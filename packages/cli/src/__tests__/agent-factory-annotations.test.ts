@@ -26,6 +26,13 @@ function platformTool(
 	};
 }
 
+// composeAuxSystemPromptAddition was removed: the aux persona now rides
+// ContextParams.personaOverride and REPLACES the main persona in the stable
+// prefix, instead of being appended to systemPromptAddition underneath the
+// full main identity (which made every aux thread speak as the main agent).
+// The replacement behavior is pinned in
+// packages/agent/src/__tests__/context-assembly.test.ts ("personaOverride").
+
 describe("createToolRegistry — platform tool annotation propagation", () => {
 	it("copies static idempotent and readOnly fields onto the registered tool", () => {
 		const platformTools: PlatformRegisteredTool[] = [

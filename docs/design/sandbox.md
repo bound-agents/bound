@@ -8,7 +8,7 @@ The two solve different problems. `@bound/sandbox` is an in-memory VFS whose con
 
 ## @bound/sandbox
 
-The sandbox package provides a controlled Bash execution environment built on top of the `just-bash` library. It manages a virtual filesystem, persists workspace changes to a SQLite database, defines custom commands that agents can invoke, and maintains an indexed view of overlay-mounted host directories.
+The sandbox package provides a controlled Bash execution environment built on top of the `just-bash` library. It manages a virtual filesystem, persists workspace changes to a SQLite database, and defines custom commands that agents can invoke.
 
 ### ClusterFs
 
@@ -22,7 +22,6 @@ The layout is fixed:
 |---|---|---|
 | `/` (base) | `InMemoryFs` | Catch-all for everything not otherwise mounted |
 | `/home/user` | `InMemoryFs` | The agent's primary working directory |
-| `/mnt/<name>` (optional) | `OverlayFs` | Read-write overlay onto a real host directory |
 
 ```typescript
 import { createClusterFs } from "@bound/sandbox";
@@ -30,20 +29,14 @@ import { createClusterFs } from "@bound/sandbox";
 const fs = createClusterFs({
   hostName: "worker-1",
   syncEnabled: true,
-  overlayMounts: {
-    // realPath on the host -> virtual mount point inside the sandbox
-    "/projects/myapp": "/mnt/myapp",
-  },
 });
 ```
-
-`overlayMounts` is a `Record<string, string>` mapping real host paths to their virtual mount points. Each entry becomes a read-write `OverlayFs`. Omitting the field means no overlay mounts are created.
 
 #### Snapshotting and diffing
 
 The OCC (Optimistic Concurrency Control) persistence model relies on before/after snapshots of the in-memory workspace. Two functions handle this:
 
-- **`snapshotWorkspace(fs, options?)`** — Returns a `Map<string, string>` of `path -> SHA-256 hash`. When `options.paths` is provided, only those specific paths are snapshotted — used by the agent loop to scope pre-execution snapshots to in-memory (agent-written) files only, avoiding unnecessary hashing of overlay content. Without `paths`, falls back to scanning all `/home/user/` paths via `fs.getAllPaths()`. Directories and unreadable entries are skipped.
+- **`snapshotWorkspace(fs, options?)`** — Returns a `Map<string, string>` of `path -> SHA-256 hash`. When `options.paths` is provided, only those specific paths are snapshotted — used by the agent loop to scope pre-execution snapshots to in-memory (agent-written) files only. Without `paths`, falls back to scanning all `/home/user/` paths via `fs.getAllPaths()`. Directories and unreadable entries are skipped.
 
   ```typescript
   snapshotWorkspace(fs: IFileSystem, options?: { paths?: string[] }): Promise<Map<string, string>>
@@ -285,9 +278,6 @@ import { createClusterFs, createDefineCommands, createSandbox } from "@bound/san
 const clusterFs = createClusterFs({
   hostName: "worker-1",
   syncEnabled: true,
-  overlayMounts: {
-    "/projects/myapp": "/mnt/myapp",
-  },
 });
 
 // 2. Hydrate from the database so prior state is available
@@ -320,66 +310,11 @@ const result = await persistWorkspaceChanges(
 
 ---
 
-### Overlay Index Scanner
-
-**Source:** `packages/sandbox/src/overlay-scanner.ts`
-
-The overlay scanner maintains an `overlay_index` table in the database that mirrors the content of host directories mounted via `OverlayFs`. It detects new files, changed files, and files that have been removed since the last scan.
-
-#### scanOverlayIndex
-
-```typescript
-function scanOverlayIndex(
-  db: Database,
-  siteId: string,
-  overlayMounts: Record<string, string>,
-): ScanResult
-```
-
-For each mount path in `overlayMounts`, `scanOverlayIndex` recursively walks the directory tree on the host filesystem. For every file found:
-
-- A deterministic UUID v5 is derived from the file's path using the fixed Bound namespace UUID (`550e8400-e29b-41d4-a716-446655440000`), so IDs are stable across restarts.
-- A SHA-256 hash of the file content is computed.
-- If no existing non-deleted row exists for that ID, a new row is inserted.
-- If a row exists but the stored content hash differs, the row is updated with the new hash and size.
-
-After the directory walk, any rows in `overlay_index` for this `siteId` that were not encountered during the scan are soft-deleted (`deleted = 1`). This handles files that were removed from the host since the last scan.
-
-```typescript
-interface ScanResult {
-  created: number;
-  updated: number;
-  tombstoned: number;
-}
-```
-
-#### startOverlayScanLoop
-
-```typescript
-function startOverlayScanLoop(
-  db: Database,
-  siteId: string,
-  overlayMounts: Record<string, string>,
-  intervalMs?: number,   // default: 300_000 (5 minutes)
-): { stop: () => void }
-```
-
-Starts a `setInterval` loop that calls `scanOverlayIndex` on the given interval. Returns a handle with a `stop()` method to cancel the loop.
-
-```typescript
-const scanner = startOverlayScanLoop(db, siteId, { "/projects/myapp": "/mnt/myapp" });
-
-// Later, when shutting down:
-scanner.stop();
-```
-
----
-
 ## Sandboxing in boundless
 
-`boundless` (the terminal coding-agent client, package `@bound/less`) faces a different containment problem from `@bound/sandbox` above. The `@bound/sandbox` VFS is in-memory and server-side: the agent loop reads and writes a `MountableFs` that only reaches durable storage when `persistWorkspaceChanges` flushes it to the `files` table. boundless's tools, by contrast, act on the operator's *real* working directory — `boundless_read` / `boundless_write` / `boundless_edit` touch real files and `boundless_bash` runs real shell commands. That surface needs OS-level containment, and boundless gets it from Microsoft's [mxc](https://github.com/microsoft/mxc) (`@microsoft/mxc-sdk`).
+`boundless` (the terminal coding-agent client, package `@bound/less`) faces a different containment problem from `@bound/sandbox` above. The `@bound/sandbox` VFS is in-memory and server-side: the agent loop reads and writes a `MountableFs` that only reaches durable storage when `persistWorkspaceChanges` flushes it to the `files` table. boundless's tools, by contrast, act on the operator's *real* working directory — `boundless_read` / `boundless_write` / `boundless_edit` touch real files and `boundless_bash` runs real shell commands. That surface needs OS-level containment. macOS and Linux use Microsoft [mxc](https://github.com/microsoft/mxc) (`@microsoft/mxc-sdk`); Windows uses Bound's native one-shot AppContainer lowbox helper.
 
-**Source:** `packages/less/src/tools/sandbox-policy.ts` (SDK-free policy and config core), `packages/less/src/tools/sandbox.ts` (SDK-dependent spawn path).
+**Source:** `packages/less/src/tools/sandbox-policy.ts` (shared policy and config core), `packages/less/src/tools/sandbox.ts` (POSIX mxc spawn path), `packages/less/src/tools/lowbox-runtime.ts` and `packages/less/src/native/bound-lowbox.cpp` (Windows spawn and native confinement).
 
 ### The policy shape
 
@@ -389,24 +324,24 @@ One rule, three knobs: read anything, write almost nothing, talk to the network 
 - **`readwritePaths: [cwd, tmpdir, ...extras]`** — writes are confined to the working directory, the system temp dir, and any operator-listed extra paths. A command can edit the project it is working in but cannot clobber `~/.ssh`, `/etc`, or a sibling checkout.
 - **Network open** — outbound requests are unrestricted (package installs, API calls).
 
-mxc compiles this abstract `process` containment to a per-OS backend: seatbelt on macOS, bubblewrap on Linux, and a native backend on Windows. `POLICY_VERSION` (`"0.6.0-alpha"`) is validated against the SDK's supported window but does **not** select the backend — the native `wxc-exec` probe picks the platform backend itself, so pinning the schema version cannot change which backend runs.
+On macOS and Linux, mxc compiles this abstract `process` containment to seatbelt and bubblewrap. Windows bypasses mxc and maps the same policy to Bound's AppContainer token, scoped filesystem DACLs, and kill-on-close Job Object. `POLICY_VERSION` (`"0.6.0-alpha"`) validates the mxc SDK's supported window on the POSIX path; it does not select the Windows backend.
 
 ### The `.git` carve-out
 
 One subpath runs the other way. Inside the writable cwd, `.git/hooks` and `.git/config` are pinned **read-only**. They hold scripts and config directives (`core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, aliases) that Git later executes as the operator, *outside* the sandbox — so without the carve-out a sandboxed run could plant a hook that fires on the operator's next `git` command and escape containment entirely. Git's own operations only ever read these paths, so the carve-out never breaks normal work. `computeGitProtectedPaths` computes the protected set.
 
-It is enforced on Linux (bubblewrap layers the read-only bind after the cwd read-write bind; last-mount-wins) and for boundless's in-process file tools on every platform **except Windows**. No mxc Windows backend can yet express "readable but not writable" for a subpath of a writable parent, so `computeGitProtectedPaths` returns `[]` on win32 and `.git` stays writable there. The gap is tracked upstream.
+It is enforced on Linux by layering read-only binds after the cwd read-write bind, by the in-process file tools on every platform, and on Windows by the lowbox helper's scoped DACL restoration. The Windows oracle covers existing and nested hook paths: `.git/config` and `.git/hooks` remain readable but cannot be replaced, while `.git/index`, refs, logs, and objects remain writable so normal Git operations continue to work.
 
 ### Degradation
 
-When mxc cannot sandbox on a platform, behavior follows the `onUnavailable` setting: `"error"` (default) refuses to run the command rather than execute it without write confinement, so a backend that breaks (e.g. after an OS update) can't silently drop write protection — the error names the exact config edit to opt into the lower-friction posture. `"passthrough"` runs the command unsandboxed with a warning instead. The sandbox is configured in `~/.bound/less/config.json` under the `sandbox` key — `false` to disable, or an object (`enabled`, `writablePaths`, `network`, `onUnavailable`) for finer control.
+When the selected platform backend cannot start, behavior follows the `onUnavailable` setting: `"error"` (default) refuses to run the command rather than execute it without write confinement, so a backend that breaks (e.g. after an OS update) can't silently drop write protection — the error names the exact config edit to opt into the lower-friction posture. `"passthrough"` runs the command unsandboxed with a warning instead. The sandbox is configured in `~/.bound/less/config.json` under the `sandbox` key — `false` to disable, or an object (`enabled`, `writablePaths`, `network`, `onUnavailable`) for finer control.
 
 ### The Windows backend
 
-mxc exposes two backends that can satisfy the `process` intent on Windows, and which one boundless uses comes down to capability. The first, **BaseContainer** (`processcontainer`), is a one-shot spawn — the same shape macOS (seatbelt) and Linux (bubblewrap) use — but on current Windows builds its kernel entry point is missing. Even with both BaseContainer feature-velocity flags enabled, the `Containers` optional features installed, and a supported build and edition (observed on 25H2 build 26300, Pro), the underlying kernel call `Experimental_CreateProcessInSandbox` returns `E_NOTIMPL` / `ERROR_CALL_NOT_IMPLEMENTED` — the OS reporting that the syscall is not implemented in this build. No user-mode configuration conjures a call the kernel does not ship. (The operator-facing detail — how to check the flags and enable the ones merely gated behind the staged rollout, on builds where the feature has shipped — lives in the README's boundless section.)
+Windows commands go directly to Bound's native **one-shot AppContainer lowbox** backend; boundless never probes or falls back to mxc's BaseContainer or IsolationSession paths. Each command creates an AppContainer profile and lowbox token, grants only the working directory, temporary directories, and configured extras, launches the shell in a kill-on-close Job Object, and transfers cleanup authority to a watcher. The watcher owns cancellation after handoff, proves the descendant process tree is dead, restores ACLs, deletes the profile and journal, and reports cleanup failures.
 
-So on Windows boundless uses the second backend, **IsolationSession**, which succeeds where BaseContainer returns `E_NOTIMPL`: it provisions a short-lived Windows agent user, runs commands as that user, and enforces the write-confinement policy (a write inside `readwritePaths` succeeds; a write outside is denied by the OS). IsolationSession differs from the one-shot backends in shape — it is a stateful, five-phase lifecycle (provision -> start -> exec -> stop -> deprovision) rather than a spawn-and-forget call — so boundless drives it per session rather than per command: it provisions a session once when a boundless session attaches (carrying the same `buildPolicy` filesystem config), `exec`s each shell command against the live session, and deprovisions on teardown. macOS (seatbelt) and Linux (bubblewrap) keep the one-shot path; only Windows takes the stateful branch, because it is the only platform where the one-shot path is `E_NOTIMPL`.
+The Windows CI oracle exercises eight confinement cases: writes inside allowed roots; denial of sibling, traversal, and junction escapes; ordinary Git writes with read-only `.git/config` and `.git/hooks` (including nested existing hooks); descendant process-tree cancellation; and watcher-owned profile, ACL, and journal cleanup. These are OS-enforced checks on `windows-latest`, not source-shape assertions.
 
-The agent user IsolationSession provisions has an indefinite lifetime, so a boundless process that dies between provision and deprovision would orphan the account and its broker process with nothing on the books to reap it. boundless bounds that by sweeping for orphaned agent users at startup and reaping any left behind by a prior hard kill.
+Profile creation is intentionally unprivileged. A host policy or Windows configuration that prevents the current user from calling `CreateAppContainerProfile` makes lowbox unavailable; no administrator bootstrap or persisted privileged service is installed. The default `onUnavailable: "error"` posture refuses the command with guidance. `"passthrough"` is an explicit unsandboxed escape hatch and is always surfaced as `ran UNSANDBOXED`.
 
-One caveat applies to every mxc backend: mxc notes its sandboxes "should not be treated as security boundaries currently." boundless's sandbox is a write-confinement guard against careless or accidental writes outside the working tree, not a hard jail against a determined adversary.
+The POSIX mxc project notes that its sandboxes "should not be treated as security boundaries currently." Across all platforms, boundless treats this machinery as a write-confinement guard against careless or accidental writes outside the working tree, not as a hard jail against a determined adversary.

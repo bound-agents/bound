@@ -1,8 +1,80 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
-import { insertRow, softDelete, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	findClusterConfigValueByKey,
+	findWebhookDeletedFlagById,
+	findWebhookIdAndTaskIdByName,
+	findWebhookIdByName,
+	findWebhookIdsByName,
+	insertRow,
+	listWebhooksForCli,
+	softDelete,
+	updateRow,
+} from "@bound/core";
+import {
+	BOUND_NAMESPACE,
+	WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+	deterministicUUID,
+} from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
+
+const SIGNATURE_FORMATS = new Set<SignatureFormat>(["github", "stripe", "slack", "raw", "none"]);
+
+function parseSignatureFormat(value: string): SignatureFormat {
+	if (!SIGNATURE_FORMATS.has(value as SignatureFormat)) {
+		throw new Error(`Unsupported signature format '${value}'.`);
+	}
+	return value as SignatureFormat;
+}
+
+/**
+ * Throws unless the cluster-wide unauthenticated-webhook switch
+ * (`cluster_config['webhooks_allow_unauthenticated']`) is set to `"true"`.
+ * Shared by create and update so `--format none` is refused identically on
+ * both paths (#195).
+ */
+function assertUnauthenticatedWebhooksAllowed(db: Database): void {
+	const allowUnauthenticated = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+	if (allowUnauthenticated?.value !== "true") {
+		throw new Error(
+			"Unauthenticated webhooks (--format none) are disabled. Enable them cluster-wide first: boundctl webhook allow-unauthenticated",
+		);
+	}
+}
+
+/**
+ * Upsert a cluster_config key through the outbox helpers. The existence probe
+ * INCLUDES tombstoned rows: a soft-deleted row still occupies the `key` PK, so
+ * a re-set must UPDATE (un-tombstoning via deleted=0), never INSERT a colliding
+ * row. Mirrors the pattern in drain.ts / set-hub.ts.
+ */
+function upsertClusterConfig(db: Database, siteId: string, key: string, value: string): void {
+	const now = new Date().toISOString();
+	if (findClusterConfigKeyByKeyIncludingDeleted(db, key)) {
+		updateRow(db, "cluster_config", key, { value, deleted: 0 }, siteId);
+	} else {
+		insertRow(db, "cluster_config", { key, value, modified_at: now, deleted: 0 }, siteId);
+	}
+}
+
+/**
+ * Flip the cluster-wide unauthenticated-webhook switch (#195). `allow=true`
+ * lets operators create `--format none` webhooks and lets those webhooks
+ * receive deliveries; `allow=false` (the default state, row absent) blocks
+ * both. This is the deliberate, visible opt-in the issue calls for.
+ */
+export function webhookSetUnauthenticated(db: Database, siteId: string, allow: boolean): void {
+	upsertClusterConfig(db, siteId, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, allow ? "true" : "false");
+	if (allow) {
+		console.log("Unauthenticated webhooks are now ALLOWED cluster-wide.");
+		console.log("⚠ Any host that can reach POST /webhook/:name can now trigger a 'none'-format");
+		console.log("  webhook without a signature. Create them deliberately.");
+	} else {
+		console.log("Unauthenticated webhooks are now DISABLED cluster-wide (default).");
+		console.log("Existing 'none'-format webhooks will stop receiving deliveries (404).");
+	}
+}
 
 // ---------------------------------------------------------------------------
 // webhookCreate
@@ -11,7 +83,7 @@ import type { SignatureFormat } from "@bound/shared";
 export function webhookCreate(db: Database, siteId: string, args: string[]): void {
 	// Parse args: --name, --format, --description, --prompt, --model, --no-history
 	const name = getArgValue(args, "--name");
-	const format = (getArgValue(args, "--format") || "github") as SignatureFormat;
+	const format = parseSignatureFormat(getArgValue(args, "--format") || "github");
 	const description = getArgValue(args, "--description");
 	const prompt = getArgValue(args, "--prompt");
 	const modelHint = getArgValue(args, "--model");
@@ -20,6 +92,10 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	// --no-history is a presence flag: when set, the webhook's event task runs
 	// with no_history=1 so each delivery starts from a clean context window.
 	const noHistory = hasFlag(args, "--no-history") ? 1 : 0;
+
+	if (format === "none") {
+		assertUnauthenticatedWebhooksAllowed(db);
+	}
 
 	// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 	if (!name) {
@@ -34,9 +110,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	}
 
 	// Check for existing non-deleted webhook
-	const existing = db
-		.prepare("SELECT id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string } | null;
+	const existing = findWebhookIdByName(db, name);
 
 	if (existing) {
 		throw new Error(`Webhook '${name}' already exists.`);
@@ -121,9 +195,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 	// updateRow so the deterministic-id property holds. (Mirrors the web
 	// route's POST handler; see #59.)
 	const webhookId = deterministicUUID(BOUND_NAMESPACE, `webhook:${name}`);
-	const priorRow = db.prepare("SELECT deleted FROM webhooks WHERE id = ?").get(webhookId) as {
-		deleted: number;
-	} | null;
+	const priorRow = findWebhookDeletedFlagById(db, webhookId);
 
 	if (priorRow) {
 		// Existing row must be soft-deleted at this point — the active
@@ -181,27 +253,7 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 // ---------------------------------------------------------------------------
 
 export function webhookList(db: Database): void {
-	const rows = db
-		.prepare(
-			`SELECT w.name AS name,
-			        w.signature_format AS signature_format,
-			        w.description AS description,
-			        w.created_at AS created_at,
-			        t.model_hint AS model_hint,
-			        t.no_history AS no_history
-			 FROM webhooks w
-			 LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0
-			 WHERE w.deleted = 0
-			 ORDER BY w.created_at DESC`,
-		)
-		.all() as Array<{
-		name: string;
-		signature_format: string;
-		description: string | null;
-		created_at: string;
-		model_hint: string | null;
-		no_history: number | null;
-	}>;
+	const rows = listWebhooksForCli(db);
 
 	if (rows.length === 0) {
 		console.log("No webhooks found.");
@@ -229,9 +281,7 @@ export function webhookList(db: Database): void {
 // ---------------------------------------------------------------------------
 
 export function webhookDelete(db: Database, siteId: string, name: string): void {
-	const webhook = db
-		.prepare("SELECT id, task_id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; task_id: string } | null;
+	const webhook = findWebhookIdAndTaskIdByName(db, name);
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);
@@ -262,7 +312,8 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 	const name = getArgValue(args, "--name");
 	const prompt = getArgValue(args, "--prompt");
 	const description = getArgValue(args, "--description");
-	const format = getArgValue(args, "--format");
+	const formatRaw = getArgValue(args, "--format");
+	const format = formatRaw === undefined ? undefined : parseSignatureFormat(formatRaw);
 	// Three-state semantics for --model:
 	//   flag absent           → leave existing model_hint alone
 	//   --model ""            → clear back to system default (null)
@@ -289,9 +340,7 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 		throw new Error("--name is required");
 	}
 
-	const webhook = db
-		.prepare("SELECT id, task_id, thread_id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string; task_id: string; thread_id: string } | null;
+	const webhook = findWebhookIdsByName(db, name);
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);
@@ -321,13 +370,17 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 		);
 	}
 
+	if (format === "none") {
+		assertUnauthenticatedWebhooksAllowed(db);
+	}
+
 	if (format) {
 		updateRow(
 			db,
 			"webhooks",
 			webhook.id,
 			{
-				signature_format: format as SignatureFormat,
+				signature_format: format,
 			},
 			siteId,
 		);
@@ -354,9 +407,7 @@ export function webhookUpdate(db: Database, siteId: string, args: string[]): voi
 // ---------------------------------------------------------------------------
 
 export function webhookRotateSecret(db: Database, siteId: string, name: string): void {
-	const webhook = db
-		.prepare("SELECT id FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as { id: string } | null;
+	const webhook = findWebhookIdByName(db, name);
 
 	if (!webhook) {
 		throw new Error(`Webhook '${name}' not found.`);

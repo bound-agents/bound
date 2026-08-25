@@ -127,7 +127,6 @@ const FULL_SCHEMA = `
 		mcp_servers TEXT,
 		mcp_tools TEXT,
 		models TEXT,
-		overlay_root TEXT,
 		online_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
 		platforms TEXT,
@@ -138,7 +137,6 @@ const FULL_SCHEMA = `
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
 		description TEXT NOT NULL,
-		status TEXT NOT NULL,
 		skill_root TEXT NOT NULL,
 		content_hash TEXT,
 		allowed_tools TEXT,
@@ -148,8 +146,6 @@ const FULL_SCHEMA = `
 		created_by_thread TEXT,
 		activation_count INTEGER DEFAULT 0,
 		last_activated_at TEXT,
-		retired_by TEXT,
-		retired_reason TEXT,
 		modified_at TEXT NOT NULL,
 		deleted INTEGER DEFAULT 0
 	);
@@ -183,20 +179,12 @@ const FULL_SCHEMA = `
 	FOR EACH ROW WHEN NEW.relation NOT IN ('related_to','informs','supports','extends','complements','contrasts-with','competes-with','cites','summarizes','synthesizes')
 	BEGIN SELECT RAISE(ABORT, 'Invalid relation. Must be one of: related_to, informs, supports, extends, complements, contrasts-with, competes-with, cites, summarizes, synthesizes. Use context column for bespoke phrasing.'); END;
 
-	CREATE TABLE overlay_index (
-		id TEXT PRIMARY KEY,
-		site_id TEXT NOT NULL,
-		path TEXT NOT NULL,
-		size_bytes INTEGER NOT NULL,
-		content_hash TEXT NOT NULL,
-		indexed_at TEXT NOT NULL,
-		deleted INTEGER NOT NULL DEFAULT 0
-	);
 
 	CREATE TABLE cluster_config (
 		key TEXT PRIMARY KEY,
 		value TEXT NOT NULL,
-		modified_at TEXT NOT NULL
+		modified_at TEXT NOT NULL,
+		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE host_meta (
@@ -266,6 +254,7 @@ const FULL_SCHEMA = `
 		peer_site_id TEXT PRIMARY KEY,
 		last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 		last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+		last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 		last_sync_at TEXT,
 		sync_errors INTEGER NOT NULL DEFAULT 0
 	);

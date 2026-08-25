@@ -1,0 +1,442 @@
+/*
+ * Bound docs theme — maps the web UI's paper/ink/vermilion identity
+ * onto Starlight's CSS variable surface.
+ *
+ * The palette is light-only (the web UI is color-scheme: light). We override
+ * BOTH light and dark theme variables to the same paper palette so the theme
+ * toggle is a no-op, then hide the toggle button entirely.
+ */
+
+/* ── Color palette (bound signage) ───────────────────────────── */
+
+:root,
+::backdrop {
+	/* Paper — warm, matte, not quite white */
+	--bound-paper: #efeae0;
+	--bound-paper-2: #e8e2d5;
+	--bound-paper-3: #dfd8c7;
+
+	/* Ink — warm near-black */
+	--bound-ink: #1a1814;
+	--bound-ink-2: #3a342b;
+	--bound-ink-3: #6b6558;
+	--bound-ink-4: #9a937f;
+
+	/* One signal accent — vermilion */
+	--bound-accent: #c8331c;
+	--bound-accent-2: #9b2613;
+	--bound-accent-wash: rgba(200, 51, 28, 0.08);
+
+	/* Rules */
+	--bound-rule: rgba(26, 24, 20, 0.18);
+	--bound-rule-faint: rgba(26, 24, 20, 0.08);
+
+	/* Semantic */
+	--bound-warn: #c37a0f;
+	--bound-ok: #2e7d47;
+	--bound-err: #b82817;
+}
+
+/* ── Starlight variable overrides (light mode = the only mode) ── */
+
+:root,
+:root[data-theme="light"],
+[data-theme="light"] ::backdrop,
+:root[data-theme="dark"],
+[data-theme="dark"] ::backdrop {
+	/* Map Starlight's gray scale to bound's ink tones */
+	--sl-color-white: var(--bound-ink);
+	--sl-color-gray-1: var(--bound-ink);
+	--sl-color-gray-2: var(--bound-ink-2);
+	--sl-color-gray-3: var(--bound-ink-3);
+	--sl-color-gray-4: var(--bound-ink-4);
+	--sl-color-gray-5: var(--bound-paper-3);
+	--sl-color-gray-6: var(--bound-paper-2);
+	--sl-color-gray-7: var(--bound-paper);
+	--sl-color-black: var(--bound-paper);
+
+	/* Accent — vermilion */
+	--sl-color-accent: var(--bound-accent);
+	--sl-color-accent-low: var(--bound-accent-wash);
+	--sl-color-accent-high: var(--bound-accent-2);
+
+	/* Text */
+	--sl-color-text: var(--bound-ink-2);
+	--sl-color-text-accent: var(--bound-accent);
+	--sl-color-text-invert: var(--bound-paper);
+
+	/* Backgrounds */
+	--sl-color-bg: var(--bound-paper);
+	--sl-color-bg-nav: var(--bound-paper-2);
+	--sl-color-bg-sidebar: var(--bound-paper);
+	--sl-color-bg-inline-code: var(--bound-paper-3);
+	--sl-color-bg-accent: var(--bound-accent);
+
+	/* Hairlines */
+	--sl-color-hairline-light: var(--bound-rule-faint);
+	--sl-color-hairline: var(--bound-rule);
+	--sl-color-hairline-shade: var(--bound-rule-faint);
+
+	/* Backdrop */
+	--sl-color-backdrop-overlay: hsla(30, 15%, 25%, 0.55);
+
+	/* Semantic colors */
+	--sl-color-red: var(--bound-err);
+	--sl-color-red-high: var(--bound-accent-2);
+	--sl-color-red-low: var(--bound-accent-wash);
+	--sl-color-green: var(--bound-ok);
+	--sl-color-green-high: #1a5a30;
+	--sl-color-green-low: rgba(46, 125, 71, 0.1);
+	--sl-color-orange: var(--bound-warn);
+	--sl-color-orange-high: #8a5408;
+	--sl-color-orange-low: rgba(195, 122, 15, 0.1);
+}
+
+/* ── Force light mode ────────────────────────────────────────── */
+
+/* Hide the theme toggle — bound is light-only */
+starlight-theme-select {
+	display: none !important;
+}
+
+/* ── Typography ──────────────────────────────────────────────── */
+
+:root {
+	--sl-font: "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
+	--sl-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ── Paper texture ───────────────────────────────────────────── */
+
+body::before {
+	content: "";
+	position: fixed;
+	inset: 0;
+	pointer-events: none;
+	z-index: 0;
+	background-image: radial-gradient(rgba(26, 24, 20, 0.035) 1px, transparent 1px),
+		radial-gradient(rgba(26, 24, 20, 0.02) 1px, transparent 1px);
+	background-size: 3px 3px, 7px 7px;
+	background-position: 0 0, 1.5px 1.5px;
+}
+
+/* ── Navigation bar ──────────────────────────────────────────── */
+
+header[data-theme] {
+	background: var(--bound-paper-2) !important;
+	border-bottom: 1px solid var(--bound-rule) !important;
+	backdrop-filter: saturate(1.1);
+}
+
+/* Site title in the nav */
+.site-title {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 700 !important;
+	letter-spacing: -0.02em !important;
+	color: var(--bound-ink) !important;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+
+.sidebar-pane {
+	background: var(--bound-paper) !important;
+	border-right: 1px solid var(--bound-rule-faint) !important;
+}
+
+/* Sidebar group labels (Start Here, Guides, Concepts, Reference) */
+.group-label {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 600 !important;
+	font-size: 0.75rem !important;
+	letter-spacing: 0.08em !important;
+	text-transform: uppercase !important;
+	color: var(--bound-ink-3) !important;
+}
+
+.group-label .large {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 600 !important;
+	font-size: 0.75rem !important;
+	letter-spacing: 0.08em !important;
+	text-transform: uppercase !important;
+	color: var(--bound-ink-3) !important;
+}
+
+/* Sidebar links — target the actual <a> tags inside sidebar <li> elements.
+   Starlight uses scoped astro-* classes, not .sidebar-link. */
+.sidebar a[href] {
+	font-size: 0.875rem !important;
+	color: var(--bound-ink-2) !important;
+	text-decoration: none !important;
+	transition: background 0.12s ease, color 0.12s ease !important;
+}
+
+.sidebar a[href]:hover {
+	background: var(--bound-rule-faint) !important;
+	color: var(--bound-ink) !important;
+}
+
+.sidebar a[aria-current="page"] {
+	color: var(--bound-paper) !important;
+	background: var(--bound-accent) !important;
+	font-weight: 600 !important;
+	border-left: 3px solid var(--bound-accent) !important;
+}
+
+/* ── Content area ────────────────────────────────────────────── */
+
+main {
+	background: var(--bound-paper) !important;
+}
+
+/* Headings */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	font-family: "Space Grotesk", sans-serif !important;
+	letter-spacing: -0.02em !important;
+	color: var(--bound-ink) !important;
+}
+
+h1 {
+	font-weight: 700 !important;
+}
+
+h2 {
+	font-weight: 600 !important;
+	border-bottom-color: var(--bound-rule-faint) !important;
+	padding-bottom: 0.3em !important;
+}
+
+/* Body text */
+p,
+li,
+dd {
+	color: var(--bound-ink-2) !important;
+	line-height: 1.65 !important;
+}
+
+/* Links in content (scoped to main so sidebar links are unaffected) */
+main :where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]) {
+	color: var(--bound-accent) !important;
+	text-decoration: none !important;
+	transition: color 0.1s ease !important;
+}
+
+main :where(p, li, dd, td) a[href]:not(.sl-link-button):not(.card):not([class*="button"]):hover {
+	color: var(--bound-accent-2) !important;
+	text-decoration: underline !important;
+}
+
+/* ── Code blocks ─────────────────────────────────────────────── */
+
+/* Inline code */
+code:not(pre code) {
+	background: var(--bound-paper-3) !important;
+	color: var(--bound-ink) !important;
+	font-family: "JetBrains Mono", ui-monospace, monospace !important;
+	font-size: 0.85em !important;
+	padding: 0.15em 0.35em !important;
+	border-radius: 3px !important;
+	border: 1px solid var(--bound-rule-faint) !important;
+}
+
+/* Code blocks */
+pre {
+	background: var(--bound-ink) !important;
+	border: 1px solid var(--bound-rule) !important;
+	border-radius: 4px !important;
+}
+
+pre code {
+	font-family: "JetBrains Mono", ui-monospace, monospace !important;
+	font-size: 0.8125rem !important;
+	line-height: 1.5 !important;
+}
+
+/* Expressive code (Starlight's syntax highlighting) — override the
+   dark-on-light default to ink-on-paper with vermilion tokens */
+.ec .ec-line {
+	background: transparent !important;
+}
+
+/* ── Tables ──────────────────────────────────────────────────── */
+
+table {
+	border-collapse: collapse !important;
+	border: 1px solid var(--bound-rule) !important;
+	border-radius: 4px !important;
+	overflow: hidden;
+	display: table !important;
+	width: 100% !important;
+}
+
+th {
+	background: var(--bound-paper-2) !important;
+	color: var(--bound-ink) !important;
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 600 !important;
+	font-size: 0.8125rem !important;
+	border-bottom: 1px solid var(--bound-rule) !important;
+	padding: 0.5em 0.75em !important;
+}
+
+td {
+	border-bottom: 1px solid var(--bound-rule-faint) !important;
+	padding: 0.5em 0.75em !important;
+	font-size: 0.875rem !important;
+}
+
+tr:last-child td {
+	border-bottom: none !important;
+}
+
+/* ── Callouts / asides ───────────────────────────────────────── */
+
+aside[data-type] {
+	border-radius: 4px !important;
+	border-width: 1px !important;
+	border-style: solid !important;
+}
+
+aside[data-type="note"] {
+	background: var(--bound-paper-2) !important;
+	border-color: var(--bound-rule) !important;
+}
+
+aside[data-type="caution"] {
+	background: rgba(195, 122, 15, 0.06) !important;
+	border-color: var(--bound-warn) !important;
+}
+
+aside[data-type="danger"] {
+	background: var(--bound-accent-wash) !important;
+	border-color: var(--bound-accent) !important;
+}
+
+/* ── Hero / splash page ──────────────────────────────────────── */
+
+.hero {
+	background: linear-gradient(180deg, var(--bound-paper-2) 0%, var(--bound-paper) 100%) !important;
+	border-bottom: 1px solid var(--bound-rule-faint) !important;
+}
+
+.hero-title {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 700 !important;
+	letter-spacing: -0.03em !important;
+	color: var(--bound-ink) !important;
+}
+
+.hero-tagline {
+	color: var(--bound-ink-3) !important;
+}
+
+/* Hero action buttons — use Starlight's actual class names, not data-variant */
+.sl-link-button {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 600 !important;
+	border-radius: 4px !important;
+	transition: all 0.12s ease !important;
+	text-decoration: none !important;
+}
+
+/* Primary button: vermilion background, paper text */
+.sl-link-button.primary {
+	background: var(--bound-accent) !important;
+	color: var(--bound-paper) !important;
+	border: 1px solid var(--bound-accent) !important;
+}
+
+.sl-link-button.primary:hover {
+	background: var(--bound-accent-2) !important;
+	border-color: var(--bound-accent-2) !important;
+	color: var(--bound-paper) !important;
+}
+
+/* Minimal button: transparent with ink border */
+.sl-link-button.minimal {
+	color: var(--bound-ink-3) !important;
+	border: 1px solid var(--bound-rule) !important;
+	background: transparent !important;
+	/* Starlight removes inline padding from minimal links; this theme gives
+	   them a button border, so restore a full hit area. */
+	padding-inline: 1.25rem !important;
+}
+
+.sl-link-button.minimal:hover {
+	color: var(--bound-ink) !important;
+	border-color: var(--bound-ink-3) !important;
+}
+
+/* ── Card links (Next steps etc.) ────────────────────────────── */
+
+.card {
+	background: var(--bound-paper-2) !important;
+	border: 1px solid var(--bound-rule-faint) !important;
+	border-radius: 4px !important;
+	transition: border-color 0.12s ease, background 0.12s ease !important;
+}
+
+.card:hover {
+	border-color: var(--bound-accent) !important;
+	background: var(--bound-paper) !important;
+}
+
+.card-title {
+	font-family: "Space Grotesk", sans-serif !important;
+	font-weight: 600 !important;
+	color: var(--bound-ink) !important;
+}
+
+/* ── Search ──────────────────────────────────────────────────── */
+
+#starlight__search input {
+	background: var(--bound-paper) !important;
+	border: 1px solid var(--bound-rule) !important;
+	border-radius: 4px !important;
+	color: var(--bound-ink) !important;
+	font-family: "Space Grotesk", sans-serif !important;
+}
+
+#starlight__search input::placeholder {
+	color: var(--bound-ink-4) !important;
+}
+
+/* ── Mobile sidebar overlay ──────────────────────────────────── */
+
+@media (max-width: 50em) {
+	.sidebar-pane {
+		background: var(--bound-paper) !important;
+	}
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--bound-paper);
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--bound-paper-3);
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--bound-ink-4);
+}
+
+/* ── Selection ───────────────────────────────────────────────── */
+
+::selection {
+	background: var(--bound-accent-wash);
+	color: var(--bound-ink);
+}

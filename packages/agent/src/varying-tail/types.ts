@@ -14,14 +14,16 @@
  *   - **Freshness**: when relevant state changes, the next varying-
  *     tail render MUST reflect it. A memorize that lands within the
  *     turn must produce a `[changed since last turn]` marker on the
- *     next assembly. Stale freshness is the failure class that
- *     produced thread `d0372be6-...`'s confabulation incident.
+ *     next assembly. Stale freshness is the failure class behind a
+ *     production confabulation incident: the agent argued from a
+ *     purge summary it had authored itself, treating stale narrative
+ *     as ground truth instead of re-checking source state.
  *
  *   - **Source-label totality**: every Live-State line shall carry
  *     exactly one of `[thread] / [task] / [file] / [advisory] /
  *     [synthesis-backlog]`. Unlabeled lines confuse the agent about
- *     where the data came from (the `d0372be6` failure mode); double-
- *     labeled lines are a structural bug.
+ *     where the data came from; double-labeled lines are a structural
+ *     bug.
  *
  *   - **Subsystem ordering**: R-VC5 fixes the four Live-State
  *     subsystems in the order `thread → task → file → advisory`
@@ -51,11 +53,10 @@
 import type { MemoryTier } from "@bound/shared";
 
 /**
- * Recent-memory entry projection. Mirrors the fields read by
- * `formatMemoryEntry` for `tier='default'` L2/L3 entries on the
- * varying side: key, value, modifiedAt, tier, tag, plus the
- * source/task/thread resolution fields. The `deleted` flag triggers
- * the `[forgotten]` rendering branch.
+ * Recent-memory entry projection for the R-VC27 relevant-memory block:
+ * key, value, modifiedAt, tier, tag, plus the source/task/thread
+ * resolution fields. The `deleted` flag triggers the `forgotten`
+ * tier rendering branch.
  */
 export interface RecentMemoryEntryView {
 	key: string;
@@ -80,6 +81,7 @@ export interface StaleChildView {
 
 /** Cross-thread digest line (R-VC7). */
 export interface CrossThreadEntryView {
+	threadId: string;
 	title: string;
 	messageCount: number;
 	/** ISO-8601 from `threads.last_message_at`. Rendered verbatim. */
@@ -108,6 +110,7 @@ export interface FileEntryView {
 
 /** Applied-advisory line (R-VC12). */
 export interface AdvisoryEntryView {
+	advisoryId: string;
 	title: string;
 	/** ISO-8601 of the apply-status transition. Used for relative-time fragment. */
 	appliedAt: string;

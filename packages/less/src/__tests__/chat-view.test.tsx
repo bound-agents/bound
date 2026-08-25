@@ -8,6 +8,8 @@ import {
 	ChatView,
 	type ChatViewProps,
 	buildToolResultMetaMap,
+	buildTranscriptMargins,
+	buildTurnActivityMap,
 	partitionPendingMessage,
 } from "../tui/views/ChatView";
 
@@ -103,6 +105,16 @@ describe("ChatView slash commands", () => {
 		expect(frame).toContain("/model");
 		expect(frame).not.toContain("/model <name>");
 	});
+
+	it("lists the Esc hint in the action bar", async () => {
+		const props = makeProps();
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("Esc");
+		expect(frame).toContain("clear input");
+	});
 });
 
 describe("ChatView active prop", () => {
@@ -128,6 +140,83 @@ describe("ChatView active prop", () => {
 		// and is the whole point: Static stays mounted across view transitions.
 		expect(output).not.toContain("❯");
 		expect(output).not.toContain("thread-123");
+	});
+});
+
+describe("ChatView Yard-dispatched client tools", () => {
+	// Complaint (2026-08-16): bash output from inside a Yard run streamed as a
+	// standalone ToolCallCard underneath the Yard execution card — the same
+	// effect rendered twice. Yard dispatches client tools with a
+	// `yard-client-` call id (YARD_CLIENT_CALL_ID_PREFIX in @bound/shared);
+	// the execution card already renders those as graph nodes, so the
+	// streaming card must be suppressed for them and ONLY them.
+	it("does not render a streaming card for yard-client dispatches", async () => {
+		const inFlightTools = new Map([
+			[
+				"yard-client-1234",
+				{
+					toolName: "boundless_bash",
+					startTime: Date.now(),
+					stdout: "streamed-yard-rows",
+					args: { command: "ls" },
+				},
+			],
+			[
+				"toolu_direct",
+				{ toolName: "boundless_search", startTime: Date.now(), args: { pattern: "x" } },
+			],
+		]);
+		const props = makeProps({ inFlightTools });
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		// The directly-dispatched tool still gets its live card (ToolCallCard
+		// renders the display name with the boundless_ prefix stripped)…
+		expect(frame).toContain("search pattern=x");
+		// …while the Yard-dispatched one renders nowhere in the dynamic area:
+		// no card, no args summary, no streamed stdout.
+		expect(frame).not.toContain("command=ls");
+		expect(frame).not.toContain("streamed-yard-rows");
+	});
+
+	// Complaint 2 (thread febfe45e, 2026-08-16): aux agents run in their OWN
+	// threads but execute client tools on this session's registered handlers,
+	// so their bash output streamed under whatever chat was open — dozens of
+	// scouts made the transcript unfollowable. In-flight cards now carry the
+	// dispatching thread id and ChatView renders only this thread's tools.
+	it("does not render streaming cards for tools dispatched by other threads", async () => {
+		const inFlightTools = new Map([
+			[
+				"call_aux1",
+				{
+					toolName: "boundless_bash",
+					startTime: Date.now(),
+					stdout: "aux-scout-output",
+					args: { command: "bun test" },
+					threadId: "aux-thread-999",
+				},
+			],
+			[
+				"call_mine",
+				{
+					toolName: "boundless_search",
+					startTime: Date.now(),
+					args: { pattern: "y" },
+					threadId: "thread-123",
+				},
+			],
+		]);
+		const props = makeProps({ inFlightTools });
+		const { lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		// This thread's tool renders…
+		expect(frame).toContain("search pattern=y");
+		// …the aux thread's tool and its stdout do not.
+		expect(frame).not.toContain("command=bun test");
+		expect(frame).not.toContain("aux-scout-output");
 	});
 });
 
@@ -178,7 +267,15 @@ describe("buildToolResultMetaMap", () => {
 		];
 		const m = buildToolResultMetaMap(messages);
 		expect(m.size).toBe(1);
-		expect(m.get("r1")).toEqual({ filePath: "/a.ts", isLastInGroup: true, toolName: "read" });
+		expect(m.get("r1")).toEqual({
+			filePath: "/a.ts",
+			isLastInGroup: true,
+			toolName: "read",
+			input: { file_path: "/a.ts" },
+			callMsgId: "c1",
+			total: 1,
+			callCreatedAt: "2026-05-22T00:00:00Z",
+		});
 	});
 
 	it("marks all but the final sibling result as mid-group for parallel calls", () => {
@@ -259,6 +356,10 @@ describe("buildToolResultMetaMap", () => {
 			filePath: undefined,
 			isLastInGroup: true,
 			toolName: "bash",
+			input: { command: "echo hi" },
+			callMsgId: "c1",
+			total: 1,
+			callCreatedAt: "2026-05-22T00:00:00Z",
 		});
 	});
 
@@ -359,5 +460,466 @@ describe("MessageBlock tool_result header", () => {
 			}),
 		);
 		expect(lastFrame() ?? "").not.toContain(toolUseId);
+	});
+});
+
+/**
+ * Compact read/search/query grouping: consecutive compact invocations collapse
+ * to one line each with no blank lines between them. Because Ink's <Static>
+ * commits each row once and never repaints, all margins here are derived
+ * only from PRECEDING messages (marginTop on the follower, never a
+ * retroactive marginBottom on the last row of a run).
+ */
+describe("buildTranscriptMargins (compact read/search/query grouping)", () => {
+	function marginsFor(messages: Message[]) {
+		return buildTranscriptMargins(messages, buildToolResultMetaMap(messages));
+	}
+
+	it("stacks consecutive read/search/query invocations with no gaps and flags the open run", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			toolResult("r1", "tu1"),
+			toolCall("c2", [{ id: "tu2", name: "boundless_search", input: { pattern: "foo" } }]),
+			toolResult("r2", "tu2"),
+			toolCall("c3", [{ id: "tu3", name: "query", input: { sql: "SELECT id FROM threads" } }]),
+			toolResult("r3", "tu3"),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		expect(margins.get("c1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("c2")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r2")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("c3")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r3")).toEqual({ top: 0, bottom: 0 });
+		expect(endsInCompactRun).toBe(true);
+	});
+
+	it("separates the message after a compact run with a top margin", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			toolResult("r1", "tu1"),
+			msg({ id: "a1", role: "assistant", content: "done" }),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		expect(margins.get("a1")).toEqual({ top: 1, bottom: 1 });
+		expect(endsInCompactRun).toBe(false);
+	});
+
+	it("keeps legacy margins for non-compact tools (call abuts results, last result closes)", () => {
+		const messages = [
+			toolCall("c1", [
+				{ id: "tu1", name: "bash" },
+				{ id: "tu2", name: "bash" },
+			]),
+			toolResult("r1", "tu1"),
+			toolResult("r2", "tu2"),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		expect(margins.get("c1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r1")).toEqual({ top: 0, bottom: 0 });
+		expect(margins.get("r2")).toEqual({ top: 0, bottom: 1 });
+		expect(endsInCompactRun).toBe(false);
+	});
+
+	it("treats a compact-tool error result as full-width: closes the run, keeps group abutment", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			msg({
+				id: "r1",
+				role: "tool_result",
+				tool_name: "tu1",
+				content: "Error: ENOENT",
+				exit_code: 1,
+			}),
+		];
+		const { margins, endsInCompactRun } = marginsFor(messages);
+		// Same owning call as the suppressed row before it — no stray top gap.
+		expect(margins.get("r1")).toEqual({ top: 0, bottom: 1 });
+		expect(endsInCompactRun).toBe(false);
+	});
+
+	it("a tool_call with inline text is not suppressed and takes the gap after a run", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } }]),
+			toolResult("r1", "tu1"),
+			msg({
+				id: "c2",
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "text", text: "checking b too" },
+					{ type: "tool_use", id: "tu2", name: "boundless_read", input: { file_path: "/b.ts" } },
+				]),
+			}),
+			toolResult("r2", "tu2"),
+		];
+		const { margins } = marginsFor(messages);
+		expect(margins.get("c2")).toEqual({ top: 1, bottom: 0 });
+		// Its result is compact again and re-opens the run.
+		expect(margins.get("r2")).toEqual({ top: 0, bottom: 0 });
+	});
+});
+
+/**
+ * Compact read/search/query result rendering: one line per invocation carrying
+ * the target (path / pattern / SQL) and a useful volume summary (lines read /
+ * matches found / rows × columns). The ⏵ call row for compact-only calls is
+ * suppressed entirely.
+ */
+describe("MessageBlock compact read/search/query rendering", () => {
+	it("renders a read result as one line with path and line count, no body", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "1:aaaa|const a = 1;\n2:bbbb|const b = 2;\n3:cccc|const c = 3;",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				filePath: "/x/y.ts",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("read");
+		expect(out).toContain("y.ts");
+		expect(out).toContain("3 lines");
+		expect(out).not.toContain("const a");
+	});
+
+	it("renders a search result with the parsed match summary and pattern", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content:
+				"src/a.ts:1:ab12:foo\nsrc/b.ts:2:cd34:foo\n\n2 matches in 2 files (10 files searched)",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_search",
+				toolInput: { pattern: "foo" },
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("search");
+		expect(out).toContain("foo");
+		expect(out).toContain("2 matches in 2 files");
+		expect(out).not.toContain("files searched");
+	});
+
+	it("renders a query result as one line with SQL and a row/column summary", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "id\ttitle\n1\tFirst\n2\tSecond\n3\tThird\n",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "query",
+				toolInput: { sql: "SELECT id, title FROM threads" },
+				terminalColumns: 100,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("query");
+		expect(out).toContain("SELECT id, title FROM threads");
+		expect(out).toContain("3 rows · 2 columns");
+		expect(out).not.toContain("First");
+	});
+
+	it("renders an empty query result as no rows", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "query",
+				toolInput: { sql: "SELECT id FROM threads WHERE 0" },
+				terminalColumns: 100,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("SELECT id FROM threads WHERE 0");
+		expect(out).toContain("no rows");
+	});
+
+	it("keeps the full rendering for compact-tool errors", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "Error: ENOENT: no such file or directory: /nope.ts",
+			exit_code: 1,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("✗");
+		expect(out).toContain("ENOENT");
+	});
+
+	it("suppresses a compact-only tool_call row entirely", () => {
+		const call = toolCall("c1", [
+			{ id: "tu1", name: "boundless_read", input: { file_path: "/a.ts" } },
+		]);
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, { message: call, terminalColumns: 80 }),
+		);
+		expect((lastFrame() ?? "").trim()).toBe("");
+	});
+});
+
+/**
+ * Outcome facts on committed result rows: wall-clock duration for slow calls
+ * (call created_at → result created_at, both frozen at commit time), exit
+ * codes beyond the bare ✗ (127/124/2 carry diagnostic signal; exit 1 stays
+ * quiet), and one-line status for edit/write results whose call row already
+ * rendered the full diff/preview.
+ */
+describe("MessageBlock result outcome facts", () => {
+	it("shows duration on slow compact results, computed from the call timestamp", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "1:aaaa|line",
+			exit_code: 0,
+			created_at: "2026-05-22T00:00:05Z",
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				filePath: "/x/y.ts",
+				callCreatedAt: "2026-05-22T00:00:00Z",
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").toContain("5.0s");
+	});
+
+	it("omits duration on fast calls", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "1:aaaa|line",
+			exit_code: 0,
+			created_at: "2026-05-22T00:00:00.500Z",
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_read",
+				filePath: "/x/y.ts",
+				callCreatedAt: "2026-05-22T00:00:00Z",
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").not.toContain("0.5s");
+	});
+
+	it("shows non-1 exit codes on error results", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "sh: nope: command not found",
+			exit_code: 127,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_bash",
+				terminalColumns: 80,
+			}),
+		);
+		expect(lastFrame() ?? "").toContain("exit 127");
+	});
+
+	it("stays quiet on exit 1 — the ✗ already says it failed", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "tests failed",
+			exit_code: 1,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_bash",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("✗");
+		expect(out).not.toContain("exit 1");
+	});
+
+	it("collapses an edit result to one status line — the call row carries the diff", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content:
+				"Edited /x/y.ts: applied 3 edits\n\nNew content (fresh anchors):\n1:aaaa|const a = 1;",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_edit",
+				filePath: "/x/y.ts",
+				toolInput: {
+					file_path: "/x/y.ts",
+					edits: [
+						{ start: "1:aa", end: "1:aa", content: "x" },
+						{ start: "2:bb", end: "2:bb", content: "y" },
+						{ start: "3:cc", end: "3:cc", content: "z" },
+					],
+				},
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("3 edits applied");
+		expect(out).toContain("y.ts");
+		expect(out).not.toContain("New content");
+	});
+
+	it("collapses a write result to one status line with the written line count", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "Wrote 42 bytes to /x/new.ts",
+			exit_code: 0,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_write",
+				filePath: "/x/new.ts",
+				toolInput: { file_path: "/x/new.ts", content: "a\nb\nc" },
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("3 lines written");
+		expect(out).not.toContain("Wrote 42 bytes");
+	});
+
+	it("keeps full rendering for edit errors", () => {
+		const message = msg({
+			id: "r1",
+			role: "tool_result",
+			tool_name: "tu1",
+			content: "Error: anchor mismatch at 12:a3f1",
+			exit_code: 1,
+		});
+		const { lastFrame } = render(
+			React.createElement(MessageBlock, {
+				message,
+				toolName: "boundless_edit",
+				filePath: "/x/y.ts",
+				terminalColumns: 80,
+			}),
+		);
+		const out = lastFrame() ?? "";
+		expect(out).toContain("✗");
+		expect(out).toContain("anchor mismatch");
+	});
+});
+
+describe("buildToolResultMetaMap path-param extraction", () => {
+	it("resolves filePath from bms-style `path` input as well as `file_path`", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "bms_read", input: { path: "/home/user/notes.md" } }]),
+			toolResult("r1", "tu1"),
+		];
+		const m = buildToolResultMetaMap(messages);
+		expect(m.get("r1")?.filePath).toBe("/home/user/notes.md");
+	});
+});
+
+/**
+ * Turn-activity summaries: each assistant message that concludes a run of
+ * tool activity gets a one-line journey summary (`14 tools · 1m 40s`),
+ * rendered dim after the `agent` header. Static-safe: depends only on
+ * messages preceding the assistant row.
+ */
+describe("buildTurnActivityMap", () => {
+	const at = (id: string, role: string, createdAt: string, extra: Record<string, unknown> = {}) =>
+		msg({ id, role, content: "x", created_at: createdAt, ...extra });
+
+	it("summarizes a qualifying run (≥3 tools) on the concluding assistant message", () => {
+		const messages = [
+			at("u1", "user", "2026-05-22T00:00:00Z"),
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:10Z", { tool_name: "tu1" }),
+			toolCall("c2", [{ id: "tu2", name: "boundless_read", input: {} }]),
+			at("r2", "tool_result", "2026-05-22T00:00:20Z", { tool_name: "tu2" }),
+			toolCall("c3", [{ id: "tu3", name: "boundless_read", input: {} }]),
+			at("r3", "tool_result", "2026-05-22T00:00:30Z", { tool_name: "tu3" }),
+			at("a1", "assistant", "2026-05-22T00:01:40Z"),
+		];
+		const m = buildTurnActivityMap(messages);
+		expect(m.get("a1")).toBe("3 tools · 1m 40s");
+	});
+
+	it("stays quiet for short fast runs and resets between turns", () => {
+		const messages = [
+			at("u1", "user", "2026-05-22T00:00:00Z"),
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:01Z", { tool_name: "tu1" }),
+			at("a1", "assistant", "2026-05-22T00:00:02Z"),
+			at("u2", "user", "2026-05-22T00:10:00Z"),
+			at("a2", "assistant", "2026-05-22T00:10:01Z"),
+		];
+		const m = buildTurnActivityMap(messages);
+		expect(m.get("a1")).toBeUndefined(); // 1 tool, 2s — not a journey
+		expect(m.get("a2")).toBeUndefined(); // no tools at all
+	});
+
+	it("qualifies a short but slow run on duration alone", () => {
+		const messages = [
+			at("u1", "user", "2026-05-22T00:00:00Z"),
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:30Z", { tool_name: "tu1" }),
+			at("a1", "assistant", "2026-05-22T00:00:31Z"),
+		];
+		expect(buildTurnActivityMap(messages).get("a1")).toBe("1 tool · 31.0s");
+	});
+
+	it("does not leak activity across a user interruption", () => {
+		const messages = [
+			toolCall("c1", [{ id: "tu1", name: "boundless_bash", input: {} }]),
+			at("r1", "tool_result", "2026-05-22T00:00:10Z", { tool_name: "tu1" }),
+			at("r2", "tool_result", "2026-05-22T00:00:11Z", { tool_name: "tu1" }),
+			at("r3", "tool_result", "2026-05-22T00:00:12Z", { tool_name: "tu1" }),
+			at("u1", "user", "2026-05-22T00:00:20Z"),
+			at("a1", "assistant", "2026-05-22T00:00:21Z"),
+		];
+		expect(buildTurnActivityMap(messages).get("a1")).toBeUndefined();
 	});
 });

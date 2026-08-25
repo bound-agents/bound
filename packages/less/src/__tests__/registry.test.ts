@@ -21,12 +21,13 @@ describe("buildToolSet", () => {
 	it("returns core tools with correct structure", () => {
 		const { tools, handlers } = buildToolSet("/tmp", "localhost");
 
-		// Should have exactly 6 core tools (read, write, edit, shell, copy, search)
-		expect(tools).toHaveLength(6);
+		// Should have exactly 7 core tools (read, structure, write, edit, shell, copy, search)
+		expect(tools).toHaveLength(7);
 
 		// Check tool names
 		const toolNames = tools.map((t) => t.function.name);
 		expect(toolNames).toContain("boundless_read");
+		expect(toolNames).toContain("boundless_read_structure");
 		expect(toolNames).toContain("boundless_write");
 		expect(toolNames).toContain("boundless_edit");
 		expect(toolNames).toContain(SHELL_TOOL_NAME);
@@ -34,8 +35,9 @@ describe("buildToolSet", () => {
 		expect(toolNames).toContain("boundless_search");
 
 		// Check handlers exist
-		expect(handlers.size).toBe(6);
+		expect(handlers.size).toBe(7);
 		expect(handlers.has("boundless_read")).toBe(true);
+		expect(handlers.has("boundless_read_structure")).toBe(true);
 		expect(handlers.has("boundless_write")).toBe(true);
 		expect(handlers.has("boundless_edit")).toBe(true);
 		expect(handlers.has(SHELL_TOOL_NAME)).toBe(true);
@@ -71,6 +73,29 @@ describe("buildToolSet", () => {
 		expect(properties.file_path).toBeDefined();
 		expect(properties.offset).toBeDefined();
 		expect(properties.limit).toBeDefined();
+	});
+
+	it("exposes only path for boundless_read_structure", () => {
+		const { tools } = buildToolSet("/tmp", "localhost");
+		const structure = tools.find((t) => t.function.name === "boundless_read_structure");
+		expect(structure).toBeDefined();
+		const params = structure?.function.parameters as {
+			required: string[];
+			properties: Record<string, unknown>;
+		};
+		expect(params.required).toEqual(["path"]);
+		expect(Object.keys(params.properties)).toEqual(["path"]);
+	});
+
+	it("describes every registered read-structure language", () => {
+		const { tools } = buildToolSet("/tmp", "localhost");
+		const structure = tools.find((t) => t.function.name === "boundless_read_structure");
+		expect(structure).toBeDefined();
+
+		const description = structure?.function.description ?? "";
+		for (const extension of [".py", ".pyi", ".go", ".rs"]) {
+			expect(description).toContain(extension);
+		}
 	});
 
 	it("shell tool exposes optional timeout + cwd params, command required", () => {
@@ -120,8 +145,7 @@ describe("buildToolSet", () => {
 
 		const params = editTool.function.parameters as Record<string, unknown>;
 		expect(params.required).toContain("file_path");
-		expect(params.required).toContain("old_string");
-		expect(params.required).toContain("new_string");
+		expect(params.required).toContain("edits");
 	});
 
 	it("has correct shell-tool parameters", () => {
@@ -166,12 +190,13 @@ describe("buildToolSet", () => {
 
 		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 1 MCP tool
-		expect(tools).toHaveLength(7);
+		// Should have 7 core + 1 MCP tool
+		expect(tools).toHaveLength(8);
 
 		// Check MCP tool name
 		const coreNames = [
 			"boundless_read",
+			"boundless_read_structure",
 			"boundless_write",
 			"boundless_edit",
 			SHELL_TOOL_NAME,
@@ -216,8 +241,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 1 MCP tool (no collision)
-		expect(tools).toHaveLength(7);
+		// Should have 7 core + 1 MCP tool (no collision)
+		expect(tools).toHaveLength(8);
 
 		// MCP tool should be present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_testserver_test")).toBeDefined();
@@ -274,8 +299,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core tools only (both MCP servers rejected due to collision)
-		expect(tools).toHaveLength(6);
+		// Should have 7 core tools only (both MCP servers rejected due to collision)
+		expect(tools).toHaveLength(7);
 
 		// Verify the colliding tools are NOT present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_a_b_read")).toBeUndefined();
@@ -336,8 +361,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 3 MCP tools
-		expect(tools).toHaveLength(9);
+		// Should have 7 core + 3 MCP tools
+		expect(tools).toHaveLength(10);
 
 		// All MCP tools should be present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_github_list_repos")).toBeDefined();
@@ -395,8 +420,8 @@ describe("buildToolSet", () => {
 
 		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 2 MCP tools
-		expect(tools).toHaveLength(8);
+		// Should have 7 core + 2 MCP tools
+		expect(tools).toHaveLength(9);
 
 		// Check both MCP tools present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_github_list_repos")).toBeDefined();
@@ -447,8 +472,8 @@ describe("buildToolSet", () => {
 
 		const { tools } = buildToolSet("/tmp", "localhost", mcpTools);
 
-		// Should have 6 core + 2 MCP tools (delete excluded)
-		expect(tools).toHaveLength(8);
+		// Should have 7 core + 2 MCP tools (delete excluded)
+		expect(tools).toHaveLength(9);
 
 		// Check allowed tools are present
 		expect(tools.find((t) => t.function.name === "boundless_mcp_fileserver_read")).toBeDefined();
@@ -684,8 +709,8 @@ describe("buildToolSet", () => {
 
 		const { tools, handlers } = buildToolSet("/tmp", "localhost", mcpTools, confirmFn);
 
-		// Should have 6 core + 2 MCP tools (delete excluded)
-		expect(tools).toHaveLength(8);
+		// Should have 7 core + 2 MCP tools (delete excluded)
+		expect(tools).toHaveLength(9);
 
 		// read should exist without confirmation
 		expect(tools.find((t) => t.function.name === "boundless_mcp_admin_read")).toBeDefined();
@@ -706,32 +731,21 @@ describe("buildToolSet", () => {
 });
 
 describe("buildSystemPromptAddition", () => {
-	it("returns system prompt with core tools only", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
+	it("renders surface, host, cwd, and provenance sections", async () => {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com");
 
 		expect(prompt).toContain("boundless terminal client");
 		expect(prompt).toContain("Host: example.com");
 		expect(prompt).toContain("Working directory: /home/user");
-		expect(prompt).toContain("boundless_read");
-		expect(prompt).toContain("boundless_write");
-		expect(prompt).toContain("boundless_edit");
-		expect(prompt).toContain("boundless_bash");
-		expect(prompt).toContain("boundless_search");
 		expect(prompt).toContain("provenance metadata");
-	});
-
-	it("includes MCP server namespaces", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [
-			"github",
-			"slack",
-		]);
-
-		expect(prompt).toContain("boundless_mcp_github_*");
-		expect(prompt).toContain("boundless_mcp_slack_*");
+		// No tool enumeration: the daemon advertises every registered tool as a
+		// JSON schema each turn, so duplicating names here would drift from the
+		// real surface and invite reading prose as the capability manifest.
+		expect(prompt).not.toContain("boundless_read");
 	});
 
 	it("returns consistent format", async () => {
-		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
+		const prompt = await buildSystemPromptAddition("/tmp", "localhost");
 
 		// Should have multiple lines
 		expect(prompt.split("\n").length).toBeGreaterThan(2);
@@ -742,29 +756,29 @@ describe("buildSystemPromptAddition", () => {
 
 	it("includes git context in the output", async () => {
 		// Use the bound repo itself — guaranteed to be a git repo
-		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", []);
+		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost");
 
-		// Should contain git context somewhere between working directory and tool namespaces
+		// Should contain git context after the working directory line
 		expect(prompt).toContain("Git branch:");
 		expect(prompt).toContain("Recent commits:");
 	});
 
 	it("includes git warning for non-git directories", async () => {
-		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
+		const prompt = await buildSystemPromptAddition("/tmp", "localhost");
 
 		// /tmp is not a git repo — should show the warning
 		expect(prompt).toContain("Git context:");
 	});
 
 	it("defaults to the terminal surface line when no surface is given", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com");
 
 		expect(prompt).toContain("boundless terminal client");
 		expect(prompt).not.toContain("ACP");
 	});
 
 	it("renders the ACP/editor surface line when surface is acp", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [], {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", {
 			surface: {
 				type: "acp",
 				clientInfo: {
@@ -781,13 +795,12 @@ describe("buildSystemPromptAddition", () => {
 		// and permission-gated tool calls.
 		expect(prompt).toContain("inline");
 		expect(prompt).toContain("permission");
-		// Host/cwd/tools sections still render identically.
+		// Host/cwd sections still render identically.
 		expect(prompt).toContain("Host: example.com");
-		expect(prompt).toContain("boundless_read");
 	});
 
 	it("tells the ACP agent how to cite a linkable file location", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "example.com", [], {
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com", {
 			surface: {
 				type: "acp",
 				clientInfo: {
@@ -805,7 +818,7 @@ describe("buildSystemPromptAddition", () => {
 	});
 
 	it("omits the citation guidance on the terminal surface", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "example.com", []);
+		const prompt = await buildSystemPromptAddition("/home/user", "example.com");
 
 		// Linkification is an editor behavior; the plain terminal line stays bare.
 		expect(prompt).not.toContain("path:line");
@@ -854,9 +867,12 @@ describe("collectGitContext", () => {
 
 describe("collectContextFiles", () => {
 	it("returns empty string for directory with no context files", async () => {
-		// /tmp should not contain README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
-		const result = await collectContextFiles("/tmp");
-		expect(result).toBe("");
+		const dir = mkdtempSync(join(tmpdir(), "boundless-empty-context-"));
+		try {
+			expect(await collectContextFiles(dir)).toBe("");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("returns empty string for non-existent directory", async () => {
@@ -959,35 +975,37 @@ describe("collectContextFiles", () => {
 describe("buildSystemPromptAddition context files", () => {
 	it("includes context files by default when files are present", async () => {
 		// bound repo root has README.md — use REPO_ROOT so we hit the actual files
-		const prompt = await buildSystemPromptAddition(REPO_ROOT, "localhost", []);
+		const prompt = await buildSystemPromptAddition(REPO_ROOT, "localhost");
 		expect(prompt).toContain("<context-files");
 		expect(prompt).toContain('<context-file path="README.md"');
 	});
 
 	it("excludes context files when injectContextFiles is empty array", async () => {
-		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", [], {
+		const prompt = await buildSystemPromptAddition(process.cwd(), "localhost", {
 			injectContextFiles: [],
 		});
 		expect(prompt).not.toContain("<context-files");
 		// But still has git context
 		expect(prompt).toContain("Git branch:");
-		expect(prompt).toContain("Available tool namespaces:");
 	});
 
 	it("does not include context files block when none are present", async () => {
-		// /tmp has no README.md, CONTRIBUTING.md, AGENTS.md, or CLAUDE.md
-		const prompt = await buildSystemPromptAddition("/tmp", "localhost", []);
-		expect(prompt).not.toContain("<context-files");
+		const dir = mkdtempSync(join(tmpdir(), "boundless-empty-context-"));
+		try {
+			const prompt = await buildSystemPromptAddition(dir, "localhost");
+			expect(prompt).not.toContain("<context-files");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("still includes all other sections when context files list is empty", async () => {
-		const prompt = await buildSystemPromptAddition("/home/user", "test.host", ["github"], {
+		const prompt = await buildSystemPromptAddition("/home/user", "test.host", {
 			injectContextFiles: [],
 		});
 		expect(prompt).toContain("boundless terminal client");
 		expect(prompt).toContain("Host: test.host");
 		expect(prompt).toContain("Working directory: /home/user");
-		expect(prompt).toContain("boundless_mcp_github_*");
 		expect(prompt).toContain("provenance metadata");
 	});
 });

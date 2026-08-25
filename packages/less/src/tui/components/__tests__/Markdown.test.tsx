@@ -71,8 +71,8 @@ describe("Markdown — formatting tweaks", () => {
 	});
 
 	it("collapses 3+ blank lines between paragraphs to a single gap", () => {
-		// marked emits one `space` token regardless of how many blank lines were
-		// typed, so the gap is always exactly one row.
+		// Consecutive blank lines collapse to a single authored gap, so the row
+		// count is always exactly one regardless of how many blanks were typed.
 		const { lastFrame } = render(
 			React.createElement(Markdown, {
 				text: "Para one.\n\n\n\nPara two.",
@@ -86,8 +86,8 @@ describe("Markdown — formatting tweaks", () => {
 	});
 
 	it("does not strand a blank row from a trailing blank line", () => {
-		// marked emits a trailing `space` token for "Para.\n\n"; the positional
-		// walker must not turn it into a stray blank row below the message.
+		// A trailing blank line must not become a stray blank row below the
+		// message: authoredBlockGaps only records gaps BETWEEN blocks.
 		const { lastFrame } = render(
 			React.createElement(Markdown, { text: "Only para.\n\n", width: 60 }),
 		);

@@ -11,9 +11,9 @@ import {
 	computeWritableRoots,
 	decideSandboxSpawn,
 	formatWriteDenied,
+	nonInteractiveEnv,
 	resolveSandboxConfig,
 } from "../tools/sandbox-policy";
-
 /**
  * Cross-platform coverage for the mxc filesystem-sandbox PURE logic. Everything
  * here imports only `../tools/sandbox-policy`, which pulls in NO `@microsoft/
@@ -110,6 +110,17 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 			(p) => process.cwd().startsWith(p) || p === process.cwd(),
 		);
 		expect(hasCwd).toBe(true);
+	});
+
+	it("puts literal /tmp in the writable set on POSIX (README contract)", () => {
+		// README: "writes are confined to the working directory and /tmp". On
+		// Linux os.tmpdir() IS /tmp so the promise held incidentally; on macOS
+		// os.tmpdir() is /var/folders/<user>/T, leaving the literal /tmp
+		// (realpath /private/tmp) outside the writable set — shell idioms like
+		// `cat > /tmp/x` died with EPERM.
+		if (process.platform === "win32") return;
+		const policy = buildPolicy(process.cwd(), enabled);
+		expect(policy.filesystem.readwritePaths).toContain(realpathSync("/tmp"));
 	});
 
 	it("adds operator-listed extra writable paths", () => {
@@ -226,10 +237,18 @@ describe("computeWritableRoots (git worktree gitdir resolution)", () => {
 		mkdirSync(bare, { recursive: true });
 
 		const roots = computeWritableRoots(bare, cfg);
-		// cwd + tmpdir only.
+		// cwd + tmpdir + literal /tmp — no git-derived roots. /tmp dedupes
+		// against tmpdir() where they resolve to the same directory (Linux),
+		// so compute the expected set instead of hardcoding a count.
 		expect(roots).toContain(realpathSync(bare));
 		expect(roots).toContain(realpathSync(tmpdir()));
-		expect(roots.length).toBe(2);
+		const expected = new Set([realpathSync(bare), realpathSync(tmpdir())]);
+		try {
+			expected.add(realpathSync("/tmp"));
+		} catch {
+			// no /tmp on this platform
+		}
+		expect(roots.length).toBe(expected.size);
 	});
 });
 
@@ -365,12 +384,10 @@ describe("checkWritePath (in-process write guard)", () => {
 });
 
 // The `.git` exec-surface carve-out: hooks + config are kept read-only even
-// though they live inside the otherwise-writable cwd. Enforced on bubblewrap
-// (via buildPolicy.readonlyPaths) and for the in-process file tools everywhere
-// EXCEPT Windows, which has no mxc backend able to express "readable but not
-// writable" for a subpath — so `.git` stays writable there (see
-// computeGitProtectedPaths). These tests pass an explicit `platform` where the
-// behavior is platform-dependent so they assert the same thing on every runner.
+// though they live inside the otherwise-writable cwd. POSIX shell confinement
+// consumes these paths through buildPolicy; the Windows lowbox helper enforces
+// the same boundary through scoped DACLs. The in-process file tools use this
+// platform-independent list directly.
 describe(".git exec-surface protection", () => {
 	const cfg: ResolvedSandboxConfig = {
 		enabled: true,
@@ -396,16 +413,13 @@ describe(".git exec-surface protection", () => {
 		if (repo) rmSync(repo, { recursive: true, force: true });
 	});
 
-	it.skipIf(process.platform === "win32")(
-		"denies a write to a hook script even though it is inside cwd (non-win32)",
-		() => {
-			const check = checkWritePath(".git/hooks/post-checkout", repo, cfg);
-			expect(check.allowed).toBe(false);
-			expect(check.gitProtected).toBe(true);
-		},
-	);
+	it("denies a write to a hook script even though it is inside cwd", () => {
+		const check = checkWritePath(".git/hooks/post-checkout", repo, cfg);
+		expect(check.allowed).toBe(false);
+		expect(check.gitProtected).toBe(true);
+	});
 
-	it.skipIf(process.platform === "win32")("denies overwriting .git/config (non-win32)", () => {
+	it("denies overwriting .git/config", () => {
 		const check = checkWritePath(".git/config", repo, cfg);
 		expect(check.allowed).toBe(false);
 		expect(check.gitProtected).toBe(true);
@@ -429,13 +443,10 @@ describe(".git exec-surface protection", () => {
 		expect(paths).toContain(realpathSync(join(repo, ".git", "config")));
 	});
 
-	it("returns [] on Windows — .git stays writable where mxc can't carve it out", () => {
-		expect(computeGitProtectedPaths(repo, "win32")).toEqual([]);
-		// And the in-process guard agrees: the same write the non-win32 lanes deny
-		// is allowed once the platform gate trips. (checkWritePath uses the real
-		// process.platform, so this asserts the gate via the helper directly.)
+	it("protects hooks and config on Windows too", () => {
 		const winProtected = computeGitProtectedPaths(repo, "win32");
-		expect(winProtected.some((p) => p.includes(".git"))).toBe(false);
+		expect(winProtected).toContain(realpathSync(join(repo, ".git", "hooks")));
+		expect(winProtected).toContain(realpathSync(join(repo, ".git", "config")));
 	});
 
 	it("returns [] for a non-repo cwd — nothing to protect, no broken bind", () => {
@@ -497,5 +508,49 @@ describe("formatWriteDenied", () => {
 		// only the disable-the-guard hatch is offered.
 		expect(msg).toContain('"sandbox": false');
 		expect(msg).not.toContain("sandbox.writablePaths");
+	});
+});
+
+describe("nonInteractiveEnv (bun install cache confinement)", () => {
+	// This suite may itself run inside a sandboxed boundless shell, where the
+	// deployed confinement has ALREADY set BUN_INSTALL_CACHE_DIR in the ambient
+	// environment — which nonInteractiveEnv() faithfully spreads. Clear it
+	// around each test and restore the ambient value after, so the assertions
+	// exercise the function's own behavior, not the host it happens to run on.
+	let ambientCacheDir: string | undefined;
+
+	beforeEach(() => {
+		ambientCacheDir = process.env.BUN_INSTALL_CACHE_DIR;
+		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
+	});
+
+	afterEach(() => {
+		// NOT `= undefined`: assigning undefined to a process.env key coerces
+		// to the string "undefined". Reflect.deleteProperty removes the key
+		// without the delete operator biome's noDelete rejects.
+		Reflect.deleteProperty(process.env, "BUN_INSTALL_CACHE_DIR");
+		if (ambientCacheDir !== undefined) {
+			process.env.BUN_INSTALL_CACHE_DIR = ambientCacheDir;
+		}
+	});
+
+	it("does not touch BUN_INSTALL_CACHE_DIR by default (unsandboxed spawns keep the warm global cache)", () => {
+		const env = nonInteractiveEnv();
+		expect(env.BUN_INSTALL_CACHE_DIR).toBeUndefined();
+		// The non-interactive pager/prompt contract is unchanged.
+		expect(env.GIT_PAGER).toBe("cat");
+		expect(env.PAGER).toBe("cat");
+		expect(env.GIT_TERMINAL_PROMPT).toBe("0");
+	});
+
+	it("confineBunCache points bun's install cache at a tmpdir-local path", () => {
+		const env = nonInteractiveEnv({ confineBunCache: true });
+		expect(env.BUN_INSTALL_CACHE_DIR).toBe(join(tmpdir(), "bound-bun-install-cache"));
+	});
+
+	it("honors an operator-set BUN_INSTALL_CACHE_DIR over the confinement default", () => {
+		process.env.BUN_INSTALL_CACHE_DIR = "/opt/custom-bun-cache";
+		const env = nonInteractiveEnv({ confineBunCache: true });
+		expect(env.BUN_INSTALL_CACHE_DIR).toBe("/opt/custom-bun-cache");
 	});
 });

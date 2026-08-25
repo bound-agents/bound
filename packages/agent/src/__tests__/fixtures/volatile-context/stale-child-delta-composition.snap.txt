@@ -1,31 +1,27 @@
-User ID: test-user, Thread ID: 0f529918-4b1c-52d8-b90d-e0c8f2f1f6e9
+<identity user-id="test-user" thread-id="0f529918-4b1c-52d8-b90d-e0c8f2f1f6e9"/>
 
-## Working Knowledge — operational and durable
-
-- _pinned:0 (modified 2026-05-22): pinned body 0
-- _pinned:1 (modified 2026-05-21): pinned body 1
-- _pinned:2 (modified 2026-05-21): pinned body 2
-- _pinned:3 (modified 2026-05-21): pinned body 3
-- _pinned:4 (modified 2026-05-21): pinned body 4
-- _summary:topic-0 (modified 2026-05-21): Summary for topic 0: this is a brief overview.
-- _summary:topic-1 (modified 2026-05-21): Summary for topic 1: this is a brief overview.
-- _summary:topic-2 (modified 2026-05-21): Summary for topic 2: this is a brief overview.
-
-Bodies of summary entries are accessed via memory search using terms from the entry key.
-## Discoverable Archive — title-only; bodies via memory search
-
-- detail:stale-det000000
-
-Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.
-## Working Knowledge — updates
-
-- _pinned:0 [changed since last turn]
-- _pinned:1 [changed since last turn]
-- _pinned:2 [changed since last turn]
-- _pinned:3 [changed since last turn]
-- _pinned:4 [changed since last turn]
-- _summary:topic-0 [changed since last turn]
-- _summary:topic-1 [changed since last turn]
-- _summary:topic-2 [changed since last turn]
+<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
+<memory key="_pinned:0" tier="pinned" modified="2026-05-22">pinned body 0</memory>
+<memory key="_pinned:1" tier="pinned" modified="2026-05-21">pinned body 1</memory>
+<memory key="_pinned:2" tier="pinned" modified="2026-05-21">pinned body 2</memory>
+<memory key="_pinned:3" tier="pinned" modified="2026-05-21">pinned body 3</memory>
+<memory key="_pinned:4" tier="pinned" modified="2026-05-21">pinned body 4</memory>
+<memory key="_summary:topic-0" tier="summary" modified="2026-05-21">Summary for topic 0: this is a brief overview.</memory>
+<memory key="_summary:topic-1" tier="summary" modified="2026-05-21">Summary for topic 1: this is a brief overview.</memory>
+<memory key="_summary:topic-2" tier="summary" modified="2026-05-21">Summary for topic 2: this is a brief overview.</memory>
+</working-knowledge>
+<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">
+<entry key="detail:stale-det000000"/>
+</discoverable-archive>
+<working-knowledge-updates>
+<memory key="_pinned:0" tier="pinned" changed="true"/>
+<memory key="_pinned:1" tier="pinned" changed="true"/>
+<memory key="_pinned:2" tier="pinned" changed="true"/>
+<memory key="_pinned:3" tier="pinned" changed="true"/>
+<memory key="_pinned:4" tier="pinned" changed="true"/>
+<memory key="_summary:topic-0" tier="summary" changed="true"/>
+<memory key="_summary:topic-1" tier="summary" changed="true"/>
+<memory key="_summary:topic-2" tier="summary" changed="true"/>
+</working-knowledge-updates>
 <live-state sources="Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.">
 </live-state>

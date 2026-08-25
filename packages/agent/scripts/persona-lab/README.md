@@ -24,7 +24,7 @@ local and edit freely without committing on every tweak.
 
 ## Run
 
-`--models` is required — pass backend ids from your `model_backends.json`:
+`--models` is required — pass backend ids from your selected model backends config:
 
 ```sh
 bun run packages/agent/scripts/persona-lab/compare.ts --models opus,gpt-5.5
@@ -39,7 +39,7 @@ Flags:
 - `--persona` — persona file path (default: `./persona.md`, else `.example`)
 - `--seed` — seed transcript json (default: `./seed.json`, else `.example`)
 - `--prompts-file` — prompts json (default: `./prompts.json`, else `.example`)
-- `--config-dir` — bound config dir holding `model_backends.json`
+- `--config-dir` — bound config dir holding `model_backends.js` or fallback `model_backends.json`
   (default: `$BOUND_CONFIG_DIR`, else `~/bound/config`)
 - `--out` — also write the markdown report to this path
 

@@ -42,6 +42,19 @@ export class MemoryTracker {
 		this.fileSizes.delete(path);
 	}
 
+	/** Whether this file has an authoritative size from a tracked write or append. */
+	hasTrackedFile(path: string): boolean {
+		return this.fileSizes.has(path);
+	}
+
+	/** Track bytes appended to a file with a known prior size. */
+	trackAppend(path: string, content: string | Uint8Array): void {
+		const appendedBytes =
+			typeof content === "string" ? Buffer.byteLength(content) : content.byteLength;
+		this.totalBytes += appendedBytes;
+		this.fileSizes.set(path, (this.fileSizes.get(path) ?? 0) + appendedBytes);
+	}
+
 	/**
 	 * Get total memory usage in bytes.
 	 */
@@ -100,16 +113,17 @@ export function wrapWithMemoryTracking(fs: IFileSystem, tracker: MemoryTracker):
 		options?: unknown,
 	): Promise<void> => {
 		await originalAppendFile(path, content, options as undefined);
-		// For append, we need to read the full content to get the actual size
-		try {
-			const fullContent = await fs.readFile(path);
-			tracker.trackWrite(path, fullContent);
-		} catch {
-			// File read failed after append — track appended content length as approximation
-			// This underestimates total size for existing files but is acceptable for memory budgeting
-			// Expected causes: permission changes, concurrent deletion, filesystem errors
-			tracker.trackWrite(path, content);
+		if (tracker.hasTrackedFile(path)) {
+			// A prior tracked write or append established the file size, so avoid
+			// rereading an ever-growing file after every append.
+			tracker.trackAppend(path, content);
+			return;
 		}
+
+		// This file existed before tracking began. Read once to establish its
+		// complete post-append size; treating it as empty would undercount it.
+		const fullContent = await fs.readFile(path);
+		tracker.trackWrite(path, fullContent);
 	};
 
 	fs.rm = async (path: string, options?: unknown): Promise<void> => {

@@ -16,11 +16,6 @@ describe("Component Tests", () => {
 		expect(ModelSelector).toBeDefined();
 	});
 
-	it("TaskDetailView component module imports without error", async () => {
-		const TaskDetailView = await import("../views/TaskDetailView.svelte");
-		expect(TaskDetailView).toBeDefined();
-	});
-
 	it("MessageList component module imports without error", async () => {
 		const MessageList = await import("../components/MessageList.svelte");
 		expect(MessageList).toBeDefined();
@@ -29,5 +24,9 @@ describe("Component Tests", () => {
 	it("LineView component module imports without error", async () => {
 		const LineView = await import("../views/LineView.svelte");
 		expect(LineView).toBeDefined();
+	});
+	it("ConnectorBindingsView module imports without error", async () => {
+		const ConnectorBindingsView = await import("../views/ConnectorBindingsView.svelte");
+		expect(ConnectorBindingsView).toBeDefined();
 	});
 });

@@ -79,11 +79,10 @@ This is a test skill for unit testing.
 
 			// Verify skill row exists in DB
 			const skill = db
-				.prepare("SELECT id, name, status, description FROM skills WHERE name = ? AND deleted = 0")
+				.prepare("SELECT id, name, description FROM skills WHERE name = ? AND deleted = 0")
 				.get(skillName) as any;
 			expect(skill).not.toBeNull();
 			expect(skill.name).toBe(skillName);
-			expect(skill.status).toBe("active");
 			expect(skill.description).toBe("A test skill");
 		});
 
@@ -115,7 +114,6 @@ Body content.
 					id: deterministicUUID(BOUND_NAMESPACE, skillName),
 					name: skillName,
 					description: "stale description",
-					status: "retired",
 					skill_root: skillRoot,
 					content_hash: "stalehash",
 					allowed_tools: null,
@@ -125,8 +123,6 @@ Body content.
 					created_by_thread: null,
 					activation_count: 2,
 					last_activated_at: now,
-					retired_by: "test",
-					retired_reason: "manually retired",
 					modified_at: now,
 				},
 				siteId,
@@ -161,11 +157,8 @@ Body content.
 			expect(result).toMatch(/activated successfully/i);
 
 			const skill = db
-				.prepare(
-					"SELECT status, skill_root, description FROM skills WHERE name = ? AND deleted = 0",
-				)
-				.get(skillName) as { status: string; skill_root: string; description: string };
-			expect(skill.status).toBe("active");
+				.prepare("SELECT skill_root, description FROM skills WHERE name = ? AND deleted = 0")
+				.get(skillName) as { skill_root: string; description: string };
 			// skill_root must be preserved, not clobbered to /home/user/skills/<name>
 			expect(skill.skill_root).toBe(skillRoot);
 			// content was re-read from the files table and refreshed
@@ -268,7 +261,6 @@ name: no-desc
 					id: "skill-1",
 					name: "skill-one",
 					description: "First skill",
-					status: "active",
 					skill_root: "/home/user/skills/skill-one",
 					content_hash: "abc123",
 					allowed_tools: null,
@@ -278,8 +270,6 @@ name: no-desc
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},
@@ -293,71 +283,6 @@ name: no-desc
 
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/skill-one/i);
-			expect(result).toMatch(/active/i);
-		});
-
-		it("should filter by status when provided", async () => {
-			// Setup: Create active and retired skills
-			const now = new Date().toISOString();
-			insertRow(
-				db,
-				"skills",
-				{
-					id: "skill-active",
-					name: "active-skill",
-					description: "Active",
-					status: "active",
-					skill_root: "/home/user/skills/active",
-					content_hash: "abc",
-					allowed_tools: null,
-					compatibility: null,
-					metadata_json: "{}",
-					activated_at: now,
-					created_by_thread: null,
-					activation_count: 1,
-					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			insertRow(
-				db,
-				"skills",
-				{
-					id: "skill-retired",
-					name: "retired-skill",
-					description: "Retired",
-					status: "retired",
-					skill_root: "/home/user/skills/retired",
-					content_hash: "def",
-					allowed_tools: null,
-					compatibility: null,
-					metadata_json: "{}",
-					activated_at: now,
-					created_by_thread: null,
-					activation_count: 1,
-					last_activated_at: now,
-					retired_by: "test",
-					retired_reason: null,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "list",
-				status: "active",
-			});
-
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/active-skill/i);
-			expect(result).not.toMatch(/retired-skill/i);
 		});
 	});
 
@@ -383,7 +308,6 @@ Content here.`;
 					id: "skill-read",
 					name: skillName,
 					description: "A readable skill",
-					status: "active",
 					skill_root: `/home/user/skills/${skillName}`,
 					content_hash: "abc",
 					allowed_tools: null,
@@ -393,8 +317,6 @@ Content here.`;
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},
@@ -425,7 +347,6 @@ Content here.`;
 
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/readable-skill/i);
-			expect(result).toMatch(/active/i);
 			expect(result).toMatch(/Content here/);
 		});
 
@@ -453,9 +374,9 @@ Content here.`;
 		});
 	});
 
-	describe("retire action", () => {
-		it("should retire a skill and update status (AC3.4)", async () => {
-			// Setup: Create active skill
+	describe("retire action (removed)", () => {
+		it("rejects the retire action — retire no longer exists", async () => {
+			// Setup: an active skill that, under the old design, could be retired.
 			const now = new Date().toISOString();
 			const skillName = "retiring-skill";
 			insertRow(
@@ -465,7 +386,6 @@ Content here.`;
 					id: "skill-retire",
 					name: skillName,
 					description: "To retire",
-					status: "active",
 					skill_root: `/home/user/skills/${skillName}`,
 					content_hash: "abc",
 					allowed_tools: null,
@@ -475,8 +395,6 @@ Content here.`;
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: now,
-					retired_by: null,
-					retired_reason: null,
 					modified_at: now,
 					deleted: 0,
 				},
@@ -487,41 +405,17 @@ Content here.`;
 			const result = await getExecute(tool)({
 				action: "retire",
 				name: skillName,
-				reason: "No longer needed",
 			});
 
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/retired/i);
-
-			// Verify skill status changed
-			const skill = db
-				.prepare("SELECT status, retired_reason FROM skills WHERE name = ?")
-				.get(skillName) as any;
-			expect(skill.status).toBe("retired");
-			expect(skill.retired_reason).toBe("No longer needed");
-		});
-
-		it("should return error when skill not found", async () => {
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "retire",
-				name: "nonexistent",
-			});
-
+			// The action is rejected — the enum no longer accepts it.
 			expect(typeof result).toBe("string");
 			expect(result).toMatch(/Error/i);
-			expect(result).toMatch(/not found/i);
-		});
 
-		it("should require 'name' parameter", async () => {
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "retire",
-			});
-
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/Error/i);
-			expect(result).toMatch(/name/i);
+			// And the skill is untouched: still present, not removed.
+			const skill = db.prepare("SELECT deleted FROM skills WHERE name = ?").get(skillName) as {
+				deleted: number;
+			};
+			expect(skill.deleted).toBe(0);
 		});
 	});
 
@@ -537,7 +431,9 @@ Content here.`;
 			expect(result).toMatch(/activate/i);
 			expect(result).toMatch(/list/i);
 			expect(result).toMatch(/read/i);
-			expect(result).toMatch(/retire/i);
+			expect(result).toMatch(/deactivate/i);
+			// retire is no longer a valid action and must not appear in the list.
+			expect(result).not.toMatch(/retire/i);
 		});
 	});
 

@@ -2,13 +2,13 @@
 /**
  * Agent-loop diagnostic harness — CLI entry.
  *
- * Drives the production AgentLoop against a hermetic in-memory environment
+ * Drives the production MainAgentLoop against a hermetic in-memory environment
  * with live LLM inference. Plugin-shaped diagnostics observe per-turn data
  * (cache markers, wire-body byte diffs, …) without restarting the daemon.
  *
  * `--budget <usd>` is required so cost is always a deliberate operator
  * decision; no env vars are consulted by the harness itself. Credentials
- * flow through whatever `model_backends.json` already configures for the
+ * flow through the precedence-selected model backends config already configures for the
  * chosen `--backend`.
  *
  * Run:
@@ -52,6 +52,8 @@ async function main(): Promise<void> {
 		turns: args.turns,
 		budgetUsd: args.budget,
 		logger,
+		remote: args.remote,
+		dataDir: args.dataDir,
 	});
 
 	// Emit per-diagnostic reports.
@@ -83,6 +85,21 @@ async function main(): Promise<void> {
 		process.stdout.write(
 			`wire_dump:       ${dir}/turn-N.json (${result.rawTurnData.length} turns)\n`,
 		);
+		// Also dump wires the classifier did NOT attribute to a main-loop
+		// turn. Normally auxiliary (summary/title) calls — but when a run
+		// reports N turn rows and 0 classified turns, these files are the
+		// evidence needed to fix `isAgentLoopWire` for that provider's wire
+		// shape instead of leaving a silent dead end.
+		for (let i = 0; i < result.unmatchedWires.length; i++) {
+			const w = result.unmatchedWires[i];
+			const path = join(dir, `unmatched-${i}.json`);
+			writeFileSync(path, JSON.stringify(w, null, 2));
+		}
+		if (result.unmatchedWires.length > 0) {
+			process.stdout.write(
+				`wire_unmatched:  ${dir}/unmatched-N.json (${result.unmatchedWires.length} wires)\n`,
+			);
+		}
 	}
 
 	// Exit 0 for clean completion or intentional budget aborts (the budget

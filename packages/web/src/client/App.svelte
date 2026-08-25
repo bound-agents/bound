@@ -86,7 +86,11 @@ function screenLabel(r: string): string {
 						? "skills"
 						: route === "/connections/mcp"
 							? "mcp"
-							: "webhooks"}
+							: route === "/connections/connectors"
+								? "connectors"
+								: route === "/connections/rss"
+									? "rss"
+									: "webhooks"}
 				/>
 			{:else if route === "/metrics"}
 				<MetricsView />

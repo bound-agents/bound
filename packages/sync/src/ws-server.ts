@@ -14,6 +14,34 @@ import type {
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
+const AUTH_FAILURE_BODY = "Unauthorized";
+const AUTH_REPLAY_WINDOW_MS = 5 * 60 * 1000;
+const seenUpgradeSignatures = new Map<string, number>();
+
+function pruneSeenUpgradeSignatures(now: number): void {
+	for (const [key, expiresAt] of seenUpgradeSignatures) {
+		if (expiresAt <= now) {
+			seenUpgradeSignatures.delete(key);
+		}
+	}
+}
+
+function markUpgradeSignatureSeen(headers: Record<string, string>): boolean {
+	const siteId = headers["x-site-id"];
+	const timestamp = headers["x-timestamp"];
+	const signature = headers["x-signature"];
+	if (!siteId || !timestamp || !signature) return false;
+
+	const now = Date.now();
+	pruneSeenUpgradeSignatures(now);
+	const key = `${siteId}:${timestamp}:${signature}`;
+	if (seenUpgradeSignatures.has(key)) {
+		return false;
+	}
+	seenUpgradeSignatures.set(key, now + AUTH_REPLAY_WINDOW_MS);
+	return true;
+}
+
 /**
  * Per-connection metadata attached to a WebSocket connection.
  * Contains authentication info and backpressure state for the sync protocol.
@@ -57,16 +85,12 @@ export async function authenticateWsUpgrade(
 	const verifyResult = await verifyRequest(keyring, method, path, headers, body);
 	if (!verifyResult.ok) {
 		const error = verifyResult.error;
-		let statusCode: 401 | 403 | 408;
+		let statusCode: 401 | 408;
 
-		if (error.code === "unknown_site") {
-			statusCode = 403;
-		} else if (error.code === "invalid_signature") {
-			statusCode = 401;
-		} else if (error.code === "stale_timestamp") {
+		if (error.code === "stale_timestamp") {
 			statusCode = 408;
 		} else {
-			statusCode = 401; // Fallback for unknown error codes
+			statusCode = 401;
 		}
 
 		logger?.warn("WS upgrade signature verification failed", {
@@ -74,18 +98,23 @@ export async function authenticateWsUpgrade(
 			message: error.message,
 		});
 
-		return err({ status: statusCode, body: error.message });
+		return err({ status: statusCode, body: AUTH_FAILURE_BODY });
 	}
 
 	const { siteId } = verifyResult.value;
+
+	if (!markUpgradeSignatureSeen(headers)) {
+		logger?.warn("WS upgrade replay rejected", { siteId });
+		return err({ status: 401, body: AUTH_FAILURE_BODY });
+	}
 
 	// Step 2: Look up symmetric key via KeyManager
 	const symmetricKey = keyManager.getSymmetricKey(siteId);
 	if (!symmetricKey) {
 		logger?.warn("WS upgrade: symmetric key not found", { siteId });
 		return err({
-			status: 403,
-			body: `Symmetric key not found for site ${siteId}`,
+			status: 401,
+			body: AUTH_FAILURE_BODY,
 		});
 	}
 
@@ -94,8 +123,8 @@ export async function authenticateWsUpgrade(
 	if (!fingerprint) {
 		logger?.warn("WS upgrade: fingerprint not found", { siteId });
 		return err({
-			status: 403,
-			body: `Fingerprint not found for site ${siteId}`,
+			status: 401,
+			body: AUTH_FAILURE_BODY,
 		});
 	}
 
@@ -222,6 +251,8 @@ export function createWsHandlers(config: WsServerConfig): {
 		idleTimeout = 120,
 		backpressureLimit = 2097152,
 	} = config;
+	const sendFailureWarnings = new Map<string, number>();
+	const SEND_FAILURE_WARNING_INTERVAL_MS = 60_000;
 
 	const handleUpgrade = async (
 		req: Request,
@@ -278,6 +309,15 @@ export function createWsHandlers(config: WsServerConfig): {
 						ws.close(1011, "Internal server error");
 						return false;
 					} catch {
+						const now = Date.now();
+						const lastWarningAt = sendFailureWarnings.get(ws.data.siteId) ?? 0;
+						if (now - lastWarningAt >= SEND_FAILURE_WARNING_INTERVAL_MS) {
+							sendFailureWarnings.set(ws.data.siteId, now);
+							logger?.warn("WS send threw", {
+								peer_site_id: ws.data.siteId,
+								frame_size: frame.length,
+							});
+						}
 						return false;
 					}
 				};
@@ -330,36 +370,46 @@ export function createWsHandlers(config: WsServerConfig): {
 
 			const decodedFrame = decodeResult.value;
 
-			// Dispatch to WsTransport handlers
+			// Dispatch failures indicate a local storage/reducer/invariant problem, not
+			// malformed peer input. Close to stop further mutation on this connection.
 			if (config.wsTransport) {
-				if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
-					config.wsTransport.handleChangelogPush(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
-					config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
-					config.wsTransport.handleRelaySend(
-						ws.data.siteId,
-						decodedFrame.payload as RelaySendPayload,
-					);
-				} else if (decodedFrame.type === WsMessageType.RELAY_DELIVER) {
-					logger?.warn("WS received relay_deliver from spoke (unexpected)", {
-						siteId: ws.data.siteId,
+				try {
+					if (decodedFrame.type === WsMessageType.CHANGELOG_PUSH) {
+						config.wsTransport.handleChangelogPush(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.CHANGELOG_ACK) {
+						config.wsTransport.handleChangelogAck(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
+						config.wsTransport.handleRelaySend(
+							ws.data.siteId,
+							decodedFrame.payload as RelaySendPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.RELAY_DELIVER) {
+						logger?.warn("WS received relay_deliver from spoke (unexpected)", {
+							siteId: ws.data.siteId,
+						});
+					} else if (decodedFrame.type === WsMessageType.RELAY_ACK) {
+						config.wsTransport.handleRelayAck(
+							ws.data.siteId,
+							decodedFrame.payload as RelayAckPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.SNAPSHOT_ACK) {
+						config.wsTransport.handleSnapshotAck(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.RESEED_REQUEST) {
+						config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.CONSISTENCY_REQUEST) {
+						config.wsTransport.handleConsistencyRequest(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.ROW_PULL_REQUEST) {
+						config.wsTransport.handleRowPullRequest(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.ROW_PULL_ACK) {
+						config.wsTransport.handleRowPullAck(ws.data.siteId, decodedFrame.payload);
+					}
+				} catch (error) {
+					logger?.error("WS transport frame dispatch failed", {
+						peer_site_id: ws.data.siteId,
+						frame_type: WsMessageType[decodedFrame.type],
+						error_class: error instanceof Error ? error.constructor.name : "NonError",
 					});
-				} else if (decodedFrame.type === WsMessageType.RELAY_ACK) {
-					config.wsTransport.handleRelayAck(
-						ws.data.siteId,
-						decodedFrame.payload as RelayAckPayload,
-					);
-				} else if (decodedFrame.type === WsMessageType.SNAPSHOT_ACK) {
-					config.wsTransport.handleSnapshotAck(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.RESEED_REQUEST) {
-					config.wsTransport.handleReseedRequest(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.CONSISTENCY_REQUEST) {
-					config.wsTransport.handleConsistencyRequest(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.ROW_PULL_REQUEST) {
-					config.wsTransport.handleRowPullRequest(ws.data.siteId, decodedFrame.payload);
-				} else if (decodedFrame.type === WsMessageType.ROW_PULL_ACK) {
-					config.wsTransport.handleRowPullAck(ws.data.siteId, decodedFrame.payload);
+					ws.close(1011, "Internal server error");
 				}
 			}
 		},

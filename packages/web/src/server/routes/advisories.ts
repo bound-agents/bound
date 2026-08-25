@@ -1,35 +1,38 @@
 import type { Database } from "bun:sqlite";
 import { applyAdvisory, approveAdvisory, deferAdvisory, dismissAdvisory } from "@bound/agent";
-import type { Advisory } from "@bound/shared";
+import {
+	countProposedAdvisories,
+	findActiveAdvisoryById,
+	findAdvisoryById,
+	getHostMetaSiteId,
+	listActiveAdvisories,
+	listAdvisoriesByStatus,
+} from "@bound/core";
 import { Hono } from "hono";
 
-export function createAdvisoriesRoutes(db: Database): Hono {
+export function createAdvisoriesRoutes(db: Database, operatorUserId: string): Hono {
 	const app = new Hono();
 
 	function getSiteId(): string {
-		const row = db.query("SELECT value FROM host_meta WHERE key = 'site_id'").get() as
-			| { value: string }
-			| undefined;
-		return row?.value ?? "unknown";
+		return getHostMetaSiteId(db);
+	}
+
+	/**
+	 * Pull the required #192 resolution note from a POST body. Returns the
+	 * trimmed note or null when it's missing/blank, so each handler can reject
+	 * a state change with no rationale before touching the row.
+	 */
+	async function readNote(c: import("hono").Context): Promise<string | null> {
+		const body = (await c.req.json().catch(() => ({}))) as { note?: unknown };
+		const note = typeof body.note === "string" ? body.note.trim() : "";
+		return note.length > 0 ? note : null;
 	}
 
 	app.get("/", (c) => {
 		try {
 			const status = c.req.query("status");
 
-			let query = "SELECT * FROM advisories WHERE deleted = 0";
-			const params: string[] = [];
-
-			if (status) {
-				query += " AND status = ?";
-				params.push(status);
-			} else {
-				query += " AND status NOT IN ('applied', 'dismissed')";
-			}
-
-			query += " ORDER BY proposed_at DESC";
-
-			const advisories = db.query(query).all(...params) as Advisory[];
+			const advisories = status ? listAdvisoriesByStatus(db, status) : listActiveAdvisories(db);
 
 			return c.json(advisories);
 		} catch (error) {
@@ -46,10 +49,8 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 
 	app.get("/count", (c) => {
 		try {
-			const row = db
-				.query("SELECT COUNT(*) as count FROM advisories WHERE deleted = 0 AND status = 'proposed'")
-				.get() as { count: number };
-			return c.json({ count: row.count });
+			const count = countProposedAdvisories(db);
+			return c.json({ count });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -62,12 +63,10 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 		}
 	});
 
-	app.post("/:id/approve", (c) => {
+	app.post("/:id/approve", async (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -82,8 +81,12 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const siteId = getSiteId();
-			const result = approveAdvisory(db, id, siteId);
+			const note = await readNote(c);
+			if (!note) {
+				return c.json({ error: "A 'note' is required to approve an advisory" }, 400);
+			}
+
+			const result = approveAdvisory(db, id, { note, by: operatorUserId }, getSiteId());
 
 			if (!result.ok) {
 				return c.json(
@@ -95,7 +98,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -109,12 +112,10 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 		}
 	});
 
-	app.post("/:id/dismiss", (c) => {
+	app.post("/:id/dismiss", async (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -129,8 +130,12 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const siteId = getSiteId();
-			const result = dismissAdvisory(db, id, siteId);
+			const note = await readNote(c);
+			if (!note) {
+				return c.json({ error: "A 'note' is required to dismiss an advisory" }, 400);
+			}
+
+			const result = dismissAdvisory(db, id, { note, by: operatorUserId }, getSiteId());
 
 			if (!result.ok) {
 				return c.json(
@@ -142,7 +147,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -156,12 +161,10 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 		}
 	});
 
-	app.post("/:id/defer", (c) => {
+	app.post("/:id/defer", async (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -176,10 +179,14 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const siteId = getSiteId();
+			const note = await readNote(c);
+			if (!note) {
+				return c.json({ error: "A 'note' is required to defer an advisory" }, 400);
+			}
+
 			// Default defer by 24 hours
 			const deferUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-			const result = deferAdvisory(db, id, deferUntil, siteId);
+			const result = deferAdvisory(db, id, deferUntil, { note, by: operatorUserId }, getSiteId());
 
 			if (!result.ok) {
 				return c.json(
@@ -191,7 +198,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -205,12 +212,10 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 		}
 	});
 
-	app.post("/:id/apply", (c) => {
+	app.post("/:id/apply", async (c) => {
 		try {
 			const { id } = c.req.param();
-			const advisory = db
-				.query("SELECT * FROM advisories WHERE id = ? AND deleted = 0")
-				.get(id) as Advisory | null;
+			const advisory = findActiveAdvisoryById(db, id);
 
 			if (!advisory) {
 				return c.json({ error: "Advisory not found" }, 404);
@@ -225,8 +230,12 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const siteId = getSiteId();
-			const result = applyAdvisory(db, id, siteId);
+			const note = await readNote(c);
+			if (!note) {
+				return c.json({ error: "A 'note' is required to apply an advisory" }, 400);
+			}
+
+			const result = applyAdvisory(db, id, { note, by: operatorUserId }, getSiteId());
 
 			if (!result.ok) {
 				return c.json(
@@ -238,7 +247,7 @@ export function createAdvisoriesRoutes(db: Database): Hono {
 				);
 			}
 
-			const updated = db.query("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
+			const updated = findAdvisoryById(db, id);
 			return c.json(updated);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

@@ -1,12 +1,12 @@
 /**
- * Shared in-memory AgentLoop harness environment.
+ * Shared in-memory MainAgentLoop harness environment.
  *
  * This module is DIAGNOSTIC / TEST INFRASTRUCTURE, not part of the daemon
  * runtime. Nothing on the production startup path imports it, so it is
  * tree-shaken out of the compiled binary. It lives under `src/` (rather than
  * `scripts/`) for one reason: `packages/agent/tsconfig.json` only typechecks
  * `src`, so placing the shared assembly here makes a future change to the
- * `AgentLoop` constructor a COMPILE error in both consumers rather than a
+ * `MainAgentLoop` constructor a COMPILE error in both consumers rather than a
  * runtime surprise discovered only when someone next runs a harness.
  *
  * Two consumers build the same hermetic environment and used to each
@@ -17,7 +17,7 @@
  * The shared part is: a `:memory:` SQLite DB with the full schema applied, a
  * seeded user + thread, a silent logger + event bus, an `AppContext` stub, a
  * no-op sandbox shim, and a `runLoop` that constructs + runs one production
- * `AgentLoop` against all of it. The router is INJECTED by the caller — the
+ * `MainAgentLoop` against all of it. The router is INJECTED by the caller — the
  * `toRouterConfig` translation (Critical Invariant #17) lives in the `cli`
  * package, and pulling `cli` into `@bound/agent`'s typecheck graph would be a
  * layering inversion. Each consumer keeps its own `toRouterConfig` +
@@ -46,7 +46,7 @@ import type {
 	TypedEventEmitter,
 } from "@bound/shared";
 import { InMemoryFs } from "just-bash";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import type { AgentLoopConfig } from "../types";
 
 const DEFAULT_TURN_STATE_TTL_MS = 55 * 60 * 1000;
@@ -91,9 +91,13 @@ export interface HarnessEnvironmentOptions {
 	threadSummary?: string | null;
 	/** Per-thread turn-state TTL. Default 55 minutes (matches production). */
 	turnStateTtlMs?: number;
+	/** Override the site ID (used by --remote mode to match the production keypair). */
+	siteId?: string;
+	/** Override the event bus (used by --remote mode for relay infrastructure). */
+	eventBus?: TypedEventEmitter;
 }
 
-/** Per-call overrides for one `AgentLoop` run. `threadId` / `userId` are
+/** Per-call overrides for one `MainAgentLoop` run. `threadId` / `userId` are
  *  supplied by the environment; everything else passes through. */
 export type HarnessLoopConfig = Omit<AgentLoopConfig, "threadId" | "userId">;
 
@@ -108,7 +112,7 @@ export interface HarnessEnvironment {
 	/** Seed timestamp shared by the user + thread rows. */
 	now: string;
 	/**
-	 * Construct a fresh production `AgentLoop` against this environment and run
+	 * Construct a fresh production `MainAgentLoop` against this environment and run
 	 * it once. Safe to call repeatedly against the same environment — each call
 	 * is a new loop instance over the same db / ctx / router, mirroring how the
 	 * daemon constructs a loop per turn while reusing the AppContext.
@@ -153,7 +157,7 @@ export function silentEventBus(): TypedEventEmitter {
 
 /**
  * Build a hermetic in-memory environment with a seeded user + thread and an
- * `AppContext` ready to drive the production `AgentLoop`. The only outbound
+ * `AppContext` ready to drive the production `MainAgentLoop`. The only outbound
  * side effects from a subsequent `runLoop` are the HTTPS calls the injected
  * router makes — nothing on disk changes.
  */
@@ -165,7 +169,7 @@ export function createHarnessEnvironment(opts: HarnessEnvironmentOptions): Harne
 	applySchema(db);
 	applyMetricsSchema(db);
 
-	const siteId = randomUUID();
+	const siteId = opts.siteId ?? randomUUID();
 	const userId = randomUUID();
 	const threadId = randomUUID();
 	const now = new Date().toISOString();
@@ -220,7 +224,7 @@ export function createHarnessEnvironment(opts: HarnessEnvironmentOptions): Harne
 			modelBackends: opts.rawBackends,
 		},
 		optionalConfig: {},
-		eventBus: silentEventBus(),
+		eventBus: opts.eventBus ?? silentEventBus(),
 		logger,
 		siteId,
 		hostName,
@@ -240,7 +244,7 @@ export function createHarnessEnvironment(opts: HarnessEnvironmentOptions): Harne
 		hostName,
 		now,
 		async runLoop(config: HarnessLoopConfig): Promise<void> {
-			const loop = new AgentLoop(ctx, HARNESS_SANDBOX, opts.router, {
+			const loop = new MainAgentLoop(ctx, HARNESS_SANDBOX, opts.router, {
 				...config,
 				threadId,
 				userId,

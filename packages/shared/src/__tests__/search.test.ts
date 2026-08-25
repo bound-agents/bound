@@ -3,6 +3,7 @@ import {
 	DEFAULT_MAX_MATCHES,
 	DEFAULT_MAX_PREVIEW_CHARS,
 	compileSearchPattern,
+	computeLineHash,
 	formatSearchResults,
 	isLikelyBinary,
 	searchFiles,
@@ -35,11 +36,19 @@ describe("compileSearchPattern", () => {
 });
 
 describe("searchFiles", () => {
-	it("reports 1-based line and column for each match", () => {
+	it("reports 1-based line and column for each match, plus the line's hashline anchor", () => {
 		const result = searchFiles([{ path: "a.txt", content: "alpha\nbeta foo\ngamma" }], {
 			pattern: "foo",
 		});
-		expect(result.matches).toEqual([{ path: "a.txt", line: 2, column: 6, preview: "beta foo" }]);
+		expect(result.matches).toEqual([
+			{
+				path: "a.txt",
+				line: 2,
+				column: 6,
+				preview: "beta foo",
+				hash: computeLineHash("beta foo"),
+			},
+		]);
 		expect(result.filesSearched).toBe(1);
 		expect(result.filesMatched).toBe(1);
 		expect(result.truncated).toBe(false);
@@ -133,7 +142,7 @@ describe("searchFiles", () => {
 });
 
 describe("formatSearchResults", () => {
-	it("renders grep-style path:line:preview lines with a summary footer", () => {
+	it("renders grep-style path:line:hash:preview lines with a summary footer", () => {
 		const result = searchFiles(
 			[
 				{ path: "a.txt", content: "hit one" },
@@ -142,8 +151,8 @@ describe("formatSearchResults", () => {
 			{ pattern: "hit" },
 		);
 		const out = formatSearchResults(result);
-		expect(out).toContain("a.txt:1:hit one");
-		expect(out).toContain("b.txt:1:hit two");
+		expect(out).toContain(`a.txt:1:${computeLineHash("hit one")}:hit one`);
+		expect(out).toContain(`b.txt:1:${computeLineHash("hit two")}:hit two`);
 		expect(out).toContain("2 matches in 2 files");
 	});
 
@@ -187,8 +196,8 @@ describe("shouldSearchPath", () => {
 });
 
 describe("isLikelyBinary", () => {
-	it("flags content with a NUL byte", () => {
-		expect(isLikelyBinary("abc\u0000def")).toBe(true);
+	it("flags content with a NUL byte anywhere in the input", () => {
+		expect(isLikelyBinary(`${"a".repeat(8192)}\u0000def`)).toBe(true);
 	});
 
 	it("treats normal text as non-binary", () => {

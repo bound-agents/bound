@@ -1,4 +1,5 @@
 import type { BoundClient } from "@bound/client";
+import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box } from "ink";
 import type React from "react";
@@ -15,11 +16,18 @@ import { useConnectionState } from "./hooks/useConnectionState";
 import { useMcpServers } from "./hooks/useMcpServers";
 import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
+import { TerminalTitleController, formatThreadTitleForTerminal } from "./util/terminal-title";
 import { ChatView } from "./views/ChatView";
+import { InspectorView } from "./views/InspectorView";
 import { McpView } from "./views/McpView";
 import { PickerView } from "./views/PickerView";
 
-export type AppView = "chat" | "mcp" | "picker";
+const NULL_TERMINAL_TITLE = new TerminalTitleController(
+	{ isTTY: false, write: () => undefined },
+	{ TERM: "dumb" },
+);
+
+export type AppView = "chat" | "mcp" | "picker" | "inspector";
 export type PickerMode = "thread" | "model";
 
 export interface AppState {
@@ -77,6 +85,12 @@ export interface AppProps {
 	initialMessages: Message[];
 	model: string | null;
 	toolHandlers: Map<string, ToolHandler>;
+	/** Initial title fetched during startup, used before the first refresh poll. */
+	initialThreadTitle?: string | null;
+	/** Terminal title controller owned by boundless.tsx so shutdown can restore it. */
+	terminalTitle?: TerminalTitleController;
+	/** Context files injected into the system prompt during thread transitions. */
+	contextFiles?: string[];
 	/** Resolved shell for the bash-family tool (streaming + spawn invocation). */
 	shell: ResolvedShell;
 	/** Resolved filesystem sandbox policy for the bash-family tool. */
@@ -102,6 +116,9 @@ export function App({
 	initialMessages,
 	model: initialModel,
 	toolHandlers,
+	initialThreadTitle = null,
+	terminalTitle = NULL_TERMINAL_TITLE,
+	contextFiles,
 	shell,
 	sandbox,
 }: AppProps): React.ReactElement {
@@ -176,6 +193,35 @@ export function App({
 		};
 	}, [client, state.threadId]);
 
+	useEffect(() => {
+		let cancelled = false;
+		let lastTitle = state.threadId === initialThreadId ? initialThreadTitle : null;
+
+		if (lastTitle !== null) {
+			terminalTitle.set(formatThreadTitleForTerminal(lastTitle));
+		}
+
+		const refreshTitle = async () => {
+			if (!client) return;
+			try {
+				const thread = await client.getThread(state.threadId);
+				if (cancelled || thread.title === lastTitle) return;
+				lastTitle = thread.title;
+				terminalTitle.set(formatThreadTitleForTerminal(thread.title));
+			} catch {
+				// The terminal title is cosmetic; losing one refresh must not disturb chat.
+			}
+		};
+
+		void refreshTitle();
+		const interval = setInterval(refreshTitle, 15_000);
+
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
+		};
+	}, [client, initialThreadId, initialThreadTitle, state.threadId, terminalTitle]);
+
 	// Dispatch helpers
 	const handleSetView = (view: AppView, pickerMode?: PickerMode) => {
 		dispatch({ type: "SET_VIEW", view, pickerMode });
@@ -202,6 +248,7 @@ export function App({
 				logger,
 				inFlightTools: abortMap,
 				model: state.model,
+				injectContextFiles: contextFiles,
 				shell,
 				sandbox,
 			});
@@ -228,6 +275,19 @@ export function App({
 			// (bounded by the same 200-msg cap used at startup).
 			replaceMessages(result.attachResult.messages);
 			dispatch({ type: "SET_THREAD", threadId: result.threadId });
+
+			// Resume the thread on the model it last used. A thread with no
+			// model-bearing history (fresh thread, or model rows outside the
+			// fetch window) keeps the current selection.
+			const inheritedModel = result.attachResult.lastUsedModelId;
+			if (inheritedModel && inheritedModel !== state.model) {
+				dispatch({ type: "SET_MODEL", model: inheritedModel });
+				dispatch({
+					type: "SET_BANNER",
+					message: `Model set to ${inheritedModel} (last used in this thread)`,
+					bannerType: "info",
+				});
+			}
 		},
 		[
 			client,
@@ -241,6 +301,7 @@ export function App({
 			logger,
 			inFlightTools,
 			replaceMessages,
+			contextFiles,
 			shell,
 			sandbox,
 		],
@@ -275,6 +336,7 @@ export function App({
 			logger,
 			inFlightTools: abortMap,
 			model: state.model,
+			injectContextFiles: contextFiles,
 			shell,
 			sandbox,
 		});
@@ -302,6 +364,7 @@ export function App({
 		client,
 		state.threadId,
 		state.model,
+		contextFiles,
 		configDir,
 		cwd,
 		hostname,
@@ -314,12 +377,21 @@ export function App({
 		sandbox,
 	]);
 
-	const handleSendMessage = async (message: string) => {
+	const handleSendMessage = async (message: string | ContentBlock[]) => {
 		if (client) {
 			// Optimistically render the user's message immediately. The real
 			// `message:created` (sometimes >3s later) reconciles this placeholder;
-			// see #88 and useMessages.appendPendingUserMessage.
-			appendPendingUserMessage(state.threadId, message);
+			// see #88 and useMessages.appendPendingUserMessage. Block sends
+			// (image paste) flatten to a text sketch for the placeholder — the
+			// real message renders the preview when it arrives.
+			const placeholderText =
+				typeof message === "string"
+					? message
+					: message
+							.map((b) => (b.type === "text" ? b.text : b.type === "image" ? "[image]" : ""))
+							.filter((t) => t.length > 0)
+							.join(" ");
+			appendPendingUserMessage(state.threadId, placeholderText);
 			try {
 				await client.sendMessage(state.threadId, message, { modelId: state.model || undefined });
 			} catch (error) {
@@ -354,6 +426,7 @@ export function App({
 				onModelPicker={() => handleSetView("picker", "model")}
 				onAttachThread={() => handleSetView("picker", "thread")}
 				onMcpView={() => handleSetView("mcp")}
+				onInspect={() => handleSetView("inspector")}
 				onClear={handleClear}
 				onBannerDismiss={handleDismissBanner}
 				onSendMessage={handleSendMessage}
@@ -368,6 +441,9 @@ export function App({
 					}}
 					onCancel={() => handleSetView("chat")}
 				/>
+			)}
+			{state.view === "inspector" && (
+				<InspectorView messages={messages} onClose={() => handleSetView("chat")} />
 			)}
 			{state.view === "picker" && state.pickerMode && (
 				<PickerView

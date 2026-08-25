@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoopResult } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
-import type { AgentLoop } from "@bound/agent";
+import type { MainAgentLoop } from "@bound/agent";
 import { TypedEventEmitter } from "@bound/shared";
 import { runLocalAgentLoop } from "../lib/message-handler";
 
@@ -34,7 +34,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 	function makeSlowFactory(
 		durationMs: number,
 		capturedSignals: AbortSignal[],
-	): (config: AgentLoopConfig) => AgentLoop {
+	): (config: AgentLoopConfig) => MainAgentLoop {
 		return (config) => {
 			if (config.abortSignal) capturedSignals.push(config.abortSignal);
 			return {
@@ -42,7 +42,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 					await new Promise((resolve) => setTimeout(resolve, durationMs));
 					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 				},
-			} as AgentLoop;
+			} as MainAgentLoop;
 		};
 	}
 
@@ -73,7 +73,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 
 		// Loop that takes 500ms — test fires cancel after 50ms
 		let _loopFinishedNaturally = false;
-		const factory = (config: AgentLoopConfig): AgentLoop => {
+		const factory = (config: AgentLoopConfig): MainAgentLoop => {
 			if (config.abortSignal) capturedSignals.push(config.abortSignal);
 			return {
 				run: async (): Promise<AgentLoopResult> => {
@@ -81,7 +81,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 					_loopFinishedNaturally = true;
 					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 				},
-			} as AgentLoop;
+			} as MainAgentLoop;
 		};
 
 		// Fire agent:cancel after 50ms (well before 500ms loop)
@@ -103,7 +103,7 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		expect(capturedSignals[0].aborted).toBe(true);
 		// The loop did NOT finish its natural 500ms wait (test completed in ~50ms)
 		// Note: the mock loop doesn't check the signal — we verify the signal itself
-		// was set. Real AgentLoop checks the signal on each LLM call.
+		// was set. Real MainAgentLoop checks the signal on each LLM call.
 	});
 
 	it("does NOT abort loops for other threads", async () => {
@@ -161,12 +161,12 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		const eventBus = makeEventBus();
 		const threadId = randomUUID();
 
-		const factory = (_config: AgentLoopConfig): AgentLoop =>
+		const factory = (_config: AgentLoopConfig): MainAgentLoop =>
 			({
 				run: async (): Promise<AgentLoopResult> => {
 					throw new Error("LLM connection error");
 				},
-			}) as AgentLoop;
+			}) as MainAgentLoop;
 
 		await expect(
 			runLocalAgentLoop({
@@ -204,32 +204,39 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		expect(capturedSignals[0]?.aborted).toBe(true);
 	});
 
-	it("should reset timeout when onActivity is called by the loop", async () => {
+	it("resets the inactivity timeout for each activity without aborting before the final deadline", async () => {
 		const eventBus = makeEventBus();
 		const threadId = randomUUID();
 		const capturedSignals: AbortSignal[] = [];
-
-		// Loop that takes 200ms total, with activity at 60ms and 120ms.
-		// Timeout is 100ms — without reset it would fire at 100ms.
-		// With reset at 60ms → new deadline at 160ms; reset at 120ms → 220ms.
-		// Loop finishes at 200ms before the 220ms deadline.
-		let capturedOnActivity: (() => void) | undefined;
-		const factory = (config: AgentLoopConfig): AgentLoop => {
-			if (config.abortSignal) capturedSignals.push(config.abortSignal);
-			capturedOnActivity = config.onActivity;
-			return {
-				run: async (): Promise<AgentLoopResult> => {
-					await new Promise((resolve) => setTimeout(resolve, 60));
-					config.onActivity?.(); // First activity
-					await new Promise((resolve) => setTimeout(resolve, 60));
-					config.onActivity?.(); // Second activity
-					await new Promise((resolve) => setTimeout(resolve, 80));
-					return { messagesCreated: 1, toolCallsMade: 2, filesChanged: 0 };
-				},
-			} as AgentLoop;
+		let nextId = 0;
+		const scheduled = new Map<number, () => void>();
+		const cancelled: number[] = [];
+		const timeoutScheduler = {
+			setTimeout(callback: () => void) {
+				const id = nextId++;
+				scheduled.set(id, callback);
+				return id;
+			},
+			clearTimeout(id: unknown) {
+				cancelled.push(id as number);
+				scheduled.delete(id as number);
+			},
 		};
 
-		const result = await runLocalAgentLoop({
+		let onActivity: (() => void) | undefined;
+		let finish: (() => void) | undefined;
+		const factory = (config: AgentLoopConfig): MainAgentLoop => {
+			if (config.abortSignal) capturedSignals.push(config.abortSignal);
+			onActivity = config.onActivity;
+			return {
+				run: () =>
+					new Promise<AgentLoopResult>((resolve) => {
+						finish = () => resolve({ messagesCreated: 1, toolCallsMade: 2, filesChanged: 0 });
+					}),
+			} as MainAgentLoop;
+		};
+
+		const run = runLocalAgentLoop({
 			eventBus,
 			threadId,
 			userId: "u1",
@@ -237,12 +244,21 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 			activeLoopAbortControllers: controllers,
 			agentLoopFactory: factory as any,
 			timeoutMs: 100,
+			timeoutScheduler,
 		});
 
-		// Should NOT have been aborted — activity resets kept pushing deadline out
+		expect([...scheduled.keys()]).toEqual([0]);
+		onActivity?.();
+		expect(cancelled).toEqual([0]);
+		expect([...scheduled.keys()]).toEqual([1]);
+		onActivity?.();
+		expect(cancelled).toEqual([0, 1]);
+		expect([...scheduled.keys()]).toEqual([2]);
+
 		expect(capturedSignals[0]?.aborted).toBe(false);
+		finish?.();
+		const result = await run;
 		expect(result.agentResult.messagesCreated).toBe(1);
-		expect(capturedOnActivity).toBeDefined();
 	});
 
 	it("should abort if no activity resets happen within timeoutMs", async () => {
@@ -251,14 +267,14 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		const capturedSignals: AbortSignal[] = [];
 
 		// Loop takes 200ms with no activity calls. Timeout is 100ms.
-		const factory = (config: AgentLoopConfig): AgentLoop => {
+		const factory = (config: AgentLoopConfig): MainAgentLoop => {
 			if (config.abortSignal) capturedSignals.push(config.abortSignal);
 			return {
 				run: async (): Promise<AgentLoopResult> => {
 					await new Promise((resolve) => setTimeout(resolve, 200));
 					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 				},
-			} as AgentLoop;
+			} as MainAgentLoop;
 		};
 
 		await runLocalAgentLoop({

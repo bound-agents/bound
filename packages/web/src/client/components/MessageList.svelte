@@ -6,9 +6,13 @@ import {
 	groupMessages,
 	toolUseIdsInItem,
 } from "../lib/message-grouping";
+import { anchorYardTrees } from "../lib/yard-anchoring";
+import type { YardTreeSnapshot } from "../lib/yard-execution";
 import McpAppPanel from "./McpAppPanel.svelte";
 import MessageBubble from "./MessageBubble.svelte";
+import ReasoningBlock from "./ReasoningBlock.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
+import YardExecutionPanel from "./YardExecutionPanel.svelte";
 
 interface Message {
 	role: string;
@@ -18,6 +22,7 @@ interface Message {
 	created_at?: string;
 	id?: string;
 	exit_code?: number | null;
+	metadata?: string | Record<string, unknown> | null;
 }
 
 interface TurnRange {
@@ -36,6 +41,7 @@ interface Props {
 	messages: Message[];
 	waiting?: boolean;
 	streamingText?: string;
+	streamingReasoning?: string;
 	emptyText?: string | null;
 	turnRange?: TurnRange | null;
 	scrollRequest?: ScrollRequest | null;
@@ -43,12 +49,14 @@ interface Props {
 	lineColor?: string;
 	isAgentActive?: boolean;
 	appInstances?: McpAppInstance[];
+	yardTrees?: YardTreeSnapshot[];
 }
 
 const {
 	messages,
 	waiting = false,
 	streamingText = "",
+	streamingReasoning = "",
 	emptyText = null,
 	turnRange = null,
 	scrollRequest = null,
@@ -56,6 +64,7 @@ const {
 	lineColor = "#999",
 	isAgentActive = false,
 	appInstances = [],
+	yardTrees = [],
 }: Props = $props();
 
 // --- Auto-scroll logic ---
@@ -174,6 +183,7 @@ interface ToolResultMsg {
 	content: string;
 	exit_code?: number | null;
 	tool_name?: string | null;
+	metadata?: string | Record<string, unknown> | null;
 }
 
 const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
@@ -184,6 +194,7 @@ const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
 				content: m.content,
 				exit_code: m.exit_code ?? null,
 				tool_name: m.tool_name,
+				metadata: m.metadata ?? null,
 			};
 		}
 	}
@@ -196,6 +207,15 @@ const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
 type DisplayItem = GroupedDisplayItem<Message>;
 
 const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
+
+// Lifecycle events can precede their persisted tool_call. Keep unmatched trees
+// trailing until polling supplies their source row, then relocate every trace for that call.
+const anchoredYardTrees = $derived.by(() =>
+	anchorYardTrees(
+		yardTrees,
+		displayItems.map((item) => ({ key: item.key, toolCallIds: toolUseIdsInItem(item) })),
+	),
+);
 
 // Anchor each live MCP App panel beneath the display item carrying the tool_use
 // that spawned it (instance.callId === the persisted tool_use.id). `perItem`
@@ -260,6 +280,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 
 <div class="board">
 	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
+		{#snippet yardPanelRow(tree: YardTreeSnapshot)}
+			<div class="turn-row" data-message-role="tool_call"><div class="time-gutter mono"></div><div class="rail"><div class="rail-line" style="background: {lineColor}"></div><div class="rail-dot rail-dot-assistant" style="background: {lineColor}; border-color: {lineColor}"></div></div><div class="row-content"><YardExecutionPanel {tree} /></div></div>
+		{/snippet}
 		{#snippet panelRow(instance: McpAppInstance)}
 			<div class="turn-row" data-message-role="tool_call">
 				<div class="time-gutter mono"></div>
@@ -321,6 +344,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 						{/if}
 					</div>
 				</div>
+				{#each anchoredYardTrees.perItem.get(item.key) ?? [] as tree (tree.traceId)}
+					{@render yardPanelRow(tree)}
+				{/each}
 				{#each anchoredInstances.perItem.get(item.key) ?? [] as instance (instance.callId)}
 					{@render panelRow(instance)}
 				{/each}
@@ -337,13 +363,16 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 					></div>
 				</div>
 				<div class="row-content">
+					{#if streamingReasoning}
+						<ReasoningBlock text={streamingReasoning} {lineColor} />
+					{/if}
 					{#if streamingText}
 						<MessageBubble
 							role="assistant"
 							content={streamingText}
 							{threadColor}
 						/>
-					{:else}
+					{:else if !streamingReasoning}
 						<div class="role-label">Agent</div>
 						<div class="thinking-caption">
 							<span>Thinking</span>
@@ -357,6 +386,9 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 				</div>
 			</div>
 		{/if}
+		{#each anchoredYardTrees.trailing as tree (tree.traceId)}
+			{@render yardPanelRow(tree)}
+		{/each}
 		{#each anchoredInstances.trailing as instance (instance.callId)}
 			{@render panelRow(instance)}
 		{/each}

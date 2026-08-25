@@ -6,15 +6,15 @@ import { type DiscordClientFactory, setupDiscordServers } from "../setup-platfor
 /**
  * Tests for setupDiscordServers — login-before-register ordering invariant.
  *
- * Background (incident 2026-05-17, follow-up to commits 1039fbb + 8f55bd7):
- * the prior order was register → login. If discord login() rejected (invalid
+ * Background: an incident, and a follow-up fix, established this ordering.
+ * The prior order was register → login. If discord login() rejected (invalid
  * token, network blip during a leadership-gain window, etc.), the outer
  * for-loop in packages/cli/src/commands/start/server.ts:848-862 caught the
  * throw with a `warn` and continued — but the prior registerServer() call
  * had already exposed the tool to the cluster relay, pointing at a Client
  * whose rest._token was never set. Every subsequent discord_list_channels
  * call surfaced "Expected token to be set for this request, but none was
- * present" via the now-correct error-propagation path (8f55bd7).
+ * present" via the now-correct error-propagation path.
  *
  * The fix: login first. If it rejects, registration never runs, and the
  * outer catch leaves the cluster with "tool not found" (correct: discord
@@ -80,9 +80,9 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			allowed_users: [],
 		} as unknown as PlatformConnectorConfig;
 
-		await expect(setupDiscordServers(config, registry, mockLogger, factory)).rejects.toThrow(
-			"An invalid token was provided.",
-		);
+		await expect(
+			setupDiscordServers(config, registry, mockLogger, undefined, factory),
+		).rejects.toThrow("An invalid token was provided.");
 
 		// The bug: pre-fix, registry.registerServer ran BEFORE login, so this
 		// array would have one entry ('discord') even though login rejected.
@@ -105,7 +105,7 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			allowed_users: [],
 		} as unknown as PlatformConnectorConfig;
 
-		await setupDiscordServers(config, registry, mockLogger, factory);
+		await setupDiscordServers(config, registry, mockLogger, undefined, factory);
 
 		// Both happened.
 		expect(client.__loginCalls).toHaveLength(1);
@@ -130,7 +130,7 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			token: "irrelevant",
 		} as unknown as PlatformConnectorConfig;
 
-		await setupDiscordServers(config, registry, mockLogger, factory);
+		await setupDiscordServers(config, registry, mockLogger, undefined, factory);
 
 		expect(client.__loginCalls).toHaveLength(0);
 		expect(calls).toHaveLength(0);
@@ -150,7 +150,9 @@ describe("setupDiscordServers — login-before-register ordering", () => {
 			allowed_users: [],
 		} as unknown as PlatformConnectorConfig;
 
-		await expect(setupDiscordServers(config, registry, mockLogger, factory)).rejects.toThrow();
+		await expect(
+			setupDiscordServers(config, registry, mockLogger, undefined, factory),
+		).rejects.toThrow();
 
 		expect(calls).toEqual([]);
 		expect(client.__loginCalls).toHaveLength(1);

@@ -10,11 +10,18 @@
 // path rewrite — see materializeSandboxRuntime() and
 // scripts/build-sandbox-runtime.ts.
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { BunPlugin } from "bun";
 import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
+
+export function buildLowboxHelperCommand(bunExecutable = process.execPath): {
+	command: string;
+	args: string[];
+} {
+	return { command: bunExecutable, args: ["run", "scripts/build-lowbox-helper.ts"] };
+}
 
 /**
  * Many @opentelemetry packages lack an `exports` field and only declare
@@ -247,14 +254,17 @@ async function build() {
 		process.exit(1);
 	}
 
-	// Step 2b: Stage mxc sandbox binary for embedding into the boundless binary.
-	// Non-fatal: a missing/unsupported binary degrades to passthrough at runtime
-	// rather than breaking the build.
-	console.log("\n2b. Preparing mxc sandbox runtime...");
+	// Step 2b: The Windows lowbox helper is built before the boundless compile
+	// (step 4b) so `packages/less/src/_lowbox/embedded.ts` exists and the helper
+	// is embedded into the binary; it also lands in dist/ beside boundless.exe.
+	// Non-Windows builds skip it.
+
+	// Step 2c: Stage mxc for the remaining macOS/Linux sandbox paths.
+	console.log("\n2c. Preparing mxc sandbox runtime...");
 	try {
 		execSync("bun run scripts/build-mxc-runtime.ts", { stdio: "inherit" });
 	} catch {
-		console.warn("mxc runtime staging failed; boundless filesystem sandbox will be unavailable.");
+		console.warn("mxc runtime staging failed; mxc filesystem sandbox will be unavailable.");
 	}
 
 	// Step 3: Compile bound (main agent binary) — needs both OTel esnext
@@ -278,17 +288,25 @@ async function build() {
 		console.log("Use 'bun packages/cli/src/boundctl.ts' to run directly");
 	}
 
-	// Step 5: Compile bound-mcp (MCP stdio server)
-	console.log("\n5. Compiling bound-mcp binary...");
-	try {
-		await compileBinary("packages/mcp-server/src/server.ts", "dist/bound-mcp");
-	} catch (e) {
-		console.error("bound-mcp compilation failed:", e instanceof Error ? e.message : e);
-		console.log("Use 'bun packages/mcp-server/src/server.ts' to run directly");
+	// Step 4b: Build the Windows lowbox helper BEFORE boundless so the compile
+	// embeds it via packages/less/src/_lowbox/embedded.ts. Also materializes
+	// dist/bound-lowbox.exe beside the binary for the CI oracle.
+	if (process.platform === "win32") {
+		console.log("\n4b. Building Windows lowbox helper for embedding...");
+		const invocation = buildLowboxHelperCommand();
+		try {
+			execFileSync(invocation.command, invocation.args, { stdio: "inherit" });
+		} catch (error) {
+			console.error(
+				"Windows lowbox helper build failed:",
+				error instanceof Error ? error.message : error,
+			);
+			process.exit(1);
+		}
 	}
 
-	// Step 6: Compile boundless (terminal client)
-	console.log("\n6. Compiling boundless binary...");
+	// Step 5: Compile boundless (terminal client)
+	console.log("\n5. Compiling boundless binary...");
 	try {
 		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
 			stubNodePty: true,
@@ -303,7 +321,7 @@ async function build() {
 	// Bun.compile appends ".exe" on Windows, so the summary check must
 	// look for the platform-correct file name.
 	const binaryExt = process.platform === "win32" ? ".exe" : "";
-	for (const binary of ["dist/bound", "dist/boundctl", "dist/bound-mcp", "dist/boundless"]) {
+	for (const binary of ["dist/bound", "dist/boundctl", "dist/boundless"]) {
 		const binaryPath = binary + binaryExt;
 		if (existsSync(binaryPath)) {
 			const sizeMB = (statSync(binaryPath).size / (1024 * 1024)).toFixed(2);

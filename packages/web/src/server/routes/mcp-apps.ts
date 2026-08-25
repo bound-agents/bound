@@ -1,5 +1,3 @@
-// MCP-Apps-in-web-UI feature: see project memory project:mcp-apps-web-ui:design-and-progress.
-//
 // The web UI is a pure *renderer* of MCP Apps, not a tool provider. App-bearing
 // servers are sourced from the agent-side `mcp.json` (NOT a dedicated
 // `mcp_apps.json`): the agent connects to them server-side as usual, and the web

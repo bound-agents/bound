@@ -1,7 +1,7 @@
 /**
  * Agent-loop diagnostic harness driver.
  *
- * Drives N turns of the production `AgentLoop` against a hermetic in-memory
+ * Drives N turns of the production `MainAgentLoop` against a hermetic in-memory
  * environment (`:memory:` SQLite + `InMemoryFs` + `InMemoryTurnStateStore`)
  * with live LLM inference. Captures wire bodies and per-turn metrics for
  * pluggable diagnostics.
@@ -17,7 +17,7 @@
  *   3. Hard stop after each turn (5% slack).
  *
  * Divergence audit (kept narrow on purpose).
- * Production constructs `AgentLoop` via `createAgentLoopFactory`
+ * Production constructs `MainAgentLoop` via `createAgentLoopFactory`
  * (`packages/cli/src/commands/start/agent-factory.ts`). The harness
  * deliberately deviates only where the daemon's wiring would force live
  * filesystem / sandbox / platform side effects. Every deviation either
@@ -25,7 +25,7 @@
  * or (c) is documented as a known limitation.
  *
  * Reused unchanged from production:
- *   - `loadConfigFile` + `modelBackendsSchema` (config-loader)
+ *   - `loadModelBackendsConfig` (the production precedence config loader)
  *   - `toRouterConfig` (Critical Invariant #17 hand-off)
  *   - `createModelRouter` + `createBackendFromConfig` (provider dispatch)
  *   - `applySchema` + `applyMetricsSchema` + `insertRow` (DB seed)
@@ -64,13 +64,20 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { insertRow, loadConfigFile } from "@bound/core";
+import {
+	insertRow,
+	loadConfigWithPrecedence,
+	setChangelogEventBus,
+	setRelayOutboxEventBus,
+} from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { ToolDefinition } from "@bound/llm";
 import {
 	type Logger,
 	type ModelBackendsConfig as RawBackendsConfig,
-	modelBackendsSchema,
+	TypedEventEmitter,
+	keyringSchema,
+	syncSchema,
 } from "@bound/shared";
 // `toRouterConfig` lives in the cli package; this is a known minor coupling
 // (the harness needs the same SharedModelBackendsConfig → ModelBackendsConfig
@@ -78,13 +85,14 @@ import {
 // via relative path because cli has no package re-export and adding one
 // would touch CI surface unrelated to the harness.
 import { toRouterConfig } from "../../../cli/src/commands/start/inference";
+import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
+import { createHarnessEnvironment } from "../../src/harness/environment";
 // `@bound/agent` is the package this harness lives in; use relative paths to
 // avoid the package self-reference resolution issue under tsc. The hermetic
 // seed-and-run environment (in-memory DB, silent bus, AppContext stub, sandbox
-// shim, AgentLoop construction) is shared with persona-lab via the harness
+// shim, MainAgentLoop construction) is shared with persona-lab via the harness
 // core; only the wire-capture / budget / diagnostic logic is driver-specific.
-import { estimateMaxTurnCost, insertThreadMessage } from "../../src/agent-loop-utils";
-import { createHarnessEnvironment } from "../../src/harness/environment";
+import { loadModelBackendsConfig } from "../../src/model-backends-config";
 import type { RegisteredTool } from "../../src/types";
 import { createCapturingFetch } from "./capture";
 import type { Diagnostic, DiagnosticTurnData } from "./diagnostics/types";
@@ -100,6 +108,10 @@ export interface HarnessRunOptions {
 	turns: number;
 	budgetUsd: number;
 	logger: Logger;
+	/** Enable remote (relay-backed) model resolution via the hub. */
+	remote: boolean;
+	/** Path to the data directory containing host.key/host.pub. */
+	dataDir: string;
 }
 
 export interface HarnessRunResult {
@@ -113,6 +125,17 @@ export interface HarnessRunResult {
 	perDiagnosticReports: Map<string, string>;
 	perDiagnosticRecords: Map<string, ReadonlyArray<Record<string, unknown>>>;
 	rawTurnData: ReadonlyArray<DiagnosticTurnData>;
+	/**
+	 * Wire bodies captured during a user-turn that `isAgentLoopWire` did NOT
+	 * classify as main-loop inference. Normally these are auxiliary calls
+	 * (summary extraction, title generation) and safely ignorable — but when a
+	 * user-turn records N turn rows and 0 main-loop wires, the classifier
+	 * itself has failed for that provider's wire shape, and these bodies are
+	 * the evidence needed to fix it. Dumped by `--dump-wire` alongside the
+	 * classified turns so a silent classifier miss is inspectable instead of
+	 * a dead end.
+	 */
+	unmatchedWires: ReadonlyArray<{ userTurn: number; url: string; body: string }>;
 }
 
 /**
@@ -120,42 +143,61 @@ export interface HarnessRunResult {
  * (`run.ts`) is responsible for formatting + writing to stdout.
  */
 export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunResult> {
-	// 1. Load model_backends.json — same path as production startup.
-	const rawBackendsResult = loadConfigFile(
-		opts.configDir,
-		"model_backends.json",
-		modelBackendsSchema,
-	);
-	if (!rawBackendsResult.ok) {
-		throw new Error(
-			`failed to load model_backends.json from ${opts.configDir}: ${rawBackendsResult.error.message}`,
-		);
-	}
-	const rawBackends = rawBackendsResult.value;
-
-	// 2. Pick the backend the operator selected (default → router default).
-	const pickedId = opts.backend || rawBackends.default;
-	const picked = rawBackends.backends.find((b: RawBackendConfig) => b.id === pickedId);
-	if (!picked) {
-		const known = rawBackends.backends.map((b: RawBackendConfig) => b.id).join(", ") || "(none)";
-		throw new Error(`backend "${pickedId}" not found in model_backends.json. Available: ${known}`);
+	// 1. Load the same precedence-selected model backend config as startup.
+	let rawBackends: RawBackendsConfig;
+	try {
+		rawBackends = await loadModelBackendsConfig(opts.configDir);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		throw new Error(`failed to load model backends config from ${opts.configDir}: ${message}`);
 	}
 
-	// 3. Pre-flight budget check — reject before any inference call when the
-	//    worst-case ceiling already exceeds the budget.
-	const maxTurnCost = estimateMaxTurnCost(picked);
-	const projectedTotal = maxTurnCost * opts.turns;
-	if (projectedTotal > opts.budgetUsd) {
-		return {
-			userTurnsCompleted: 0,
-			inferencesObserved: 0,
-			totalCostUsd: 0,
-			abortReason: "pre-flight-budget",
-			abortMessage: `pre-flight estimate ${projectedTotal.toFixed(4)} USD exceeds budget ${opts.budgetUsd.toFixed(2)} USD (per-turn ceiling ${maxTurnCost.toFixed(4)} × ${opts.turns} turns)`,
-			perDiagnosticReports: new Map(),
-			perDiagnosticRecords: new Map(),
-			rawTurnData: [],
-		};
+	// 2. Pick the backend / model the operator selected.
+	let picked: RawBackendConfig;
+	let modelId: string;
+	if (opts.remote) {
+		// Remote mode: --backend is the remote model ID (e.g. "umans-coder").
+		// The local router still needs a backend for auxiliary calls (summary
+		// extraction, title generation), so use the first local backend.
+		if (!opts.backend) {
+			throw new Error("--backend <model-id> is required with --remote");
+		}
+		picked = rawBackends.backends[0];
+		if (!picked) {
+			throw new Error("model backends config must have at least one backend for auxiliary calls");
+		}
+		modelId = opts.backend;
+	} else {
+		const pickedId = opts.backend || rawBackends.default;
+		const found = rawBackends.backends.find((b: RawBackendConfig) => b.id === pickedId);
+		if (!found) {
+			const known = rawBackends.backends.map((b: RawBackendConfig) => b.id).join(", ") || "(none)";
+			throw new Error(
+				`backend "${pickedId}" not found in model backends config. Available: ${known}`,
+			);
+		}
+		picked = found;
+		modelId = picked.id;
+	}
+
+	// 3. Pre-flight budget check (local mode only — can't estimate remote costs).
+	let maxTurnCost = 0;
+	if (!opts.remote) {
+		maxTurnCost = estimateMaxTurnCost(picked);
+		const projectedTotal = maxTurnCost * opts.turns;
+		if (projectedTotal > opts.budgetUsd) {
+			return {
+				userTurnsCompleted: 0,
+				inferencesObserved: 0,
+				totalCostUsd: 0,
+				abortReason: "pre-flight-budget",
+				abortMessage: `pre-flight estimate ${projectedTotal.toFixed(4)} USD exceeds budget ${opts.budgetUsd.toFixed(2)} USD (per-turn ceiling ${maxTurnCost.toFixed(4)} × ${opts.turns} turns)`,
+				perDiagnosticReports: new Map(),
+				perDiagnosticRecords: new Map(),
+				rawTurnData: [],
+				unmatchedWires: [],
+			};
+		}
 	}
 
 	// 4. Translate the picked backend through toRouterConfig — same path the
@@ -175,21 +217,140 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		fetchByBackendId: new Map([[picked.id, capturing.fetch]]),
 	});
 
-	// 6. Hermetic environment: in-memory DB with the full schema applied, a
-	//    seeded user + thread, a silent event bus, and an AppContext stub —
-	//    all shared with persona-lab via the harness core. The capturing
-	//    router built above is injected so wire bodies are recorded per
-	//    inference. Everything below (pre-seeded history, volatile-prefix
-	//    seeding, tool registry, budget, diagnostics) is driver-specific and
-	//    operates on the returned db / siteId / threadId / hostName.
+	// 6. Environment setup.
+	//    In remote mode, use the production keypair's siteId and a real
+	//    event bus so WsTransport can drain relay outbox entries to the hub.
+	let wsClient: { close: () => void } | null = null;
+	let wsTransport: { stop: () => void } | null = null;
+	let remoteSiteId: string | undefined;
+	let remoteEventBus: TypedEventEmitter | undefined;
+	let remoteKeypair: { publicKey: CryptoKey; privateKey: CryptoKey; siteId: string } | null = null;
+	if (opts.remote) {
+		const { ensureKeypair } = await import("@bound/sync");
+		remoteKeypair = await ensureKeypair(opts.dataDir);
+		remoteSiteId = remoteKeypair.siteId;
+		remoteEventBus = new TypedEventEmitter();
+		setChangelogEventBus(remoteEventBus);
+		setRelayOutboxEventBus(remoteEventBus);
+	}
 	const env = createHarnessEnvironment({
 		rawBackends,
 		router,
 		logger: opts.logger,
 		threadTitle: opts.fixture.name,
 		threadSummary: opts.fixture.threadSummary ?? null,
+		siteId: remoteSiteId,
+		eventBus: remoteEventBus,
 	});
 	const { db, siteId, threadId, hostName, now } = env;
+
+	// 6b. Remote sync: connect to the hub via WsSyncClient so relay outbox
+	//     entries (inference requests) are drained and sent to the hub. The
+	//     snapshot is filtered to only apply the `hosts` table — everything
+	//     else stays hermetic (harness-seeded data only).
+	if (opts.remote && remoteKeypair && remoteEventBus) {
+		const { KeyManager, WsSyncClient, WsTransport } = await import("@bound/sync");
+		const keyringResult = await loadConfigWithPrecedence(opts.configDir, "keyring", keyringSchema);
+		const syncResult = await loadConfigWithPrecedence(opts.configDir, "sync", syncSchema);
+		if (!keyringResult.ok) {
+			throw new Error(
+				`failed to load keyring.json from ${opts.configDir}: ${keyringResult.error.message}`,
+			);
+		}
+		if (!syncResult.ok) {
+			throw new Error(
+				`failed to load sync.json from ${opts.configDir}: ${syncResult.error.message}`,
+			);
+		}
+		const keyring = keyringResult.value;
+		const syncConfig = syncResult.value;
+		if (!syncConfig.hub) {
+			throw new Error("sync.json must have a 'hub' URL for --remote mode");
+		}
+		const hubUrl = new URL(syncConfig.hub).toString();
+		// Find the hub's siteId in the keyring by matching URL.
+		let hubSiteId: string | undefined;
+		for (const [sid, entry] of Object.entries(keyring.hosts)) {
+			if (new URL(entry.url).toString() === hubUrl) {
+				hubSiteId = sid;
+				break;
+			}
+		}
+		if (!hubSiteId) {
+			throw new Error(`hub URL ${hubUrl} not found in keyring.json hosts`);
+		}
+		const keyManager = new KeyManager(remoteKeypair, remoteKeypair.siteId);
+		await keyManager.init(keyring);
+		const wt = new WsTransport({
+			db,
+			siteId,
+			eventBus: remoteEventBus,
+			logger: opts.logger,
+			isHub: false,
+		});
+		wt.start();
+		wsTransport = wt;
+		// Filtered transport: relay functions delegate to the real WsTransport;
+		// snapshot is filtered to only the `hosts` table; changelog is no-op
+		// (harness data should not replicate to the hub).
+		const filtered = {
+			addPeer: wt.addPeer.bind(wt),
+			removePeer: wt.removePeer.bind(wt),
+			handleChangelogPush: () => {},
+			handleChangelogAck: () => {},
+			drainChangelog: () => {},
+			handleRelayDeliver: wt.handleRelayDeliver.bind(wt),
+			handleRelayAck: wt.handleRelayAck.bind(wt),
+			drainRelayOutbox: wt.drainRelayOutbox.bind(wt),
+			applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) =>
+				tableName === "hosts" ? wt.applySnapshotChunk(tableName, rows) : 0,
+			applyColumnChunk: (
+				tableName: string,
+				pkValue: string,
+				columnName: string,
+				chunkIndex: number,
+				chunkData: string,
+			) => {
+				if (tableName === "hosts") {
+					wt.applyColumnChunk(tableName, pkValue, columnName, chunkIndex, chunkData);
+				}
+			},
+		};
+		wsClient = new WsSyncClient({
+			hubUrl,
+			privateKey: remoteKeypair.privateKey,
+			siteId: remoteKeypair.siteId,
+			keyManager,
+			hubSiteId,
+			wsTransport: filtered,
+			logger: opts.logger,
+			backfillIntervalSeconds: 0,
+		});
+		await wsClient.connect();
+		// Wait for the hub's `hosts` row to arrive via the filtered snapshot.
+		opts.logger.info("[harness] Waiting for hub hosts row via snapshot...");
+		const deadline = Date.now() + 30_000;
+		let hostsReady = false;
+		while (Date.now() < deadline) {
+			const row = db
+				.query<{ c: number }, [string]>(
+					"SELECT COUNT(*) AS c FROM hosts WHERE site_id = ? AND deleted = 0",
+				)
+				.get(hubSiteId);
+			if (row && row.c > 0) {
+				hostsReady = true;
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 500));
+		}
+		if (!hostsReady) {
+			throw new Error(
+				"Timed out waiting for hub hosts row (30s). " +
+					"Is the production daemon stopped? (same siteId can't connect twice)",
+			);
+		}
+		opts.logger.info("[harness] Hub hosts row received — relay path ready");
+	}
 
 	// Pre-seed messages when the fixture defines them. Used by fixtures
 	// that need a thread large enough to trigger truncation before turn 1.
@@ -208,7 +369,12 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 					role: pm.role,
 					content: pm.content,
 					model_id: null,
-					tool_name: null,
+					// `tool_name` is the column the readback seam converts back into
+					// `LLMMessage.tool_use_id` (agent-loop-utils.ts). A seeded
+					// `tool_result` without it cannot be paired to its call, and
+					// Anthropic rejects the turn with "each tool_use must have a
+					// single result".
+					tool_name: pm.tool_use_id ?? null,
 					host_origin: hostName,
 					created_at: msgTime,
 					modified_at: msgTime,
@@ -221,10 +387,10 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		}
 	}
 
-	// `hosts` row would normally be bootstrapped via the daemon's start
-	// path (outbox-exempt — see bootstrap.ts). Context-assembly only reads
-	// `ctx.hostName` and `ctx.siteId` directly, so the harness can skip
-	// host seeding without breaking any read path.
+	// `hosts` row: in local mode, none is seeded (context-assembly only reads
+	// `ctx.hostName` and `ctx.siteId` directly). In remote mode, the `hosts`
+	// table is populated via the WsSyncClient snapshot (filtered to only apply
+	// the `hosts` table) so `findEligibleHostsByModel` can resolve the hub.
 
 	// Seed volatile-prefix data when the fixture asks for it. Without
 	// this, the volatile-prefix renders ~empty and `tokens_in` per
@@ -243,6 +409,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	const perDiagRecords = new Map<string, Record<string, unknown>[]>();
 	for (const d of opts.diagnostics) perDiagRecords.set(d.name, []);
 	const rawTurnData: DiagnosticTurnData[] = [];
+	const unmatchedWires: { userTurn: number; url: string; body: string }[] = [];
 
 	// 11. Drive the turns loop.
 	let userTurnsCompleted = 0;
@@ -278,7 +445,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 
 		// Build the loop config and run it against the shared environment.
 		try {
-			await env.runLoop({ modelId: picked.id, toolRegistry });
+			await env.runLoop({ modelId, toolRegistry });
 		} catch (err) {
 			abortReason = "error";
 			abortMessage = `user-turn ${userTurn} threw: ${(err as Error).message}`;
@@ -309,6 +476,9 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		const newTurnRows = readTurnRowsAfter(db, threadId, turnsRowCountBefore);
 		const allWires = capturing.entries.slice();
 		const mainWires = allWires.filter(isAgentLoopWire);
+		for (const w of allWires) {
+			if (!isAgentLoopWire(w)) unmatchedWires.push({ userTurn, url: w.url, body: w.body });
+		}
 		if (newTurnRows.length !== mainWires.length) {
 			opts.logger.warn(
 				`[harness] user-turn ${userTurn}: ${allWires.length} wires captured ` +
@@ -344,6 +514,8 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 	}
 
 	const totalCostUsd = sumTurnCosts(db, threadId);
+	if (wsClient) wsClient.close();
+	if (wsTransport) wsTransport.stop();
 	db.close();
 
 	return {
@@ -360,6 +532,7 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			]),
 		),
 		rawTurnData,
+		unmatchedWires,
 	};
 }
 

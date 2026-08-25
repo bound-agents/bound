@@ -11,7 +11,6 @@ function createTestDb(): Database {
 		id TEXT PRIMARY KEY NOT NULL,
 		name TEXT NOT NULL,
 		description TEXT NOT NULL,
-		status TEXT NOT NULL,
 		skill_root TEXT,
 		content_hash TEXT,
 		allowed_tools TEXT,
@@ -21,8 +20,6 @@ function createTestDb(): Database {
 		created_by_thread TEXT,
 		activation_count INTEGER DEFAULT 0,
 		last_activated_at TEXT,
-		retired_by TEXT,
-		retired_reason TEXT,
 		modified_at TEXT NOT NULL,
 		deleted INTEGER DEFAULT 0
 	)`);
@@ -50,13 +47,13 @@ function createTestDb(): Database {
 	return db;
 }
 
-// id, name, description, status, skill_root, modified_at
+// id, name, description, skill_root, modified_at
 const insertSkill = (db: Database, id: string, name: string, skillRoot: string) => {
 	db.prepare(
 		`INSERT INTO skills VALUES (
-			?, ?, 'Test description', 'active',
+			?, ?, 'Test description',
 			?, NULL, NULL, NULL, NULL,
-			NULL, NULL, 1, NULL, NULL, NULL,
+			NULL, NULL, 1, NULL,
 			'2026-01-01T00:00:00.000Z', 0
 		)`,
 	).run(id, name, skillRoot);

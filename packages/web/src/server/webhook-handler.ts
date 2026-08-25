@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertInbox } from "@bound/core";
+import { findClusterConfigValueByKey, findWebhookByName, insertInbox } from "@bound/core";
+import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
 import type { TypedEventEmitter, Webhook } from "@bound/shared";
 import { validateWebhookSignature } from "./webhook-hmac.js";
+
+export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 
 export interface WebhookHandlerDeps {
 	db: Database;
@@ -32,6 +35,50 @@ function extractDeliveryId(headers: Headers): string | null {
 	return null;
 }
 
+async function readRequestBodyLimited(request: Request): Promise<
+	| {
+			ok: true;
+			body: Buffer;
+	  }
+	| {
+			ok: false;
+			status: 400 | 413;
+	  }
+> {
+	const contentLength = request.headers.get("content-length");
+	if (contentLength && /^\d+$/.test(contentLength)) {
+		const declaredLength = Number.parseInt(contentLength, 10);
+		if (declaredLength > MAX_WEBHOOK_BODY_BYTES) {
+			return { ok: false, status: 413 };
+		}
+	}
+
+	if (!request.body) {
+		return { ok: true, body: Buffer.alloc(0) };
+	}
+
+	const reader = request.body.getReader();
+	const chunks: Buffer[] = [];
+	let total = 0;
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > MAX_WEBHOOK_BODY_BYTES) {
+				await reader.cancel();
+				return { ok: false, status: 413 };
+			}
+			chunks.push(Buffer.from(value));
+		}
+	} catch {
+		return { ok: false, status: 400 };
+	}
+
+	return { ok: true, body: Buffer.concat(chunks, total) };
+}
+
 /**
  * Handles incoming webhook POST requests.
  * Validates signature, writes relay_inbox entry, emits events for scheduler triggering,
@@ -47,39 +94,59 @@ export async function handleWebhookRequest(
 		return new Response("Not found", { status: 404 });
 	}
 
-	// Read raw body bytes (must happen before any other processing)
-	let rawBody: Buffer;
-	try {
-		const arrayBuffer = await request.arrayBuffer();
-		rawBody = Buffer.from(arrayBuffer);
-	} catch {
-		return new Response("", { status: 400 });
-	}
-
-	// Reject empty body
-	if (rawBody.length === 0) {
-		return new Response("", { status: 400 });
-	}
-
 	// Look up webhook in database
-	const webhook = deps.db
-		.prepare("SELECT * FROM webhooks WHERE name = ? AND deleted = 0")
-		.get(name) as Webhook | null;
+	const webhook = findWebhookByName(deps.db, name) as Webhook | null;
 
 	if (!webhook) {
 		return new Response("", { status: 404 });
 	}
 
-	// Validate signature
-	const validationResult = validateWebhookSignature(
-		webhook.signature_format,
-		webhook.secret,
-		request.headers,
-		rawBody,
-	);
+	// Read raw body bytes after webhook lookup so unknown names cannot force
+	// memory work, and cap streaming reads before HMAC validation.
+	//
+	// Every rejection observable without the webhook secret returns 404 so the
+	// response cannot be used to distinguish a real webhook name from an unknown
+	// one (empty/oversized/unreadable body and bad signature all look identical
+	// to a non-existent name). Only a valid signature produces a non-404
+	// response. The body read still happens after the name lookup so unknown
+	// names short-circuit before any streaming work.
+	const readResult = await readRequestBodyLimited(request);
+	if (!readResult.ok) {
+		return new Response("", { status: 404 });
+	}
+	const rawBody = readResult.body;
 
-	if (!validationResult.valid) {
-		return new Response("", { status: 401 });
+	// Reject empty body
+	if (rawBody.length === 0) {
+		return new Response("", { status: 404 });
+	}
+
+	// "none" format webhooks skip HMAC entirely and are gated behind the
+	// cluster-wide kill switch (#195). Re-check live on every delivery (not
+	// just at creation time) so flipping the switch off immediately stops
+	// delivery to a "none" webhook that was created while it was on, with no
+	// restart required. Every other rejection in this handler returns an
+	// identical 404 to avoid a name-enumeration oracle; mirror that here.
+	if (webhook.signature_format === "none") {
+		const allowUnauthenticated = findClusterConfigValueByKey(
+			deps.db,
+			WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+		);
+		if (allowUnauthenticated?.value !== "true") {
+			return new Response("", { status: 404 });
+		}
+	} else {
+		// Validate signature
+		const validationResult = validateWebhookSignature(
+			webhook.signature_format,
+			webhook.secret,
+			request.headers,
+			rawBody,
+		);
+
+		if (!validationResult.valid) {
+			return new Response("", { status: 404 });
+		}
 	}
 
 	// Build envelope with filtered headers
@@ -117,7 +184,10 @@ export async function handleWebhookRequest(
 		trace_context: null,
 	};
 
-	insertInbox(deps.db, inboxEntry);
+	const inserted = insertInbox(deps.db, inboxEntry);
+	if (!inserted) {
+		return new Response("", { status: 202 });
+	}
 
 	// Emit connector:event to trigger scheduler
 	if (deps.eventBus) {

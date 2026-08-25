@@ -99,6 +99,20 @@ async function cancelTask(taskId: string): Promise<void> {
 	}
 }
 
+let togglingHistoryId = $state<string | null>(null);
+
+async function toggleNoHistory(task: TaskListEntry): Promise<void> {
+	togglingHistoryId = task.id;
+	try {
+		await client.updateTask(task.id, { no_history: !task.no_history });
+		await loadTasks();
+	} catch (error) {
+		console.error("Failed to toggle task history:", error);
+	} finally {
+		togglingHistoryId = null;
+	}
+}
+
 function canCancel(status: string): boolean {
 	return status === "pending" || status === "running" || status === "claimed";
 }
@@ -252,6 +266,27 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 										</span>
 									</div>
 									<div class="detail-row">
+										<span class="detail-kicker kicker">History</span>
+										<button
+											class="history-toggle mono"
+											class:off={task.no_history}
+											disabled={togglingHistoryId === task.id}
+											onclick={(e) => {
+												e.stopPropagation();
+												toggleNoHistory(task);
+											}}
+											title={task.no_history
+												? "Conversation history disabled — click to enable"
+												: "Conversation history enabled — click to disable"}
+										>
+											{togglingHistoryId === task.id
+												? "…"
+												: task.no_history
+													? "disabled"
+													: "enabled"}
+										</button>
+									</div>
+									<div class="detail-row">
 										<span class="detail-kicker kicker">Schedule</span>
 										<span class="detail-value mono">{task.schedule ?? "—"}</span>
 									</div>
@@ -359,6 +394,13 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 	.task-list {
 		border: 1px solid var(--rule-soft);
 		background: var(--paper);
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.task-list-header,
+	.task-row {
+		min-width: 880px;
 	}
 
 	.task-list-header {
@@ -586,6 +628,38 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 
 	.thread-link:hover {
 		color: var(--ink);
+	}
+
+	.history-toggle {
+		background: transparent;
+		border: 1px solid var(--accent);
+		border-radius: 3px;
+		padding: 1px 8px;
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--accent);
+		cursor: pointer;
+		letter-spacing: 0.04em;
+	}
+
+	.history-toggle:hover:not(:disabled) {
+		background: var(--accent);
+		color: var(--bg-primary);
+	}
+
+	.history-toggle.off {
+		border-color: var(--ink-4);
+		color: var(--ink-4);
+	}
+
+	.history-toggle.off:hover:not(:disabled) {
+		background: var(--ink-4);
+		color: var(--bg-primary);
+	}
+
+	.history-toggle:disabled {
+		opacity: 0.5;
+		cursor: default;
 	}
 
 	.footer {

@@ -6,7 +6,6 @@ import {
 	mcpSchema,
 	modelBackendsSchema,
 	networkSchema,
-	overlaySchema,
 	platformsSchema,
 	syncSchema,
 	userEntrySchema,
@@ -81,6 +80,58 @@ describe("Config schemas", () => {
 				default: "local-compat",
 			};
 			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("accepts arbitrary valid cache durations and rejects garbage", () => {
+			for (const cache_ttl of ["5m", "1h", "30m", "PT30M"]) {
+				const result = modelBackendsSchema.safeParse({
+					backends: [
+						{
+							id: "cached",
+							provider: "bedrock",
+							model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+							region: "us-east-1",
+							context_window: 200_000,
+							tier: 1,
+							cache_ttl,
+						},
+					],
+					default: "cached",
+				});
+				expect(result.success, cache_ttl).toBe(true);
+			}
+
+			const invalid = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "cached",
+						provider: "bedrock",
+						model: "openai.gpt-5.6",
+						region: "us-east-1",
+						cache_ttl: "garbage",
+					},
+				],
+				default: "cached",
+			});
+			expect(invalid.success).toBe(false);
+		});
+
+		it("accepts an optional per-backend system prompt suffix", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "specialized",
+						provider: "bedrock",
+						model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+						region: "us-east-1",
+						context_window: 200_000,
+						tier: 1,
+						system_prompt_suffix: "Use the backend-specific policy.",
+					},
+				],
+				default: "specialized",
+			});
 			expect(result.success).toBe(true);
 		});
 
@@ -191,6 +242,121 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
+		it("accepts bedrock-mantle with explicit openai_responses provider_mode", () => {
+			const config = {
+				backends: [
+					{
+						id: "mantle-gpt",
+						provider: "bedrock-mantle",
+						provider_mode: "openai_responses",
+						model: "openai.gpt-5.5",
+						region: "us-east-1",
+						context_window: 272000,
+						tier: 1,
+					},
+				],
+				default: "mantle-gpt",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("accepts bedrock-mantle with explicit anthropic provider_mode and no api_key", () => {
+			const config = {
+				backends: [
+					{
+						id: "mantle-sonnet",
+						provider: "bedrock-mantle",
+						provider_mode: "anthropic",
+						model: "anthropic.claude-sonnet-5",
+						region: "us-east-1",
+						context_window: 200000,
+						tier: 1,
+					},
+				],
+				default: "mantle-sonnet",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("requires provider_mode for bedrock-mantle", () => {
+			const config = {
+				backends: [
+					{
+						id: "mantle-gpt",
+						provider: "bedrock-mantle",
+						model: "openai.gpt-5.5",
+						region: "us-east-1",
+						context_window: 272000,
+						tier: 1,
+					},
+				],
+				default: "mantle-gpt",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		// --- umans (config-light, self-configuring) ---
+
+		it("accepts a config-light umans namespace (provider+id+api_key only) (AC.1)", () => {
+			const config = {
+				backends: [{ id: "umans", provider: "umans", api_key: "sk-test" }],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects a umans namespace missing api_key, naming umans (AC.2)", () => {
+			const config = {
+				backends: [{ id: "umans", provider: "umans" }],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(JSON.stringify(result.error.issues)).toContain("umans");
+			}
+		});
+
+		it("rejects a umans row that sets model/tier/context_window (AC.2)", () => {
+			const config = {
+				backends: [
+					{
+						id: "umans",
+						provider: "umans",
+						api_key: "sk-test",
+						model: "umans-coder",
+						tier: 3,
+						context_window: 200000,
+					},
+				],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("rejects a umans row that sets pricing (AC.2)", () => {
+			const config = {
+				backends: [{ id: "umans", provider: "umans", api_key: "sk-test", price_per_m_input: 3 }],
+				default: "umans",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
+		it("still rejects a NON-umans row that omits model/context_window/tier (AC.2)", () => {
+			const config = {
+				backends: [{ id: "x", provider: "cerebras", api_key: "k", base_url: "https://x/v1" }],
+				default: "x",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
 		it("rejects negative context_window", () => {
 			const config = {
 				backends: [
@@ -252,7 +418,7 @@ describe("Config schemas", () => {
 		});
 
 		describe("thinking field", () => {
-			// Regression: prior to 2026-04-25, `thinking` was not declared on the
+			// Regression: `thinking` was not declared on the
 			// schema. Zod's default strip mode silently dropped it from parse
 			// output, which meant ModelRouter.getThinkingConfig() returned
 			// undefined for every backend even when the JSON config set
@@ -455,6 +621,64 @@ describe("Config schemas", () => {
 				expect(result.success).toBe(false);
 			});
 
+			it("accepts `thinking: { type: 'tool' }`", () => {
+				const config = {
+					backends: [
+						{
+							id: "tool-mode",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "tool" },
+						},
+					],
+					default: "tool-mode",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].thinking).toEqual({ type: "tool" });
+			});
+
+			it("rejects tool mode with native-thinking fields", () => {
+				const config = {
+					backends: [
+						{
+							id: "tool-mode",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "tool", budget_tokens: 12000 },
+						},
+					],
+					default: "tool-mode",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+			});
+
+			it("rejects tool mode for Mantle Fable because the provider has no disable control", () => {
+				const config = {
+					backends: [
+						{
+							id: "fable",
+							provider: "bedrock-mantle",
+							provider_mode: "anthropic",
+							model: "anthropic.claude-fable-5",
+							region: "us-east-1",
+							context_window: 200000,
+							tier: 1,
+							thinking: { type: "tool" },
+						},
+					],
+					default: "fable",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+			});
+
 			it("rejects unknown thinking type values (e.g. 'auto')", () => {
 				const config = {
 					backends: [
@@ -506,7 +730,11 @@ describe("Config schemas", () => {
 				});
 			}
 
-			it("rejects unknown effort values", () => {
+			it("accepts a free-form effort value (provider-validated, not schema-validated)", () => {
+				// effort is now free-form: the canonical Anthropic set is no
+				// longer enforced by the schema because other providers (umans)
+				// advertise their own reasoning.levels. A provider-specific level
+				// must pass schema validation; the driver validates it.
 				const config = {
 					backends: [
 						{
@@ -517,7 +745,28 @@ describe("Config schemas", () => {
 							context_window: 200000,
 							tier: 1,
 							thinking: { type: "adaptive" },
-							effort: "extreme",
+							effort: "ultra",
+						},
+					],
+					default: "opus",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(true);
+				if (!result.success) return;
+				expect(result.data.backends[0].effort).toBe("ultra");
+			});
+
+			it("rejects an empty-string effort", () => {
+				const config = {
+					backends: [
+						{
+							id: "opus",
+							provider: "bedrock",
+							model: "global.anthropic.claude-opus-4-7",
+							region: "us-west-2",
+							context_window: 200000,
+							tier: 1,
+							effort: "",
 						},
 					],
 					default: "opus",
@@ -548,11 +797,12 @@ describe("Config schemas", () => {
 
 		describe("max_output_tokens field", () => {
 			// Per-backend cap on the response-side `maxOutputTokens` parameter.
-			// Some Bedrock models reject the default DEFAULT_MAX_OUTPUT_TOKENS
-			// (16_384) with "max_tokens exceeds model limit of 10000" — notably
+			// Some Bedrock models reject an explicit maxTokens above their
+			// ceiling with "max_tokens exceeds model limit of 10000" — notably
 			// Nova Pro (10k cap). This field lets operators pin a lower cap per
 			// backend without touching code. The agent-loop takes
-			// `min(backend.max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`.
+			// `min(backend.max_output_tokens, configuredMax)`, and when neither
+			// is set, omits max_tokens entirely.
 			it("accepts a positive integer max_output_tokens", () => {
 				const config = {
 					backends: [
@@ -715,6 +965,11 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("applies reconnect defaults when the ws block is present", () => {
+			const result = syncSchema.parse({ ws: {} });
+			expect(result.ws?.reconnect_max_interval).toBe(10);
+		});
+
 		it("validates empty sync config (hub-only, defaults)", () => {
 			const config = {};
 			const result = syncSchema.safeParse(config);
@@ -842,19 +1097,6 @@ describe("Config schemas", () => {
 				],
 			};
 			const result = mcpSchema.safeParse(config);
-			expect(result.success).toBe(true);
-		});
-	});
-
-	describe("overlaySchema", () => {
-		it("validates correct overlay config", () => {
-			const config = {
-				mounts: {
-					"/real/path": "/mount/path",
-					"/another/real": "/another/mount",
-				},
-			};
-			const result = overlaySchema.safeParse(config);
 			expect(result.success).toBe(true);
 		});
 	});
@@ -988,7 +1230,7 @@ describe("RELAY_KIND_REGISTRY completeness", () => {
  * Guardrail: every top-level config schema must REJECT unknown keys
  * (Zod strict mode) rather than silently stripping them.
  *
- * Background — on 2026-04-25 a `thinking` key on model_backends.json was
+ * Background — a `thinking` key on model_backends.json was
  * silently dropped by the default Zod strip behavior, which meant
  * extended thinking was fully disabled at runtime while the user's
  * config file appeared correct. Tests, typecheck, and config-load all
@@ -1046,9 +1288,6 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 		},
 		"mcp.json": {
 			servers: [],
-		},
-		"overlay.json": {
-			mounts: {},
 		},
 	};
 

@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import type { TypedEventEmitter } from "@bound/shared";
+import { readMessageMetadata, updateRow } from "./change-log";
+import { countBackgroundToolCallsByThread } from "./repositories/messages";
 
 export interface DispatchEntry {
 	message_id: string;
@@ -67,16 +70,118 @@ export function enqueueClientToolCall(
 
 /**
  * Enqueue a tool result entry to trigger agent loop resume.
- * Returns the generated entry ID.
+ *
+ * IDEMPOTENT on `(thread_id, call_id)` (R-UD9) WHILE THE RE-DRIVE IS IN FLIGHT:
+ * re-driving the same tool result — e.g. a relayed `client_result` retried after
+ * a held/duplicated delivery — is a no-op that returns the EXISTING entry's id
+ * rather than inserting a second row. Without this guard a relay retry would
+ * double-enqueue and risk double-execution / a duplicate tool-result row.
+ *
+ * The dedup is scoped to rows still `pending`/`processing`. `call_id` is only
+ * unique within one turn, NOT across a thread's lifetime — clients (boundless)
+ * reuse `call_1, call_2, …` every turn. A guard that also matched already-
+ * `acknowledged` rows would drop a legitimate NEW turn's re-drive for a reused
+ * call_id, so the loop never gets its wakeup and the thread stalls one message
+ * per turn (this was a real regression). Once the prior re-drive is
+ * consumed (acknowledged), the same call_id is free to enqueue a fresh row; a
+ * genuine retry arrives while the original is still in flight and is deduped.
+ * The match is scoped to the canonical `{"call_id":"…"}` payload this function
+ * writes, so it is stable across calls.
+ *
+ * Returns the (existing or newly-created) entry id.
  */
 export function enqueueToolResult(db: Database, threadId: string, callId: string): string {
+	const payload = JSON.stringify({ call_id: callId });
+	const existing = db
+		.prepare(
+			`SELECT message_id FROM dispatch_queue
+			 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
+			   AND status IN ('pending', 'processing')
+			 LIMIT 1`,
+		)
+		.get(threadId, TOOL_RESULT, payload) as { message_id: string } | null;
+	if (existing) {
+		// Already enqueued for this (thread_id, call_id) — re-drive is a no-op.
+		return existing.message_id;
+	}
+
 	const messageId = randomUUID();
 	const now = new Date().toISOString();
 	db.prepare(
 		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
 		 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
-	).run(messageId, threadId, TOOL_RESULT, JSON.stringify({ call_id: callId }), now, now);
+	).run(messageId, threadId, TOOL_RESULT, payload, now, now);
 	return messageId;
+}
+
+/**
+ * Resolve a deferred tool result by updating the placeholder tool_result message
+ * with the real content and re-waking the loop via `enqueueToolResult`.
+ *
+ * The placeholder was written by the loop when the tool returned a
+ * `DeferredToolResult`. This function finds it by `(thread_id, tool_name=callId,
+ * role='tool_result')`, updates the content, clears the `background` marker so
+ * the row stops counting as in-flight, and enqueues a dispatch entry to re-wake
+ * the loop.
+ *
+ * If the placeholder is not found (race: background work completed before the
+ * loop persisted the placeholder), this is a no-op beyond the enqueue — the
+ * loop will write the placeholder on its current iteration and the model will
+ * see it then.
+ *
+ * Pass `eventBus` to push the recomputed in-flight count to subscribers
+ * (`background:count`). The count is always re-derived from `messages`, never
+ * decremented, so a client that missed a frame resyncs rather than drifting.
+ */
+export function resolveDeferredToolResult(
+	db: Database,
+	threadId: string,
+	callId: string,
+	content: string,
+	isError: boolean,
+	siteId: string,
+	eventBus?: TypedEventEmitter,
+): void {
+	const row = db
+		.prepare(
+			`SELECT id FROM messages
+			 WHERE thread_id = ? AND tool_name = ? AND role = 'tool_result' AND deleted = 0
+			 ORDER BY created_at DESC LIMIT 1`,
+		)
+		.get(threadId, callId) as { id: string } | null;
+
+	if (row) {
+		// Drop the `background` key rather than setting it false: the in-flight
+		// query counts rows that CARRY the marker, and writeMessageMetadata merges
+		// (so it could never remove a key). Stamp `background_delivered` in its
+		// place so delivery is durable on the row itself — the dispatcher's
+		// clobber guard keys on proof-of-delivery, not on the in-flight marker
+		// having been present (#220: a placeholder that missed its stamp must
+		// still be resolvable). Any sibling metadata is preserved.
+		const { background: _wasBackground, ...rest } = readMessageMetadata(db, row.id) ?? {};
+		const remaining = JSON.stringify({ ...rest, background_delivered: true });
+
+		updateRow(
+			db,
+			"messages",
+			row.id,
+			{
+				content,
+				exit_code: isError ? 1 : 0,
+				metadata: remaining,
+			},
+			siteId,
+		);
+	}
+
+	enqueueToolResult(db, threadId, callId);
+
+	if (eventBus) {
+		eventBus.emit("background:count", {
+			thread_id: threadId,
+			count: countBackgroundToolCallsByThread(db, threadId),
+		});
+	}
 }
 
 /**
@@ -212,6 +317,25 @@ export function hasPendingClientToolCalls(db: Database, threadId: string): boole
 			 WHERE thread_id = ? AND event_type = ? AND status IN ('pending', 'processing')`,
 		)
 		.get(threadId, CLIENT_TOOL_CALL) as { c: number };
+	return row.c > 0;
+}
+
+/**
+ * True if a connection is holding any in-flight (pending|processing) client
+ * tool call. Used by the WS liveness sweep to scope its blast radius: a
+ * connection is only force-closed when it has an actual wedged call to free,
+ * so a silent-but-idle client (nothing outstanding) is never disturbed.
+ */
+export function hasInFlightClientToolCallsForConnection(
+	db: Database,
+	connectionId: string,
+): boolean {
+	const row = db
+		.prepare(
+			`SELECT COUNT(*) as c FROM dispatch_queue
+			 WHERE claimed_by = ? AND event_type = ? AND status IN ('pending', 'processing')`,
+		)
+		.get(connectionId, CLIENT_TOOL_CALL) as { c: number };
 	return row.c > 0;
 }
 
@@ -379,4 +503,25 @@ export function pruneAcknowledged(db: Database, cutoff: string): number {
 	).run(cutoff);
 	const row = db.query("SELECT changes() as c").get() as { c: number } | null;
 	return row?.c ?? 0;
+}
+
+/**
+ * Acknowledge any pending/processing `tool_result` dispatch entries for one
+ * `(thread_id, call_id)`.
+ *
+ * The normal client-tool track leaves this to the generic dispatcher: the loop
+ * stops, `enqueueToolResult` queues a re-wake, and `claimPending` consumes it.
+ * A NESTED loop (an aux invocation, #201) has no re-wake path — it resolves the
+ * tool inline and keeps running — so nothing would ever claim the row. Left
+ * pending it becomes a phantom wakeup that crash-recovery re-dispatches on the
+ * next boot. The inline resolver calls this to close the entry it will never use.
+ */
+export function acknowledgeToolResultForCall(db: Database, threadId: string, callId: string): void {
+	const now = new Date().toISOString();
+	db.prepare(
+		`UPDATE dispatch_queue
+		 SET status = 'acknowledged', modified_at = ?
+		 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
+		   AND status IN ('pending', 'processing')`,
+	).run(now, threadId, TOOL_RESULT, JSON.stringify({ call_id: callId }));
 }

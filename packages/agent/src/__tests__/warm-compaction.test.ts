@@ -179,7 +179,7 @@ describe("warm-compaction", () => {
 			const result = compactStoredMessagesInPlace(messages, {
 				recentWindow: 4,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			expect(result.compacted).toBe(true);
@@ -205,7 +205,7 @@ describe("warm-compaction", () => {
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 2,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			// In-flight tool_result kept intact.
@@ -226,7 +226,7 @@ describe("warm-compaction", () => {
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 4,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			expect(messages[0].content).toBe(before);
@@ -258,14 +258,14 @@ describe("warm-compaction", () => {
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 4,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 			const snapshot = messages.map((m) => m.content);
 
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 4,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			for (let i = 0; i < messages.length; i++) {
@@ -294,7 +294,7 @@ describe("warm-compaction", () => {
 				// Massive headroom: post-compaction estimate << threshold,
 				// so thinking blocks should NOT be stripped.
 				contextWindow: 1_000_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 850000,
 			});
 			expect(hasStrippableThinking(smallMessages[0].content as string)).toBe(true);
 		});
@@ -319,7 +319,7 @@ describe("warm-compaction", () => {
 				recentWindow: 4,
 				// Tiny window: any thinking content trips the threshold.
 				contextWindow: 1000,
-				effectiveTruncationRatio: 0.5,
+				truncationTargetTokens: 500,
 			});
 			expect(hasStrippableThinking(messages[0].content as string)).toBe(false);
 		});
@@ -333,7 +333,7 @@ describe("warm-compaction", () => {
 			const result = compactStoredMessagesInPlace(messages, {
 				recentWindow: 4,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 			expect(result.compacted).toBe(false);
 		});
@@ -354,7 +354,7 @@ describe("warm-compaction", () => {
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 4,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			expect((messages[0].content as string).length).toBe(5000);
@@ -408,7 +408,7 @@ describe("warm-compaction", () => {
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 2,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			const turn1Snapshot = messages.map((m) => m.content);
@@ -427,7 +427,7 @@ describe("warm-compaction", () => {
 			compactStoredMessagesInPlace(messages, {
 				recentWindow: 2,
 				contextWindow: 200_000,
-				effectiveTruncationRatio: 0.85,
+				truncationTargetTokens: 170000,
 			});
 
 			// CORE INVARIANT: every message that existed before the append must

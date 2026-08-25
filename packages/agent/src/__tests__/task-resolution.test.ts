@@ -56,13 +56,37 @@ describe("task-resolution", () => {
 			expect(next.getUTCMinutes() % 30).toBe(0);
 		});
 
+		it("treats wildcard day-of-month and restricted day-of-week as the weekday only", () => {
+			const from = new Date("2026-03-23T00:00:00Z"); // Monday
+			const next = computeNextRunAt("0 9 * * 2", from);
+			expect(next.toISOString()).toBe("2026-03-24T09:00:00.000Z");
+		});
+
+		it("treats restricted day-of-month and wildcard day-of-week as the month day only", () => {
+			const from = new Date("2026-03-23T00:00:00Z");
+			const next = computeNextRunAt("0 9 25 * *", from);
+			expect(next.toISOString()).toBe("2026-03-25T09:00:00.000Z");
+		});
+
+		it("rejects zero and negative cron steps", () => {
+			for (const expression of ["*/0 * * * *", "*/-1 * * * *"]) {
+				expect(() => computeNextRunAt(expression)).toThrow("Invalid step value");
+			}
+		});
+
+		it("rejects trailing garbage in numeric cron tokens", () => {
+			for (const expression of ["1x * * * *", "*/2x * * * *", "1-2x * * * *"]) {
+				expect(() => computeNextRunAt(expression)).toThrow();
+			}
+		});
+
 		it("throws on invalid cron expression", () => {
 			expect(() => {
 				computeNextRunAt("invalid");
 			}).toThrow();
 		});
 
-		// Regression: scheduler advisory 3e69a2bf (2026-04-19).
+		// Regression, observed via a scheduler advisory.
 		// Cron expressions must be interpreted in UTC, independent of host TZ,
 		// so that a given spec fires at the same wall-clock UTC moment on every
 		// node of a multi-host cluster. Prior impl used getHours/setMinutes (local

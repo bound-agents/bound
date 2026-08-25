@@ -265,6 +265,98 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM turns");
 			db.run("DELETE FROM daily_summary");
 		});
+
+		it("counts only today's turns toward the budget (sargable range excludes prior days)", async () => {
+			// The daily-budget query was rewritten from a non-sargable
+			// `date(created_at) = ?` full scan to a sargable half-open range
+			// `created_at >= dayStart AND created_at < dayEnd` (covered by
+			// idx_turns_created_at). This test pins the boundary behavior the
+			// rewrite must preserve: yesterday's spend must NOT count toward today.
+			const budget = 1.0;
+			const ctx = makeCtx({
+				config: {
+					allowlist: { default_web_user: "test", users: { test: { display_name: "Test" } } },
+					modelBackends: {
+						backends: [
+							{
+								id: "mock",
+								provider: "openai-compatible",
+								model: "mock",
+								base_url: "http://localhost:11434",
+								context_window: 8000,
+								tier: 1,
+								price_per_m_input: 0,
+								price_per_m_output: 0,
+							},
+						],
+						default: "mock",
+						daily_budget_usd: budget,
+					},
+				},
+			} as unknown as Partial<AppContext>);
+
+			// $5 of spend YESTERDAY (well over budget) + $0.10 today (under).
+			const yesterday = new Date(Date.now() - 86_400_000).toISOString();
+			recordTurn(db, {
+				thread_id: randomUUID(),
+				model_id: "mock",
+				tokens_in: 1000,
+				tokens_out: 1000,
+				cost_usd: 5.0,
+				created_at: yesterday,
+			});
+			recordTurn(db, {
+				thread_id: randomUUID(),
+				model_id: "mock",
+				tokens_in: 1000,
+				tokens_out: 1000,
+				cost_usd: 0.1,
+				created_at: new Date().toISOString(),
+			});
+
+			// An autonomous task should run: only today's $0.10 counts, under the $1 cap.
+			const taskId = randomUUID();
+			const pastTime = new Date(Date.now() - 60_000).toISOString();
+			const nowStr = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'deferred', 'pending', 'manual', NULL, NULL,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'status', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, pastTime, nowStr, nowStr],
+			);
+
+			let agentRunCalled = false;
+			const factory = () => ({
+				run: async () => {
+					agentRunCalled = true;
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+
+			const scheduler = new Scheduler(ctx as any, factory as any);
+			const { stop } = scheduler.start(10);
+			await waitFor(() => agentRunCalled, 2000);
+			stop();
+
+			// Task ran because yesterday's over-budget spend was correctly excluded.
+			expect(agentRunCalled).toBe(true);
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM turns");
+			db.run("DELETE FROM daily_summary");
+		});
 	});
 
 	// -----------------------------------------------------------------------
@@ -2177,6 +2269,168 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 
+		// Regression: resetEventTask's re-arm gate counted only webhook_intake
+		// rows, and the completion path skipped the check entirely. Since the
+		// single-delivery-vehicle change, connector_intake rows are the ONLY
+		// leader-local record of a platform event — so an event arriving while
+		// the task's loop was already running (onEvent's CAS claim fails on a
+		// non-pending task) stranded: the intake row sat unprocessed and
+		// nothing re-armed the task until the NEXT event happened to fire.
+		it("re-arms a completed event task when unprocessed connector_intake rows remain", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', 'pending', 'connector:event:test-handle', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'results', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, new Date(Date.now() - 60_000).toISOString(), now, now],
+			);
+			// Simulate an event that arrives MID-RUN: the wakeup fold marks
+			// pre-existing rows processed BEFORE the loop runs, so a row that
+			// is still unprocessed at completion time can only have arrived
+			// while the loop was executing (onEvent's CAS claim fails while
+			// the task is claimed/running, stranding the row). Insert it from
+			// inside the loop factory to model exactly that interleaving.
+			const midRunEventFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					db.run(
+						`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+						 VALUES (?, ?, 'connector_intake', ?, ?, ?, ?, ?, 0)`,
+						[
+							randomUUID(),
+							siteId,
+							threadId,
+							`connector_intake:test-handle:${randomUUID()}`,
+							JSON.stringify([{ content: "mid-run event" }]),
+							new Date(Date.now() + 3600_000).toISOString(),
+							new Date().toISOString(),
+						],
+					);
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, midRunEventFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, run_count, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						run_count: number;
+						next_run_at: string | null;
+					} | null;
+					// After completion WITH a pending intake row: task must be
+					// re-armed (next_run_at set), not parked with NULL.
+					return task?.status === "pending" && task.run_count > 0 && task.next_run_at !== null;
+				},
+				{
+					timeoutMs: 5000,
+					message: "completed event task was not re-armed despite unprocessed connector_intake",
+				},
+			);
+			stop();
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+		});
+
+		it("counts connector_intake rows in the soft-failure retry gate", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO tasks (
+					id, type, status, trigger_spec, payload, thread_id,
+					claimed_by, claimed_at, lease_id, next_run_at, last_run_at,
+					run_count, max_runs, requires, model_hint, no_history,
+					inject_mode, depends_on, require_success, alert_threshold,
+					consecutive_failures, event_depth, no_quiescence,
+					heartbeat_at, result, error, created_at, created_by, modified_at, deleted
+				) VALUES (
+					?, 'event', 'pending', 'connector:event:test-handle-2', NULL, ?,
+					NULL, NULL, NULL, ?, NULL,
+					0, NULL, NULL, NULL, 0,
+					'results', NULL, 0, 5,
+					0, 0, 0,
+					NULL, NULL, NULL, ?, 'system', ?, 0
+				)`,
+				[taskId, threadId, new Date(Date.now() - 60_000).toISOString(), now, now],
+			);
+
+			// The row must arrive MID-RUN here too: the wakeup fold marks any
+			// pre-existing rows processed before run() executes, so a row
+			// seeded before the run never reaches the failure gate.
+			const softErrorFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					db.run(
+						`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+						 VALUES (?, ?, 'connector_intake', ?, ?, ?, ?, ?, 0)`,
+						[
+							randomUUID(),
+							siteId,
+							threadId,
+							`connector_intake:test-handle-2:${randomUUID()}`,
+							JSON.stringify([{ content: "pending event" }]),
+							new Date(Date.now() + 3600_000).toISOString(),
+							new Date().toISOString(),
+						],
+					);
+					return {
+						messagesCreated: 0,
+						toolCallsMade: 0,
+						filesChanged: 0,
+						error: "Transient model failure",
+					};
+				},
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, softErrorFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, consecutive_failures, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						consecutive_failures: number;
+						next_run_at: string | null;
+					} | null;
+					// Failure path with a pending connector_intake row must
+					// schedule a retry (next_run_at set), same as webhook_intake.
+					return (
+						task?.status === "pending" && task.consecutive_failures > 0 && task.next_run_at !== null
+					);
+				},
+				{
+					timeoutMs: 5000,
+					message: "failed event task did not schedule retry despite unprocessed connector_intake",
+				},
+			);
+			stop();
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+		});
+
 		it("resets event task to pending after successful completion", async () => {
 			const taskId = randomUUID();
 			insertEventTask(taskId, { consecutiveFailures: 3 });
@@ -2217,10 +2471,10 @@ describe("Scheduler features", () => {
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 		});
 
-		// Regression for advisory 0b9441e5-c47a (2026-05-16): event tasks must
+		// Regression: event tasks must
 		// not self-wake periodically after success. Setting next_run_at on
 		// completion caused phase1Schedule to re-claim the task every 5 minutes
-		// with no new event payload (observed: thread 6a9d56aa, 1 real Discord
+		// with no new event payload (observed live: 1 real Discord
 		// interaction → 29 wake-ups over 70min).
 		it("event task next_run_at is NULL after successful completion (no periodic self-wake)", async () => {
 			const taskId = randomUUID();

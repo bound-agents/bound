@@ -7,9 +7,20 @@
  */
 import type { AgentLoopResult, HandleMessageTracker } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
-import type { AgentLoop } from "@bound/agent";
+import type { MainAgentLoop } from "@bound/agent";
+import { resolveEffectiveModelHint } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
 import type { TypedEventEmitter } from "@bound/shared";
+
+export interface TimeoutScheduler {
+	setTimeout(callback: () => void, delayMs: number): unknown;
+	clearTimeout(timeoutId: unknown): void;
+}
+
+const realTimeoutScheduler: TimeoutScheduler = {
+	setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+	clearTimeout: (timeoutId) => clearTimeout(timeoutId as ReturnType<typeof setTimeout>),
+};
 
 export interface RunLocalLoopParams {
 	eventBus: TypedEventEmitter;
@@ -17,9 +28,11 @@ export interface RunLocalLoopParams {
 	userId: string;
 	modelId: string;
 	activeLoopAbortControllers: Map<string, AbortController>;
-	agentLoopFactory: (config: AgentLoopConfig) => AgentLoop;
+	agentLoopFactory: (config: AgentLoopConfig) => MainAgentLoop;
 	/** Override for the 5-minute LLM timeout (milliseconds). Defaults to 300_000. */
 	timeoutMs?: number;
+	/** Scheduler for the inactivity timer; injectable for deterministic tests. */
+	timeoutScheduler?: TimeoutScheduler;
 	/** Cooperative cancellation: checked at yield points in the agent loop. */
 	shouldYield?: () => boolean;
 	/** Platform identifier for platform-scoped threads (e.g. "discord"). */
@@ -59,19 +72,14 @@ export interface RunLocalLoopResult {
  * Guarantees cleanup (clearTimeout, off("agent:cancel"), map.delete) even on
  * error via a finally block.
  */
-/**
- * Resolves the model to use for a thread by reading threads.model_hint.
- * Falls back to nodeDefault when model_hint is NULL or thread doesn't exist.
- */
+/** Resolve the effective model for either task-bound or ordinary threads. */
 export function resolveThreadModel(
 	db: import("bun:sqlite").Database,
 	threadId: string,
 	nodeDefault: string,
+	taskId?: string,
 ): string {
-	const row = db.query("SELECT model_hint FROM threads WHERE id = ?").get(threadId) as {
-		model_hint: string | null;
-	} | null;
-	return row?.model_hint ?? nodeDefault;
+	return resolveEffectiveModelHint(db, threadId, nodeDefault, taskId);
 }
 
 export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<RunLocalLoopResult> {
@@ -89,6 +97,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		// inner budget + 5min grace for pre-stream context assembly, capability
 		// resolution, and tool execution between turns.
 		timeoutMs = 35 * 60 * 1000,
+		timeoutScheduler = realTimeoutScheduler,
 		shouldYield,
 		platform,
 		clientTools,
@@ -105,13 +114,13 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 	activeLoopAbortControllers.set(threadId, abortController);
 
 	// Resettable inactivity timeout — restarted each time the loop signals activity.
-	let timeoutId = setTimeout(() => {
+	let timeoutId = timeoutScheduler.setTimeout(() => {
 		abortController.abort(new Error("LLM response timeout"));
 	}, timeoutMs);
 
 	const resetTimeout = (): void => {
-		clearTimeout(timeoutId);
-		timeoutId = setTimeout(() => {
+		timeoutScheduler.clearTimeout(timeoutId);
+		timeoutId = timeoutScheduler.setTimeout(() => {
 			abortController.abort(new Error("LLM response timeout"));
 		}, timeoutMs);
 	};
@@ -148,7 +157,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		const agentResult = await agentLoop.run();
 		return { agentResult, signal: abortController.signal };
 	} finally {
-		clearTimeout(timeoutId);
+		timeoutScheduler.clearTimeout(timeoutId);
 		eventBus.off("agent:cancel", onCancel);
 		activeLoopAbortControllers.delete(threadId);
 	}

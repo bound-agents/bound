@@ -14,6 +14,7 @@ export {
 	updateRow,
 	updateRowIf,
 	softDelete,
+	dangerouslyExecuteRawWrite,
 	insertMessage,
 	readMessageMetadata,
 	writeMessageMetadata,
@@ -21,6 +22,8 @@ export {
 	getPkColumn,
 } from "./change-log";
 export {
+	syncableRowPredicate,
+	syncableWhereClause,
 	getLocalPksSorted,
 	getBackfillablePksSorted,
 	getBackfillableEntriesSorted,
@@ -35,6 +38,8 @@ export {
 } from "./consistency";
 export {
 	loadConfigFile,
+	loadConfigWithPrecedence,
+	loadModelBackendsConfig,
 	loadRequiredConfigs,
 	loadOptionalConfigs,
 	expandEnvVars,
@@ -73,6 +78,7 @@ export {
 	writeOutbox,
 	readUndelivered,
 	markDelivered,
+	markDeliveredForTarget,
 	readUnprocessed,
 	insertInbox,
 	markProcessed,
@@ -80,6 +86,8 @@ export {
 	readInboxByRefId,
 	readInboxByStreamId,
 	readUnprocessedInboxByRefId,
+	findStaleUnprocessedIntake,
+	type StaleIntakeGroup,
 	PayloadTooLargeError,
 	setRelayOutboxEventBus,
 } from "./relay";
@@ -89,6 +97,7 @@ export {
 	enqueueClientToolCall,
 	enqueueToolResult,
 	acknowledgeClientToolCall,
+	acknowledgeToolResultForCall,
 	claimPending,
 	acknowledgeBatch,
 	resetProcessing,
@@ -96,6 +105,7 @@ export {
 	pruneAcknowledged,
 	hasPending,
 	hasPendingClientToolCalls,
+	hasInFlightClientToolCallsForConnection,
 	getPendingClientToolCalls,
 	expireClientToolCalls,
 	expireClientToolCallsForConnection,
@@ -103,6 +113,7 @@ export {
 	updateClaimedBy,
 	CLIENT_TOOL_CALL,
 	TOOL_RESULT,
+	resolveDeferredToolResult,
 	type DispatchEntry,
 } from "./dispatch";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
@@ -127,3 +138,5 @@ export {
 	normalizeRelationValue,
 } from "./memory-relations";
 export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";
+// Read repository layer (synced-table SELECT helpers). Writes go through change-log.ts.
+export * from "./repositories";

@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite";
+import type { ModelRouter } from "@bound/llm";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import type { MountableFs } from "just-bash";
 import { createAdvisoriesRoutes } from "./advisories";
+import { createConnectorsRoutes } from "./connectors";
 import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
 import { createMcpAppsRoutes } from "./mcp-apps";
@@ -10,6 +12,8 @@ import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
 import { createPersonaRoutes } from "./persona";
+import { createResponsesRoutes } from "./responses";
+import { createRssFeedsRoutes } from "./rss";
 import { createSandboxRoutes } from "./sandbox";
 import { createSkillsRoutes } from "./skills";
 import { type ModelsConfig, createStatusRoutes } from "./status";
@@ -45,7 +49,6 @@ export interface RoutesConfig {
 	 */
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	emitToolCancel?: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -67,6 +70,11 @@ export interface RoutesConfig {
 	 * Web-router only; never touches the sync router.
 	 */
 	mcpConfig?: McpConfig | null;
+	/**
+	 * In-process model router. When provided, exposes `POST /api/inference`
+	 * for direct LLM inference over HTTP (no agent loop, no context assembly).
+	 */
+	modelRouter?: ModelRouter | null;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -80,15 +88,15 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		syncPort,
 		hubUrl,
 		statusForwardCache,
-		activeDelegations,
 		activeLoops,
 		emitToolCancel,
 		requestConsistency,
 		clusterFs,
 		mcpConfig,
+		modelRouter,
 	} = config;
 
-	// The threads route only needs the default model id (a value); resolve a
+	// The threads route only needs the default model id
 	// getter once at registration. The status route keeps the live getter so
 	// SIGHUP reloads reach the /models discovery endpoint.
 	const resolvedDefault = (typeof modelsConfig === "function" ? modelsConfig() : modelsConfig)
@@ -103,6 +111,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			activeLoops,
 		),
 		messages: createMessagesRoutes(db, eventBus),
+		connectors: createConnectorsRoutes(db),
 		files: createFilesRoutes(db),
 		memory: createMemoryRoutes(db),
 		status: createStatusRoutes(
@@ -111,13 +120,12 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			hostName,
 			siteId,
 			modelsConfig,
-			activeDelegations,
 			undefined,
 			emitToolCancel,
 			requestConsistency,
 		),
 		tasks: createTasksRoutes(db),
-		advisories: createAdvisoriesRoutes(db),
+		advisories: createAdvisoriesRoutes(db, operatorUserId),
 		mcp: createMcpRoutes(db),
 		mcpApps: createMcpAppsRoutes(db, mcpConfig ?? null),
 		webhooks: createWebhooksRoutes(db, {
@@ -127,9 +135,11 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			hostName,
 			siteId,
 		}),
+		rssFeeds: createRssFeedsRoutes(db),
 		skills: createSkillsRoutes(db),
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),
 		persona: createPersonaRoutes(db),
+		responses: createResponsesRoutes(db, modelRouter ?? null, eventBus, siteId),
 	};
 }

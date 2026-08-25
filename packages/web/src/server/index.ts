@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { ModelRouter } from "@bound/llm";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
@@ -66,7 +67,6 @@ export interface WebAppConfig {
 	 */
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	emitToolCancel?: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -88,6 +88,12 @@ export interface WebAppConfig {
 	 * sync router.
 	 */
 	mcpConfig?: McpConfig | null;
+	/**
+	 * In-process model router. When provided, exposes `POST /v1/responses`
+	 * (OpenAI Responses-API-compatible inference over HTTP — no agent loop, no
+	 * context assembly).
+	 */
+	modelRouter?: ModelRouter | null;
 }
 
 export interface SyncAppConfig {
@@ -152,12 +158,12 @@ export async function createWebApp(
 		syncPort: config.syncPort,
 		hubUrl: config.hubUrl,
 		statusForwardCache: config.statusForwardCache,
-		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
 		emitToolCancel: config.emitToolCancel,
 		requestConsistency: config.requestConsistency,
 		clusterFs: config.clusterFs,
 		mcpConfig: config.mcpConfig,
+		modelRouter: config.modelRouter,
 	};
 
 	const app = new Hono();
@@ -167,7 +173,9 @@ export async function createWebApp(
 	app.use("*", async (c, next) => {
 		const host = c.req.header("host");
 		if (host) {
-			const hostName = host.split(":")[0];
+			const hostName = host.startsWith("[")
+				? host.slice(0, host.indexOf("]") + 1)
+				: host.split(":")[0];
 			const allowedHosts = ["localhost", "127.0.0.1", "[::1]"];
 			if (!allowedHosts.includes(hostName)) {
 				return c.json({ error: "Invalid Host header" }, 400);
@@ -186,11 +194,14 @@ export async function createWebApp(
 	app.route("/api/advisories", routes.advisories);
 	app.route("/api/mcp", routes.mcp);
 	app.route("/api/mcp-apps", routes.mcpApps);
+	app.route("/api/connectors", routes.connectors);
 	app.route("/api/webhooks", routes.webhooks);
+	app.route("/api/rss-feeds", routes.rssFeeds);
 	app.route("/api/skills", routes.skills);
 	app.route("/api/metrics", routes.metrics);
 	app.route("/api/sandbox", routes.sandbox);
 	app.route("/api/persona", routes.persona);
+	app.route("/v1/responses", routes.responses);
 
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();

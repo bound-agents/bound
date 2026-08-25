@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { createSigV4Fetch } from "../sigv4-fetch";
+import { createSigV4Fetch } from "../drivers/sigv4-fetch";
 
 const MANTLE_URL = "https://bedrock-mantle.us-west-2.api.aws/openai/v1/responses";
 

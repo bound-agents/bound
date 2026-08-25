@@ -16,6 +16,7 @@ const CACHE_REASON_LABEL: Record<string, string> = {
 	"cache-expired": "the prompt-cache TTL elapsed since the last turn",
 	"tool-change": "the available tool set changed, invalidating the cached prefix",
 	"orphaned-tool-call": "an unanswered tool call forced a structural rebuild",
+	"purge-message": "a purge instruction forced full history substitution",
 	"budget-exceeded": "the estimate exceeded the budget even after in-place compaction",
 	"no-history": "no-history task threads always cold-assemble",
 	"warm-eligible": "the warm path completed within budget — cached prefix reused",
@@ -300,18 +301,18 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			{/if}
 
-			{#if selectedTurn.context_debug.effectiveTruncationRatio !== undefined}
-				{@const ratio = selectedTurn.context_debug.effectiveTruncationRatio}
+			{#if selectedTurn.context_debug.truncationTargetTokens !== undefined}
+				{@const target = selectedTurn.context_debug.truncationTargetTokens}
 				{@const inflation = selectedTurn.context_debug.measuredInflation}
-				{@const tightened = ratio < 0.84}
+				{@const tightened = inflation !== null && inflation !== undefined && inflation > 1.0}
 				<div class="adaptive-row">
 					<InfoPopover
-						label="Cold-assembly budget target = 0.85 ÷ inflation EMA. Lower telescopes sooner, compensating for estimator under-count."
+						label="Cold-assembly budget target = (contextWindow − maxOutputTokens) ÷ inflation EMA. Lower telescopes sooner, compensating for estimator under-count."
 					>
 						{#snippet trigger()}<span class="cache-kicker">Adaptive</span>{/snippet}
 					</InfoPopover>
 					<span class="adaptive-num mono tnum" class:adaptive-tight={tightened}>
-						ratio {ratio.toFixed(2)}
+						target {target.toLocaleString()}
 					</span>
 					{#if inflation !== null && inflation !== undefined}
 						<span class="cache-sep">·</span>

@@ -3,9 +3,15 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { computeLineHash } from "@bound/shared";
 import { editTool } from "../tools/edit";
 
-describe("boundless_edit", () => {
+/** Build a "LINE:HASH" anchor for a given line of content. */
+function anchor(line: number, text: string): string {
+	return `${line}:${computeLineHash(text)}`;
+}
+
+describe("boundless_edit (hashline)", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
@@ -19,22 +25,19 @@ describe("boundless_edit", () => {
 		}
 	});
 
-	it("AC5.6: replaces exactly one match of old_string with new_string", async () => {
+	it("replaces a single line addressed by anchor", async () => {
 		const testFile = join(tempDir, "test.txt");
-		const originalContent = "hello world\nfoo bar\nbaz qux\n";
-		writeFileSync(testFile, originalContent);
+		writeFileSync(testFile, "hello world\nfoo bar\nbaz qux\n");
 
 		const result = await editTool(
 			{
 				file_path: "test.txt",
-				old_string: "foo bar",
-				new_string: "replaced",
+				edits: [{ start: anchor(2, "foo bar"), end: anchor(2, "foo bar"), content: "replaced" }],
 			},
 			new AbortController().signal,
 			tempDir,
 		);
 
-		expect(result.content).toHaveLength(2);
 		expect(result.isError).toBeUndefined();
 		const provenanceBlock = result.content[0];
 		expect(provenanceBlock.type).toBe("text");
@@ -44,96 +47,180 @@ describe("boundless_edit", () => {
 		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Edited");
-		expect(contentBlock.text).toContain("replaced 1 occurrence");
 
-		// Verify file was actually changed
-		const fileContent = readFileSync(testFile, "utf-8");
-		expect(fileContent).toBe("hello world\nreplaced\nbaz qux\n");
+		expect(readFileSync(testFile, "utf-8")).toBe("hello world\nreplaced\nbaz qux\n");
 	});
 
-	it("AC5.7: returns error when old_string not found", async () => {
-		const testFile = join(tempDir, "test.txt");
-		writeFileSync(testFile, "hello world\nfoo bar\n");
+	it("replaces a range of lines between two anchors", async () => {
+		const testFile = join(tempDir, "range.txt");
+		writeFileSync(testFile, "line 1\nline 2\nline 3\nline 4\n");
 
 		const result = await editTool(
 			{
-				file_path: "test.txt",
-				old_string: "nonexistent",
-				new_string: "replacement",
+				file_path: testFile,
+				edits: [{ start: anchor(2, "line 2"), end: anchor(3, "line 3"), content: "replaced" }],
 			},
 			new AbortController().signal,
 			tempDir,
 		);
 
-		expect(result.content).toHaveLength(2);
-		expect(result.isError).toBe(true);
-		const contentBlock = result.content[1];
-		expect(contentBlock.type).toBe("text");
-		expect(contentBlock.text).toContain("Error");
-		expect(contentBlock.text).toContain("old_string not found");
-
-		// Verify file was NOT changed
-		const fileContent = readFileSync(testFile, "utf-8");
-		expect(fileContent).toBe("hello world\nfoo bar\n");
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(testFile, "utf-8")).toBe("line 1\nreplaced\nline 4\n");
 	});
 
-	it("AC5.8: returns error with match count when multiple matches found", async () => {
+	it("applies multiple edits in one call atomically", async () => {
+		const testFile = join(tempDir, "multi.txt");
+		writeFileSync(testFile, "aaa\nbbb\nccc\nddd\n");
+
+		const result = await editTool(
+			{
+				file_path: testFile,
+				edits: [
+					{ start: anchor(1, "aaa"), end: anchor(1, "aaa"), content: "AAA" },
+					{ start: anchor(4, "ddd"), end: anchor(4, "ddd"), content: "DDD" },
+				],
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(testFile, "utf-8")).toBe("AAA\nbbb\nccc\nDDD\n");
+	});
+
+	it("recovers via proximity when lines shifted since the anchor was read", async () => {
+		const testFile = join(tempDir, "shift.txt");
+		// Anchor captured for "target" when it was on line 2...
+		const a = anchor(2, "target");
+		// ...but the file has since gained two lines above it.
+		writeFileSync(testFile, "// new header\n// more header\nintro\ntarget\ntail\n");
+
+		const result = await editTool(
+			{ file_path: testFile, edits: [{ start: a, end: a, content: "TARGET" }] },
+			new AbortController().signal,
+			tempDir,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(testFile, "utf-8")).toBe(
+			"// new header\n// more header\nintro\nTARGET\ntail\n",
+		);
+	});
+
+	it("disambiguates duplicate lines by proximity to the line hint", async () => {
+		const testFile = join(tempDir, "dup.txt");
+		writeFileSync(testFile, "x\nreturn 1;\ny\nz\nreturn 1;\nw\n");
+
+		const result = await editTool(
+			{
+				file_path: testFile,
+				edits: [
+					{ start: anchor(5, "return 1;"), end: anchor(5, "return 1;"), content: "return 2;" },
+				],
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(testFile, "utf-8")).toBe("x\nreturn 1;\ny\nz\nreturn 2;\nw\n");
+	});
+
+	it("returns an error with a re-read hint when an anchor's hash is not found", async () => {
 		const testFile = join(tempDir, "test.txt");
-		const content = "foo bar\nfoo bar\nfoo bar\nbaz qux\n";
+		const content = "hello world\nfoo bar\n";
 		writeFileSync(testFile, content);
 
 		const result = await editTool(
 			{
 				file_path: "test.txt",
-				old_string: "foo bar",
-				new_string: "replaced",
+				edits: [{ start: "1:ffff", end: "1:ffff", content: "replacement" }],
 			},
 			new AbortController().signal,
 			tempDir,
 		);
 
-		expect(result.content).toHaveLength(2);
 		expect(result.isError).toBe(true);
 		const contentBlock = result.content[1];
-		expect(contentBlock.type).toBe("text");
 		expect(contentBlock.text).toContain("Error");
-		expect(contentBlock.text).toContain("3");
-		expect(contentBlock.text).toContain("multiple matches");
+		expect(contentBlock.text).toContain("not found");
+		expect(contentBlock.text).toContain("re-read");
 
-		// Verify file was NOT changed
-		const fileContent = readFileSync(testFile, "utf-8");
-		expect(fileContent).toBe(content);
+		// File NOT changed.
+		expect(readFileSync(testFile, "utf-8")).toBe(content);
 	});
 
-	it("AC5.8: provides context for multiple matches", async () => {
-		const testFile = join(tempDir, "test.txt");
-		const content =
-			"line 1\nMATCH here\nline 3\nline 4\nMATCH here\nline 6\nline 7\nMATCH here\nline 9\n";
+	it("uses 0000 from a read as the anchor for a blank line", async () => {
+		const testFile = join(tempDir, "blank.txt");
+		writeFileSync(testFile, "before\n\nafter\n");
+
+		const result = await editTool(
+			{
+				file_path: "blank.txt",
+				edits: [{ start: "2:0000", end: "2:0000", content: "between" }],
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(testFile, "utf-8")).toBe("before\nbetween\nafter\n");
+	});
+
+	it("rejects the whole batch when any edit fails (atomicity)", async () => {
+		const testFile = join(tempDir, "atomic.txt");
+		const content = "aaa\nbbb\nccc\n";
 		writeFileSync(testFile, content);
 
 		const result = await editTool(
 			{
-				file_path: "test.txt",
-				old_string: "MATCH here",
-				new_string: "replaced",
+				file_path: testFile,
+				edits: [
+					{ start: anchor(1, "aaa"), end: anchor(1, "aaa"), content: "AAA" },
+					{ start: "2:ffff", end: "2:ffff", content: "nope" },
+				],
 			},
 			new AbortController().signal,
 			tempDir,
 		);
 
-		const contentBlock = result.content[1];
-		expect(contentBlock.text).toContain("3 matches found");
+		expect(result.isError).toBe(true);
+		expect(readFileSync(testFile, "utf-8")).toBe(content);
 	});
 
-	it("AC5.12: always includes provenance block first", async () => {
+	it("validates required args", async () => {
+		const noPath = await editTool(
+			{ edits: [{ start: "1:abcd", end: "1:abcd", content: "x" }] },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(noPath.isError).toBe(true);
+		expect(noPath.content[1].text).toContain("file_path");
+
+		const noEdits = await editTool(
+			{ file_path: "whatever.txt" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(noEdits.isError).toBe(true);
+		expect(noEdits.content[1].text).toContain("edits");
+
+		const badEdit = await editTool(
+			{ file_path: "whatever.txt", edits: [{ start: "1:abcd" }] },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(badEdit.isError).toBe(true);
+	});
+
+	it("always includes provenance block first", async () => {
 		const testFile = join(tempDir, "test.txt");
 		writeFileSync(testFile, "hello world\n");
 
 		const result = await editTool(
 			{
 				file_path: "test.txt",
-				old_string: "hello",
-				new_string: "hi",
+				edits: [{ start: anchor(1, "hello world"), end: anchor(1, "hello world"), content: "hi" }],
 			},
 			new AbortController().signal,
 			tempDir,
@@ -146,60 +233,39 @@ describe("boundless_edit", () => {
 		expect(firstBlock.text).toContain("boundless_edit");
 	});
 
-	it("handles file at absolute path", async () => {
-		const testFile = join(tempDir, "absolute.txt");
-		writeFileSync(testFile, "content to edit\n");
+	it("reports the resulting line range with fresh anchors after an edit", async () => {
+		const testFile = join(tempDir, "fresh.txt");
+		writeFileSync(testFile, "one\ntwo\nthree\n");
 
 		const result = await editTool(
 			{
 				file_path: testFile,
-				old_string: "to edit",
-				new_string: "edited",
+				edits: [{ start: anchor(2, "two"), end: anchor(2, "two"), content: "TWO-A\nTWO-B" }],
 			},
 			new AbortController().signal,
 			tempDir,
 		);
 
-		expect(result.content[1].text).toContain("replaced 1 occurrence");
-		const fileContent = readFileSync(testFile, "utf-8");
-		expect(fileContent).toBe("content edited\n");
-	});
-
-	it("handles multiline old_string", async () => {
-		const testFile = join(tempDir, "multiline.txt");
-		const content = "line 1\nline 2\nline 3\nline 4\n";
-		writeFileSync(testFile, content);
-
-		const result = await editTool(
-			{
-				file_path: testFile,
-				old_string: "line 2\nline 3",
-				new_string: "replaced",
-			},
-			new AbortController().signal,
-			tempDir,
-		);
-
-		expect(result.content[1].text).toContain("replaced 1 occurrence");
-		const fileContent = readFileSync(testFile, "utf-8");
-		expect(fileContent).toBe("line 1\nreplaced\nline 4\n");
+		expect(result.isError).toBeUndefined();
+		// The result should carry fresh anchors for the replaced region so the
+		// model can chain edits without a re-read.
+		const text = result.content[1].text;
+		expect(text).toContain(`2:${computeLineHash("TWO-A")}|TWO-A`);
+		expect(text).toContain(`3:${computeLineHash("TWO-B")}|TWO-B`);
 	});
 
 	it("provides a recovery hint when file does not exist", async () => {
 		const result = await editTool(
 			{
 				file_path: "does-not-exist.ts",
-				old_string: "foo",
-				new_string: "bar",
+				edits: [{ start: "1:abcd", end: "1:abcd", content: "bar" }],
 			},
 			new AbortController().signal,
 			tempDir,
 		);
 
 		expect(result.isError).toBe(true);
-		expect(result.content).toHaveLength(2);
 		const errorBlock = result.content[1];
-		expect(errorBlock.type).toBe("text");
 		expect(errorBlock.text).toContain("File not found");
 		expect(errorBlock.text).toContain("write");
 	});

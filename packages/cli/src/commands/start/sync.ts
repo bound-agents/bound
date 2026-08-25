@@ -1,20 +1,17 @@
 /**
  * WebSocket sync subsystem: WsTransport (push-on-write changelog replication),
- * WsSyncClient (spoke to hub connection), pruning loop, and overlay scanner.
+ * WsSyncClient (spoke to hub connection), and pruning loop.
  */
 
-import type { Database } from "bun:sqlite";
 import type { AppContext } from "@bound/core";
 import { setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
 import type { KeyringConfig, SyncConfig } from "@bound/shared";
 import { formatError, wsSchema } from "@bound/shared";
-import type { OverlayIndexEntry } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import type { WsTransport as WsTransportType } from "@bound/sync";
 
 export interface SyncResult {
 	pruningHandle: { stop: () => void } | null;
-	overlayHandle: { stop: () => void } | null;
 	wsTransport: WsTransportType | undefined;
 	wsClient: {
 		close: () => void;
@@ -85,6 +82,8 @@ export async function initSync(
 						const reconnectMaxInterval = wsConfig.reconnect_max_interval;
 						const backpressureLimit = wsConfig.backpressure_limit;
 						const backfillIntervalSeconds = wsConfig.backfill_interval;
+						const receiveTimeoutMs = wsConfig.receive_timeout_ms;
+						const handshakeTimeoutMs = wsConfig.handshake_timeout_ms;
 
 						const wsClientInstance = new WsSyncClient({
 							hubUrl,
@@ -97,6 +96,11 @@ export async function initSync(
 							reconnectMaxInterval,
 							backpressureLimit,
 							backfillIntervalSeconds,
+							receiveTimeoutMs,
+							handshakeTimeoutMs,
+							// Surfaces handshake failures on sync_state.sync_errors so hostinfo
+							// and the web UI stop reporting a clean mesh over a dark link.
+							db: appContext.db,
 							reseed,
 						});
 
@@ -127,51 +131,5 @@ export async function initSync(
 		appContext.logger.warn(`[sync] Failed to start pruning: ${formatError(error)}`);
 	}
 
-	// 15. Overlay scanning (if configured)
-	appContext.logger.info("Initializing overlay scanner...");
-	let overlayHandle: { stop: () => void } | null = null;
-	const overlayResult = appContext.optionalConfig.overlay;
-	if (overlayResult?.ok) {
-		const overlayConfig = overlayResult.value as { mounts: Record<string, string> };
-		try {
-			const { startOverlayScanLoop } = await import("@bound/sandbox");
-			const { insertRow, updateRow, softDelete } = await import("@bound/core");
-			// Adapter: OverlayOutbox expects string table names, core outbox expects SyncedTableName.
-			// overlay_index is a synced table, so this cast is safe.
-			const outboxAdapter = {
-				insertRow: (
-					db: Database,
-					table: string,
-					row: Record<string, unknown>,
-					siteId: string,
-				): void =>
-					insertRow(db, table as "overlay_index", row as unknown as OverlayIndexEntry, siteId),
-				updateRow: (
-					db: Database,
-					table: string,
-					id: string,
-					changes: Record<string, unknown>,
-					siteId: string,
-				): void => updateRow(db, table as "overlay_index", id, changes, siteId),
-				softDelete: (db: Database, table: string, id: string, siteId: string): void =>
-					softDelete(db, table as "overlay_index", id, siteId),
-			};
-			overlayHandle = startOverlayScanLoop(
-				appContext.db,
-				appContext.siteId,
-				overlayConfig.mounts,
-				undefined,
-				outboxAdapter,
-			);
-			appContext.logger.info(
-				`[overlay] Scanner started (${Object.keys(overlayConfig.mounts).length} mount(s))`,
-			);
-		} catch (error) {
-			appContext.logger.warn(`[overlay] Failed to start: ${formatError(error)}`);
-		}
-	} else {
-		appContext.logger.info("[overlay] Not configured");
-	}
-
-	return { pruningHandle, overlayHandle, wsTransport, wsClient } as SyncResult;
+	return { pruningHandle, wsTransport, wsClient } as SyncResult;
 }

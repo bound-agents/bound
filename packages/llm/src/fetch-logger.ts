@@ -1,62 +1,85 @@
 /**
- * Fetch interceptor that logs outgoing AI SDK request bodies at debug level.
- *
- * The AI SDK provider factories (`createAmazonBedrock`, `createOpenAICompatible`,
- * `createAnthropic`) all accept a custom `fetch` option typed as
- * `(input: RequestInfo, init?: RequestInit) => Promise<Response>`. This
- * factory returns such a function. When installed, every outgoing HTTP call
- * the AI SDK makes to the inference backend is intercepted, and the raw
- * request body is logged via the provided pino-backed Logger.
- *
- * Intentionally body-only — headers are not logged. Request URLs are included
- * for provider/route disambiguation.
- *
- * Gated on `logger.isLevelEnabled("debug")` so info-level runs pay zero cost
- * (no body introspection, no log emission).
- *
- * Delegation note: the wrapper calls `globalThis.fetch(input, init)` at
- * invocation time rather than capturing a bound reference at construction
- * time. Some tests replace `global.fetch` with a mock after this factory
- * runs; late-binding ensures those mocks are honored. See the
- * `global.fetch pollution` gotcha in CONTRIBUTING.md.
+ * Fetch interceptor that emits safe request-shape summaries for outgoing AI
+ * SDK calls. Bodies are never logged: they can contain prompts, memory, tool
+ * payloads, and files.
  */
 
 import type { Logger } from "@bound/shared";
 
-/**
- * Extract a loggable string representation of a fetch request body without
- * consuming ReadableStreams (which would break the real request).
- */
-function readBodyForLog(body: BodyInit | null | undefined): string {
-	if (body === null || body === undefined) return "";
-	if (typeof body === "string") return body;
-	if (body instanceof URLSearchParams) return body.toString();
-	if (body instanceof Uint8Array) {
-		try {
-			return new TextDecoder().decode(body);
-		} catch {
-			return `[binary body: Uint8Array length=${body.byteLength}]`;
+const MAX_TOOL_NAMES = 10;
+
+type RequestSummary = Record<string, unknown>;
+
+export interface TimeoutScheduler {
+	schedule(callback: () => void, delayMs: number): unknown;
+	clear(handle: unknown): void;
+}
+
+const realTimeoutScheduler: TimeoutScheduler = {
+	schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+	clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+function byteSize(body: BodyInit): number | undefined {
+	if (typeof body === "string") return new TextEncoder().encode(body).byteLength;
+	if (body instanceof URLSearchParams) return new TextEncoder().encode(body.toString()).byteLength;
+	if (body instanceof Uint8Array || body instanceof ArrayBuffer) return body.byteLength;
+	return undefined;
+}
+
+function summarizeJsonBody(body: string): RequestSummary {
+	const summary: RequestSummary = { bodyKind: "json", bodySize: byteSize(body) };
+	try {
+		const value: unknown = JSON.parse(body);
+		if (!value || typeof value !== "object" || Array.isArray(value)) return summary;
+		const record = value as Record<string, unknown>;
+		if (typeof record.model === "string") summary.model = record.model;
+		const messages = Array.isArray(record.messages) ? record.messages : [];
+		if (messages.length > 0) {
+			const roleCounts: Record<string, number> = {};
+			for (const message of messages) {
+				if (!message || typeof message !== "object") continue;
+				const role = (message as Record<string, unknown>).role;
+				if (typeof role === "string") roleCounts[role] = (roleCounts[role] ?? 0) + 1;
+			}
+			summary.roleCounts = roleCounts;
 		}
-	}
-	if (body instanceof ArrayBuffer) {
-		try {
-			return new TextDecoder().decode(new Uint8Array(body));
-		} catch {
-			return `[binary body: ArrayBuffer byteLength=${body.byteLength}]`;
+		const tools = Array.isArray(record.tools) ? record.tools : [];
+		if (tools.length > 0) {
+			summary.toolCount = tools.length;
+			summary.toolNames = tools
+				.slice(0, MAX_TOOL_NAMES)
+				.map((tool) =>
+					tool && typeof tool === "object" ? (tool as Record<string, unknown>).name : undefined,
+				)
+				.filter((name): name is string => typeof name === "string");
 		}
+	} catch {
+		// Non-JSON strings are represented only by kind and byte count.
 	}
-	// FormData / Blob / ReadableStream — we don't try to consume these, both
-	// because it could break the request (ReadableStream is one-shot) and
-	// because AI SDK providers don't use them for inference calls in practice.
-	const ctor = (body as object).constructor?.name ?? typeof body;
-	return `[non-string body: ${ctor}]`;
+	return summary;
+}
+
+function summarizeBody(body: BodyInit | null | undefined): RequestSummary {
+	if (body === null || body === undefined) return { bodyKind: "empty", bodySize: 0 };
+	if (typeof body === "string") return summarizeJsonBody(body);
+	if (body instanceof URLSearchParams) return { bodyKind: "form", bodySize: byteSize(body) };
+	if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
+		return { bodyKind: "binary", bodySize: byteSize(body) };
+	}
+	if (body instanceof ReadableStream) return { bodyKind: "stream" };
+	return { bodyKind: "opaque", bodySize: byteSize(body) };
 }
 
 function extractUrl(input: RequestInfo | URL): string {
 	if (typeof input === "string") return input;
 	if (input instanceof URL) return input.toString();
-	// Request-like object with a `url` property.
 	return (input as Request).url;
+}
+
+function endpoint(input: RequestInfo | URL): string {
+	const url = new URL(extractUrl(input));
+	return `${url.origin}${url.pathname}`;
 }
 
 /**
@@ -102,15 +125,15 @@ export function createLoggingFetch(
 	logger: Logger,
 	provider: string,
 	connectTimeoutMs?: number,
+	timeoutScheduler: TimeoutScheduler = realTimeoutScheduler,
 ): typeof fetch {
 	const wrapped = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 		if (logger.isLevelEnabled("debug")) {
-			const body = readBodyForLog(init?.body);
-			logger.debug(`[ai-sdk:${provider}] outgoing request body`, {
+			logger.debug(`[ai-sdk:${provider}] outgoing request shape`, {
 				provider,
-				url: extractUrl(input),
+				endpoint: endpoint(input),
 				method: init?.method ?? "GET",
-				body,
+				...summarizeBody(init?.body),
 			});
 		}
 
@@ -123,7 +146,7 @@ export function createLoggingFetch(
 		// in time, with a message we control. Compose with any inbound signal
 		// (the agent-loop silence/inactivity controller) so either can win.
 		const deadline = new AbortController();
-		const timer = setTimeout(() => {
+		const timer = timeoutScheduler.schedule(() => {
 			deadline.abort(
 				new Error(
 					`bound: no inference response headers from ${provider} within ${connectTimeoutMs}ms (connect/TTFB deadline)`,
@@ -139,10 +162,10 @@ export function createLoggingFetch(
 			// agent-loop signal (still live on the composed `signal`), not our
 			// connect deadline — clear the timer so a slow-but-progressing
 			// stream is never aborted.
-			clearTimeout(timer);
+			timeoutScheduler.clear(timer);
 			return res;
 		} catch (err) {
-			clearTimeout(timer);
+			timeoutScheduler.clear(timer);
 			throw err;
 		}
 	};

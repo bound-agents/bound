@@ -3,7 +3,7 @@ import wrapAnsi from "wrap-ansi";
 /**
  * A run of text carrying a single visual style. Mirrors the inline styles
  * the Markdown renderer can emit (bold/italic/underline/strikethrough/dim
- * and a foreground color). A paragraph of marked inline tokens flattens into
+ * and a foreground color). A paragraph of parsed inline nodes flattens into
  * a sequence of these.
  */
 export interface StyledRun {

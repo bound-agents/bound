@@ -32,7 +32,7 @@ export function writeOutbox(
 	entry: Omit<RelayOutboxEntry, "delivered">,
 	maxPayloadBytes: number = MAX_PAYLOAD_BYTES_DEFAULT,
 	eventBus?: TypedEventEmitter,
-): void {
+): boolean {
 	if (!entry.source_site_id) {
 		throw new Error("writeOutbox: source_site_id is required for relay routing");
 	}
@@ -67,7 +67,12 @@ export function writeOutbox(
 	// re-buffers an entry that's already in relay_outbox). The Node
 	// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
 	// throws RangeError.
-	if (result.changes === 0) return;
+	//
+	// Returns whether a row was actually inserted (mirrors insertInbox), so
+	// callers using per-event idempotency keys can gate dependent writes on
+	// the dedupe outcome (e.g. deliverBatch skips the developer message for a
+	// crash-replayed event the outbox already carries).
+	if (result.changes === 0) return false;
 
 	// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
 	const bus = eventBus ?? relayOutboxEventBus;
@@ -77,6 +82,7 @@ export function writeOutbox(
 			target_site_id: entry.target_site_id,
 		});
 	}
+	return true;
 }
 
 export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {
@@ -96,6 +102,15 @@ export function markDelivered(db: Database, ids: string[]): void {
 	if (ids.length === 0) return;
 	const placeholders = ids.map(() => "?").join(", ");
 	db.run(`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders})`, ids);
+}
+
+export function markDeliveredForTarget(db: Database, ids: string[], targetSiteId: string): void {
+	if (ids.length === 0) return;
+	const placeholders = ids.map(() => "?").join(", ");
+	db.run(
+		`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders}) AND target_site_id = ?`,
+		[...ids, targetSiteId],
+	);
 }
 
 export function readUnprocessed(db: Database): RelayInboxEntry[] {
@@ -192,6 +207,51 @@ export function readUnprocessedInboxByRefId(
 			"SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ? ORDER BY received_at ASC",
 		)
 		.all(refId, kind) as RelayInboxEntry[];
+}
+
+/**
+ * One stale-intake group: all unprocessed inbox rows of a given kind that share
+ * a `ref_id` and were received before a staleness cutoff. `oldest_received_at`
+ * is the earliest row's timestamp, so a caller can report how long the binding
+ * has been dark.
+ */
+export interface StaleIntakeGroup {
+	ref_id: string;
+	kind: string;
+	count: number;
+	oldest_received_at: string;
+}
+
+/**
+ * Finds unprocessed inbox rows of `kind` whose `received_at` predates
+ * `staleBeforeIso`, grouped by `ref_id`. This is the dead-letter signal for the
+ * webhook intake pipeline: a healthy event handler drains its `webhook_intake`
+ * rows the moment it runs (markProcessed via buildEventWakeupContent), so a row
+ * that stays unprocessed past the staleness window means the bound handler is
+ * dark — cancelled, evicted-to-failed, declined by an incapable host, or lost to
+ * a deploy gap. We don't try to attribute the cause here; the unprocessed-and-old
+ * condition is sufficient to raise a catch-of-last-resort advisory, since the
+ * intake itself is durable (7-day TTL) and any revived handler bound to the same
+ * thread drains the backlog. Rows with a null `ref_id` are skipped — they cannot
+ * be tied back to a handler thread.
+ *
+ * ISO-8601 timestamps sort lexically, so the `received_at < ?` comparison is a
+ * plain string compare (no SQLite `datetime()` coercion — see gotchas).
+ */
+export function findStaleUnprocessedIntake(
+	db: Database,
+	kind: string,
+	staleBeforeIso: string,
+): StaleIntakeGroup[] {
+	return db
+		.query(
+			`SELECT ref_id, kind, COUNT(*) AS count, MIN(received_at) AS oldest_received_at
+			 FROM relay_inbox
+			 WHERE processed = 0 AND kind = ? AND ref_id IS NOT NULL AND received_at < ?
+			 GROUP BY ref_id
+			 ORDER BY oldest_received_at ASC`,
+		)
+		.all(kind, staleBeforeIso) as StaleIntakeGroup[];
 }
 
 export function readInboxByStreamId(db: Database, streamId: string): RelayInboxEntry[] {

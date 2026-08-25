@@ -1,6 +1,3 @@
-// Commit 4 of the MCP-Apps-in-web-UI feature: see project memory
-// project:mcp-apps-web-ui:design-and-progress.
-//
 // The browser dispatches the agent's MCP tool calls (the boundless pattern). For
 // UI-bearing tools (ext-apps `_meta.ui.resourceUri`) the call ALSO renders an
 // app iframe. This module owns the bridge between the tool-call dispatch path
@@ -16,7 +13,7 @@
 //    instance for UI-bearing tools (sharing the same in-flight promise the app
 //    consumes), and returns the flattened textual result the agent loop needs.
 import type { ToolCallRequest, ToolCallResult } from "@bound/client";
-import { stripToolDuration } from "@bound/shared";
+import { stripToolDuration } from "@bound/shared/strings";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { writable } from "svelte/store";
 import type { UiResourceClient } from "./mcp-app-bridge";
@@ -123,6 +120,7 @@ interface McpAppBinding {
 	server: string;
 	tool: string;
 	uiResourceUri: string;
+	input?: Record<string, unknown>;
 }
 
 /**
@@ -144,11 +142,17 @@ function readMcpAppBinding(metadata: PersistedToolMessage["metadata"]): McpAppBi
 	if (typeof bag !== "object" || bag === null) return undefined;
 	const mcpApp = (bag as Record<string, unknown>).mcp_app;
 	if (typeof mcpApp !== "object" || mcpApp === null) return undefined;
-	const { server, tool, uiResourceUri } = mcpApp as Record<string, unknown>;
+	const { server, tool, uiResourceUri, input } = mcpApp as Record<string, unknown>;
 	if (typeof server !== "string" || typeof tool !== "string" || typeof uiResourceUri !== "string") {
 		return undefined;
 	}
-	return { server, tool, uiResourceUri };
+	return {
+		server,
+		tool,
+		uiResourceUri,
+		input:
+			typeof input === "object" && input !== null ? (input as Record<string, unknown>) : undefined,
+	};
 }
 
 /** Parse a message's content into a content-block array, tolerating both forms. */
@@ -261,9 +265,16 @@ export function reconstructInstancesFromMessages(
 	for (const [callId, binding] of bindingByToolUseId) {
 		const reg = host.resolveByServerTool(binding.server, binding.tool);
 		if (!reg) continue;
-		// Strip the omnibus `subcommand` wrapper when present; the app wants only
-		// the tool's own arguments.
-		const { subcommand: _omit, ...toolArgs } = inputByCallId.get(callId) ?? {};
+		// Prefer the native MCP arguments captured at dispatch. The persisted
+		// tool_use may describe an outer bash wrapper (`{ command: ... }`), which is
+		// not meaningful to the app. Older direct calls fall back to their tool_use.
+		const persistedInput = inputByCallId.get(callId) ?? {};
+		const bindingInput = binding.input;
+		// Before native arguments were persisted, bash-wrapped calls could only be
+		// reconstructed as `{command: ...}`. Feeding that wrapper to the app produces
+		// an empty canvas, so leave the ordinary tool card visible instead.
+		if (!bindingInput && "command" in persistedInput) continue;
+		const { subcommand: _omit, ...toolArgs } = bindingInput ?? persistedInput;
 		const persisted = resultsByToolUseId.get(callId);
 		instances.push({
 			callId,

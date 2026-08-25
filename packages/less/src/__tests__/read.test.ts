@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { MAX_SOURCE_STRUCTURE_INPUT_BYTES, computeLineHash } from "@bound/shared";
 import { readTool } from "../tools/read";
+
+/** Expected hashline read rendering for a given line. */
+function hashline(n: number, text: string): string {
+	return `${n}:${computeLineHash(text)}|${text}`;
+}
 
 describe("boundless_read", () => {
 	let tempDir: string;
@@ -36,9 +42,9 @@ describe("boundless_read", () => {
 
 		const contentBlock = result.content[1];
 		expect(contentBlock.type).toBe("text");
-		expect(contentBlock.text).toContain("1\tline one");
-		expect(contentBlock.text).toContain("2\tline two");
-		expect(contentBlock.text).toContain("3\tline three");
+		expect(contentBlock.text).toContain(hashline(1, "line one"));
+		expect(contentBlock.text).toContain(hashline(2, "line two"));
+		expect(contentBlock.text).toContain(hashline(3, "line three"));
 	});
 
 	it("AC5.2: returns specified line range with offset and limit", async () => {
@@ -55,12 +61,12 @@ describe("boundless_read", () => {
 		expect(result.content).toHaveLength(2);
 		expect(result.isError).toBeUndefined();
 		const contentBlock = result.content[1];
-		expect(contentBlock.text).toContain("5\tline 5");
-		expect(contentBlock.text).toContain("6\tline 6");
-		expect(contentBlock.text).toContain("7\tline 7");
+		expect(contentBlock.text).toContain(hashline(5, "line 5"));
+		expect(contentBlock.text).toContain(hashline(6, "line 6"));
+		expect(contentBlock.text).toContain(hashline(7, "line 7"));
 		// Should not contain lines outside the range
-		expect(contentBlock.text).not.toContain("4\tline 4");
-		expect(contentBlock.text).not.toContain("8\tline 8");
+		expect(contentBlock.text).not.toContain(hashline(4, "line 4"));
+		expect(contentBlock.text).not.toContain(hashline(8, "line 8"));
 	});
 
 	it("AC5.3: returns error with ENOENT for nonexistent file", async () => {
@@ -98,7 +104,7 @@ describe("boundless_read", () => {
 		expect(contentBlock.text).toContain("Binary file");
 		expect(contentBlock.text).toContain("100 bytes");
 		// Should not have line numbers (not text content)
-		expect(contentBlock.text).not.toMatch(/^\s+\d+\t/m);
+		expect(contentBlock.text).not.toMatch(/^\d+:[0-9a-f]{4}\|/m);
 	});
 
 	it("AC5.12: always includes provenance block first", async () => {
@@ -230,5 +236,153 @@ describe("boundless_read", () => {
 			(b) => b.type === "text" && b.text?.includes("Binary file"),
 		);
 		expect(textBlock).toBeDefined();
+	});
+	it("returns declaration symbols with shared hashline anchors without source bodies", async () => {
+		const testFile = join(tempDir, "sample.ts");
+		writeFileSync(
+			testFile,
+			"export function greeting(name: string) {\n  return `hello ${name}`;\n}\n",
+		);
+
+		const { readStructureTool } = await import("../tools/read-structure");
+		const result = await readStructureTool(
+			{ path: "sample.ts" },
+			new AbortController().signal,
+			tempDir,
+		);
+		const text = result.content[1]?.text ?? "";
+
+		expect(result.isError).toBeUndefined();
+		expect(text).toContain("greeting");
+		expect(text).toContain(`${1}:${computeLineHash("export function greeting(name: string) {")}`);
+		expect(text).not.toContain("return `hello ${name}`");
+	});
+});
+
+describe("boundless_read_structure", () => {
+	let tempDir: string;
+
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `boundless-structure-${randomBytes(4).toString("hex")}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+
+	afterEach(() => rmSync(tempDir, { recursive: true, force: true }));
+
+	it("rejects missing and non-string paths", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		for (const args of [{}, { path: 1 }]) {
+			const result = await readStructureTool(args, new AbortController().signal, tempDir);
+			expect(result.isError).toBe(true);
+		}
+	});
+
+	it("handles missing files, directories, binary files, and both confined path forms", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		writeFileSync(join(tempDir, "source.ts"), "export const item = 1;\n");
+		writeFileSync(
+			join(tempDir, "binary.bin"),
+			Buffer.concat([Buffer.alloc(8192, 0x61), Buffer.from([0, 1, 2])]),
+		);
+		for (const path of ["missing.ts", ".", "binary.bin"]) {
+			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+			expect(result.isError).toBe(true);
+		}
+		for (const path of ["source.ts", join(tempDir, "source.ts")]) {
+			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+			expect(result.isError).toBeUndefined();
+			expect(result.content[1]?.text).toContain("item");
+		}
+	});
+
+	it("rejects paths outside the working directory, including traversal", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		const outside = join(tmpdir(), `boundless-outside-${randomBytes(4).toString("hex")}.ts`);
+		writeFileSync(outside, "export const secret = 1;\n");
+		try {
+			// basename(), not split("/"): on Windows the tmpdir path uses
+			// backslashes, so split("/").at(-1) returned the WHOLE path and the
+			// "traversal" case degenerated into a nonexistent garbage path whose
+			// ENOENT error fails the assertion — the deterministic Windows CI red
+			// on every run since this suite landed.
+			for (const path of [outside, `../${basename(outside)}`]) {
+				const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+				expect(result.isError).toBe(true);
+				expect(result.content[1]?.text).toContain("outside the working directory");
+			}
+		} finally {
+			rmSync(outside, { force: true });
+		}
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"rejects symlinks that escape the working directory",
+		async () => {
+			const { readStructureTool } = await import("../tools/read-structure");
+			const outside = join(tmpdir(), `boundless-outside-${randomBytes(4).toString("hex")}.ts`);
+			const link = join(tempDir, "escape.ts");
+			writeFileSync(outside, "export const secret = 1;\n");
+			symlinkSync(outside, link);
+			try {
+				const result = await readStructureTool(
+					{ path: "escape.ts" },
+					new AbortController().signal,
+					tempDir,
+				);
+				expect(result.isError).toBe(true);
+				expect(result.content[1]?.text).toContain("outside the working directory");
+			} finally {
+				rmSync(outside, { force: true });
+			}
+		},
+	);
+
+	it("extracts Python, Go, and Rust declarations and rejects oversized inputs", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		const fixtures = [
+			[
+				"python.py",
+				"class Service:\n    pass\n\ndef greeting():\n    pass\n",
+				"Service",
+				"greeting",
+			],
+			[
+				"go.go",
+				"package example\n\ntype Service struct{}\nfunc Greeting() {}\n",
+				"Service",
+				"Greeting",
+			],
+			["rust.rs", "pub struct Service;\npub fn greeting() {}\n", "Service", "greeting"],
+		] as const;
+		for (const [path, source, ...names] of fixtures) {
+			writeFileSync(join(tempDir, path), source);
+			const result = await readStructureTool({ path }, new AbortController().signal, tempDir);
+			for (const name of names) expect(result.content[1]?.text).toContain(name);
+		}
+		writeFileSync(join(tempDir, "too-large.ts"), "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1));
+		const oversized = await readStructureTool(
+			{ path: "too-large.ts" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(oversized.isError).toBe(true);
+		expect(oversized.content[1]?.text).toBe(
+			"Error: source file exceeds read_structure input limit",
+		);
+	});
+
+	it("bounds large outputs", async () => {
+		const { readStructureTool } = await import("../tools/read-structure");
+		writeFileSync(
+			join(tempDir, "large.ts"),
+			Array.from({ length: 4000 }, (_, i) => `export const item${i} = ${i};`).join("\n"),
+		);
+		const result = await readStructureTool(
+			{ path: "large.ts" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(Buffer.byteLength(result.content[1]?.text ?? "", "utf8")).toBeLessThanOrEqual(50_000);
+		expect(result.content[1]?.text).toContain("[truncated;");
 	});
 });

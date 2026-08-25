@@ -178,22 +178,26 @@ describe("Connector Handle Lifecycle", () => {
 			// Give time for async operations
 			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			// Verify message was created in the thread
-			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND deleted = 0")
+			// Verify the batch landed as a passive connector_intake relay row —
+			// the leader-local delivery vehicle. The scheduler folds it into the
+			// event task's wakeup tool_result via buildEventWakeupContent; no
+			// separate developer-role message is written (single delivery
+			// vehicle per branch). relay_inbox is local-only (invariant #3), so
+			// there is no changelog entry to assert.
+			const intakeRows = db
+				.query("SELECT * FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
+				.all(threadId) as any[];
+
+			expect(intakeRows.length).toBe(1);
+			expect(intakeRows[0].processed).toBe(0);
+			expect(intakeRows[0].payload).toContain("data");
+
+			// No developer-role message in the leader-local branch — the folded
+			// wakeup is the single place the event enters thread history.
+			const devMessages = db
+				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
 				.all(threadId) as never[];
-
-			expect(messages.length).toBeGreaterThan(0);
-
-			const devMessage = messages.find((m: any) => m.role === "developer");
-			expect(devMessage).toBeDefined();
-			expect(devMessage?.thread_id).toBe(threadId);
-
-			// Verify changelog entry exists
-			const changelog = db
-				.query("SELECT * FROM change_log WHERE row_id = ? AND table_name = 'messages'")
-				.all(devMessage?.id) as never[];
-			expect(changelog.length).toBeGreaterThan(0);
+			expect(devMessages.length).toBe(0);
 		});
 	});
 
@@ -287,7 +291,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify only one developer message was created
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as never[];
 
 			expect(messages.length).toBe(1);
@@ -364,7 +370,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify message was created
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(1);
@@ -462,10 +470,211 @@ describe("Connector Handle Lifecycle", () => {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 			expect(messages.length).toBe(1);
 			expect(messages[0].content).toContain("delivered via notification path");
+		});
+
+		// Regression: deliverBatch wrote ONE intake row per BATCH, keyed on the
+		// FIRST event's id. After a crash between insertInbox and the cursor
+		// update, reconnect replays the overlap as one batch [e1, e2]: the
+		// batch key collides with e1's already-persisted row, INSERT OR IGNORE
+		// drops the whole row — and the cursor then advances past e2, losing
+		// it permanently. Per-event rows with per-event keys make replay
+		// dedupe exact: e1 is ignored, e2 survives.
+		it("keeps trailing events when a crash-replay batch overlaps an already-delivered event", async () => {
+			const now = new Date().toISOString();
+			const threadId = `thread-${randomBytes(4).toString("hex")}`;
+			const taskId = `task-${randomBytes(4).toString("hex")}`;
+			insertRow(
+				db,
+				"threads",
+				{
+					id: threadId,
+					user_id: "test-user",
+					interface: "test",
+					host_origin: siteId,
+					summary: null,
+					last_message_at: now,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				siteId,
+			);
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "event",
+					status: "pending",
+					trigger_spec: `connector:event:${taskId}`,
+					thread_id: threadId,
+					created_at: now,
+					deleted: 0,
+					modified_at: now,
+				},
+				siteId,
+			);
+			const handleId = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "test.event",
+				eventArgs: {},
+				deliveryMode: "push",
+				taskId,
+			});
+
+			await registry.registerServer("test-server", server);
+			const handle = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleId);
+			await registry.activateSubscription(handle as never);
+
+			const e1 = {
+				eventId: "replay-e1",
+				name: "test.event",
+				timestamp: now,
+				data: { num: 1 },
+				cursor: "101",
+			};
+			const e2 = {
+				eventId: "replay-e2",
+				name: "test.event",
+				timestamp: now,
+				data: { num: 2 },
+				cursor: "102",
+			};
+
+			// First delivery: e1 alone. Row persisted, cursor advances to 101.
+			const sub = (registry as any).activeSubscriptions.get(handleId);
+			registry.deliverBatch(sub, [e1]);
+
+			// Simulate the crash window: the intake row for e1 was written but
+			// the cursor update was lost. Reset the cursor and rebuild the
+			// subscription (in-memory dedup set dies with the process).
+			db.run("UPDATE connector_handles SET cursor = NULL WHERE id = ?", [handleId]);
+			(registry as any).activeSubscriptions.delete(handleId);
+			const handleAfter = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleId);
+			await registry.activateSubscription(handleAfter as never);
+			const subAfter = (registry as any).activeSubscriptions.get(handleId);
+
+			// Replay delivers the overlap as one batch.
+			registry.deliverBatch(subAfter, [e1, e2]);
+
+			const rows = db
+				.query(
+					"SELECT payload FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' ORDER BY received_at",
+				)
+				.all(threadId) as Array<{ payload: string }>;
+
+			// e1 must not double; e2 must survive the replay.
+			const withE2 = rows.filter((r) => r.payload.includes('"num":2'));
+			expect(withE2.length).toBe(1);
+			const withE1 = rows.filter((r) => r.payload.includes('"num":1'));
+			expect(withE1.length).toBe(1);
+		});
+		it("routes an event only to subscriptions whose params match event.data", async () => {
+			const now = new Date().toISOString();
+			const mkThreadTask = (suffix: string) => {
+				const threadId = `thread-${suffix}-${randomBytes(4).toString("hex")}`;
+				const taskId = `task-${suffix}-${randomBytes(4).toString("hex")}`;
+				insertRow(
+					db,
+					"threads",
+					{
+						id: threadId,
+						user_id: "test-user",
+						interface: "test",
+						host_origin: siteId,
+						summary: null,
+						last_message_at: now,
+						created_at: now,
+						deleted: 0,
+						modified_at: now,
+					},
+					siteId,
+				);
+				insertRow(
+					db,
+					"tasks",
+					{
+						id: taskId,
+						type: "event",
+						status: "pending",
+						trigger_spec: `connector:event:${taskId}`,
+						thread_id: threadId,
+						created_at: now,
+						deleted: 0,
+						modified_at: now,
+					},
+					siteId,
+				);
+				return { threadId, taskId };
+			};
+
+			const a = mkThreadTask("dm");
+			const b = mkThreadTask("guild");
+
+			const handleA = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "message.received",
+				eventArgs: { channel_id: "channel-dm" },
+				deliveryMode: "push",
+				taskId: a.taskId,
+			});
+			const handleB = createConnectorHandle(db, siteId, {
+				serverName: "test-server",
+				eventName: "message.received",
+				eventArgs: { channel_id: "channel-guild" },
+				deliveryMode: "push",
+				taskId: b.taskId,
+			});
+
+			await registry.registerServer("test-server", server);
+			const rowA = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleA);
+			const rowB = db.query("SELECT * FROM connector_handles WHERE id = ?").get(handleB);
+			await registry.activateSubscription(rowA as never);
+			await registry.activateSubscription(rowB as never);
+
+			// One event on the guild channel. Only handle B's filter matches.
+			await server.notification({
+				method: "notifications/events/event",
+				params: {
+					eventId: "event-guild-only",
+					name: "message.received",
+					timestamp: now,
+					data: { channel_id: "channel-guild", content: "testing receive" },
+					cursor: "100",
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			const subA = (registry as any).activeSubscriptions.get(handleA);
+			const subB = (registry as any).activeSubscriptions.get(handleB);
+			expect(subA).toBeDefined();
+			expect(subB).toBeDefined();
+			expect(subB.buffer.length).toBe(1);
+			expect(subB.buffer[0].data.channel_id).toBe("channel-guild");
+			// The DM subscription must NOT receive the guild event.
+			expect(subA.buffer.length).toBe(0);
+
+			// An event carrying no channel_id at all matches neither filtered
+			// subscription (fail-closed, mirroring the connector-side filter).
+			await server.notification({
+				method: "notifications/events/event",
+				params: {
+					eventId: "event-no-channel",
+					name: "message.received",
+					timestamp: now,
+					data: { content: "channel-less event" },
+					cursor: "101",
+				},
+			});
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			expect(subA.buffer.length).toBe(0);
+			expect(subB.buffer.length).toBe(1);
 		});
 	});
 
@@ -531,7 +740,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify no message was created
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(0);
@@ -635,7 +846,9 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify message was created in the thread
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
 			expect(messages.length).toBe(1);
@@ -768,11 +981,15 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Get messages from both threads
 			const pushMessages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadIdPush) as any[];
 
 			const pollMessages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadIdPoll) as any[];
 
 			// Verify both have exactly one message
@@ -997,11 +1214,15 @@ describe("Connector Handle Lifecycle", () => {
 
 			// Verify messages were created in both threads
 			const messages1 = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId1) as any[];
 
 			const messages2 = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId2) as any[];
 
 			expect(messages1.length).toBe(1);
@@ -1107,23 +1328,27 @@ describe("Connector Handle Lifecycle", () => {
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			// Verify only one message was created (containing events 6 and 7)
+			// Verify per-event intake rows were created for events 6 and 7 only
+			// (persistence is per-event, not per-batch: one row per event so
+			// crash-replay dedupe via idempotency key is exact).
 			const messages = db
-				.query("SELECT * FROM messages WHERE thread_id = ? AND role = 'developer' AND deleted = 0")
+				.query(
+					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+				)
 				.all(threadId) as any[];
 
-			expect(messages.length).toBe(1);
+			expect(messages.length).toBe(2);
 
-			// Verify the message contains both 6 and 7
-			const content = messages[0].content;
-			expect(content).toContain("6");
-			expect(content).toContain("7");
+			// One row carries event 6, the other event 7.
+			const contents = messages.map((m) => m.content).join("|");
+			expect(contents).toContain('"num":6');
+			expect(contents).toContain('"num":7');
 
-			// Verify events 3, 4, 5 (before cursor) are NOT in the message
+			// Verify events 3, 4, 5 (before cursor) are NOT in any row
 			// These should have been filtered by cursor-based replay
-			expect(content).not.toContain('"num":3');
-			expect(content).not.toContain('"num":4');
-			expect(content).not.toContain('"num":5');
+			expect(contents).not.toContain('"num":3');
+			expect(contents).not.toContain('"num":4');
+			expect(contents).not.toContain('"num":5');
 
 			// Verify cursor was updated to 7
 			const updatedHandle = db

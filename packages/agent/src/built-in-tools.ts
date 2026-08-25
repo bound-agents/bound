@@ -2,7 +2,10 @@ import { posix } from "node:path";
 import type { ContentBlock, ToolDefinition } from "@bound/llm";
 import {
 	type SearchFileInput,
+	applyHashlineEdits,
+	computeLineHash,
 	formatSearchResults,
+	formatSourceStructure,
 	isLikelyBinary,
 	searchFiles,
 	shouldSearchPath,
@@ -38,6 +41,10 @@ const readSchema = z.object({
 		.describe("Maximum number of lines to return. Defaults to 2000."),
 });
 
+const readStructureSchema = z.object({
+	path: z.string().describe("Absolute sandbox VFS path to inspect (POSIX-style; not a host path)."),
+});
+
 const writeSchema = z.object({
 	path: z
 		.string()
@@ -52,11 +59,18 @@ const editSchema = z.object({
 	edits: z
 		.array(
 			z.object({
-				old_text: z.string(),
-				new_text: z.string(),
+				start: z
+					.string()
+					.describe('Anchor of the first line to replace, as "LINE:HASH" from a prior read.'),
+				end: z
+					.string()
+					.describe("Anchor of the last line to replace (same as start for a single line)."),
+				content: z
+					.string()
+					.describe("Replacement text for the range; multi-line via \\n, empty string deletes."),
 			}),
 		)
-		.describe("Ordered list of edits to apply."),
+		.describe("Edits to apply atomically. Line ranges must not overlap."),
 });
 
 const searchSchema = z.object({
@@ -244,7 +258,7 @@ const DRIVE_LETTER_PATH_RE = /^\/?[A-Za-z]:([\\/]|$)/;
  * paths. just-bash treats backslashes as ordinary filename characters, so a
  * Windows-style path "writes successfully" as a single junk filename in the
  * VFS root while the caller believes it wrote to the host — the failure then
- * surfaces turns later as a host-side ENOENT (observed 2026-06-05).
+ * surfaces turns later as a host-side ENOENT.
  */
 function hostShapedPathError(path: string): string | null {
 	if (path.includes("\\") || DRIVE_LETTER_PATH_RE.test(path)) {
@@ -262,9 +276,8 @@ interface MountPointLister {
 }
 
 /**
- * Writable roots: the static defaults plus every mount point, which covers
- * /home/user and any overlay mounts on a MountableFs. A bare InMemoryFs
- * (unit tests) has no mount table and keeps the defaults.
+ * Writable roots: the static defaults plus every mount point. A bare
+ * InMemoryFs (unit tests) has no mount table and keeps the defaults.
  */
 function writableRoots(fs: IFileSystem): string[] {
 	const roots = new Set<string>(["/home/user", "/tmp"]);
@@ -304,7 +317,9 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "bms_read",
 			description:
-				"Read a file from the in-memory sandbox VFS (not the host filesystem). Returns the file's text content. " +
+				"Read a file from the in-memory sandbox VFS (not the host filesystem). Returns the file's " +
+				"text content in hashline format: each line renders as LINE:HASH|content, where the 4-char " +
+				"hash is a stable anchor accepted by bms_edit. " +
 				"Output is head-truncated to 2000 lines or 50,000 bytes (whichever is smaller); " +
 				"use offset and limit to page through larger files.",
 			parameters: jsonSchema,
@@ -376,10 +391,10 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 			const startIdx = offset - 1;
 			const sliced = allLines.slice(startIdx, startIdx + limit);
 
-			// Format with line numbers (6-col padded)
+			// Format as hashline: LINE:HASH|content (hash anchors feed bms_edit)
 			const formatted = sliced.map((line, i) => {
-				const lineNum = (startIdx + i + 1).toString().padStart(6, " ");
-				return `${lineNum}\t${line}`;
+				const lineNum = startIdx + i + 1;
+				return `${lineNum}:${computeLineHash(line)}|${line}`;
 			});
 
 			// Byte-size trimming: trim trailing lines until <= MAX_BYTES
@@ -396,6 +411,35 @@ function createReadTool(fs: IFileSystem): BuiltInTool {
 			}
 
 			return formatted.join("\n");
+		},
+	};
+}
+
+function createReadStructureTool(fs: IFileSystem): BuiltInTool {
+	return {
+		toolDefinition: {
+			type: "function",
+			function: {
+				name: "bms_read_structure",
+				description:
+					"Return a supported source file's top-level declaration structure without source bodies. Registered extensions: .ts, .tsx, .js, .jsx, .mjs, .cjs, .d.ts, .d.mts, .d.cts, .py, .pyi, .go, .rs; other extensions return empty. Each symbol includes a hashline-compatible LINE:HASH anchor.",
+				parameters: zodToToolParams(readStructureSchema),
+			},
+		},
+		async execute(inputRaw) {
+			const parsed = parseToolInput(readStructureSchema, inputRaw, "bms_read_structure");
+			if (!parsed.ok) return parsed.error;
+			const shapeError = hostShapedPathError(parsed.value.path);
+			if (shapeError) return shapeError;
+			try {
+				const content = await fs.readFile(parsed.value.path);
+				if (isLikelyBinary(content)) {
+					return "Error: binary file is not supported by read_structure";
+				}
+				return formatSourceStructure(content, parsed.value.path);
+			} catch (err) {
+				return `Error: ${(err as Error).message}`;
+			}
 		},
 	};
 }
@@ -451,10 +495,15 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "bms_edit",
 			description:
-				"Apply one or more search-and-replace edits to an existing file in the in-memory sandbox " +
-				"VFS (not the host filesystem). Each edit's old_text " +
-				"must match the ORIGINAL file content exactly once. All edits are validated against the " +
-				"pre-edit content; if any edit's match is missing or ambiguous, no changes are written. " +
+				"Edit an existing file in the in-memory sandbox VFS (not the host filesystem) using " +
+				"hashline anchors from a prior bms_read. Each edit replaces the inclusive line range " +
+				'[start..end] with new content; anchors are "LINE:HASH" tags as shown by bms_read. ' +
+				"Anchors survive line drift: if the file changed since the read, the hash is matched " +
+				"by proximity to the line hint. A unique hash resolves regardless of the line " +
+				"number; the number only breaks ties between lines with identical content. Take " +
+				"both halves from the same read. " +
+				"All edits are validated against the pre-edit content " +
+				"and applied atomically; if any anchor fails to resolve, no changes are written. " +
 				"Returns a unified diff on success.",
 			parameters: jsonSchema,
 		},
@@ -495,66 +544,21 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 			const originalEol = withoutBom.includes("\r\n") ? "\r\n" : "\n";
 			const normalized = withoutBom.replace(/\r\n/g, "\n");
 
-			// Validate all edits against pre-edit content
-			interface ValidatedEdit {
-				index: number; // position in normalized string
-				oldText: string; // normalized
-				newText: string; // normalized
-				editIdx: number; // 1-based edit number
+			// Resolve anchors and apply all edits atomically against the
+			// pre-edit content (validation + overlap checks + proximity
+			// recovery live in the shared hashline library).
+			const applied = applyHashlineEdits(
+				normalized,
+				edits.map((e) => ({
+					start: e.start,
+					end: e.end,
+					content: e.content.replace(/\r\n/g, "\n"),
+				})),
+			);
+			if (!applied.ok) {
+				return `Error: ${applied.error}`;
 			}
-			const validated: ValidatedEdit[] = [];
-
-			for (let ei = 0; ei < edits.length; ei++) {
-				const edit = edits[ei];
-				const oldNorm = edit.old_text.replace(/\r\n/g, "\n");
-				const newNorm = edit.new_text.replace(/\r\n/g, "\n");
-
-				// Count occurrences
-				let count = 0;
-				let pos = 0;
-				let foundAt = -1;
-				while (true) {
-					const idx = normalized.indexOf(oldNorm, pos);
-					if (idx === -1) break;
-					count++;
-					foundAt = idx;
-					pos = idx + 1;
-				}
-
-				if (count === 0) {
-					return `Error: edit ${ei + 1} old_text not found`;
-				}
-				if (count > 1) {
-					return `Error: edit ${ei + 1} old_text matches ${count} times (must be unique)`;
-				}
-
-				validated.push({
-					index: foundAt,
-					oldText: oldNorm,
-					newText: newNorm,
-					editIdx: ei + 1,
-				});
-			}
-
-			// Sort by position and check for overlaps
-			validated.sort((a, b) => a.index - b.index);
-			for (let vi = 1; vi < validated.length; vi++) {
-				const prev = validated[vi - 1];
-				const curr = validated[vi];
-				if (curr.index < prev.index + prev.oldText.length) {
-					return `Error: edits ${prev.editIdx} and ${curr.editIdx} overlap in source content`;
-				}
-			}
-
-			// Apply replacements left-to-right
-			let result = "";
-			let cursor = 0;
-			for (const v of validated) {
-				result += normalized.slice(cursor, v.index);
-				result += v.newText;
-				cursor = v.index + v.oldText.length;
-			}
-			result += normalized.slice(cursor);
+			const result = applied.content;
 
 			// Restore original EOL
 			let finalContent = result;
@@ -587,10 +591,9 @@ function createEditTool(fs: IFileSystem): BuiltInTool {
 // tool_result pair using the name "retrieve_task" — models pattern-match
 // off that injected history and sometimes emit their own retrieve_task({})
 // call mid-session. Before this tool existed, those reflex calls fell
-// through to the bash fallback and returned "unknown tool" errors; pre
-// 2026-04-26 they also tripped the empty-args truncation bug and caused
-// runaway retry loops (see bound_issue:agent-loop:empty-args-false-
-// truncation and the 2026-04-24 repo_watch incident).
+// through to the bash fallback and returned "unknown tool" errors; they
+// also used to trip a parser bug that misclassified valid empty-args
+// calls as truncated, which drove runaway retry loops.
 //
 // The tool intentionally returns a short, stable message telling the
 // model the payload is already in conversation history and that it
@@ -650,7 +653,7 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 		function: {
 			name: "bms_search",
 			description:
-				"Search file contents in the sandbox filesystem for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through bash — it returns identical results to the host boundless_search.",
+				"Search file contents in the sandbox filesystem for a regex pattern. Returns grep-style path:line:hash:preview matches (the hash is the line's hashline anchor from bms_read/bms_edit, so a hit can feed bms_edit directly as `${line}:${hash}` with no extra read) with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through bash — it returns identical results to the host boundless_search.",
 			parameters: jsonSchema,
 		},
 	};
@@ -703,6 +706,7 @@ function createSearchTool(fs: IFileSystem): BuiltInTool {
 export function createBuiltInTools(fs: IFileSystem): Map<string, BuiltInTool> {
 	const map = new Map<string, BuiltInTool>();
 	map.set("bms_read", createReadTool(fs));
+	map.set("bms_read_structure", createReadStructureTool(fs));
 	map.set("bms_write", createWriteTool(fs));
 	map.set("bms_edit", createEditTool(fs));
 	map.set("bms_search", createSearchTool(fs));

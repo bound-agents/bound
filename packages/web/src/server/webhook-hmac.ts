@@ -8,11 +8,17 @@ export interface HmacValidationResult {
 const REPLAY_TOLERANCE_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Validates webhook signatures in four formats:
+ * Validates webhook signatures in five formats:
  * - GitHub: X-Hub-Signature-256: sha256=<hex>
  * - Stripe: Stripe-Signature: t=<ts>,v1=<hex>
  * - Slack: X-Slack-Signature: v0=<hex> + X-Slack-Request-Timestamp: <unix>
  * - Raw: X-Webhook-Signature: <hex>
+ * - None: no signature at all (unauthenticated). Callers MUST gate creation
+ *   and delivery of "none"-format webhooks behind the
+ *   `webhooks_allow_unauthenticated` cluster_config switch (#195) themselves —
+ *   this function only encodes the signature *shape*, not the authorization
+ *   policy, and always reports "none" as valid so the shape-check stays
+ *   uniform across formats.
  */
 export function validateWebhookSignature(
 	format: SignatureFormat,
@@ -30,6 +36,11 @@ export function validateWebhookSignature(
 				return validateSlack(secret, headers, rawBody);
 			case "raw":
 				return validateRaw(secret, headers, rawBody);
+			case "none":
+				// Unauthenticated: no signature to verify. Authorization is enforced
+				// by the caller's `webhooks_allow_unauthenticated` gate (#195); the
+				// shape-check itself always passes.
+				return { valid: true };
 		}
 	} catch {
 		return { valid: false };
@@ -127,17 +138,34 @@ function validateRaw(secret: string, headers: Headers, rawBody: Buffer): HmacVal
 		return { valid: false };
 	}
 
+	const timestamp = headers.get("X-Webhook-Timestamp");
+	if (!timestamp || !isFreshUnixTimestamp(timestamp)) {
+		return { valid: false };
+	}
+
 	// Extract hex (must be exactly 64 chars for SHA256)
 	if (!/^[a-f0-9]{64}$/.test(headerValue)) {
 		return { valid: false };
 	}
 
 	const providedHex = headerValue;
-	const expectedHex = createHmac("sha256", secret).update(rawBody).digest("hex");
+	const expectedHex = createHmac("sha256", secret)
+		.update(`${timestamp}.`)
+		.update(rawBody)
+		.digest("hex");
 
 	return {
 		valid: constantTimeEqual(providedHex, expectedHex),
 	};
+}
+
+function isFreshUnixTimestamp(timestamp: string): boolean {
+	if (!/^\d+$/.test(timestamp)) {
+		return false;
+	}
+	const now = Math.floor(Date.now() / 1000);
+	const ts = Number.parseInt(timestamp, 10);
+	return Number.isFinite(ts) && Math.abs(now - ts) <= REPLAY_TOLERANCE_MS / 1000;
 }
 
 /**

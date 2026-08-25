@@ -21,7 +21,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { buildReasoningConfig } from "../bedrock-driver";
+import { buildReasoningConfig } from "../drivers/bedrock";
 
 describe("buildReasoningConfig — Anthropic models", () => {
 	it("keeps budgetTokens for enabled thinking on Anthropic", () => {
@@ -33,6 +33,17 @@ describe("buildReasoningConfig — Anthropic models", () => {
 			"anthropic.claude-opus-4-7",
 		);
 		expect(cfg).toEqual({ type: "enabled", budgetTokens: 8192 });
+	});
+
+	it("sends explicit disabled thinking for tool mode on Anthropic", () => {
+		const cfg = buildReasoningConfig(
+			{
+				messages: [],
+				thinking: { type: "disabled" },
+			},
+			"anthropic.claude-opus-4-7",
+		);
+		expect(cfg).toEqual({ type: "disabled" });
 	});
 
 	it("keeps adaptive thinking on Anthropic", () => {

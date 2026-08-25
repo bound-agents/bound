@@ -82,6 +82,22 @@ function classifyShell(shellPath: string): ResolvedShell {
 }
 
 /**
+ * Whether a tool name is the boundless shell tool, across every name
+ * {@link classifyShell} can mint (`boundless_bash` for the POSIX family,
+ * `boundless_pwsh` for PowerShell, `boundless_cmd` for cmd.exe). The `sh`/`zsh`/
+ * `powershell` alternatives are accepted defensively even though the POSIX
+ * family currently collapses to `boundless_bash`.
+ *
+ * Single source of truth co-located with the names it recognizes, so display
+ * (`tui`) and ACP mapping (`acp`) layers can't drift from the minted set —
+ * which is exactly how the old `toolName.endsWith("_bash")` guess missed
+ * PowerShell and cmd.
+ */
+export function isShellToolName(toolName: string): boolean {
+	return /^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName);
+}
+
+/**
  * Resolve a shell executable on the host: a path (containing a separator) is
  * checked for existence directly; a bare name is resolved on PATH. Returns the
  * resolved reference (the original string) or `null` if not found.

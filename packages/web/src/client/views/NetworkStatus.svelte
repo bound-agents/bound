@@ -467,6 +467,13 @@ const syncMeshRows = $derived.by<MeshRow[]>(() => {
 
 	.mesh {
 		margin-top: 36px;
+		overflow-x: auto;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.mesh-columns,
+	.mesh-row {
+		min-width: 560px;
 	}
 
 	.mesh-header {

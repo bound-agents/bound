@@ -41,8 +41,8 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		evictionTimeMs: number,
 		hostOfflineTimeoutMs: number,
 		orphanTimeoutMs: number = ORPHAN_HEARTBEAT_TIMEOUT,
+		now = new Date(),
 	): Task[] {
-		const now = new Date();
 		const evictionTime = new Date(now.getTime() - evictionTimeMs).toISOString();
 		const hostOfflineThreshold = new Date(now.getTime() - hostOfflineTimeoutMs).toISOString();
 		const orphanThreshold = new Date(now.getTime() - orphanTimeoutMs).toISOString();
@@ -56,8 +56,12 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		return tasksToEvict;
 	}
 
-	function insertTask(taskId: string, claimedBySiteId: string, heartbeatAtMs: number): void {
-		const now = new Date();
+	function insertTask(
+		taskId: string,
+		claimedBySiteId: string,
+		heartbeatAtMs: number,
+		now = new Date(),
+	): void {
 		const heartbeatAt = new Date(now.getTime() - heartbeatAtMs).toISOString();
 		const nowStr = now.toISOString();
 
@@ -109,8 +113,8 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 		siteId: string,
 		modifiedAtMs: number | null,
 		onlineAtMs: number | null,
+		now = new Date(),
 	): void {
-		const now = new Date();
 		// modified_at is NOT NULL in schema — always provide a value
 		// If modifiedAtMs is null, use the current time (fresh)
 		const modifiedAt =
@@ -121,102 +125,68 @@ describe("eviction host-liveness gate (R-LR2, R-LR7)", () => {
 			onlineAtMs !== null ? new Date(now.getTime() - onlineAtMs).toISOString() : null;
 
 		db.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[siteId, "test-host", "1.0", null, null, null, null, null, onlineAt, modifiedAt, 0],
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[siteId, "test-host", "1.0", null, null, null, null, onlineAt, modifiedAt, 0],
 		);
 	}
 
-	it("AC2.1: evicts when both task heartbeat_at and host modified_at are stale", () => {
+	it("evicts when both task heartbeat_at and host modified_at are stale", () => {
 		const taskId = randomUUID();
-		const siteA = "site-A";
+		const siteId = "stale-host";
+		const now = new Date("2026-01-01T00:00:00.000Z");
 
-		// Insert running task with stale heartbeat_at (30 minutes old)
-		insertTask(taskId, siteA, 30 * 60 * 1000);
+		insertTask(taskId, siteId, EVICTION_TIMEOUT + 60_000, now);
+		insertHost(siteId, HOST_OFFLINE_TIMEOUT + 60_000, null, now);
 
-		// Insert host row with stale modified_at (30 minutes old)
-		insertHost(siteA, 30 * 60 * 1000, null);
-
-		// Run eviction selector with timeouts
-		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
-
-		expect(evicted).toHaveLength(1);
-		expect(evicted[0].id).toBe(taskId);
+		const evicted = runEvictionSelector(
+			EVICTION_TIMEOUT,
+			HOST_OFFLINE_TIMEOUT,
+			ORPHAN_HEARTBEAT_TIMEOUT,
+			now,
+		);
+		expect(evicted.map((task) => task.id)).toEqual([taskId]);
 	});
 
-	it("AC2.2: does not evict when task heartbeat_at is stale but host modified_at is fresh", () => {
-		const taskId = randomUUID();
-		const siteB = "site-B";
+	it("does not evict at the strict eviction, host, or orphan boundaries", () => {
+		const now = new Date("2026-01-01T00:00:00.000Z");
+		const cases = [
+			{ taskAge: EVICTION_TIMEOUT, hostAge: HOST_OFFLINE_TIMEOUT + 60_000 },
+			{ taskAge: EVICTION_TIMEOUT + 60_000, hostAge: HOST_OFFLINE_TIMEOUT },
+			{ taskAge: ORPHAN_HEARTBEAT_TIMEOUT, hostAge: 0 },
+		];
 
-		// Heartbeat 12 minutes stale: past EVICTION_TIMEOUT (10min) but below
-		// ORPHAN_HEARTBEAT_TIMEOUT (20min), so the host-liveness gate still protects it.
-		// (Beyond the orphan threshold a fresh host no longer protects the task — see the
-		// ORPHAN test below.)
-		insertTask(taskId, siteB, 12 * 60 * 1000);
+		for (const [index, { taskAge, hostAge }] of cases.entries()) {
+			const taskId = `strict-boundary-${index}`;
+			const siteId = `strict-boundary-host-${index}`;
+			insertTask(taskId, siteId, taskAge, now);
+			insertHost(siteId, hostAge, null, now);
+		}
 
-		// Insert host row with fresh modified_at (30 seconds old)
-		insertHost(siteB, 30 * 1000, null);
-
-		// Run eviction selector with timeouts
-		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
-
-		expect(evicted).toHaveLength(0);
+		const evicted = runEvictionSelector(
+			EVICTION_TIMEOUT,
+			HOST_OFFLINE_TIMEOUT,
+			ORPHAN_HEARTBEAT_TIMEOUT,
+			now,
+		);
+		expect(evicted).toEqual([]);
 	});
 
-	it("AC7.1: COALESCE(modified_at, online_at) — stale modified_at, NULL online_at permits eviction", () => {
+	it("does not evict a stale but non-orphaned task while its host is fresh", () => {
 		const taskId = randomUUID();
-		const siteC = "site-C";
+		const siteId = "fresh-host";
+		const now = new Date("2026-01-01T00:00:00.000Z");
 
-		// Insert running task with stale heartbeat_at (30 minutes old)
-		insertTask(taskId, siteC, 30 * 60 * 1000);
+		insertTask(taskId, siteId, EVICTION_TIMEOUT + 60_000, now);
+		insertHost(siteId, 0, null, now);
 
-		// Insert host row: stale modified_at, NULL online_at
-		// COALESCE(modified_at, online_at) = stale modified_at → permits eviction
-		insertHost(siteC, 30 * 60 * 1000, null);
-
-		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
-
-		expect(evicted).toHaveLength(1);
-		expect(evicted[0].id).toBe(taskId);
-	});
-
-	it("AC7.1: COALESCE(modified_at, online_at) — fresh modified_at, stale online_at does not permit eviction", () => {
-		const taskId = randomUUID();
-		const siteD = "site-D";
-
-		// Heartbeat 12 minutes stale: past EVICTION_TIMEOUT but below ORPHAN_HEARTBEAT_TIMEOUT,
-		// so the orphan arm does not fire and the COALESCE(modified_at, …) precedence is what's
-		// under test here.
-		insertTask(taskId, siteD, 12 * 60 * 1000);
-
-		// Insert host row: fresh modified_at (30s), stale online_at (30min)
-		// COALESCE(modified_at, online_at) = fresh modified_at → does NOT permit eviction
-		insertHost(siteD, 30 * 1000, 30 * 60 * 1000);
-
-		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
-
-		expect(evicted).toHaveLength(0);
-	});
-
-	it("AC7.1: COALESCE(modified_at, online_at) — stale modified_at, stale online_at permits eviction (unreachable NULL modified_at path)", () => {
-		const taskId = randomUUID();
-		const siteE = "site-E";
-
-		// Insert running task with stale heartbeat_at (30 minutes old)
-		insertTask(taskId, siteE, 30 * 60 * 1000);
-
-		// Insert host row: stale modified_at (30min), stale online_at (30min)
-		// COALESCE(modified_at, online_at) = stale modified_at → permits eviction
-		// Note: The COALESCE fallback to online_at is tested here but never reaches it
-		// because schema enforces hosts.modified_at NOT NULL, so COALESCE always returns
-		// the non-NULL modified_at value. This test documents the expected behavior should
-		// the schema change to allow NULL modified_at in the future.
-		insertHost(siteE, 30 * 60 * 1000, 30 * 60 * 1000);
-
-		const evicted = runEvictionSelector(EVICTION_TIMEOUT, HOST_OFFLINE_TIMEOUT);
-
-		expect(evicted).toHaveLength(1);
-		expect(evicted[0].id).toBe(taskId);
+		const evicted = runEvictionSelector(
+			EVICTION_TIMEOUT,
+			HOST_OFFLINE_TIMEOUT,
+			ORPHAN_HEARTBEAT_TIMEOUT,
+			now,
+		);
+		expect(evicted).toEqual([]);
 	});
 
 	it("LEFT JOIN: missing host row permits eviction (decommissioned host)", () => {

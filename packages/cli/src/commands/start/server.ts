@@ -2,60 +2,64 @@
  * Server subsystem: web server creation, message:created handler wiring,
  * delegation logic, and platform connector initialization.
  */
-
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
-	CACHE_TTL_MS,
 	HandleMessageTracker,
 	WARM_POKE_MARKER,
 	WARM_POKE_MAX_OUTPUT_TOKENS,
 	createRelayOutboxEntry,
 	generateThreadTitle,
-	getClientSessionDelegationTarget,
 	getClientSessions,
-	getDelegationTarget,
-	hasLocalClientSession,
 	isWarmPokeNotificationPayload,
+	routeNotificationWakeup,
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
 } from "@bound/agent";
-import type { AgentLoop, AgentLoopConfig, ClientToolResolver } from "@bound/agent";
+import type { ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	type DispatchEntry,
 	ThreadExecutor,
 	acknowledgeBatch,
 	claimPending,
+	countBackgroundToolCallsByThread,
 	enqueueMessage,
 	enqueueNotification,
 	expireClientToolCalls,
+	findAgentById,
+	findBackgroundAuxSeed,
+	findBackgroundPlaceholderDeliveryState,
 	findFreshPlatformHost,
+	findLatestTaskSettingsForThread,
+	findThreadAgentIdById,
+	findThreadModelHintById,
+	findThreadUserAndInterfaceById,
+	findUnresolvedBackgroundPlaceholder,
 	hasPendingClientToolCalls,
 	insertRow,
 	markProcessed,
 	readInboxByRefId,
+	resolveDeferredToolResult,
+	softDelete,
 	updateRow,
 	writeMessageMetadata,
 	writeOutbox,
 } from "@bound/core";
-import type { ModelBackendsConfig, ModelRouter } from "@bound/llm";
+import type { ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
 import {
 	type ConnectorToolContext,
 	PlatformLeaderElection,
 	PlatformMcpRegistry as PlatformMcpRegistryClass,
+	RssPoller,
 	createConnectorTool,
 	getConnectorHandle,
+	isSubscriptionRejected,
 } from "@bound/platforms";
 import type { ClusterFsResult } from "@bound/sandbox";
-import type {
-	KeyringConfig,
-	Logger,
-	McpConfig,
-	ProcessPayload,
-	StatusForwardPayload,
-} from "@bound/shared";
+import { parseDurationMs } from "@bound/shared";
+import type { KeyringConfig, Logger, McpConfig, StatusForwardPayload } from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
 	DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
@@ -63,7 +67,6 @@ import {
 	deterministicUUID,
 	extractTraceContext,
 	formatError,
-	injectTraceContext,
 	isUserFacingInterface,
 	parseJsonSafe,
 	resultPayloadSchema,
@@ -72,8 +75,9 @@ import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
-
-export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+import type { AgentLoopFactory } from "./agent-factory.js";
+import { resolvePlatformToolsForThread } from "./platform-tools.js";
+export type { AgentLoopFactory } from "./agent-factory.js";
 
 const getTracer = () => trace.getTracer("bound.web");
 
@@ -86,10 +90,9 @@ const getTracer = () => trace.getTracer("bound.web");
  * message in `<system-context>...</system-context>`, so without an
  * explicit provenance signal the receiving agent reads its sibling's
  * narrative as authoritative system state and primes diagnoses on the
- * phrasing rather than on ground truth (live evidence: 2026-05-17
- * incident, where the agent built a full dedup fix from a notify
- * payload's "byte-different content + 1 notify fallback" phrase
- * before discovering the real bug was in the LLM bridge layer).
+ * phrasing rather than on ground truth. (Observed in production: the
+ * agent built a full dedup fix from a notify payload's characterization
+ * of a bug, before discovering the real bug was elsewhere entirely.)
  *
  * For these two payload kinds, the prefix marks the content as
  * agent-authored and unverified so the receiving agent treats it as
@@ -129,14 +132,20 @@ export interface ResolveDelegationMessageIdParams {
 
 export interface ResolveDelegationMessageIdResult {
 	/**
-	 * The message_id that must be placed in ProcessPayload when delegating
-	 * the loop to a remote host. Always references a real row in `messages`.
+	 * A real `messages.id` representing the claimed batch — the last injected
+	 * notification's id, or a non-notification claim's id (which already equals
+	 * its `messages.id`), or empty string when there are no claims.
+	 *
+	 * Under the single delegation path (R-UD1) the loop runs locally and there
+	 * is no cross-host id to forward, so this is no longer a delegation
+	 * precondition; it is retained as a convenience handle to the batch's
+	 * representative message and is still asserted by the notification tests.
 	 *
 	 * Preference order (highest wins):
 	 * 1. A non-notification claim (user / tool_result — dispatch entry id
 	 *    already equals the messages.id).
 	 * 2. The id of the last notification this call injected into messages.
-	 * 3. Empty string (no claims — caller should not delegate).
+	 * 3. Empty string (no claims).
 	 */
 	delegationMessageId: string;
 	/** IDs of newly inserted notification messages, in insertion order. */
@@ -144,16 +153,17 @@ export interface ResolveDelegationMessageIdResult {
 }
 
 /**
- * Inject any claimed notification entries into the messages table and return
- * the message_id that should flow through ProcessPayload when delegating.
+ * Inject any claimed notification entries into the `messages` table (as
+ * `role: "developer"` rows so they survive Stage 2.5 of context assembly and
+ * reach the agent), and return a real `messages.id` for the claimed batch.
  *
- * Historically handleThread passed `claimedIds[0]` — the dispatch_queue entry
- * id — into ProcessPayload.message_id. That is correct for user-message
- * entries (enqueueMessage stores the real messages.id as message_id) but
- * wrong for notifications, whose dispatch_queue entry id is a synthetic UUID
- * generated by enqueueNotification. The receiving host's executeProcess then
- * fails its `SELECT * FROM messages WHERE id = ?` guard and responds with
- * "Message not found", silently dropping the notification.
+ * This is the notification-injection step of the local turn. Its load-bearing
+ * job is the side effect: a notification claim's dispatch_queue id is a
+ * synthetic UUID (from `enqueueNotification`), so the real developer-role
+ * message must be written here before assembly so the agent sees it. The
+ * returned id maps the batch to a real row (see the result type) — formerly
+ * forwarded cross-host on the now-removed `process` delegation path; today the
+ * loop assembles locally from the just-written rows, so no forwarding occurs.
  */
 export function resolveDelegationMessageId(
 	params: ResolveDelegationMessageIdParams,
@@ -231,7 +241,6 @@ export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
 	syncServer: Awaited<ReturnType<typeof createSyncServer>> | null;
 	statusForwardCache: Map<string, StatusForwardPayload>;
-	activeDelegations: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	threadExecutor: ThreadExecutor;
 	platformMcpRegistry: PlatformMcpRegistry | null;
 	handleMessageTracker: HandleMessageTracker;
@@ -267,7 +276,6 @@ export interface ServerResult {
 export interface ServerDeps {
 	appContext: AppContext;
 	modelRouter: ModelRouter;
-	routerConfig: ModelBackendsConfig;
 	agentLoopFactory: AgentLoopFactory;
 	relayExecutor: RelayExecutor | undefined;
 	keyManager: KeyManager | undefined;
@@ -288,7 +296,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const {
 		appContext,
 		modelRouter,
-		routerConfig,
 		agentLoopFactory,
 		relayExecutor,
 		keyManager,
@@ -306,7 +313,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	let webServer: Awaited<ReturnType<typeof createWebServer>> | null = null;
 	let syncServer: Awaited<ReturnType<typeof createSyncServer>> | null = null;
 	const statusForwardCache = new Map<string, StatusForwardPayload>();
-	const activeDelegations = new Map<string, { targetSiteId: string; processOutboxId: string }>();
 	const threadExecutor = new ThreadExecutor(appContext.db, appContext.logger);
 	const handleMessageTracker = new HandleMessageTracker();
 	handleMessageTracker.startWatchdog();
@@ -426,11 +432,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				return cfg?.ok ? (cfg.value as McpConfig) : null;
 			})(),
 			statusForwardCache,
-			activeDelegations,
 			activeLoops: threadExecutor.activeThreads as Set<string>,
 			requestConsistency: (tables: string[]) => wsTransportHolder.requestConsistency(tables),
 			handleMessageTracker,
 			clusterFs: clusterFsObj?.fs ?? null,
+			modelRouter,
 		});
 		await webServer.start();
 
@@ -482,67 +488,199 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			statusForwardCache.set(payload.thread_id, payload);
 		});
 
-		// Helper: count messages in thread
-		const getThreadMessageCount = (threadId: string): number => {
-			const result = appContext.db
-				.query("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
-				.get(threadId) as { count: number } | null;
-			return result?.count ?? 0;
-		};
+		// Whole-loop delegation (the `process` relay kind) is removed: every loop
+		// runs locally on the trigger host and relays only inference. There is no
+		// dispatch-and-poll-for-remote-completion anymore (R-UD1).
 
-		// Helper: dispatch delegation to remote host
-		const dispatchDelegation = async (
-			targetHost: ReturnType<typeof getDelegationTarget>,
-			threadId: string,
-			messageId: string,
-			userId: string,
-			traceContext?: string,
+		// #76: dispatcher-owned background aux execution. See the ownership comment
+		// in handleThread. Runs under the same thread-exclusive executor lock as
+		// ordinary dispatch, so a straggler tool_result wakeup (an inline client
+		// tool acking late) cannot start a second loop on the thread mid-run.
+		const runBackgroundAuxThread = async (
+			thread_id: string,
+			agentId: string,
+			seed: { parentThreadId: string; parentCallId: string; instructions: string },
 		): Promise<void> => {
-			if (!targetHost) return;
+			await threadExecutor.execute(thread_id, async () => {
+				const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
+				if (claimed.length === 0) return {};
+				const claimedIds = claimed.map((e) => e.message_id);
 
-			const processPayload: ProcessPayload = {
-				thread_id: threadId,
-				message_id: messageId,
-				user_id: userId,
-				platform: null, // null = web UI delegation
-			};
-			const outboxEntry = createRelayOutboxEntry(
-				targetHost.site_id,
-				appContext.siteId,
-				"process",
-				JSON.stringify(processPayload),
-				5 * 60 * 1000, // 5 minute timeout for delegated loop
-				undefined,
-				undefined,
-				undefined,
-				traceContext,
-			);
-			writeOutbox(appContext.db, outboxEntry);
-			activeDelegations.set(threadId, {
-				targetSiteId: targetHost.site_id,
-				processOutboxId: outboxEntry.id,
-			});
+				// Guard on proof-of-delivery, not on the in-flight marker: a spurious
+				// re-wake after the placeholder already RESOLVED must not clobber a
+				// delivered result — but a placeholder that missed its `background`
+				// stamp (#220 defect 1, observed twice more on 2026-08-24) must still
+				// receive its only delivery. resolveDeferredToolResult stamps
+				// `background_delivered` when it lands a result, so "delivered" is
+				// provable from the row itself; anything else fails safe toward
+				// delivering. A missing row entirely is the placeholder-not-yet-
+				// persisted race, which resolveDeferredToolResult already handles
+				// (enqueue-only no-op).
+				const finishParent = (content: string, isError: boolean): void => {
+					const placeholder = findBackgroundPlaceholderDeliveryState(
+						appContext.db,
+						seed.parentThreadId,
+						seed.parentCallId,
+					);
+					if (!placeholder?.delivered) {
+						if (
+							placeholder &&
+							!findUnresolvedBackgroundPlaceholder(
+								appContext.db,
+								seed.parentThreadId,
+								seed.parentCallId,
+							)
+						) {
+							// The in-flight stamp is missing but the result is deliverable —
+							// keep the loud log so the stamp defect stays visible while the
+							// consequence (lost delivery) no longer occurs.
+							appContext.logger.error(
+								"[agent] Background placeholder missing its background stamp — delivering anyway (#220)",
+								{
+									parentThreadId: seed.parentThreadId,
+									parentCallId: seed.parentCallId,
+									auxThreadId: thread_id,
+									placeholderId: placeholder.id,
+								},
+							);
+						}
+						resolveDeferredToolResult(
+							appContext.db,
+							seed.parentThreadId,
+							seed.parentCallId,
+							content,
+							isError,
+							appContext.siteId,
+							appContext.eventBus,
+						);
+					} else {
+						// Already delivered — this is the spurious re-wake the guard exists
+						// for. Push the recomputed count so a stale client indicator
+						// converges, and leave the delivered result untouched.
+						appContext.logger.warn(
+							"[agent] Background aux re-wake after delivery — skipping duplicate resolution",
+							{
+								parentThreadId: seed.parentThreadId,
+								parentCallId: seed.parentCallId,
+								auxThreadId: thread_id,
+							},
+						);
+						appContext.eventBus.emit("background:count", {
+							thread_id: seed.parentThreadId,
+							count: countBackgroundToolCallsByThread(appContext.db, seed.parentThreadId),
+						});
+					}
+					// #220: re-drive the parent loop unconditionally. resolveDeferredToolResult
+					// only ENQUEUES the tool_result wakeup — its updateRow fires no
+					// message:created, and this dispatcher never called handleThread for
+					// the parent — so a resolution landing while the parent loop was idle
+					// stranded the pending entry until an unrelated message arrived
+					// (observed live: two entries pending for 10h). notify:enqueued is
+					// the existing wake channel; enqueueToolResult's (thread, call_id)
+					// dedup makes the re-drive idempotent, and handleThread with nothing
+					// pending is a no-op.
+					appContext.eventBus.emit("notify:enqueued", { thread_id: seed.parentThreadId });
+				};
 
-			// Poll until new assistant message appears in thread (loop completed on remote)
-			const POLL_INTERVAL_MS = 1000;
-			const TIMEOUT_MS = 5 * 60 * 1000;
-			const startTime = Date.now();
-			const initialMessageCount = getThreadMessageCount(threadId);
+				try {
+					const agent = findAgentById(appContext.db, agentId);
+					if (!agent) {
+						finishParent(
+							`Error: auxiliary agent identity ${agentId} not found for background invocation`,
+							true,
+						);
+						acknowledgeBatch(appContext.db, claimedIds);
+						return { claimedIds };
+					}
+					const threadInfo = findThreadUserAndInterfaceById(appContext.db, thread_id);
+					const parentThreadInfo = findThreadUserAndInterfaceById(
+						appContext.db,
+						seed.parentThreadId,
+					);
+					const modelHint =
+						findThreadModelHintById(appContext.db, thread_id)?.model_hint ??
+						agent.model_hint ??
+						null;
 
-			while (true) {
-				if (Date.now() - startTime > TIMEOUT_MS) {
-					appContext.logger.warn("Delegation timeout — no response received", {
-						threadId,
+					// Inherit the complete dispatching surface context, not only its
+					// client tool registry. For boundless this includes the frozen cwd,
+					// git context, and injected context-file bodies. For connector/event
+					// surfaces it includes their platform-authored instructions.
+					const clientToolsFromRegistry = wsRegistry?.getClientToolsForThread(seed.parentThreadId);
+					const clientTools =
+						clientToolsFromRegistry && clientToolsFromRegistry.size > 0
+							? clientToolsFromRegistry
+							: undefined;
+					const firstToolName = clientTools?.keys().next().value;
+					const connectionId = firstToolName
+						? wsRegistry?.getConnectionForTool(seed.parentThreadId, firstToolName)
+						: undefined;
+					const systemPromptAddition = wsRegistry?.getSystemPromptAdditionForThread(
+						seed.parentThreadId,
+					);
+					const platformInstructions = platformMcpRegistry?.getInstructionsForThread(
+						seed.parentThreadId,
+					);
+					const parentInterface = parentThreadInfo?.interface;
+					const platform =
+						parentInterface && isUserFacingInterface(parentInterface) ? parentInterface : undefined;
+
+					const runner = agentLoopFactory.createAuxLoopRunner?.({
+						clientTools,
+						connectionId,
+						platform,
+						systemPromptAddition,
+						platformInstructions,
 					});
-					break;
+					if (!runner) {
+						finishParent(
+							"Error: this host's agent loop factory cannot construct auxiliary loops",
+							true,
+						);
+						acknowledgeBatch(appContext.db, claimedIds);
+						return { claimedIds };
+					}
+
+					appContext.logger.info("[agent] Running background aux thread", {
+						threadId: thread_id,
+						agentId,
+						parentThreadId: seed.parentThreadId,
+						parentCallId: seed.parentCallId,
+					});
+					const result = await runner({
+						threadId: thread_id,
+						agentId: agent.id,
+						persona: agent.persona,
+						modelHint,
+						allowlistedTools: agent.tools ? (JSON.parse(agent.tools) as string[]) : null,
+						instructions: seed.instructions,
+						userId: threadInfo?.user_id ?? operatorUserId,
+						parentThreadId: seed.parentThreadId,
+					});
+					// The child-thread link rides the placeholder row's metadata
+					// (aux_thread, stamped by the loop's persist seam from the
+					// DeferredToolResult) — resolveDeferredToolResult preserves
+					// sibling metadata keys, so the web card keeps its link after
+					// resolution without a content trailer.
+					finishParent(
+						result.error ? `Auxiliary agent errand failed: ${result.error}` : result.summary,
+						!!result.error,
+					);
+					acknowledgeBatch(appContext.db, claimedIds);
+					return { claimedIds };
+				} catch (error) {
+					finishParent(
+						`Error: background auxiliary invocation failed: ${formatError(error)}`,
+						true,
+					);
+					try {
+						acknowledgeBatch(appContext.db, claimedIds);
+					} catch {
+						// claimed entries reset via executor error path
+					}
+					return {};
 				}
-				const currentCount = getThreadMessageCount(threadId);
-				if (currentCount > initialMessageCount) break; // Response arrived via sync
-
-				await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-			}
-
-			activeDelegations.delete(threadId);
+			});
 		};
 
 		// handleThread delegates to the shared ThreadExecutor.
@@ -550,6 +688,44 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		const handleThread = async (thread_id: string, traceContext?: string) => {
 			if (!modelRouter) {
 				appContext.logger.warn("[agent] No model router configured, cannot process message");
+				return;
+			}
+
+			// An aux thread (#201) has two ownership modes, distinguished by durable
+			// state on its seed message (#76):
+			//
+			// FOREGROUND (no background_parent correlation on the seed): a nested
+			// AuxAgentLoop inside the dispatching thread's turn owns it for the
+			// invocation's lifetime. Never claim one here: this dispatcher would
+			// build a MainAgentLoop, losing the persona, the agent_id memory
+			// scoping, AND the EXCLUDED_TOOLS capability boundary
+			// (aux/task/cancel/notify/introspect) — a capability breach, not just a
+			// behavioral regression. Its inherited client tools persist tool_result
+			// rows that fire this listener; the inline resolver in AuxAgentLoop
+			// consumes those, and `acknowledgeToolResultForCall` closes the entry.
+			//
+			// BACKGROUND (seed stamped with metadata.background_parent): the
+			// dispatcher owns it. aux.invoke(background) enqueued the seed through
+			// dispatch_queue and returned a placeholder to the parent; this branch
+			// runs the capability-scoped AuxAgentLoop over the child thread and
+			// resolves the parent's placeholder on completion. Restart durability is
+			// the ordinary dispatch machinery — bootstrap resets interrupted entries
+			// to pending, recovery re-dispatches the thread, and the errand re-runs
+			// from its durable seed.
+			//
+			// Keyed on `agent_id IS NOT NULL`, never the `interface` tag — `interface`
+			// is descriptive only.
+			const auxOwner = findThreadAgentIdById(appContext.db, thread_id);
+			if (auxOwner?.agent_id) {
+				const seed = findBackgroundAuxSeed(appContext.db, thread_id);
+				if (!seed) {
+					appContext.logger.debug(
+						"[agent] Skipping dispatch for aux thread — its nested loop owns it",
+						{ threadId: thread_id },
+					);
+					return;
+				}
+				await runBackgroundAuxThread(thread_id, auxOwner.agent_id, seed);
 				return;
 			}
 
@@ -577,11 +753,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						);
 
 					try {
-						// Inject notification context as system messages so the agent
-						// can see and respond to non-user events (task completions, etc.)
-						// The helper also picks the ProcessPayload.message_id we forward
-						// on delegation — it MUST reference a real `messages` row or the
-						// remote host's executeProcess() bails with "Message not found".
+						// Inject notification context as developer-role messages so the
+						// agent can see and respond to non-user events (task completions,
+						// etc.). This is the load-bearing side effect — the rows must
+						// exist before local assembly. The returned id maps the batch to
+						// a real `messages` row; it is no longer forwarded anywhere (the
+						// loop runs locally under the single delegation path, R-UD1).
 						const { delegationMessageId } = resolveDelegationMessageId({
 							db: appContext.db,
 							siteId: appContext.siteId,
@@ -591,46 +768,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							logger: appContext.logger,
 						});
 
-						// Resolve the model for this thread from the authoritative
-						// threads.model_hint column (set by /model command or web UI).
-						// Falls back to the node's default when model_hint is NULL.
+						const taskBinding = findLatestTaskSettingsForThread(appContext.db, thread_id);
+						// Use the same task > thread > live node-default precedence as
+						// scheduler wakeups.
 						const activeModelId = resolveThreadModel(
 							appContext.db,
 							thread_id,
-							routerConfig.default,
+							modelRouter.getDefaultId(),
+							taskBinding?.id,
 						);
-
-						const delegationTarget = ((): ReturnType<typeof getDelegationTarget> => {
-							// Warm pokes (issue #10) never delegate: noTools/maxOutputTokens
-							// live in the local AgentLoopConfig and would be lost on the
-							// remote host.
-							if (isCacheWarmPoke) return null;
-							// Client-session affinity wins over model-based delegation
-							// (issue #91). A notify/introspect wakeup can fire on any
-							// host; the loop must run where the live WS session is so
-							// client tools resolve. Three cases:
-							//   1. session lives on another host → delegate there
-							//   2. session lives here → force local (suppress model
-							//      delegation, which would otherwise pull an opus-backed
-							//      boundless loop to the hub and strip its client tools)
-							//   3. no live session → fall back to model-based delegation
-							const sessionTarget = getClientSessionDelegationTarget(
-								appContext.db,
-								thread_id,
-								appContext.siteId,
-							);
-							if (sessionTarget) return sessionTarget;
-							if (hasLocalClientSession(appContext.db, thread_id, appContext.siteId)) {
-								return null;
-							}
-							return getDelegationTarget(
-								appContext.db,
-								thread_id,
-								activeModelId,
-								modelRouter,
-								appContext.siteId,
-							);
-						})();
 
 						const threadRow = appContext.db
 							.query("SELECT user_id, interface FROM threads WHERE id = ?")
@@ -664,52 +810,20 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						}
 						handleMessageTracker.touchTurn(thread_id);
 
-						if (delegationTarget) {
-							appContext.logger.info(
-								`[agent] Delegating to remote host ${delegationTarget.site_id}`,
-							);
-							const tracer = getTracer();
-							const rootSpan = tracer.startSpan(
-								"web.handle-message",
-								{
-									attributes: {
-										"thread.id": thread_id,
-										"user.id": userId,
-										"message.id": claimedIds[0] ?? "",
-										"agent.execution": "delegated",
-										"agent.delegate.site_id": delegationTarget.site_id,
-									},
-								},
-								turnCtx,
-							);
-							try {
-								await context.with(trace.setSpan(turnCtx, rootSpan), async () => {
-									// Inject the W3C trace context with web.handle-message
-									// active so the relay outbox carries our traceparent
-									// to the remote host. The remote `relay.execute-process`
-									// span re-exports under us via reExportSpans.
-									const carrier = injectTraceContext();
-									const carrierStr = carrier ? JSON.stringify(carrier) : undefined;
-									await dispatchDelegation(
-										delegationTarget,
-										thread_id,
-										delegationMessageId,
-										userId,
-										carrierStr,
-									);
-								});
-								rootSpan.setStatus({ code: SpanStatusCode.OK });
-							} catch (err) {
-								rootSpan.setStatus({
-									code: SpanStatusCode.ERROR,
-									message: err instanceof Error ? err.message : String(err),
-								});
-								throw err;
-							} finally {
-								rootSpan.end();
-								handleMessageTracker.touchTurn(thread_id);
-							}
-						} else {
+						{
+							// Single delegation path (R-UD1): the loop ALWAYS runs locally
+							// on the host that received the trigger. It producer-assembles
+							// from its own authoritative state and relays only the inference
+							// (segments) — and, under uniform tool dispatch, any tool calls —
+							// outward. There is no whole-loop `process` delegation, so a host
+							// can never re-assemble from an un-synced replica (the history:0
+							// bug class). Model affinity and client-session affinity are no
+							// longer correctness requirements (R-UD12): the model host is
+							// reached via the inference relay, and client tools relay to the
+							// session host. `delegationMessageId` is retained for notification
+							// wakeup bookkeeping. See
+							// docs/design/specs/2026-06-29-unified-delegation.md.
+							void delegationMessageId;
 							// Derive the platform tag and platform tools for
 							// this thread. The tag tells the agent which surface the
 							// current turn originated from — web, boundless, discord, etc.
@@ -722,27 +836,24 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 									? threadInterface
 									: undefined;
 
-							// Resolve platform tools using two-branch model:
-							// - Event task threads: scoped to their bound server's full tool set
-							// - All other threads: read-only platform tools + connector tool
+							// Event task threads additionally receive the connector tool so they
+							// can detach a malfunctioning subscription without external help.
 							let platformTools: PlatformRegisteredTool[] | undefined;
 							// Connector-authored instructions, surfaced only to event-bound
 							// threads (mirrors getInstructionsForThread's scoping).
 							let platformInstructions: string | undefined;
 							if (platformMcpRegistry) {
 								const scopedTools = platformMcpRegistry.getToolsForThread(thread_id);
+								const resolvedTools = resolvePlatformToolsForThread(
+									platformMcpRegistry,
+									thread_id,
+									connectorTool,
+								);
+								if (resolvedTools.length > 0) {
+									platformTools = resolvedTools;
+								}
 								if (scopedTools.size > 0) {
-									platformTools = Array.from(scopedTools.values());
 									platformInstructions = platformMcpRegistry.getInstructionsForThread(thread_id);
-								} else {
-									const readOnlyTools = Array.from(
-										platformMcpRegistry.getReadOnlyPlatformTools().values(),
-									);
-									if (connectorTool) {
-										platformTools = [...readOnlyTools, connectorTool];
-									} else if (readOnlyTools.length > 0) {
-										platformTools = readOnlyTools;
-									}
 								}
 							}
 
@@ -981,11 +1092,17 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				result: result ?? "completed",
 			};
 
-			enqueueNotification(appContext.db, task.thread_id, notificationPayload);
-			handleThread(task.thread_id).catch((err) =>
-				appContext.logger.error("[notification] Task completion dispatch error", {
-					error: formatError(err),
-				}),
+			// Route through the session-host resolver (#91 under unified
+			// delegation): if the task's thread has a live boundless session on
+			// another host, the wakeup ships there instead of waking a second,
+			// detached loop here. Local delivery emits notify:enqueued, which the
+			// listener below turns into handleThread — no direct call needed.
+			routeNotificationWakeup(
+				appContext.db,
+				appContext.eventBus,
+				appContext.siteId,
+				task.thread_id,
+				notificationPayload,
 			);
 		});
 
@@ -1087,7 +1204,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		}, EXPIRY_SCAN_INTERVAL_MS);
 
 		// Task 2: Cache-warming "warm poke" driver (issue #10). Opt-in via the
-		// `cache_warming` block in model_backends.json. Periodically finds active
+		// `cache_warming` block in model_backends.js. Periodically finds active
 		// threads whose prompt cache is warm but near expiry and enqueues a
 		// tool-less poke wakeup so the next real message lands on a cache-read
 		// instead of a cache-write. The poke window is derived per-thread from
@@ -1118,12 +1235,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// the dramatically different break-even economics between providers
 			// (cap 0 = never warm threads on that backend).
 			const resolvePokePolicy = (threadId: string): { ttlMs: number; maxPokes: number } | null => {
-				const modelId = resolveThreadModel(appContext.db, threadId, routerConfig.default);
+				// Live router default, not routerConfig.default — the startup
+				// snapshot can still name a retired dynamic-provider namespace
+				// id (see activeModelId above).
+				const modelId = resolveThreadModel(appContext.db, threadId, modelRouter.getDefaultId());
 				const warmCfg = modelRouter.getCacheWarmConfig(modelId);
 				if (!warmCfg?.enabled) return null;
 				const ttl = modelRouter.getCacheTtl(modelId);
 				if (!ttl) return null;
-				return { ttlMs: CACHE_TTL_MS[ttl], maxPokes: warmCfg.maxPokes };
+				return { ttlMs: parseDurationMs(ttl), maxPokes: warmCfg.maxPokes };
 			};
 			warmPokeInterval = setInterval(() => {
 				try {
@@ -1194,9 +1314,26 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				// Create Discord.js clients and register MCP servers for each connector
 				if (platformMcpRegistry) {
 					const { setupDiscordServers } = await import("@bound/platforms");
+					const { createModelCommandSpec } = await import("@bound/agent");
+					// Platform-native commands, handled deterministically on the
+					// leader (no inference): /model must work precisely when the
+					// current model cannot complete an agent turn.
+					const platformCommands = [
+						createModelCommandSpec({
+							db: appContext.db,
+							siteId: appContext.siteId,
+							modelRouter,
+							logger: appContext.logger,
+						}),
+					];
 					for (const connectorConfig of platformsConfig.connectors) {
 						try {
-							await setupDiscordServers(connectorConfig, platformMcpRegistry, appContext.logger);
+							await setupDiscordServers(
+								connectorConfig,
+								platformMcpRegistry,
+								appContext.logger,
+								platformCommands,
+							);
 						} catch (err) {
 							appContext.logger.warn(
 								`[platforms-mcp] Could not setup server for '${connectorConfig.platform}': ${err}`,
@@ -1219,7 +1356,36 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							handle_id,
 							server_name: handle.server_name,
 						});
-						await platformMcpRegistry.activateSubscription(handle);
+						try {
+							await platformMcpRegistry.activateSubscription(handle);
+						} catch (err) {
+							// The connector permanently rejected this subscription (e.g.
+							// a spoke bound a Discord channel the bot can't view — the
+							// spoke has no local client, so it couldn't validate at attach
+							// time; the leader is the first host that can). Roll the
+							// synced handle + task back so the deletion propagates to the
+							// spoke rather than leaving a dead subscription that never
+							// delivers. A non-rejection error (transient) is logged and
+							// left for the next reconnect. Wrapping also prevents an
+							// unhandled rejection in this event handler.
+							if (isSubscriptionRejected(err)) {
+								appContext.logger.warn(
+									"[platforms-mcp] Rolling back synced handle: connector rejected subscription",
+									{
+										handle_id,
+										server_name: handle.server_name,
+										reason: err instanceof Error ? err.message : String(err),
+									},
+								);
+								softDelete(appContext.db, "connector_handles", handle_id, appContext.siteId);
+								softDelete(appContext.db, "tasks", handle.task_id, appContext.siteId);
+							} else {
+								appContext.logger.error("[platforms-mcp] Failed to activate synced handle", {
+									handle_id,
+									error: err instanceof Error ? err.message : String(err),
+								});
+							}
+						}
 					}
 				});
 			},
@@ -1241,6 +1407,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				platformsConfig.connectors[0],
 				appContext.db,
 				appContext.siteId,
+				undefined,
+				appContext.logger,
 			);
 			await leaderElection.start();
 			appContext.logger.info("[platforms-mcp] Leader election started");
@@ -1357,6 +1525,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			process.on("exit", clearRemoteRefresh);
 			process.on("SIGINT", clearRemoteRefresh);
 			process.on("SIGTERM", clearRemoteRefresh);
+
+			// Eager discovery at the connector-sync boundary (§7): when a connector
+			// handle syncs in, re-discover remote tools immediately rather than
+			// waiting up to 60s for the next periodic refresh. This runs on EVERY
+			// host (not just the platform leader) — any host may run a loop that
+			// references a remote platform tool by name, and the single delegation
+			// path means assembly must see that tool's definition wherever the loop
+			// lands. Fire-and-forget; errors are logged inside discoverRemoteTools.
+			appContext.eventBus.on("connector:handle_synced", () => {
+				platformMcpRegistry?.discoverRemoteTools().catch((error) => {
+					appContext.logger.warn("[platforms-mcp] handle_synced remote tool discovery failed", {
+						error: formatError(error),
+					});
+				});
+			});
 		}
 
 		// Advertise platform names in hosts.platforms for relay platform affinity routing.
@@ -1377,11 +1560,50 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		appContext.logger.info("[platforms] Not configured (no platforms.json)");
 	}
 
+	// 14. RSS feed poller — the pull-side counterpart of webhook ingestion.
+	// Runs its own leader election (platform_leader:rss) independent of the
+	// Discord connectors block above, so feeds poll even on clusters with no
+	// platforms.json. Exactly one host walks the feeds; dedup state
+	// (rss_feeds.seen_guids) is synced, so failover resumes without
+	// re-delivering the backlog. Items land in relay_inbox as passive
+	// `rss_intake` rows and ride the same connector:event → scheduler →
+	// buildEventWakeupContent track as webhooks.
+	{
+		const rssPoller = new RssPoller({
+			db: appContext.db,
+			siteId: appContext.siteId,
+			eventBus: appContext.eventBus,
+			logger: appContext.logger,
+		});
+		const rssLeaderElection = new PlatformLeaderElection(
+			{
+				platform: "rss",
+				connect: () => rssPoller.connect(),
+				disconnect: () => rssPoller.disconnect(),
+			},
+			{
+				platform: "rss",
+				allowed_users: [],
+				leadership: "auto",
+				failover_threshold_ms: 30_000,
+			},
+			appContext.db,
+			appContext.siteId,
+			undefined,
+			appContext.logger,
+		);
+		await rssLeaderElection.start();
+		appContext.logger.info("[rss] Poller leader election started");
+		const stopRss = () => rssLeaderElection.stop();
+		process.on("exit", stopRss);
+		process.on("SIGINT", stopRss);
+		process.on("SIGTERM", stopRss);
+	}
+
 	return {
 		webServer,
 		syncServer,
 		statusForwardCache,
-		activeDelegations,
 		threadExecutor,
 		platformMcpRegistry,
 		handleMessageTracker,

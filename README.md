@@ -1,5 +1,7 @@
 # Bound
 
+**Warning: Bound is still very experimental and has approximately negative stability guarantees. You are free to play with it, but I do not currently advise relying on it unless you want to fork it for your own needs. I would like for it to have positive stability guarantees and be something people can rely on eventually. -Kara**
+
 Bound is a personal agent that maintains state across multiple hosts. Messages, memory, files, and tasks replicate between a laptop and a cloud VM over an encrypted sync protocol, so every interface sees the same agent with the same context. Model selection is cluster-wide — inference is routed to the right backend and host automatically, with fallback. The scheduler runs tasks on cron schedules, time delays, or events; tasks can depend on one another and, in a cluster, run on exactly one host. The agent accumulates a knowledge graph across sessions that surfaces in context automatically.
 
 ![](docs/assets/promo_chat.png)
@@ -7,42 +9,44 @@ Bound is a personal agent that maintains state across multiple hosts. Messages, 
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) 1.2+
 - An LLM backend (one of):
   - [Ollama](https://ollama.com) running locally — easiest to start
   - AWS Bedrock access
   - Any OpenAI-compatible endpoint (Cerebras, z.AI, OpenCode Go, etc.)
+  - [umans.ai](https://code.umans.ai) — self-configuring; routed through its Anthropic Messages API with prompt caching (`UMANS_API_KEY`)
 
 ## Quick start
 
+Download the latest `bound` binary from the [releases page](https://github.com/bound-agents/bound/releases) for your platform (macOS, Linux, Windows). Make it executable and put it on your `PATH`:
+
 ```bash
-git clone https://github.com/bound-agents/bound.git
-cd bound
-bun install
+chmod +x bound
+sudo mv bound /usr/local/bin/
+```
 
+```bash
 # Pick a backend
-bun run packages/cli/src/bound.ts init --ollama
-bun run packages/cli/src/bound.ts init --bedrock --region us-east-1
-bun run packages/cli/src/bound.ts init --opencode-go
+bound init --ollama
+bound init --bedrock --region us-east-1
+bound init --opencode-go
+bound init --umans          # needs UMANS_API_KEY; self-configuring
 
-bun run packages/cli/src/bound.ts start
+bound start
 ```
 
 Open [http://localhost:3001](http://localhost:3001). The sync protocol listens on port 3000 (`PORT`); the web UI on port 3001 (`WEB_PORT`).
 
-Build a single binary instead: `bun run build`, then `./dist/bound init --ollama && ./dist/bound start`.
-
 ## Boundless — terminal coding agent
 
-`boundless` connects to a running bound server and registers local filesystem and shell tools into the agent's tool set. The agent reads and edits files and runs commands in your working directory; all messages, memory, and tool calls live in bound, so every other interface sees the same state.
+`boundless` connects a terminal workspace to a running Bound server and supplies local file and shell tools for that session. The agent can read, edit, and run commands in the working directory while conversations, memory, and tasks remain in Bound. See the [Boundless guide](https://bound-agents.github.io/bound/guides/boundless/) for its tool contract and safety boundaries.
 
 ```bash
-bun run packages/cli/src/boundless.ts    # or ./dist/boundless after a build
+boundless
 boundless --url http://localhost:3001    # non-default server
 boundless --attach <thread-id>           # resume an existing thread
 ```
 
-Shell commands run in a write-confinement sandbox (seatbelt on macOS, bubblewrap on Linux, IsolationSession on Windows): the whole filesystem is readable but writes are confined to the working directory and `/tmp`. `boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio for ACP-compatible editors.
+Shell commands run in a write-confinement sandbox (seatbelt on macOS, bubblewrap on Linux, and Bound’s one-shot AppContainer lowbox on Windows): the whole filesystem is readable but writes are confined to the working directory and temporary directories. `.git/config` and `.git/hooks` stay read-only while the rest of `.git` remains operational. Windows lowbox startup creates an unprivileged per-command AppContainer profile; hosts that forbid unprivileged profile creation must either restore that capability or explicitly opt into `sandbox.onUnavailable: "passthrough"`. `boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio for ACP-compatible editors.
 
 ## Config files
 
@@ -50,22 +54,21 @@ After `bound init`, `config/` contains:
 
 | File | Required | Description |
 |------|----------|-------------|
-| `allowlist.json` | Yes | Users permitted to interact; `default_web_user` + user map with display names and platform handles |
-| `model_backends.json` | Yes | LLM backends: routing, pricing, cache warming, extended thinking, capability overrides |
-| `network.json` | No | Outbound HTTP allowlist for the sandbox, with per-URL header injection |
-| `platforms.json` | No | Platform connectors (Discord token, allowed users, leadership role, failover threshold) |
-| `sync.json` | No | Hub URL (on spokes), relay tuning, WebSocket settings |
-| `keyring.json` | No | Per-host Ed25519 public keys and URLs (auto-populated by sync handshake) |
-| `mcp.json` | No | MCP server connections (`stdio` or `http`; `io.modelcontextprotocol/ui` tools render inline in the web UI) |
-| `overlay.json` | No | Codebase mount points (`/mnt/<name>` → real path) |
-| `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
+| `allowlist.js` / `allowlist.json` | Yes | Users permitted to interact; `default_web_user` + user map with display names and platform handles |
+| `model_backends.js` / `model_backends.json` | Yes | JS takes precedence when present; otherwise JSON static backend configuration is loaded. Only JS supports `backend.price(turn)` callbacks. |
+| `network.js` / `network.json` | No | Outbound HTTP allowlist for the sandbox, with per-URL header injection |
+| `platforms.js` / `platforms.json` | No | Platform connectors (Discord token, allowed users, leadership role, failover threshold) |
+| `sync.js` / `sync.json` | No | Hub URL (on spokes), relay tuning, WebSocket settings |
+| `keyring.js` / `keyring.json` | No | Per-host Ed25519 public keys and URLs (auto-populated by sync handshake) |
+| `mcp.js` / `mcp.json` | No | MCP server connections (`stdio` or `http`; `io.modelcontextprotocol/ui` tools render inline in the web UI) |
+| `memory.js` / `memory.json` | No | Pinned-memory caps (`pinned_count_cap` default 10, `pinned_size_cap` default 2000 chars) |
 
-All schemas are strict — unknown keys fail loudly. See [docs/config.md](docs/config.md) for the per-field reference.
+All operator configs support a `.js` alternative that takes precedence over JSON; each default-exports one object and uses the same strict schema. `model_backends.js` is the only JavaScript config permitted to define `backend.price(turn)` callbacks. All schemas are strict — unknown keys fail loudly. See the [Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) for the per-field reference.
 
 ## Further reading
 
-- [docs/cli-operations.md](docs/cli-operations.md) — `bound init/start`, `boundctl`, `boundless`, build pipeline
-- [docs/config.md](docs/config.md) — per-field reference for every config file
+- [Docs site — CLI & Operations](https://bound-agents.github.io/bound/guides/cli-operations/) — `bound init/start`, `boundctl`, `boundless`, build pipeline
+- [Docs site — Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) — per-field reference for every config file
 - [docs/design/architecture.md](docs/design/architecture.md) — package dependency graph and data flow
 - [CONTRIBUTING.md](CONTRIBUTING.md) — testing conventions, critical invariants, contributor checklist
 

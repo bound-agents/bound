@@ -575,11 +575,132 @@ describe("MCP Bridge", () => {
 			expect(result.stdout).toContain("create_issue");
 			expect(result.stdout).toContain("Create an issue");
 			expect(result.stdout).toContain("title");
-			expect(result.stdout).toContain("(required)");
+			expect(result.stdout).toContain("(required, string)");
 			expect(result.stdout).toContain("owner");
-			expect(result.stdout).toContain("(optional)");
+			expect(result.stdout).toContain("(optional, string)");
 			expect(result.stdout).toContain("Issue title");
 			expect(result.stdout).toContain("Issue owner");
+		}
+	});
+
+	// Regression: observed a call failing with
+	// "missing required parameter: method" and the error carried nothing to
+	// self-correct against, so the model blind-mutated arguments across
+	// retries. A failed dispatch now echoes the tool's parameter summary.
+	it("appends the parameter summary when a tool call returns isError", async () => {
+		const base = makeMockClient(
+			{ name: "err-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "issue_write",
+					description: "Create or update an issue",
+					inputSchema: {
+						type: "object",
+						properties: {
+							method: { type: "string", enum: ["create", "update"], description: "Write mode" },
+							title: { type: "string" },
+						},
+						required: ["method"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+		const client = {
+			...base,
+			callTool: async () => ({
+				content: "missing required parameter: method",
+				isError: true,
+			}),
+		} as unknown as MCPClient;
+
+		const clients = new Map([["err-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "err-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			const result = await serverCmd.handler(
+				{ subcommand: "issue_write", title: "x" },
+				createMockCommandContext(),
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("missing required parameter: method");
+			expect(result.stderr).toContain("issue_write parameters:");
+			expect(result.stderr).toContain(
+				"method (required, string, one of: create, update) — Write mode",
+			);
+			expect(result.stderr).toContain("title (optional, string)");
+		}
+	});
+
+	it("appends the parameter summary when a tool call throws", async () => {
+		const base = makeMockClient(
+			{ name: "throw-server", transport: "stdio", command: "test" },
+			[
+				{
+					name: "issue_write",
+					description: "Create or update an issue",
+					inputSchema: {
+						type: "object",
+						properties: {
+							method: { type: "string", enum: ["create", "update"] },
+						},
+						required: ["method"],
+					},
+				},
+			],
+			[],
+			[],
+		);
+		const client = {
+			...base,
+			callTool: async () => {
+				throw new Error("MCP error -32602: invalid params");
+			},
+		} as unknown as MCPClient;
+
+		const clients = new Map([["throw-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "throw-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			const result = await serverCmd.handler(
+				{ subcommand: "issue_write" },
+				createMockCommandContext(),
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain("Failed to call tool issue_write");
+			expect(result.stderr).toContain("MCP error -32602");
+			expect(result.stderr).toContain("issue_write parameters:");
+			expect(result.stderr).toContain("method (required, string, one of: create, update)");
+		}
+	});
+
+	it("keeps error output unchanged for tools with no parameters", async () => {
+		const base = makeMockClient(
+			{ name: "bare-server", transport: "stdio", command: "test" },
+			[{ name: "ping", description: "Ping", inputSchema: { type: "object", properties: {} } }],
+			[],
+			[],
+		);
+		const client = {
+			...base,
+			callTool: async () => ({ content: "backend unavailable", isError: true }),
+		} as unknown as MCPClient;
+
+		const clients = new Map([["bare-server", client]]);
+		const { commands } = await generateMCPCommands(clients);
+		const serverCmd = commands.find((c) => c.name === "bare-server");
+		expect(serverCmd).toBeDefined();
+
+		if (serverCmd) {
+			const result = await serverCmd.handler({ subcommand: "ping" }, createMockCommandContext());
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toBe("backend unavailable");
+			expect(result.stderr).not.toContain("parameters:");
 		}
 	});
 

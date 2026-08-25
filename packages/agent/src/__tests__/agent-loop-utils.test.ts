@@ -5,12 +5,14 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
+import fc from "fast-check";
 import {
 	buildCommandOutput,
 	calculateTurnCost,
 	clampMaxOutputTokens,
 	convertDeltaMessages,
 	createFileRefResolver,
+	deltaRequiresColdReassembly,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	hasOrphanedToolCall,
@@ -19,6 +21,7 @@ import {
 	resolveToolAnnotations,
 	shouldRetryRelayCall,
 } from "../agent-loop-utils";
+import { compileDynamicPricing } from "../dynamic-pricing";
 import type { ModelResolution } from "../model-resolution";
 
 // ---------------------------------------------------------------------------
@@ -44,38 +47,56 @@ beforeEach(() => {
 // buildCommandOutput
 // ---------------------------------------------------------------------------
 describe("buildCommandOutput", () => {
-	it("returns stdout when present", () => {
-		expect(buildCommandOutput("hello", undefined, 0)).toBe("hello");
-	});
-
-	it("returns stderr when present", () => {
-		expect(buildCommandOutput(undefined, "err", 1)).toBe("err");
-	});
-
-	it("joins stdout and stderr with newline", () => {
-		expect(buildCommandOutput("out", "err", 0)).toBe("out\nerr");
-	});
-
-	it("returns success message when no output and exitCode 0", () => {
-		expect(buildCommandOutput(undefined, undefined, 0)).toBe("Command completed successfully");
-	});
-
-	it("returns exit code message when no output and non-zero exit", () => {
-		expect(buildCommandOutput(undefined, undefined, 3)).toBe("Exit code: 3");
-	});
-
-	it("defaults exitCode to 0 when undefined", () => {
-		expect(buildCommandOutput(undefined, undefined, undefined)).toBe(
-			"Command completed successfully",
+	it("joins non-empty streams in stdout/stderr order", () => {
+		fc.assert(
+			fc.property(
+				fc.string({ minLength: 1 }),
+				fc.string({ minLength: 1 }),
+				fc.option(fc.integer(), { nil: undefined }),
+				(stdout, stderr, exitCode) => {
+					expect(buildCommandOutput(stdout, stderr, exitCode)).toBe(`${stdout}\n${stderr}`);
+				},
+			),
 		);
 	});
 
-	it("treats empty strings as falsy", () => {
-		expect(buildCommandOutput("", "", 0)).toBe("Command completed successfully");
+	it("uses the one non-empty stream when the other is absent or empty", () => {
+		fc.assert(
+			fc.property(
+				fc.string({ minLength: 1 }),
+				fc.constantFrom<string | undefined>(undefined, ""),
+				fc.option(fc.integer(), { nil: undefined }),
+				(output, missingOrEmpty, exitCode) => {
+					expect(buildCommandOutput(output, missingOrEmpty, exitCode)).toBe(output);
+					expect(buildCommandOutput(missingOrEmpty, output, exitCode)).toBe(output);
+				},
+			),
+		);
 	});
 
-	it("leaves output untouched (offload handles oversized results downstream)", () => {
-		expect(buildCommandOutput("small", "tiny", 0)).toBe("small\ntiny");
+	it("falls through absent and empty streams to the exit-status output", () => {
+		fc.assert(
+			fc.property(
+				fc.constantFrom<string | undefined>(undefined, ""),
+				fc.constantFrom<string | undefined>(undefined, ""),
+				fc.integer({ min: -10_000, max: 10_000 }),
+				(stdout, stderr, exitCode) => {
+					expect(buildCommandOutput(stdout, stderr, exitCode)).toBe(
+						exitCode === 0 ? "Command completed successfully" : `Exit code: ${exitCode}`,
+					);
+				},
+			),
+		);
+	});
+
+	it("treats an omitted exit code as successful when both streams are absent or empty", () => {
+		for (const stdout of [undefined, ""]) {
+			for (const stderr of [undefined, ""]) {
+				expect(buildCommandOutput(stdout, stderr, undefined)).toBe(
+					"Command completed successfully",
+				);
+			}
+		}
 	});
 });
 
@@ -83,6 +104,35 @@ describe("buildCommandOutput", () => {
 // calculateTurnCost
 // ---------------------------------------------------------------------------
 describe("calculateTurnCost", () => {
+	beforeAll(async () => {
+		await compileDynamicPricing([
+			{
+				id: "gpt-5.6",
+				priceFunction: `function price(turn) {
+					const long = turn.inputTokens > 128000;
+					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
+						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
+						+ turn.cacheReadTokens * turn.pricesPerM.cacheRead
+						+ turn.cacheWriteTokens * turn.pricesPerM.cacheWrite) / 1e6;
+				}`,
+			},
+			{
+				id: "throws",
+				priceFunction:
+					"function price(t) { if (t.inputTokens > 10) throw new Error('bad'); return 0; }",
+			},
+			{
+				id: "negative",
+				priceFunction: "function price(t) { return t.inputTokens > 10 ? -1 : 0; }",
+			},
+			{ id: "nan", priceFunction: "function price(t) { return t.inputTokens > 10 ? NaN : 0; }" },
+			{
+				id: "infinity",
+				priceFunction: "function price(t) { return t.inputTokens > 10 ? Infinity : 0; }",
+			},
+		]);
+	});
+
 	const backends = [
 		{
 			id: "claude-opus",
@@ -168,30 +218,73 @@ describe("calculateTurnCost", () => {
 		);
 		expect(cost).toBe(0);
 	});
+
+	it("uses a dynamic price function for long-context pricing", () => {
+		const cost = calculateTurnCost(
+			"gpt-5.6",
+			{
+				inputTokens: 200_000,
+				outputTokens: 10_000,
+				cacheReadTokens: 50_000,
+				cacheWriteTokens: 1_000,
+			},
+			[
+				{
+					id: "gpt-5.6",
+					price_per_m_input: 1.25,
+					price_per_m_output: 10,
+					price_per_m_cache_read: 0.125,
+					price_per_m_cache_write: 1.25,
+					priceFunction: `function price(turn) {
+					const long = turn.inputTokens > 128000;
+					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
+						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
+						+ turn.cacheReadTokens * turn.pricesPerM.cacheRead
+						+ turn.cacheWriteTokens * turn.pricesPerM.cacheWrite) / 1e6;
+				}`,
+				},
+			],
+		);
+		expect(cost).toBeCloseTo(0.7075, 8);
+	});
+
+	it("falls back to static pricing when a dynamic price function throws", () => {
+		const cost = calculateTurnCost(
+			"throws",
+			{ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null },
+			[{ id: "throws", price_per_m_input: 3, priceFunction: "configured" }],
+		);
+		expect(cost).toBe(3);
+	});
+
+	it.each([
+		["negative", "function price() { return -1; }"],
+		["NaN", "function price() { return NaN; }"],
+		["infinity", "function price() { return Infinity; }"],
+	])("falls back to static pricing for %s dynamic results", (_label, priceFunction) => {
+		const modelId = _label === "NaN" ? "nan" : _label;
+		const cost = calculateTurnCost(
+			modelId,
+			{ inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: null, cacheWriteTokens: null },
+			[{ id: modelId, price_per_m_input: 4, priceFunction }],
+		);
+		expect(cost).toBe(4);
+	});
 });
 
 // ---------------------------------------------------------------------------
 // getResolvedModelId
 // ---------------------------------------------------------------------------
 describe("getResolvedModelId", () => {
-	it("returns modelId from local resolution", () => {
-		const res: ModelResolution = {
-			kind: "local",
-			backend: {} as any,
-			modelId: "claude-opus",
-		};
-		expect(getResolvedModelId(res)).toBe("claude-opus");
+	it("returns modelId for every successful resolution kind", () => {
+		const resolutions: ModelResolution[] = [
+			{ kind: "local", backend: {} as never, modelId: "claude-opus" },
+			{ kind: "remote", hosts: [], modelId: "claude-sonnet" },
+		];
+		for (const resolution of resolutions) {
+			expect(getResolvedModelId(resolution)).toBe(resolution.modelId);
+		}
 	});
-
-	it("returns modelId from remote resolution", () => {
-		const res: ModelResolution = {
-			kind: "remote",
-			hosts: [],
-			modelId: "claude-sonnet",
-		};
-		expect(getResolvedModelId(res)).toBe("claude-sonnet");
-	});
-
 	it("returns 'unknown' for error resolution with no fallback", () => {
 		const res: ModelResolution = {
 			kind: "error",
@@ -645,50 +738,30 @@ function mkRow(overrides: {
 }
 
 describe("convertDeltaMessages", () => {
-	it("preserves two consecutive tool_result rows that follow a tool_call (parallel tool calls)", () => {
-		const rows = [
-			mkRow({
-				role: "tool_call",
-				content: JSON.stringify([
-					{ type: "tool_use", id: "tu_A", name: "foo", input: {} },
-					{ type: "tool_use", id: "tu_B", name: "bar", input: {} },
-				]),
+	it("preserves every consecutive result for generated parallel tool calls", () => {
+		fc.assert(
+			fc.property(fc.uniqueArray(fc.uuid(), { minLength: 2, maxLength: 8 }), (toolIds) => {
+				const rows = [
+					mkRow({
+						role: "tool_call",
+						content: JSON.stringify(
+							toolIds.map((id) => ({ type: "tool_use", id, name: "tool", input: {} })),
+						),
+					}),
+					...toolIds.map((id) =>
+						mkRow({ role: "tool_result", content: `result-${id}`, tool_name: id }),
+					),
+				];
+				const output = convertDeltaMessages(rows);
+				expect(output).toHaveLength(toolIds.length + 1);
+				expect(
+					output
+						.filter((message) => message.role === "tool_result")
+						.map((message) => message.tool_use_id),
+				).toEqual(toolIds);
 			}),
-			mkRow({ role: "tool_result", content: "result-A", tool_name: "tu_A" }),
-			mkRow({ role: "tool_result", content: "result-B", tool_name: "tu_B" }),
-		];
-
-		const out = convertDeltaMessages(rows);
-
-		// Regression: previous behavior dropped the second tool_result.
-		expect(out).toHaveLength(3);
-		expect(out[0].role).toBe("tool_call");
-		expect(out[1].role).toBe("tool_result");
-		expect(out[1].tool_use_id).toBe("tu_A");
-		expect(out[2].role).toBe("tool_result");
-		expect(out[2].tool_use_id).toBe("tu_B");
+		);
 	});
-
-	it("preserves three consecutive tool_result rows after a 3-way parallel tool_call", () => {
-		const rows = [
-			mkRow({
-				role: "tool_call",
-				content: JSON.stringify([
-					{ type: "tool_use", id: "tu_1", name: "a", input: {} },
-					{ type: "tool_use", id: "tu_2", name: "b", input: {} },
-					{ type: "tool_use", id: "tu_3", name: "c", input: {} },
-				]),
-			}),
-			mkRow({ role: "tool_result", content: "r1", tool_name: "tu_1" }),
-			mkRow({ role: "tool_result", content: "r2", tool_name: "tu_2" }),
-			mkRow({ role: "tool_result", content: "r3", tool_name: "tu_3" }),
-		];
-
-		const out = convertDeltaMessages(rows);
-		expect(out).toHaveLength(4);
-		expect(out.filter((m) => m.role === "tool_result")).toHaveLength(3);
-	});
-
 	it("still drops a tool_result that has no preceding tool_call anywhere in the delta", () => {
 		const rows = [
 			mkRow({ role: "user", content: "hi" }),
@@ -700,43 +773,68 @@ describe("convertDeltaMessages", () => {
 		expect(out).toHaveLength(1);
 		expect(out[0].role).toBe("user");
 	});
+
+	// Regression: alert-role rows (inference failures persisted via emitAlert)
+	// must be converted to developer-role messages in the warm path, matching
+	// the cold path's Stage 2.5 conversion in context-assembly.ts. Without
+	// this, the warm path emits role:"alert" which fails the AI SDK's
+	// ModelMessage[] schema validation, permanently poisoning the thread.
+	it("converts alert-role rows to developer-role with [system alert] prefix", () => {
+		const rows = [
+			mkRow({ role: "user", content: "hello" }),
+			mkRow({ role: "alert", content: "Failed after 3 attempts. Last error: undefined" }),
+			mkRow({ role: "user", content: "bump" }),
+		];
+
+		const out = convertDeltaMessages(rows);
+
+		expect(out).toHaveLength(3);
+		expect(out[0].role).toBe("user");
+		expect(out[1].role).toBe("developer");
+		expect(out[1].content).toBe("[system alert] Failed after 3 attempts. Last error: undefined");
+		expect(out[2].role).toBe("user");
+	});
+
+	it("marks purge deltas for cold reassembly instead of exposing the DB-only role", () => {
+		const rows = [
+			mkRow({ role: "user", content: "before" }),
+			mkRow({
+				role: "purge",
+				content: JSON.stringify({ target_ids: ["old-message"], summary: "cleared" }),
+			}),
+		];
+
+		expect(deltaRequiresColdReassembly(rows)).toBe(true);
+		expect(
+			convertDeltaMessages(rows).some((message) => (message as { role: string }).role === "purge"),
+		).toBe(false);
+	});
 });
 
 // ---------------------------------------------------------------------------
 // clampMaxOutputTokens
 // ---------------------------------------------------------------------------
 describe("clampMaxOutputTokens", () => {
-	// This pure helper is the single point that reconciles the agent-loop's
-	// DEFAULT_MAX_OUTPUT_TOKENS (16_384) with per-backend caps like Nova Pro's
-	// 10_000 ceiling. Both agent-loop (local path) and relay-processor
-	// (receiver side) must go through it so a misconfigured payload can never
-	// slip a too-high value past the provider.
-	it("returns the default when no cap is configured", () => {
-		expect(clampMaxOutputTokens(16384, undefined)).toBe(16384);
-	});
-
-	it("returns the cap when it is smaller than the default", () => {
-		// Nova Pro case: default 16_384, backend cap 10_000 → clamp to 10_000
-		expect(clampMaxOutputTokens(16384, 10000)).toBe(10000);
-	});
-
-	it("returns the default when the cap is larger (cap is an upper bound, not a floor)", () => {
-		// If an operator mistakenly sets max_output_tokens higher than
-		// DEFAULT_MAX_OUTPUT_TOKENS, the default still wins — we treat the
-		// backend cap as "at most this", never "at least this", so we never
-		// raise the per-turn budget beyond what the loop expects.
-		expect(clampMaxOutputTokens(16384, 32000)).toBe(16384);
-	});
-
-	it("returns the cap when it equals the default", () => {
-		expect(clampMaxOutputTokens(16384, 16384)).toBe(16384);
-	});
-
-	it("ignores a non-positive cap (defensive against malformed config)", () => {
-		// Schema rejects <=0 at load time, but in case a relay payload sneaks
-		// through with 0 or a negative value we fall back to the default.
-		expect(clampMaxOutputTokens(16384, 0)).toBe(16384);
-		expect(clampMaxOutputTokens(16384, -500)).toBe(16384);
+	it("returns the documented positive-budget formula", () => {
+		fc.assert(
+			fc.property(
+				fc.option(fc.double({ noNaN: true, noDefaultInfinity: true }), { nil: undefined }),
+				fc.option(fc.double({ noNaN: true, noDefaultInfinity: true }), { nil: undefined }),
+				(defaultMax, cap) => {
+					const validDefault = typeof defaultMax === "number" && defaultMax > 0;
+					const validCap = typeof cap === "number" && cap > 0;
+					const expected =
+						validDefault && validCap
+							? Math.min(defaultMax, Math.floor(cap))
+							: validDefault
+								? defaultMax
+								: validCap
+									? Math.floor(cap)
+									: 8_000;
+					expect(clampMaxOutputTokens(defaultMax, cap)).toBe(expected);
+				},
+			),
+		);
 	});
 });
 
@@ -896,78 +994,48 @@ describe("hasOrphanedToolCall", () => {
 });
 
 describe("shouldRetryRelayCall", () => {
-	const baseInput = {
-		attempt: 0,
-		maxAttempts: 1,
-		aborted: false,
-	};
-
-	it("returns false when not retriable", () => {
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: { content: "result", retriable: false },
-			}),
-		).toBe(false);
-	});
-
-	it("returns false when aborted, even if retriable+definitely_not_executed", () => {
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				aborted: true,
-				waitResult: {
-					content: "Remote error: target offline",
-					retriable: true,
-					definitely_not_executed: true,
+	it("follows the documented retry safety formula", () => {
+		fc.assert(
+			fc.property(
+				fc.record({
+					attempt: fc.integer({ min: 0, max: 5 }),
+					maxAttempts: fc.integer({ min: 0, max: 5 }),
+					aborted: fc.boolean(),
+					retriable: fc.boolean(),
+					definitelyNotExecuted: fc.boolean(),
+					readOnly: fc.boolean(),
+					idempotent: fc.boolean(),
+				}),
+				({
+					attempt,
+					maxAttempts,
+					aborted,
+					retriable,
+					definitelyNotExecuted,
+					readOnly,
+					idempotent,
+				}) => {
+					const expected =
+						!aborted &&
+						attempt < maxAttempts &&
+						retriable &&
+						(definitelyNotExecuted || readOnly || idempotent);
+					expect(
+						shouldRetryRelayCall({
+							attempt,
+							maxAttempts,
+							aborted,
+							waitResult: {
+								content: "result",
+								retriable,
+								definitely_not_executed: definitelyNotExecuted,
+							},
+							annotations: { readOnly, idempotent },
+						}),
+					).toBe(expected);
 				},
-			}),
-		).toBe(false);
-	});
-
-	it("returns false when retry budget exhausted", () => {
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				attempt: 1,
-				maxAttempts: 1,
-				waitResult: {
-					content: "Remote error: target offline",
-					retriable: true,
-					definitely_not_executed: true,
-				},
-			}),
-		).toBe(false);
-	});
-
-	it("returns true on hub fast-fail (definitely_not_executed=true)", () => {
-		// Hub fast-fail attests that the target tool never ran. Always safe to
-		// retry, regardless of tool idempotency.
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: {
-					content: "Remote error: target offline",
-					retriable: true,
-					definitely_not_executed: true,
-				},
-			}),
-		).toBe(true);
-	});
-
-	it("returns false on retriable=true alone (commit-1 conservative posture)", () => {
-		// Without definitely_not_executed (e.g. full timeout), the target may
-		// have started executing. Without idempotency knowledge — added in a
-		// later commit — refuse to retry rather than risk a double execution.
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: {
-					content: "Timeout: all eligible hosts did not respond",
-					retriable: true,
-				},
-			}),
-		).toBe(false);
+			),
+		);
 	});
 });
 
@@ -1041,83 +1109,6 @@ describe("resolveToolAnnotations", () => {
 			toolDefinition: stubDef,
 		});
 		expect(resolveToolAnnotations(registry, "bash", { command: "ls" })).toEqual({});
-	});
-});
-
-describe("shouldRetryRelayCall (annotation-aware)", () => {
-	const baseInput = {
-		attempt: 0,
-		maxAttempts: 1,
-		aborted: false,
-	};
-
-	it("retries on retriable+readOnly even without definitely_not_executed", () => {
-		// Read-only tools have no side effects, so a duplicate execution is
-		// indistinguishable from a single execution. Always safe to retry.
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: { content: "Timeout", retriable: true },
-				annotations: { readOnly: true },
-			}),
-		).toBe(true);
-	});
-
-	it("retries on retriable+idempotent even without definitely_not_executed", () => {
-		// Idempotent tools may have side effects, but N executions == 1 execution.
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: { content: "Timeout", retriable: true },
-				annotations: { idempotent: true },
-			}),
-		).toBe(true);
-	});
-
-	it("does not retry when annotations explicitly say neither", () => {
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: { content: "Timeout", retriable: true },
-				annotations: { idempotent: false, readOnly: false },
-			}),
-		).toBe(false);
-	});
-
-	it("annotations do not override abort or budget", () => {
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				aborted: true,
-				waitResult: { content: "Timeout", retriable: true },
-				annotations: { idempotent: true },
-			}),
-		).toBe(false);
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				attempt: 1,
-				maxAttempts: 1,
-				waitResult: { content: "Timeout", retriable: true },
-				annotations: { idempotent: true },
-			}),
-		).toBe(false);
-	});
-
-	it("definitely_not_executed beats annotations: retries even when annotations say not idempotent", () => {
-		// Hub fast-fail attestation is the strongest signal — it doesn't matter
-		// whether the tool is idempotent because it provably never ran.
-		expect(
-			shouldRetryRelayCall({
-				...baseInput,
-				waitResult: {
-					content: "Remote error: target offline",
-					retriable: true,
-					definitely_not_executed: true,
-				},
-				annotations: { idempotent: false, readOnly: false },
-			}),
-		).toBe(true);
 	});
 });
 

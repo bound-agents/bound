@@ -1,5 +1,5 @@
 import type Database from "bun:sqlite";
-import { insertRow, softDelete, updateRow } from "@bound/core";
+import { findFileByPath, insertRow, softDelete, updateRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { type Result, err, ok } from "@bound/shared";
 import type { IFileSystem } from "just-bash";
@@ -83,9 +83,7 @@ export async function persistWorkspaceChanges(
 	try {
 		for (const change of changes) {
 			// Read current DB state for OCC check
-			const dbRow = db.query("SELECT * FROM files WHERE path = ?").get(change.path) as
-				| { path: string; content: string; modified_at: string }
-				| undefined;
+			const dbRow = findFileByPath(db, change.path);
 
 			const preSnapshotHash = preSnapshot.get(change.path);
 
@@ -93,7 +91,7 @@ export async function persistWorkspaceChanges(
 			if (dbRow && preSnapshotHash) {
 				// Hash the DB content for apples-to-apples comparison with pre-snapshot hash
 				const hasher = new Bun.CryptoHasher("sha256");
-				hasher.update(dbRow.content);
+				hasher.update(dbRow.content ?? "");
 				const dbContentHash = hasher.digest("hex");
 				const isConflict = preSnapshotHash !== dbContentHash;
 				if (isConflict) {

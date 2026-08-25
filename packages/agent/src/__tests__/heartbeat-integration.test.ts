@@ -15,7 +15,13 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, type createAppContext, createDatabase, insertRow } from "@bound/core";
+import {
+	applyMetricsSchema,
+	applySchema,
+	type createAppContext,
+	createDatabase,
+	insertRow,
+} from "@bound/core";
 import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { buildHeartbeatContext } from "../heartbeat-context";
@@ -33,6 +39,7 @@ describe("Heartbeat Integration", () => {
 
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 
 		appContext = {
 			db,

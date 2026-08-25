@@ -3,7 +3,7 @@
  * in the required bootstrap order and wires them together.
  */
 
-export { type StartArgs, ensureMcpUser } from "./bootstrap.js";
+export type { StartArgs } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { HandleMessageTracker } from "@bound/agent";
@@ -13,7 +13,12 @@ import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
-import { advertiseLocalModels, initInference, toRouterConfig } from "./inference.js";
+import {
+	advertiseLocalModels,
+	initInference,
+	toRouterConfig,
+	wireBackendReadiness,
+} from "./inference.js";
 import { initMcp, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
@@ -46,7 +51,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 	);
 
 	// Phase 4: Model router and inference setup
-	const { modelRouter, routerConfig } = await initInference(appContext, commandContext);
+	const { modelRouter } = await initInference(appContext, commandContext);
 
 	// Phase 5: Relay processor, KeyManager
 	const { relayProcessor, relayProcessorHandle, relayExecutor, keyManager, hubSiteId, keyring } =
@@ -74,7 +79,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 			? await initServer({
 					appContext,
 					modelRouter,
-					routerConfig,
 					agentLoopFactory,
 					relayExecutor,
 					keyManager,
@@ -87,7 +91,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 					webServer: null,
 					syncServer: null,
 					statusForwardCache: new Map(),
-					activeDelegations: new Map(),
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformMcpRegistry: null,
 					handleMessageTracker: new HandleMessageTracker({ watchdogIntervalMs: 0 }),
@@ -139,23 +142,23 @@ export async function runStart(args: StartArgs): Promise<void> {
 		onModelBackendsChanged: async (_oldConfig, newConfig) => {
 			if (!modelRouter) {
 				appContext.logger.warn(
-					"[sighup] model_backends.json changed but no router is registered — restart to apply",
+					"[sighup] model backends config changed but no router is registered — restart to apply",
 				);
 				return;
 			}
-			try {
-				modelRouter.reload(toRouterConfig(newConfig));
-				advertiseLocalModels(appContext, modelRouter, newConfig);
-				appContext.logger.info("[sighup] Model router reloaded", {
-					backends: modelRouter.listBackends().map((b) => b.id),
-					default: modelRouter.getDefaultId(),
-				});
-			} catch (err) {
-				appContext.logger.error(
-					"[sighup] Failed to reload model router — keeping previous backends",
-					{ error: err instanceof Error ? err.message : String(err) },
-				);
-			}
+
+			// loadModelBackendsConfig() has already evaluated, schema-validated,
+			// sample-validated, and atomically published the candidate pricing
+			// callbacks. Schema rows no longer contain those functions, so compiling
+			// oldConfig here would clear the live registry rather than restore it.
+			modelRouter.reload(toRouterConfig(newConfig));
+			advertiseLocalModels(appContext, modelRouter, newConfig);
+			appContext.config.modelBackends = newConfig;
+			wireBackendReadiness(appContext, modelRouter);
+			appContext.logger.info("[sighup] Model router reloaded", {
+				backends: modelRouter.listBackends().map((b) => b.id),
+				default: modelRouter.getDefaultId(),
+			});
 		},
 		onWsConfigChanged: async (newWsConfig) => {
 			// Update WS client config. Changes take effect on next reconnection/connection.
@@ -176,10 +179,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 		},
 	});
 
-	// Phase 8: Sync loop, pruning, overlay scanner
+	// Phase 8: Sync loop, pruning
 	const syncResult = await initSync(appContext, keypair, keyManager, args.reseed);
 	wsClient = syncResult.wsClient;
-	const { pruningHandle, overlayHandle, wsTransport } = syncResult;
+	const { pruningHandle, wsTransport } = syncResult;
 
 	// Wire WsTransport into the sync server's deferred holder (for hub-side frame dispatch)
 	if (wsTransport && serverResult.wsTransportHolder) {
@@ -235,7 +238,6 @@ Press Ctrl+C to stop.
 		heartbeatHandle,
 		schedulerHandle,
 		pruningHandle,
-		overlayHandle,
 		relayProcessorHandle,
 		mcpClientsMap,
 		webServer: serverResult.webServer,

@@ -105,16 +105,27 @@ const stableInputs: fc.Arbitrary<StableVolatileInputs> = fc.record({
 	}),
 	skillIndex: fc.array(skillIndexView, { maxLength: 5 }),
 	clusterModels: fc.array(
-		fc.record({
-			name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => !/[\n\r<>]/.test(s)),
-			hosts: fc.array(
-				fc.string({ minLength: 1, maxLength: 20 }).filter((s) => !/[\n\r<>]/.test(s)),
-				{
-					maxLength: 3,
-				},
-			),
-			local: fc.boolean(),
-		}),
+		fc.record(
+			{
+				name: fc.string({ minLength: 1, maxLength: 30 }).filter((s) => !/[\n\r<>]/.test(s)),
+				hosts: fc.array(
+					fc.string({ minLength: 1, maxLength: 20 }).filter((s) => !/[\n\r<>]/.test(s)),
+					{
+						maxLength: 3,
+					},
+				),
+				local: fc.boolean(),
+				// Decision metadata is optional per-field (string-alias host rows
+				// produce none), so the arbitrary must exercise both absent and
+				// present forms for every field.
+				tier: fc.integer({ min: 1, max: 5 }),
+				contextWindow: fc.integer({ min: 1000, max: 2_000_000 }),
+				maxOutput: fc.integer({ min: 100, max: 200_000 }),
+				vision: fc.boolean(),
+				thinking: fc.boolean(),
+			},
+			{ requiredKeys: ["name", "hosts", "local"] },
+		),
 		{ maxLength: 6 },
 	),
 });

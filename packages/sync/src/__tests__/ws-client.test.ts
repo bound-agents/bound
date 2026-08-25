@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { deriveSiteId, ensureKeypair, exportPublicKey, generateKeypair } from ".
 import { KeyManager } from "../key-manager.js";
 import { WsSyncClient } from "../ws-client.js";
 import { WsMessageType, encodeFrame } from "../ws-frames.js";
+import { createWsTestCluster } from "./test-harness.js";
 
 describe("WsSyncClient", () => {
 	let hubKeypair: { publicKey: CryptoKey; privateKey: CryptoKey };
@@ -505,19 +507,100 @@ describe("WsSyncClient", () => {
 			expect(client).toBeTruthy();
 		});
 
-		it("uses default reconnectMaxInterval of 60s", () => {
+		it("uses default reconnectMaxInterval of 10s", () => {
 			const client = new WsSyncClient({
 				hubUrl: "http://localhost:3000",
 				privateKey: spokeKeypair.privateKey,
 				siteId: spokeSiteId,
 				keyManager: hubKeyManager,
 				hubSiteId,
-				// No reconnectMaxInterval specified
 			});
 
 			clients.push(client);
+			const internal = client as unknown as {
+				config: { reconnectMaxInterval?: number };
+				reconnectInterval: number;
+				scheduleReconnect(): void;
+			};
+			internal.reconnectInterval = 10;
+			internal.scheduleReconnect();
+			expect(internal.reconnectInterval).toBe(10);
+		});
 
-			expect(client).toBeTruthy();
+		it("resets reconnect backoff only after authenticated inbound activity", () => {
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				reconnectInterval: number;
+				connectionHealthy: boolean;
+				markConnectionHealthy(): void;
+			};
+			internal.reconnectInterval = 8;
+			internal.connectionHealthy = false;
+			internal.markConnectionHealthy();
+			expect(internal.reconnectInterval).toBe(1);
+			expect(internal.connectionHealthy).toBe(true);
+		});
+
+		it("debounces reconnect backfill until the socket stays open", async () => {
+			let runs = 0;
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+				reconnectBackfillDelayMs: 20,
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				ws: { readyState: number } | null;
+				scheduleReconnectBackfill(wt: { runBackfill(): Promise<void> }): void;
+			};
+			internal.ws = { readyState: WebSocket.OPEN };
+			(client as unknown as { connectionHealthy: boolean }).connectionHealthy = true;
+			internal.scheduleReconnectBackfill({
+				runBackfill: async () => {
+					runs++;
+				},
+			});
+			expect(runs).toBe(0);
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			expect(runs).toBe(1);
+		});
+
+		it("cancels reconnect backfill when the socket drops again", async () => {
+			let runs = 0;
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+				reconnectBackfillDelayMs: 20,
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				ws: { readyState: number } | null;
+				scheduleReconnectBackfill(wt: { runBackfill(): Promise<void> }): void;
+				stopReconnectBackfillTimer(): void;
+			};
+			internal.ws = { readyState: WebSocket.OPEN };
+			(client as unknown as { connectionHealthy: boolean }).connectionHealthy = true;
+			internal.scheduleReconnectBackfill({
+				runBackfill: async () => {
+					runs++;
+				},
+			});
+			internal.stopReconnectBackfillTimer();
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			expect(runs).toBe(0);
 		});
 
 		it("uses default backpressureLimit of 2MB", () => {
@@ -667,5 +750,245 @@ describe("WsSyncClient", () => {
 			expect(spokeClient).toBeTruthy();
 			expect(typeof spokeClient.connected).toBe("boolean");
 		});
+	});
+
+	describe("receive-side liveness watchdog", () => {
+		it("forces reconnect when no frames arrive within receiveTimeoutMs", async () => {
+			const testRunId = randomBytes(4).toString("hex");
+			const cluster = await createWsTestCluster({
+				spokeCount: 1,
+				basePort: 0,
+				testRunId,
+			});
+
+			try {
+				const spoke = cluster.spokes[0];
+				let disconnectCount = 0;
+				spoke.wsClient.onDisconnected = () => {
+					disconnectCount++;
+				};
+
+				// Set a short liveness timeout. After the initial snapshot drain
+				// settles and the hub has no more changelog entries to push, no
+				// frames arrive. The watchdog should tear down the zombie socket.
+				spoke.wsClient.updateReceiveTimeout(300);
+
+				// 300ms timeout + interval check alignment — 800ms is enough to
+				// catch the disconnection without waiting for the 1s reconnect.
+				await new Promise((r) => setTimeout(r, 800));
+
+				expect(disconnectCount).toBeGreaterThanOrEqual(1);
+			} finally {
+				await cluster.cleanup();
+			}
+		}, 10000);
+	});
+
+	describe("handshake deadline — half-open CONNECTING socket", () => {
+		/**
+		 * A server that accepts the TCP connection and reads the upgrade request
+		 * but never answers it. The client is left in CONNECTING: no open event,
+		 * and critically no close event either. This is the production wedge —
+		 * neither handleClose() nor connect()'s synchronous catch re-arms the
+		 * reconnect timer, so the client latches dark until the process restarts.
+		 */
+		function serveNeverUpgrading(): { server: ReturnType<typeof Bun.serve>; hits: () => number } {
+			let hits = 0;
+			const server = Bun.serve({
+				port: 0,
+				fetch() {
+					hits++;
+					return new Promise<Response>(() => {});
+				},
+			});
+			servers.push(server);
+			return { server, hits: () => hits };
+		}
+
+		function makeSyncStateDb(): Database {
+			const db = new Database(":memory:");
+			db.run(`CREATE TABLE sync_state (
+				peer_site_id  TEXT PRIMARY KEY,
+				last_received TEXT NOT NULL DEFAULT '',
+				last_sent     TEXT NOT NULL DEFAULT '',
+				last_confirmed TEXT NOT NULL DEFAULT '',
+				last_sync_at  TEXT,
+				sync_errors   INTEGER NOT NULL DEFAULT 0
+			)`);
+			return db;
+		}
+
+		it("tears down the half-open socket and reconnects when the upgrade never completes", async () => {
+			const { server, hits } = serveNeverUpgrading();
+
+			const client = new WsSyncClient({
+				hubUrl: `http://localhost:${server.port}`,
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				// spokeKeyManager (not hubKeyManager) — computePeerSecrets skips self,
+				// so only the spoke's manager holds a symmetric key for hubSiteId.
+				// Without this the client throws before creating a socket at all.
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				reconnectMaxInterval: 1,
+				handshakeTimeoutMs: 200,
+			});
+			clients.push(client);
+
+			await client.connect();
+			// First attempt dies at ~200ms, reconnect lands ~1s later, second attempt
+			// dies at ~1.4s. Pre-fix this stays at exactly 1 forever.
+			await new Promise((r) => setTimeout(r, 1800));
+
+			expect(hits()).toBeGreaterThanOrEqual(2);
+			expect(client.connected).toBe(false);
+		}, 10000);
+
+		it("does not arm the deadline when handshakeTimeoutMs is 0", async () => {
+			const { server, hits } = serveNeverUpgrading();
+
+			const client = new WsSyncClient({
+				hubUrl: `http://localhost:${server.port}`,
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				reconnectMaxInterval: 1,
+				handshakeTimeoutMs: 0,
+			});
+			clients.push(client);
+
+			await client.connect();
+			await new Promise((r) => setTimeout(r, 1200));
+
+			expect(hits()).toBe(1);
+		}, 10000);
+
+		it("logs a warning naming the deadline when it fires", async () => {
+			const { server } = serveNeverUpgrading();
+			const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
+			const logger = {
+				debug: () => {},
+				info: () => {},
+				warn: (message: string, context?: Record<string, unknown>) => {
+					warnings.push({ message, context });
+				},
+				error: () => {},
+				isLevelEnabled: () => true,
+			};
+
+			const client = new WsSyncClient({
+				hubUrl: `http://localhost:${server.port}`,
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				reconnectMaxInterval: 1,
+				handshakeTimeoutMs: 200,
+				logger,
+			});
+			clients.push(client);
+
+			await client.connect();
+			await new Promise((r) => setTimeout(r, 600));
+
+			const hit = warnings.find((w) => w.message.includes("handshake deadline"));
+			expect(hit).toBeTruthy();
+			expect(hit?.context?.timeoutMs).toBe(200);
+		}, 10000);
+
+		it("records a sync error for the hub peer so hostinfo stops reporting a clean mesh", async () => {
+			const { server } = serveNeverUpgrading();
+			const db = makeSyncStateDb();
+
+			const client = new WsSyncClient({
+				hubUrl: `http://localhost:${server.port}`,
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				reconnectMaxInterval: 1,
+				handshakeTimeoutMs: 200,
+				db,
+			});
+			clients.push(client);
+
+			await client.connect();
+			await new Promise((r) => setTimeout(r, 600));
+
+			const row = db
+				.query("SELECT sync_errors FROM sync_state WHERE peer_site_id = ?")
+				.get(hubSiteId) as { sync_errors: number } | null;
+
+			expect(row).toBeTruthy();
+			expect(row?.sync_errors).toBeGreaterThanOrEqual(1);
+			db.close();
+		}, 10000);
+
+		it("records a sync error when connect() throws before a socket exists", async () => {
+			const db = makeSyncStateDb();
+
+			// hubKeyManager has no symmetric key for hubSiteId (self is skipped),
+			// so connect() throws synchronously inside its try block.
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:59997",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: hubKeyManager,
+				hubSiteId,
+				reconnectMaxInterval: 1,
+				db,
+			});
+			clients.push(client);
+
+			await client.connect();
+			await new Promise((r) => setTimeout(r, 100));
+
+			const row = db
+				.query("SELECT sync_errors FROM sync_state WHERE peer_site_id = ?")
+				.get(hubSiteId) as { sync_errors: number } | null;
+
+			expect(row?.sync_errors).toBeGreaterThanOrEqual(1);
+			db.close();
+		}, 10000);
+
+		it("clears the error counter once a handshake completes", async () => {
+			const db = makeSyncStateDb();
+			db.run("INSERT INTO sync_state (peer_site_id, sync_errors) VALUES (?, 7)", [hubSiteId]);
+
+			const server = Bun.serve({
+				port: 0,
+				fetch(req, srv) {
+					if (srv.upgrade(req)) return undefined;
+					return new Response("expected websocket", { status: 400 });
+				},
+				websocket: { message() {}, open() {}, close() {} },
+			});
+			servers.push(server);
+
+			const client = new WsSyncClient({
+				hubUrl: `http://localhost:${server.port}`,
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				reconnectMaxInterval: 1,
+				handshakeTimeoutMs: 2000,
+				backfillIntervalSeconds: 0,
+				receiveTimeoutMs: 0,
+				db,
+			});
+			clients.push(client);
+
+			await client.connect();
+			await new Promise((r) => setTimeout(r, 400));
+
+			expect(client.connected).toBe(true);
+			const row = db
+				.query("SELECT sync_errors FROM sync_state WHERE peer_site_id = ?")
+				.get(hubSiteId) as { sync_errors: number } | null;
+			expect(row?.sync_errors).toBe(0);
+			db.close();
+		}, 10000);
 	});
 });

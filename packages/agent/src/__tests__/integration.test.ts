@@ -9,7 +9,7 @@ import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
 	const backends = new Map<string, LLMBackend>();
@@ -171,7 +171,7 @@ describe("Agent Loop End-to-End Integration", () => {
 		};
 
 		// Run agent loop
-		const agentLoop = new AgentLoop(
+		const agentLoop = new MainAgentLoop(
 			mockAppContext as any,
 			mockSandbox as any,
 			createMockRouter(mockLLMBackend),
@@ -313,7 +313,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
 		};
 
-		const agentLoop = new AgentLoop(
+		const agentLoop = new MainAgentLoop(
 			mockAppContext as any,
 			mockSandbox as any,
 			createMockRouter(mockLLMBackend),
@@ -441,7 +441,7 @@ describe("Agent Loop End-to-End Integration", () => {
 			exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
 		};
 
-		const agentLoop = new AgentLoop(
+		const agentLoop = new MainAgentLoop(
 			mockAppContext as any,
 			mockSandbox as any,
 			createMockRouter(mockLLMBackend),

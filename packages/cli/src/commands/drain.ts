@@ -1,5 +1,11 @@
 import { dirname, join, resolve } from "node:path";
-import { createChangeLogEntry, getSiteId } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	getSiteId,
+	insertRow,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface DrainArgs {
 	newHub: string;
@@ -12,6 +18,31 @@ interface TaskRow {
 }
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Upsert a cluster_config key through the outbox helpers. The existence probe
+ * intentionally IGNORES `deleted`: a soft-deleted row still occupies the `key`
+ * PK, so re-setting it must UPDATE (and un-tombstone via deleted=0), never INSERT
+ * a colliding row.
+ */
+function upsertClusterConfig(
+	db: ReturnType<typeof openBoundDB>,
+	key: string,
+	value: string,
+	siteId: string,
+): void {
+	const exists = findClusterConfigKeyByKeyIncludingDeleted(db, key) !== null;
+	if (exists) {
+		updateRow(db, "cluster_config", key, { value, deleted: 0 }, siteId);
+	} else {
+		insertRow(
+			db,
+			"cluster_config",
+			{ key, value, modified_at: new Date().toISOString(), deleted: 0 },
+			siteId,
+		);
+	}
 }
 export async function runDrain(args: DrainArgs): Promise<void> {
 	const configDir = args.configDir || "config";
@@ -29,28 +60,10 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		if (siteId === "unknown") {
 			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
-		const now = new Date().toISOString();
 		// Step 1: Set emergency_stop = "drain" to prevent new task scheduling
 		console.log("Step 1: Setting emergency_stop to 'drain' to prevent new tasks...");
 		const emergencyStopKey = "emergency_stop";
-		const existingStop = db
-			.query("SELECT key FROM cluster_config WHERE key = ?")
-			.get(emergencyStopKey);
-		const setDrainTx = db.transaction(() => {
-			if (existingStop) {
-				db.query(
-					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config drain command)
-				).run("drain", now, emergencyStopKey);
-			} else {
-				db.query(
-					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config drain command)
-				).run(emergencyStopKey, "drain", now);
-			}
-			// Write change_log entry
-			const rowData = { key: emergencyStopKey, value: "drain", modified_at: now };
-			createChangeLogEntry(db, "cluster_config", emergencyStopKey, siteId, rowData);
-		});
-		setDrainTx();
+		upsertClusterConfig(db, emergencyStopKey, "drain", siteId);
 		console.log("Drain mode enabled.\n");
 		// Step 2: Wait for all running tasks to complete
 		console.log("Step 2: Waiting for running tasks to complete...");
@@ -74,37 +87,14 @@ export async function runDrain(args: DrainArgs): Promise<void> {
 		}
 		// Step 3: Set cluster_hub to new hub
 		console.log(`Step 3: Setting cluster_hub to ${args.newHub}...`);
-		const hubTimestamp = new Date().toISOString();
 		const hubKey = "cluster_hub";
-		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
-		const setHubTx = db.transaction(() => {
-			if (existingHub) {
-				db.query(
-					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config drain command)
-				).run(args.newHub, hubTimestamp, hubKey);
-			} else {
-				db.query(
-					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config drain command)
-				).run(hubKey, args.newHub, hubTimestamp);
-			}
-			// Write change_log entry
-			const rowData = { key: hubKey, value: args.newHub, modified_at: hubTimestamp };
-			createChangeLogEntry(db, "cluster_config", hubKey, siteId, rowData);
-		});
-		setHubTx();
+		upsertClusterConfig(db, hubKey, args.newHub, siteId);
 		console.log("Hub updated.\n");
-		// Step 4: Clear emergency_stop
+		// Step 4: Clear emergency_stop (soft-delete — invariant #2)
 		console.log("Step 4: Clearing emergency_stop...");
-		const clearTimestamp = new Date().toISOString();
-		const clearTx = db.transaction(() => {
-			db.query(
-				"DELETE FROM cluster_config WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config drain command)
-			).run(emergencyStopKey);
-			// Write change_log entry with empty value to signal deletion
-			const rowData = { key: emergencyStopKey, value: "", modified_at: clearTimestamp };
-			createChangeLogEntry(db, "cluster_config", emergencyStopKey, siteId, rowData);
-		});
-		clearTx();
+		if (findClusterConfigKeyByKeyIncludingDeleted(db, emergencyStopKey) !== null) {
+			softDelete(db, "cluster_config", emergencyStopKey, siteId);
+		}
 		console.log("Emergency stop cleared.\n");
 		console.log(`Drain complete. Cluster hub is now: ${args.newHub}`);
 	} finally {

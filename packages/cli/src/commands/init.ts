@@ -12,13 +12,13 @@ export interface InitArgs {
 	cerebras?: boolean;
 	zai?: boolean;
 	opencodeGo?: boolean;
+	umans?: boolean;
 	/** Hub-only mode: no local inference backends; the node relays inference to spokes. */
 	hub?: boolean;
 	region?: string;
 	name?: string;
 	withSync?: boolean;
 	withMcp?: boolean;
-	withOverlay?: boolean;
 	force?: boolean;
 	configDir?: string;
 }
@@ -28,7 +28,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 	// Check if config already exists
 	const allowlistPath = resolve(configDir, "allowlist.json");
-	const modelBackendsPath = resolve(configDir, "model_backends.json");
+	const modelBackendsPath = resolve(configDir, "model_backends.js");
 
 	if (!args.force && (existsSync(allowlistPath) || existsSync(modelBackendsPath))) {
 		console.log("Config already exists. Use --force to overwrite.");
@@ -52,11 +52,17 @@ export async function runInit(args: InitArgs): Promise<void> {
 		| "anthropic"
 		| "cerebras"
 		| "zai"
-		| "opencode-go" = "openai-compatible";
+		| "opencode-go"
+		| "umans" = "openai-compatible";
 	let baseUrl: string | undefined = "http://localhost:11434/v1";
 	let apiKey: string | undefined = "ollama";
 	let region: string | undefined;
 	let model = "llama3";
+	// umans is config-light + self-configuring: the namespace entry carries only
+	// provider + id + api_key + default; the full model lineup (ids, context
+	// windows, pricing, tiers) is fetched at runtime. We take a dedicated
+	// config-write branch for it below.
+	let isUmans = false;
 
 	// Determine configuration mode
 	if (args.hub) {
@@ -118,6 +124,17 @@ export async function runInit(args: InitArgs): Promise<void> {
 		if (!apiKey) {
 			console.log("OPENCODE_API_KEY not found in environment.");
 		}
+	} else if (args.umans) {
+		// umans preset — config-light + self-configuring. The full model lineup,
+		// pricing, context windows, tiers, and concurrency limit are fetched at
+		// runtime, so the config carries only provider + id + api_key + default.
+		provider = "umans";
+		isUmans = true;
+		apiKey = process.env.UMANS_API_KEY;
+
+		if (!apiKey) {
+			console.log("UMANS_API_KEY not found in environment.");
+		}
 	}
 
 	// Generate deterministic UUID for operator
@@ -133,11 +150,20 @@ export async function runInit(args: InitArgs): Promise<void> {
 		},
 	};
 
-	// Create model_backends.json
+	// Create model_backends.js
 	let modelBackendsConfig: { backends: unknown[]; default: string };
 	if (args.hub) {
 		// Hub-only: no inference backends. Inference is relayed to spokes.
 		modelBackendsConfig = { backends: [], default: "" };
+	} else if (isUmans) {
+		// Config-light umans namespace. NO model/tier/context_window/base_url/
+		// pricing — all fetched/derived at runtime. `default` MUST be the
+		// namespace id ("umans"), not a concrete model id: a concrete id does
+		// not exist at startup and would crash the default-existence check.
+		// biome-ignore lint/suspicious/noExplicitAny: config is dynamic
+		const umansBackend: any = { id: "umans", provider: "umans" };
+		if (apiKey) umansBackend.api_key = apiKey;
+		modelBackendsConfig = { backends: [umansBackend], default: "umans" };
 	} else {
 		// biome-ignore lint/suspicious/noExplicitAny: config is dynamic
 		const backendConfig: any = {
@@ -168,7 +194,10 @@ export async function runInit(args: InitArgs): Promise<void> {
 
 	// Write config files
 	writeFileSync(allowlistPath, `${JSON.stringify(allowlistConfig, null, 2)}\n`);
-	writeFileSync(modelBackendsPath, `${JSON.stringify(modelBackendsConfig, null, 2)}\n`);
+	writeFileSync(
+		modelBackendsPath,
+		`export default ${JSON.stringify(modelBackendsConfig, null, 2)};\n`,
+	);
 
 	if (args.hub) {
 		console.log(`
@@ -176,7 +205,7 @@ Hub initialized successfully!
 
 Created:
   - ${configDir}/allowlist.json
-  - ${configDir}/model_backends.json (empty - hub relays inference to spokes)
+  - ${configDir}/model_backends.js (empty — hub relays inference to spokes)
 
 Operator: ${operatorName}
 
@@ -193,11 +222,11 @@ Config initialized successfully!
 
 Created:
   - ${configDir}/allowlist.json
-  - ${configDir}/model_backends.json
+  - ${configDir}/model_backends.js
 
 Operator: ${operatorName}
 Provider: ${provider}
-Model: ${model}
+${isUmans ? "Model: (self-configuring — lineup fetched at runtime)" : `Model: ${model}`}
 
 Next steps:
   1. Review the config files
@@ -223,14 +252,5 @@ Next steps:
 		};
 		writeFileSync(mcpPath, `${JSON.stringify(mcpConfig, null, 2)}\n`);
 		console.log(`  - ${configDir}/mcp.json (template)`);
-	}
-
-	if (args.withOverlay) {
-		const overlayPath = resolve(configDir, "overlay.json");
-		const overlayConfig = {
-			mounts: {},
-		};
-		writeFileSync(overlayPath, `${JSON.stringify(overlayConfig, null, 2)}\n`);
-		console.log(`  - ${configDir}/overlay.json (template)`);
 	}
 }

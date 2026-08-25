@@ -8,7 +8,12 @@ import { applySchema, type createAppContext, createDatabase } from "@bound/core"
 import type { Task } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { DEFERRED_RETRY_BACKOFF_MS_DEFAULT, STUCK_THRESHOLD, healStuckTasks } from "../scheduler";
+import {
+	DEFERRED_MAX_RETRIES,
+	DEFERRED_RETRY_BACKOFF_MS_DEFAULT,
+	STUCK_THRESHOLD,
+	healStuckTasks,
+} from "../scheduler";
 
 describe("healStuckTasks", () => {
 	let tmpDir: string;
@@ -352,19 +357,9 @@ describe("healStuckTasks", () => {
 		});
 	});
 
-	// #87: the heal predicate was `status IN ('failed', 'cancelled')` for ALL
-	// task types. That carried two defects:
-	//   1. retry-exhausted deferred tasks (consecutive_failures >=
-	//      DEFERRED_MAX_RETRIES) stay `failed` + claimed forever — retryDeferredTask
-	//      bails without clearing the claim — so the healer re-selected and
-	//      re-WARNed them every cycle (the reported log spam).
-	//   2. deliberately-cancelled cron/event/deferred tasks were re-dispatched
-	//      (resurrected), contradicting the cancel. The 'cancelled' clause was
-	//      only ever needed for heartbeats (uncancellable by design).
-	// The fix makes the predicate type-aware. These tests pin the new behavior.
-	describe("AC: #87 — terminal/cancelled rows are not re-healed", () => {
-		// DEFERRED_MAX_RETRIES is 2; a deferred row with consecutive_failures >= 2
-		// can no longer be retried (retryDeferredTask refuses at prev+1 > 2).
+	// #87: ordinary terminal rows must remain untouched, while failed deferred
+	// rows below their retry limit recover with the prescribed backoff.
+	describe("#87: terminal and retryable deferred rows", () => {
 		const insertStuckTask = (
 			taskId: string,
 			type: string,
@@ -394,118 +389,122 @@ describe("healStuckTasks", () => {
 			`);
 		};
 
-		it("still revives a cancelled heartbeat (uncancellable by design)", () => {
-			cleanupDb();
-			const taskId = randomUUID();
-			insertStuckTask(taskId, "heartbeat", "cancelled", 0, '{"interval_ms":120000}');
-
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
-
-			expect(recovered).toBe(1);
-			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
-			expect(updated?.status).toBe("pending");
-		});
-
-		it("does not resurrect a cancelled cron task", () => {
+		it("does not resurrect cancelled cron tasks", () => {
 			cleanupDb();
 			const taskId = randomUUID();
 			insertStuckTask(taskId, "cron", "cancelled", 0, "0 * * * *");
 
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
-
-			expect(recovered).toBe(0);
-			const updated = db.query("SELECT status, claimed_by FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
-			expect(updated?.status).toBe("cancelled");
-			// Untouched — no change_log entry written for a terminal row.
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(0);
+			const updated = db
+				.query("SELECT status, claimed_by, claimed_at, lease_id FROM tasks WHERE id = ?")
+				.get(taskId) as Partial<Task> | undefined;
+			expect(updated).toMatchObject({
+				status: "cancelled",
+				claimed_by: "peer-A",
+				claimed_at: expect.any(String),
+				lease_id: "lease-1",
+			});
 			const changeLog = db
 				.query("SELECT COUNT(*) as c FROM change_log WHERE row_id = ?")
 				.get(taskId) as { c: number } | undefined;
 			expect(changeLog?.c).toBe(0);
 		});
 
-		it("does not resurrect a cancelled deferred task", () => {
+		it("does not resurrect cancelled deferred tasks", () => {
 			cleanupDb();
 			const taskId = randomUUID();
-			// consecutive_failures = 0 → before the fix, retryDeferredTask (called
-			// with prev+1 = 1 <= 2) would rewrite it to pending = resurrection.
 			insertStuckTask(taskId, "deferred", "cancelled", 0, "in 10m");
 
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
-
-			expect(recovered).toBe(0);
-			const updated = db.query("SELECT status, claimed_by FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
-			expect(updated?.status).toBe("cancelled");
-		});
-
-		it("does not resurrect a cancelled event task", () => {
-			cleanupDb();
-			const taskId = randomUUID();
-			insertStuckTask(taskId, "event", "cancelled", 0, "webhook:bound");
-
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
-
-			expect(recovered).toBe(0);
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(0);
 			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
 				| Partial<Task>
 				| undefined;
 			expect(updated?.status).toBe("cancelled");
 		});
 
-		it("does not re-select a retry-exhausted deferred task (no log spam)", () => {
+		it("does not resurrect cancelled event tasks", () => {
 			cleanupDb();
 			const taskId = randomUUID();
-			// consecutive_failures = 2 = DEFERRED_MAX_RETRIES → retryDeferredTask
-			// refuses (prev+1 = 3 > 2). Before the fix this row stayed failed +
-			// claimed and was re-WARNed every heal cycle.
-			insertStuckTask(taskId, "deferred", "failed", 2, "in 10m");
+			insertStuckTask(taskId, "event", "cancelled", 0, "webhook:bound");
 
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(0);
+			const updated = db
+				.query("SELECT status, claimed_by, claimed_at, lease_id FROM tasks WHERE id = ?")
+				.get(taskId) as Partial<Task> | undefined;
+			expect(updated).toMatchObject({
+				status: "cancelled",
+				claimed_by: "peer-A",
+				claimed_at: expect.any(String),
+				lease_id: "lease-1",
+			});
+			const changeLog = db
+				.query("SELECT COUNT(*) as c FROM change_log WHERE row_id = ?")
+				.get(taskId) as { c: number } | undefined;
+			expect(changeLog?.c).toBe(0);
+		});
 
-			expect(recovered).toBe(0);
+		it("does not reselect retry-exhausted deferred tasks", () => {
+			cleanupDb();
+			const taskId = randomUUID();
+			insertStuckTask(taskId, "deferred", "failed", DEFERRED_MAX_RETRIES, "in 10m");
+
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(0);
 			const updated = db.query("SELECT status, claimed_by FROM tasks WHERE id = ?").get(taskId) as
 				| Partial<Task>
 				| undefined;
-			// Left untouched in its terminal state — not re-dispatched, not re-logged.
 			expect(updated?.status).toBe("failed");
 			expect(updated?.claimed_by).toBe("peer-A");
 		});
 
-		it("still recovers a deferred task that has retries remaining", () => {
+		it("recovers retryable deferred tasks with post-increment backoff", () => {
 			cleanupDb();
 			const taskId = randomUUID();
-			// consecutive_failures = 1 < DEFERRED_MAX_RETRIES → genuinely recoverable.
-			insertStuckTask(taskId, "deferred", "failed", 1, "in 10m");
+			insertStuckTask(taskId, "deferred", "failed", DEFERRED_MAX_RETRIES - 1, "in 10m");
+			// retryDeferredTask reads Date.now() internally (the `now` param to
+			// healStuckTasks is only the user-interaction anchor), so the exact
+			// backoff instant can't be predicted from a single clock read — the
+			// old `toBe(now + backoff)` assert flaked whenever a millisecond
+			// ticked between the test's Date and the implementation's. Bracket
+			// the call instead.
+			const before = Date.now();
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date(before))).toBe(1);
+			const after = Date.now();
+			const updated = db
+				.query(
+					"SELECT status, claimed_by, claimed_at, lease_id, consecutive_failures, next_run_at FROM tasks WHERE id = ?",
+				)
+				.get(taskId) as Partial<Task> | undefined;
+			expect(updated).toMatchObject({
+				status: "pending",
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				consecutive_failures: DEFERRED_MAX_RETRIES,
+			});
+			const backoff = DEFERRED_RETRY_BACKOFF_MS_DEFAULT * DEFERRED_MAX_RETRIES;
+			const nextRunAt = new Date(updated?.next_run_at ?? 0).getTime();
+			expect(nextRunAt).toBeGreaterThanOrEqual(before + backoff);
+			expect(nextRunAt).toBeLessThanOrEqual(after + backoff);
+		});
 
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
+		it("still revives a cancelled heartbeat (uncancellable by design)", () => {
+			cleanupDb();
+			const taskId = randomUUID();
+			insertStuckTask(taskId, "heartbeat", "cancelled", 0, '{"interval_ms":120000}');
 
-			expect(recovered).toBe(1);
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(1);
 			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
 				| Partial<Task>
 				| undefined;
 			expect(updated?.status).toBe("pending");
 		});
 
-		// #104: a heartbeat transiently passes through status='completed' between the
-		// completion write and rescheduleHeartbeat. If the process dies (or is evicted)
-		// in that window — or rescheduleHeartbeat early-returns — the heartbeat is left
-		// stuck in 'completed'. The pending sweep only looks at 'pending', and the
-		// healer historically only covered 'failed'/'cancelled', so nothing re-armed a
-		// completed heartbeat. Heartbeats are perpetual by design and must never durably
-		// rest in a terminal state; the healer recovers them.
 		it("revives a heartbeat stuck in completed state (#104)", () => {
 			cleanupDb();
 			const taskId = randomUUID();
 			insertStuckTask(taskId, "heartbeat", "completed", 0, '{"interval_ms":120000}');
 
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
-
-			expect(recovered).toBe(1);
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(1);
 			const updated = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as
 				| Partial<Task>
 				| undefined;
@@ -513,18 +512,21 @@ describe("healStuckTasks", () => {
 			expect(updated?.next_run_at).not.toBeNull();
 		});
 
-		it("does not revive a completed cron task (cron completion is terminal)", () => {
+		it("revives an event task stuck in completed state", () => {
 			cleanupDb();
 			const taskId = randomUUID();
-			insertStuckTask(taskId, "cron", "completed", 0, "0 * * * *");
+			insertStuckTask(taskId, "event", "completed", 0, "webhook:bound");
 
-			const recovered = healStuckTasks(db, appContext.logger, siteId, new Date());
-
-			expect(recovered).toBe(0);
-			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
-			expect(updated?.status).toBe("completed");
+			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(1);
+			const updated = db
+				.query("SELECT status, claimed_by, claimed_at, lease_id FROM tasks WHERE id = ?")
+				.get(taskId) as Partial<Task> | undefined;
+			expect(updated).toMatchObject({
+				status: "pending",
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+			});
 		});
 	});
 });

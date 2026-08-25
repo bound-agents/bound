@@ -1,39 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Prepares sandbox worker assets for embedding in the compiled `bound` binary.
- *
- * ── Why this exists ────────────────────────────────────────────────────────
- * `just-bash` ships Python and JavaScript commands that run inside Node
- * `Worker` threads. At build-time the worker entry points are referenced via
- * `new URL("./worker.js", import.meta.url)` patterns inside its own chunk
- * files. `bun build --compile` does NOT auto-embed files referenced through
- * that pattern when the references live inside `node_modules/` — only files
- * in the project tree trigger the asset-embedding heuristic.
- *
- * Result: the compiled binary knows the worker PATH but not the worker
- * CONTENT. Spawning the Worker fails with
- *   BuildMessage: ModuleNotFound resolving "/$bunfs<path>"
- * (the `<path>` is a path-sanitizer redaction).
- *
- * The fix is in three parts:
- *   1) (this script) Copy worker files and their companion assets out of
- *      just-bash's node_modules into the project tree at
- *      packages/sandbox/src/_runtime/.
- *   2) (runtime/assets.ts) Re-import those files via the explicit
- *      `with { type: "file" }` syntax so bun's compile step embeds them.
- *   3) (build.ts plugin) Rewrite just-bash's chunk sources so they spawn
- *      Workers using our embedded paths instead of their own `new URL(...)`
- *      construction.
- *
- * Python and js-exec get different treatment:
- *   - Python's worker uses only `node:*` APIs that Bun supports, so we
- *     copy it as-is and preserve the original relative-path layout for
- *     its sibling CPython WASM/stdlib assets.
- *   - js-exec's worker statically imports `stripTypeScriptTypes` from
- *     `node:module`, which Bun 1.3.x does not implement. We bundle it
- *     with `Bun.build` (inlines quickjs-emscripten) and patch the import
- *     to fall back to Bun.Transpiler when `stripTypeScriptTypes` is
- *     unavailable.
+ * Embeds just-bash Worker assets that `bun build --compile` misses inside node_modules. Copy Python unchanged;
+ * bundle js-exec to replace Bun-unsupported `node:module` stripping with `Bun.Transpiler` fallback.
  */
 
 import { createHash } from "node:crypto";

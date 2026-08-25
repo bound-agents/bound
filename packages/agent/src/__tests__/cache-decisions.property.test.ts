@@ -10,7 +10,7 @@
  *      changes between turns.
  *   2. `selectCacheTtl` — picks the cache TTL string.
  *   3. `maybePlaceCacheMarker` — splices a {role: "cache"} marker
- *      at messages[length-1] when capability allows.
+ *      at the bridge-safe boundary when capability allows.
  *   4. `buildCacheMarkers` — produces the descriptors recorded on
  *      `context_debug.cacheMarkers`.
  *
@@ -32,8 +32,8 @@
  *   F7 maybePlaceCacheMarker too-short gate — messages.length < 2
  *      always returns placed=false with reason "too-short".
  *   F8 maybePlaceCacheMarker insertion semantics — when placed,
- *      the result has a {role: "cache"} marker at index
- *      length-1 of the OLD array; new array is one longer.
+ *      it preserves every original message and inserts exactly one marker
+ *      at the reported bridge-safe boundary.
  *   F9 buildCacheMarkers system marker is always "fixed" — even
  *      when the message marker is "rolling".
  *   F10 buildCacheMarkers position monotonicity — the message
@@ -41,7 +41,7 @@
  *   F11 buildCacheMarkers capability-disabled returns empty array.
  */
 
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { LLMMessage, ToolDefinition } from "@bound/llm";
 import type { ContextSection } from "@bound/shared";
 import fc from "fast-check";
@@ -96,6 +96,31 @@ describe("computeToolFingerprint — property tests", () => {
 		);
 	});
 
+	it("F2b: param-key-order stability — same params in different key order, same hash", () => {
+		// A tool's `parameters` object built with its keys enumerated in a
+		// different order (e.g. an MCP schema re-parsed across turns) is the SAME
+		// logical tool set. The fingerprint must not flip, or the warm-path cache
+		// invalidates with a spurious "tool-change" and the cold path re-compacts
+		// history — the churn that forced repeated file re-reads in thread
+		// 64ccb200. Canonicalize before hashing.
+		fc.assert(
+			fc.property(
+				toolNameArb,
+				fc.uniqueArray(toolNameArb, { minLength: 2, maxLength: 6 }),
+				(toolName, paramKeys) => {
+					const forward: Record<string, unknown> = {};
+					for (const k of paramKeys) forward[k] = { type: "string" };
+					const reversed: Record<string, unknown> = {};
+					for (const k of [...paramKeys].reverse()) reversed[k] = { type: "string" };
+					const a = computeToolFingerprint([makeTool(toolName, { properties: forward })]);
+					const b = computeToolFingerprint([makeTool(toolName, { properties: reversed })]);
+					return a === b;
+				},
+			),
+			{ numRuns: 100 },
+		);
+	});
+
 	it("F3: sensitivity — adding a tool changes the hash", () => {
 		fc.assert(
 			fc.property(toolSetArb, toolNameArb, (tools, newName) => {
@@ -126,6 +151,22 @@ describe("computeToolFingerprint — property tests", () => {
 			),
 			{ numRuns: 50 },
 		);
+	});
+
+	it("F4b: never throws on a malformed entry (cache hint must degrade, not crash)", () => {
+		// The fingerprint is a cache-keying hint computed on every turn; a
+		// malformed tool entry (e.g. a registry tool missing its toolDefinition)
+		// must downgrade the hash, never throw and abort the agent loop.
+		const malformed = [
+			undefined,
+			{ type: "function" },
+			{ function: {} },
+			makeTool("ok"),
+		] as unknown as ToolDefinition[];
+		const fp = computeToolFingerprint(malformed);
+		// Only the valid "ok" tool contributes; result is a real hash, not a throw.
+		expect(HEX_16.test(fp)).toBe(true);
+		expect(computeToolFingerprint([undefined] as unknown as ToolDefinition[])).toBe("empty");
 	});
 });
 
@@ -171,21 +212,23 @@ describe("maybePlaceCacheMarker — property tests", () => {
 		);
 	});
 
-	it("F8: insertion semantics — placed inserts cache marker at length-1, new length += 1", () => {
+	it("F8: insertion preserves every original and adds exactly one reported marker", () => {
 		fc.assert(
 			fc.property(
 				fc.array(llmMessageArb, { minLength: 2, maxLength: 10 }),
 				fc.constantFrom("fixed", "rolling"),
 				(msgs, kind) => {
-					const arr = [...msgs];
-					const oldLen = arr.length;
-					const result = maybePlaceCacheMarker(arr, kind as "fixed" | "rolling", undefined);
+					const original = structuredClone(msgs);
+					const result = maybePlaceCacheMarker(msgs, kind as "fixed" | "rolling", undefined);
 					if (!result.placed) return false;
-					if (arr.length !== oldLen + 1) return false;
-					if (result.index !== oldLen - 1) return false;
-					if (arr[result.index].role !== "cache") return false;
-					if (result.variant !== kind) return false;
-					return true;
+					const withoutMarker = [...msgs.slice(0, result.index), ...msgs.slice(result.index + 1)];
+					return (
+						msgs.length === original.length + 1 &&
+						msgs[result.index].role === "cache" &&
+						msgs[result.index].content === "" &&
+						result.variant === kind &&
+						JSON.stringify(withoutMarker) === JSON.stringify(original)
+					);
 				},
 			),
 			{ numRuns: 100 },

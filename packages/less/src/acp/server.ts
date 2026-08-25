@@ -40,7 +40,7 @@ import {
 	type SetSessionConfigOptionResponse,
 	ndJsonStream,
 } from "@agentclientprotocol/sdk";
-import { BoundClient } from "@bound/client";
+import { BoundClient, sortClusterModelsById } from "@bound/client";
 import { getBuildInfo } from "@bound/shared";
 import type { McpServerConfig } from "../config";
 import { acquireLock, releaseLock } from "../lockfile";
@@ -328,7 +328,7 @@ export class BoundAcpAgent implements Agent {
 			mcpConfigs = merged;
 		}
 
-		await performAttach({
+		const attachResult = await performAttach({
 			client: this.opts.client,
 			threadId,
 			mcpManager: this.opts.mcpManager,
@@ -341,6 +341,26 @@ export class BoundAcpAgent implements Agent {
 			sandbox: this.opts.sandbox,
 			surface: { type: "acp", clientInfo: this.clientInfo ?? DEFAULT_CLIENT_INFO },
 		});
+
+		// Resume the thread on the model it last used — the agent is the source
+		// of truth for session config during resumption, so the load/new response
+		// advertises this as the model option's currentValue. Adopt only aliases
+		// still in the daemon's roster: prompting on a retired alias would fail
+		// daemon-side, so an unknown model falls back to the configured one.
+		let modelId = this.opts.modelId;
+		if (attachResult.lastUsedModelId) {
+			try {
+				const models = await this.opts.client.listModels();
+				if (models.models.some((model) => model.id === attachResult.lastUsedModelId)) {
+					modelId = attachResult.lastUsedModelId;
+				}
+			} catch (error) {
+				this.opts.logger.warn("acp_model_adoption_roster_unavailable", {
+					threadId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
 
 		// Rebuild the tool set/handlers against THIS session's cwd. performAttach
 		// configures tools on the wire; we additionally need the local handler
@@ -382,13 +402,13 @@ export class BoundAcpAgent implements Agent {
 			client: this.opts.client,
 			toolHandlers: toolSet.handlers,
 			clientToolNames,
-			modelId: this.opts.modelId,
+			modelId,
 			logger: this.opts.logger,
 		});
 		const entry: SessionEntry = {
 			session,
 			clientToolNames,
-			modelId: this.opts.modelId,
+			modelId,
 			modeId: DEFAULT_MODE_ID,
 		};
 		this.sessions.set(threadId, entry);
@@ -426,13 +446,11 @@ export class BoundAcpAgent implements Agent {
 				category: "model",
 				type: "select",
 				currentValue,
-				options: models.models
-					.map((model) => ({
-						value: model.id,
-						name: model.id,
-						description: `${model.provider} via ${model.host}`,
-					}))
-					.sort((a, b) => b.name.localeCompare(a.name)),
+				options: sortClusterModelsById(models.models).map((model) => ({
+					value: model.id,
+					name: model.id,
+					description: `${model.provider} via ${model.host}`,
+				})),
 			},
 		];
 	}

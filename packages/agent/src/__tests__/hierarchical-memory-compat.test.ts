@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applySchema, createDatabase, insertRow, updateRow } from "@bound/core";
 import { upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
+import { deltaLines } from "./test-helpers/enrichment";
 
 let db: Database;
 let dbPath: string;
@@ -124,7 +125,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		expect(totalEntries).toBeGreaterThan(0);
 
 		// Verify: memoryDeltaLines exist and contain expected entries
-		expect(enrichment.memoryDeltaLines.length).toBeGreaterThan(0);
+		expect(deltaLines(enrichment).length).toBeGreaterThan(0);
 	});
 
 	it("pinned entries appear first regardless of recency", () => {
@@ -169,7 +170,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		expect(enrichment.tiers.L0[0].key).toContain("_standing");
 
 		// Verify: pinned entry appears first in memoryDeltaLines
-		expect(enrichment.memoryDeltaLines[0]).toContain("_standing");
+		expect(deltaLines(enrichment)[0]).toContain("_standing");
 	});
 
 	it("value truncation at 200 chars works", () => {
@@ -193,7 +194,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		const enrichment = buildVolatileEnrichment(db, baseline, 10);
 
 		// Verify: value is truncated
-		const line = enrichment.memoryDeltaLines.find((l) => l.includes("long_entry"));
+		const line = deltaLines(enrichment).find((l) => l.includes("long_entry"));
 		expect(line).toBeDefined();
 		expect(line).toContain("...");
 		// Formatted line includes prefix/suffix, but the value should be truncated
@@ -245,7 +246,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		const enrichment = buildVolatileEnrichment(db, baseline, 10);
 
 		// Verify: source resolution includes thread title
-		const line = enrichment.memoryDeltaLines.find((l) => l.includes("test_key"));
+		const line = deltaLines(enrichment).find((l) => l.includes("test_key"));
 		expect(line).toBeDefined();
 		expect(line).toContain("via thread");
 	});
@@ -293,7 +294,7 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		const enrichment = buildVolatileEnrichment(db, baseline, 10);
 
 		// Verify: basic structure exists
-		expect(enrichment.memoryDeltaLines.length).toBeGreaterThan(0);
+		expect(deltaLines(enrichment).length).toBeGreaterThan(0);
 		expect(enrichment.tiers).toBeDefined();
 		expect(enrichment.tiers.L0).toBeDefined();
 		expect(enrichment.tiers.L1).toBeDefined();

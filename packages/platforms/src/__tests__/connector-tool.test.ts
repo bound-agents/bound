@@ -9,6 +9,7 @@ import { connectorHandleId } from "../connector-handle-id.js";
 import { createConnectorHandle } from "../connector-handle.js";
 import { createConnectorTool } from "../connector-tool.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
+import { SUBSCRIPTION_REJECTED_CODE } from "../subscription-errors.js";
 
 // Simple mock logger
 const mockLogger = {
@@ -141,7 +142,6 @@ describe("Connector Tool", () => {
 					mcp_servers: null,
 					mcp_tools: null,
 					models: null,
-					overlay_root: null,
 					online_at: null,
 					modified_at: new Date().toISOString(),
 					platforms: JSON.stringify(["remote-platform"]),
@@ -509,6 +509,66 @@ describe("Connector Tool", () => {
 
 			expect(result).toContain("Attached:");
 			expect(activateSubscriptionCalled).toBe(true);
+		});
+	});
+
+	describe("attach rolls back when the connector rejects the subscription", () => {
+		it("soft-deletes the handle, task, and thread and returns an error when events/stream rejects with the subscription-rejected code", async () => {
+			// A connector whose events/stream permanently rejects — e.g. Discord
+			// refusing a channel the bot can't view. The rejection rides the
+			// subscription-rejected code so the tool can tell it from a transient
+			// stream failure and roll the just-created rows back.
+			const rejectingServer = new Server({ name: "rejector", version: "1.0.0" });
+			await rejectingServer.setRequestHandler(
+				z.object({ method: z.literal("events/list") }),
+				async () => ({
+					events: [
+						{
+							name: "message.received",
+							description: "msg",
+							inputSchema: { type: "object", properties: {} },
+						},
+					],
+				}),
+			);
+			await rejectingServer.setRequestHandler(
+				z.object({ method: z.literal("events/stream") }),
+				async () => {
+					const err = new Error(
+						"Cannot subscribe to channel hidden: bot lacks View Channel permission",
+					) as Error & { code?: number };
+					err.code = SUBSCRIPTION_REJECTED_CODE;
+					throw err;
+				},
+			);
+			await registry.registerServer("rejector", rejectingServer);
+
+			const tool = createConnectorTool({ registry, db, siteId });
+			const result = (await tool.execute?.({
+				action: "attach",
+				server_name: "rejector",
+				event_name: "message.received",
+				event_args: { channel_id: "hidden" },
+			})) as string;
+
+			// The tool reports the rejection rather than a false "Attached:".
+			expect(result).not.toContain("Attached:");
+			expect(result).toMatch(/reject|view channel|permission|cannot subscribe/i);
+
+			// And no live rows linger: the handle, task, and thread are all rolled
+			// back so nothing looks bound when it will never deliver.
+			const handleId = connectorHandleId("rejector", "message.received", {
+				channel_id: "hidden",
+			});
+			const liveHandle = db
+				.query("SELECT * FROM connector_handles WHERE id = ? AND deleted = 0")
+				.get(handleId);
+			expect(liveHandle).toBeNull();
+
+			const liveTasks = db
+				.query("SELECT * FROM tasks WHERE trigger_spec = ? AND deleted = 0")
+				.all(`connector:event:${handleId}`);
+			expect(liveTasks.length).toBe(0);
 		});
 	});
 

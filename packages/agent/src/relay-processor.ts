@@ -5,7 +5,9 @@ import {
 	type AppContext,
 	type ThreadExecutor,
 	acknowledgeBatch,
+	acknowledgeToolResultForCall,
 	claimPending,
+	enqueueClientToolCall,
 	enqueueMessage,
 	insertInbox,
 	markDelivered,
@@ -21,10 +23,11 @@ import { LLMError, type ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry } from "@bound/platforms";
 import type {
 	CacheWarmPayload,
+	ClientResultPayload,
+	ClientToolPayload,
 	ErrorPayload,
 	Logger,
 	PlatformRequestPayload,
-	ProcessPayload,
 	PromptInvokePayload,
 	RelayConfig,
 	RelayInboxEntry,
@@ -33,7 +36,6 @@ import type {
 	ResourceReadPayload,
 	ResultPayload,
 	SerializedSpan,
-	StatusForwardPayload,
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
@@ -42,15 +44,17 @@ import {
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
+	clientToolPayloadSchema,
 	createScopedTraceCollector,
 	extractTraceContext,
 	hostMcpToolsSchema,
 	hostModelsSchema,
+	inferenceRequestPartPayloadSchema,
 	inferenceRequestPayloadSchema,
 	intakePayloadSchema,
+	notifyWakeupPayloadSchema,
 	parseJsonSafe,
 	parseJsonUntyped,
-	processPayloadSchema,
 } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
@@ -70,17 +74,51 @@ import {
 	clampMaxOutputTokens,
 	createFileRefResolver,
 } from "./agent-loop-utils.js";
-import { AgentLoop, DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop.js";
+import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
+import { reconcileDarkConnectorHandles } from "./connector-handle-reconciler.js";
+import { resolveSegments } from "./delegation-segments.js";
+import {
+	type InferenceRequestPart,
+	InferenceRequestPartAssembler,
+} from "./inference-request-parts.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
-import { formatMcpHelp } from "./mcp-bridge.js";
+import { formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
+import { deliverNotificationWakeup } from "./wakeup-routing.js";
+import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Allow event handlers to claim pre-existing durable intake after daemon startup. */
+export const INTAKE_RECONCILIATION_STARTUP_GRACE_MS = 20 * 60 * 1000;
+
 const getTracer = () => trace.getTracer("bound.relay");
+
+/**
+ * Best-effort parse of a relay entry's serialized W3C trace carrier into the
+ * `{header: value}` record shape the `client_tool_call:created` event expects.
+ * Returns null for a missing or unparseable carrier — trace linkage is purely
+ * observability and must never gate a tool call.
+ */
+function parseTraceCarrier(raw: string | null | undefined): Record<string, string> | null {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const out: Record<string, string> = {};
+			for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+				if (typeof v === "string") out[k] = v;
+			}
+			return Object.keys(out).length > 0 ? out : null;
+		}
+	} catch {
+		// Unparseable carrier — no parent linkage.
+	}
+	return null;
+}
 
 /**
  * Handler for a relay request kind. Returns a response string (written as a
@@ -135,6 +173,7 @@ export class RelayProcessor {
 	private idempotencyCache = new Map<string, IdempotencyCacheEntry>();
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
+	private readonly completedInferenceParts = new Set<string>();
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformMcpRegistry: PlatformMcpRegistry | null = null;
 	private wsRegistry: ClientToolResolver | null = null;
@@ -144,6 +183,8 @@ export class RelayProcessor {
 	// inputSchema. Populated on first relay tool_call for a server so arg
 	// coercion does not add a listTools round-trip on every call.
 	private toolSchemaCache = new Map<string, Map<string, Tool["inputSchema"]>>();
+	private readonly intakeReconciliationNotBeforeMs: number;
+	private readonly now: () => number;
 
 	/**
 	 * Typed handler map — every HandledRequestKind MUST have an entry.
@@ -172,8 +213,10 @@ export class RelayProcessor {
 				this.executePlatformRequest(p as PlatformRequestPayload),
 			),
 		inference: (entry) => this.handleInference(entry),
-		process: (entry) => this.handleProcess(entry),
+		inference_part: (entry) => this.handleInferencePart(entry),
 		intake: (entry) => this.handleIntake(entry),
+		notify_wakeup: (entry) => this.handleNotifyWakeup(entry),
+		client_tool: (entry) => this.handleClientTool(entry),
 	};
 
 	constructor(
@@ -186,13 +229,16 @@ export class RelayProcessor {
 		private appCtx: AppContext | null = null,
 		private relayConfig?: RelayConfig,
 		threadAffinityMap: Map<string, string> = new Map(),
-		private agentLoopFactory?: (config: AgentLoopConfig) => AgentLoop,
+		private agentLoopFactory?: (config: AgentLoopConfig) => MainAgentLoop,
+		now: () => number = Date.now,
 	) {
 		this.threadAffinityMap = threadAffinityMap;
+		this.now = now;
+		this.intakeReconciliationNotBeforeMs = now() + INTAKE_RECONCILIATION_STARTUP_GRACE_MS;
 	}
 
 	/** Inject the agent loop factory after startup completes (avoids circular init order). */
-	setAgentLoopFactory(factory: (config: AgentLoopConfig) => AgentLoop): void {
+	setAgentLoopFactory(factory: (config: AgentLoopConfig) => MainAgentLoop): void {
 		this.agentLoopFactory = factory;
 	}
 
@@ -255,6 +301,44 @@ export class RelayProcessor {
 					pruneRelayTables(this.db);
 				} catch (error) {
 					this.logger.error("Relay table prune failed", { error });
+				}
+				// Catch-of-last-resort for the webhook intake pipeline. Runs against
+				// the LOCAL relay_inbox (invariant #3), so it sees intake on the host
+				// that received the POST. Raises a deduplicated dead-letter advisory
+				// for any webhook_intake left undrained by a dark handler — turning a
+				// silent multi-hour outage into something the operator can act on.
+				if (this.now() >= this.intakeReconciliationNotBeforeMs) {
+					try {
+						const { advisoriesRaised, deadLettered } = reconcileStaleWebhookIntake(
+							this.db,
+							this.siteId,
+							{ logger: this.logger },
+						);
+						if (advisoriesRaised > 0 || deadLettered > 0) {
+							this.logger.warn("[relay] Webhook intake reconcile acted", {
+								advisoriesRaised,
+								deadLettered,
+							});
+						}
+					} catch (error) {
+						this.logger.error("Webhook intake reconcile failed", { error });
+					}
+				}
+				// Connector-side analogue: surface live connector-handle subscriptions
+				// whose backing event task has gone dark (cancelled/deleted/missing).
+				// Detector only — connector push events buffer in-memory, so there is
+				// no durable backlog to dead-letter, just a dark subscription to flag.
+				try {
+					const { advisoriesRaised } = reconcileDarkConnectorHandles(this.db, this.siteId, {
+						logger: this.logger,
+					});
+					if (advisoriesRaised > 0) {
+						this.logger.warn("[relay] Dark connector handle reconcile acted", {
+							advisoriesRaised,
+						});
+					}
+				} catch (error) {
+					this.logger.error("Dark connector handle reconcile failed", { error });
 				}
 			}),
 		);
@@ -542,25 +626,50 @@ export class RelayProcessor {
 		return null;
 	}
 
-	private async handleProcess(entry: RelayInboxEntry): Promise<null> {
-		const payloadResult = parseJsonSafe(processPayloadSchema, entry.payload, entry.kind);
-		if (!payloadResult.ok) {
-			this.logger.error("Invalid relay payload", {
-				kind: entry.kind,
-				error: payloadResult.error,
-				entryId: entry.id,
-			});
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
+	private async handleInferencePart(entry: RelayInboxEntry): Promise<null> {
+		const parsed = parseJsonSafe(inferenceRequestPartPayloadSchema, entry.payload, entry.kind);
+		if (!parsed.ok || !entry.ref_id) {
+			throw new Error(
+				`Invalid multipart inference payload: ${parsed.ok ? "missing ref_id" : parsed.error}`,
 			);
-			markProcessed(this.db, [entry.id]);
-			throw new PayloadParseError();
 		}
-		this.executeProcess(entry, payloadResult.value).catch((err) => {
-			this.logger.error("executeProcess failed", { error: err, entryId: entry.id });
-		});
+		const part = parsed.value as InferenceRequestPart;
+		if (part.request_id !== entry.ref_id) throw new Error("Multipart request_id/ref_id mismatch");
+		if (this.completedInferenceParts.has(part.request_id)) return null;
+
+		const rows = this.db
+			.query(
+				"SELECT * FROM relay_inbox WHERE kind = 'inference_part' AND ref_id = ? ORDER BY received_at ASC, id ASC",
+			)
+			.all(part.request_id) as RelayInboxEntry[];
+		const assembler = new InferenceRequestPartAssembler();
+		let serialized: string | null = null;
+		for (const row of rows) {
+			if (
+				row.source_site_id !== entry.source_site_id ||
+				row.stream_id !== entry.stream_id ||
+				row.expires_at !== entry.expires_at
+			) {
+				throw new Error("Conflicting multipart inference request envelope");
+			}
+			const rowPart = parseJsonSafe(inferenceRequestPartPayloadSchema, row.payload, row.kind);
+			if (!rowPart.ok) throw new Error(`Invalid multipart inference payload: ${rowPart.error}`);
+			const completed = assembler.add(rowPart.value as InferenceRequestPart);
+			if (completed !== null) serialized = completed;
+		}
+		if (serialized === null) return null;
+		if (this.pendingCancels.delete(part.request_id)) return null;
+
+		this.completedInferenceParts.add(part.request_id);
+		const synthetic: RelayInboxEntry = {
+			...entry,
+			id: part.request_id,
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			payload: serialized,
+		};
+		await this.handleInference(synthetic);
 		return null;
 	}
 
@@ -608,26 +717,334 @@ export class RelayProcessor {
 			isLocal: targetSiteId === this.siteId,
 		});
 
-		writeOutbox(this.db, {
-			id: randomUUID(),
-			source_site_id: entry.source_site_id,
-			target_site_id: targetSiteId,
-			kind: "process",
-			ref_id: entry.id,
-			idempotency_key: `process:${entry.id}`,
-			stream_id: null,
-			payload: JSON.stringify({
-				thread_id: payload.thread_id,
-				message_id: payload.message_id,
-				user_id: `platform:${payload.platform}`,
+		// Single delegation path (R-UD1): the selected host runs the agent loop
+		// LOCALLY — it producer-assembles from its own authoritative state and
+		// relays only the inference (and any tool calls) outward. There is no
+		// whole-loop `process` delegation and no consumer that re-assembles from
+		// an un-synced replica. When the selected host is remote, forward the
+		// SAME `intake` entry to it; that host re-runs selectIntakeHost, selects
+		// itself, and runs the loop locally. Affinity (platform-connector host)
+		// is an optimization the selector applies, never a correctness gate
+		// (R-UD12). See docs/design/specs/2026-06-29-unified-delegation.md.
+		if (targetSiteId === this.siteId) {
+			this.runLocalThreadLoop({
+				threadId: payload.thread_id,
+				messageId: payload.message_id,
+				userId: `platform:${payload.platform}`,
 				platform: payload.platform,
-			} satisfies ProcessPayload),
-			created_at: new Date().toISOString(),
-			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-			trace_context: null,
-		});
+			}).catch((err) => {
+				this.logger.error("Local intake loop failed", {
+					error: err,
+					threadId: payload.thread_id,
+				});
+			});
+		} else {
+			writeOutbox(this.db, {
+				id: randomUUID(),
+				source_site_id: entry.source_site_id,
+				target_site_id: targetSiteId,
+				kind: "intake",
+				ref_id: entry.id,
+				idempotency_key: idempotencyKey,
+				stream_id: null,
+				payload: entry.payload,
+				created_at: new Date().toISOString(),
+				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				trace_context: null,
+			});
+		}
 
 		return null;
+	}
+
+	/**
+	 * Receiving side of a routed notify/introspect wakeup (#91 under unified
+	 * delegation). The sender resolved THIS host as the holder of the thread's
+	 * live WS session and shipped the notification payload here instead of
+	 * enqueueing into its own local dispatch_queue — so exactly one host wakes
+	 * the thread, beside its session. Delivery is UNCONDITIONAL (no re-routing):
+	 * a session row churning mid-flight must not ping-pong the wakeup between
+	 * hosts. Worst case (session died in flight) the wakeup runs where the
+	 * session was last seen — the pre-#91 behavior for a just-dropped client.
+	 */
+	private async handleNotifyWakeup(entry: RelayInboxEntry): Promise<null> {
+		const payloadResult = parseJsonSafe(notifyWakeupPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.logger.error("Invalid relay payload", {
+				kind: entry.kind,
+				error: payloadResult.error,
+				entryId: entry.id,
+			});
+			markProcessed(this.db, [entry.id]);
+			throw new PayloadParseError();
+		}
+		const payload = payloadResult.value;
+		this.logger.info("[relay] Notify wakeup received", {
+			threadId: payload.thread_id,
+			sourceSiteId: entry.source_site_id,
+		});
+		deliverNotificationWakeup(this.db, this.eventBus, {
+			thread_id: payload.thread_id,
+			payload: payload.payload,
+		});
+		return null;
+	}
+
+	/**
+	 * Cross-host client-tool relay consumer (R-UD5/R-UD8/R-UD12).
+	 *
+	 * Runs on the SESSION host — the node holding the thread's live WS
+	 * (boundless) connection. The producer loop on a different node relayed a
+	 * `client_tool` request here because IT could not reach the client. We:
+	 *   1. Verify a live LOCAL WS connection actually has this tool. If not, the
+	 *      session moved/dropped between the producer's resolve and our receipt —
+	 *      relay back a retriable `error` with `definitely_not_executed: true`
+	 *      so the producer can re-resolve/retry safely (never ran here).
+	 *   2. Enqueue the call into the LOCAL WS dispatch via the SAME machinery the
+	 *      local path uses (`enqueueClientToolCall` + `client_tool_call:created`),
+	 *      so `websocket.ts` pushes the `tool:call` frame to the connected client.
+	 *      The enqueue is idempotent-safe under re-drive (a duplicated relay just
+	 *      re-emits; the WS layer dedups on call_id).
+	 *   3. Await the client's `tool_result` (the WS `handleToolResult` persists a
+	 *      `messages` row with `role='tool_result'` and `tool_name=call_id`, then
+	 *      calls `enqueueToolResult`). We watch for that row, then relay a
+	 *      `client_result` (ClientResultPayload) back to the producer.
+	 *   4. On timeout / session drop mid-call, relay a retriable `error` (AC.7b).
+	 *
+	 * Returns `null` — the handler writes its own response(s) directly (like
+	 * `handleInference`), so processEntry must not wrap the return as a `result`.
+	 */
+	private async handleClientTool(entry: RelayInboxEntry): Promise<null> {
+		const payloadResult = parseJsonSafe(clientToolPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.logger.error("Invalid relay payload", {
+				kind: entry.kind,
+				error: payloadResult.error,
+				entryId: entry.id,
+			});
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
+			);
+			markProcessed(this.db, [entry.id]);
+			throw new PayloadParseError();
+		}
+		const payload = payloadResult.value as ClientToolPayload;
+
+		// Step 1: confirm a live LOCAL WS connection holds this tool. The producer
+		// resolved us from the synced `client_sessions` table, which can lag a
+		// session move/drop; the authoritative check is the in-memory registry.
+		const connectionId = this.wsRegistry?.getConnectionForTool(
+			payload.thread_id,
+			payload.tool_name,
+		);
+		if (!connectionId) {
+			this.logger.warn("[relay] client_tool: no live local WS session for thread/tool", {
+				threadId: payload.thread_id,
+				tool: payload.tool_name,
+				entryId: entry.id,
+			});
+			this.relayClientError(entry, "No live client session on this host for the requested tool", {
+				retriable: true,
+				definitely_not_executed: true,
+			});
+			markProcessed(this.db, [entry.id]);
+			return null;
+		}
+
+		// Step 2: enqueue into the LOCAL WS dispatch + emit the creation event so
+		// websocket.ts pushes the `tool:call` frame to the connected client. Reuse
+		// the exact machinery the local (same-host) deferred path uses. Idempotent
+		// under re-drive: a duplicated relay re-enqueues, and the WS handler dedups
+		// the result on call_id (AC.7c) while enqueueToolResult is idempotent on
+		// (thread_id, call_id).
+		let dispatchEntryId: string;
+		try {
+			dispatchEntryId = enqueueClientToolCall(
+				this.db,
+				payload.thread_id,
+				{
+					call_id: payload.call_id,
+					tool_name: payload.tool_name,
+					arguments: payload.args,
+				},
+				connectionId,
+			);
+		} catch (error) {
+			this.logger.error("[relay] client_tool: enqueue failed", {
+				threadId: payload.thread_id,
+				callId: payload.call_id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			this.relayClientError(entry, `Failed to enqueue client tool: ${String(error)}`, {
+				retriable: true,
+				definitely_not_executed: true,
+			});
+			markProcessed(this.db, [entry.id]);
+			return null;
+		}
+
+		this.eventBus.emit("client_tool_call:created", {
+			threadId: payload.thread_id,
+			callId: payload.call_id,
+			entryId: dispatchEntryId,
+			toolName: payload.tool_name,
+			arguments: payload.args,
+			// Forward the W3C trace carrier (a {header: value} record) the producer
+			// injected into the relay entry, so the WS `tool:call` frame stays on
+			// the same trace. Parsed defensively — a missing/garbled carrier just
+			// means no parent linkage, never a dropped tool call.
+			traceContext: parseTraceCarrier(entry.trace_context),
+		});
+
+		// Step 3: await the client's tool_result (persisted by WS handleToolResult
+		// as a messages row with role='tool_result' and tool_name=call_id), then
+		// relay a client_result back. Run async so the processor tick is not
+		// blocked; we mark the inbox entry processed up front (the dispatch row is
+		// the durable handoff to the WS layer) so a re-driven client_tool re-emits
+		// cleanly rather than wedging here.
+		markProcessed(this.db, [entry.id]);
+		const timeoutMs = payload.timeout_ms > 0 ? payload.timeout_ms : 30_000;
+		this.awaitClientResult(entry, payload, timeoutMs).catch((err) => {
+			this.logger.error("[relay] client_tool: awaitClientResult failed", {
+				threadId: payload.thread_id,
+				callId: payload.call_id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+		return null;
+	}
+
+	/**
+	 * Read the persisted client `tool_result` content for a call, or null when
+	 * none exists yet. The WS layer persists it with role='tool_result' and
+	 * tool_name=call_id (host-parity with the native dispatch return).
+	 */
+	private readClientToolResult(
+		threadId: string,
+		callId: string,
+	): { content: string; isError: boolean } | null {
+		const row = this.db
+			.query(
+				`SELECT content, exit_code FROM messages
+				 WHERE thread_id = ? AND role = 'tool_result' AND tool_name = ? AND deleted = 0
+				 ORDER BY created_at DESC LIMIT 1`,
+			)
+			.get(threadId, callId) as { content: string; exit_code: number | null } | null;
+		if (!row) return null;
+		return { content: row.content, isError: (row.exit_code ?? 0) !== 0 };
+	}
+
+	/**
+	 * Wait (event-driven, with a polling backstop and a hard timeout) for the
+	 * client's tool_result, then relay a `client_result` back to the producer.
+	 * On timeout — including a session dropped mid-call — relay a retriable
+	 * `error` (AC.7b) so the producer's relay-wait sees a transient failure.
+	 */
+	private async awaitClientResult(
+		entry: RelayInboxEntry,
+		payload: ClientToolPayload,
+		timeoutMs: number,
+	): Promise<void> {
+		// Fast path: a re-driven client_tool whose result already landed (AC.7c).
+		const existing = this.readClientToolResult(payload.thread_id, payload.call_id);
+		if (existing) {
+			this.relayClientResult(entry, payload.call_id, existing.content, existing.isError);
+			return;
+		}
+
+		const result = await new Promise<{ content: string; isError: boolean } | null>((resolve) => {
+			let settled = false;
+			const finish = (value: { content: string; isError: boolean } | null): void => {
+				if (settled) return;
+				settled = true;
+				this.eventBus.off("message:created", onMessage);
+				clearInterval(poll);
+				clearTimeout(timer);
+				resolve(value);
+			};
+			const check = (): void => {
+				const found = this.readClientToolResult(payload.thread_id, payload.call_id);
+				if (found) finish(found);
+			};
+			const onMessage = (data: { thread_id: string }): void => {
+				if (data.thread_id === payload.thread_id) check();
+			};
+			this.eventBus.on("message:created", onMessage);
+			// Polling backstop: covers the case where the WS handler persists the
+			// row without an observable event reaching this listener (and any race
+			// between the on() registration and the emit).
+			const poll = setInterval(check, 200);
+			const timer = setTimeout(() => finish(null), timeoutMs);
+			// Immediate re-check after wiring listeners (closes the registration
+			// race above before the first poll tick).
+			check();
+		});
+
+		if (result) {
+			// The WS handler enqueues a local tool-result wake for ordinary agent
+			// continuation. This relay consumer owns continuation upstream, so close
+			// that wake here or the session host starts a detached second loop.
+			acknowledgeToolResultForCall(this.db, payload.thread_id, payload.call_id);
+			this.relayClientResult(entry, payload.call_id, result.content, result.isError);
+		} else {
+			this.logger.warn("[relay] client_tool: timed out waiting for client result", {
+				threadId: payload.thread_id,
+				callId: payload.call_id,
+				timeoutMs,
+			});
+			this.relayClientError(entry, "Timed out waiting for client tool result", {
+				retriable: true,
+			});
+		}
+	}
+
+	/** Relay a `client_result` response back to the producer that sent `entry`. */
+	private relayClientResult(
+		entry: RelayInboxEntry,
+		callId: string,
+		content: string,
+		isError: boolean,
+	): void {
+		const targetSiteId = entry.source_site_id;
+		if (!targetSiteId) {
+			this.logger.warn("[relay] client_result: request entry has no source_site_id", {
+				entryId: entry.id,
+			});
+			return;
+		}
+		const resultPayload: ClientResultPayload = { call_id: callId, content, is_error: isError };
+		const now = new Date();
+		writeOutbox(this.db, {
+			id: randomUUID(),
+			source_site_id: this.siteId,
+			target_site_id: targetSiteId,
+			kind: "client_result",
+			ref_id: entry.id,
+			idempotency_key: null,
+			stream_id: entry.stream_id ?? null,
+			payload: JSON.stringify(resultPayload),
+			created_at: now.toISOString(),
+			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+			trace_context: null,
+		});
+	}
+
+	/** Relay an `error` response back to the producer that sent a `client_tool`. */
+	private relayClientError(
+		entry: RelayInboxEntry,
+		message: string,
+		opts: { retriable: boolean; definitely_not_executed?: boolean },
+	): void {
+		const errorPayload: ErrorPayload = {
+			error: message,
+			retriable: opts.retriable,
+			...(opts.definitely_not_executed !== undefined
+				? { definitely_not_executed: opts.definitely_not_executed }
+				: {}),
+		};
+		this.writeResponse(entry, "error", JSON.stringify(errorPayload));
 	}
 
 	private async executeToolCall(payload: ToolCallPayload): Promise<string> {
@@ -705,7 +1122,10 @@ export class RelayProcessor {
 		const result = await client.callTool(subcommand, coercedArgs);
 		const resultPayload: ResultPayload = {
 			stdout: result.content,
-			stderr: result.isError ? result.content : "",
+			// Mirror the local dispatch path: a failed call echoes the tool's
+			// parameter summary so the calling host's model can self-correct
+			// instead of blind-mutating args across retries.
+			stderr: result.isError ? result.content + formatToolParamHint(subcommand, inputSchema) : "",
 			exit_code: result.isError ? 1 : 0,
 			execution_ms: 0,
 		};
@@ -1249,7 +1669,7 @@ export class RelayProcessor {
 			model: payload.model,
 			source: entry.source_site_id,
 			streamId: entry.stream_id,
-			messageCount: payload.messages?.length ?? 0,
+			segmentCount: payload.segments?.length ?? 0,
 			hasTools: !!payload.tools?.length,
 		});
 		const FLUSH_INTERVAL_MS = 200;
@@ -1304,33 +1724,30 @@ export class RelayProcessor {
 			return;
 		}
 
-		// Resolve large prompt file ref if present (AC1.9)
-		let messages = payload.messages;
-		if (payload.messages_file_ref) {
-			const fileRow = this.db
-				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-				.get(payload.messages_file_ref) as { content: string } | null;
-			if (!fileRow) {
-				this.writeResponse(
-					entry,
-					"error",
-					JSON.stringify({
-						error: `Large prompt file not found: ${payload.messages_file_ref}`,
-						retriable: false,
-					}),
-				);
-				return;
-			}
-			try {
-				messages = JSON.parse(fileRow.content);
-			} catch {
-				this.writeResponse(
-					entry,
-					"error",
-					JSON.stringify({ error: "Failed to parse large prompt file", retriable: false }),
-				);
-				return;
-			}
+		// Resolve the delegated context from segments (R-UD2 / R-UD10). The
+		// consumer NEVER re-assembles: it resolves inline segments verbatim and
+		// rebuilds each range segment byte-for-byte from its OWN confirmed-synced
+		// message rows via the same Stage-1 finder + annotator the producer used.
+		// `resolveSegments` has no access to assembleContext / an AssemblyAuthority
+		// — consumer re-assembly is structurally unrepresentable. A range that
+		// points past available rows throws (cannot happen by construction since
+		// the producer gates on last_confirmed, R-UD6).
+		let messages: ReturnType<typeof resolveSegments>;
+		try {
+			messages = resolveSegments(payload.segments, this.db, payload.nowMs);
+		} catch (err) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({
+					error: `Failed to resolve context segments: ${err instanceof Error ? err.message : String(err)}`,
+					// Retriable: a range row may simply not have synced yet on this
+					// consumer. By construction (last_confirmed gate) this should not
+					// happen, but if it does, a retry after sync converges can succeed.
+					retriable: true,
+				}),
+			);
+			return;
 		}
 
 		// Defense-in-depth: strip `{role:"cache"}` markers if the local backend
@@ -1370,6 +1787,12 @@ export class RelayProcessor {
 		let bufferBytes = 0;
 		let lastFlushTime = Date.now();
 		const inferenceStartTime = Date.now();
+		const heartbeatTimer = setInterval(() => {
+			// Empty sequenced payload: proves the relay consumer and backend call are
+			// alive without fabricating a model chunk. The requester consumes it as
+			// first/in-flight activity and emits nothing to the agent loop.
+			this.writeStreamChunk(entry, "stream_chunk", streamId, seq++, []);
+		}, 1_000);
 
 		const flush = (isFinal: boolean): void => {
 			if (chunkBuffer.length === 0 && !isFinal) return;
@@ -1423,21 +1846,21 @@ export class RelayProcessor {
 				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
 			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
 			// Defense-in-depth: clamp the requester's max_tokens to this host's
-			// per-backend cap. Without this, a pre-fix requester binary (or a
-			// hub routing decision made against a peer's stale capability
-			// record) can still send DEFAULT_MAX_OUTPUT_TOKENS for a model
-			// whose provider rejects it — e.g. Nova Pro's 10_000 ceiling.
+			// per-backend cap. Without this, a stale requester binary (or a hub
+			// routing decision made against stale peer capabilities) can send an
+			// invalid ceiling. When both values are absent, the helper supplies the
+			// same conservative 8k fallback reserved by context assembly — never a
+			// provider-defined model maximum.
 			const localMaxOutputTokens = this.modelRouter.getMaxOutputTokens(payload.model);
-			const effectiveMaxTokens = clampMaxOutputTokens(
-				payload.max_tokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-				localMaxOutputTokens,
-			);
+			const effectiveMaxTokens = clampMaxOutputTokens(payload.max_tokens, localMaxOutputTokens);
 			const chatStream = backend.chat({
 				messages,
 				tools: payload.tools,
 				system: payload.system,
 				max_tokens: effectiveMaxTokens,
 				temperature: payload.temperature,
+				top_p: payload.top_p,
+				tool_choice: payload.tool_choice,
 				thinking: effectiveThinking,
 				effort: effectiveEffort,
 				cache_ttl: payload.cache_ttl ?? this.modelRouter.getCacheTtl(payload.model),
@@ -1504,7 +1927,6 @@ export class RelayProcessor {
 				const collector = createScopedTraceCollector(this.appCtx?.siteId);
 				const tracer = collector.getTracer("bound.relay-hub");
 
-				// Run inference within extracted parent context
 				await context.with(parentContext, async () => {
 					const span = tracer.startSpan("relay.hub-inference");
 					try {
@@ -1523,14 +1945,9 @@ export class RelayProcessor {
 
 				collectedSpans = await collector.flush();
 			} else {
-				// No trace context — run without tracing
 				await runInferenceWithTracing();
 			}
 		} catch (err) {
-			// Surface the failure locally before bouncing it back to the requester.
-			// Without this, relayed inference errors only appear on the requester's
-			// side (as a relay error response) and the serving spoke's own logs
-			// are silent — operators can't see WHY their host returned errors.
 			this.logger.error("[relay] Inference failed", {
 				model: payload.model,
 				source: entry.source_site_id,
@@ -1558,6 +1975,7 @@ export class RelayProcessor {
 				});
 			}
 		} finally {
+			clearInterval(heartbeatTimer);
 			this.activeInferenceStreams.delete(entry.id);
 			// Write trace_data response if spans were collected (AC5.3)
 			if (collectedSpans.length > 0) {
@@ -1581,133 +1999,64 @@ export class RelayProcessor {
 		}
 	}
 
-	private async executeProcess(entry: RelayInboxEntry, payload: ProcessPayload): Promise<void> {
-		this.logger.info("[relay] Process delegation started", {
-			threadId: payload.thread_id,
-			messageId: payload.message_id,
-			platform: payload.platform ?? null,
-			source: entry.source_site_id,
-		});
+	/**
+	 * Run an agent loop LOCALLY for an intake-routed thread (R-UD1). This is the
+	 * platform-intake leg of the single delegation path: the host the intake
+	 * selector chose (the platform-connector host as an optimization, R-UD12)
+	 * runs the whole loop here, against its OWN authoritative state. It assembles
+	 * locally (so it can never re-assemble from an un-synced replica — the old
+	 * `process` bug class) and relays only the inference outward.
+	 *
+	 * Unlike the deleted `process` consumer, there is no waiting cross-host
+	 * requester: platform intake is fire-and-forget, so there is no
+	 * status_forward / result relayed back. The loop's own output (assistant
+	 * messages, platform tool calls) is the observable effect.
+	 */
+	private async runLocalThreadLoop(req: {
+		threadId: string;
+		messageId: string;
+		userId: string;
+		platform: string | null;
+	}): Promise<void> {
 		if (!this.modelRouter) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: "No model router configured", retriable: false }),
-			);
+			this.logger.error("[relay] Local intake loop: no model router configured", {
+				threadId: req.threadId,
+			});
 			return;
 		}
 
-		// Sanity-check that the target thread exists. The agent loop reads
-		// messages from the thread directly — we don't need payload.message_id
-		// to anchor the turn, so we no longer reject when it references a row
-		// that doesn't exist locally. That reject was the silent-drop path
-		// for notification-triggered delegations: spokes historically
-		// forwarded the dispatch_queue entry id (a synthetic UUID) as
-		// message_id, and the lookup failed here. (The spoke-side fix in
-		// server.ts/resolveDelegationMessageId now forwards a real
-		// messages.id, but older spokes may still send a stale id during
-		// rollout.)
 		const thread = this.db
 			.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
-			.get(payload.thread_id) as { id: string } | null;
-
+			.get(req.threadId) as { id: string } | null;
 		if (!thread) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({ error: `Thread not found: ${payload.thread_id}`, retriable: false }),
-			);
+			this.logger.error("[relay] Local intake loop: thread not found", {
+				threadId: req.threadId,
+			});
 			return;
 		}
 
-		// Warn once if the caller passed a message_id that doesn't resolve.
-		// Doesn't block execution; logged for diagnostics during rollout.
-		if (payload.message_id) {
-			const userMessage = this.db
-				.query("SELECT id FROM messages WHERE id = ? AND thread_id = ? AND deleted = 0")
-				.get(payload.message_id, payload.thread_id) as { id: string } | null;
-			if (!userMessage) {
-				this.logger.warn(
-					"[relay] Process delegation payload.message_id does not match any row in messages; proceeding on thread state alone",
-					{
-						threadId: payload.thread_id,
-						messageId: payload.message_id,
-						source: entry.source_site_id,
-					},
-				);
-			}
-		}
-
-		// For the delegated AgentLoop, we need the full AppContext passed to RelayProcessor
 		if (!this.appCtx) {
-			this.writeResponse(
-				entry,
-				"error",
-				JSON.stringify({
-					error: "AppContext not available for delegated loop execution",
-					retriable: false,
-				}),
-			);
+			this.logger.error("[relay] Local intake loop: AppContext not available", {
+				threadId: req.threadId,
+			});
 			return;
 		}
+		const localCtx = this.appCtx;
 
-		const delegatedCtx = this.appCtx;
-
-		// Emit status_forward on each state change
-		const emitStatusForward = (status: string, detail: string | null, tokens: number): void => {
-			const fwdPayload: StatusForwardPayload = {
-				thread_id: payload.thread_id,
-				status,
-				detail,
-				tokens,
-			};
-			const outboxEntry = {
-				id: randomUUID(),
-				source_site_id: this.siteId,
-				target_site_id: entry.source_site_id,
-				kind: "status_forward" as const,
-				ref_id: entry.id,
-				idempotency_key: null,
-				stream_id: null,
-				payload: JSON.stringify(fwdPayload),
-				created_at: new Date().toISOString(),
-				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-				trace_context: null,
-			};
-			try {
-				writeOutbox(this.db, outboxEntry);
-			} catch (error) {
-				this.logger.warn("Failed to write status forward outbox entry", {
-					threadId: payload.thread_id,
-					error: error instanceof Error ? error.message : String(error),
-				});
-			}
-		};
-
-		emitStatusForward("thinking", null, 0);
-
-		// When a ThreadExecutor is available, enqueue the message into the dispatch
-		// queue and delegate to the executor. This prevents N concurrent inferences
-		// when N rapid Discord messages arrive for the same thread.
+		// Thread executor serializes concurrent intakes for the same thread
+		// (prevents N concurrent inferences when N rapid platform messages
+		// arrive). Mirrors the prior executeProcess concurrency control.
 		if (this.threadExecutor) {
-			enqueueMessage(this.db, payload.message_id, payload.thread_id);
-
+			enqueueMessage(this.db, req.messageId, req.threadId);
 			await this.threadExecutor.execute(
-				payload.thread_id,
-				// runFn: claim → run agent loop → acknowledge
+				req.threadId,
 				async (shouldYield) => {
-					const claimed = claimPending(this.db, payload.thread_id, this.siteId);
+					const claimed = claimPending(this.db, req.threadId, this.siteId);
 					if (claimed.length === 0) return {};
-
 					const claimedIds = claimed.map((e) => e.message_id);
-
 					try {
-						const result = await this.runDelegatedLoop(entry, payload, delegatedCtx, shouldYield);
-
-						if (result.yielded) {
-							return { yielded: true };
-						}
-
+						const result = await this.runLocalLoop(req, localCtx, shouldYield);
+						if (result.yielded) return { yielded: true };
 						acknowledgeBatch(this.db, claimedIds);
 						return result;
 					} catch (error) {
@@ -1722,42 +2071,31 @@ export class RelayProcessor {
 						throw error;
 					}
 				},
-				// onComplete: finalize the relay response
-				async (result) => {
-					this.finalizeProcess(entry, payload, result);
-				},
+				async () => {},
 			);
-
-			emitStatusForward("idle", null, 0);
 			return;
 		}
 
-		// Fallback: no executor available (backward compat for tests or standalone relay).
-		try {
-			const result = await this.runDelegatedLoop(entry, payload, delegatedCtx);
-			this.finalizeProcess(entry, payload, result);
-			emitStatusForward("idle", null, 0);
-		} catch (err) {
-			emitStatusForward("idle", null, 0);
-			this.writeResponse(entry, "error", JSON.stringify({ error: String(err), retriable: false }));
-		}
+		// Fallback: no executor (tests / standalone relay).
+		await this.runLocalLoop(req, localCtx);
 	}
 
 	/**
-	 * Run a delegated agent loop. Extracted from executeProcess so both the
-	 * executor-backed and fallback paths can share the same inference logic.
+	 * Run a single local agent loop for an intake-routed thread. The loop reads
+	 * the thread's authoritative state from the local DB and assembles its own
+	 * context — never re-assembling from a relay payload (R-UD1/R-UD2).
 	 */
-	private async runDelegatedLoop(
-		entry: RelayInboxEntry,
-		payload: ProcessPayload,
-		delegatedCtx: AppContext,
+	private async runLocalLoop(
+		req: { threadId: string; messageId: string; userId: string; platform: string | null },
+		localCtx: AppContext,
 		shouldYield?: () => boolean,
 	): Promise<Record<string, unknown>> {
+		const entryId = req.messageId;
 		// Resolve thread's preferred model from the authoritative threads.model_hint column.
 		let threadModelId: string | undefined;
 		const threadRow = this.db
 			.query("SELECT model_hint FROM threads WHERE id = ?")
-			.get(payload.thread_id) as { model_hint: string | null } | null;
+			.get(req.threadId) as { model_hint: string | null } | null;
 		if (threadRow?.model_hint) {
 			threadModelId = threadRow.model_hint;
 		}
@@ -1767,7 +2105,7 @@ export class RelayProcessor {
 			.query(
 				"SELECT id, type, no_history, system_prompt_addition FROM tasks WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
 			)
-			.get(payload.thread_id) as {
+			.get(req.threadId) as {
 			id: string;
 			type: string;
 			no_history: number;
@@ -1775,9 +2113,9 @@ export class RelayProcessor {
 		} | null;
 
 		const loopConfig: AgentLoopConfig = {
-			threadId: payload.thread_id,
-			userId: payload.user_id,
-			taskId: owningTask?.id ?? `delegated-${entry.id}`,
+			threadId: req.threadId,
+			userId: req.userId,
+			taskId: owningTask?.id ?? `intake-${entryId}`,
 			// Surface-gating for volatile rendering (#70): a delegated heartbeat
 			// keeps its resolved-advisory operator-acks; all other surfaces strip
 			// them. Undefined when no owning task row resolves.
@@ -1788,13 +2126,13 @@ export class RelayProcessor {
 			shouldYield,
 		};
 
-		if (payload.platform) {
-			loopConfig.platform = payload.platform;
+		if (req.platform) {
+			loopConfig.platform = req.platform;
 		}
 
 		// Inject platform tools if registry is available
 		if (this.platformMcpRegistry) {
-			const platformToolsMap = this.platformMcpRegistry.getToolsForThread(payload.thread_id);
+			const platformToolsMap = this.platformMcpRegistry.getToolsForThread(req.threadId);
 			if (platformToolsMap.size > 0) {
 				loopConfig.platformTools = Array.from(platformToolsMap.values());
 			}
@@ -1806,17 +2144,17 @@ export class RelayProcessor {
 		// is — which is why handleThread routed the wakeup here. Mirrors the
 		// local-path resolution in start/server.ts.
 		if (this.wsRegistry) {
-			const clientToolsFromRegistry = this.wsRegistry.getClientToolsForThread(payload.thread_id);
+			const clientToolsFromRegistry = this.wsRegistry.getClientToolsForThread(req.threadId);
 			if (clientToolsFromRegistry && clientToolsFromRegistry.size > 0) {
 				loopConfig.clientTools = clientToolsFromRegistry;
 				const firstToolName = clientToolsFromRegistry.keys().next().value;
 				loopConfig.connectionId = firstToolName
-					? this.wsRegistry.getConnectionForTool(payload.thread_id, firstToolName)
+					? this.wsRegistry.getConnectionForTool(req.threadId, firstToolName)
 					: undefined;
 			}
 			// A live boundless session's per-connection systemPromptAddition is
 			// more current than any owning-task value; prefer it when present.
-			const sessionSysPrompt = this.wsRegistry.getSystemPromptAdditionForThread(payload.thread_id);
+			const sessionSysPrompt = this.wsRegistry.getSystemPromptAdditionForThread(req.threadId);
 			if (sessionSysPrompt !== undefined) {
 				loopConfig.systemPromptAddition = sessionSysPrompt;
 			}
@@ -1824,23 +2162,22 @@ export class RelayProcessor {
 
 		const agentLoop = this.agentLoopFactory
 			? this.agentLoopFactory(loopConfig)
-			: new AgentLoop(
-					delegatedCtx,
+			: new MainAgentLoop(
+					localCtx,
 					{
 						/* sandbox not available — no tools in context */
 					} as object,
-					// biome-ignore lint/style/noNonNullAssertion: modelRouter checked before entering executeProcess
+					// biome-ignore lint/style/noNonNullAssertion: modelRouter checked before entering runLocalThreadLoop
 					this.modelRouter!,
 					loopConfig,
 				);
 
 		const tracer = getTracer();
-		const rootSpan = tracer.startSpan("relay.execute-process", {
+		const rootSpan = tracer.startSpan("relay.run-local-thread-loop", {
 			attributes: {
-				"thread.id": payload.thread_id,
-				"user.id": payload.user_id ?? "",
-				"source.site_id": entry.source_site_id,
-				platform: payload.platform ?? "",
+				"thread.id": req.threadId,
+				"user.id": req.userId ?? "",
+				platform: req.platform ?? "",
 			},
 		});
 
@@ -1863,22 +2200,6 @@ export class RelayProcessor {
 			error: result.error,
 			messagesCreated: result.messagesCreated,
 		};
-	}
-
-	/**
-	 * Finalize a process relay: write the response.
-	 */
-	private finalizeProcess(
-		entry: RelayInboxEntry,
-		_payload: ProcessPayload,
-		result: Record<string, unknown>,
-	): void {
-		if (result.error) {
-			this.writeResponse(entry, "error", JSON.stringify({ error: result.error, retriable: false }));
-			return;
-		}
-
-		this.writeResponse(entry, "result", JSON.stringify({ success: true }));
 	}
 
 	private createResultEntry(

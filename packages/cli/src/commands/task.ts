@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { updateRow } from "@bound/core";
+import { findTaskExistenceById, updateRow } from "@bound/core";
 
 // ---------------------------------------------------------------------------
 // arg helpers (mirrors the local helpers in webhook.ts)
@@ -59,10 +59,7 @@ export function taskUpdate(db: Database, siteId: string, args: string[]): void {
 
 	const alertRaw = getArgValue(args, "--alert-threshold");
 
-	const task = db.prepare("SELECT id, deleted FROM tasks WHERE id = ?").get(id) as {
-		id: string;
-		deleted: number;
-	} | null;
+	const task = findTaskExistenceById(db, id);
 	if (!task || task.deleted === 1) {
 		throw new Error(`Task '${id}' not found.`);
 	}
@@ -78,8 +75,8 @@ export function taskUpdate(db: Database, siteId: string, args: string[]): void {
 	}
 
 	if (alertRaw !== undefined) {
-		const n = Number.parseInt(alertRaw, 10);
-		if (!Number.isFinite(n) || n <= 0) {
+		const n = Number(alertRaw);
+		if (!Number.isInteger(n) || n <= 0) {
 			throw new Error("--alert-threshold must be an integer greater than 0");
 		}
 		updates.alert_threshold = n;

@@ -1,0 +1,366 @@
+/**
+ * Amazon Bedrock driver — thin shim onto `@ai-sdk/amazon-bedrock`.
+ *
+ * Replaced the hand-rolled Converse-API wrapper (~2000 lines).
+ * The AI SDK handles:
+ *   - Converse API envelope + event-stream decoding
+ *   - SigV4 signing / AWS_BEARER_TOKEN_BEDROCK fallback
+ *   - Retry and error shape normalization
+ *   - Opus 4.7 reasoning-behavior quirks (patched in @ai-sdk/amazon-bedrock@3.0.97)
+ *
+ * We keep ownership of:
+ *   - Message shape → ModelMessage conversion (../bridge)
+ *   - Cache breakpoint placement policy (cache-stable-prefix is still ours;
+ *     the driver just forwards the markers via providerOptions.bedrock.cachePoint)
+ *   - Stream chunk shape translation back to our StreamChunk type
+ *   - Reasoning config construction from ChatParams.thinking + ChatParams.effort
+ */
+
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
+import type { AmazonBedrockProvider } from "@ai-sdk/amazon-bedrock";
+import { type Logger, parseDurationMs } from "@bound/shared";
+import { streamText } from "ai";
+import type { ModelMessage } from "ai";
+import {
+	ANTHROPIC_ENVELOPE,
+	BEDROCK_PERMISSIVE_ENVELOPE,
+	toModelMessages,
+	toToolSet,
+} from "../bridge";
+import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import { resolveAwsCredentials } from "./aws-credential-cache";
+import { resolveProviderFetch, runProviderStream } from "./shared";
+
+interface BedrockReasoningConfig {
+	type?: "enabled" | "disabled" | "adaptive";
+	budgetTokens?: number;
+	maxReasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+	display?: "omitted" | "summarized";
+}
+
+/**
+ * Bedrock system-block builder.
+ *
+ * Background. Bedrock's Converse API supports a `cachePoint` on the system
+ * blocks array, which anchors a stable cache entry to the byte-stable system
+ * prefix (R-VC25). The AI SDK's top-level `streamText({system: <string>})`
+ * parameter normalizes the value into a system block WITHOUT `providerOptions`,
+ * so no `cachePoint` reaches the wire and the only cache anchor lives at the
+ * message-level marker — which moves every turn as message history grows,
+ * orphaning prior cache entries. See `@ai-sdk/amazon-bedrock@4.0.96` index.mjs
+ * line 432-440 (the `case "system":` branch reads `cachePoint` from
+ * `message.providerOptions`).
+ *
+ * The fix is to pass the system content as a `role: "system"` `ModelMessage` at
+ * index 0 of the messages array, with `providerOptions.bedrock.cachePoint`
+ * attached. This routes the system block through the SDK's per-message
+ * `providerOptions` plumbing, where the `cachePoint` survives normalization.
+ *
+ * Cache-anchor gating. The `cachePoint` is attached only when caching is
+ * already enabled for this turn (signaled by the agent-loop having placed a
+ * message-level cache marker upstream — detected here by the presence of any
+ * `providerOptions.bedrock.cachePoint` on a non-system message after
+ * `toModelMessages` has run). When caching is disabled (e.g. capability gate
+ * fired in `cache-marker.ts`), the system block is still emitted via the
+ * messages array but without a `cachePoint`, preserving wire compatibility
+ * for non-caching models.
+ */
+export function quantizeCacheTtl(cacheTtl: string | undefined): "5m" | "1h" | undefined {
+	if (cacheTtl === undefined) return undefined;
+	const durationMs = parseDurationMs(cacheTtl);
+	return Math.abs(durationMs - 300_000) <= Math.abs(durationMs - 3_600_000) ? "5m" : "1h";
+}
+
+export interface BuildBedrockSystemMessageParams {
+	/** The system prompt text. When falsy/empty, no system block is produced. */
+	system?: string;
+	/**
+	 * Whether to attach a `providerOptions.bedrock.cachePoint` to the system
+	 * block. Should mirror the agent-loop's caching decision for this turn.
+	 */
+	cacheEnabled: boolean;
+	/** Optional TTL forwarded to `cachePoint.ttl`. */
+	cacheTtl?: "5m" | "1h";
+}
+
+/**
+ * Builds the Bedrock system message that opens the messages array.
+ *
+ * Returns `null` when `system` is empty/missing — the caller should pass
+ * the messages array unchanged in that case. Returns a `ModelMessage` with
+ * `role: "system"` otherwise; the `providerOptions.bedrock.cachePoint` is
+ * present iff `cacheEnabled` is true.
+ *
+ * Pure: depends only on its arguments. The result is byte-stable for the
+ * same inputs (R-VC25-aligned).
+ */
+export function buildBedrockSystemMessage(
+	params: BuildBedrockSystemMessageParams,
+): ModelMessage | null {
+	if (!params.system) return null;
+	const message: ModelMessage = {
+		role: "system",
+		content: params.system,
+	};
+	if (params.cacheEnabled) {
+		const cachePoint: { type: "default"; ttl?: "5m" | "1h" } = { type: "default" };
+		if (params.cacheTtl) cachePoint.ttl = params.cacheTtl;
+		message.providerOptions = { bedrock: { cachePoint } };
+	}
+	return message;
+}
+
+/**
+ * Detects whether any non-system message in the post-bridge `ModelMessage[]`
+ * carries a Bedrock `cachePoint`. Used to mirror the agent-loop's caching
+ * decision into the system-block placement: when the message-level cache
+ * marker was placed (caching enabled), we also anchor the system block; when
+ * it was suppressed (capability gate), we skip the system anchor too.
+ *
+ * Exported for unit-test use only.
+ */
+export function hasBedrockMessageCachePoint(messages: ModelMessage[]): boolean {
+	return messages.some((m) => {
+		const opts = m.providerOptions as { bedrock?: { cachePoint?: unknown } } | undefined;
+		return opts?.bedrock?.cachePoint !== undefined;
+	});
+}
+
+export interface ShouldEnableSystemCachePointParams {
+	/** From `ChatParams.cache_ttl`. Caller signals caching intent. */
+	cacheTtl: string | undefined;
+	/** Post-bridge messages — used as a fallback signal for caching intent. */
+	bridgeMessages: ModelMessage[];
+}
+
+/**
+ * Decide whether the SYSTEM block should carry a Bedrock `cachePoint`.
+ *
+ * The SYSTEM anchor is INDEPENDENT of any message-level cachePoint. The
+ * historical conflation — `cacheEnabled =
+ * hasBedrockMessageCachePoint(bridgeMessages)` — meant any failure of
+ * the upstream message-marker placer disabled the system anchor too.
+ * Live regression: a thread had no message-level marker placed (root
+ * cause still under investigation in the agent loop's
+ * truncation/placement path), the gate flipped false, the system
+ * anchor was suppressed, and 79 turns ran with cr=0.
+ *
+ * The new contract:
+ *   - If the caller passed `cache_ttl`, they intend caching → enable
+ *     the system anchor.
+ *   - As a fallback for older callers that don't pass `cache_ttl`,
+ *     check for message-level marker presence (preserves the previous
+ *     behavior for any code path that hasn't been updated).
+ *   - Otherwise disable.
+ *
+ * The two layers (system anchor / message-level marker) now operate
+ * independently: a missing message-level marker no longer disables the
+ * system anchor, and a missing `cache_ttl` no longer prevents
+ * downstream code from flipping the system anchor on via a
+ * message-level marker.
+ */
+export function shouldEnableSystemCachePoint(params: ShouldEnableSystemCachePointParams): boolean {
+	if (params.cacheTtl !== undefined) return true;
+	return hasBedrockMessageCachePoint(params.bridgeMessages);
+}
+
+export class BedrockDriver implements LLMBackend {
+	private provider: AmazonBedrockProvider;
+	private model: string;
+	private contextWindow: number;
+
+	constructor(config: {
+		region: string;
+		model: string;
+		contextWindow: number;
+		profile?: string;
+		/**
+		 * Optional logger for debug-level interception of outgoing AI SDK
+		 * request bodies. When provided, raw request payloads are routed
+		 * through pino at `LOG_LEVEL=debug`; otherwise the SDK's default
+		 * fetch is used with zero overhead.
+		 */
+		logger?: Logger;
+		/**
+		 * Custom fetch for wire-body interception (harness/test only). When
+		 * set, takes precedence over the logger-backed fetch. Production
+		 * callers leave this unset and use `logger` instead.
+		 *
+		 * The harness in `packages/agent/scripts/agent-harness/` injects a
+		 * capturing fetch through `createModelRouter`'s `fetchByBackendId`
+		 * option to record outgoing wire bodies per turn for diagnostic
+		 * inspection (cache-marker counts, byte-diff vs prior cold turn,
+		 * etc.).
+		 */
+		fetch?: typeof fetch;
+		/**
+		 * Per-backend connect / time-to-first-byte deadline (ms), forwarded to
+		 * the logging fetch. When set, response headers must arrive within this
+		 * window or the request is aborted with a self-identifying error. Only
+		 * applies to the logger-backed fetch; an explicit `fetch` override
+		 * (harness/test) is used verbatim. See `createLoggingFetch`.
+		 */
+		connectTimeoutMs?: number;
+	}) {
+		this.model = config.model;
+		this.contextWindow = config.contextWindow;
+		// Auth precedence (matches @ai-sdk/amazon-bedrock@4 behavior):
+		//   1. apiKey / AWS_BEARER_TOKEN_BEDROCK if set (handled by the SDK)
+		//   2. explicit profile via fromIni (honors SSO, sts:AssumeRole, MFA)
+		//   3. fall-through to the default AWS credential chain
+		// The SDK only consults credentialProvider when no bearer token is
+		// present, so wiring fromIni here is safe even when a user has a
+		// bearer token configured.
+		const credentialProvider = config.profile
+			? () => resolveAwsCredentials(config.profile)
+			: undefined;
+		// Custom fetch takes precedence over logger-backed fetch. When both
+		// are absent the SDK uses its default fetch with zero overhead.
+		const customFetch = resolveProviderFetch("bedrock", config);
+		this.provider = createAmazonBedrock({
+			region: config.region,
+			...(credentialProvider && { credentialProvider }),
+			...(customFetch && { fetch: customFetch }),
+		});
+	}
+
+	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
+		// sentinel (see openai-compatible-driver.ts for the same note).
+		const modelId = params.model || this.model;
+		// Reasoning-block signature/redactedData passthrough is Anthropic-only.
+		// Non-Anthropic Bedrock models (Kimi, MiniMax, GLM, Nova, …) reject
+		// `reasoningContent.reasoningText.signature` outright. Detection mirrors
+		// buildReasoningConfig: substring match on "anthropic" in the model id.
+		// The same flag selects the wire envelope: Claude-on-Bedrock has the same
+		// strict tool_use.id charset as Claude-on-Anthropic-API, while everything
+		// else on Bedrock-Converse can carry the looser `[a-zA-Z0-9_.:-]{1,64}`
+		// shape — notably Kimi's native `functions.<name>:<index>` fallback ids.
+		const isAnthropicModel = modelId.includes("anthropic");
+		const bridgeMessages = toModelMessages(params.messages, {
+			cacheProvider: "bedrock",
+			cacheTtl: quantizeCacheTtl(params.cache_ttl),
+			resolveFileRef: params.resolveFileRef,
+			// Anthropic-on-Bedrock replays its signed reasoning blocks via the
+			// "bedrock" policy. Non-Anthropic Converse models can't carry a
+			// reasoning signature, but `null` here means "replay signature-less
+			// reasoning as bare text", which re-accumulates a reasoning-heavy
+			// model's prior chain-of-thought every turn — the same context bloat
+			// that degraded the OpenCode Go models. Use "openai" so signature-less
+			// reasoning is dropped on replay (kept only if it carries replayable
+			// encrypted content), matching every other non-signature leg.
+			reasoningProviderOptions: isAnthropicModel ? "bedrock" : "openai",
+			targetEnvelope: isAnthropicModel ? ANTHROPIC_ENVELOPE : BEDROCK_PERMISSIVE_ENVELOPE,
+		});
+		// Inject the system prompt as a `role: "system"` ModelMessage at index 0
+		// rather than via streamText's top-level `system: string` parameter.
+		// The latter does not carry providerOptions through the AI SDK's
+		// normalization, so a Bedrock `cachePoint` would never reach the wire
+		// and the byte-stable system prefix (R-VC25) would have no cache anchor.
+		// See `buildBedrockSystemMessage` for the full rationale.
+		const systemMessage = buildBedrockSystemMessage({
+			system: params.system,
+			// Independent decision per `shouldEnableSystemCachePoint` — the
+			// system anchor is no longer gated on message-level marker
+			// presence. See thread `a191e01f-…` regression: empty bridge
+			// markers used to disable the system anchor, killing all
+			// caching for the entire turn.
+			cacheEnabled: shouldEnableSystemCachePoint({
+				cacheTtl: quantizeCacheTtl(params.cache_ttl),
+				bridgeMessages,
+			}),
+			cacheTtl: quantizeCacheTtl(params.cache_ttl),
+		});
+		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
+		const tools = toToolSet(params.tools);
+		const reasoningConfig = buildReasoningConfig(params, modelId);
+
+		// Emit heartbeat immediately. Extended thinking can produce a 60s+ gap
+		// before the first content event, which would trip the relay silence
+		// timeout. This matches the legacy driver's messageStart behavior.
+		yield* runProviderStream({
+			providerName: "bedrock",
+			signal: params.signal,
+			stream: () =>
+				streamText({
+					model: this.provider.languageModel(modelId),
+					messages,
+					allowSystemInMessages: true,
+					...(tools && { tools }),
+					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+					// Reasoning requests disallow temperature on Anthropic; only set it
+					// when we're not in thinking mode. Mirrors the old validator gate.
+					...(params.temperature !== undefined &&
+						!reasoningConfig && { temperature: params.temperature }),
+					abortSignal: params.signal,
+					providerOptions: {
+						bedrock: {
+							...(reasoningConfig && { reasoningConfig }),
+						} as Record<string, unknown> as never,
+					},
+				}).fullStream,
+			map: { usageProvider: "bedrock", estimateInputFromMessages: params.messages },
+		});
+	}
+
+	capabilities(): BackendCapabilities {
+		return {
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: true,
+			vision: true,
+			extended_thinking: true,
+			max_context: this.contextWindow,
+		};
+	}
+}
+
+/**
+ * Build the `providerOptions.bedrock.reasoningConfig` payload, filtered by
+ * model family so we don't send features the target model doesn't support.
+ *
+ * The @ai-sdk/amazon-bedrock SDK emits warnings when non-Anthropic models
+ * receive `budgetTokens` or `type: "adaptive"` — those features are routed
+ * through Anthropic-specific `additionalModelRequestFields.thinking`. For
+ * other providers (Moonshot, MiniMax, DeepSeek, OpenAI-on-Bedrock, …) only
+ * `maxReasoningEffort` is honored, forwarded as either `reasoning_effort`
+ * (OpenAI) or raw `reasoningConfig.maxReasoningEffort`.
+ *
+ * Detection mirrors the SDK: substring match on `"anthropic"` in the model
+ * id, which covers both plain ids (`anthropic.claude-opus-4-7`) and
+ * inference-profile ARNs (`.../us.anthropic.claude-opus-4-7`).
+ *
+ * Exported so the gating behavior can be unit-tested without stubbing the
+ * full AI SDK streaming stack.
+ */
+export function buildReasoningConfig(
+	params: ChatParams,
+	modelId: string,
+): BedrockReasoningConfig | undefined {
+	if (!params.thinking && !params.effort) return undefined;
+	const isAnthropicModel = modelId.includes("anthropic");
+	const config: BedrockReasoningConfig = {};
+	if (isAnthropicModel) {
+		if (params.thinking?.type === "disabled") {
+			config.type = "disabled";
+		} else if (params.thinking?.type === "enabled") {
+			config.type = "enabled";
+			config.budgetTokens = params.thinking.budget_tokens;
+		} else if (params.thinking?.type === "adaptive") {
+			config.type = "adaptive";
+			if (params.thinking.display) config.display = params.thinking.display;
+		}
+	}
+	// Non-Anthropic thinking-related fields are dropped intentionally —
+	// sending them triggers AI SDK "unsupported feature" warnings.
+	// `effort` is a free-form string (provider-validated), so only forward it to
+	// Bedrock's Converse `maxReasoningEffort` when it is one of the values that
+	// field actually accepts — a foreign level (e.g. a umans-only one) must not
+	// reach Bedrock.
+	const BEDROCK_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+	if (params.effort && (BEDROCK_EFFORTS as readonly string[]).includes(params.effort)) {
+		config.maxReasoningEffort = params.effort as (typeof BEDROCK_EFFORTS)[number];
+	}
+	return Object.keys(config).length > 0 ? config : undefined;
+}

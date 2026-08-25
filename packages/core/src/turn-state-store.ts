@@ -1,6 +1,6 @@
 /**
  * TurnStateStore — a keyed cache for agent turn state that must survive
- * AgentLoop instance teardown (e.g. across client-tool defer/wakeup cycles)
+ * MainAgentLoop instance teardown (e.g. across client-tool defer/wakeup cycles)
  * while staying bounded in lifetime to match the upstream prompt-cache TTL.
  *
  * The interface is generic so @bound/core stays free of agent-internal types.

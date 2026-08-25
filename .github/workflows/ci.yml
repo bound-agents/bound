@@ -15,7 +15,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3"
+          bun-version: "1.4"
 
       - uses: actions/cache@v4
         with:
@@ -39,7 +39,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3"
+          bun-version: "1.4"
 
       - uses: actions/cache@v4
         with:
@@ -64,7 +64,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3"
+          bun-version: "1.4"
 
       - uses: actions/cache@v4
         with:
@@ -74,15 +74,29 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - name: Build Windows AppContainer lowbox helper
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        run: bun run scripts/build-lowbox-helper.ts
+
+      - name: Mandatory Windows AppContainer lowbox oracle
+        if: ${{ runner.os == 'Windows' }}
+        shell: bash
+        env:
+          BOUND_LOWBOX_HELPER: ${{ github.workspace }}\dist\bound-lowbox.exe
+        run: bun test packages/less/src/__tests__/windows-lowbox-oracle.test.ts --timeout 30000
+
       - name: Unit tests
         # Step-level (not job-level) timeout: a wedged test fails THIS step
         # without cancelling the job, so the summary + upload steps below
         # (gated on !cancelled()) still run and surface partial diagnostics.
-        # The unit suite finishes in a few minutes on every lane; 20 caps a
-        # hang at minutes instead of GitHub's 360-minute default — which is
-        # what let a wedged worker burn ~6h on the Windows lane.
-        timeout-minutes: 20
+        # Windows runs package files serially to avoid worker contention; give
+        # that lane 30 minutes while keeping the other lanes at 20. GitHub's
+        # expression resolves to a number for timeout-minutes.
+        timeout-minutes: ${{ runner.os == 'Windows' && 30 || 20 }}
         shell: bash
+        env:
+          BOUND_LOWBOX_HELPER: ${{ runner.os == 'Windows' && format('{0}\\dist\\bound-lowbox.exe', github.workspace) || '' }}
         run: |
           # bun test --recursive silently skips 5 packages on Linux due to a
           # workspace test-discovery bug. Run each package explicitly instead.
@@ -97,11 +111,51 @@ jobs:
           # teardown error like Windows EBUSY) that a pure-JUnit summary would
           # render as "all green". The sidecar is what makes that case visible.
           mkdir -p test-results
+          # Per-test default ceiling. Bun's own default is 5s, which tripped
+          # intermittently on GitHub's ~2-core, I/O-slow runners — a different
+          # set of tests each run (core FTS5 one run, relay agent the next),
+          # all TimeoutError, none reproducing. 15s gives slow-but-correct
+          # tests headroom; the 20-minute step cap above still bounds a hang.
+          #
+          # Windows keeps a larger ceiling. A previous commit cut it to 15s on
+          # the grounds that no Windows test NEEDED more (measured max 5.5s under
+          # the default in a green run, with the one 22.4s case carrying its own
+          # explicit timeout). That measurement was of the wrong quantity: it
+          # sampled durations from an UNCONTENDED run and inferred a ceiling for
+          # a contended one. Windows CI then failed twice on `agent` TimeoutError
+          # — different tests each run, exactly the signature described above,
+          # which is what the larger ceiling had been absorbing. A per-test
+          # ceiling exists to bound a hang, not to assert a performance budget,
+          # so the slack costs nothing when tests pass and buys nothing when cut.
+          TEST_TIMEOUT=15000
+          if [ "$RUNNER_OS" = "Windows" ]; then TEST_TIMEOUT=30000; fi
           exit_code=0
-          for pkg in shared core sync sandbox llm agent platforms web client mcp-server cli less; do
+          for pkg in shared core sync sandbox llm agent platforms web client cli less; do
             echo "::group::packages/$pkg"
             pkg_code=0
-            bun test "packages/$pkg" --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
+            # --parallel spreads a package's test FILES across worker processes
+            # (default: core count). The loop is sequential across 11 packages,
+            # which on a ~2-core Windows runner walked the whole step up to
+            # GitHub's 20-minute ceiling and killed it mid-`agent` — nothing after
+            # `llm` ran at all. Measured locally on packages/agent, the heaviest
+            # of the eleven: 67.1s sequential -> 23.4s parallel, same 2472 pass /
+            # 0 fail, JUnit output unaffected. On Windows the step dropped from
+            # 20m07s (capped) to 11m46s (completed).
+            #
+            # macOS packages/agent and every Windows package run serially.
+            # Isolated workers made macOS agent exit nonzero on a different
+            # timing-sensitive set each run, while on Windows they caused worker
+            # crashes, DB-closed errors, many arbitrary 30s test timeouts, and a
+            # 20-minute step overrun. The worker setup improved nominal throughput
+            # but destroyed per-test latency on the constrained runners.
+            PARALLEL_ARG=--parallel
+            if [ "$RUNNER_OS" = "Windows" ] || { [ "$RUNNER_OS" = "macOS" ] && [ "$pkg" = "agent" ]; }; then PARALLEL_ARG=; fi
+            #
+            # The Windows lowbox oracle is excluded here because the dedicated
+            # step above already runs it, serially and with its own timeout. On
+            # Linux/macOS all 8 cases are win32-gated skips, so excluding it
+            # everywhere costs no coverage.
+            bun test "packages/$pkg" $PARALLEL_ARG --timeout "$TEST_TIMEOUT" --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
             echo "$pkg_code" > "test-results/$pkg.exit"
             if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"
@@ -115,8 +169,13 @@ jobs:
         # per failure so failures surface inline without scrolling the log.
         # Also reconciles each package's exit-code sidecar against its JUnit
         # failure count and flags process-level failures (nonzero exit, no
-        # recorded test failure) that the raw JUnit reports as green.
-        run: bun run scripts/ci-test-summary.ts test-results
+        # recorded test failure) that the raw JUnit reports as green. An earlier
+        # build/oracle failure can skip the unit-test step, so create the input
+        # directory before invoking the summary script.
+        shell: bash
+        run: |
+          mkdir -p test-results
+          bun run scripts/ci-test-summary.ts test-results
 
       - name: Upload test results
         if: ${{ !cancelled() }}

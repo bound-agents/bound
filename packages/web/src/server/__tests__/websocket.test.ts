@@ -288,6 +288,76 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
+	describe("message:send sender-identity metadata", () => {
+		it("stamps user_id, user_name, and tz_offset onto the user message metadata bag", async () => {
+			const { applySchema, createDatabase, insertRow } = await import("@bound/core");
+			const db = createDatabase(":memory:");
+			applySchema(db);
+			const now = new Date().toISOString();
+			insertRow(
+				db,
+				"users",
+				{ id: "user-kara", display_name: "Kara", first_seen_at: now, modified_at: now, deleted: 0 },
+				"site-a",
+			);
+			insertRow(
+				db,
+				"threads",
+				{
+					id: "thread-1",
+					user_id: "user-kara",
+					interface: "web",
+					host_origin: "site-a",
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				"site-a",
+			);
+
+			const testEventBus = new TypedEventEmitter();
+			const testHandler = createWebSocketHandler({
+				eventBus: testEventBus,
+				db,
+				siteId: "site-a",
+				defaultUserId: "user-kara",
+				hostOrigin: "site-a",
+			});
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+			testHandler.message(
+				mockWs,
+				JSON.stringify({ type: "thread:subscribe", thread_id: "thread-1" }),
+			);
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "message:send",
+					thread_id: "thread-1",
+					content: "hello there",
+					tz_offset: -420,
+				}),
+			);
+			// handleMessageSend is async — let the insert flush.
+			await new Promise((r) => setTimeout(r, 20));
+
+			const row = db
+				.query(
+					"SELECT metadata FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0",
+				)
+				.get("thread-1") as { metadata: string | null } | null;
+			expect(row).not.toBeNull();
+			const bag = JSON.parse(row?.metadata ?? "{}") as Record<string, unknown>;
+			expect(bag.user_id).toBe("user-kara");
+			expect(bag.user_name).toBe("Kara");
+			expect(bag.tz_offset).toBe(-420);
+
+			testHandler.cleanup();
+			db.close();
+		});
+	});
+
 	describe("WS message schemas - tool:result", () => {
 		it("should accept valid tool:result", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
@@ -1059,6 +1129,92 @@ describe("ClientConnection type and WS message schemas", () => {
 			const exitCodeIndex = columns.indexOf("exit_code");
 			expect(exitCodeIndex).toBeGreaterThanOrEqual(0);
 			expect(values[exitCodeIndex]).toBe(0);
+
+			testHandler.cleanup();
+		});
+
+		it("accepts a late tool:result for a still-processing entry (no arrival-time TTL — regression: 5-min cutoff wedged long-running client tools)", () => {
+			const eventBus = new TypedEventEmitter();
+			// Entry dispatched 10 minutes ago but still 'processing' — nothing
+			// expired it (live session spared it from the TTL sweep, connection
+			// never closed). The old handler compared created_at against a fixed
+			// 5-minute cutoff and silently discarded this result, leaving the row
+			// wedged in 'processing' forever and the thread stalled.
+			const oldTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+			const insertedMessages: Array<{ sql: string; values: unknown[] }> = [];
+			let acknowledged = false;
+
+			const mockDb = {
+				prepare: (sql: string) => ({
+					get: () => null,
+					all: () => {
+						if (sql.includes("status = 'expired'")) return [];
+						// getPendingClientToolCalls path
+						return [
+							{
+								message_id: "msg-1",
+								thread_id: "thread-123",
+								status: "processing",
+								claimed_by: "conn-1",
+								event_type: "client_tool_call",
+								event_payload: JSON.stringify({ call_id: "call-123" }),
+								created_at: oldTime,
+								modified_at: oldTime,
+							},
+						];
+					},
+					run: (..._values: unknown[]) => {
+						if (sql.includes("status = 'acknowledged'")) {
+							acknowledged = true;
+						}
+					},
+				}),
+				transaction: (fn: () => unknown) => () => {
+					fn();
+					return "mock-hlc";
+				},
+				run: (sql: string, values: unknown[]) => {
+					if (sql.includes("INSERT INTO messages")) {
+						insertedMessages.push({ sql, values });
+					}
+				},
+				query: (_sql: string) => ({
+					get: () => null,
+				}),
+				exec: () => {},
+			} as unknown as Database;
+
+			const testHandler = createWebSocketHandler({
+				eventBus,
+				db: mockDb,
+				siteId: "site-1",
+				defaultUserId: "user-1",
+			});
+
+			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+			testHandler.open(mockWs);
+
+			testHandler.message(
+				mockWs,
+				JSON.stringify({
+					type: "tool:result",
+					call_id: "call-123",
+					thread_id: "thread-123",
+					content: "Exit code: 137\nstdout:\n...",
+					is_error: true,
+				}),
+			);
+
+			// The late result is ACCEPTED: persisted as a tool_result message and
+			// the dispatch entry acknowledged, so the loop's resume barrier clears.
+			expect(insertedMessages).toHaveLength(1);
+			expect(acknowledged).toBe(true);
+			// No error frame back to the client.
+			const errorFrames = (mockWs as unknown as MockWebSocket).messages.filter(
+				(m) => (m as Record<string, unknown>).type === "error",
+			);
+			expect(errorFrames).toHaveLength(0);
 
 			testHandler.cleanup();
 		});
@@ -2529,6 +2685,34 @@ describe("issue #189: single tool-bearing session per thread (eviction)", () => 
 		expect(sessionsFor(db, "thread-2")).toBe(1);
 		expect(handler.registry.getClientToolsForThread("thread-2").has("boundless_read")).toBe(true);
 		expect(handler.registry.getClientToolsForThread("thread-1").size).toBe(1);
+
+		handler.cleanup();
+		db.close();
+	});
+});
+
+describe("background count subscription seeds", () => {
+	it("sends zero on subscribe so reconnect clears a stale client count", async () => {
+		const { applySchema, createDatabase } = await import("@bound/core");
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const eventBus = new TypedEventEmitter();
+		const handler = createWebSocketHandler({
+			eventBus,
+			db,
+			siteId: "site-a",
+			defaultUserId: "test-user",
+		});
+		const ws = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
+		handler.open(ws);
+
+		handler.message(ws, JSON.stringify({ type: "thread:subscribe", thread_id: "thread-idle" }));
+
+		expect((ws as unknown as MockWebSocket).messages).toContainEqual({
+			type: "background:count",
+			thread_id: "thread-idle",
+			count: 0,
+		});
 
 		handler.cleanup();
 		db.close();

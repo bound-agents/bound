@@ -10,6 +10,7 @@ import {
 	buildVolatileEnrichment,
 	computeBaseline,
 } from "../summary-extraction.js";
+import { deltaLines } from "./test-helpers/enrichment";
 
 let db: Database;
 let dbPath: string;
@@ -31,7 +32,7 @@ afterEach(() => {
 
 describe("computeBaseline", () => {
 	it("AC4.1: returns the most-recent user-role message timestamp when newer than the 24h floor", () => {
-		// Post-2026-05-24 contract change: baseline anchors to the
+		// Contract change: baseline anchors to the
 		// last user-role message (the real conversational boundary)
 		// rather than thread.last_message_at. The latter advances on
 		// every persisted assistant/tool/developer row, which on
@@ -207,8 +208,8 @@ describe("buildVolatileEnrichment — memory delta", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain("- test-key:");
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain("- test-key:");
 	});
 
 	it("AC2.2: excludes entry with modified_at before baseline", () => {
@@ -228,7 +229,7 @@ describe("buildVolatileEnrichment — memory delta", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(0);
+		expect(deltaLines(enrichment).length).toBe(0);
 	});
 
 	it("AC2.3: renders tombstoned entry as [forgotten]", () => {
@@ -254,12 +255,12 @@ describe("buildVolatileEnrichment — memory delta", () => {
 		const earlyBaseline = "2026-01-01T00:00:00.000Z";
 		const enrichment = buildVolatileEnrichment(db, earlyBaseline);
 
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain("[forgotten]");
-		expect(enrichment.memoryDeltaLines[0]).not.toContain("test-value");
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain("[forgotten]");
+		expect(deltaLines(enrichment)[0]).not.toContain("test-value");
 	});
 
-	it("AC2.4: shows overflow line when more than maxMemory entries changed", () => {
+	it("AC2.4: caps L2/L3 entries at maxMemory", () => {
 		for (let i = 0; i < 11; i++) {
 			insertRow(
 				db,
@@ -277,10 +278,11 @@ describe("buildVolatileEnrichment — memory delta", () => {
 			);
 		}
 
+		// 11 eligible entries, maxMemory=10: the 11th is dropped by the cap.
+		// (The old "... and N more" overflow line rode memoryDeltaLines, which
+		// was removed as dead code — nothing rendered it after R-VC24.)
 		const enrichment = buildVolatileEnrichment(db, baseline, 10);
-		expect(enrichment.memoryDeltaLines.length).toBe(11);
-		expect(enrichment.memoryDeltaLines[10]).toContain("... and 1 more");
-		expect(enrichment.memoryDeltaLines[10]).toContain("query semantic_memory for full list");
+		expect(deltaLines(enrichment).length).toBe(10);
 	});
 
 	it("AC2.5: truncates value longer than 200 chars", () => {
@@ -301,9 +303,9 @@ describe("buildVolatileEnrichment — memory delta", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain("...");
-		expect(enrichment.memoryDeltaLines[0]).not.toContain(longValue);
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain("...");
+		expect(deltaLines(enrichment)[0]).not.toContain(longValue);
 	});
 });
 
@@ -329,16 +331,15 @@ describe("buildVolatileEnrichment — _internal key filtering", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		const hasInternal = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("_internal.file_thread"),
-		);
+		const hasInternal = deltaLines(enrichment).some((l) => l.includes("_internal.file_thread"));
 		expect(hasInternal).toBe(false);
 	});
 
-	it("does not count _internal.* keys in the 'N more' overflow line", () => {
+	it("never surfaces _internal.* keys even when real entries compete for capped slots", () => {
 		// Seed 3 real default-tier entries AND 5 _internal entries, all recent.
-		// With maxMemory=2, overflow should count only the 3 real entries (1 more after 2 shown),
-		// not 8 (3 real + 5 internal).
+		// With maxMemory=2 the cap bites: the kept entries must all be real keys,
+		// and no _internal key may occupy a slot. (The old "... and N more"
+		// overflow line rode memoryDeltaLines, which was removed as dead code.)
 		for (let i = 0; i < 3; i++) {
 			insertRow(
 				db,
@@ -373,9 +374,10 @@ describe("buildVolatileEnrichment — _internal key filtering", () => {
 		}
 
 		const enrichment = buildVolatileEnrichment(db, baseline, 2);
-		const overflowLine = enrichment.memoryDeltaLines.find((l) => l.includes("... and"));
-		expect(overflowLine).toBeDefined();
-		expect(overflowLine).toContain("... and 1 more");
+		const lines = deltaLines(enrichment);
+		expect(lines.length).toBe(2);
+		expect(lines.every((l) => l.includes("real-key-"))).toBe(true);
+		expect(lines.some((l) => l.includes("_internal."))).toBe(false);
 	});
 });
 
@@ -402,9 +404,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 
 		// Baseline well after the entry
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
-		const policyLine = enrichment.memoryDeltaLines.find((l) =>
-			l.includes("policy_research_guidelines"),
-		);
+		const policyLine = deltaLines(enrichment).find((l) => l.includes("policy_research_guidelines"));
 		expect(policyLine).toBeDefined();
 		expect(policyLine).toContain("Always cite sources");
 	});
@@ -428,7 +428,7 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z");
-		const pinnedLine = enrichment.memoryDeltaLines.find((l) => l.includes("_pinned_operator_name"));
+		const pinnedLine = deltaLines(enrichment).find((l) => l.includes("_pinned_operator_name"));
 		// The entry is not pinned and was modified before baseline, so it must NOT appear.
 		expect(pinnedLine).toBeUndefined();
 	});
@@ -471,10 +471,8 @@ describe("buildVolatileEnrichment — pinned/policy entries", () => {
 
 		// maxMemory=3: all 3 regular entries + pinned should appear
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 3);
-		const hasPinned = enrichment.memoryDeltaLines.some((l) => l.includes("important_rule"));
-		const regularCount = enrichment.memoryDeltaLines.filter((l) =>
-			l.includes("regular-entry"),
-		).length;
+		const hasPinned = deltaLines(enrichment).some((l) => l.includes("important_rule"));
+		const regularCount = deltaLines(enrichment).filter((l) => l.includes("regular-entry")).length;
 		expect(hasPinned).toBe(true);
 		expect(regularCount).toBe(3);
 	});
@@ -525,9 +523,7 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 			"How does the scheduler handle cron tasks?",
 		);
 
-		const hasScheduler = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("scheduler_cron_patterns"),
-		);
+		const hasScheduler = deltaLines(enrichment).some((l) => l.includes("scheduler_cron_patterns"));
 		expect(hasScheduler).toBe(true);
 	});
 
@@ -557,7 +553,7 @@ describe("buildVolatileEnrichment — relevance boosting", () => {
 			"What is the sync protocol?",
 		);
 
-		const hasColor = enrichment.memoryDeltaLines.some((l) => l.includes("favorite_color_blue"));
+		const hasColor = deltaLines(enrichment).some((l) => l.includes("favorite_color_blue"));
 		expect(hasColor).toBe(false);
 	});
 });
@@ -596,9 +592,7 @@ describe("buildVolatileEnrichment — assistant message keyword seeding", () => 
 			"I traced the kafka consumer rebalance path and the sticky assignor logic",
 		);
 
-		const hasKafka = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("kafka_rebalance_protocol"),
-		);
+		const hasKafka = deltaLines(enrichment).some((l) => l.includes("kafka_rebalance_protocol"));
 		expect(hasKafka).toBe(true);
 	});
 
@@ -621,9 +615,7 @@ describe("buildVolatileEnrichment — assistant message keyword seeding", () => 
 		// Same keyword-barren user message, but no assistant seed — nothing matches.
 		const enrichment = buildVolatileEnrichment(db, "2026-03-28T00:00:00.000Z", 10, 5, "continue");
 
-		const hasKafka = enrichment.memoryDeltaLines.some((l) =>
-			l.includes("kafka_rebalance_protocol"),
-		);
+		const hasKafka = deltaLines(enrichment).some((l) => l.includes("kafka_rebalance_protocol"));
 		expect(hasKafka).toBe(false);
 	});
 });
@@ -675,10 +667,10 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 			"We discussed agent detection techniques and MCP protocol implementation details",
 		);
 
-		const hasAgentDetection = enrichment.memoryDeltaLines.some((l) =>
+		const hasAgentDetection = deltaLines(enrichment).some((l) =>
 			l.includes("agent_detection_research"),
 		);
-		const hasMcpSpec = enrichment.memoryDeltaLines.some((l) => l.includes("mcp_spec_notes"));
+		const hasMcpSpec = deltaLines(enrichment).some((l) => l.includes("mcp_spec_notes"));
 		expect(hasAgentDetection).toBe(true);
 		expect(hasMcpSpec).toBe(true);
 	});
@@ -710,9 +702,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 			"We explored the scheduler implementation and sync protocol",
 		);
 
-		const schedulerLines = enrichment.memoryDeltaLines.filter((l) =>
-			l.includes("scheduler_internals"),
-		);
+		const schedulerLines = deltaLines(enrichment).filter((l) => l.includes("scheduler_internals"));
 		// Should appear exactly once, not duplicated
 		expect(schedulerLines.length).toBe(1);
 	});
@@ -742,7 +732,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 			"some user message",
 		);
 
-		expect(enrichment.memoryDeltaLines.length).toBeGreaterThanOrEqual(1);
+		expect(deltaLines(enrichment).length).toBeGreaterThanOrEqual(1);
 	});
 
 	it("thread summary surfaces entries even when user message is empty", () => {
@@ -771,7 +761,7 @@ describe("buildVolatileEnrichment — thread summary keyword seeding", () => {
 			"Discussed bluesky tooling and AT protocol integration",
 		);
 
-		const hasBluesky = enrichment.memoryDeltaLines.some((l) => l.includes("bluesky_tooling"));
+		const hasBluesky = deltaLines(enrichment).some((l) => l.includes("bluesky_tooling"));
 		expect(hasBluesky).toBe(true);
 	});
 });
@@ -1007,8 +997,8 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain('via task "my_cron"');
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain('via task "my_cron"');
 	});
 
 	it("AC5.2: resolves source matching active thread id to thread title", () => {
@@ -1049,8 +1039,8 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain('via thread "My Thread"');
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain('via thread "My Thread"');
 	});
 
 	it("AC5.3: resolves untitled thread source to thread id prefix", () => {
@@ -1091,8 +1081,8 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain(`via thread "${threadId.slice(0, 8)}"`);
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain(`via thread "${threadId.slice(0, 8)}"`);
 	});
 
 	it("AC5.4: falls back to id prefix for deleted thread source", () => {
@@ -1135,9 +1125,9 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		softDelete(db, "threads", threadId, siteId);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain(threadId.slice(0, 8));
-		expect(enrichment.memoryDeltaLines[0]).not.toContain('thread "');
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain(threadId.slice(0, 8));
+		expect(deltaLines(enrichment)[0]).not.toContain('thread "');
 	});
 
 	it("AC5.5: falls back to source[0:8] for unmatched source", () => {
@@ -1157,8 +1147,8 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain("via zzzzzzzz");
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain("via zzzzzzzz");
 	});
 
 	it("AC5.6: resolves null source to 'unknown'", () => {
@@ -1178,8 +1168,8 @@ describe("buildVolatileEnrichment — source resolution", () => {
 		);
 
 		const enrichment = buildVolatileEnrichment(db, baseline);
-		expect(enrichment.memoryDeltaLines.length).toBe(1);
-		expect(enrichment.memoryDeltaLines[0]).toContain("via unknown");
+		expect(deltaLines(enrichment).length).toBe(1);
+		expect(deltaLines(enrichment)[0]).toContain("via unknown");
 	});
 });
 

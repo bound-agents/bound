@@ -1,0 +1,11 @@
+extends: substitution
+message: "Use '%s' instead of '%s'."
+level: warning
+ignorecase: false
+swap:
+  Github: GitHub
+  Javascript: JavaScript
+  Websocket: WebSocket
+  web socket: WebSocket
+  openAI: OpenAI
+  OpenAi: OpenAI

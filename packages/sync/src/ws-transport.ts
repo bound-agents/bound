@@ -1,5 +1,11 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
+	findChangeLogEntryByHlc,
+	findConnectorHandleForSyncNotification,
+	findMessageForSyncBroadcast,
+	findUndeliveredRelayOutboxById,
+} from "@bound/core";
+import {
 	type ConsistencyEntry,
 	createChangeLogEntry,
 	getBackfillableEntriesSorted,
@@ -8,9 +14,11 @@ import {
 	hashRow,
 	insertInbox,
 	markDelivered,
+	markDeliveredForTarget,
 	mergeDiffEntries,
 	mergeDiffPks,
 	readUndelivered,
+	syncableWhereClause,
 	writeOutbox,
 } from "@bound/core";
 import type {
@@ -31,6 +39,7 @@ import {
 	applySnapshotRows,
 	getPkColumn,
 	replayEvents,
+	validateTableName,
 } from "./reducers.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
 import type {
@@ -122,11 +131,12 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"tasks",
 	"connector_handles",
 	"webhooks",
+	"rss_feeds",
 	"client_sessions",
 	"files",
 	"advisories",
 	"skills",
-	"overlay_index",
+	"agents",
 ];
 
 /** Per-peer snapshot seeding progress (hub-side). */
@@ -257,12 +267,7 @@ export class WsTransport {
 	start(): void {
 		this.changelogWrittenListener = (event) => {
 			// Query the full changelog entry from the database
-			const entry = this.config.db
-				.query(
-					`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
-					FROM change_log WHERE hlc = ?`,
-				)
-				.get(event.hlc) as ChangeLogEntry | null;
+			const entry = findChangeLogEntryByHlc<ChangeLogEntry>(this.config.db, event.hlc);
 
 			if (entry) {
 				this.changelogCoalescer.add(entry);
@@ -276,9 +281,7 @@ export class WsTransport {
 			// if some future caller emits this event for an already-delivered row,
 			// we don't want to re-route it and risk re-triggering the hub-mode
 			// re-entry path in handleRelaySend that originally produced the spin.
-			const entry = this.config.db
-				.query("SELECT * FROM relay_outbox WHERE id = ? AND delivered = 0")
-				.get(event.id) as RelayOutboxEntry | null;
+			const entry = findUndeliveredRelayOutboxById<RelayOutboxEntry>(this.config.db, event.id);
 
 			if (entry) {
 				this.sendRelayOutboxEntry(entry);
@@ -392,9 +395,7 @@ export class WsTransport {
 					// the rest of the system emits (post-trigger defaults, coerced
 					// types, etc.).
 					try {
-						const message = this.config.db
-							.prepare("SELECT * FROM messages WHERE id = ?")
-							.get(info.row_id) as Message | undefined;
+						const message = findMessageForSyncBroadcast<Message>(this.config.db, info.row_id);
 						if (!message) return;
 						this.config.eventBus.emit("message:broadcast", {
 							message,
@@ -409,9 +410,7 @@ export class WsTransport {
 				} else if (info.table_name === "connector_handles") {
 					// Notify the platform leader to activate newly synced handles
 					try {
-						const handle = this.config.db
-							.prepare("SELECT id, server_name, deleted FROM connector_handles WHERE id = ?")
-							.get(info.row_id) as { id: string; server_name: string; deleted: number } | undefined;
+						const handle = findConnectorHandleForSyncNotification(this.config.db, info.row_id);
 						if (handle && !handle.deleted) {
 							this.config.eventBus.emit("connector:handle_synced", {
 								handle_id: handle.id,
@@ -447,13 +446,19 @@ export class WsTransport {
 	/**
 	 * Handle incoming changelog_ack frame from a peer.
 	 *
-	 * Updates last_sent cursor to the HLC the peer confirmed.
+	 * Updates last_sent cursor to the HLC the peer confirmed, and advances the
+	 * authoritative last_confirmed watermark. last_confirmed is advanced ONLY
+	 * here — never on the optimistic send-side write in flushChangelogEntries —
+	 * so it is a true acknowledgement watermark and the sole anchor authority
+	 * for delegation range segments (R-UD7/R-UD11). See
+	 * docs/design/specs/2026-06-29-unified-delegation.md.
 	 */
 	handleChangelogAck(peerSiteId: string, payload: ChangelogAckPayload): void {
 		const { cursor } = payload;
 
 		updatePeerCursor(this.config.db, peerSiteId, {
 			last_sent: cursor,
+			last_confirmed: cursor,
 		});
 
 		this.config.logger?.debug("WsTransport changelog_ack received", {
@@ -633,6 +638,21 @@ export class WsTransport {
 			// The hub's own agent loop can write relay outbox entries (e.g., inference
 			// requests targeting a spoke). These must be routed just like entries
 			// received from a spoke via handleRelaySend.
+			//
+			// BUT only the hub's OWN entries (source_site_id === this hub) get routed
+			// here. Forwarded entries (source_site_id is some spoke) are written to the
+			// hub outbox purely for durability by handleRelaySend's response/async
+			// branch (#174) — they have ALREADY been delivered inline with the correct
+			// source. Re-routing one would re-enter handleRelaySend with sourceSiteId =
+			// this hub, rewriting the relay source to the hub itself; the target would
+			// then address every response frame (stream_chunk, stream_end, error) back
+			// to the hub instead of the original requester, the hub would file them in
+			// its own relay_inbox, and the requester would poll forever. The durable row
+			// stays delivered=0 until the target acks (or drainRelayOutbox re-sends on
+			// reconnect) — which is exactly the durability guarantee we want to keep.
+			if (entry.source_site_id !== this.config.siteId) {
+				return;
+			}
 			this.config.logger?.info("WsTransport: hub routing outbox entry", {
 				kind: entry.kind,
 				targetSiteId: entry.target_site_id,
@@ -772,43 +792,44 @@ export class WsTransport {
 				continue;
 			}
 
-			// Forward to another spoke
+			// Forward to another spoke.
+			// Sync-dispatch kinds (tool_call, platform_request, etc): the source is
+			// actively polling for a response. Forward immediately when connected, or
+			// fast-fail when offline — buffering would silently absorb the request and
+			// let the source time out (~15s).
+			// Response/async kinds (stream_chunk, stream_end, error): ALWAYS buffer to
+			// the hub's outbox first, then forward if connected. The buffered entry
+			// (delivered=0) is the durability guarantee — if the forward frame is lost
+			// on a flapping connection, the target's next reconnect drains and re-sends
+			// it. The spoke's idempotent relay_inbox insert makes duplicate delivery a
+			// no-op. Without buffering, a lost frame on a flapping link is unrecoverable:
+			// the hub already ACKed the source, and nothing was saved to re-send (#174).
+			const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
 			const targetPeer = this.peerConnections.get(entry.target_site_id);
-			if (targetPeer) {
-				// Spoke is connected: send immediately
-				const inboxEntry: RelayInboxEntry = {
-					id: entry.id,
-					source_site_id: sourceSiteId,
-					kind: entry.kind as RelayKind,
-					ref_id: entry.ref_id ?? entry.id,
-					idempotency_key: entry.idempotency_key,
-					stream_id: entry.stream_id,
-					payload: JSON.stringify(entry.payload),
-					expires_at: entry.expires_at,
-					received_at: new Date().toISOString(),
-					processed: 0,
-					trace_context: entry.trace_context ?? null,
-				};
 
-				this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
-			} else {
-				// Spoke is NOT connected. Behavior depends on dispatch mode:
-				// - sync-dispatch kinds (tool_call, platform_request, etc): the source is
-				//   actively polling for a response. Buffering would silently absorb the
-				//   request and let the source time out (~15s). Instead, fast-fail with a
-				//   structured retriable=true error so the caller sees a clear signal and
-				//   higher layers can decide whether to retry. See bound_issue:relay-hub-
-				//   silent-buffer-on-offline-target.
-				// - async/response kinds: buffer for delivery on reconnect (existing
-				//   fire-and-forget semantics).
-				const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
-				if (kindMeta?.dispatch === "sync") {
+			if (kindMeta?.dispatch === "sync") {
+				if (targetPeer) {
+					const inboxEntry: RelayInboxEntry = {
+						id: entry.id,
+						source_site_id: sourceSiteId,
+						kind: entry.kind as RelayKind,
+						ref_id: entry.ref_id ?? entry.id,
+						idempotency_key: entry.idempotency_key,
+						stream_id: entry.stream_id,
+						payload: JSON.stringify(entry.payload),
+						expires_at: entry.expires_at,
+						received_at: new Date().toISOString(),
+						processed: 0,
+						trace_context: entry.trace_context ?? null,
+					};
+					this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
+				} else {
+					// Hub fast-fail: the request never left the hub, so the target tool
+					// DEFINITELY did not execute. Lets the agent loop retry safely even
+					// for non-idempotent tools.
 					const errorPayload: ErrorPayload = {
 						error: `Target host ${entry.target_site_id} is not currently connected`,
 						retriable: true,
-						// Hub fast-fail: the request never left the hub, so the target
-						// tool DEFINITELY did not execute. Lets the agent loop retry
-						// safely even for non-idempotent tools.
 						definitely_not_executed: true,
 					};
 					const errorInboxEntry: RelayInboxEntry = {
@@ -833,21 +854,44 @@ export class WsTransport {
 						target: entry.target_site_id,
 						source: sourceSiteId,
 					});
-				} else {
-					// Async/response kinds: write to hub's own outbox for delivery on reconnect
-					writeOutbox(this.config.db, {
+				}
+			} else {
+				// Response/async kinds: buffer to hub's outbox for durability, then
+				// forward if connected. The entry stays delivered=0 until the target's
+				// next drainRelayInbox marks it (on reconnect) or the TTL pruner reaps
+				// it (on stable connections). This guarantees recovery for frames lost
+				// mid-flight on a flapping link (#174).
+				writeOutbox(this.config.db, {
+					id: entry.id,
+					source_site_id: sourceSiteId,
+					target_site_id: entry.target_site_id,
+					kind: entry.kind as RelayKind,
+					ref_id: entry.ref_id ?? entry.id,
+					idempotency_key: entry.idempotency_key,
+					stream_id: entry.stream_id,
+					payload: JSON.stringify(entry.payload),
+					created_at: new Date().toISOString(),
+					expires_at: entry.expires_at,
+					trace_context: entry.trace_context ?? null,
+				});
+
+				if (targetPeer) {
+					// Target connected: forward optimistically. The buffered entry
+					// (delivered=0) acts as a fallback if this frame is lost.
+					const inboxEntry: RelayInboxEntry = {
 						id: entry.id,
 						source_site_id: sourceSiteId,
-						target_site_id: entry.target_site_id,
 						kind: entry.kind as RelayKind,
 						ref_id: entry.ref_id ?? entry.id,
 						idempotency_key: entry.idempotency_key,
 						stream_id: entry.stream_id,
 						payload: JSON.stringify(entry.payload),
-						created_at: new Date().toISOString(),
 						expires_at: entry.expires_at,
+						received_at: new Date().toISOString(),
+						processed: 0,
 						trace_context: entry.trace_context ?? null,
-					});
+					};
+					this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
 				}
 			}
 
@@ -910,7 +954,11 @@ export class WsTransport {
 			return;
 		}
 
-		markDelivered(this.config.db, payload.ids);
+		if (this.config.isHub) {
+			markDeliveredForTarget(this.config.db, payload.ids, sourceSiteId);
+		} else {
+			markDelivered(this.config.db, payload.ids);
+		}
 
 		this.config.logger?.debug("WsTransport relay_ack received", {
 			sourceSiteId,
@@ -1101,10 +1149,18 @@ export class WsTransport {
 		// from the right point and the pruner knows the spoke has everything
 		// up to this HLC. Without this, last_sent stays at HLC_ZERO and the
 		// drain relies on un-pruned changelog entries that may already be gone.
+		// SNAPSHOT_ACK is a genuine acknowledgement that the spoke applied every
+		// snapshot row up to snapshotHlc, so it advances last_confirmed (the
+		// peer-acknowledged watermark) too — distinct from the optimistic
+		// send-side write in flushChangelogEntries, which never advances it
+		// (R-UD7). Without this, last_confirmed would stay HLC_ZERO after a
+		// fresh snapshot, forcing all delegated history inline until the first
+		// post-snapshot changelog ack.
 		if (snapshotHlc) {
 			updatePeerCursor(this.config.db, peerSiteId, {
 				last_received: snapshotHlc,
 				last_sent: snapshotHlc,
+				last_confirmed: snapshotHlc,
 			});
 		}
 
@@ -1234,11 +1290,14 @@ export class WsTransport {
 
 		if (!state.stmt) {
 			try {
+				// Raw read justification: snapshot seeding reads a runtime-selected validated table.
+				// Raw read justification: snapshot seeding reads a runtime-selected synchronized table.
 				state.stmt = this.config.db.prepare(
 					`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE deleted = 0 AND rowid > ? ORDER BY rowid LIMIT ?`,
 				);
 			} catch {
 				try {
+					// Raw read justification: snapshot seeding falls back for tables without deleted.
 					state.stmt = this.config.db.prepare(
 						`SELECT rowid AS _bound_rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`,
 					);
@@ -1576,7 +1635,12 @@ export class WsTransport {
 
 	handleConsistencyRequest(
 		peerSiteId: string,
-		payload: { tables: string[]; request_id?: string },
+		payload: {
+			tables: string[];
+			request_id?: string;
+			resume_table_index?: number;
+			resume_offset?: number;
+		},
 	): void {
 		if (!this.config.isHub) return;
 
@@ -1593,7 +1657,6 @@ export class WsTransport {
 			"files",
 			"advisories",
 			"skills",
-			"overlay_index",
 		];
 
 		const requestedNames = payload.tables.length > 0 ? payload.tables : allTables.map(String);
@@ -1611,7 +1674,16 @@ export class WsTransport {
 			tableCount: tables.length,
 		});
 
-		this.streamConsistencyPages(peerSiteId, tables, 0, 0, payload.request_id);
+		const resumeTable = payload.resume_table_index ?? 0;
+		const resumeOffset = payload.resume_offset ?? 0;
+		if (resumeTable > 0 || resumeOffset > 0) {
+			this.config.logger?.debug("[consistency] Resuming from cursor", {
+				peerSiteId,
+				tableIndex: resumeTable,
+				offset: resumeOffset,
+			});
+		}
+		this.streamConsistencyPages(peerSiteId, tables, resumeTable, resumeOffset, payload.request_id);
 	}
 
 	private pendingConsistencyStream = new Map<
@@ -1640,17 +1712,26 @@ export class WsTransport {
 		const pkCol = getPkColumn(table);
 		const pageSize = WsTransport.CONSISTENCY_PAGE_SIZE;
 
-		const countRow = this.config.db.query(`SELECT COUNT(*) AS c FROM ${table}`).get() as {
+		// Exclude unsyncable rows (invariant #19: role='system' messages) from
+		// both the count and the page. This MUST match the comparing side's
+		// `getBackfillable*` filter — advertising rows the peer's diff view
+		// excludes makes them perpetually `remoteOnly`, so every backfill cycle
+		// re-pulls the same rows without converging. Route through the shared
+		// `syncableWhereClause` so the two sides cannot drift apart again.
+		const whereClause = syncableWhereClause(table);
+
+		const countRow = this.config.db
+			.query(`SELECT COUNT(*) AS c FROM ${table}${whereClause}`)
+			.get() as {
 			c: number;
 		};
 
-		// A1 state-aware backfill: select full rows so we can compute per-row
+		// State-aware backfill: select full rows so we can compute per-row
 		// content hashes for divergence detection. PK-only diff is insufficient
 		// because tier flips, soft-delete tombstones, and value mutations on
-		// rows present on both sides are silently skipped (see
-		// bound_issue:hub-backfill-pk-set-skips-state-updates).
+		// rows present on both sides are silently skipped.
 		const rows = this.config.db
-			.query(`SELECT * FROM ${table} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
+			.query(`SELECT * FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
 			.all(pageSize + 1, offset) as Array<Record<string, unknown>>;
 
 		const hasMore = rows.length > pageSize;
@@ -1678,6 +1759,8 @@ export class WsTransport {
 				table_count: tables.length,
 				all_done: allDone,
 				request_id: requestId,
+				next_table_index: allDone ? undefined : nextTableIndex,
+				next_offset: allDone ? undefined : nextOffset,
 			},
 			peer.symmetricKey,
 		);
@@ -1734,6 +1817,18 @@ export class WsTransport {
 
 	// ── Spoke-side: request + collect ────────────────────────────────────
 
+	/**
+	 * Resume state for the consistency exchange. When the connection drops
+	 * mid-stream and the 5-minute timeout fires, we save the accumulated data
+	 * and the last-seen position so the next request can resume from there
+	 * instead of restarting from table 0, offset 0. Without this, an unstable
+	 * connection makes the all-or-nothing exchange impossible to complete.
+	 */
+	private consistencyResumeState: {
+		cursor: { tableIndex: number; offset: number };
+		data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
+	} | null = null;
+
 	private pendingConsistencyRequests = new Map<
 		string,
 		{
@@ -1743,6 +1838,7 @@ export class WsTransport {
 			reject: (err: Error) => void;
 			data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
 			timer: Timer;
+			cursor: { tableIndex: number; offset: number };
 		}
 	>();
 
@@ -1754,28 +1850,55 @@ export class WsTransport {
 			return Promise.reject(new Error("Not connected to hub"));
 		}
 
+		const resume = this.consistencyResumeState;
+		const initialData = resume?.data ?? new Map();
+		const resumeTableIndex = resume?.cursor.tableIndex ?? 0;
+		const resumeOffset = resume?.cursor.offset ?? 0;
+
 		const requestId = `cr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+		const framePayload: {
+			tables: string[];
+			request_id: string;
+			resume_table_index?: number;
+			resume_offset?: number;
+		} = { tables, request_id: requestId };
+		if (resumeTableIndex > 0 || resumeOffset > 0) {
+			framePayload.resume_table_index = resumeTableIndex;
+			framePayload.resume_offset = resumeOffset;
+		}
 		const frame = encodeFrame(
 			WsMessageType.CONSISTENCY_REQUEST,
-			{ tables, request_id: requestId },
+			framePayload,
 			hubPeer.symmetricKey,
 		);
 		if (!hubPeer.sendFrame(frame)) {
 			return Promise.reject(new Error("Failed to send consistency request"));
 		}
 
-		this.config.logger?.debug("[consistency] Request sent", { requestId });
+		this.config.logger?.debug("[consistency] Request sent", {
+			requestId,
+			resumeTableIndex,
+			resumeOffset,
+		});
 
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
+				const req = this.pendingConsistencyRequests.get(requestId);
+				if (req) {
+					this.consistencyResumeState = {
+						cursor: { ...req.cursor },
+						data: req.data,
+					};
+				}
 				this.pendingConsistencyRequests.delete(requestId);
 				reject(new Error("Consistency check timed out (5m)"));
 			}, 300_000);
 			this.pendingConsistencyRequests.set(requestId, {
 				resolve,
 				reject,
-				data: new Map(),
+				data: initialData,
 				timer,
+				cursor: { tableIndex: resumeTableIndex, offset: resumeOffset },
 			});
 		});
 	}
@@ -1790,11 +1913,19 @@ export class WsTransport {
 		table_count?: number;
 		all_done?: boolean;
 		request_id?: string;
+		next_table_index?: number;
+		next_offset?: number;
 	}): void {
 		const rid = payload.request_id;
 		if (!rid) return;
 		const req = this.pendingConsistencyRequests.get(rid);
 		if (!req) return;
+
+		// Track the cursor so that if this exchange times out, we can resume
+		// from where the hub left off rather than restarting from scratch.
+		if (typeof payload.next_table_index === "number" && typeof payload.next_offset === "number") {
+			req.cursor = { tableIndex: payload.next_table_index, offset: payload.next_offset };
+		}
 
 		const existing = req.data.get(payload.table);
 		if (existing) {
@@ -1833,6 +1964,7 @@ export class WsTransport {
 		});
 		clearTimeout(req.timer);
 		this.pendingConsistencyRequests.delete(requestId);
+		this.consistencyResumeState = null;
 		req.resolve(req.data);
 	}
 
@@ -1859,7 +1991,6 @@ export class WsTransport {
 		"files",
 		"advisories",
 		"skills",
-		"overlay_index",
 	];
 
 	clearSyncedTables(): void {
@@ -2054,6 +2185,26 @@ export class WsTransport {
 
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) return;
+
+		for (const { table } of payload.tables) {
+			if (!validateTableName(table)) {
+				this.config.logger?.warn("[row-pull] Rejecting request for invalid table", {
+					peerSiteId,
+					requestId: payload.request_id,
+					table,
+				});
+				const frame = encodeFrame(
+					WsMessageType.ERROR,
+					{
+						code: "invalid_table",
+						message: "Row pull requested an unknown table",
+					},
+					peer.symmetricKey,
+				);
+				peer.sendFrame(frame);
+				return;
+			}
+		}
 
 		const totalPks = payload.tables.reduce((sum, t) => sum + t.pks.length, 0);
 		this.config.logger?.info("[row-pull] Request received", {

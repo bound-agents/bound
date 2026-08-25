@@ -1,8 +1,5 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { TypedEventEmitter } from "@bound/shared";
@@ -10,8 +7,7 @@ import type { ToolContext } from "../../types";
 import { createMemoryTool } from "../memory";
 
 function createTestDb(): Database {
-	const dbPath = join(tmpdir(), `test-memory-${randomBytes(4).toString("hex")}.db`);
-	const db = new Database(dbPath);
+	const db = new Database(":memory:");
 	applySchema(db);
 	return db;
 }
@@ -181,6 +177,17 @@ describe("memory tool", () => {
 			});
 
 			expect(result).toContain("No memories matched");
+		});
+
+		it("should stamp each result with its modification date", async () => {
+			const tool = createMemoryTool(ctx);
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "searchable",
+			});
+
+			expect(result).toContain("search_test");
+			expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
 		});
 
 		it("should error when query is missing", async () => {
@@ -438,6 +445,18 @@ describe("memory tool", () => {
 			expect(result).toContain("start");
 		});
 
+		it("should stamp each traversed entry with its modification date", async () => {
+			const tool = createMemoryTool(ctx);
+			const result = await getExecute(tool)({
+				action: "traverse",
+				key: "start",
+				depth: 2,
+			});
+
+			expect(result).toContain("level1");
+			expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
+		});
+
 		it("should error when key is missing", async () => {
 			const tool = createMemoryTool(ctx);
 			const result = await getExecute(tool)({
@@ -489,6 +508,17 @@ describe("memory tool", () => {
 
 			expect(result).toContain("Neighbors of");
 			expect(result).toContain("center");
+		});
+
+		it("should stamp each neighbor with its modification date", async () => {
+			const tool = createMemoryTool(ctx);
+			const result = await getExecute(tool)({
+				action: "neighbors",
+				key: "center",
+			});
+
+			expect(result).toContain("neighbor1");
+			expect(result).toMatch(/\d{4}-\d{2}-\d{2}/);
 		});
 
 		it("should error when key is missing", async () => {
@@ -904,6 +934,39 @@ describe("memory tool", () => {
 			expect(result).toContain("one_keyword");
 		});
 
+		it("should find an entry searched by its exact key (colons + hyphens)", async () => {
+			const tool = createMemoryTool(ctx);
+			// Keys in the real namespace are punctuation-dense:
+			// `_outcome:connector-event-fanout-fix:2026-07-09`. The colon is
+			// FTS5 column-filter syntax and the hyphen is the NOT operator, so
+			// an unquoted single-token MATCH either errors (no such column) or
+			// silently zeroes out — both swallowed into "No memories matched".
+			// A search by exact key must find the entry.
+			await getExecute(tool)({
+				action: "store",
+				key: "_outcome:connector-event-fanout-fix:2026-07-09",
+				value: "single delivery vehicle plus params-match routing fix",
+			});
+
+			const result = await getExecute(tool)({
+				action: "search",
+				key: "_outcome:connector-event-fanout-fix:2026-07-09",
+			});
+
+			expect(result).toContain("Found");
+			expect(result).toContain("_outcome:connector-event-fanout-fix:2026-07-09");
+		});
+
+		it("should not crash on a query with a leading hyphen or bare colon", async () => {
+			const tool = createMemoryTool(ctx);
+			// FTS5 operator characters appearing standalone must not throw.
+			for (const q of ["-python", "python:", ":python", "python -", "a:b:c"]) {
+				const result = await getExecute(tool)({ action: "search", key: q });
+				expect(typeof result).toBe("string");
+				expect(result).not.toContain("Error");
+			}
+		});
+
 		it("should filter results excluding _internal prefix", async () => {
 			const tool = createMemoryTool(ctx);
 
@@ -1193,5 +1256,29 @@ describe("memory tool — pinned caps (issue #101)", () => {
 		}
 		const eleventh = await store(ctx, "dp10", "x", "pinned");
 		expect(eleventh).toContain("count cap reached (10/10)");
+	});
+
+	it("size-caps system keys at default tier (not just pinned)", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 20 });
+		const tooBig = await store(ctx, "_heartbeat_instructions", "a".repeat(21));
+		expect(tooBig).toContain("over the per-entry cap of 20");
+		expect(tierOf("_heartbeat_instructions")).toBeNull();
+	});
+
+	it("allows system key under the size cap at default tier", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 20 });
+		const ok = await store(ctx, "_heartbeat_instructions", "short enough");
+		expect(ok).toContain("Memory saved");
+		expect(tierOf("_heartbeat_instructions")).toBe("default");
+	});
+
+	it("allows shrinking a system key under a tighter cap", async () => {
+		const ctx = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 100 });
+		// Store a large entry first (under cap)
+		await store(ctx, "_heartbeat_instructions", "a".repeat(90));
+		// Now shrink it under a tighter cap — should succeed
+		const ctx2 = makeCtx({ pinnedCountCap: 10, pinnedSizeCap: 20 });
+		const result = await store(ctx2, "_heartbeat_instructions", "short");
+		expect(result).toContain("Memory saved");
 	});
 });

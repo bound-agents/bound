@@ -59,7 +59,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { insertRow, updateRow } from "@bound/core";
+import { getChangeLogHorizon, insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 
 const VALIDATION_INTERVAL_MS = 60 * 60 * 1000;
@@ -85,7 +85,6 @@ const AUDITED_TABLES = [
 	"tasks",
 	"files",
 	"hosts",
-	"overlay_index",
 	"cluster_config",
 	"advisories",
 	"skills",
@@ -131,10 +130,7 @@ export interface OutboxAuditReport {
  * when this is the very first run on a fresh node.
  */
 function getEvidenceHorizon(db: Database): string | null {
-	const row = db.prepare("SELECT MIN(timestamp) AS horizon FROM change_log").get() as {
-		horizon: string | null;
-	} | null;
-	return row?.horizon ?? null;
+	return getChangeLogHorizon(db);
 }
 
 export function runOutboxAuditValidation(
@@ -218,6 +214,7 @@ export function runOutboxAuditValidation(
 	return { rowsExamined, violationsFound, tablesScanned, evidenceHorizon };
 }
 
+/** Gate for the daily outbox-audit sweep: true if it has never run, or its last run (`_validation:outbox-audit-last-run`) predates `VALIDATION_INTERVAL_MS`. */
 export function shouldRunOutboxAuditValidation(db: Database, nowMs: number): boolean {
 	const row = db
 		.prepare("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0")

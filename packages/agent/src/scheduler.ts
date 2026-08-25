@@ -5,6 +5,7 @@ import {
 	createChangeLogEntry,
 	insertRow,
 	markProcessed,
+	resolveEffectiveModelHint,
 	updateRow,
 	updateRowIf,
 	withTx,
@@ -14,7 +15,8 @@ import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } fro
 import type { Task } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { createAdvisory } from "./advisories";
-import type { AgentLoop } from "./agent-loop";
+import type { MainAgentLoop } from "./agent-loop";
+import { buildConsolidationContext } from "./consolidation-context";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import {
@@ -107,8 +109,9 @@ export const STUCK_THRESHOLD = 2 * EVICTION_TIMEOUT;
  * liveness is NOT task-lease liveness: `hosts.modified_at` is bumped every
  * HOST_HEARTBEAT_INTERVAL independent of task servicing, so a host that restarted and
  * re-registered — but whose interrupted task never resumed — looks "alive" forever and
- * wedges the task indefinitely (observed: webhook task d2ecf42d, ~17h stuck after a hub
- * restart). Set to 2× EVICTION_TIMEOUT so the orphan arm never races the normal gate:
+ * wedges the task indefinitely. (Observed in production: a webhook task sat stuck for
+ * ~17h after its host restarted mid-run.) Set to 2× EVICTION_TIMEOUT so the orphan arm
+ * never races the normal gate:
  * the host-liveness path owns the first eviction window, and the orphan arm is the
  * backstop for the host-alive-but-task-orphaned case the gate cannot see.
  */
@@ -212,9 +215,9 @@ export function isConnectivityFailure(error: string): boolean {
  * clobber a peer's active task; rescheduling a stuck orphan is safe and intended.
  *
  * Scope note: the lease CAS defeats same-generation eviction/re-claim races. It
- * does NOT by itself defeat a stale peer on pre-fix code that re-pends via a
- * fresher `modified_at` — that is the separate soft-delete-tombstone-precedence
- * work tracked in bound_issue:scheduler:cron-cancel-reverted-by-peer-20260529.
+ * does NOT by itself defeat a stale peer that re-pends the row via a fresher
+ * `modified_at` — that requires soft-delete tombstones to take LWW precedence
+ * over a plain field update, which is separate, not-yet-done work.
  */
 export function rescheduleCronTask(
 	db: AppContext["db"],
@@ -275,9 +278,9 @@ export function rescheduleCronTask(
  *
  * Scope note: parking stops THIS node from re-arming a dead-model task on every
  * tick. It propagates via the change log, but does not by itself defeat a stale
- * peer that re-pends the row with a fresher `modified_at` — that is the separate
- * soft-delete-tombstone-precedence work tracked in
- * bound_issue:scheduler:cron-cancel-reverted-by-peer-20260529.
+ * peer that re-pends the row with a fresher `modified_at` — that requires
+ * soft-delete tombstones to take LWW precedence over a plain field update,
+ * which is separate, not-yet-done work.
  */
 function parkTask(
 	db: AppContext["db"],
@@ -384,13 +387,14 @@ function retryDeferredTask(
  * Success path: leaves `next_run_at = NULL`. Event tasks must only be woken by
  * real `connector:event` emissions (the `onEvent` path in this scheduler), not
  * by `phase1Schedule`. Setting a periodic fallback caused phase1 to re-claim
- * completed event tasks every N minutes with no new event payload, which
- * produced the spin observed in advisory 0b9441e5-c47a (2026-05-16: thread
- * 6a9d56aa, 1 real interaction → 29 wake-ups over 70min). The original
- * comment cited "AC4.6 periodic fallback" — that AC applies to the connector
- * **dispatcher** ("Periodic cron fallback wakes dispatcher even without
- * list_changed", per docs/test-plans/2026-05-08-mcp-platform-connectors-
- * test-requirements.md), not to per-event handler tasks. The two were conflated.
+ * completed event tasks every N minutes with no new event payload — a spin
+ * observed in production as one real interaction producing 29 wake-ups over
+ * 70 minutes with no new content on any of them. The periodic-fallback idea
+ * came from a spec note about the connector **dispatcher** ("periodic cron
+ * fallback wakes the dispatcher even without list_changed"); that note
+ * applies to the dispatcher, not to per-event handler tasks like this one —
+ * the two got conflated. (The dispatcher itself was later removed; see the
+ * MCP Platform Connectors RFC.)
  *
  * Failure path: 60s retry IF AND ONLY IF the relay_inbox still has unprocessed
  * envelopes for this task's thread. Capped at MAX_FAILURE_BACKOFFS to avoid
@@ -403,9 +407,9 @@ function retryDeferredTask(
  * resetEventTask the common-case inbox is already drained. An unconditional
  * retry would re-fire the agent loop on an empty buildEventWakeupContent
  * payload — the "Execute scheduled task." fallback — giving the agent context-
- * free phantom wakeups. Observed 2026-05-18 in thread d0372be6 (task
- * 4b1d85f9, webhook:bound): a single soft-fail produced a 5-wakeup cluster at
- * 21:33→21:41 with no new event content on any retry. The narrow case the
+ * free phantom wakeups. Observed in production: a single soft-fail produced a
+ * 5-wakeup cluster within minutes with no new event content on any retry. The
+ * narrow case the
  * retry still serves: persistence failed BEFORE markProcessed (DB error
  * during message inserts), so the inbox is genuinely unprocessed and the
  * retry replays the actual event payload.
@@ -445,29 +449,40 @@ function resetEventTask(
 
 	const isCompletion = context === "completion" || context === "template completion";
 	let nextRunAt: string | null = null;
-	if (!isCompletion && task.thread_id) {
-		// Only retry if the inbox has unprocessed webhook envelopes for this
-		// thread. markProcessed (scheduler.ts:895) drains the inbox BEFORE the
-		// agent loop runs, so the common-case retry would replay an empty
-		// wakeup (the "Execute scheduled task." fallback in
-		// buildEventWakeupContent) and produce phantom wakeups. The retry
-		// remains useful only when persistence failed BEFORE markProcessed,
-		// leaving the inbox genuinely pending and the retry replaying the
-		// actual event payload.
+	if (task.thread_id) {
+		// Re-arm if the inbox has unprocessed foldable envelopes for this
+		// thread. markProcessed (below, post-wakeup-insert) drains the inbox
+		// BEFORE the agent loop runs, so an unprocessed row here can only be
+		// (a) an event that arrived MID-RUN — onEvent's CAS claim fails while
+		// the task is claimed/running, so without this re-arm the event
+		// strands until the next event happens to fire — or (b) a wakeup that
+		// failed before markProcessed, where the retry replays the actual
+		// payload.
 		//
-		// kind is filtered to match buildEventWakeupContent's reader — only
-		// webhook_intake rows are foldable into the wakeup, so only those
-		// rows can produce a non-empty retry. A stray platform-MCP `intake`
-		// row sharing this thread_id would NOT survive a retry into the
-		// helper, so retrying on its presence would be a phantom wakeup.
+		// Kinds match buildEventWakeupContent's readers exactly: webhook_intake,
+		// connector_intake, AND rss_intake all fold into the wakeup. Since the
+		// single-delivery-vehicle change, connector_intake rows are the ONLY
+		// leader-local record of a platform event, so missing them here loses
+		// events outright (observed: Discord messages during an active loop
+		// produced no response). The completion path runs this check too —
+		// completing the CURRENT wakeup says nothing about rows that arrived
+		// after its fold drained the inbox.
+		//
+		// A stray platform-MCP `intake` row sharing this thread_id would NOT
+		// survive a retry into the helper, so it is deliberately not counted
+		// (retrying on its presence would be a phantom wakeup).
 		const unprocessed = db
 			.query(
-				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
+				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN ('webhook_intake', 'connector_intake', 'rss_intake')",
 			)
-			.get(task.thread_id, "webhook_intake") as { c: number } | null;
+			.get(task.thread_id) as { c: number } | null;
 		if (unprocessed && unprocessed.c > 0) {
 			const failures = current.consecutive_failures ?? 0;
-			if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
+			if (isCompletion) {
+				// Success path with pending rows: immediate re-arm — this is a
+				// live event waiting, not a retry backoff.
+				nextRunAt = new Date().toISOString();
+			} else if (failures < MAX_EVENT_TASK_FAILURE_BACKOFFS) {
 				nextRunAt = new Date(Date.now() + 60_000).toISOString();
 			}
 		}
@@ -515,7 +530,10 @@ export function computeHeartbeatNextRunAt(task: Task, lastUserInteractionAt: Dat
 		return new Date().toISOString();
 	}
 
-	const multiplier = computeQuiescenceMultiplier(lastUserInteractionAt);
+	// Consolidation runs on a fixed 4h schedule — idle time is ideal for
+	// memory maintenance, so quiescence stretching provides no benefit.
+	const multiplier =
+		task.type === "consolidation" ? 1 : computeQuiescenceMultiplier(lastUserInteractionAt);
 
 	const now = Date.now();
 	const effectiveInterval = intervalMs * multiplier;
@@ -539,7 +557,7 @@ export function rescheduleHeartbeat(
 	siteId: string,
 	lastUserInteractionAt: Date,
 ): void {
-	if (task.type !== "heartbeat") return;
+	if (task.type !== "heartbeat" && task.type !== "consolidation") return;
 
 	const specResult = parseJsonUntyped(task.trigger_spec, "heartbeat trigger_spec");
 	if (!specResult.ok) {
@@ -622,9 +640,28 @@ export function healStuckTasks(
 			// rescheduleHeartbeat; if a crash/eviction lands in that window (or
 			// rescheduleHeartbeat early-returns), the heartbeat is left stuck in
 			// 'completed' with nothing to re-arm it. Heartbeats are perpetual, so
-			// 'completed' is a recoverable wedge for them — but NOT for cron/event,
-			// whose completion is terminal. The claimed_at < threshold guard keeps a
-			// healthy heartbeat (claim always fresh, completed for only microseconds)
+			// 'completed' is a recoverable wedge for them. Cron's own 'completed' wedge
+			// is truly terminal (cron re-arms via next_run_at, not by needing a status
+			// flip) so it is deliberately excluded here.
+			//
+			// Event tasks also recover from 'completed', for a different reason than
+			// heartbeats: resetEventTask's own status='pending' write (immediately
+			// following completion) can be clobbered by a concurrent sync changeset
+			// for the same row from a peer host that raced the same delivery — the
+			// peer's LWW-newer snapshot of the row (itself mid- or post-completion,
+			// carrying its own 'completed' status and a stale next_run_at) wins the
+			// merge and overwrites the local pending-reset after the fact. Unlike a
+			// crash mid-window, this is not self-healing — nothing re-runs
+			// resetEventTask once the row settles in 'completed', and the pending-task
+			// sweep never selects it, so the webhook/connector handler goes dark for
+			// every subsequent delivery. Observed in production: task f862e622
+			// (webhook:bound) stuck in 'completed' with next_run_at pinned to a stale
+			// pre-run timestamp from a peer host's earlier firing. The claimed_at <
+			// threshold guard (same as heartbeats) keeps a healthy in-flight event task
+			// from ever matching. Cron intentionally stays excluded — its 'completed'
+			// state is written by the SAME rescheduleCronTask call that sets
+			// next_run_at in one step, so cron never wedges in 'completed' the way
+			// event's two-step (complete, then separately resetEventTask) can.
 			// from ever matching.
 			`SELECT * FROM tasks
 			WHERE deleted = 0
@@ -632,7 +669,8 @@ export function healStuckTasks(
 			  AND claimed_at < ?
 			  AND (
 			    (type = 'heartbeat' AND status IN ('failed', 'cancelled', 'completed'))
-			    OR (type IN ('cron', 'event') AND status = 'failed')
+			    OR (type = 'event' AND status IN ('failed', 'completed'))
+			    OR (type = 'cron' AND status = 'failed')
 			    OR (type = 'deferred' AND status = 'failed' AND consecutive_failures < ?)
 			  )`,
 		)
@@ -656,6 +694,7 @@ export function healStuckTasks(
 					recovered++;
 					break;
 				case "heartbeat":
+				case "consolidation":
 					rescheduleHeartbeat(db, task, logger, "stuck-row healer", siteId, lastUserInteractionAt);
 					// NOTE: rescheduleHeartbeat updates next_run_at + status + (optionally) error via outbox.
 					// It does NOT clear claim metadata; that is left to the next phase1 claim CAS, which
@@ -763,6 +802,8 @@ interface SchedulerConfig {
 	modelValidator?: (
 		modelId: string,
 	) => { ok: true } | { ok: false; error: string; permanent?: boolean };
+	/** Live node default used after task and thread model hints. */
+	modelDefaultResolver?: () => string;
 	/** Optional tier resolver for cost-equivalent fallback. Returns the tier (1-5)
 	 *  for a model ID, or null if the model is not in the local router. */
 	modelTierResolver?: (modelId: string) => number | null;
@@ -795,7 +836,7 @@ export class Scheduler {
 
 	constructor(
 		private ctx: AppContext,
-		private agentLoopFactory: (config: AgentLoopConfig) => AgentLoop,
+		private agentLoopFactory: (config: AgentLoopConfig) => MainAgentLoop,
 		private config: SchedulerConfig = {},
 		private sandbox?: {
 			exec?: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
@@ -912,9 +953,10 @@ export class Scheduler {
 		if (!this.running) return;
 
 		try {
-			// Check for emergency stop
+			// Check for emergency stop. deleted = 0 so a cleared (soft-deleted) flag
+			// does not keep halting the scheduler.
 			const emergencyStop = this.ctx.db
-				.query("SELECT value FROM cluster_config WHERE key = 'emergency_stop'")
+				.query("SELECT value FROM cluster_config WHERE key = 'emergency_stop' AND deleted = 0")
 				.get() as { value: string } | undefined;
 
 			if (emergencyStop) {
@@ -1011,7 +1053,8 @@ export class Scheduler {
 								break;
 							}
 
-							case "heartbeat": {
+							case "heartbeat":
+							case "consolidation": {
 								nextRunAtIso = computeHeartbeatNextRunAt(task, this.lastUserInteractionAt);
 								break;
 							}
@@ -1200,11 +1243,19 @@ export class Scheduler {
 			return false;
 		}
 
-		// Query today's spend from turns table
-		const today = new Date().toISOString().split("T")[0];
+		// Query today's spend from turns table. Use a sargable half-open range on
+		// created_at rather than wrapping the column in date() — the latter is
+		// non-sargable and forces a full SCAN of the (ever-growing) turns table on
+		// every budgeted tick. created_at is an ISO-8601 UTC string that sorts
+		// lexicographically, so the bounds are computed in JS as ISO strings and
+		// compare correctly against the stored `2026-07-18T...Z` format (never
+		// SQLite's space-separated datetime()). Covered by idx_turns_created_at.
+		const now = Date.now();
+		const dayStart = `${new Date(now).toISOString().split("T")[0]}T00:00:00.000Z`;
+		const dayEnd = `${new Date(now + 86_400_000).toISOString().split("T")[0]}T00:00:00.000Z`;
 		const result = this.ctx.db
-			.query("SELECT SUM(cost_usd) as total FROM turns WHERE date(created_at) = ?")
-			.get(today) as { total: number | null } | null;
+			.query("SELECT SUM(cost_usd) as total FROM turns WHERE created_at >= ? AND created_at < ?")
+			.get(dayStart, dayEnd) as { total: number | null } | null;
 
 		const todaySpend = result?.total ?? 0;
 
@@ -1382,16 +1433,17 @@ export class Scheduler {
 						siteId: this.ctx.siteId,
 						logger: this.ctx.logger,
 					});
+				} else if (task.type === "consolidation") {
+					taskContent = buildConsolidationContext(this.ctx.db);
 				} else if (task.type === "event") {
 					// Event tasks (e.g. webhook-triggered) carry their dynamic
 					// payload in relay_inbox keyed by thread_id, written at
 					// intake time by webhook-handler.ts. Without this branch
-					// the agent would just see "Execute scheduled task." with
-					// no clue what fired the trigger — see the 2026-05-18
-					// d0372be6 incident where a GitHub-issue webhook woke a
-					// task and the agent had to do MCP archaeology to figure
-					// out what happened. Helper returns processedIds for
-					// post-insert draining (below).
+					// the agent would just see "Execute scheduled task." with no
+					// clue what fired the trigger, and would have to reconstruct
+					// the event by hand from external state (GitHub, etc.).
+					// Helper returns processedIds for post-insert draining
+					// (below).
 					const eventResult = buildEventWakeupContent(this.ctx.db, task);
 					taskContent = eventResult.content;
 					inboxIdsToMarkProcessed = eventResult.processedIds;
@@ -1455,8 +1507,8 @@ export class Scheduler {
 				// preceding tool_call as machinery, not as something it itself chose
 				// to do. Without this banner, models pattern-match off the injected
 				// retrieve_task call and emit their own redundant retrieve_task({})
-				// calls mid-session — see _feedback:correction:retrieve_task_spin_*
-				// and the 2026-05-16 incident in advisory 0b9441e5-c47a.
+				// calls mid-session — observed to cause spin loops where the model
+				// re-issues the acknowledgment call instead of acting on the payload.
 				const systemInjectedBanner =
 					"[System-injected on task wakeup — the preceding `retrieve_task` " +
 					"tool_call was forged by the scheduler, not issued by you. The " +
@@ -1621,7 +1673,11 @@ export class Scheduler {
 							// neither the pending sweep nor healStuckTasks revives it. Heartbeats
 							// are NEVER parked (they must always re-arm), so the type guard routes
 							// them to rescheduleHeartbeat below regardless of permanence.
-							if (validation.permanent && task.type !== "heartbeat") {
+							if (
+								validation.permanent &&
+								task.type !== "heartbeat" &&
+								task.type !== "consolidation"
+							) {
 								parkTask(this.ctx.db, task, this.ctx.logger, errorMsg, this.ctx.siteId, leaseId);
 							} else {
 								// Retryable (transient model unavailability) or heartbeat: reschedule
@@ -1663,11 +1719,15 @@ export class Scheduler {
 					}
 				}
 
-				const modelId = task.model_hint || undefined;
-				const modelTier =
-					modelId && this.config.modelTierResolver
-						? (this.config.modelTierResolver(modelId) ?? undefined)
-						: undefined;
+				const modelId = resolveEffectiveModelHint(
+					this.ctx.db,
+					threadId,
+					this.config.modelDefaultResolver?.() ?? "default",
+					task.id,
+				);
+				const modelTier = this.config.modelTierResolver
+					? (this.config.modelTierResolver(modelId) ?? undefined)
+					: undefined;
 
 				const loopConfig: AgentLoopConfig = {
 					threadId,
@@ -2088,7 +2148,37 @@ export class Scheduler {
 				.all(eventType) as Task[];
 
 			for (const task of eventTasks) {
-				if (shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+				if (!shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+					continue;
+				}
+				// Capability-gated claim (chain BEGINNING fix): never claim an
+				// inference-bearing task this host cannot resolve a model for. The
+				// injected validator closes over the LOCAL ModelRouter, so this is a
+				// per-host self-check — a backend-less hub whose empty model_hint
+				// resolves to an unservable default declines the claim and leaves the
+				// task pending for a capable host (or the durable-intake drain) rather
+				// than claiming it and burning the failure budget. Validate the
+				// EFFECTIVE model: an empty/"default" hint resolves to the host's
+				// default inside the validator, so it is checked here too (unlike the
+				// run-time validator at phase3Run, which short-circuits on a falsy
+				// hint and so never caught this case). Event firings have no HRW
+				// rendezvous, so a self-decline cannot deadlock a sole capable host.
+				if (this.config.modelValidator) {
+					const validation = this.config.modelValidator(task.model_hint ?? "");
+					if (!validation.ok) {
+						this.ctx.logger.info(
+							"[scheduler] Declining event-task claim: model unresolvable on this host",
+							{
+								taskId: task.id,
+								triggerSpec: task.trigger_spec,
+								modelHint: task.model_hint ?? "",
+								error: validation.error,
+							},
+						);
+						continue;
+					}
+				}
+				{
 					const claimedAt = new Date().toISOString();
 					// CAS: only claim if still pending (prevents duplicate event execution)
 					const txFn = this.ctx.db.transaction(() => {

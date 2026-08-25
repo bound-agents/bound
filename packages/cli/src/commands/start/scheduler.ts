@@ -8,9 +8,10 @@ import {
 	generateThreadTitle,
 	resolveModel,
 	resolveModelTier,
+	seedConsolidation,
 	seedHeartbeat,
 } from "@bound/agent";
-import type { AgentLoop, AgentLoopConfig } from "@bound/agent";
+import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import { createRelayOutboxEntry } from "@bound/agent";
 import {
@@ -29,9 +30,10 @@ import {
 	registerConnectorEventDelivery,
 } from "@bound/platforms";
 import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
+import { resolvePlatformToolsForThread } from "./platform-tools.js";
 import { shutdownTelemetry } from "./telemetry.js";
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
 
 export interface SchedulerResult {
 	schedulerHandle: { stop: () => void } | null;
@@ -41,7 +43,6 @@ export interface ShutdownHandles {
 	heartbeatHandle: { stop: () => void } | null;
 	schedulerHandle: { stop: () => void } | null;
 	pruningHandle: { stop: () => void } | null;
-	overlayHandle: { stop: () => void } | null;
 	relayProcessorHandle: { stop: () => void } | null;
 	mcpClientsMap: Map<string, MCPClient>;
 	webServer: { stop(): Promise<void> } | null;
@@ -72,6 +73,15 @@ export function initScheduler(
 		appContext.logger.info("[scheduler] Heartbeat task seeded");
 	} catch (error) {
 		appContext.logger.warn("[scheduler] Failed to seed heartbeat", {
+			error: formatError(error),
+		});
+	}
+
+	try {
+		seedConsolidation(appContext.db, appContext.siteId);
+		appContext.logger.info("[scheduler] Consolidation task seeded");
+	} catch (error) {
+		appContext.logger.warn("[scheduler] Failed to seed consolidation", {
 			error: formatError(error),
 		});
 	}
@@ -181,6 +191,7 @@ export function initScheduler(
 							return { ok: true as const };
 						}
 					: undefined,
+				modelDefaultResolver: modelRouter ? () => modelRouter.getDefaultId() : undefined,
 				modelTierResolver: modelRouter
 					? (modelId: string) =>
 							resolveModelTier(modelId, modelRouter, appContext.db, appContext.siteId)
@@ -200,21 +211,8 @@ export function initScheduler(
 							}
 						: undefined,
 				platformToolResolver: platformMcpRegistry
-					? (threadId: string) => {
-							// Event task threads: scoped to their bound server's full tool set
-							const scopedTools = platformMcpRegistry.getToolsForThread(threadId);
-							if (scopedTools.size > 0) {
-								return Array.from(scopedTools.values());
-							}
-							// All other threads: read-only platform tools + connector tool
-							const readOnlyTools = Array.from(
-								platformMcpRegistry.getReadOnlyPlatformTools().values(),
-							);
-							if (connectorTool) {
-								return [...readOnlyTools, connectorTool];
-							}
-							return readOnlyTools;
-						}
+					? (threadId: string) =>
+							resolvePlatformToolsForThread(platformMcpRegistry, threadId, connectorTool)
 					: undefined,
 				platformInstructionsResolver: platformMcpRegistry
 					? (threadId: string) => platformMcpRegistry.getInstructionsForThread(threadId)
@@ -253,7 +251,6 @@ export function setupGracefulShutdown(
 			if (handles.heartbeatHandle) handles.heartbeatHandle.stop();
 			if (handles.schedulerHandle) handles.schedulerHandle.stop();
 			if (handles.pruningHandle) handles.pruningHandle.stop();
-			if (handles.overlayHandle) handles.overlayHandle.stop();
 			if (handles.relayProcessorHandle) handles.relayProcessorHandle.stop();
 			if (handles.wsTransport) {
 				handles.wsTransport.stop();

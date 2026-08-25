@@ -1,6 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { createChangeLogEntry, getSiteId } from "@bound/core";
+import { countUndeliveredRelayOutbox, listSyncState } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	getSiteId,
+	insertRow,
+	loadConfigWithPrecedence,
+	updateRow,
+} from "@bound/core";
+import { syncSchema } from "@bound/shared";
 import { openBoundDB } from "../lib/db";
 export interface SetHubArgs {
 	hostName: string;
@@ -8,27 +15,13 @@ export interface SetHubArgs {
 	timeout?: number;
 	configDir?: string;
 }
-interface SyncStateRow {
-	peer_site_id: string;
-	last_sync_at: string | null;
-}
 function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
-function loadRelayConfig(configDir: string): { drain_timeout_seconds: number } {
-	try {
-		const syncConfigPath = resolve(configDir, "sync.json");
-		if (!existsSync(syncConfigPath)) {
-			return { drain_timeout_seconds: 120 };
-		}
-		const content = readFileSync(syncConfigPath, "utf-8");
-		const parsed = JSON.parse(content);
-		return {
-			drain_timeout_seconds: parsed.relay?.drain_timeout_seconds ?? 120,
-		};
-	} catch {
-		return { drain_timeout_seconds: 120 };
-	}
+async function loadRelayConfig(configDir: string): Promise<{ drain_timeout_seconds: number }> {
+	const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
+	if (!result.ok) return { drain_timeout_seconds: 120 };
+	return { drain_timeout_seconds: result.value.relay?.drain_timeout_seconds ?? 120 };
 }
 export async function runSetHub(args: SetHubArgs): Promise<void> {
 	const configDir = args.configDir || "config";
@@ -72,6 +65,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		// TODO: For multi-hub clusters, this should be in cluster_config (synced) so all
 		// hubs see the drain signal. Currently in host_meta (local-only), which works for
 		// single-hub deployments where the draining hub is the one running this command.
+		// Raw read justification: this call writes local-only host metadata; it is not a read.
 		db.query("INSERT OR REPLACE INTO host_meta (key, value) VALUES (?, ?)").run(
 			"relay_draining",
 			"true",
@@ -81,7 +75,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		// Step 2: Wait for relay outbox to drain
 		// Polls relay_outbox until all entries are delivered or the timeout elapses.
 		// Entries are marked delivered via markDelivered() when acknowledged by the relay handler.
-		const relayConfig = loadRelayConfig(configDir);
+		const relayConfig = await loadRelayConfig(configDir);
 		const drainTimeoutMs = relayConfig.drain_timeout_seconds * 1000;
 		const drainStart = Date.now();
 		let drained = false;
@@ -91,52 +85,45 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		);
 
 		while (Date.now() - drainStart < drainTimeoutMs) {
-			const pending = db
-				.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0")
-				.get() as { count: number };
+			const pendingCount = countUndeliveredRelayOutbox(db);
 
-			if (pending.count === 0) {
+			if (pendingCount === 0) {
 				drained = true;
 				console.log("Relay outbox drained successfully.");
 				break;
 			}
 
-			console.log(`Draining relay outbox: ${pending.count} entries remaining...`);
+			console.log(`Draining relay outbox: ${pendingCount} entries remaining...`);
 			await sleep(1000);
 		}
 
 		if (!drained) {
-			const remaining = db
-				.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0")
-				.get() as { count: number };
+			const remainingCount = countUndeliveredRelayOutbox(db);
 			console.warn(
-				`Drain timeout reached with ${remaining.count} entries remaining. Proceeding with hub switch.`,
+				`Drain timeout reached with ${remainingCount} entries remaining. Proceeding with hub switch.`,
 			);
 		}
 
 		// Record the timestamp when hub is set (used for polling)
 		const hubChangeTimestamp = new Date().toISOString();
-		// Step 3: Set hub
+		// Step 3: Set hub. Probe ignoring `deleted` so a previously soft-deleted
+		// key is un-tombstoned via UPDATE rather than colliding on INSERT.
 		const hubKey = "cluster_hub";
-		const existingHub = db.query("SELECT key FROM cluster_config WHERE key = ?").get(hubKey);
-		const setHubTx = db.transaction(() => {
-			if (existingHub) {
-				db.query(
-					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config set-hub command)
-				).run(args.hostName, hubChangeTimestamp, hubKey);
-			} else {
-				db.query(
-					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config set-hub command)
-				).run(hubKey, args.hostName, hubChangeTimestamp);
-			}
-			// Write change_log entry
-			const rowData = { key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp };
-			createChangeLogEntry(db, "cluster_config", hubKey, siteId, rowData);
-		});
-		setHubTx();
+		const existingHub = findClusterConfigKeyByKeyIncludingDeleted(db, hubKey);
+		if (existingHub) {
+			updateRow(db, "cluster_config", hubKey, { value: args.hostName, deleted: 0 }, siteId);
+		} else {
+			insertRow(
+				db,
+				"cluster_config",
+				{ key: hubKey, value: args.hostName, modified_at: hubChangeTimestamp, deleted: 0 },
+				siteId,
+			);
+		}
 		console.log("Cluster hub set successfully.");
 
 		// Step 4: Clear drain flag
+		// Raw read justification: this call deletes local-only host metadata; it is not a read.
 		db.query("DELETE FROM host_meta WHERE key = 'relay_draining'").run();
 		console.log("Relay drain mode disabled.");
 		if (args.wait) {
@@ -146,9 +133,7 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 			console.log("Waiting for all peers to confirm...");
 			let confirmed = false;
 			while (Date.now() < deadline) {
-				const peers = db
-					.query("SELECT peer_site_id, last_sync_at FROM sync_state")
-					.all() as SyncStateRow[];
+				const peers = listSyncState(db);
 				if (peers.length === 0) {
 					console.log("No peers found in sync_state. Nothing to wait for.");
 					confirmed = true;

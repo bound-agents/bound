@@ -1,0 +1,90 @@
+name: Docs
+
+# Builds the Starlight docs site (packages/docs) and deploys it to GitHub Pages.
+#
+# - On pull requests touching the docs, the `build` job runs as a green/red
+#   check so a broken site never merges. The `deploy` job is skipped on PRs.
+# - On merge to main (docs paths) or manual dispatch, both jobs run and the
+#   site publishes.
+#
+# The site is a project site served at https://bound-agents.github.io/bound/ —
+# the Astro `base` is set to `/bound/` in packages/docs/astro.config.mjs.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/docs/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Least-privilege token plus the OIDC id-token the deploy-pages action needs.
+permissions:
+  contents: read
+  checks: write
+  pages: write
+  id-token: write
+
+# Allow one concurrent deploy; let an in-progress run finish (don't cancel a
+# publish mid-flight) but coalesce queued runs.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check documentation
+        working-directory: packages/docs
+        run: bun run check
+
+      - name: Review prose with Vale
+        continue-on-error: true
+        uses: vale-cli/vale-action@v2.1.2
+        with:
+          version: 3.17.1
+          files: packages/docs/src/content/docs
+          reporter: github-check
+          filter_mode: nofilter
+          vale_flags: "--config=packages/docs/.vale.ini"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/docs/dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    # Only publish on a push to main or a manual dispatch — never on a PR build,
+    # which runs purely as a merge gate.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

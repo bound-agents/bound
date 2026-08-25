@@ -164,8 +164,8 @@ describe("summary-extraction relay integration", () => {
 		// Register the remote host (advertising the model) in the spoke's hosts table
 		// so resolveModel finds it for remote delegation.
 		spokeDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				remoteSiteId,
 				"remote-host",
@@ -173,8 +173,7 @@ describe("summary-extraction relay integration", () => {
 				null,
 				null,
 				null,
-				JSON.stringify([REMOTE_MODEL]),
-				null,
+				JSON.stringify([{ id: REMOTE_MODEL, capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,

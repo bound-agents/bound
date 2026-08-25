@@ -136,6 +136,11 @@ describe("volatile-context snapshots", () => {
 		db.close();
 	});
 
+	// 5000 detail entries × (insertRow + change-log row) puts this fixture's
+	// build alone past bun's 5s default test timeout on a loaded host — it sat
+	// right at the line and flaked in three consecutive pre-commit gates
+	// (2026-08-17/18) before failing in isolation too. Explicit budget: this
+	// is a snapshot-equality test, not a perf assertion.
 	it("Memory state with 80 pinned + 50 summary + 5000 detail entries (R-VC15 Tier 3 heading-only compression with M=20 cap).", async () => {
 		// Override BOUND_VC15_M for fixture reviewability
 		process.env.BOUND_VC15_M = "5";
@@ -172,7 +177,7 @@ describe("volatile-context snapshots", () => {
 		);
 
 		db.close();
-	});
+	}, 30_000);
 
 	it("Memory state with critical budget pressure (R-VC14 active) and deltas inside Working Knowledge (verifying R-VC11 markers preserved while Live State and Discoverable Archive are shed).", async () => {
 		const db = createTempDb();
@@ -242,7 +247,7 @@ describe("volatile-context snapshots", () => {
 
 		// Stable volatile portion: everything from the first volatile section
 		// header onward (the section headers are stable identifiers).
-		const stableMarker = "## Working Knowledge — operational and durable";
+		const stableMarker = "<working-knowledge sources=";
 		const stableMarkerIdx = result.systemPrompt.indexOf(stableMarker);
 		const stableVolatile = stableMarkerIdx >= 0 ? result.systemPrompt.slice(stableMarkerIdx) : "";
 
@@ -478,9 +483,9 @@ describe("volatile-context snapshots", () => {
 		);
 
 		db.close();
-	});
+	}, 30_000);
 
-	it("Memory state with task digest entries rendering under Live State alongside cross-thread / file / advisory entries (verifying R-VC5's four subsystems render in their fixed order with correct source labels).", async () => {
+	it("Memory state with task digest entries, sibling-thread metadata, and a boundless host attachment rendering under Live State alongside file / advisory entries.", async () => {
 		const db = createTempDb();
 		const userId = "test-user";
 		const threadId = deterministicUUID(BOUND_NAMESPACE, "test:scenario:11");
@@ -500,6 +505,34 @@ describe("volatile-context snapshots", () => {
 		// They're created with the same userId as the agent so they show in the digest
 		const siblingThread1 = makeSiblingThread(ctx, "Related Thread 1", 2, "Thread summary 1");
 		const siblingThread2 = makeSiblingThread(ctx, "Related Thread 2", 2, "Thread summary 2");
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: "boundless-snapshot-host-site",
+				host_name: "boundless-snapshot-host",
+				// Live-state session liveness uses the wall clock, so keep this
+				// fixture host fresh regardless of when the suite executes.
+				online_at: "2099-01-01T00:00:00.000Z",
+				modified_at: "2099-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id: deterministicUUID(BOUND_NAMESPACE, "snapshot:boundless-session"),
+				connection_id: "snapshot-boundless-connection",
+				thread_id: siblingThread2,
+				site_id: "boundless-snapshot-host-site",
+				created_at: new Date(nowMs).toISOString(),
+				modified_at: new Date(nowMs).toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
 
 		// Add file modifications (stored as _internal.file_thread.* entries pointing to thread IDs)
 		makeFileMod(ctx, "/src/main.ts", siblingThread1);

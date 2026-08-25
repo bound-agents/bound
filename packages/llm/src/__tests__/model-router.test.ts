@@ -2,9 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { ModelRouter, PooledBackend, createModelRouter } from "../model-router";
 import type {
 	BackendCapabilities,
+	BackendReadiness,
 	ChatParams,
 	LLMBackend,
 	ModelBackendsConfig,
+	ModelDescriptor,
+	ModelRegistrar,
 	StreamChunk,
 } from "../types";
 import { LLMError } from "../types";
@@ -61,8 +64,39 @@ class CachingMockBackend implements LLMBackend {
 	}
 }
 
+describe("ModelRouter — system prompt suffix", () => {
+	it("returns the configured suffix only for its backend", () => {
+		const configured = new MockBackend("configured");
+		const plain = new MockBackend("plain");
+		const backends = new Map<string, LLMBackend>([
+			[configured.id, configured],
+			[plain.id, plain],
+		]);
+		const router = new ModelRouter(
+			backends,
+			configured.id,
+			undefined,
+			undefined,
+			new Map([
+				[
+					configured.id,
+					{
+						id: configured.id,
+						provider: "bedrock",
+						model: "configured",
+						systemPromptSuffix: "Configured only.",
+					},
+				],
+				[plain.id, { id: plain.id, provider: "bedrock", model: "plain" }],
+			]),
+		);
+		expect(router.getSystemPromptSuffix(configured.id)).toBe("Configured only.");
+		expect(router.getSystemPromptSuffix(plain.id)).toBeUndefined();
+	});
+});
+
 describe("ModelRouter — getCacheTtl capability defaulting", () => {
-	// Live regression: thread `33212d49-…` 2026-05-25 ran with cr=0 across
+	// Live regression: a thread ran with cr=0 across
 	// most of its turns because Sonnet's `model_backends.json` config didn't
 	// explicitly set `cacheTtl` (a config-landmine — every operator must
 	// remember to set it for each caching-capable backend). `getCacheTtl`
@@ -92,6 +126,30 @@ describe("ModelRouter — getCacheTtl capability defaulting", () => {
 		const backends = new Map<string, LLMBackend>([[backend.id, backend]]);
 		const router = createRouterFromBackends(backends, backend.id);
 		expect(router.getCacheTtl(backend.id)).toBeUndefined();
+	});
+
+	it("keeps arbitrary configured cache TTLs available for internal scheduling", () => {
+		const config: ModelBackendsConfig = {
+			backends: [
+				{
+					id: "cached",
+					provider: "bedrock",
+					model: "anthropic.claude-sonnet",
+					region: "us-east-1",
+					cacheTtl: "30m",
+				},
+			],
+			default: "cached",
+		};
+		const backend = new CachingMockBackend("cached");
+		const router = new ModelRouter(
+			new Map([[backend.id, backend]]),
+			backend.id,
+			new Map([[backend.id, backend.capabilities()]]),
+			undefined,
+			new Map([[backend.id, config.backends[0]]]),
+		);
+		expect(router.getCacheTtl("cached")).toBe("30m");
 	});
 
 	it("E3: explicit config cacheTtl='1h' overrides the capability default", () => {
@@ -433,23 +491,30 @@ describe("Phase 4: capability management", () => {
 		expect(router.isRateLimited("test")).toBe(true);
 	});
 
-	it("isRateLimited returns false after expiry", async () => {
-		const router = createModelRouter({
-			backends: [
-				{
-					id: "test",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-				},
-			],
-			default: "test",
-		});
-		router.markRateLimited("test", 1); // 1ms — expires immediately
-		await new Promise((resolve) => setTimeout(resolve, 5));
+	it("isRateLimited expires exactly at the retry boundary", () => {
+		let now = 1_000;
+		const router = createModelRouter(
+			{
+				backends: [
+					{
+						id: "test",
+						provider: "openai-compatible",
+						apiKey: "test",
+						model: "llama3",
+						baseUrl: "http://localhost:11434",
+						contextWindow: 4096,
+						tier: 1,
+					},
+				],
+				default: "test",
+			},
+			{ clock: () => now },
+		);
+		router.markRateLimited("test", 1_000);
+		expect(router.isRateLimited("test")).toBe(true);
+		now += 999;
+		expect(router.isRateLimited("test")).toBe(true);
+		now += 1;
 		expect(router.isRateLimited("test")).toBe(false);
 	});
 
@@ -1198,6 +1263,27 @@ describe("ModelRouter thinking config", () => {
 		expect(config?.display).toBe("summarized");
 	});
 
+	it("maps thinking: { type: 'tool' } to an explicit provider disable and exposes the tool mode", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "tool-model",
+					provider: "bedrock",
+					region: "us-east-1",
+					model: "anthropic.claude-opus-5",
+					apiKey: "test-key",
+					contextWindow: 200000,
+					thinking: { type: "tool" },
+				},
+			],
+			default: "tool-model",
+		});
+
+		expect(router.getThinkingConfig("tool-model")).toEqual({ type: "disabled" });
+		expect(router.usesThinkingTool("tool-model")).toBe(true);
+		expect(router.getEffort("tool-model")).toBeUndefined();
+	});
+
 	it("getEffort returns configured effort", () => {
 		const router = createModelRouter({
 			backends: [
@@ -1432,5 +1518,234 @@ describe("ModelRouter.reload — in-place config swap", () => {
 
 		expect(router.getDefaultId()).toBe(before.defaultId);
 		expect(router.listBackends().map((b) => b.id)).toEqual(before.ids);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Generic readiness contract (umans is the first implementer). These tests use
+// a PROVIDER-NEUTRAL stub readiness backend to prove the router path has no
+// umans-specific branching (AC.20), plus the umans factory case (AC.1).
+// ---------------------------------------------------------------------------
+
+const READY_CAPS: BackendCapabilities = {
+	streaming: true,
+	tool_use: true,
+	system_prompt: true,
+	prompt_caching: true,
+	vision: false,
+	extended_thinking: false,
+	max_context: 100000,
+};
+
+/** Provider-neutral readiness backend stub — not umans. */
+class StubReadinessBackend implements LLMBackend {
+	readiness: BackendReadiness;
+	private capturedRegistrar?: ModelRegistrar;
+	private disposed = false;
+	private ready = false;
+	registerCalls = 0;
+
+	constructor(
+		private namespaceId: string,
+		private models: ModelDescriptor[],
+		private deferred = false,
+	) {
+		this.readiness = {
+			isReady: () => this.ready,
+			dispose: () => {
+				this.disposed = true;
+			},
+			start: (registrar) => {
+				this.capturedRegistrar = registrar;
+				if (!this.deferred) this.fire();
+			},
+		};
+	}
+
+	/** Manually trigger expansion (for deferred backends). */
+	fire(): void {
+		if (this.disposed || !this.capturedRegistrar) return;
+		this.ready = true;
+		this.registerCalls++;
+		this.capturedRegistrar.register(
+			this.namespaceId,
+			this.models.map((descriptor) => ({
+				descriptor,
+				backend: new MockBackend(descriptor.id),
+			})),
+		);
+	}
+
+	// biome-ignore lint/correctness/useYield: a namespace stub never yields — it throws.
+	async *chat(): AsyncGenerator<never> {
+		throw new LLMError("stub namespace not invokable", "stub");
+	}
+	capabilities() {
+		return { ...READY_CAPS, max_context: 0 };
+	}
+}
+
+describe("ModelRouter generic readiness (AC.20)", () => {
+	function descriptor(id: string, tier: number): ModelDescriptor {
+		return {
+			id,
+			capabilities: { ...READY_CAPS },
+			tier,
+			pricing: { inputPerM: 1, outputPerM: 2 },
+			maxOutputTokens: 8192,
+		};
+	}
+
+	it("excludes a not-ready readiness backend from listEligible/listBackends and isNotReady", () => {
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
+		const backends = new Map<string, LLMBackend>([["ns", stub]]);
+		const router = new ModelRouter(backends, "ns");
+
+		expect(router.isNotReady("ns")).toBe(true);
+		expect(router.listBackends().map((b) => b.id)).not.toContain("ns");
+		expect(router.listEligible().map((b) => b.id)).not.toContain("ns");
+		expect(router.getReadinessBackends().map((r) => r.id)).toEqual(["ns"]);
+	});
+
+	it("expands via the registrar path: adds backends, clears not-ready, removes placeholder, redirects default", () => {
+		const models = [descriptor("m-a", 5), descriptor("m-b", 3)];
+		const stub = new StubReadinessBackend("ns", models, true);
+		const backends = new Map<string, LLMBackend>([["ns", stub]]);
+		const router = new ModelRouter(backends, "ns");
+
+		// Build a registrar that drives the router primitives (the real
+		// CLI-layer registrar does the same + config writes).
+		const registrar: ModelRegistrar = {
+			register(_providerId, entries) {
+				for (const { descriptor: d, backend } of entries) {
+					router.addDynamicBackend(d.id, backend, d.capabilities, d.tier);
+				}
+				router.redirectDefault("ns", entries[0].descriptor.id);
+				router.removeBackend("ns");
+			},
+		};
+		stub.readiness.start(registrar);
+		stub.fire();
+
+		expect(router.isNotReady("m-a")).toBe(false);
+		expect(
+			router
+				.listBackends()
+				.map((b) => b.id)
+				.sort(),
+		).toEqual(["m-a", "m-b"]);
+		expect(router.tryGetBackend("ns")).toBeNull();
+		expect(router.getDefaultId()).toBe("m-a");
+		expect(router.getBackendTier("m-a")).toBe(5);
+		expect(router.getBackendTier("m-b")).toBe(3);
+	});
+
+	it("resolves getMaxOutputTokens for a dynamically-registered backend (per-model output budget)", () => {
+		// Regression: addDynamicBackend previously stored caps/tier but not the
+		// output budget, so getMaxOutputTokens returned undefined for dynamic
+		// (e.g. umans) models. The loop then sent no max_tokens and the provider
+		// applied a low default (~4096), truncating heavy reasoners mid-thinking.
+		// The descriptor's maxOutputTokens must reach backendConfigs.
+		const models = [descriptor("m-a", 5)]; // descriptor() sets maxOutputTokens: 8192
+		const stub = new StubReadinessBackend("ns", models, true);
+		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
+
+		const registrar: ModelRegistrar = {
+			register(_providerId, entries) {
+				for (const { descriptor: d, backend } of entries) {
+					router.addDynamicBackend(d.id, backend, d.capabilities, d.tier, d.maxOutputTokens);
+				}
+				router.redirectDefault("ns", entries[0].descriptor.id);
+				router.removeBackend("ns");
+			},
+		};
+		stub.readiness.start(registrar);
+		stub.fire();
+
+		expect(router.getMaxOutputTokens("m-a")).toBe(8192);
+	});
+
+	it("leaves getMaxOutputTokens undefined when a dynamic backend reports no budget", () => {
+		// A dynamic backend without a per-model output limit stays undefined —
+		// the caller (clampMaxOutputTokens) then omits max_tokens, unchanged.
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 5)], true);
+		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
+		router.addDynamicBackend("m-x", stub, { ...READY_CAPS }, 3, undefined);
+		expect(router.getMaxOutputTokens("m-x")).toBeUndefined();
+	});
+
+	it("disposes superseded readiness backends on reload (AC.5)", () => {
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
+		let disposed = false;
+		// Wrap dispose to observe it.
+		const origDispose = stub.readiness.dispose;
+		stub.readiness.dispose = () => {
+			disposed = true;
+			origDispose();
+		};
+		const backends = new Map<string, LLMBackend>([["ns", stub]]);
+		const router = new ModelRouter(backends, "ns");
+
+		// Reload to a config WITHOUT the readiness backend.
+		router.reload({
+			backends: [
+				{
+					id: "x",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "y",
+					baseUrl: "http://localhost:11434",
+					contextWindow: 8192,
+				},
+			],
+			default: "x",
+		});
+
+		expect(disposed).toBe(true);
+		// A late fire() from the disposed stub must NOT register into the router.
+		const registrar: ModelRegistrar = {
+			register() {
+				router.addDynamicBackend("m-a", new MockBackend("m-a"), READY_CAPS, 3);
+			},
+		};
+		stub.readiness.start(registrar);
+		stub.fire(); // no-op: disposed
+		expect(router.tryGetBackend("m-a")).toBeNull();
+	});
+});
+
+describe("ModelRouter umans factory case (AC.1)", () => {
+	it("builds a not-ready umans namespace backend with readiness from a config-light entry", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "umans",
+					provider: "umans",
+					model: "",
+					apiKey: "sk-test",
+				} as unknown as ModelBackendsConfig["backends"][number],
+			],
+			default: "umans",
+		});
+		// The namespace exists but is not-ready (excluded from selection).
+		expect(router.isNotReady("umans")).toBe(true);
+		expect(router.tryGetBackend("umans")?.readiness).toBeDefined();
+		expect(router.listBackends().map((b) => b.id)).not.toContain("umans");
+		expect(router.getReadinessBackends().map((r) => r.id)).toEqual(["umans"]);
+	});
+
+	it("throws when a umans backend is missing api_key", () => {
+		expect(() =>
+			createModelRouter({
+				backends: [
+					{
+						id: "umans",
+						provider: "umans",
+						model: "",
+					} as unknown as ModelBackendsConfig["backends"][number],
+				],
+				default: "umans",
+			}),
+		).toThrow(/umans/i);
 	});
 });

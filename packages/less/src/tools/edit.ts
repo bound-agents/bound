@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { type HashlineEdit, applyHashlineEdits, formatWithHashes } from "@bound/shared";
 import { contextFileStaleNote, isContextFile } from "./context-files";
-import { findStringOccurrences } from "./match";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -21,6 +21,28 @@ export function createEditTool(
 	};
 }
 
+/** Narrow unknown args into a validated edit list, or an error string. */
+function parseEdits(raw: unknown): HashlineEdit[] | string {
+	if (!Array.isArray(raw) || raw.length === 0) {
+		return "Error: edits is required and must be a non-empty array of {start, end, content}";
+	}
+	const edits: HashlineEdit[] = [];
+	for (let i = 0; i < raw.length; i++) {
+		const e = raw[i] as Record<string, unknown>;
+		if (
+			typeof e !== "object" ||
+			e === null ||
+			typeof e.start !== "string" ||
+			typeof e.end !== "string" ||
+			typeof e.content !== "string"
+		) {
+			return `Error: edits[${i}] must be {start: "LINE:HASH", end: "LINE:HASH", content: string}`;
+		}
+		edits.push({ start: e.start, end: e.end, content: e.content });
+	}
+	return edits;
+}
+
 async function editToolImpl(
 	hostname: string,
 	args: Record<string, unknown>,
@@ -28,54 +50,21 @@ async function editToolImpl(
 	sandbox: ResolvedSandboxConfig,
 	contextFiles?: readonly string[],
 ): Promise<ToolResult> {
-	const { file_path, old_string, new_string } = args as {
-		file_path?: string;
-		old_string?: string;
-		new_string?: string;
-	};
+	const { file_path } = args as { file_path?: string };
 
 	const provenance = formatProvenance(hostname, cwd, "boundless_edit");
+	const fail = (text: string): ToolResult => ({
+		content: [provenance, { type: "text", text }],
+		isError: true,
+	});
 
 	if (!file_path || typeof file_path !== "string") {
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: "Error: file_path is required and must be a string",
-				},
-			],
-			isError: true,
-		};
-		return result;
+		return fail("Error: file_path is required and must be a string");
 	}
 
-	if (old_string === undefined || typeof old_string !== "string") {
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: "Error: old_string is required and must be a string",
-				},
-			],
-			isError: true,
-		};
-		return result;
-	}
-
-	if (new_string === undefined || typeof new_string !== "string") {
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: "Error: new_string is required and must be a string",
-				},
-			],
-			isError: true,
-		};
-		return result;
+	const edits = parseEdits(args.edits);
+	if (typeof edits === "string") {
+		return fail(edits);
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
@@ -87,98 +76,47 @@ async function editToolImpl(
 	if (sandbox.enabled) {
 		const check = checkWritePath(file_path, cwd, sandbox);
 		if (!check.allowed) {
-			return {
-				content: [
-					provenance,
-					{ type: "text", text: formatWriteDenied("boundless_edit", file_path, check) },
-				],
-				isError: true,
-			};
+			return fail(formatWriteDenied("boundless_edit", file_path, check));
 		}
 	}
 
 	try {
 		const content = readFileSync(resolvedPath, "utf-8");
 
-		const { count, occurrences } = findStringOccurrences(content, old_string);
-
-		if (count === 0) {
-			const result: ToolResult = {
-				content: [
-					provenance,
-					{
-						type: "text",
-						text: `Error: old_string not found in ${file_path}`,
-					},
-				],
-				isError: true,
-			};
-			return result;
+		const applied = applyHashlineEdits(content, edits);
+		if (!applied.ok) {
+			return fail(`Error: ${applied.error}`);
 		}
 
-		if (count > 1) {
-			// Show context for the first couple of matches.
-			const context = occurrences
-				.slice(0, 2)
-				.map((m) => `  Line ${m.line}: ${m.lineText}`)
-				.join("\n");
+		writeFileSync(resolvedPath, applied.content, "utf-8");
 
-			const result: ToolResult = {
-				content: [
-					provenance,
-					{
-						type: "text",
-						text: `Error: ${count} matches found for old_string in ${file_path}. Cannot edit with multiple matches.\n\nFirst match locations:\n${context}`,
-					},
-				],
-				isError: true,
-			};
-			return result;
-		}
+		// Report fresh anchors for each replaced region so follow-up edits can
+		// chain without a re-read.
+		const regionViews = applied.regions
+			.filter((r) => r.lineCount > 0)
+			.map((r) => formatWithHashes(applied.content, r.startLine, r.lineCount))
+			.filter((v) => v.length > 0);
 
-		// Replace the single occurrence
-		const newContent = content.replace(old_string, new_string);
-		writeFileSync(resolvedPath, newContent, "utf-8");
+		const summary = `Edited ${file_path}: applied ${edits.length} ${edits.length === 1 ? "edit" : "edits"}`;
+		const text =
+			regionViews.length > 0
+				? `${summary}\n\nNew content (fresh anchors):\n${regionViews.join("\n⋯\n")}`
+				: summary;
 
-		const blocks: ToolResult["content"] = [
-			provenance,
-			{
-				type: "text",
-				text: `Edited ${file_path}: replaced 1 occurrence`,
-			},
-		];
+		const blocks: ToolResult["content"] = [provenance, { type: "text", text }];
 		if (isContextFile(file_path, cwd, contextFiles)) {
 			blocks.push({ type: "text", text: contextFileStaleNote(file_path) });
 		}
 
-		const result: ToolResult = { content: blocks };
-		return result;
+		return { content: blocks };
 	} catch (err) {
 		const error = err as NodeJS.ErrnoException;
 		if (error?.code === "ENOENT") {
-			const result: ToolResult = {
-				content: [
-					provenance,
-					{
-						type: "text",
-						text: `Error: File not found: ${file_path}\n\nThis path does not exist. To create a new file, use the write tool instead.`,
-					},
-				],
-				isError: true,
-			};
-			return result;
+			return fail(
+				`Error: File not found: ${file_path}\n\nThis path does not exist. To create a new file, use the write tool instead.`,
+			);
 		}
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: `Error: ${error?.message || String(err)}`,
-				},
-			],
-			isError: true,
-		};
-		return result;
+		return fail(`Error: ${error?.message || String(err)}`);
 	}
 }
 

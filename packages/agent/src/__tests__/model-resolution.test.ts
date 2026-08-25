@@ -10,6 +10,7 @@ import {
 	resolveModel,
 	resolveModelTier,
 	resolveSameTierFallback,
+	resolveTargetCapabilities,
 } from "../model-resolution";
 
 // Test database setup
@@ -50,7 +51,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -77,7 +78,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -99,7 +100,20 @@ describe("Model Resolution", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["remote-1", "Remote Host", JSON.stringify(["claude-haiku"]), 0, now, now],
+				[
+					"remote-1",
+					"Remote Host",
+					JSON.stringify([
+						{
+							id: "claude-haiku",
+							max_output_tokens: 64_000,
+							capabilities: { max_context: 200000 },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
 			);
 
 			const mockBackend = {
@@ -111,7 +125,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -125,6 +139,7 @@ describe("Model Resolution", () => {
 				expect(resolution.hosts.length).toBe(1);
 				expect(resolution.hosts[0].site_id).toBe("remote-1");
 				expect(resolution.modelId).toBe("claude-haiku");
+				expect(resolution.maxOutputTokens).toBe(64_000);
 			}
 		});
 
@@ -138,7 +153,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -202,7 +217,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 			const backends = new Map([["claude-opus", mockBackend]]);
@@ -227,7 +242,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -240,7 +255,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -278,7 +293,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -302,14 +317,28 @@ describe("Model Resolution", () => {
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["older-host", "Older Host", JSON.stringify(["claude-haiku"]), 0, olderTime, olderTime],
+				[
+					"older-host",
+					"Older Host",
+					JSON.stringify([{ id: "claude-haiku", capabilities: { max_context: 200000 } }]),
+					0,
+					olderTime,
+					olderTime,
+				],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["recent-host", "Recent Host", JSON.stringify(["claude-haiku"]), 0, recentTime, recentTime],
+				[
+					"recent-host",
+					"Recent Host",
+					JSON.stringify([{ id: "claude-haiku", capabilities: { max_context: 200000 } }]),
+					0,
+					recentTime,
+					recentTime,
+				],
 			);
 
 			const mockBackend = {
@@ -321,7 +350,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -734,7 +763,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -750,7 +779,7 @@ describe("Model Resolution", () => {
 			expect(resolution.kind).toBe("error");
 		});
 
-		it("resolveModel with no requirements accepts remote hosts without capability metadata (AC7.3 end-to-end)", () => {
+		it("routes a remote host with no capability metadata (legacy string format) to kind:error — no guessed window (AC7.3 end-to-end)", () => {
 			const now = new Date().toISOString();
 
 			// Insert a remote host with legacy string format (no capabilities)
@@ -770,7 +799,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -780,11 +809,13 @@ describe("Model Resolution", () => {
 			// Request vision-model WITHOUT requirements (no capability filtering)
 			const resolution = resolveModel("vision-model", modelRouter, db, "local-site");
 
-			// Should be remote since host is available (unverified legacy format accepted)
-			expect(resolution.kind).toBe("remote");
-			if (resolution.kind === "remote") {
-				expect(resolution.hosts.length).toBe(1);
-				expect(resolution.hosts[0].unverified).toBe(true);
+			// A legacy string-format host advertises no context window, so the loop
+			// can't budget against it. Resolution surfaces a retryable error rather
+			// than dispatching on a guessed default — the host must advertise caps.
+			expect(resolution.kind).toBe("error");
+			if (resolution.kind === "error") {
+				expect(resolution.error).toMatch(/no context window/i);
+				expect(resolution.reason).toBe("transient-unavailable");
 			}
 		});
 
@@ -836,7 +867,7 @@ describe("Model Resolution", () => {
 					streaming: true,
 					tools: true,
 					vision: false,
-					maxContextWindow: 200000,
+					max_context: 200000,
 				}),
 			};
 
@@ -848,12 +879,14 @@ describe("Model Resolution", () => {
 				vision: true,
 			});
 
-			// Should fall back to unverified host when no verified match
-			expect(resolution.kind).toBe("remote");
-			if (resolution.kind === "remote") {
-				expect(resolution.hosts.length).toBe(1);
-				expect(resolution.hosts[0].unverified).toBe(true);
-				expect(resolution.hosts[0].site_id).toBe("legacy-remote-fallback");
+			// The verified host fails the vision requirement and the only fallback
+			// is a legacy unverified host with no advertised window. Neither can be
+			// budgeted, so resolution surfaces a retryable error instead of
+			// dispatching the unverified host on a guessed default.
+			expect(resolution.kind).toBe("error");
+			if (resolution.kind === "error") {
+				expect(resolution.error).toMatch(/no context window/i);
+				expect(resolution.reason).toBe("transient-unavailable");
 			}
 		});
 
@@ -990,7 +1023,13 @@ describe("resolveModel — hub-only mode (empty default)", () => {
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			["spoke-1", "spoke", JSON.stringify([{ id: "claude-3", tier: 2 }]), now, now],
+			[
+				"spoke-1",
+				"spoke",
+				JSON.stringify([{ id: "claude-3", tier: 2, capabilities: { max_context: 200000 } }]),
+				now,
+				now,
+			],
 		);
 
 		// Hub-only: empty router (no local backends)
@@ -1118,7 +1157,7 @@ describe("resolveModel — hub-only mode (empty default)", () => {
 				streaming: true,
 				tools: true,
 				vision: false,
-				maxContextWindow: 200000,
+				max_context: 200000,
 			}),
 		};
 
@@ -1227,7 +1266,9 @@ describe("resolveSameTierFallback — remote hosts", () => {
 			[
 				"spoke-with-sonnet",
 				"Sonnet Spoke",
-				JSON.stringify([{ id: "sonnet", tier: 2, capabilities: { tool_use: true } }]),
+				JSON.stringify([
+					{ id: "sonnet", tier: 2, capabilities: { tool_use: true, max_context: 200000 } },
+				]),
 				now,
 				now,
 			],
@@ -1310,5 +1351,250 @@ describe("resolveSameTierFallback — remote hosts", () => {
 			// Should prefer local
 			expect(result.kind).toBe("local");
 		}
+	});
+});
+
+// AC.3 — readiness gate. A not-ready (self-configuring) backend must NOT
+// resolve `kind:"local"` even when it is the default and even with no
+// requirements; it resolves `transient-unavailable` (retryable), not
+// `capability-mismatch`. After expansion the concrete model resolves local.
+describe("resolveModel readiness gate (AC.3)", () => {
+	function readinessBackend(ready: boolean) {
+		return {
+			id: "umans",
+			readiness: {
+				isReady: () => ready,
+				start: () => {},
+				dispose: () => {},
+			},
+			chat: async function* () {},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: true,
+				vision: false,
+				extended_thinking: false,
+				max_context: 0,
+			}),
+		};
+	}
+
+	it("defers a not-ready default with NO requirements to transient-unavailable (not kind:local)", () => {
+		const backends = new Map([["umans", readinessBackend(false)]]);
+		const router = new ModelRouter(backends, "umans");
+		const resolution = resolveModel(undefined, router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.reason).toBe("transient-unavailable");
+		}
+	});
+
+	it("defers a not-ready default WITH requirements to transient-unavailable (not capability-mismatch)", () => {
+		const backends = new Map([["umans", readinessBackend(false)]]);
+		const router = new ModelRouter(backends, "umans");
+		const resolution = resolveModel(undefined, router, db, "local-site", { tool_use: true });
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.reason).toBe("transient-unavailable");
+		}
+	});
+
+	it("resolves a concrete model id local once the readiness backend is ready and expanded", () => {
+		// Simulate post-expansion: a concrete backend is registered, the
+		// namespace removed, not-ready cleared.
+		const concrete = {
+			id: "umans-coder",
+			chat: async function* () {},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: true,
+				vision: false,
+				extended_thinking: false,
+				max_context: 200000,
+			}),
+		};
+		const backends = new Map([["umans", readinessBackend(false)]]);
+		const router = new ModelRouter(backends, "umans");
+		router.addDynamicBackend("umans-coder", concrete, concrete.capabilities(), 5);
+		router.redirectDefault("umans", "umans-coder");
+		router.removeBackend("umans");
+
+		const resolution = resolveModel("umans-coder", router, db, "local-site");
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") {
+			expect(resolution.modelId).toBe("umans-coder");
+		}
+		// The default now resolves to the concrete model too.
+		const def = resolveModel(undefined, router, db, "local-site");
+		expect(def.kind).toBe("local");
+	});
+});
+
+describe("required context window (no silent default)", () => {
+	const backendWithCaps = (caps: Record<string, unknown>) => ({
+		id: "model-under-test",
+		chat: async function* () {
+			yield { type: "text" as const, text: "test" };
+		},
+		capabilities: () => caps,
+	});
+
+	it("resolves a local backend that advertises a window to kind:local with that window", () => {
+		const backend = backendWithCaps({
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			extended_thinking: false,
+			max_context: 128000,
+		});
+		const router = new ModelRouter(new Map([["model-under-test", backend]]), "model-under-test");
+
+		const resolution = resolveModel("model-under-test", router, db, "local-site");
+		expect(resolution.kind).toBe("local");
+		const local = resolution as Extract<ModelResolution, { kind: "local" }>;
+		expect(local.max_context).toBe(128000);
+	});
+
+	it("routes a local backend with no advertised context window to kind:error (no 200k default)", () => {
+		// capabilities() omits max_context — the exact case the old `?? 200_000`
+		// masked. A ready local backend should always advertise one, so absence
+		// is a misconfiguration we surface rather than a window we guess.
+		const backend = backendWithCaps({
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			extended_thinking: false,
+		});
+		const router = new ModelRouter(new Map([["model-under-test", backend]]), "model-under-test");
+
+		const resolution = resolveModel("model-under-test", router, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.error).toMatch(/no context window/i);
+			expect(resolution.reason).toBe("transient-unavailable");
+		}
+	});
+});
+
+describe("resolveTargetCapabilities", () => {
+	const fullCaps = {
+		streaming: true,
+		tool_use: true,
+		system_prompt: true,
+		prompt_caching: true,
+		vision: true,
+		extended_thinking: false,
+		max_context: 200000,
+	};
+
+	function routerStub(caps: typeof fullCaps | null) {
+		return {
+			getEffectiveCapabilities: () => caps,
+		} as unknown as ModelRouter;
+	}
+
+	function remoteHost(capabilities?: {
+		streaming?: boolean;
+		tool_use?: boolean;
+		system_prompt?: boolean;
+		prompt_caching?: boolean;
+		vision?: boolean;
+		max_context?: number;
+	}) {
+		return {
+			site_id: "remote-site",
+			host_name: "remote-host",
+			sync_url: null,
+			online_at: null,
+			modified_at: null,
+			capabilities,
+		};
+	}
+
+	it("local: returns the router's effective capabilities verbatim", () => {
+		const res: ModelResolution = {
+			kind: "local",
+			backend: {} as any,
+			modelId: "opus",
+			max_context: 200000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(fullCaps))).toEqual(fullCaps);
+	});
+
+	it("local: propagates null when the backend id is unregistered", () => {
+		const res: ModelResolution = {
+			kind: "local",
+			backend: {} as any,
+			modelId: "ghost",
+			max_context: 200000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))).toBeNull();
+	});
+
+	it("remote: surfaces a non-vision backend's vision:false (the regression) so the substitution gate fires", () => {
+		// REGRESSION: this branch used to return `undefined`, skipping Stage 5b
+		// substitution and shipping raw image blocks to a text-only remote
+		// backend (e.g. umans-glm-5.2) — a hard "content.type invalid" failure.
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost({ vision: false, prompt_caching: true, max_context: 128000 })],
+			modelId: "umans-glm-5.2",
+			max_context: 128000,
+		};
+		const caps = resolveTargetCapabilities(res, routerStub(fullCaps));
+		expect(caps).not.toBeNull();
+		expect(caps?.vision).toBe(false);
+	});
+
+	it("remote: preserves an advertised vision:true", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost({ vision: true, max_context: 200000 })],
+			modelId: "opus",
+			max_context: 200000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))?.vision).toBe(true);
+	});
+
+	it("remote: defaults vision to false when the host advertised caps but no vision flag (never ship raw images to an unconfirmed backend)", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost({ prompt_caching: true, max_context: 128000 })],
+			modelId: "some-remote",
+			max_context: 128000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))?.vision).toBe(false);
+	});
+
+	it("remote: returns null when the chosen host advertised no capabilities", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [remoteHost(undefined)],
+			modelId: "some-remote",
+			max_context: 128000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))).toBeNull();
+	});
+
+	it("remote: returns null when the hosts array is empty", () => {
+		const res: ModelResolution = {
+			kind: "remote",
+			hosts: [],
+			modelId: "some-remote",
+			max_context: 128000,
+		};
+		expect(resolveTargetCapabilities(res, routerStub(null))).toBeNull();
+	});
+
+	it("error: returns null", () => {
+		const res: ModelResolution = { kind: "error", error: "no backends" };
+		expect(resolveTargetCapabilities(res, routerStub(fullCaps))).toBeNull();
 	});
 });

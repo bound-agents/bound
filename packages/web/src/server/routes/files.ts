@@ -1,6 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { getSiteId, insertRow } from "@bound/core";
+import {
+	findFileById,
+	findFileByIdActive,
+	findFileByPathActive,
+	findFileIdByPathActive,
+	getSiteId,
+	insertRow,
+	listFilesActiveByCreatedDesc,
+} from "@bound/core";
 import { type AgentFile, MAX_FILE_STORAGE_BYTES } from "@bound/shared";
 import { Hono } from "hono";
 
@@ -97,9 +105,7 @@ export async function storeFile(
 	const ext = dotIdx > 0 ? safeName.slice(dotIdx) : "";
 	const filePath = `/home/user/uploads/${stem}.${hash}${ext}`;
 
-	const existing = db
-		.query("SELECT id FROM files WHERE path = ? AND deleted = 0")
-		.get(filePath) as { id: string } | null;
+	const existing = findFileIdByPathActive(db, filePath);
 	if (existing) return existing.id;
 
 	const fileId = randomUUID();
@@ -135,15 +141,7 @@ export function createFilesRoutes(db: Database): Hono {
 
 	app.get("/", (c) => {
 		try {
-			const files = db
-				.query(
-					`
-				SELECT * FROM files
-				WHERE deleted = 0
-				ORDER BY created_at DESC
-			`,
-				)
-				.all() as AgentFile[];
+			const files = listFilesActiveByCreatedDesc(db);
 
 			// Strip content field from each file in response
 			const filesWithoutContent = files.map((file) => {
@@ -175,13 +173,9 @@ export function createFilesRoutes(db: Database): Hono {
 
 			let file: AgentFile | null;
 			if (fileId) {
-				file = db
-					.query("SELECT * FROM files WHERE id = ? AND deleted = 0")
-					.get(fileId) as AgentFile | null;
+				file = findFileByIdActive(db, fileId);
 			} else {
-				file = db
-					.query("SELECT * FROM files WHERE path = ? AND deleted = 0")
-					.get(filePath as string) as AgentFile | null;
+				file = findFileByPathActive(db, filePath as string);
 			}
 
 			if (!file) {
@@ -239,14 +233,7 @@ export function createFilesRoutes(db: Database): Hono {
 		try {
 			const path = c.req.path.replace(/^\/api\/files\/?/, "") || "/";
 
-			const file = db
-				.query(
-					`
-				SELECT * FROM files
-				WHERE path = ? AND deleted = 0
-			`,
-				)
-				.get(path) as AgentFile | undefined;
+			const file = findFileByPathActive(db, path);
 
 			if (!file) {
 				return c.json(
@@ -304,7 +291,7 @@ export function createFilesRoutes(db: Database): Hono {
 				hostOrigin: "localhost:3000",
 			});
 
-			const result = db.query("SELECT * FROM files WHERE id = ?").get(fileId) as AgentFile;
+			const result = findFileById(db, fileId) as AgentFile;
 
 			return c.json(result, 201);
 		} catch (error) {

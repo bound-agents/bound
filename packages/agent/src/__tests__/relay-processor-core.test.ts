@@ -17,8 +17,9 @@ import type {
 	ToolCallPayload,
 	TypedEventEmitter,
 } from "@bound/shared";
+import type { SchedulerAction, SchedulerLike } from "rxjs";
 import type { MCPClient } from "../mcp-client";
-import { RelayProcessor } from "../relay-processor";
+import { INTAKE_RECONCILIATION_STARTUP_GRACE_MS, RelayProcessor } from "../relay-processor";
 import { sleep, waitFor } from "./helpers";
 
 // Mock MCPClient for testing
@@ -127,6 +128,58 @@ afterEach(() => {
 
 describe("RelayProcessor", () => {
 	describe("background loop", () => {
+		it("holds stale intake reconciliation until the startup grace window has elapsed", () => {
+			const callbacks: Array<() => void> = [];
+			let now = 0;
+			let advisoryChecks = 0;
+			const scheduler: SchedulerLike = {
+				now: () => now,
+				schedule: (work, _delay, state) => {
+					callbacks.push(() =>
+						work.call(
+							{
+								schedule: () => ({ unsubscribe: () => {} }),
+								unsubscribe: () => {},
+								closed: false,
+							} as SchedulerAction<unknown>,
+							state,
+						),
+					);
+					return { unsubscribe: () => {} };
+				},
+			};
+			const logger = {
+				...createMockLogger(),
+				warn: (message: string) => {
+					if (message === "[relay] Webhook intake reconcile acted") advisoryChecks++;
+				},
+			};
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				new Map<string, MCPClient>(),
+				createMockModelRouter(),
+				logger,
+				createMockEventBus(),
+				null,
+				undefined,
+				undefined,
+				undefined,
+				() => now,
+			);
+
+			const handle = processor.start(10, scheduler);
+			const pruneTick = callbacks.at(-1);
+			expect(pruneTick).toBeDefined();
+			pruneTick?.();
+			expect(advisoryChecks).toBe(0);
+
+			now = INTAKE_RECONCILIATION_STARTUP_GRACE_MS;
+			pruneTick?.();
+			expect(advisoryChecks).toBe(0);
+			handle.stop();
+		});
+
 		it("creates RelayProcessor and returns stop handle", () => {
 			const mcpClients = new Map<string, MCPClient>();
 			const processor = new RelayProcessor(

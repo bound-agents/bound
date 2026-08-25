@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { ThreadListEntry } from "@bound/client";
+import { Search } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import MemoryGraph from "../components/MemoryGraph.svelte";
@@ -14,10 +15,10 @@ interface ThreadStatus {
 
 // PAGE_SIZE is large enough to cover most viewports without immediately
 // triggering a "load more" on mount, small enough to keep the SQL bounded.
-// Server caps at 200 — see packages/web/src/server/routes/threads.ts.
+// Server caps at 200 - see packages/web/src/server/routes/threads.ts.
 const PAGE_SIZE = 50;
 
-// Source of truth is the id→entry map; the directory list is derived from it.
+// Source of truth is the id-entry map; the directory list is derived from it.
 // Holding the map lets us merge poll results without throwing away threads
 // loaded by paginated "load more" calls.
 let threadsById: Map<string, ThreadListEntry> = $state(new Map());
@@ -65,7 +66,7 @@ const hoveredThread = $derived(
 // thread that *should* have appeared in this page-1 result but didn't,
 // catching deletions of threads currently in the newest-N window.
 // `last_message_at` is monotonic (only bumps forward when a new message
-// arrives), so a thread cannot fall off page 1 by being bumped — only by
+// arrives), so a thread cannot fall off page 1 by being bumped - only by
 // deletion.
 function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean } = {}): void {
 	const map = new Map(threadsById);
@@ -82,7 +83,7 @@ function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean
 				}
 			}
 		} else {
-			// Fewer than PAGE_SIZE — that's the entire visible set.
+			// Fewer than PAGE_SIZE - that's the entire visible set.
 			for (const id of [...map.keys()]) {
 				if (!liveIds.has(id)) {
 					map.delete(id);
@@ -94,8 +95,11 @@ function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean
 
 	for (const t of batch) {
 		map.set(t.id, t);
-		// Only seed from the list if WS hasn't already given us a fresher status.
-		if (!status.has(t.id)) {
+		// For poll refreshes (prunePage1Window), always use the REST API's active
+		// flag -- it derives from the synced tasks.status='running' and is correct
+		// for remote-host tasks that don't emit cross-host WS status events (#42).
+		// For load-more pages, only seed status for new entries not yet tracked.
+		if (opts.prunePage1Window || !status.has(t.id)) {
 			status.set(t.id, { active: t.active });
 		}
 		if (!subscribedIds.has(t.id)) {
@@ -110,7 +114,7 @@ function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean
 
 // Refresh the visible head of the thread list. Polled every 15s plus run on
 // mount; status updates between polls flow over the WS `thread:status`
-// channel. Older paginated pages remain in the map — they don't get
+// channel. Older paginated pages remain in the map - they don't get
 // re-fetched per-poll, but their per-thread status updates flow over WS.
 async function loadThreads(): Promise<void> {
 	try {
@@ -122,7 +126,7 @@ async function loadThreads(): Promise<void> {
 		if (next.length < PAGE_SIZE) {
 			hasMoreThreads = false;
 		} else if (threadsById.size === next.length) {
-			// First-ever load returned a full page — assume there might be more.
+			// First-ever load returned a full page - assume there might be more.
 			hasMoreThreads = true;
 		}
 	} catch (error) {
@@ -173,6 +177,14 @@ async function newThread(): Promise<void> {
 	}
 }
 
+async function renameThread(id: string, title: string): Promise<void> {
+	const updated = await client.renameThread(id, title);
+	const next = new Map(threadsById);
+	const current = next.get(id);
+	if (current) next.set(id, { ...current, title: updated.title });
+	threadsById = next;
+}
+
 function goToThread(id: string): void {
 	navigateTo(`/line/${id}`);
 }
@@ -194,7 +206,7 @@ onDestroy(() => {
 </script>
 
 <div class="system-map">
-	<!-- Left — thread directory -->
+	<!-- Left â thread directory -->
 	<div class="thread-panel">
 		<div class="panel-header">
 			<div class="header-top">
@@ -211,21 +223,11 @@ onDestroy(() => {
 			<TextInput
 				value={searchQuery}
 				onchange={(v) => (searchQuery = v)}
-				placeholder="Search threads…"
+				placeholder="Search threads"
 				fullWidth={true}
 			>
 				{#snippet icon()}
-					<svg
-						width="12"
-						height="12"
-						viewBox="0 0 16 16"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="1.8"
-					>
-						<circle cx="7" cy="7" r="5" />
-						<path d="M11 11l3.5 3.5" />
-					</svg>
+					<Search size={12} />
 				{/snippet}
 			</TextInput>
 		</div>
@@ -238,6 +240,7 @@ onDestroy(() => {
 				onSelectThread={(id) => goToThread(id)}
 				onNavigateThread={goToThread}
 				onHoverThread={(id) => (hoveredThreadId = id)}
+				onRenameThread={renameThread}
 				onLoadMore={loadMoreThreads}
 				hasMore={hasMoreThreads && !searchQuery.trim()}
 				isLoadingMore={isLoadingMore}
@@ -245,7 +248,7 @@ onDestroy(() => {
 		</div>
 	</div>
 
-	<!-- Right — memory graph -->
+	<!-- Right â memory graph -->
 	<div class="map-panel">
 		<MemoryGraph
 			selectedThreadId={hoveredThreadId}
@@ -310,7 +313,7 @@ onDestroy(() => {
 		flex-direction: column;
 		flex: 1;
 		min-height: 0;
-		/* No overflow here — ThreadList owns its own scrolling so its
+		/* No overflow here - ThreadList owns its own scrolling so its
 		   internal virtualization can hook the scroll container directly. */
 	}
 
@@ -329,6 +332,18 @@ onDestroy(() => {
 			border-right: none;
 			border-bottom: 1px solid var(--rule-soft);
 			max-height: 50vh;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.panel-header {
+			padding: 14px 14px 10px;
+		}
+		.panel-title {
+			font-size: 21px;
+		}
+		.thread-panel {
+			max-height: 45vh;
 		}
 	}
 </style>

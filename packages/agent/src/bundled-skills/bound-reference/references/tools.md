@@ -26,7 +26,7 @@ adds the conceptual layer the schema can't carry: what each tool is *for* and
 
 ## Native agent tools
 
-These twelve are registered in `createAgentTools()`
+These fourteen are registered in `createAgentTools()`
 (`packages/agent/src/tools/index.ts`). The set is the source of truth; this
 catalog is kept in sync with it by a test.
 
@@ -101,9 +101,58 @@ phrasing in the `context` field, not the relation. This is your durable
 cross-session memory — see `references/memory.md`.
 
 ### `skill`
-Manage skills: `activate`, `list`, `bms_read`, `retire`. Skills are reusable
+Manage skills: `activate`, `list`, `read`, `deactivate`. Skills are reusable
 instruction sets; activating one makes its index entry appear in every turn and
 lets a task inject its body. See the `skill-authoring` skill for how to write one.
+
+### `aux`
+Manage auxiliary-agent identities: `define`, `update`, `retire`, `list`. An
+auxiliary agent is a durable, persona-scoped identity with its own memory
+namespace — a scoped someone to hand a side errand to without dragging your full
+context or identity along. The persona says who it IS (temperament, working
+style, standing habits), not what it's for; the job rides in the invocation's
+instructions. `define` refuses an existing active name (identity sprawl splits a
+namespace); `retire` hides it from list/invoke but keeps its memory namespace
+readable. Invocation (running one) is a separate slice. The `aux-agents` skill
+carries the roster doctrine: persona vs errand, role coverage, and the
+overprompting smell that means an identity is missing.
+
+### `yard`
+Execute a bounded JavaScript generator in a QuickJS sandbox, keeping
+corpus-scale intermediates outside conversation history. The `program` defines
+`function* main(input)` and yields branded effects — `tool(name, args)`,
+`infer(modelId, request)`, `aux(name, instructions)`, `all(effects)`,
+`sequence(effects)` — which Yard dispatches through the ordinary tool and
+inference paths, resuming the generator with each result. This includes
+`boundless_*` client tools: Yard dispatches them to the attached WS session
+(or relays to its host), waits inline, and consumes the generated re-wake so a
+second agent loop cannot run the thread.
+
+Yard is a high-level orchestration tool: the unit of work is normally an
+agent, not a raw tool call. Corpus-scale changes are scatter-gather —
+enumerate partitions with one glue `tool()` call, scatter read-agents
+(`aux()`) across them via `all()`, gather their findings into structured
+work orders with `infer()` (schema-validated), re-scatter write-agents to
+implement, then gate acceptance with reviewer agents and re-dispatch
+implementers against the specific objections. Choose effects by capability:
+`infer()` is pure text-to-text (the invoked model has NO tools and sees only
+the prompt and input you hand it — asking it to "inspect the repo" fails
+structurally), `tool()` is glue for enumeration up front and verification at
+the end, and `aux()` runs a real tool loop for any errand needing tools plus
+judgment. If a program's core work is a chain of raw `tool()` calls, that
+work usually belongs inside an `aux()` errand instead. Size the plan to the
+whole task on the FIRST attempt: a partition is the smallest unit one agent
+can exhaustively cover and verify (a directory or a few files, not a group
+of packages), and dozens of concurrent aux agents is the normal shape for
+repo-wide work, not an escalation. Return per-partition outcomes so coverage
+is checkable from the result. The `yard-recipes` skill carries the full
+working recipes and the failure modes that waste runs.
+Avoid using it for a lone trivial read where the orchestration
+cost adds nothing. The guest has no ambient I/O; only the final JSON value,
+usage counts, and a trace id return to context. Optional `budget`
+(`timeout_seconds`, `concurrency`) bounds the whole recursive tree; nested
+`tool("yard", ...)` calls must omit `budget` and inherit the root limits
+unchanged.
 
 ## Built-in file and sandbox tools
 

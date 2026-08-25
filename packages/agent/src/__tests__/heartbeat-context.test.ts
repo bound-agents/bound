@@ -11,7 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase, insertRow } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, insertRow } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { buildHeartbeatContext } from "../heartbeat-context";
 
@@ -25,6 +25,7 @@ describe("buildHeartbeatContext", () => {
 		const dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 	});
 
 	beforeEach(() => {

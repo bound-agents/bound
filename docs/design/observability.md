@@ -2,7 +2,7 @@
 
 Last verified: 2026-05-25
 
-OpenTelemetry distributed tracing across all binaries (`bound`, `boundless`, `bound-mcp`, `boundctl`) and the relay protocol. Opt-in via `OTEL_ENABLED=1`; when unset, `@opentelemetry/api` returns no-op spans (zero overhead). When enabled, the OTLP HTTP exporter sends to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
+OpenTelemetry distributed tracing across all binaries (`bound`, `boundless`, `boundctl`) and the relay protocol. Opt-in via `OTEL_ENABLED=1`; when unset, `@opentelemetry/api` returns no-op spans (zero overhead). When enabled, the OTLP HTTP exporter sends to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
 
 ## Bootstrap
 
@@ -31,6 +31,7 @@ All layers use `@opentelemetry/api` directly; no auto-instrumentation.
 | `bound.web` | `web.handle-message` per handler invocation (NOT a root span when `agent.handle-message` is open) |
 | `bound.scheduler` | `scheduler.execute-task` root span per scheduled task execution |
 | `bound.relay` | `relay.execute-process` root span for delegated inference on hub |
+| `bound.yard` | `yard.run` per Yard execution (root + nested, linked by `yard.trace_id`), `yard.effect` per dispatched tool/inference effect |
 
 ## Cross-handler-invocation spans
 
@@ -88,3 +89,31 @@ Pino mixin injects `trace_id`, `span_id`, `trace_flags` into every log line when
 - From `@bound/shared`: `createScopedTraceCollector`, `extractTraceContext`, `injectTraceContext`, `runInTraceContext`, `SerializedSpan`, `setTraceExporter`, `getTraceExporter` (the last two via a module-level holder that avoids circular imports).
 - From `@bound/client`: `createClientTracingSession`.
 - From `@bound/agent`: `HandleMessageTracker`, `DEFAULT_WATCHDOG_TIMEOUT_MS`, `DEFAULT_WATCHDOG_INTERVAL_MS`.
+
+---
+
+## Metrics Dashboard
+
+The Bound web UI includes a comprehensive Metrics tab that aggregates and visualizes token usage, cost, relay performance, and context assembly efficiency. All metrics are filtered by an interactive date range selector with presets (24h/7d/30d/All) and custom date inputs. The dashboard is backed by a single parameterized aggregation endpoint that performs server-side queries across the `turns`, `relay_cycles`, and `context_debug` data sources.
+
+### API Endpoint
+
+`GET /api/metrics?from=<ISO>&to=<ISO>` returns a structured `MetricsResponse` payload containing three sections: tokens, relay, and context. The endpoint enforces query parameter validation (ISO 8601 date strings required) and returns 400 with a descriptive error if parameters are missing or malformed.
+
+**Bucketing logic** lives server-side: ranges ≤48h use hourly buckets via SQLite's `strftime('%Y-%m-%dT%H:00', created_at)`, ranges >48h use daily buckets via `date(created_at)`. The threshold is computed from the difference between `from` and `to` timestamps at request time, so the client receives appropriately granular timeline data without needing to specify bucketing strategy.
+
+### Token Usage and Cost
+
+The tokens section aggregates per-model token consumption and cost from the `turns` table. `byModel` returns an array with `model_id`, summed `tokens_in`/`tokens_out`/`cache_read`/`cache_write`, total `cost_usd`, and `turn_count`. The `timeline` array provides bucketed time-series data showing tokens and cost over the selected range. The `totals` object rolls up aggregate counts including `error_count` (turns with null `model_id` or other failure indicators). Cost calculation incorporates all four pricing dimensions: input tokens, output tokens, cache write tokens, and cache read tokens, using the per-million rates from `model_backends.json`.
+
+### Relay Performance
+
+The relay section aggregates from the local-only `relay_cycles` table, which records each relay inference request/response cycle with latency, success/failure status, and peer metadata. `byHost` returns per-host breakdowns with `avg_latency_ms`, `p95_latency_ms` (95th percentile), and success/failure/expired counts. `recentCycles` returns the 50 most recent relay cycles with sortable columns for interactive exploration. The `totals` object includes cluster-wide `success_rate` and `avg_latency_ms`. Because `relay_cycles` is not synced across hosts, the relay section reflects what the current node observes, not cluster-wide relay health — this is noted in the section header subtitle in the UI.
+
+### Context Assembly Metrics
+
+The context section extracts metrics from the `context_debug` JSON column on the `turns` table. `totals` provides `avg_cache_hit_rate` (percentage of tokens served from prompt cache), `budget_pressure_count` (number of turns where context size approached the model's token limit, triggering enrichment reduction or truncation), and `avg_truncated_tokens` (average number of tokens removed from history due to budget pressure). The `timeline` array shows cache hit rate and budget pressure percentage evolving over the selected date range, enabling operators to identify trends in context efficiency. Turns without `context_debug` entries are excluded from these metrics to avoid NaN or divide-by-zero errors.
+
+### Response Contract
+
+The full `MetricsResponse` shape includes nested objects and arrays for all three sections. The client-side view component fetches this endpoint on mount and whenever the date range changes, then passes the response sections to LayerCake-based chart components for visualization. The UI provides MetroCard summary components for key metrics (total tokens, total cost, success rate, cache hit rate), horizontal bar charts for per-model and per-host breakdowns, timeline/area charts for cost and cache evolution, and a DataTable for recent relay cycles with failure row accents. The layout follows the Tokyo Metro aesthetic with Space Grotesk typography and 8px border-radius cards, matching existing views like NetworkStatus and Timetable. Front-end visualization details are documented in the web-ui reference doc; this section covers only the backend aggregation API and metrics definitions.

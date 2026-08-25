@@ -1,5 +1,6 @@
 // Client classes
 export { BoundClient, BoundNotRunningError, BoundApiError } from "./client.js";
+export { sortClusterModelsById } from "./model-sort.js";
 
 // Tracing utilities
 export {
@@ -33,11 +34,15 @@ export type {
 	CrossThreadSource,
 	ContextDebugInfo,
 	ContextDebugTurn,
+	ContextDebugEvent,
+	MetricsTokenTotals,
 	CacheMarker,
-	CreateMcpThreadResult,
 	ApiErrorBody,
 	BoundClientEvents,
 	ConnectionState,
+	ConnectorBindingEntry,
+	ConnectorBindingsResponse,
+	UpdateConnectorBindingOptions,
 	ToolDefinition,
 	ToolCallRequest,
 	ToolCallResult,
@@ -47,4 +52,7 @@ export type {
 	WebhookRotateResponse,
 	CreateWebhookOptions,
 	UpdateWebhookOptions,
+	RssFeedListEntry,
+	CreateRssFeedOptions,
+	UpdateRssFeedOptions,
 } from "./types.js";

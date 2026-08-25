@@ -100,9 +100,16 @@ export function createRelayBackend(
 ): LLMBackend {
 	return {
 		chat(params: ChatParams): AsyncIterable<StreamChunk> {
+			// This relay path carries ad-hoc messages (e.g. loop-end summary
+			// extraction), NOT a thread's assembled history — they don't correspond
+			// to synced message rows, so there is no range to point at. Ship every
+			// message as an inline segment (the all-inline degenerate of the single
+			// segment wire format, R-UD3). nowMs is the send instant; with no range
+			// segment to resolve, the consumer never uses it for re-annotation.
 			const payload: InferenceRequestPayload = {
 				model: modelId,
-				messages: params.messages,
+				segments: params.messages.map((message) => ({ kind: "inline" as const, message })),
+				nowMs: Date.now(),
 				timeout_ms: timeoutMs,
 			};
 			if (params.tools !== undefined) payload.tools = params.tools;

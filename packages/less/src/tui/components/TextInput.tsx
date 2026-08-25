@@ -1,6 +1,17 @@
 import { Box, Text, useInput, useStdin } from "ink";
 import type React from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { expandTabs } from "../util/wrap";
+
+export interface SlashCompletion {
+	/** The command literal, including the leading slash (e.g. "/model"). */
+	value: string;
+	/** One-line description shown dimmed beside the command in the menu. */
+	description?: string;
+	/** When true, Tab-completion appends a trailing space so the operator
+	 *  can keep typing the argument without an extra keystroke. */
+	takesArgs?: boolean;
+}
 
 export interface TextInputProps {
 	onSubmit: (value: string) => void;
@@ -11,6 +22,38 @@ export interface TextInputProps {
 	 *  wrapping. This ensures Ink's logical line count matches the physical
 	 *  row count, preventing ghost lines when the input height changes. */
 	columns?: number;
+	/** Whether the input currently holds keyboard focus. Defaults to true. Set
+	 *  false while a key-capturing overlay is mounted above the input (e.g. a
+	 *  dismissable banner that closes on 'x') so the overlay steals focus —
+	 *  otherwise ink delivers the keypress to BOTH handlers and the dismiss key
+	 *  also lands as a character in the input. Suppresses both keystroke capture
+	 *  and the imperative clear; distinct from `disabled` (connection state),
+	 *  which also dims the rendered value. */
+	hasFocus?: boolean;
+	/** Prior submissions, oldest → newest. ↑/↓ (or Ctrl+P/N) recall them
+	 *  readline-style: ↑ walks back, ↓ walks forward and finally restores the
+	 *  in-progress draft. Recalled text passes through the same sanitation as
+	 *  a paste (tabs → spaces, newlines → spaces) so a multi-line historical
+	 *  message can't desync the input's physical-row accounting. Any edit
+	 *  detaches from history and keeps the recalled text. */
+	history?: string[];
+	/** Slash-command palette. While the buffer is a bare "/token" (no space
+	 *  yet), prefix-matching entries render as a menu under the input:
+	 *  ↑/↓ select, Tab completes into the buffer, Enter submits the selected
+	 *  command directly. */
+	completions?: SlashCompletion[];
+	/** Fired on Ctrl+V. The terminal never delivers image bytes through
+	 *  stdin — bracketed paste only carries text — so an image paste MUST be
+	 *  an explicit chord that asks the OS clipboard directly. The input stays
+	 *  clipboard-agnostic: the parent owns the read (spawning pbpaste/osascript/
+	 *  wl-paste), staging, and send. Text pastes are unaffected — terminals
+	 *  deliver those as ordinary input, handled by the character branch. */
+	onPasteImage?: () => void;
+	/** Fired when Esc lands on an ALREADY-EMPTY buffer (the single-press
+	 *  clear had nothing to do). ChatView uses it to drop a staged image
+	 *  attachment — the same key that clears text clears the attachment,
+	 *  in the same order: text first, then the stage. */
+	onEscapeEmpty?: () => void;
 }
 
 /**
@@ -201,11 +244,23 @@ function wordRight(value: string, pos: number): number {
 	return i;
 }
 
+/** Recalled history entries pass through the same sanitation as a paste:
+ * tabs → spaces, embedded newlines → single spaces — a multi-line historical
+ * message must not desync the input's physical-row accounting. */
+function sanitizeRecall(s: string): string {
+	return expandTabs(s).replace(/\r\n|\r|\n/g, " ");
+}
+
 export function TextInput({
 	onSubmit,
 	placeholder = "",
 	disabled = false,
 	columns,
+	hasFocus = true,
+	history = [],
+	completions = [],
+	onPasteImage,
+	onEscapeEmpty,
 }: TextInputProps): React.ReactElement {
 	// Combine value + cursor position in a single state atom so that
 	// rapid-fire keystrokes (which all close over the same render's state)
@@ -219,6 +274,61 @@ export function TextInput({
 	});
 	const { value, pos } = state;
 
+	// --- Slash-command completion menu (derived) ---
+	// Active only while the buffer is a bare "/token" — the moment a space
+	// lands (arguments begin) the menu folds away and every key reverts to
+	// its plain meaning.
+	const slashFilter = /^\/\S*$/.test(value) ? value : null;
+	const menuItems =
+		slashFilter !== null ? completions.filter((c) => c.value.startsWith(slashFilter)) : [];
+	const menuActive = menuItems.length > 0 && !disabled && hasFocus;
+	// Selection is keyed to the filter it was made under: when the filter
+	// changes (typing narrows/widens the match list) the stored index no
+	// longer applies and the selection derives back to 0 — no reset effect
+	// needed. The clamp also covers a shrinking list under the same filter.
+	const [menuState, setMenuState] = useState<{ idx: number; filter: string | null }>({
+		idx: 0,
+		filter: null,
+	});
+	const menuSel =
+		menuState.filter === slashFilter
+			? Math.min(menuState.idx, Math.max(0, menuItems.length - 1))
+			: 0;
+
+	// --- History recall state ---
+	// idx === null: not browsing. draft: the in-progress text saved when ↑
+	// first entered history, restored when ↓ walks past the newest entry.
+	const [hist, setHist] = useState<{ idx: number | null; draft: string }>({
+		idx: null,
+		draft: "",
+	});
+
+	// Any edit detaches from history browsing and keeps the current text —
+	// otherwise a recalled entry silently shadows the characters just typed.
+	const detachHistory = useCallback(() => {
+		setHist((h) => (h.idx === null ? h : { idx: null, draft: "" }));
+	}, []);
+
+	// Mirror the live value/disabled into refs so clear() (whose identity must
+	// stay stable across renders) reads current state rather than a stale
+	// capture.
+	const valueRef = useRef(value);
+	valueRef.current = value;
+	const disabledRef = useRef(disabled);
+	disabledRef.current = disabled;
+	const hasFocusRef = useRef(hasFocus);
+	hasFocusRef.current = hasFocus;
+
+	// Single-press Esc clear. No-op on an empty buffer; a modal capturing input
+	// above us (hasFocus=false) makes this a no-op so the input never edits
+	// itself while it lacks focus.
+	const clear = useCallback((): boolean => {
+		if (disabledRef.current || !hasFocusRef.current) return false;
+		if (valueRef.current.length === 0) return false;
+		setState({ value: "", pos: 0 });
+		setHist({ idx: null, draft: "" });
+		return true;
+	}, []);
 	// ink maps BOTH 0x7F (the byte the Unix Backspace key sends) and the
 	// xterm forward-delete escape sequence (ESC[3~) to key.delete=true with
 	// input='' (see ink's parse-keypress.js: 0x7F and ESC[3~ both resolve to
@@ -273,9 +383,41 @@ export function TextInput({
 				return;
 			}
 
-			// Up/Down: no multi-line support yet; swallow so they don't leak
-			// as stray characters.
-			if (key.upArrow || key.downArrow) {
+			// Up/Down: menu selection while the completion menu is open; history
+			// recall otherwise (Ctrl+P/N are the readline aliases). ↓ past the
+			// newest entry restores the draft that ↑ interrupted.
+			if (key.upArrow || (key.ctrl && input === "p")) {
+				if (menuActive) {
+					setMenuState({
+						idx: (menuItems.length + menuSel - 1) % menuItems.length,
+						filter: slashFilter,
+					});
+					return;
+				}
+				if (history.length === 0) return;
+				const nextIdx = hist.idx === null ? history.length - 1 : Math.max(0, hist.idx - 1);
+				const draft = hist.idx === null ? value : hist.draft;
+				const recalled = sanitizeRecall(history[nextIdx] ?? "");
+				setHist({ idx: nextIdx, draft });
+				setState({ value: recalled, pos: recalled.length });
+				return;
+			}
+			if (key.downArrow || (key.ctrl && input === "n")) {
+				if (menuActive) {
+					setMenuState({ idx: (menuSel + 1) % menuItems.length, filter: slashFilter });
+					return;
+				}
+				if (hist.idx === null) return;
+				if (hist.idx >= history.length - 1) {
+					const draft = hist.draft;
+					setHist({ idx: null, draft: "" });
+					setState({ value: draft, pos: draft.length });
+				} else {
+					const nextIdx = hist.idx + 1;
+					const recalled = sanitizeRecall(history[nextIdx] ?? "");
+					setHist((h) => ({ ...h, idx: nextIdx }));
+					setState({ value: recalled, pos: recalled.length });
+				}
 				return;
 			}
 
@@ -301,11 +443,35 @@ export function TextInput({
 				return;
 			}
 
+			// Ctrl+V: image paste (see onPasteImage contract above). Checked
+			// before the generic ctrl swallow so the chord reaches the parent.
+			if (key.ctrl && input === "v") {
+				onPasteImage?.();
+				return;
+			}
+
+			// Tab: complete the selected menu entry into the buffer. Swallowed
+			// even with no menu open — a literal tab keypress in a single-line
+			// input is never intent (tabs in PASTED text are sanitized to spaces
+			// by the character-input branch below, unchanged).
+			if (key.tab) {
+				if (menuActive) {
+					const chosen = menuItems[menuSel];
+					const completed = chosen.takesArgs ? `${chosen.value} ` : chosen.value;
+					setState({ value: completed, pos: completed.length });
+				}
+				return;
+			}
+
 			// --- Editing keys ---
 
 			if (key.return) {
-				onSubmit(value);
+				// With the menu open, Enter runs the SELECTED command — the buffer
+				// may only hold "/mo" but the operator's intent is the highlighted
+				// "/model".
+				onSubmit(menuActive ? menuItems[menuSel].value : value);
 				setState({ value: "", pos: 0 });
+				setHist({ idx: null, draft: "" });
 				return;
 			}
 
@@ -331,6 +497,7 @@ export function TextInput({
 							pos: s.pos,
 						};
 					});
+					detachHistory();
 					return;
 				}
 				// Fall through: treat as backspace.
@@ -349,11 +516,23 @@ export function TextInput({
 						pos: newPos,
 					};
 				});
+				detachHistory();
+				return;
+			}
+
+			// Esc clears the buffer (single press, no-op when empty). Bare ESC
+			// only — escape *sequences* (arrows, meta-combos) were consumed by the
+			// branches above, so key.escape here means the lone byte. On an
+			// already-empty buffer the press falls through to onEscapeEmpty so
+			// the parent can drop a staged image attachment (text first, then
+			// the stage — two presses to clear both).
+			if (key.escape) {
+				if (!clear()) onEscapeEmpty?.();
 				return;
 			}
 
 			// Swallow any remaining control sequences.
-			if (key.ctrl || key.meta || key.escape) {
+			if (key.ctrl || key.meta) {
 				return;
 			}
 
@@ -363,13 +542,22 @@ export function TextInput({
 				if (input.startsWith("[<") || input.startsWith("[M")) {
 					return;
 				}
+				// Sanitize pasted text: breakLines does its row accounting in plain
+				// character counts, but a literal tab renders as up to 8 columns and
+				// an embedded newline as a whole extra physical row — either desyncs
+				// Ink's logical line count from the physical rows, making log-update
+				// under-erase and re-emit the input box's top border on every
+				// keystroke. Tabs become spaces; newlines (multiline paste into a
+				// single-line input) become single spaces.
+				const sanitized = expandTabs(input).replace(/\r\n|\r|\n/g, " ");
 				setState((s) => ({
-					value: s.value.slice(0, s.pos) + input + s.value.slice(s.pos),
-					pos: s.pos + input.length,
+					value: s.value.slice(0, s.pos) + sanitized + s.value.slice(s.pos),
+					pos: s.pos + sanitized.length,
 				}));
+				detachHistory();
 			}
 		},
-		{ isActive: !disabled },
+		{ isActive: !disabled && hasFocus },
 	);
 
 	// Render the value with the cursor drawn ON TOP OF the grapheme cluster
@@ -380,6 +568,32 @@ export function TextInput({
 	//
 	// At end-of-string (pos === value.length), the cursor is rendered as a
 	// trailing inverse-video space so it remains visible.
+
+	// --- Completion menu node ---
+	// Rendered UNDER the value line(s). Hard row cap keeps the dynamic
+	// region's height predictable (the ghost-card lesson: unbounded physical
+	// rows in the live area make log-update strand scrollback copies). Eight
+	// rows covers the full command palette today; a longer list truncates
+	// (selection can't walk past it — prefix filtering shrinks the list
+	// faster than ↓ can chase it in practice).
+	const MENU_MAX_ITEMS = 8;
+	const menuNode = menuActive ? (
+		<Box flexDirection="column">
+			{menuItems.slice(0, MENU_MAX_ITEMS).map((c, i) => (
+				<Text key={c.value} wrap="truncate-end">
+					<Text
+						color={i === menuSel ? "cyan" : undefined}
+						bold={i === menuSel}
+						dimColor={i !== menuSel}
+					>
+						{i === menuSel ? "❯ " : "  "}
+						{c.value}
+					</Text>
+					{c.description ? <Text dimColor> {c.description}</Text> : null}
+				</Text>
+			))}
+		</Box>
+	) : null;
 
 	const showPlaceholder = value.length === 0 && !disabled;
 
@@ -439,6 +653,7 @@ export function TextInput({
 						<Text key={lineIdx}>{line}</Text>
 					);
 				})}
+				{menuNode}
 			</Box>
 		);
 	}
@@ -449,10 +664,13 @@ export function TextInput({
 	if (cluster === null) {
 		// Cursor is past end-of-string — render as a trailing inverse space.
 		return (
-			<Text>
-				{value}
-				<Text inverse> </Text>
-			</Text>
+			<Box flexDirection="column">
+				<Text>
+					{value}
+					<Text inverse> </Text>
+				</Text>
+				{menuNode}
+			</Box>
 		);
 	}
 
@@ -460,10 +678,13 @@ export function TextInput({
 	const clusterEnd = clusterStart + cluster.length;
 
 	return (
-		<Text>
-			{value.slice(0, clusterStart)}
-			<Text inverse>{cluster}</Text>
-			{value.slice(clusterEnd)}
-		</Text>
+		<Box flexDirection="column">
+			<Text>
+				{value.slice(0, clusterStart)}
+				<Text inverse>{cluster}</Text>
+				{value.slice(clusterEnd)}
+			</Text>
+			{menuNode}
+		</Box>
 	);
 }

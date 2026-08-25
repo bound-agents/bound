@@ -31,15 +31,6 @@ path may show the *old* content or no row yet. The write is real and a subsequen
 a write by querying `files` in the same turn and conclude it failed — `bms_read` the
 path instead.
 
-## Overlay mounts — reading real codebases
-
-The sandbox can mount real host directories read-through as **overlays** (e.g. a
-checked-out repo), configured in `overlay.json`. An overlay scanner indexes those
-trees into the `overlay_index` table so you can discover and read source without
-the files being copied into the VFS proper. This is how you read a codebase you
-are reasoning about. Overlay mounts are read paths; your writable workspace is the
-VFS itself.
-
 ## The 256 KiB tool-result cap
 
 Every tool result, regardless of kind, is bounded by a universal **256 KiB**
@@ -90,6 +81,14 @@ while `bms_edit` would (silently, harmlessly) write into the VFS instead. The
 `boundless_copy` tool moves bytes between the two stations without round-tripping
 through your context — its `source`/`target` take `"main"` (the VFS) or `"satellite"`
 (the host disk).
+
+Boundless shell writes are OS-confined: seatbelt on macOS, bubblewrap on Linux, and a
+Bound-owned one-shot AppContainer lowbox on Windows. The Windows backend has no persisted
+session fallback. It keeps `.git/config` and `.git/hooks` read-only while ordinary Git
+state remains writable, kills descendant process trees through a Job
+Object, and leaves profile/ACL/journal cleanup to its watcher. If host policy blocks
+unprivileged AppContainer profile creation, the default `onUnavailable: "error"` refuses
+the command with guidance; `"passthrough"` is an explicit, visibly unsandboxed fallback.
 
 ## What is NOT in the sandbox
 

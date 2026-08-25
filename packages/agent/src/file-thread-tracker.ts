@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
+import {
+	findMemoryIdByKeyIncludingDeleted,
+	findMemoryValueByKey,
+	insertRow,
+	updateRow,
+} from "@bound/core";
 
 const MEMORY_KEY_PREFIX = "_internal.file_thread.";
 
@@ -43,9 +48,7 @@ export function trackFilePath(
 	const now = new Date().toISOString();
 
 	// Check if memory entry exists (including soft-deleted to avoid UNIQUE violations)
-	const existing = db.prepare("SELECT id FROM semantic_memory WHERE key = ?").get(key) as
-		| { id: string }
-		| undefined;
+	const existing = findMemoryIdByKeyIncludingDeleted(db, key);
 
 	if (existing) {
 		// Update existing entry via change-log outbox
@@ -79,13 +82,12 @@ export function trackFilePath(
 
 export function getLastThreadForFile(db: Database, filePath: string): string | null {
 	const key = MEMORY_KEY_PREFIX + normalizeFilePathForKey(filePath);
-	const result = db
-		.prepare("SELECT value FROM semantic_memory WHERE key = ? AND deleted = 0")
-		.get(key) as { value: string } | undefined;
+	const result = findMemoryValueByKey(db, key);
 
 	return result?.value || null;
 }
 
+/** Cross-thread file-conflict notice: `filePath` was last touched by a different thread than the one currently about to read/write it. */
 export function getFileThreadNotificationMessage(
 	filePath: string,
 	otherThreadTitle: string,

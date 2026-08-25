@@ -17,6 +17,19 @@
  * transitively depends on a directly-affected package, then `bun test` runs
  * once over the union of their source dirs.
  *
+ * Two-layer selection. The package set above comes from the STAGED diff and is
+ * the correctness floor. Within it, `bun test --changed` drops test files the
+ * change cannot reach through the import graph — the file-level filter a
+ * package-level graph walk cannot express (a one-line edit in @bound/shared
+ * expands to all 12 packages by dependency, while only a couple of test files
+ * import the touched module: measured 2/535 files vs 12 whole packages).
+ *
+ * `--changed` compares the WORKING TREE, not the index, so it is only ever a
+ * narrowing layer over the staged determination. Partial staging (`git add -p`)
+ * leaves the working tree a superset of the index, erring toward running MORE
+ * tests. A global-file change skips the narrowing entirely: when bunfig or the
+ * lockfile moves, every test is in scope regardless of what imports what.
+ *
  * Run:           bun run scripts/test-affected.ts
  * Inspect only:  bun run scripts/test-affected.ts --dry-run
  * Wired into:    .githooks/pre-commit
@@ -137,6 +150,18 @@ export function toTestPathArg(dir: string): string {
 }
 
 /**
+ * True if a package directory contains any test files (files with `.test`,
+ * `_test_`, `.spec`, or `_spec_` in the name). Package dirs without test files
+ * (e.g. `packages/docs`) are skipped so `bun test` doesn't exit non-zero
+ * on "did not match any test files".
+ */
+export function hasTestFiles(dir: string, root: string): boolean {
+	const glob = new Glob("**/*.{test,spec}.{ts,tsx,js,jsx}");
+	for (const _ of glob.scanSync({ cwd: resolve(root, dir) })) return true;
+	return false;
+}
+
+/**
  * Given the changed files and the workspace graph, returns the set of package
  * dirs whose tests should run. A global file change returns every package.
  * Otherwise, directly-changed packages are expanded across transitive
@@ -201,19 +226,28 @@ export function run(): void {
 	const dirs = [...affected].sort();
 	if (shouldRunScriptsTests(changed)) dirs.push("scripts");
 
-	if (dirs.length === 0) {
+	const testableDirs = dirs.filter((d) => hasTestFiles(d, root));
+	const scriptsHaveTests = shouldRunScriptsTests(changed) && hasTestFiles("scripts", root);
+	if (scriptsHaveTests) testableDirs.push("scripts");
+
+	if (testableDirs.length === 0) {
 		console.log("test-affected: no testable sources staged — skipping tests.");
 		process.exit(0);
 	}
 
 	const pkgCount = affected.size;
 	const isFull = pkgCount === graph.deps.size;
+	const skipped = dirs.filter((d) => !testableDirs.includes(d));
 	console.log(
-		`test-affected: ${dirs.length} test dir(s)${
+		`test-affected: ${testableDirs.length} test dir(s)${
 			isFull ? " (full package suite — a global file changed)" : ""
 		}:`,
 	);
-	for (const dir of dirs) console.log(`  - ${dir}`);
+	for (const dir of testableDirs) console.log(`  - ${dir}`);
+	if (skipped.length > 0) {
+		console.log(`test-affected: ${skipped.length} dir(s) skipped (no test files):`);
+		for (const dir of skipped) console.log(`  - ${dir}`);
+	}
 
 	if (dryRun) {
 		process.exit(0);
@@ -228,18 +262,37 @@ export function run(): void {
 		// matches. Per-dir exit code is preserved; the partial case (3
 		// packages) is unaffected — it never trips the global-file branch.
 		let lastExit = 0;
-		for (const dir of dirs) {
+		for (const dir of testableDirs) {
 			const proc = Bun.spawnSync(["bun", "test", toTestPathArg(dir)], {
 				cwd: root,
 				stdout: "inherit",
 				stderr: "inherit",
 			});
-			if ((proc.exitCode ?? 1) !== 0) lastExit = proc.exitCode ?? 1;
+			const exitCode = proc.exitCode ?? 1;
+			if (exitCode !== 0) {
+				console.error(`test-affected: ${dir} exited ${exitCode}`);
+				lastExit = exitCode;
+			}
 		}
 		process.exit(lastExit);
 	}
 
-	const proc = Bun.spawnSync(["bun", "test", ...dirs.map(toTestPathArg)], {
+	// Narrow within the selected dirs by import-graph reachability. The dirs come
+	// from the STAGED diff (authoritative for what this commit ships); `--changed`
+	// then drops test files in those dirs that the change cannot reach, which is a
+	// file-level filter the package-level graph walk above cannot express: a
+	// one-line edit in @bound/shared expands to all 12 packages by dependency, but
+	// only a couple of test files actually import the touched module.
+	//
+	// `--changed` reads the WORKING TREE, not the index, so it is a narrowing
+	// layer and never the gate itself. Partial staging (`git add -p`) leaves the
+	// working tree a superset of the index, so it errs toward running MORE tests.
+	// The global-file branch above deliberately skips it: when bunfig/lockfile
+	// moves, every test is in scope regardless of what imports what.
+	//
+	// "no test files are affected" exits 0, so a dir whose tests are all
+	// unreachable is not a failure.
+	const proc = Bun.spawnSync(["bun", "test", ...testableDirs.map(toTestPathArg), "--changed"], {
 		cwd: root,
 		stdout: "inherit",
 		stderr: "inherit",

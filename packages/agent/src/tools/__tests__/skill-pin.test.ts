@@ -130,11 +130,11 @@ describe("skill pinning helpers (issue #173)", () => {
 			expect(result.fingerprint).not.toBe("");
 		});
 
-		it("drops a skill that was activated then retired (status filter)", async () => {
+		it("drops a skill that was activated then deleted", async () => {
 			await importSkill(db, "alpha", "Alpha body.");
 			insertSkillToolCall(db, threadId, "activate", "alpha", "2026-01-01T00:00:00.000Z");
-			// Retire it globally.
-			db.prepare("UPDATE skills SET status = 'retired' WHERE name = 'alpha'").run();
+			// Delete it globally (soft-delete tombstone).
+			db.prepare("UPDATE skills SET deleted = 1 WHERE name = 'alpha'").run();
 
 			const result = collectThreadPinnedSkills(db, threadId);
 			expect(result.pinnedNames).toEqual([]);
@@ -231,17 +231,17 @@ describe("skill tool deactivate action (issue #173)", () => {
 		expect(result).toMatch(/not found/i);
 	});
 
-	it("confirms deactivation for an existing skill without mutating its status", async () => {
+	it("confirms deactivation for an existing skill without mutating the global row", async () => {
 		await importSkill(db, "alpha", "Alpha body.");
 		const result = await getExecute(createSkillTool(toolContext))({
 			action: "deactivate",
 			name: "alpha",
 		});
 		expect(result).toMatch(/deactivated for this thread/i);
-		// Global status untouched — deactivate is a per-thread, log-derived concern.
-		const row = db.prepare("SELECT status FROM skills WHERE name = 'alpha'").get() as {
-			status: string;
+		// Global row untouched — deactivate is a per-thread, log-derived concern.
+		const row = db.prepare("SELECT deleted FROM skills WHERE name = 'alpha'").get() as {
+			deleted: number;
 		};
-		expect(row.status).toBe("active");
+		expect(row.deleted).toBe(0);
 	});
 });

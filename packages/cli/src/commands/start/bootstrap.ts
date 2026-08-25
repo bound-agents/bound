@@ -1,9 +1,14 @@
+import {
+	INTERRUPTED_TOOL_USE_SCAN_SQL,
+	findHostRowForChangeLog,
+	listInterruptedToolUseThreadIds,
+} from "@bound/core";
+import { findUserIdById } from "@bound/core";
 /**
  * Bootstrap phase: config loading, PID lockfile, AppContext creation,
  * Ed25519 keypair, user seeding, host registration, and crash recovery.
  */
 
-import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
 	copyFileSync,
@@ -15,10 +20,11 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { seedBundledSkills } from "@bound/agent";
+import { loadModelBackendsConfig, seedBundledSkills } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
 	createAppContext,
+	dangerouslyExecuteRawWrite,
 	insertRow,
 	normalizeEdgeRelations,
 	resetProcessing,
@@ -51,20 +57,25 @@ const bootstrapLogger = createLogger("@bound/cli", "start-bootstrap");
  * and test in lockstep prevents the divergence that previously hid a syntax
  * error in this string.
  *
- * Kept on a single source line on purpose: the outbox-invariant validator
- * (`scripts/validate-outbox-invariant.ts`) only exempts the line containing the
- * `// outbox-exempt` marker, so the marker must sit on the same line as the
- * `UPDATE tasks` keyword. Splitting across lines via a template literal would
- * either leak `//` into the SQL string (the bug this constant was extracted to
- * prevent) or move the keyword onto an unmarked line that re-trips the validator.
+ * Executed via dangerouslyExecuteRawWrite (the sanctioned outbox-bypass seam),
+ * so this constant no longer needs to keep the `UPDATE tasks` keyword on a
+ * marked single line — the validator now only permits the chokepoint call.
  */
 export const STALE_TASK_RESET_SQL =
-	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ?"; // outbox-exempt: crash recovery, scoped to booting host (R-LR10)
+	"UPDATE tasks SET status = 'pending', lease_id = NULL, claimed_by = NULL, claimed_at = NULL WHERE status = 'running' AND claimed_by = ?";
 
 /**
  * Crash-recovery scan for threads whose last meaningful message is a tool_call
- * or tool_result with no following assistant turn or interrupt notice. Runs on
- * every daemon boot.
+ * or tool_result written by this site, with no following assistant turn or
+ * interrupt notice. Runs on every daemon boot.
+ *
+ * Scoping the trailing tool message to the booting site is the ownership gate:
+ * boot proves this site's previous process is gone, but says nothing about a
+ * peer that may still be executing its own trailing tool turn. Without this
+ * predicate, any peer restart can inject a false interruption notice into a
+ * healthy loop elsewhere in the cluster. `host_origin` carries the stable site
+ * ID on agent-authored tool messages; the notice can therefore name this
+ * booting host without misattributing a peer's work.
  *
  * Thread-centric form: one GROUP BY scan over `idx_messages_thread`, ~1k thread
  * groups on a typical deployment. The semantically-equivalent per-tool-message
@@ -73,36 +84,13 @@ export const STALE_TASK_RESET_SQL =
  * meaningful chunk of bootstrap latency on slow disks. Profiled rewrite runs in
  * ~100ms.
  *
- * Equivalence: a tool message with no later assistant/interrupt notice is
- * exactly equivalent to "the last assistant/interrupt timestamp in the thread
- * is earlier than the last tool timestamp" (or absent). Verified against the
- * live DB and synthetic fixtures in startup-wiring.test.ts.
- *
  * Excludes threads with a pending `client_tool_call` in `dispatch_queue` —
- * those are waiting for client execution, not crashed server tools.
+ * those are waiting for client execution, not crashed server tools. Also
+ * excludes auxiliary-agent threads (`threads.agent_id IS NOT NULL`): foreground
+ * aux loops are owned by the parent invocation and cannot be resumed by the
+ * main-loop dispatcher, while background aux recovery rides its durable seed
+ * and dispatch queue rather than this generic interrupted-turn notice.
  */
-export const INTERRUPTED_TOOL_USE_SCAN_SQL = `WITH thread_summary AS (
-	SELECT thread_id,
-		MAX(CASE WHEN role IN ('tool_call', 'tool_result') THEN created_at END) AS last_tool_at,
-		MAX(CASE WHEN role = 'assistant' THEN created_at END) AS last_assistant_at,
-		MAX(CASE
-			WHEN role IN ('system', 'developer')
-			 AND (content LIKE '%interrupted%' OR content LIKE '%cancelled%')
-			THEN created_at
-		END) AS last_interrupt_at
-	FROM messages
-	GROUP BY thread_id
-)
-SELECT ts.thread_id FROM thread_summary ts
-WHERE ts.last_tool_at IS NOT NULL
-  AND (ts.last_assistant_at IS NULL OR ts.last_assistant_at < ts.last_tool_at)
-  AND (ts.last_interrupt_at IS NULL OR ts.last_interrupt_at < ts.last_tool_at)
-  AND NOT EXISTS (
-	SELECT 1 FROM dispatch_queue dq
-	WHERE dq.thread_id = ts.thread_id
-	  AND dq.event_type = 'client_tool_call'
-	  AND dq.status IN ('pending', 'processing')
-  )`;
 
 export interface StartArgs {
 	configDir?: string;
@@ -116,30 +104,8 @@ export interface BootstrapResult {
 	configDir: string;
 }
 
-/**
- * Provision the mcp system user idempotently at startup.
- */
-export function ensureMcpUser(db: Database, siteId: string): void {
-	const now = new Date().toISOString();
-	const mcpUserId = deterministicUUID(BOUND_NAMESPACE, "mcp");
-	const existingMcpUser = db.query("SELECT id FROM users WHERE id = ?").get(mcpUserId) as {
-		id: string;
-	} | null;
-	if (!existingMcpUser) {
-		insertRow(
-			db,
-			"users",
-			{
-				id: mcpUserId,
-				display_name: "mcp",
-				platform_ids: null,
-				first_seen_at: now,
-				modified_at: now,
-				deleted: 0,
-			},
-			siteId,
-		);
-	}
+export async function loadStartupModelBackends(configDir: string) {
+	return loadModelBackendsConfig(configDir);
 }
 
 export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
@@ -253,7 +219,9 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 
 	let appContext: AppContext;
 	try {
-		appContext = createAppContext(resolve(configDir), dbPath);
+		const resolvedConfigDir = resolve(configDir);
+		const modelBackends = await loadStartupModelBackends(resolvedConfigDir);
+		appContext = await createAppContext(resolvedConfigDir, dbPath, modelBackends);
 		// Clear the column cache after applySchema has run, so long-running
 		// agent processes pick up the new memory_edges.context column without restart.
 		clearColumnCache();
@@ -294,9 +262,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		const now = new Date().toISOString();
 		for (const [username, entry] of Object.entries(appContext.config.allowlist.users)) {
 			const userId = deterministicUUID(BOUND_NAMESPACE, username);
-			const existingUser = appContext.db.query("SELECT id FROM users WHERE id = ?").get(userId) as {
-				id: string;
-			} | null;
+			const existingUser = findUserIdById(appContext.db, userId);
 
 			if (!existingUser) {
 				insertRow(
@@ -329,9 +295,6 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		}
 	}
 
-	// 5.1 Provision mcp system user (idempotent)
-	ensureMcpUser(appContext.db, appContext.siteId);
-
 	// 5.5. Bundled-skill seeding (skill-authoring, bound-reference, …)
 	try {
 		seedBundledSkills(appContext.db, appContext.siteId);
@@ -358,9 +321,10 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 	appContext.logger.info("Registering host...");
 	{
 		const now = new Date().toISOString();
-		const existingHost = appContext.db
-			.query("SELECT site_id FROM hosts WHERE site_id = ?")
-			.get(appContext.siteId) as { site_id: string } | null;
+		const existingHost = findHostRowForChangeLog<{ site_id: string }>(
+			appContext.db,
+			appContext.siteId,
+		);
 
 		if (existingHost) {
 			withChangeLog(appContext.db, appContext.siteId, () => {
@@ -368,9 +332,13 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 					"UPDATE hosts SET host_name = ?, commit_hash = ?, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
 					[appContext.hostName, COMMIT_HASH, now, now, appContext.siteId],
 				);
-				const updatedRow = appContext.db
-					.query("SELECT * FROM hosts WHERE site_id = ?")
-					.get(appContext.siteId) as Record<string, unknown>;
+				const updatedRow = findHostRowForChangeLog<Record<string, unknown>>(
+					appContext.db,
+					appContext.siteId,
+				);
+				if (!updatedRow) {
+					throw new Error("Failed to read updated host row for changelog");
+				}
 				return {
 					tableName: "hosts" as const,
 					rowId: appContext.siteId,
@@ -422,7 +390,12 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			.all(appContext.siteId) as Array<{ id: string }>;
 
 		if (staleRunning.length > 0) {
-			appContext.db.query(STALE_TASK_RESET_SQL).run(appContext.siteId);
+			dangerouslyExecuteRawWrite(appContext.db, {
+				sql: STALE_TASK_RESET_SQL,
+				params: [appContext.siteId],
+				reason:
+					"crash recovery scoped to the booting host (claimed_by = ?siteId); resets only this host's own stale claims, no cross-host invariant (R-LR10)",
+			});
 			appContext.logger.info(
 				`[recovery] Reset ${staleRunning.length} stale running task(s) to pending`,
 			);
@@ -447,6 +420,8 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 				 WHERE event_type = 'client_tool_call' AND status = 'processing'`,
 				)
 				.run(now);
+			// Raw read justification: SELECT changes() reads SQLite connection metadata.
+			// Raw read justification: SELECT changes() reads SQLite connection metadata.
 			const row = appContext.db.query("SELECT changes() as c").get() as { c: number } | null;
 			return row?.c ?? 0;
 		})();
@@ -472,9 +447,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		// Scan for interrupted tool-use per R-E13. SQL is exported as
 		// INTERRUPTED_TOOL_USE_SCAN_SQL so the regression tests can pin the same
 		// query the daemon actually runs.
-		const interruptedThreads = appContext.db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
-			thread_id: string;
-		}>;
+		const interruptedThreads = listInterruptedToolUseThreadIds(appContext.db, appContext.siteId);
 
 		if (interruptedThreads.length > 0) {
 			const now = new Date().toISOString();
@@ -514,3 +487,5 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 
 	return { appContext, keypair, configDir };
 }
+
+export { INTERRUPTED_TOOL_USE_SCAN_SQL };

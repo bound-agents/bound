@@ -6,12 +6,12 @@
  *
  * This drives the full production path end-to-end:
  *   ScriptedLLM emits {name:"bash", command:"github get_me"}
- *     → AgentLoop dispatch (sees "bash")
+ *     → MainAgentLoop dispatch (sees "bash")
  *     → sandbox.exec → just-bash → the real generateMCPCommands github handler
  *     → handler stashes the binding on the loopContextStorage store
  *     → exec wrapper lifts store.mcpApp onto the result (replicated here, as
  *       relay-mcp-proxy.test.ts replicates the relayRequest wrapper)
- *     → AgentLoop persist seam stamps messages.metadata.mcp_app
+ *     → MainAgentLoop persist seam stamps messages.metadata.mcp_app
  *
  * The renderer is tested manually; the data shape is guaranteed here.
  */
@@ -29,7 +29,7 @@ import { createDefineCommands, loopContextStorage } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { Bash, InMemoryFs } from "just-bash";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { generateMCPCommands } from "../mcp-bridge";
 import type { MCPClient, MCPServerConfig, Tool } from "../mcp-client";
 import type { RegisteredTool } from "../types";
@@ -244,11 +244,11 @@ describe("MCP App binding persisted to tool_result metadata", () => {
 		if (tmpDir) await cleanupTmpDir(tmpDir);
 	});
 
-	it("stamps {server, tool, uiResourceUri} on the tool_result row for a UI-bearing tool", async () => {
+	it("stamps the binding and native MCP input on the tool_result row", async () => {
 		const backend = new ScriptedLLMBackend();
 		backend.toolThenText("call-1", "github get_me", "done");
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,
@@ -267,6 +267,7 @@ describe("MCP App binding persisted to tool_result metadata", () => {
 			server: "github",
 			tool: "get_me",
 			uiResourceUri: UI_RESOURCE_URI,
+			input: {},
 		});
 	});
 
@@ -274,7 +275,7 @@ describe("MCP App binding persisted to tool_result metadata", () => {
 		const backend = new ScriptedLLMBackend();
 		backend.toolThenText("call-2", "github list_issues", "done");
 
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: BASH_REGISTRY,

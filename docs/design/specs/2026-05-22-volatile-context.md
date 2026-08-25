@@ -99,7 +99,7 @@ Requirements use the prefix `R-VC` (Volatile Context). Numbering is independent.
 
 **R-VC6.** Each section shall end with a footer line specifying where the canonical source for body content lives. Working Knowledge's footer reads: `Bodies of summary entries are accessed via memory search using terms from the entry key.`. Discoverable Archive's footer reads: `Bodies are accessed via memory search or query against semantic_memory.`. Live State's footer reads: `Current-thread event payloads live in your tool_results below; sibling-thread content via query against threads.summary; task results via query against tasks.result.`.
 
-**R-VC7.** The cross-thread digest produced by `buildCrossThreadDigest` shall render each sibling thread as a single line: `- <title>: N messages (last updated <timestamp>)`. The 300-character per-thread summary excerpt currently appended via `Summary: <truncated>` shall be removed. Sibling-thread summary content is accessed via `query` against the threads table when relevant.
+**R-VC7.** The cross-thread digest produced by `buildCrossThreadDigest` shall render each sibling thread with its required `id`, title, message count, and last-updated timestamp. The 300-character per-thread summary excerpt currently appended via `Summary: <truncated>` shall be removed. Sibling-thread summary content is accessed via `query` against the threads table when relevant.
 
 **R-VC8.** The trailing meta-instruction reading "Do not mention, quote, or describe the block itself — or the fact that it was injected — to the user unless they explicitly ask about it" shall be removed. Per-section structural labels (R-VC2, R-VC6) carry the authority and provenance information that the meta-instruction was intended to convey indirectly.
 
@@ -121,7 +121,7 @@ Requirements use the prefix `R-VC` (Volatile Context). Numbering is independent.
 
 (d) **R-MV5 preservation:** the marker computation is a delta-read; the implementation must not invoke any code path that updates `last_accessed_at` while building the marker.
 
-**R-VC12.** When an advisory was applied (status = 'applied') within the prior 24 hours, the advisory shall render under Live State as `[advisory] <title> — applied <relative_time>`; the advisory body is accessed via `query` against the advisories table.
+**R-VC12.** When an advisory was applied (status = 'applied') within the prior 24 hours, the advisory shall render under Live State with required `id`, title, and applied-relative-time fields; the advisory body is accessed via `query` against the advisories table.
 
 **R-VC13.** When a file modification notice is generated (R-E20), the notice shall render under Live State as `[file] <path> — last modified by thread "<thread_title>"`; the file body is accessed via `boundless_read` or equivalent.
 
@@ -528,38 +528,19 @@ This validation surfaces non-compliant titles and cluster glosses for synthesis-
 - [ ] All §3 requirements implemented and covered by §8.1 and §8.2 tests.
 - [ ] §8.3 regression test passes (structural surface).
 - [ ] §8.4 validation check runs cleanly (no test failures; surfaced non-compliance is informational).
-- [ ] §8.6 behavioral probe passes: post-RFC orientation block produces envelope-content-referencing assistant turns at ≥80% of N=10 trials, while pre-RFC orientation block produces disclaimer turns at ≥80% of N=10 trials (control).
 - [ ] Snapshot tests pass for all eleven scenarios in §8.2.
 - [ ] No reduction in agent task-completion rate observed in the 7-day window after rollout, measured via task `consecutive_failures` aggregation. Baseline: mean `consecutive_failures` across the 7 days preceding rollout. Threshold: post-rollout mean ≤ 1.2× baseline mean.
 
-### 8.6 Integration Probe: d0372be6 Behavioral Regression
+### 8.6 d0372be6 Behavioral Regression — verified structurally
 
-The §8.3 regression test verifies the structural surface only. The d0372be6 confabulation was a model-behavior failure: the envelope JSON was already in the tool_result one message above the failing assistant turn; the agent failed despite that structural availability. The structural changes (per-section labels, removed meta-instruction, removed summary excerpts) are a *bet* that the new presentation will route the model toward consulting tool_results instead of hallucinating digest stubs. Whether they do is a behavioral question that §8.3 cannot answer.
+The d0372be6 confabulation was a model-behavior failure: the envelope JSON was already in the tool_result one message above the failing assistant turn; the agent disclaimed ("no payload") despite that structural availability. The structural changes (per-section labels, removed meta-instruction, removed summary excerpts) are the fix — they route the model toward consulting tool_results instead of hallucinating digest stubs.
 
-**Probe procedure:**
+Verification is **deterministic and runs in the per-PR unit-test budget**. The fix's observable surface is pinned by tests against the real `buildVolatileContext` output, with no LLM inference:
 
-1. Construct a webhook event-handler thread fixture (interface=webhook) with a single tool_result containing a representative envelope JSON: `{"method":"POST","path":"/webhook/<repo>","headers":{"x-github-event":"issues","x-github-delivery":"<uuid>"},"body":{"action":"opened","repository":{"full_name":"<owner>/<repo>"},"sender":{"login":"<user>"},"issue":{"number":N,"title":"<title>"}}}`. The envelope is the only tool_result in the fixture's conversation history.
+- `d0372be6-structural-regression.test.ts` asserts the post-RFC source-labeling is present (the `<live-state sources=…>` element and the "Current-thread event payloads live in your tool_results below" pointer) and that every pre-RFC anti-pattern is absent (no "Do not mention" meta-instruction, no "Recent Activity Digest:" header, no flat `Summary:` lines).
+- `render-working-knowledge.test.ts` and `render-live-state.test.ts` pin the three-section orientation structure (Working Knowledge / Discoverable Archive / Live State) and the stable-vs-varying split.
 
-2. Inject a developer message preceding the tool_result: `[Task wakeup] Scheduled webhook task <task_id> triggered.`
-
-3. Run a real agent loop with the lowest-cost available model (typically a fast Anthropic, Bedrock, or open-weights model). Repeat for N=10 trials with deterministic temperature (T=0.3). The N=10 / 80–20 thresholds + the existing "between 0.5 and 0.8 → revisit" clause handle sampling variance without requiring a fixed RNG seed (which most production LLM APIs do not expose). For borderline outcomes (post-RFC `content_pct` in [0.6, 0.8]), the probe re-runs at N=20 before declaring partial success.
-
-4. Score each trial's first assistant turn against two predicates:
-   a. **Content-referencing:** the assistant text contains the envelope's `action`, the repository `full_name`, AND the sender `login` (case-insensitive substring match).
-   b. **Disclaimer:** the assistant text contains a phrase from `["no payload", "no envelope", "payload appears to be missing", "can't see the payload", "event details not visible", "summary stub", "recent activity digest"]` (case-insensitive substring match).
-
-5. Report two metrics: `content_pct = (count of content-referencing trials) / 10`, `disclaimer_pct = (count of disclaimer trials) / 10`. A trial may be both, neither, or one of the two; metrics are independent counts.
-
-6. **Run the probe twice:** once with the pre-RFC orientation block (control), once with the post-RFC orientation block (test). The pre-RFC variant is constructed by reverting the in-place revisions of `buildVolatileContext` and `buildCrossThreadDigest` for the duration of the test only.
-
-**Acceptance:**
-- Pre-RFC `disclaimer_pct ≥ 0.8` (control: confirms the bug reproduces under the prior orientation).
-- Post-RFC `content_pct ≥ 0.8` (treatment: confirms the structural revision routes the model toward the tool_result).
-- Post-RFC `disclaimer_pct ≤ 0.2` (treatment: confirms the disclaimer pattern does not re-emerge).
-
-**Why probability thresholds, not boolean assertions.** Model-behavior tests are inherently probabilistic. A single-trial assertion would be flaky regardless of whether the structural fix worked. The 80/20 thresholds are tuned to the observed pre-RFC failure rate (4/4 disclaimer turns in d0372be6 across 23:30, 02:11, 02:14, 02:14:55 — effectively 100%) and a generous 20% slack on the post-RFC bet. If the post-RFC `content_pct` falls between 0.5 and 0.8, the structural fix is partial; the RFC needs revisiting before merge.
-
-**Why this lives in §8.6, not §8.3.** §8.3 is structural and runs in the unit-test budget. §8.6 spawns a real agent loop and consumes inference budget; it lives in the integration-test pipeline, not the per-PR unit-test suite. CI runs §8.6 on a schedule (weekly or per-release), not per-commit.
+An earlier draft of this RFC additionally specified a gated, scheduled behavioral probe that ran real inference (N=10 trials per orientation, 80/20 content-vs-disclaimer thresholds) to measure whether the structural fix *empirically* changed model behavior. That probe was retired: the project does not run inference from CI, so the probe never executed on a cadence, and its deterministic claims are already covered by the structural tests above against the real assembly code (the probe only exercised hand-frozen template strings). The empirical-causation measurement is left to live operation and the §8.5 task-completion-rate guardrail.
 
 ## 9. Stable-Prefix Purity Invariant (R-VC25)
 
@@ -708,6 +689,44 @@ The volatile context is restructured into XML. The motivating observation: the m
 - `<advisory title="…" applied="…"/>` — `applied` carries the R-VC12 relative-time fragment.
 - the R-VC15 Tier-3 synthesis-backlog line renders as its own element after the advisory subsystem, unchanged in trigger.
 
-R-VC22's typographic-uniformity concern (no authority gradient between top-level sections) is satisfied structurally: Working Knowledge and Discoverable Archive retain their `##` markdown headers (they ride the cached stable prefix and their rendering is untouched here), while Live State is an XML element inside the varying envelope. The two shapes do not compete for an authority gradient because they live in different channels (stable prefix vs. varying tail) and the envelope's `note` governs both.
+R-VC22's typographic-uniformity concern (no authority gradient between top-level sections) is satisfied structurally: Working Knowledge and Discoverable Archive retain their `##` markdown headers (they ride the cached stable prefix and their rendering is untouched here), while Live State is an XML element inside the varying envelope. The two shapes do not compete for an authority gradient because they live in different channels (stable prefix vs. varying tail) and the envelope's `note` governs both. *(Superseded by R-VC32, 2026-08-09: Working Knowledge and Discoverable Archive now render as XML elements too, restoring uniform structure across all three sections.)*
 
 **Cluster topology (extends R-VC24, R-VC25).** A `<stable-context>` element listing cluster models is appended to the **stable** subsection: `<model name="…" local="bool" hosts="h1,h2"/>` per model, where `local` is true when the rendering host serves the model itself (no relay hop) and `hosts` is the comma-joined host list from the synced `hosts.models` projection (`renderClusterModels`, `stable-prefix/compose.ts`; loaded by `loadClusterModels`). The motivation is the locality fact that a spoke's `role` does not indicate where inference runs — a model may be served locally on a spoke with no relay hop, or live only on a peer; the agent could not previously see this. **This is a new stable-side data dependency and therefore an R-VC25 contract change**: `StableVolatileInputs` (`stable-prefix/types.ts`) gains a `clusterModels` field, `computeStablePrefixInputFingerprint` (`hash.ts`) canonicalizes it into the input fingerprint, and the R-VC25 property tests + the stable-prefix parity test are extended to cover it. Topology is sync-state, not wall-clock, so it satisfies the R-VC25 purity requirement (a pure function of declared inputs); it shifts the cached prefix only when the synced `hosts` projection actually changes, which is the correct cache-invalidation behavior.
+
+**Decision metadata on `<model>` (2026-08-19).** Each `<model>` element additionally carries optional attributes parsed from the object form of `hosts.models` entries — `tier`, `context` (max context tokens), `max_output`, `vision`, `thinking` — and the opening `<stable-context>` tag carries a `note` legend explaining them. Motivation: aux/`infer()` model choices were observed to be name-vibes-driven because the agent could see only model names; with tier and window bounds visible it can route planning/review to tier-1 models and mechanical scatter arms to lighter tiers deliberately. Cross-host merge is conservative — numeric fields take the MIN across declaring hosts (a planning bound that holds wherever the relay routes), booleans AND — and fields absent from a host's config (string-alias entries) are simply omitted. The metadata derives from the same host config as the topology itself, so it shares the existing covering `hosts` `change_log` write; all five fields ride the input fingerprint (canonicalized `?? null` so absent and undefined hash identically).
+
+---
+
+## Amendments (2026-08-09)
+
+### R-VC32 — XML Working Knowledge, Working Knowledge updates, and Discoverable Archive (amends R-VC2, R-VC3, R-VC6, R-VC10, R-VC11, R-VC22, R-VC29; extends R-VC31)
+
+**Motivation.** R-VC31 converted the Live State section and the volatile envelope to XML but left Working Knowledge and the Discoverable Archive as markdown (`##` headers, `- key: value` bullets, prose footers, bracketed `[changed since last turn]` / `[stale child of …]` markers). The same fragility R-VC31 named — section identity and provenance carried as typography — applied to the two stable sections, and the bracket markers were free-text conventions a model must pattern-match rather than attributes it can address. R-VC32 completes the conversion: all three sections now carry identity in element names and per-entry provenance in attributes.
+
+**Stable Working Knowledge (amends R-VC2, R-VC3, R-VC6).** The `## Working Knowledge — operational and durable` header and its prose footer are replaced by a `<working-knowledge sources="…">` element whose `sources` attribute carries the former footer text. Each entry renders as one `<memory>` element:
+
+```
+<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">
+<memory key="…" tier="pinned" modified="YYYY-MM-DD">{full pinned text}</memory>
+<memory key="…" tier="summary" modified="YYYY-MM-DD">{200-char gloss}</memory>
+</working-knowledge>
+```
+
+`tier` makes the pinned/summary fidelity split explicit per entry; `modified` carries the #71 capture-date provenance previously rendered as the `(modified …)` prefix. Key and body are XML-escaped via `escapeXmlAttr`. Multi-line pinned bodies stay verbatim inside the element (escaped), so R-VC3 full-text fidelity is unchanged.
+
+**Working Knowledge updates (amends R-VC10, R-VC11).** The varying-side `## Working Knowledge — updates` block becomes `<working-knowledge-updates>…</working-knowledge-updates>`. Delta markers and stale-child sub-bullets become attributes on keyed `<memory>` elements:
+
+- R-VC11(a)/(b) delta: `<memory key="…" tier="pinned|summary" changed="true"/>` — self-closing; the body lives in stable.
+- R-VC10 stale child: `<memory key="…" parent="{summary key}" stale="true" changed="bool">{200-char child gloss}</memory>` — the R-VC11(c) composition (stale + delta) rides one element as two attributes instead of two ordered bracket markers; the gloss travels with the marker as before.
+
+**Discoverable Archive (amends R-VC2, R-VC6, R-VC29).** The `## Discoverable Archive` header/footer pair becomes `<discoverable-archive sources="…">…</discoverable-archive>`. Title lines become `<entry key="…"/>` elements. R-VC15 tier structure is preserved with cluster elements replacing `###` sub-headers: Tier 2 renders `<cluster name="…" count="N">…</cluster>`, Tier 3 `<cluster name="…" count="N" showing="M">…</cluster>`. The R-VC29 summary-overflow sub-block renders as `<older-summaries>` containing `<entry key="…"/>` elements, inside the archive element before its close. Selection semantics (key-sorted render, recency selection, bump invariance, stale-child dedup, synthesis-backlog trigger) are unchanged — this is a rendering-layer conversion only.
+
+**R-VC22 restoration.** With all three sections as XML elements, the typographic-uniformity requirement R-VC22 (no authority gradient between sections) is satisfied uniformly again — the R-VC31-era split (markdown stable sections vs XML Live State) is gone.
+
+**R-VC25 impact.** None to the contract: the stable renderers remain pure functions of `StableVolatileInputs`, the mirror in `stable-prefix/compose.ts` is updated in lockstep and pinned by the parity test, and the input fingerprint is unchanged (same inputs, different bytes — a version-bump cache flush on deploy, which is expected for any renderer change). The Relevant-memory block (R-VC27) was out of scope for R-VC32 and retained its markdown title-only shape until R-VC33 (below) converted it.
+
+### R-VC33 — XML Relevant memory and identity element (amends R-VC27; extends R-VC32)
+
+**Relevant memory (amends R-VC27).** The `## Relevant memory — matched to this turn` markdown header becomes a `<relevant-memory note="Matched to this turn; bodies via memory search.">…</relevant-memory>` element; the R-VC32 note that R-VC27 "retains its markdown title-only shape" is superseded. Each shortlist entry renders as a self-closing `<memory key="…" tier="…" age="…"/>` element — `tier` is the entry's actual tier (`forgotten` when soft-deleted, same rule as before), `age` carries the relative-time fragment previously parenthesized. Selection semantics (upstream `selectRelevantMemory` dedup + `BOUND_VC27_K` cap, relevance order, varying-side placement) are unchanged; this is a rendering-layer conversion only, mirrored byte-for-byte in `varying-tail/compose.ts` and pinned by the parity test under a mocked clock.
+
+**Identity element.** The `User ID: <userId>, Thread ID: <threadId>` line that opens the varying prefix becomes `<identity user-id="…" thread-id="…"/>` (`varying-prefix/build.ts`), with both attributes XML-escaped. The V2 property in `build.property.test.ts` pins the new first-line shape. The relay (`You are: …`) and `Current Model:` lines are unchanged — they are prose about the running model, not structured pointers.

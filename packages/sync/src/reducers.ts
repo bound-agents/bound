@@ -8,6 +8,8 @@ type RowData = Record<string, SQLQueryBindings>;
 export interface ReducerOptions {
 	/** Optional logger. Used to surface invariant violations on replay. */
 	logger?: Logger;
+	/** Per-batch bounded warning samples, keyed by table and error class. */
+	diagnosticSamples?: Set<string>;
 }
 
 /**
@@ -38,6 +40,18 @@ function violatesMessageRoleInvariant(
 
 const columnCache: Record<string, string[]> = {};
 
+function warnSkippedApply(
+	logger: Logger | undefined,
+	samples: Set<string> | undefined,
+	tableName: string,
+	reason: "constraint" | "database",
+): void {
+	const key = `${tableName}:${reason}`;
+	if (samples?.has(key)) return;
+	samples?.add(key);
+	logger?.warn("[reducers] Skipped remote apply", { tableName, reason });
+}
+
 interface TableInfo {
 	name: string;
 	type: string;
@@ -53,7 +67,7 @@ export function getPkColumn(tableName: string): string {
 }
 
 // Validate table name - must be a known synced table
-function validateTableName(tableName: unknown): tableName is SyncedTableName {
+export function validateTableName(tableName: unknown): tableName is SyncedTableName {
 	const validTables = Object.keys(TABLE_REDUCER_MAP);
 	return typeof tableName === "string" && validTables.includes(tableName);
 }
@@ -239,8 +253,14 @@ export function applyLWWReducer(
 			);
 			const changes = db.query("SELECT changes() as count").get() as Record<string, number>;
 			return { applied: changes.count > 0 };
-		} catch {
-			// Partial row_data missing NOT NULL columns — skip, a later event will have full data
+		} catch (error) {
+			// Partial row_data missing NOT NULL columns — skip, a later event will have full data.
+			warnSkippedApply(
+				options?.logger,
+				options?.diagnosticSamples,
+				event.table_name,
+				classifySqliteError(error),
+			);
 			return { applied: false };
 		}
 	}
@@ -320,6 +340,7 @@ export function replayEvents(
 	// subscribers querying the DB in response see the committed state (and a
 	// reducer exception can't mislead listeners about rows that got rolled back).
 	const appliedInfos: AppliedEventInfo[] = [];
+	const diagnosticSamples = new Set<string>();
 	const changelogHlcs: Array<{ hlc: string; tableName: SyncedTableName; siteId: string }> = [];
 
 	// Wrap in transaction so partial failures don't leave the DB in an
@@ -339,7 +360,7 @@ export function replayEvents(
 			}
 			const rowData = value as RowData;
 
-			const result = applyEvent(db, event, { logger: options?.logger });
+			const result = applyEvent(db, event, { logger: options?.logger, diagnosticSamples });
 
 			if (result.applied) {
 				applied++;
@@ -390,7 +411,7 @@ export function replayEvents(
 			try {
 				options.eventBus.emit("changelog:written", entry);
 			} catch {
-				// Swallow — same resilience pattern as onApplied
+				options.logger?.warn("[reducers] Changelog listener failed", { reason: "listener" });
 			}
 		}
 	}
@@ -402,7 +423,7 @@ export function replayEvents(
 			try {
 				options.onApplied(info);
 			} catch {
-				// Swallow listener errors — callers own their own error handling.
+				options.logger?.warn("[reducers] Applied listener failed", { reason: "listener" });
 			}
 		}
 	}
@@ -424,6 +445,13 @@ export function replayEvents(
  * @returns Number of rows successfully applied.
  */
 type SqlValue = string | number | bigint | boolean | Uint8Array | null;
+
+function classifySqliteError(error: unknown): "constraint" | "database" {
+	return error instanceof Error &&
+		/constraint|not null|unique|primary key|trigger/i.test(error.message)
+		? "constraint"
+		: "database";
+}
 
 function coerceRowValues(columns: string[], row: Record<string, unknown>): SqlValue[] {
 	return columns.map((k) => {
@@ -455,12 +483,32 @@ export function applySnapshotRows(
 
 	if (rows.length === 0) return 0;
 
+	// Invariant #19: role='system' is forbidden in the `messages` table. The
+	// changelog-replay path drops these via `violatesMessageRoleInvariant`, but
+	// the snapshot/row-pull apply path is a separate raw upsert that bypassed
+	// that guard — which is how a peer advertising role='system' rows could seed
+	// them locally, where they then loop forever as remoteOnly (the sending side
+	// must also filter; see `syncableRowPredicate`). Drop them here too so the
+	// two apply paths enforce the invariant identically.
+	let applicableRows = rows;
+	if (tableName === "messages") {
+		applicableRows = rows.filter((row) => row.role !== "system");
+		const dropped = rows.length - applicableRows.length;
+		if (dropped > 0) {
+			logger?.warn(
+				"[snapshot] Dropping incoming messages rows with role='system' (invariant #19)",
+				{ tableName, dropped },
+			);
+		}
+		if (applicableRows.length === 0) return 0;
+	}
+
 	// Heal-on-receive (issue #105): rewrite non-canonical memory_edges relations
 	// before the INSERT OR REPLACE. Otherwise the canonical-relation trigger
 	// RAISE(ABORT)s, the whole batch rolls back to the slow per-row fallback, and
 	// the invalid rows are skipped + warned on every reseed.
 	if (tableName === "memory_edges") {
-		for (const row of rows) {
+		for (const row of applicableRows) {
 			if (typeof row.relation === "string") {
 				const healed = normalizeRelationValue(
 					row.relation,
@@ -475,7 +523,7 @@ export function applySnapshotRows(
 	}
 
 	// Gather column names from the first row (all rows in a table share columns).
-	const firstRow = rows[0];
+	const firstRow = applicableRows[0];
 	const columns = Object.keys(firstRow);
 
 	// Validate all column names
@@ -511,7 +559,7 @@ export function applySnapshotRows(
 	db.exec("BEGIN IMMEDIATE");
 	try {
 		const stmt = db.prepare(sql);
-		for (const row of rows) {
+		for (const row of applicableRows) {
 			stmt.run(...coerceRowValues(columns, row));
 			applied++;
 		}
@@ -525,24 +573,23 @@ export function applySnapshotRows(
 		}
 		logger?.warn("[snapshot] Batch apply failed, retrying per-row", {
 			tableName,
-			rowCount: rows.length,
-			error: err instanceof Error ? err.message : String(err),
+			rowCount: applicableRows.length,
+			reason: classifySqliteError(err),
 		});
 		applied = 0;
-		for (const row of rows) {
+		let skipped = 0;
+		let skipReason: "constraint" | "database" = "database";
+		for (const row of applicableRows) {
 			try {
 				db.run(sql, coerceRowValues(columns, row));
 				applied++;
-			} catch {
-				// skip — trigger rejection or constraint violation
+			} catch (error) {
+				skipped++;
+				skipReason = classifySqliteError(error);
 			}
 		}
-		if (applied < rows.length) {
-			logger?.warn("[snapshot] Per-row fallback: skipped rows", {
-				tableName,
-				applied,
-				skipped: rows.length - applied,
-			});
+		if (skipped > 0) {
+			logger?.warn("[snapshot] Skipped snapshot rows", { tableName, reason: skipReason, skipped });
 		}
 		return applied;
 	}

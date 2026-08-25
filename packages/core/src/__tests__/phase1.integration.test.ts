@@ -9,7 +9,7 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createAppContext } from "../app-context";
 import { insertRow } from "../change-log";
 
-describe("Phase 1 Integration", () => {
+describe("Phase 1 Integration", async () => {
 	let configDir: string;
 	let dbPath: string;
 
@@ -67,9 +67,9 @@ describe("Phase 1 Integration", () => {
 		}
 	});
 
-	it("complete Phase 1 vertical slice: create context, verify database, insert user, emit event", () => {
+	it("complete Phase 1 vertical slice: create context, verify database, insert user, emit event", async () => {
 		// Step 1: Create AppContext with full initialization
-		const ctx = createAppContext(configDir, dbPath);
+		const ctx = await createAppContext(configDir, dbPath);
 
 		expect(ctx).toBeDefined();
 		expect(ctx.db).toBeDefined();
@@ -78,14 +78,14 @@ describe("Phase 1 Integration", () => {
 		expect(ctx.logger).toBeDefined();
 		expect(ctx.siteId).toBeDefined();
 
-		// Step 2: Verify database has all 20 tables
+		// Step 2: Verify database has all 21 tables
 		const tables = ctx.db
 			.query(
 				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(30); // 18 main tables (incl. skills, memory_edges, connector_handles, webhooks, client_sessions) + 3 relay + dispatch_queue + 2 metrics - 1 (host_meta is local) + 1 FTS5 virtual + 5 FTS5 shadow = 30
+		expect(tables.length).toBe(31); // + agents (#201) = 31
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
@@ -99,7 +99,6 @@ describe("Phase 1 Integration", () => {
 			"hosts",
 			"memory_edges",
 			"messages",
-			"overlay_index",
 			"relay_cycles",
 			"relay_inbox",
 			"relay_outbox",
@@ -205,8 +204,8 @@ describe("Phase 1 Integration", () => {
 		ctx.db.close();
 	});
 
-	it("vertical slice with multiple users and threads", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("vertical slice with multiple users and threads", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
 
 		// Insert multiple users
@@ -316,8 +315,8 @@ describe("Phase 1 Integration", () => {
 		ctx.db.close();
 	});
 
-	it("semantic memory and tasks storage", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("semantic memory and tasks storage", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 		const now = new Date().toISOString();
 
 		// Insert semantic memory

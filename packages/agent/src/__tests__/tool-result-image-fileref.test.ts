@@ -23,7 +23,7 @@ import type { AppContext } from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import type { RegisteredTool } from "../types";
 
 // A 1x1 PNG, then padded so the base64 is unmistakably "large" relative to a
@@ -153,7 +153,7 @@ describe("tool-result image blocks persisted as file_ref", () => {
 
 	it("rewrites an inline base64 image to a file_ref and stores the bytes in files", async () => {
 		const backend = new ScriptedLLMBackend();
-		const loop = new AgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
+		const loop = new MainAgentLoop(makeCtx(db), sandbox, createMockRouter(backend), {
 			threadId,
 			userId: "test-user",
 			toolRegistry: imageToolRegistry(),

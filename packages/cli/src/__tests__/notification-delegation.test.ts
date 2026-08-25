@@ -7,9 +7,9 @@
  * no matching messages row. The remote host's executeProcess() then hit
  * `Message not found` and silently wrote an error response.
  *
- * Repro in the field: thread a83b945f-d4b1-4b77-904f-bb9b465edc1d had three
- * heartbeat notifications inserted (07:32, 09:03, 11:32 UTC 2026-04-26) that
- * were visible in the messages table but never triggered any turn — the
+ * Repro in the field: a thread had three
+ * heartbeat notifications inserted (three timestamps roughly two hours
+ * apart) that were visible in the messages table but never triggered any turn — the
  * delegating host wrote the dispatch entry ID into ProcessPayload.message_id
  * and the receiving host's lookup returned null.
  *

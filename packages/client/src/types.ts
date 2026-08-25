@@ -1,4 +1,5 @@
 import type { ContentBlock } from "@bound/llm";
+import type { YardExecutionEvent } from "@bound/shared";
 import type { AgentFile, MemoryTier, Message, Task, Thread, WsStreamChunk } from "@bound/shared";
 
 // ---- Thread responses ----
@@ -217,8 +218,8 @@ export interface ContextDebugInfo {
 	/**
 	 * Why `cachePath` resolved as it did — the same signal the agent loop logs.
 	 * Cold reasons explain a rebuild (`budget-exceeded`, `tool-change`,
-	 * `cache-expired`, `orphaned-tool-call`, `no-stored-state`, `no-history`);
-	 * `warm-eligible` means the warm path completed within budget. Optional on
+	 * `cache-expired`, `orphaned-tool-call`, `purge-message`, `no-stored-state`,
+	 * `no-history`); `warm-eligible` means the warm path completed within budget. Optional on
 	 * older rows.
 	 */
 	cachePathReason?:
@@ -226,6 +227,7 @@ export interface ContextDebugInfo {
 		| "cache-expired"
 		| "tool-change"
 		| "orphaned-tool-call"
+		| "purge-message"
 		| "budget-exceeded"
 		| "no-history"
 		| "warm-eligible";
@@ -285,10 +287,71 @@ export interface ContextDebugTurn {
 	created_at: string;
 }
 
-// ---- MCP ----
-
-export interface CreateMcpThreadResult {
+/**
+ * Payload of the `context:debug` WebSocket event. Matches the wire shape the
+ * server broadcasts (see `handleContextDebug` in web/src/server/websocket.ts
+ * and `BoundEvents["context:debug"]` in @bound/shared): the debug info for
+ * ONE just-recorded turn, not the full ContextDebugTurn REST row.
+ */
+export interface ContextDebugEvent {
 	thread_id: string;
+	turn_id: string;
+	debug: ContextDebugInfo;
+}
+
+/**
+ * Cluster-wide token/cost totals for a time range, as served by
+ * `GET /api/metrics` (the `tokens.totals` slice). The spoke's own web server
+ * aggregates these from the synced `turns` table, so the numbers cover the
+ * whole cluster without any hub round-trip.
+ */
+export interface MetricsTokenTotals {
+	tokens_in: number;
+	tokens_out: number;
+	cache_read: number;
+	cache_write: number;
+	cost_usd: number;
+	turn_count: number;
+	error_count: number;
+}
+
+// ---- Connector bindings ----
+
+export interface ConnectorBindingEntry {
+	id: string;
+	server_name: string;
+	event_name: string;
+	event_args: unknown;
+	event_args_raw: string;
+	delivery_mode: string;
+	cursor: string | null;
+	task_id: string | null;
+	created_at: string;
+	modified_at: string;
+	task_status: string | null;
+	task_thread_id: string | null;
+	task_trigger_spec: string | null;
+	/**
+	 * Model that runs deliveries for this binding. Stored on the backing event
+	 * task's `model_hint` (mirrored onto its delivery thread), since
+	 * `connector_handles` has no model column. Null means "use the cluster default".
+	 */
+	model_hint: string | null;
+	thread_title: string | null;
+}
+
+export interface ConnectorBindingsResponse {
+	bindings: ConnectorBindingEntry[];
+}
+
+export interface UpdateConnectorBindingOptions {
+	/**
+	 * Three-state, matching the webhook and RSS PATCH contract:
+	 *   omitted        → leave the existing model alone
+	 *   null or ""     → clear back to the cluster default
+	 *   non-empty str  → set the model
+	 */
+	model_hint?: string | null;
 }
 
 // ---- Webhooks ----
@@ -359,6 +422,15 @@ export interface WebhookUrlsResponse {
 	urls: WebhookUrlEntry[];
 }
 
+/**
+ * State of the cluster-wide unauthenticated-webhook kill switch (#195).
+ * When false (the default), `signature_format: "none"` webhooks cannot be
+ * created and existing ones receive no deliveries.
+ */
+export interface WebhookUnauthenticatedSwitch {
+	allow_unauthenticated: boolean;
+}
+
 export interface CreateWebhookOptions {
 	name: string;
 	format?: string;
@@ -393,6 +465,51 @@ export interface UpdateWebhookOptions {
 	 *   true/false → set the flag explicitly
 	 * Non-boolean values are rejected by the server with HTTP 400.
 	 */
+	no_history?: boolean;
+}
+
+// ---- RSS feeds ----
+
+export interface RssFeedListEntry {
+	id: string;
+	name: string;
+	url: string;
+	description: string | null;
+	poll_interval_seconds: number;
+	task_id: string;
+	thread_id: string;
+	created_at: string;
+	modified_at: string;
+	/** task.system_prompt_addition surfaced on the feed (see WebhookListEntry.prompt). */
+	prompt: string | null;
+	/** tasks.model_hint; null means "use the cluster default model". */
+	model_hint: string | null;
+	/** tasks.no_history coerced to a boolean (see WebhookListEntry.no_history). */
+	no_history: boolean;
+}
+
+export interface CreateRssFeedOptions {
+	name: string;
+	/** Feed URL — must be http(s). */
+	url: string;
+	description?: string;
+	prompt?: string;
+	/** Poll cadence in seconds; server default 900, floor 60. */
+	poll_interval_seconds?: number;
+	/** See CreateWebhookOptions.model_hint. */
+	model_hint?: string | null;
+	/** See CreateWebhookOptions.no_history. */
+	no_history?: boolean;
+}
+
+export interface UpdateRssFeedOptions {
+	url?: string;
+	description?: string;
+	prompt?: string;
+	poll_interval_seconds?: number;
+	/** Three-state semantics — see UpdateWebhookOptions.model_hint. */
+	model_hint?: string | null;
+	/** Two-state semantics — see UpdateWebhookOptions.no_history. */
 	no_history?: boolean;
 }
 
@@ -451,7 +568,7 @@ export interface BoundClientEvents {
 	"message:created": (msg: Message) => void;
 	"task:updated": (data: { taskId: string; status: string }) => void;
 	"file:updated": (data: { path: string; operation: string }) => void;
-	"context:debug": (data: ContextDebugTurn) => void;
+	"context:debug": (data: ContextDebugEvent) => void;
 	"thread:status": (data: {
 		thread_id: string;
 		active: boolean;
@@ -460,6 +577,13 @@ export interface BoundClientEvents {
 		model: string | null;
 	}) => void;
 	"stream:chunk": (data: { thread_id: string; chunk: WsStreamChunk }) => void;
+	"yard:execution": (data: YardExecutionEvent) => void;
+	/**
+	 * Number of background (deferred, #76) tool calls in flight on a thread.
+	 * Server-recomputed on every change, so a client that missed a frame resyncs
+	 * to truth rather than drifting the way local tallying would.
+	 */
+	"background:count": (data: { thread_id: string; count: number }) => void;
 	"tool:call": (call: ToolCallRequest) => void;
 	"tool:cancel": (event: ToolCancelEvent) => void;
 	error: (err: Event | Error | { code: string; message: string }) => void;

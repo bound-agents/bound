@@ -9,6 +9,7 @@ import {
 	TOOL_RESULT,
 	acknowledgeBatch,
 	acknowledgeClientToolCall,
+	acknowledgeToolResultForCall,
 	cancelClientToolCalls,
 	claimPending,
 	enqueueClientToolCall,
@@ -23,10 +24,11 @@ import {
 	pruneAcknowledged,
 	resetProcessing,
 	resetProcessingForThread,
+	resolveDeferredToolResult,
 	updateClaimedBy,
 } from "../dispatch";
+import { findBackgroundPlaceholderDeliveryState } from "../repositories/messages";
 import { applySchema } from "../schema";
-
 let db: ReturnType<typeof createDatabase>;
 let dbPath: string;
 
@@ -459,6 +461,68 @@ describe("enqueueToolResult", () => {
 		expect(row?.status).toBe("pending");
 		expect(row?.event_type).toBe(TOOL_RESULT);
 		expect(JSON.parse(row?.event_payload ?? "{}")).toEqual({ call_id: callId });
+	});
+
+	// R-UD9 / AC.7c — re-driving the same (thread_id, call_id) is a no-op so a
+	// relayed client_result retry cannot double-enqueue or double-execute.
+	it("is idempotent on (thread_id, call_id): a second enqueue is a no-op", () => {
+		const threadId = randomUUID();
+		const callId = "call-dup";
+
+		const firstId = enqueueToolResult(db, threadId, callId);
+		const secondId = enqueueToolResult(db, threadId, callId);
+
+		// Same entry id returned, and exactly ONE row exists for this pair.
+		expect(secondId).toBe(firstId);
+		const count = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND event_payload = ?",
+			)
+			.get(threadId, TOOL_RESULT, JSON.stringify({ call_id: callId })) as { c: number };
+		expect(count.c).toBe(1);
+	});
+
+	// Regression: boundless reuses call_1, call_2, …
+	// every turn, so a call_id is NOT unique across a thread's lifetime — only
+	// within one turn. The idempotency guard must dedup only while a re-drive is
+	// still in flight (pending/processing). Once the re-drive row has been consumed
+	// (acknowledged), a later turn reusing the same call_id must enqueue a FRESH
+	// row — otherwise the loop never gets its wakeup and the thread stalls one
+	// message per turn until a user message forces it forward.
+	it("re-enqueues a reused call_id after the prior re-drive was acknowledged", () => {
+		const threadId = randomUUID();
+		const callId = "call_1";
+
+		// Turn N: enqueue + consume (claim → acknowledge) the re-drive.
+		const firstId = enqueueToolResult(db, threadId, callId);
+		acknowledgeBatch(db, [firstId]);
+
+		// Turn N+1: same call_id comes back. Must be a NEW pending row, not a no-op.
+		const secondId = enqueueToolResult(db, threadId, callId);
+
+		expect(secondId).not.toBe(firstId);
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	it("distinguishes different call_ids and different threads", () => {
+		const threadA = randomUUID();
+		const threadB = randomUUID();
+
+		const a1 = enqueueToolResult(db, threadA, "call-1");
+		const a2 = enqueueToolResult(db, threadA, "call-2"); // different call → new row
+		const b1 = enqueueToolResult(db, threadB, "call-1"); // different thread → new row
+
+		expect(a1).not.toBe(a2);
+		expect(a1).not.toBe(b1);
+		const total = db
+			.query("SELECT COUNT(*) AS c FROM dispatch_queue WHERE event_type = ?")
+			.get(TOOL_RESULT) as { c: number };
+		expect(total.c).toBe(3);
 	});
 });
 
@@ -1167,5 +1231,344 @@ describe("expireClientToolCallsForConnection", () => {
 			"other",
 		);
 		expect(expireClientToolCallsForConnection(db, "ws-conn-empty")).toHaveLength(0);
+	});
+});
+
+// #76 — tool backgrounding. A tool that returns a DeferredToolResult gets a
+// placeholder tool_result written by the loop; when its background work lands,
+// resolveDeferredToolResult swaps the placeholder content for the real result
+// and re-wakes the loop through the same enqueueToolResult path the WS
+// client-tool track uses.
+describe("resolveDeferredToolResult", () => {
+	const siteId = "test-site";
+
+	function insertPlaceholder(
+		threadId: string,
+		callId: string,
+		content = "[Background: running]",
+		opts: { deleted?: number; role?: string; createdAt?: string } = {},
+	): string {
+		const id = randomUUID();
+		const now = opts.createdAt ?? new Date().toISOString();
+		db.run(
+			`INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted, exit_code, metadata)
+			 VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL)`,
+			[
+				id,
+				threadId,
+				opts.role ?? "tool_result",
+				content,
+				callId,
+				now,
+				now,
+				siteId,
+				opts.deleted ?? 0,
+			],
+		);
+		return id;
+	}
+
+	function contentOf(id: string): { content: string; exit_code: number | null } {
+		return db.query("SELECT content, exit_code FROM messages WHERE id = ?").get(id) as {
+			content: string;
+			exit_code: number | null;
+		};
+	}
+
+	it("swaps the placeholder content for the real result and enqueues a re-wake", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-1";
+		const placeholderId = insertPlaceholder(threadId, callId);
+
+		resolveDeferredToolResult(db, threadId, callId, "aux found 3 files", false, siteId);
+
+		const row = contentOf(placeholderId);
+		expect(row.content).toBe("aux found 3 files");
+		expect(row.exit_code).toBe(0);
+
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND event_payload = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT, JSON.stringify({ call_id: callId })) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	it("marks exit_code 1 when the background work failed", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-err";
+		const placeholderId = insertPlaceholder(threadId, callId);
+
+		resolveDeferredToolResult(db, threadId, callId, "Error: aux blew up", true, siteId);
+
+		const row = contentOf(placeholderId);
+		expect(row.content).toBe("Error: aux blew up");
+		expect(row.exit_code).toBe(1);
+	});
+
+	// Race: background work can finish before the loop has persisted the
+	// placeholder. The enqueue must still happen so the loop wakes and reads
+	// whatever it wrote on its own iteration — dropping it would stall the thread.
+	it("still enqueues the re-wake when no placeholder exists yet", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-race";
+
+		resolveDeferredToolResult(db, threadId, callId, "result arrived early", false, siteId);
+
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	// call_ids are reused across turns (boundless emits call_1, call_2, … every
+	// turn), so the newest row for a given (thread, call_id) is the live one.
+	it("resolves the most recent placeholder when a call_id was reused", () => {
+		const threadId = randomUUID();
+		const callId = "call_1";
+		const oldId = insertPlaceholder(threadId, callId, "[old turn placeholder]", {
+			createdAt: "2026-01-01T00:00:00.000Z",
+		});
+		const newId = insertPlaceholder(threadId, callId, "[current turn placeholder]", {
+			createdAt: "2026-06-01T00:00:00.000Z",
+		});
+
+		resolveDeferredToolResult(db, threadId, callId, "fresh result", false, siteId);
+
+		expect(contentOf(newId).content).toBe("fresh result");
+		expect(contentOf(oldId).content).toBe("[old turn placeholder]");
+	});
+
+	it("ignores soft-deleted placeholders", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-deleted";
+		const deletedId = insertPlaceholder(threadId, callId, "[tombstoned]", { deleted: 1 });
+
+		resolveDeferredToolResult(db, threadId, callId, "should not land here", false, siteId);
+
+		expect(contentOf(deletedId).content).toBe("[tombstoned]");
+	});
+
+	it("does not touch rows of other roles that share the tool_name", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-role";
+		const toolCallId = insertPlaceholder(threadId, callId, "[the tool_call row]", {
+			role: "tool_call",
+		});
+
+		resolveDeferredToolResult(db, threadId, callId, "real result", false, siteId);
+
+		expect(contentOf(toolCallId).content).toBe("[the tool_call row]");
+	});
+
+	it("scopes resolution to the owning thread", () => {
+		const threadA = randomUUID();
+		const threadB = randomUUID();
+		const callId = "call-shared";
+		const aId = insertPlaceholder(threadA, callId, "[thread A placeholder]");
+		const bId = insertPlaceholder(threadB, callId, "[thread B placeholder]");
+
+		resolveDeferredToolResult(db, threadA, callId, "A's result", false, siteId);
+
+		expect(contentOf(aId).content).toBe("A's result");
+		expect(contentOf(bId).content).toBe("[thread B placeholder]");
+	});
+
+	// The re-wake rides enqueueToolResult, which is idempotent on
+	// (thread_id, call_id) while a prior re-drive is still in flight.
+	it("is idempotent on repeat resolution while the re-wake is still pending", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-dup";
+		insertPlaceholder(threadId, callId);
+
+		resolveDeferredToolResult(db, threadId, callId, "first", false, siteId);
+		resolveDeferredToolResult(db, threadId, callId, "second", false, siteId);
+
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM dispatch_queue WHERE thread_id = ? AND event_type = ? AND status = 'pending'",
+			)
+			.get(threadId, TOOL_RESULT) as { c: number };
+		expect(pending.c).toBe(1);
+	});
+
+	it("routes the placeholder update through the change-log outbox", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-sync";
+		const placeholderId = insertPlaceholder(threadId, callId);
+		const before = db.query("SELECT COUNT(*) AS c FROM change_log").get() as { c: number };
+
+		resolveDeferredToolResult(db, threadId, callId, "synced result", false, siteId);
+
+		const after = db.query("SELECT COUNT(*) AS c FROM change_log").get() as { c: number };
+		expect(after.c).toBeGreaterThan(before.c);
+		const entry = db
+			.query(
+				"SELECT table_name, row_id FROM change_log WHERE row_id = ? ORDER BY rowid DESC LIMIT 1",
+			)
+			.get(placeholderId) as { table_name: string; row_id: string } | null;
+		expect(entry?.table_name).toBe("messages");
+	});
+
+	// #220: resolution stamps proof-of-delivery on the row itself so the
+	// dispatcher's clobber guard keys on "was the result delivered" instead of
+	// "was the in-flight marker present" (which has been observed missing).
+	it("stamps background_delivered and drops the in-flight marker on resolution", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-stamp";
+		const placeholderId = insertPlaceholder(threadId, callId);
+		db.run("UPDATE messages SET metadata = ? WHERE id = ?", [
+			JSON.stringify({ background: true, aux_thread: "child-1" }),
+			placeholderId,
+		]);
+
+		resolveDeferredToolResult(db, threadId, callId, "done", false, siteId);
+
+		const row = db.query("SELECT metadata FROM messages WHERE id = ?").get(placeholderId) as {
+			metadata: string;
+		};
+		const meta = JSON.parse(row.metadata) as Record<string, unknown>;
+		expect(meta.background_delivered).toBe(true);
+		expect(meta.background).toBeUndefined();
+		expect(meta.aux_thread).toBe("child-1");
+	});
+
+	// #220 defect 1 (observed live 2026-08-24, two placeholders in one batch):
+	// a placeholder that MISSED its `background` stamp entirely (metadata NULL)
+	// must still read as undelivered before resolution and delivered after —
+	// the fail-safe direction is to deliver.
+	it("treats an unstamped placeholder as undelivered, then delivered after resolution", () => {
+		const threadId = randomUUID();
+		const callId = "call-bg-nostamp";
+		const placeholderId = insertPlaceholder(threadId, callId); // metadata NULL — the missing-stamp shape
+
+		expect(findBackgroundPlaceholderDeliveryState(db, threadId, callId)).toEqual({
+			id: placeholderId,
+			delivered: false,
+		});
+
+		resolveDeferredToolResult(db, threadId, callId, "recovered result", false, siteId);
+
+		expect(findBackgroundPlaceholderDeliveryState(db, threadId, callId)?.delivered).toBe(true);
+		expect(contentOf(placeholderId).content).toBe("recovered result");
+	});
+
+	it("reports no delivery state when no placeholder row exists", () => {
+		expect(findBackgroundPlaceholderDeliveryState(db, randomUUID(), "call-none")).toBeNull();
+	});
+});
+// #201 — a NESTED (aux) loop resolves client tools inline and keeps running, so
+// nothing will ever claim the re-wake `enqueueToolResult` queued. Left pending it
+// becomes a phantom wakeup that crash recovery re-dispatches on the next boot.
+describe("acknowledgeToolResultForCall", () => {
+	function statusesFor(threadId: string): string[] {
+		return (
+			db
+				.query(
+					"SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = ? ORDER BY created_at",
+				)
+				.all(threadId, TOOL_RESULT) as Array<{ status: string }>
+		).map((r) => r.status);
+	}
+
+	it("acknowledges a pending tool_result entry for the call", () => {
+		const threadId = randomUUID();
+		enqueueToolResult(db, threadId, "call-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+	});
+
+	it("acknowledges an entry already claimed into processing", () => {
+		const threadId = randomUUID();
+		const entryId = enqueueToolResult(db, threadId, "call-1");
+		updateClaimedBy(db, entryId, "conn-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+	});
+
+	it("leaves other call_ids on the same thread untouched", () => {
+		const threadId = randomUUID();
+		enqueueToolResult(db, threadId, "call-1");
+		enqueueToolResult(db, threadId, "call-2");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		const rows = db
+			.query(
+				"SELECT event_payload, status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?",
+			)
+			.all(threadId, TOOL_RESULT) as Array<{ event_payload: string; status: string }>;
+		const byCall = new Map(
+			rows.map((r) => [(JSON.parse(r.event_payload) as { call_id: string }).call_id, r.status]),
+		);
+		expect(byCall.get("call-1")).toBe("acknowledged");
+		expect(byCall.get("call-2")).toBe("pending");
+	});
+
+	it("scopes to the owning thread", () => {
+		const threadA = randomUUID();
+		const threadB = randomUUID();
+		enqueueToolResult(db, threadA, "call-1");
+		enqueueToolResult(db, threadB, "call-1");
+
+		acknowledgeToolResultForCall(db, threadA, "call-1");
+
+		expect(statusesFor(threadA)).toEqual(["acknowledged"]);
+		expect(statusesFor(threadB)).toEqual(["pending"]);
+	});
+
+	// The inline resolver calls this unconditionally, including on paths where no
+	// entry was ever queued (e.g. no live session), so it must not throw.
+	it("is a no-op when no matching entry exists", () => {
+		const threadId = randomUUID();
+		expect(() => acknowledgeToolResultForCall(db, threadId, "never")).not.toThrow();
+		expect(statusesFor(threadId)).toEqual([]);
+	});
+
+	it("is idempotent on repeat calls", () => {
+		const threadId = randomUUID();
+		enqueueToolResult(db, threadId, "call-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+	});
+
+	// Acknowledging clears the in-flight guard, so a later turn reusing the same
+	// call_id enqueues a fresh row rather than colliding with the closed one.
+	it("frees the call_id for a later turn to re-enqueue", () => {
+		const threadId = randomUUID();
+		const first = enqueueToolResult(db, threadId, "call_1");
+		acknowledgeToolResultForCall(db, threadId, "call_1");
+
+		const second = enqueueToolResult(db, threadId, "call_1");
+
+		expect(second).not.toBe(first);
+		expect(statusesFor(threadId).sort()).toEqual(["acknowledged", "pending"]);
+	});
+
+	it("does not touch client_tool_call entries for the same thread", () => {
+		const threadId = randomUUID();
+		enqueueClientToolCall(
+			db,
+			threadId,
+			{ call_id: "call-1", tool_name: "boundless_read", arguments: {} },
+			"conn-1",
+		);
+		enqueueToolResult(db, threadId, "call-1");
+
+		acknowledgeToolResultForCall(db, threadId, "call-1");
+
+		const ct = db
+			.query("SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?")
+			.get(threadId, CLIENT_TOOL_CALL) as { status: string };
+		expect(ct.status).toBe("pending");
 	});
 });

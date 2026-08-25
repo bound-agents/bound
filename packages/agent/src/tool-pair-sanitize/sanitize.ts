@@ -69,9 +69,38 @@ export function sanitizeToolPairs(params: SanitizeToolPairsParams): Message[] {
  * NOT reordered — they belong in their original position. Pass 2
  * handles the structural case where assistant text sits mid-pair.
  */
-function reorderPass(messages: ReadonlyArray<Message>): Message[] {
+export function reorderPass(messages: ReadonlyArray<Message>): Message[] {
 	const reordered: Message[] = [];
 	const consumed = new Set<number>();
+
+	// Precompute tool_result indices keyed by tool_name (tool_use_id), ascending.
+	// This lets Phase 2 resolve straggler results past a tool_call boundary via a
+	// keyed lookup instead of scanning to end-of-array for every tool_call — the
+	// original O(n^2) hot path that pegged a CPU core for ~100s on threads with
+	// thousands of tool_calls whose ids never matched (e.g. cross-provider
+	// tool_use id synthesis leaving orphaned pairs).
+	const resultIndicesByName = new Map<string, number[]>();
+	for (let k = 0; k < messages.length; k++) {
+		const m = messages[k];
+		if (m.role === "tool_result" && m.tool_name) {
+			const arr = resultIndicesByName.get(m.tool_name);
+			if (arr) arr.push(k);
+			else resultIndicesByName.set(m.tool_name, [k]);
+		}
+	}
+	// Per-name cursor into the ascending index lists. Monotonic: the boundary
+	// threshold only increases across the outer loop and `consumed` only grows,
+	// so we never revisit an index we've advanced past. This keeps straggler
+	// resolution O(n) total rather than O(n^2).
+	const nameCursor = new Map<string, number>();
+	const claimStraggler = (name: string, afterIndex: number): number | undefined => {
+		const arr = resultIndicesByName.get(name);
+		if (!arr) return undefined;
+		let c = nameCursor.get(name) ?? 0;
+		while (c < arr.length && (arr[c] <= afterIndex || consumed.has(arr[c]))) c++;
+		nameCursor.set(name, c);
+		return c < arr.length ? arr[c] : undefined;
+	};
 
 	for (let i = 0; i < messages.length; i++) {
 		if (consumed.has(i)) continue;
@@ -88,34 +117,50 @@ function reorderPass(messages: ReadonlyArray<Message>): Message[] {
 
 		const pendingToolUseIds = new Set(extractToolUseIds(msg.content));
 
-		// Tracks whether we've scanned past a subsequent `tool_call`.
-		// Past that boundary we ONLY claim results whose tool_use_id
-		// is in our pending set — never steal results that belong to
-		// the next call.
-		let crossedToolCallBoundary = false;
+		// Phase 1: linear scan from i+1 until the first subsequent `tool_call`
+		// (the boundary) or an early break. Before the boundary we claim every
+		// tool_result and hoist non-assistant, non-tool messages. This scan is
+		// bounded by the gap to the next tool_call, so it is O(n) amortized
+		// across the whole array. `boundaryIndex >= 0` means we stopped at a
+		// subsequent tool_call with ids still pending (Phase 2 territory).
+		let boundaryIndex = -1;
 		for (let j = i + 1; j < messages.length; j++) {
 			if (consumed.has(j)) continue;
 			const jMsg = messages[j];
 			if (jMsg.role === "tool_call") {
 				if (pendingToolUseIds.size === 0) break;
-				crossedToolCallBoundary = true;
-				continue;
+				boundaryIndex = j;
+				break;
 			}
 			if (jMsg.role === "tool_result") {
-				if (crossedToolCallBoundary) {
-					if (!jMsg.tool_name || !pendingToolUseIds.has(jMsg.tool_name)) continue;
-				}
 				matchIndices.push(j);
 				if (jMsg.tool_name) pendingToolUseIds.delete(jMsg.tool_name);
 			} else {
 				if (matchIndices.length > 0 && pendingToolUseIds.size === 0) break;
-				if (crossedToolCallBoundary) continue;
 				// Only reorder system-shaped messages, NOT assistants.
 				if (jMsg.role !== "assistant") {
 					nonToolMessages.push(jMsg);
 					nonToolIndices.push(j);
 				}
 			}
+		}
+
+		// Phase 2: crossed a tool_call boundary with ids still pending. The
+		// original scanned the rest of the array claiming any tool_result whose
+		// id was in our pending set (first match per id, in ascending order).
+		// Resolve each pending id via the precomputed index instead, then sort
+		// the claimed indices so emission stays in ascending array order —
+		// byte-identical to the original's scan-order claim. Messages past the
+		// boundary are never hoisted, matching the original's post-boundary
+		// `continue`.
+		if (boundaryIndex >= 0 && pendingToolUseIds.size > 0) {
+			const stragglers: number[] = [];
+			for (const id of pendingToolUseIds) {
+				const idx = claimStraggler(id, boundaryIndex);
+				if (idx !== undefined) stragglers.push(idx);
+			}
+			stragglers.sort((a, b) => a - b);
+			for (const idx of stragglers) matchIndices.push(idx);
 		}
 
 		if (matchIndices.length > 0) {
@@ -226,22 +271,31 @@ function repairPass(messages: ReadonlyArray<Message>, threadId: string, nowIso: 
 				inActiveToolCall = false;
 				sanitized.push(msg);
 				prevSanitizedRole = "tool_result";
-			} else if (prevSanitizedRole === "tool_result") {
-				if (lastSyntheticToolCall) {
-					const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
-					try {
-						const blocks = JSON.parse(lastSyntheticToolCall.content);
-						if (Array.isArray(blocks) && !blocks.some((b: { id?: string }) => b.id === toolUseId)) {
-							blocks.push({ type: "tool_use", id: toolUseId, name: "unknown", input: {} });
-							lastSyntheticToolCall.content = JSON.stringify(blocks);
-						}
-					} catch {
-						// Non-parseable synthetic content — shouldn't happen.
+			} else if (prevSanitizedRole === "tool_result" && lastSyntheticToolCall) {
+				// Consecutive orphans for the same multi-tool call: extend the
+				// prior synthetic tool_call's content rather than emit a new
+				// synthetic for each.
+				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
+				try {
+					const blocks = JSON.parse(lastSyntheticToolCall.content);
+					if (Array.isArray(blocks) && !blocks.some((b: { id?: string }) => b.id === toolUseId)) {
+						blocks.push({ type: "tool_use", id: toolUseId, name: "unknown", input: {} });
+						lastSyntheticToolCall.content = JSON.stringify(blocks);
 					}
+				} catch {
+					// Non-parseable synthetic content — shouldn't happen.
 				}
 				sanitized.push(msg);
 				// prevSanitizedRole stays "tool_result"
 			} else {
+				// Orphan with no synthetic parent to extend. This INCLUDES an
+				// orphan landing directly after a REAL, fully-closed tool pair
+				// (prevSanitizedRole === "tool_result" but lastSyntheticToolCall
+				// is null): pushing it bare violated post-condition T3, and the
+				// Stage 5 annotator's fallback then stamped it with the last real
+				// call's tool_use id — duplicate tool_result ids on the wire
+				// (incident thread adb65d85, 2026-08-16). Synthesize a declaring
+				// tool_call instead.
 				const toolUseId = msg.tool_name || `synthetic-tc-${msg.id}`;
 				const syntheticMsg: Message = {
 					id: `synthetic-${msg.id}`,

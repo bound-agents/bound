@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { findPendingUserMessage } from "../agent-loop-utils";
 
 // Mock LLM Backend that returns text responses
@@ -176,19 +176,19 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 			],
 		);
 
-		// Create two AgentLoop instances with mock LLM backends
+		// Create two MainAgentLoop instances with mock LLM backends
 		const mockBackend1 = new MockLLMBackend();
 		const mockBackend2 = new MockLLMBackend();
 		const mockBash1 = createMockSandbox();
 		const mockBash2 = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop1 = new AgentLoop(ctx, mockBash1, createMockRouter(mockBackend1), {
+		const agentLoop1 = new MainAgentLoop(ctx, mockBash1, createMockRouter(mockBackend1), {
 			threadId: threadId1,
 			userId,
 		});
 
-		const agentLoop2 = new AgentLoop(ctx, mockBash2, createMockRouter(mockBackend2), {
+		const agentLoop2 = new MainAgentLoop(ctx, mockBash2, createMockRouter(mockBackend2), {
 			threadId: threadId2,
 			userId,
 		});
@@ -265,7 +265,7 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 		const loops = threadIds.map((threadId) => {
 			const mockBackend = new MockLLMBackend();
 			const mockBash = createMockSandbox();
-			return new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			return new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId,
 			});

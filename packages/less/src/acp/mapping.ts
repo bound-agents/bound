@@ -11,6 +11,12 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+// Canonical shell-tool-name predicate lives in ../tools/shell, co-located with
+// the names resolveShell mints. Imported for internal use and re-exported so
+// existing acp consumers keep importing it from mapping.
+import { isShellToolName } from "../tools/shell";
+
+export { isShellToolName };
 import type {
 	ContentBlock as AcpContentBlock,
 	PermissionOption,
@@ -21,8 +27,8 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { ImageMediaType, ContentBlock as LlmContentBlock } from "@bound/llm";
 import type { Message, WsStreamChunk } from "@bound/shared";
+import { type HashlineEdit, applyHashlineEdits, parseAnchor, resolveAnchor } from "@bound/shared";
 import { parseContentBlocks } from "../session/tool-call-pairing";
-import { findStringOccurrences } from "../tools/match";
 
 /**
  * The four permission options offered to the client for every gated tool call.
@@ -80,10 +86,6 @@ export function toolNameToKind(toolName: string): ToolKind {
 	return "other";
 }
 
-export function isShellToolName(toolName: string): boolean {
-	return /^boundless_(bash|sh|zsh|pwsh|powershell|cmd)$/.test(toolName);
-}
-
 export function toolCallTitle(toolName: string, args: Record<string, unknown>): string {
 	const command = typeof args.command === "string" ? args.command.trim() : "";
 	if (isShellToolName(toolName) && command) {
@@ -133,13 +135,13 @@ function writePathsForTool(toolName: string, args: Record<string, unknown>, cwd:
  *
  * - `boundless_read`: the 1-based `offset` is the line, passed through verbatim
  *   (matching the Claude Code shim: Read "from line 200" -> `{ line: 200 }`).
- * - `boundless_edit`: the line where the replacement first *diverges* from
- *   `old_string`, computed against the file's current (pre-edit) contents — this
- *   runs before the edit applies. Edits are routinely anchored with leading
- *   unchanged context lines, so the raw match-start sits above the real change;
- *   we advance past the shared `old_string`/`new_string` line-prefix to land on
- *   it. With no `new_string` arg, falls back to the match start. Reads the file;
- *   any failure (missing file, unreadable, no match) degrades to no line.
+ * - `boundless_edit`: the first edit's `start` anchor, resolved against the
+ *   file's current (pre-edit) contents — this runs before the edit applies.
+ *   Hashline anchors carry a line hint, but the file may have drifted since
+ *   the read that minted them, so we re-resolve by hash (with proximity
+ *   disambiguation) the same way the edit itself will. Falls back to the
+ *   anchor's raw line hint when the file can't be read; degrades to no line
+ *   when the anchor is malformed or the hash no longer matches.
  * - `boundless_write`: a write carries no line in its args and the target may
  *   not exist yet, so there is nothing to follow.
  */
@@ -157,35 +159,31 @@ function followAlongLine(
 
 	if (toolName === "boundless_edit") {
 		const filePath = args.file_path;
-		const oldString = args.old_string;
-		if (typeof filePath !== "string" || typeof oldString !== "string" || oldString.length === 0) {
+		const firstEdit = Array.isArray(args.edits) ? args.edits[0] : undefined;
+		const start =
+			typeof firstEdit === "object" && firstEdit !== null
+				? (firstEdit as Record<string, unknown>).start
+				: undefined;
+		if (typeof filePath !== "string" || typeof start !== "string") {
+			return undefined;
+		}
+		const anchor = parseAnchor(start);
+		if (anchor === null) {
 			return undefined;
 		}
 		try {
 			const content = readFileSync(absolutePath(cwd, filePath), "utf-8");
-			const matchLine = findStringOccurrences(content, oldString).occurrences[0]?.line;
-			if (matchLine === undefined) {
-				return undefined;
+			const lines = content.endsWith("\n") ? content.slice(0, -1).split("\n") : content.split("\n");
+			const resolved = resolveAnchor(lines, anchor);
+			if (resolved.ok) {
+				return resolved.index + 1;
 			}
-			const newString = args.new_string;
-			if (typeof newString !== "string") {
-				return matchLine;
-			}
-			// Advance past the shared leading lines so the follow line lands on the
-			// first line the edit actually changes rather than on unchanged context.
-			const oldLines = oldString.split("\n");
-			const newLines = newString.split("\n");
-			let shared = 0;
-			while (
-				shared < oldLines.length &&
-				shared < newLines.length &&
-				oldLines[shared] === newLines[shared]
-			) {
-				shared++;
-			}
-			return matchLine + shared;
+			// Hash no longer matches anything — the file drifted past recovery.
+			// The raw line hint is still a better hint than nothing.
+			return anchor.line;
 		} catch {
-			return undefined;
+			// File unreadable: fall back to the anchor's own line hint.
+			return anchor.line;
 		}
 	}
 
@@ -247,18 +245,38 @@ export function toolCallContent(
 
 	if (toolName === "boundless_edit") {
 		const filePath = typeof args.file_path === "string" ? args.file_path : "";
-		const oldText = typeof args.old_string === "string" ? args.old_string : undefined;
-		const newText = typeof args.new_string === "string" ? args.new_string : undefined;
-		if (filePath && oldText !== undefined && newText !== undefined) {
-			return [
-				{
-					type: "diff",
-					path: absolutePath(cwd, filePath),
-					oldText,
-					newText,
-				},
-			];
+		const rawEdits = Array.isArray(args.edits) ? args.edits : [];
+		const edits: HashlineEdit[] = [];
+		for (const e of rawEdits) {
+			const r = e as Record<string, unknown>;
+			if (
+				typeof r === "object" &&
+				r !== null &&
+				typeof r.start === "string" &&
+				typeof r.end === "string" &&
+				typeof r.content === "string"
+			) {
+				edits.push({ start: r.start, end: r.end, content: r.content });
+			}
 		}
+		if (filePath && edits.length > 0) {
+			// This runs before the edit applies, so the file on disk is the
+			// pre-edit state: apply the hashline edits to it in memory to give
+			// the editor a true before/after diff. Any failure (missing file,
+			// stale anchors) degrades to no content — the tool call itself will
+			// surface the error.
+			try {
+				const absPath = absolutePath(cwd, filePath);
+				const oldText = readFileSync(absPath, "utf-8");
+				const applied = applyHashlineEdits(oldText, edits);
+				if (applied.ok) {
+					return [{ type: "diff", path: absPath, oldText, newText: applied.content }];
+				}
+			} catch {
+				// fall through to no content
+			}
+		}
+		return [];
 	}
 
 	if (toolName === "boundless_write") {
@@ -489,11 +507,46 @@ export function streamChunkToSessionUpdate(chunk: WsStreamChunk): SessionUpdate 
 
 /**
  * Best-effort parse of a persisted `Message.content` string into the
- * LlmContentBlock[] it was serialized from. Assistant / tool_call rows persist
- * their content as a JSON array of blocks (thinking / text / tool_use / …);
- * plain user and string-content rows are not JSON arrays. Returns null when the
- * content is not a block array so callers can fall back to treating it as text.
+ * LlmContentBlock[] it was serialized from. Assistant and tool_call rows
+ * persist their content as a JSON array of blocks (thinking / text / tool_use /
+ * …); plain user and string-content rows are not JSON arrays. Returns null
+ * when the content is not a block array so callers can treat it as text.
  */
+
+/**
+ * Rebuild the visible ACP event runs from a structured assistant row.
+ *
+ * Live streaming gives thoughts and prose distinct message ids, while adjacent
+ * chunks of the same kind share one id. Persisted assistant rows collapse
+ * those chunks into one ContentBlock[] JSON value, so replay has to recover the
+ * boundaries instead of forwarding that JSON as literal assistant prose.
+ */
+function structuredAssistantUpdates(message: Message): SessionUpdate[] | null {
+	const blocks = parseContentBlocks(message.content);
+	if (!blocks) return null;
+
+	const updates: SessionUpdate[] = [];
+	let activeKind: "thought" | "message" | null = null;
+	let run = 0;
+	for (const block of blocks) {
+		const kind = block.type === "thinking" ? "thought" : block.type === "text" ? "message" : null;
+		const text =
+			block.type === "thinking" ? block.thinking : block.type === "text" ? block.text : "";
+		// Empty reasoning blocks carry provider replay state but no display content;
+		// the live path suppresses them without breaking the current message run.
+		if (!kind || !text) continue;
+		if (kind !== activeKind) {
+			activeKind = kind;
+			run += 1;
+		}
+		updates.push({
+			sessionUpdate: kind === "thought" ? "agent_thought_chunk" : "agent_message_chunk",
+			content: { type: "text", text },
+			messageId: `${message.id}-${kind}-${run}`,
+		});
+	}
+	return updates;
+}
 /**
  * Translates a persisted bound Message into the SessionUpdates used to replay
  * history during session/load, mirroring the sequence the live path emits for
@@ -547,7 +600,9 @@ export function messageToSessionUpdate(
 					messageId: message.id,
 				},
 			];
-		case "assistant":
+		case "assistant": {
+			const structured = structuredAssistantUpdates(message);
+			if (structured) return structured;
 			return [
 				{
 					sessionUpdate: "agent_message_chunk",
@@ -555,6 +610,7 @@ export function messageToSessionUpdate(
 					messageId: message.id,
 				},
 			];
+		}
 		case "alert":
 			// Daemon alerts (inference timeouts, non-retryable LLM errors, fatal
 			// loop/task errors, plus informational notices like a same-tier model

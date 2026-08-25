@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import type React from "react";
-import { wrapLineAtWidth } from "../util/wrap";
+import { stripTerminalControlSequences } from "../util/terminal-control";
+import { expandTabs, wrapLineAtWidth } from "../util/wrap";
 import { Collapsible } from "./Collapsible";
 import { Spinner } from "./Spinner";
 
@@ -73,6 +74,14 @@ export interface ToolCallCardProps {
 	startTime: number;
 	stdout?: string;
 	/**
+	 * One-line summary of the call's arguments (`~/x.ts`, `bun test …`),
+	 * produced by `summarizeToolArgs` upstream. With parallel call rows
+	 * suppressed in the committed transcript, this is the only surface that
+	 * says WHAT a running invocation is working on — without it, three
+	 * parallel reads render as three identical anonymous spinners.
+	 */
+	argsSummary?: string;
+	/**
 	 * Live terminal column count from `useTerminalSize()` in the parent view.
 	 * Used to wrap long single-line stdout (e.g., a JSON dump from `cat`)
 	 * into deterministic visual rows so the truncation cap counts physical
@@ -101,6 +110,7 @@ export interface ToolCallCardProps {
 export function ToolCallCard({
 	toolName,
 	stdout,
+	argsSummary,
 	terminalColumns,
 	maxStdoutRows = MAX_STDOUT_ROWS,
 }: ToolCallCardProps): React.ReactElement {
@@ -115,10 +125,25 @@ export function ToolCallCard({
 		// and any ancestor padding so visual rows don't accidentally trigger
 		// the terminal's own soft-wrap.
 		const wrapColumn = Math.max(1, terminalColumns - 4);
+		// Sanitize BEFORE wrapping — streamed stdout is the one path that
+		// reaches the live region raw (committed results are stripped in
+		// MessageBlock). Two distinct hazards, one observed derailment
+		// (2026-07-17 screenshot: a ghost spinner row stranded per 80ms tick):
+		// - Raw \r / ANSI escapes: a carriage return inside the frame moves
+		//   the cursor outside Ink's knowledge, so log-update under-erases
+		//   and strands the frame's top rows in scrollback every repaint.
+		//   strip…Sequences also normalizes \r→\n and drops color/cursor
+		//   escapes (which char-count wrapping would otherwise slice mid-
+		//   sequence, leaking a live half-escape into the terminal).
+		// - Tabs: wrapLineAtWidth counts \t as one char but the terminal
+		//   renders up to 8 columns — same gauge mismatch as 4b7d394e — so
+		//   physical rows exceed counted rows and the row budget silently
+		//   overflows the viewport.
+		const sanitized = stripTerminalControlSequences(stdout);
 		// Flatten logical lines into visual rows.
 		const allVisualRows: string[] = [];
-		for (const line of stdout.split("\n")) {
-			allVisualRows.push(...wrapLineAtWidth(line, wrapColumn));
+		for (const line of sanitized.split("\n")) {
+			allVisualRows.push(...wrapLineAtWidth(expandTabs(line), wrapColumn));
 		}
 		if (allVisualRows.length > rowCap) {
 			const tail = allVisualRows.slice(-rowCap).join("\n");
@@ -128,9 +153,53 @@ export function ToolCallCard({
 		}
 	}
 
+	// Flatten the args summary to its FIRST line. The spinner card's job is
+	// identity ("which invocation is this"), not content — the committed ⏵
+	// row carries the full args. This is load-bearing, not cosmetic:
+	// wrap="truncate-end" caps WIDTH but embedded newlines still produce
+	// physical rows, and computeStdoutRowBudget reserves chrome assuming the
+	// spinner line is ONE row. A multi-line summary (heredoc commit → ~30
+	// lines) blows that arithmetic, the dynamic region outgrows what Ink can
+	// repaint, and every spinner tick strands a ghost copy of the card in
+	// scrollback (observed 2026-07-17: the same commit stacked at 38s/39s/
+	// 39s/61s).
+	const firstLine = stripTerminalControlSequences(expandTabs(argsSummary?.split("\n", 1)[0] ?? ""));
+	const argsFirstLine = argsSummary
+		? argsSummary.includes("\n")
+			? `${firstLine} …`
+			: firstLine
+		: undefined;
+	// Bound the args to ONE physical row. wrap="truncate-end" does NOT cap width
+	// when the flex row is unconstrained: Ink measures the text at full content
+	// width (counts it as 1 row) while the terminal's autowrap folds the overflow
+	// onto a 2nd physical row — logUpdate then under-erases and strands a ghost
+	// header every 80ms spinner tick (observed 2026-07-18: a bash
+	// typecheck+test+lint chain stacked at 31/32/33/34s). Hard-truncate at a
+	// column budget, mirroring the explicit-width discipline the stdout path
+	// already uses — the counted row and the physical row MUST agree. The full
+	// args still ride the committed ⏵ row; the live card only needs identity.
+	const headerPrefixWidth =
+		2 + // spinner glyph + space
+		6 + // elapsed up to "9999s "
+		displayToolName(toolName).length +
+		1; // JSX leading space before the args
+	const argsBudget = Math.max(8, terminalColumns - headerPrefixWidth);
+	const argsLine =
+		argsFirstLine && argsFirstLine.length > argsBudget
+			? `${argsFirstLine.slice(0, Math.max(1, argsBudget - 1))}…`
+			: argsFirstLine;
+
 	return (
 		<Box flexDirection="column">
-			<Spinner label={displayToolName(toolName)} />
+			<Box>
+				<Spinner label={displayToolName(toolName)} />
+				{argsLine ? (
+					<Text dimColor wrap="truncate-end">
+						{" "}
+						{argsLine}
+					</Text>
+				) : null}
+			</Box>
 			{stdoutDisplay !== undefined && (
 				<Collapsible header="Output" defaultOpen={true}>
 					<Text>{stdoutDisplay}</Text>

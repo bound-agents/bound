@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createDiscordServer } from "../connectors/discord-server";
+import type { PlatformCommandInvocation, PlatformCommandSpec } from "../platform-commands";
 
 // Mock Logger
 const mockLogger: Logger = {
@@ -20,7 +21,9 @@ import { ChannelType } from "discord.js";
 // Mock Discord types
 interface MockDiscordChannel {
 	type?: number;
+	name?: string;
 	isDMBased: () => boolean;
+	isTextBased?: () => boolean;
 	sendTyping: () => Promise<void>;
 	send: (content: string) => Promise<unknown>;
 }
@@ -30,6 +33,7 @@ interface MockDiscordMessage {
 	author: { id: string; username: string; displayName: string | null; bot: boolean };
 	content: string;
 	channelId: string;
+	guildId?: string | null;
 	channel: MockDiscordChannel;
 	attachments: Map<string, { id: string; name: string; size: number; url: string }>;
 }
@@ -55,9 +59,29 @@ function createMockDiscordClient() {
 	const sendTypingCalls: string[] = [];
 	const sendCalls: Array<{ channelId: string; content: string }> = [];
 	const editReplyCalls: string[] = [];
+	const commandSetCalls: unknown[][] = [];
 	const interactionStore = new Map<string, MockDiscordInteraction>();
 	const createDMCalls: string[] = [];
 	const dmOverrides = new Map<string, { id?: string; error?: Error }>();
+	// Per-channel fetch overrides so a test can make client.channels.fetch
+	// return a guild (non-DM) text channel or a non-text channel. `canView`
+	// (default true) and `guild` (default false) let a test model a guild
+	// channel the bot lacks View Channel permission on, for subscription-time
+	// permission validation.
+	const channelOverrides = new Map<
+		string,
+		{ isDMBased: boolean; isTextBased: boolean; canView?: boolean; guild?: boolean }
+	>();
+	// Guild cache for discord_list_channels enumeration.
+	const guildCache = new Map<
+		string,
+		{
+			id: string;
+			name: string;
+			members: { me: { id: string } };
+			channels: { cache: Map<string, unknown> };
+		}
+	>();
 
 	return {
 		on: (event: string, handler: (...args: unknown[]) => void) => {
@@ -66,17 +90,32 @@ function createMockDiscordClient() {
 			}
 			handlers.get(event)?.add(handler);
 		},
+		guilds: { cache: guildCache },
 		channels: {
-			fetch: async (channelId: string) => ({
-				isDMBased: () => true,
-				sendTyping: async () => {
-					sendTypingCalls.push(channelId);
-				},
-				send: async (content: string) => {
-					sendCalls.push({ channelId, content });
-					return { id: `msg-${Date.now()}` };
-				},
-			}),
+			fetch: async (channelId: string) => {
+				const override = channelOverrides.get(channelId);
+				const isDMBased = override ? override.isDMBased : true;
+				const isTextBased = override ? override.isTextBased : true;
+				const canView = override?.canView ?? true;
+				const isGuild = override?.guild ?? false;
+				return {
+					isDMBased: () => isDMBased,
+					// Real discord.js DM channels report isTextBased() === true.
+					isTextBased: () => isTextBased,
+					// Guild channels carry a guild ref (with the bot member) and a
+					// permissionsFor() resolver; DM channels have neither. The
+					// subscription-time permission gate keys off these.
+					guild: isGuild ? { id: "guild-1", members: { me: { id: "bot" } } } : undefined,
+					permissionsFor: isGuild ? () => ({ has: () => canView }) : undefined,
+					sendTyping: async () => {
+						sendTypingCalls.push(channelId);
+					},
+					send: async (content: string) => {
+						sendCalls.push({ channelId, content });
+						return { id: `msg-${Date.now()}` };
+					},
+				};
+			},
 		},
 		users: {
 			createDM: async (userId: string) => {
@@ -97,6 +136,38 @@ function createMockDiscordClient() {
 		_setDMOverride: (userId: string, override: { id?: string; error?: Error }) => {
 			dmOverrides.set(userId, override);
 		},
+		_setChannelOverride: (
+			channelId: string,
+			override: { isDMBased: boolean; isTextBased: boolean },
+		) => {
+			channelOverrides.set(channelId, override);
+		},
+		_addGuild: (guild: {
+			id: string;
+			name: string;
+			channels: Array<{ id: string; name: string; isTextBased: boolean; canView?: boolean }>;
+		}) => {
+			const channelCache = new Map<string, unknown>();
+			for (const ch of guild.channels) {
+				const canView = ch.canView ?? true;
+				channelCache.set(ch.id, {
+					id: ch.id,
+					name: ch.name,
+					isTextBased: () => ch.isTextBased,
+					// permissionsFor(member) ignores the member arg in the mock and
+					// answers from the channel's `canView` flag; ViewChannel is the
+					// only permission the list filter checks.
+					permissionsFor: () => ({ has: () => canView }),
+				});
+			}
+			guildCache.set(guild.id, {
+				id: guild.id,
+				name: guild.name,
+				// The Guilds intent always caches the bot's own member.
+				members: { me: { id: "bot" } },
+				channels: { cache: channelCache },
+			});
+		},
 		_storeInteraction: (callbackId: string, interaction: MockDiscordInteraction) => {
 			interactionStore.set(callbackId, interaction);
 		},
@@ -112,6 +183,19 @@ function createMockDiscordClient() {
 				await handler(interaction);
 			}
 		},
+		// Application-command registration surface. isReady() => true makes
+		// createDiscordServer register immediately instead of waiting on the
+		// (never-fired) ready event.
+		isReady: () => true,
+		application: {
+			commands: {
+				set: async (cmds: unknown[]) => {
+					commandSetCalls.push(cmds);
+					return cmds;
+				},
+			},
+		},
+		_getCommandSetCalls: () => commandSetCalls,
 	};
 }
 
@@ -140,11 +224,13 @@ describe("Discord MCP Server", () => {
 	 */
 	async function setupMCPConnection(
 		config: PlatformConnectorConfig,
+		commands?: PlatformCommandSpec[],
 	): Promise<{ server: Awaited<ReturnType<typeof createDiscordServer>>; client: Client }> {
 		const discordServer = createDiscordServer(
 			config,
 			mockDiscordClient as unknown as any,
 			mockLogger,
+			commands,
 		);
 		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -1058,6 +1144,418 @@ describe("Discord MCP Server", () => {
 		expect(typeof exported).toBe("function");
 	});
 
+	describe("guild channel support", () => {
+		const pollSchema = z.object({
+			events: z.array(z.unknown()),
+			cursor: z.string(),
+			nextPollSeconds: z.number(),
+		});
+
+		async function subscribe(mcpClient: Client, channelId: string): Promise<void> {
+			await mcpClient.request(
+				{
+					method: "events/stream",
+					params: { event: "message.received", params: { channel_id: channelId } },
+				},
+				z.object({ subscriptionId: z.string() }),
+			);
+		}
+
+		function guildMessage(overrides: Partial<MockDiscordMessage> = {}): MockDiscordMessage {
+			return {
+				id: `snowflake-${Math.floor(Number(overrides.id ?? "1"))}`,
+				author: { id: "member-1", username: "member", displayName: null, bot: false },
+				content: "hello guild",
+				channelId: "guild-ch-1",
+				guildId: "guild-1",
+				channel: {
+					type: ChannelType.GuildText,
+					name: "general",
+					isDMBased: () => false,
+					isTextBased: () => true,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+				attachments: new Map(),
+				...overrides,
+			};
+		}
+
+		it("emits message.received for a guild text channel with guild_id and channel_name", async () => {
+			// allowed_users is non-empty to prove the DM allowlist does NOT gate
+			// guild-channel authors: this author is not in allowed_users.
+			const config: PlatformConnectorConfig = { allowed_users: ["someone-else"] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await subscribe(mcpClient, "guild-ch-1");
+			await mockDiscordClient._triggerMessageCreate(guildMessage({ id: "1" }));
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "message.received", params: { channel_id: "guild-ch-1" } },
+				},
+				pollSchema,
+			);
+
+			expect(pollResult.events.length).toBe(1);
+			const data = (pollResult.events[0] as Record<string, unknown>).data as Record<
+				string,
+				unknown
+			>;
+			expect(data.channel_id).toBe("guild-ch-1");
+			expect(data.guild_id).toBe("guild-1");
+			expect(data.channel_name).toBe("general");
+			expect(data.content).toBe("hello guild");
+		});
+
+		it("DM allowlist still gates DMs (regression: guild change must not open DMs)", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: ["user-1"] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await subscribe(mcpClient, "dm-ch");
+			const dmFromDisallowed: MockDiscordMessage = {
+				id: "dm-1",
+				author: { id: "user-2", username: "other", displayName: null, bot: false },
+				content: "sneaky DM",
+				channelId: "dm-ch",
+				guildId: null,
+				channel: {
+					type: ChannelType.DM,
+					isDMBased: () => true,
+					isTextBased: () => true,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+				attachments: new Map(),
+			};
+			await mockDiscordClient._triggerMessageCreate(dmFromDisallowed);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "message.received", params: { channel_id: "dm-ch" } },
+				},
+				pollSchema,
+			);
+			expect(pollResult.events.length).toBe(0);
+		});
+
+		it("discord_send_message sends to a guild text channel", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._setChannelOverride("guild-ch-1", {
+				isDMBased: false,
+				isTextBased: true,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{
+					method: "tools/call",
+					params: {
+						name: "discord_send_message",
+						arguments: { channel_id: "guild-ch-1", content: "to the guild" },
+					},
+				},
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			expect((callResult.content[0] as { text: string }).text).toBe("sent");
+			const sendCalls = mockDiscordClient._getSendCalls();
+			expect(sendCalls[sendCalls.length - 1]).toEqual({
+				channelId: "guild-ch-1",
+				content: "to the guild",
+			});
+		});
+
+		it("discord_send_message rejects a non-text channel", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._setChannelOverride("voice-ch", {
+				isDMBased: false,
+				isTextBased: false,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{
+					method: "tools/call",
+					params: {
+						name: "discord_send_message",
+						arguments: { channel_id: "voice-ch", content: "nope" },
+					},
+				},
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBe(true);
+			expect(String((callResult.content[0] as { text: string }).text)).toContain(
+				"not a text channel",
+			);
+		});
+
+		it("discord_list_channels enumerates visible guild text channels", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._addGuild({
+				id: "guild-1",
+				name: "My Server",
+				channels: [
+					{ id: "text-1", name: "general", isTextBased: true },
+					{ id: "text-2", name: "random", isTextBased: true },
+					{ id: "voice-1", name: "Voice", isTextBased: false },
+				],
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
+				Record<string, unknown>
+			>;
+			// Only the two text channels — voice is excluded.
+			expect(parsed).toEqual([
+				{
+					guild_id: "guild-1",
+					guild_name: "My Server",
+					channel_id: "text-1",
+					channel_name: "general",
+				},
+				{
+					guild_id: "guild-1",
+					guild_name: "My Server",
+					channel_id: "text-2",
+					channel_name: "random",
+				},
+			]);
+		});
+
+		it("discord_list_channels omits guild text channels the bot cannot view", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._addGuild({
+				id: "guild-1",
+				name: "My Server",
+				channels: [
+					{ id: "text-1", name: "general", isTextBased: true, canView: true },
+					// The bot is a member of the guild (so it's in the channel cache)
+					// but lacks View Channel on this one — must be filtered out.
+					{ id: "text-2", name: "secret", isTextBased: true, canView: false },
+				],
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
+				Record<string, unknown>
+			>;
+			const ids = parsed.map((e) => e.channel_id);
+			expect(ids).toContain("text-1");
+			expect(ids).not.toContain("text-2");
+		});
+
+		it("events/stream rejects a subscription to a guild channel the bot cannot view", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._setChannelOverride("hidden-ch", {
+				isDMBased: false,
+				isTextBased: true,
+				guild: true,
+				canView: false,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await expect(
+				mcpClient.request(
+					{
+						method: "events/stream",
+						params: { event: "message.received", params: { channel_id: "hidden-ch" } },
+					},
+					z.object({ subscriptionId: z.string() }),
+				),
+			).rejects.toThrow(/view channel|cannot subscribe|permission/i);
+		});
+
+		it("events/stream allows a subscription to a guild channel the bot can view", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			mockDiscordClient._setChannelOverride("visible-ch", {
+				isDMBased: false,
+				isTextBased: true,
+				guild: true,
+				canView: true,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const result = await mcpClient.request(
+				{
+					method: "events/stream",
+					params: { event: "message.received", params: { channel_id: "visible-ch" } },
+				},
+				z.object({ subscriptionId: z.string() }),
+			);
+			expect(result.subscriptionId).toBeTruthy();
+		});
+
+		it("events/stream allows a DM subscription without a channel-permission check", async () => {
+			// DM channels have no permissionsFor/guild; the gate must exempt them
+			// (DMs are gated by the allowed_users allowlist, not channel perms).
+			const config: PlatformConnectorConfig = { allowed_users: ["user-1"] };
+			mockDiscordClient._setChannelOverride("dm-ch", {
+				isDMBased: true,
+				isTextBased: true,
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const result = await mcpClient.request(
+				{
+					method: "events/stream",
+					params: { event: "message.received", params: { channel_id: "dm-ch" } },
+				},
+				z.object({ subscriptionId: z.string() }),
+			);
+			expect(result.subscriptionId).toBeTruthy();
+		});
+
+		it("drops a guild message from a non-text channel (receive-side gate)", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await subscribe(mcpClient, "stage-ch");
+			// A guild channel that is not text-based (e.g. a stage/voice channel):
+			// isTextBased() === false must drop it before it becomes an event,
+			// mirroring the send-side non-text rejection.
+			const nonTextGuildMsg = guildMessage({
+				id: "2",
+				channelId: "stage-ch",
+				channel: {
+					type: ChannelType.GuildStageVoice,
+					name: "Stage",
+					isDMBased: () => false,
+					isTextBased: () => false,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+			});
+			await mockDiscordClient._triggerMessageCreate(nonTextGuildMsg);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "message.received", params: { channel_id: "stage-ch" } },
+				},
+				pollSchema,
+			);
+			expect(pollResult.events.length).toBe(0);
+		});
+
+		it("DM message emits guild_id null and undefined channel_name", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			await subscribe(mcpClient, "dm-ch");
+			const dm: MockDiscordMessage = {
+				id: "dm-shape-1",
+				author: { id: "user-9", username: "friend", displayName: null, bot: false },
+				content: "hi in a DM",
+				channelId: "dm-ch",
+				guildId: null,
+				channel: {
+					type: ChannelType.DM,
+					// DM channels have no `name` — proves the optional read does not throw.
+					isDMBased: () => true,
+					isTextBased: () => true,
+					sendTyping: async () => {},
+					send: async () => ({}),
+				},
+				attachments: new Map(),
+			};
+			await mockDiscordClient._triggerMessageCreate(dm);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "message.received", params: { channel_id: "dm-ch" } },
+				},
+				pollSchema,
+			);
+			expect(pollResult.events.length).toBe(1);
+			const data = (pollResult.events[0] as Record<string, unknown>).data as Record<
+				string,
+				unknown
+			>;
+			expect(data.guild_id).toBeNull();
+			expect(data.channel_name).toBeUndefined();
+		});
+
+		it("discord_list_channels returns DM and guild entries in one flat array", async () => {
+			// Both enumeration sources active at once: the flat array must carry
+			// DM {user_id, channel_id} entries AND guild entries, discriminable by
+			// user_id vs guild_id.
+			const config: PlatformConnectorConfig = { allowed_users: ["user-a"] };
+			mockDiscordClient._setDMOverride("user-a", { id: "dm-a" });
+			mockDiscordClient._addGuild({
+				id: "guild-1",
+				name: "My Server",
+				channels: [{ id: "text-1", name: "general", isTextBased: true }],
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config);
+			server = discordServer;
+			client = mcpClient;
+
+			const callResult = await mcpClient.request(
+				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
+				CallToolResultSchema,
+			);
+
+			expect(callResult.isError).toBeFalsy();
+			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
+				Record<string, unknown>
+			>;
+			// DM entries come first (enumerated before guilds), guild entries after.
+			expect(parsed).toEqual([
+				{ user_id: "user-a", channel_id: "dm-a" },
+				{
+					guild_id: "guild-1",
+					guild_name: "My Server",
+					channel_id: "text-1",
+					channel_name: "general",
+				},
+			]);
+		});
+	});
+
 	describe("discord_list_channels", () => {
 		it("returns [] when allowed_users is empty (no enumeration source)", async () => {
 			const config: PlatformConnectorConfig = { allowed_users: [] };
@@ -1235,6 +1733,201 @@ describe("Discord MCP Server", () => {
 			expect(JSON.parse((res2.content[0] as { text: string }).text)).toEqual([
 				{ user_id: "user-x", channel_id: "dm-x" },
 			]);
+		});
+	});
+
+	describe("platform command registration and routing", () => {
+		function makeSpec(overrides: Partial<PlatformCommandSpec> = {}): PlatformCommandSpec & {
+			calls: PlatformCommandInvocation[];
+		} {
+			const calls: PlatformCommandInvocation[] = [];
+			return {
+				name: "model",
+				description: "Show or set the model for this channel's thread",
+				options: [
+					{
+						name: "model",
+						description: "Model ID or tier (omit to show current)",
+						required: false,
+					},
+				],
+				restricted: true,
+				handler: async (inv: PlatformCommandInvocation) => {
+					calls.push(inv);
+					return `Model hint set to: ${inv.options.model}`;
+				},
+				calls,
+				...overrides,
+			};
+		}
+
+		it("registers provided command specs as Discord application commands", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const setCalls = mockDiscordClient._getCommandSetCalls();
+			expect(setCalls.length).toBe(1);
+			const registered = setCalls[0] as Array<{ name: string; description: string }>;
+			expect(registered.length).toBe(1);
+			expect(registered[0].name).toBe("model");
+			expect(registered[0].description).toContain("model");
+		});
+
+		it("routes a matching slash command to the handler deterministically (no event emitted)", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const editReplies: string[] = [];
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-1",
+				user: { id: "user-1", username: "kara", displayName: null },
+				channelId: "ch-cmd-1",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async (options: { content: string }) => {
+					editReplies.push(options.content);
+					return {};
+				},
+				commandName: "model",
+				options: { data: [{ name: "model", value: "opus" }] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			// Handler saw the invocation with parsed options
+			expect(spec.calls.length).toBe(1);
+			expect(spec.calls[0].options.model).toBe("opus");
+			expect(spec.calls[0].channel_id).toBe("ch-cmd-1");
+			// Reply carries the handler's return
+			expect(editReplies).toEqual(["Model hint set to: opus"]);
+
+			// Deterministic path: NO interaction.received event was emitted —
+			// the command must work even when no model can run an agent loop.
+			const eventsPollSchema = z.object({
+				events: z.array(z.unknown()),
+				cursor: z.string(),
+				nextPollSeconds: z.number(),
+			});
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "interaction.received", params: { channel_id: "ch-cmd-1" } },
+				},
+				eventsPollSchema,
+			);
+			expect(pollResult.events.length).toBe(0);
+		});
+
+		it("still emits interaction.received for commands with no registered spec", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-2",
+				user: { id: "user-1", username: "kara", displayName: null },
+				channelId: "ch-cmd-2",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async () => ({}),
+				commandName: "unrelated",
+				options: { data: [] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			expect(spec.calls.length).toBe(0);
+			const eventsPollSchema = z.object({
+				events: z.array(z.unknown()),
+				cursor: z.string(),
+				nextPollSeconds: z.number(),
+			});
+			const pollResult = await mcpClient.request(
+				{
+					method: "events/poll",
+					params: { event: "interaction.received", params: { channel_id: "ch-cmd-2" } },
+				},
+				eventsPollSchema,
+			);
+			expect(pollResult.events.length).toBe(1);
+		});
+
+		it("replies with the error when the handler throws", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: [] };
+			const spec = makeSpec({
+				handler: async () => {
+					throw new Error("no such model: bogus");
+				},
+			});
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const editReplies: string[] = [];
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-3",
+				user: { id: "user-1", username: "kara", displayName: null },
+				channelId: "ch-cmd-3",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async (options: { content: string }) => {
+					editReplies.push(options.content);
+					return {};
+				},
+				commandName: "model",
+				options: { data: [{ name: "model", value: "bogus" }] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			expect(editReplies.length).toBe(1);
+			expect(editReplies[0]).toContain("Error");
+			expect(editReplies[0]).toContain("no such model: bogus");
+		});
+
+		it("rejects a restricted command from a user outside allowed_users", async () => {
+			const config: PlatformConnectorConfig = { allowed_users: ["kara-id"] };
+			const spec = makeSpec();
+			const { server: discordServer, client: mcpClient } = await setupMCPConnection(config, [spec]);
+			server = discordServer;
+			client = mcpClient;
+
+			const editReplies: string[] = [];
+			const mockInteraction: MockDiscordInteraction = {
+				id: "cmd-int-4",
+				user: { id: "stranger", username: "stranger", displayName: null },
+				channelId: "ch-cmd-4",
+				isChatInputCommand: () => true,
+				isContextMenuCommand: () => false,
+				deferReply: async () => {},
+				editReply: async (options: { content: string }) => {
+					editReplies.push(options.content);
+					return {};
+				},
+				commandName: "model",
+				options: { data: [{ name: "model", value: "opus" }] },
+			};
+
+			await mockDiscordClient._triggerInteractionCreate(mockInteraction);
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			expect(spec.calls.length).toBe(0);
+			expect(editReplies.length).toBe(1);
+			expect(editReplies[0]).toContain("not authorized");
 		});
 	});
 });

@@ -123,6 +123,7 @@ describe("getSyncedTableSchemas — property tests", () => {
 		// sync; a divergence would surface here.
 		const expected = [
 			"advisories",
+			"agents",
 			"client_sessions",
 			"cluster_config",
 			"connector_handles",
@@ -130,7 +131,7 @@ describe("getSyncedTableSchemas — property tests", () => {
 			"hosts",
 			"memory_edges",
 			"messages",
-			"overlay_index",
+			"rss_feeds",
 			"semantic_memory",
 			"skills",
 			"tasks",

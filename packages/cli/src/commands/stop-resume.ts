@@ -1,9 +1,17 @@
 import { dirname, join, resolve } from "node:path";
-import { createChangeLogEntry, getSiteId } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	getSiteId,
+	insertRow,
+	softDelete,
+	updateRow,
+} from "@bound/core";
 import { openBoundDB } from "../lib/db";
 export interface StopResumeArgs {
 	configDir?: string;
 }
+
+const EMERGENCY_STOP_KEY = "emergency_stop";
 
 /**
  * Resolve the data directory from a config directory argument, matching the
@@ -11,6 +19,16 @@ export interface StopResumeArgs {
  */
 function resolveDataDir(configDir: string | undefined): string {
 	return join(dirname(resolve(configDir || "config")), "data");
+}
+
+/**
+ * Existence probe that intentionally IGNORES the `deleted` flag. cluster_config
+ * is keyed by `key`; a soft-deleted row still physically occupies that PK, so a
+ * re-set must UPDATE (and un-tombstone) rather than INSERT — otherwise the INSERT
+ * collides with the tombstone's PK. Live reads filter deleted = 0 elsewhere.
+ */
+function clusterConfigRowExists(db: ReturnType<typeof openBoundDB>, key: string): boolean {
+	return findClusterConfigKeyByKeyIncludingDeleted(db, key) !== null;
 }
 
 export async function runStop(args: StopResumeArgs): Promise<void> {
@@ -24,24 +42,18 @@ export async function runStop(args: StopResumeArgs): Promise<void> {
 			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
 		const now = new Date().toISOString();
-		// Check if emergency_stop already exists
-		const existing = db.query("SELECT key FROM cluster_config WHERE key = ?").get("emergency_stop");
-		// cluster_config uses 'key' as primary key, not 'id'. Use manual transaction + change_log.
-		const txFn = db.transaction(() => {
-			if (existing) {
-				db.query(
-					"UPDATE cluster_config SET value = ?, modified_at = ? WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config stop-resume command)
-				).run(now, now, "emergency_stop");
-			} else {
-				db.query(
-					"INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config stop-resume command)
-				).run("emergency_stop", now, now);
-			}
-			// Write change_log entry (row_id is the key field for cluster_config)
-			const rowData = { key: "emergency_stop", value: now, modified_at: now };
-			createChangeLogEntry(db, "cluster_config", "emergency_stop", siteId, rowData);
-		});
-		txFn();
+		// Probe ignoring `deleted`: re-setting a previously-cleared (soft-deleted)
+		// stop must un-tombstone the existing row, not INSERT a colliding one.
+		if (clusterConfigRowExists(db, EMERGENCY_STOP_KEY)) {
+			updateRow(db, "cluster_config", EMERGENCY_STOP_KEY, { value: now, deleted: 0 }, siteId);
+		} else {
+			insertRow(
+				db,
+				"cluster_config",
+				{ key: EMERGENCY_STOP_KEY, value: now, modified_at: now, deleted: 0 },
+				siteId,
+			);
+		}
 		console.log("Emergency stop set. All hosts will halt autonomous operations on next sync.");
 	} finally {
 		db.close();
@@ -56,19 +68,11 @@ export async function runResume(args: StopResumeArgs): Promise<void> {
 		if (siteId === "unknown") {
 			throw new Error("Failed to read site_id from database. Database may not be initialized.");
 		}
-		const now = new Date().toISOString();
-		// cluster_config doesn't have a deleted column, so we just delete the row directly
-		// But we need to write a change_log entry to sync the deletion
-		const rowData = { key: "emergency_stop", value: "", modified_at: now };
-		// Use a transaction to delete + log
-		const txFn = db.transaction(() => {
-			db.query(
-				"DELETE FROM cluster_config WHERE key = ?", // outbox-routed: explicit createChangeLogEntry follows the SQL operation in this transaction (cluster_config stop-resume command)
-			).run("emergency_stop");
-			// Write change_log entry with empty value to signal deletion
-			createChangeLogEntry(db, "cluster_config", "emergency_stop", siteId, rowData);
-		});
-		txFn();
+		// Soft-delete the flag (invariant #2): tombstone the row so the cleared
+		// state replicates. No-op when the flag was never set.
+		if (clusterConfigRowExists(db, EMERGENCY_STOP_KEY)) {
+			softDelete(db, "cluster_config", EMERGENCY_STOP_KEY, siteId);
+		}
 		console.log("Emergency stop cleared. Normal operations resume.");
 	} finally {
 		db.close();

@@ -9,16 +9,20 @@ interface DepartureTask {
 	last_run_at: string | null;
 }
 
-function isActiveOrUpcoming(t: DepartureTask): boolean {
+function isActiveOrUpcoming(t: DepartureTask, nowMs: number): boolean {
 	if (t.status === "completed" || t.status === "cancelled") return false;
 	if (t.status === "running" || t.status === "claimed") return true;
 	if (!t.next_run_at) return false;
-	return new Date(t.next_run_at).getTime() > Date.now();
+	return new Date(t.next_run_at).getTime() >= nowMs;
 }
 
-export function rankDepartures(tasks: DepartureTask[], limit = 6): DepartureTask[] {
+export function rankDepartures(
+	tasks: DepartureTask[],
+	limit = 6,
+	nowMs = Date.now(),
+): DepartureTask[] {
 	return [...tasks]
-		.filter(isActiveOrUpcoming)
+		.filter((task) => isActiveOrUpcoming(task, nowMs))
 		.sort((a, b) => {
 			const aActive = a.status === "running" || a.status === "claimed" ? 0 : 1;
 			const bActive = b.status === "running" || b.status === "claimed" ? 0 : 1;

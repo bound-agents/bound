@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { RelayProcessor } from "../relay-processor";
 import type { AgentLoopConfig } from "../types";
 
@@ -244,8 +244,8 @@ describe("relay-stream integration tests", () => {
 		// Setup: Register target spoke in requester's hosts table
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -253,8 +253,7 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				null,
-				JSON.stringify(["claude-3-5-sonnet"]),
-				null,
+				JSON.stringify([{ id: "claude-3-5-sonnet", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,
@@ -310,7 +309,7 @@ describe("relay-stream integration tests", () => {
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
 		// Create and run agent loop
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "claude-3-5-sonnet",
@@ -361,8 +360,8 @@ describe("relay-stream integration tests", () => {
 		// Setup: Register target in requester's hosts
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -370,8 +369,7 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				null,
-				JSON.stringify(["cancel-test-model"]),
-				null,
+				JSON.stringify([{ id: "cancel-test-model", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,
@@ -427,7 +425,7 @@ describe("relay-stream integration tests", () => {
 		const requesterRouter = createRemoteRouter("cancel-test-model");
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "cancel-test-model",
@@ -490,7 +488,8 @@ describe("relay-stream integration tests", () => {
 			stream_id: randomUUID(),
 			payload: JSON.stringify({
 				model: "unavailable-model",
-				messages: [],
+				segments: [],
+				nowMs: 0,
 				tools: [],
 				system: "",
 				max_tokens: 1000,
@@ -554,7 +553,8 @@ describe("relay-stream integration tests", () => {
 			stream_id: randomUUID(),
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [],
+				segments: [],
+				nowMs: 0,
 				tools: [],
 				system: "",
 				max_tokens: 1000,
@@ -631,7 +631,7 @@ describe("relay-stream integration tests", () => {
 
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, localRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, localRouter, {
 			threadId,
 			userId,
 			modelId: "local-model",
@@ -668,7 +668,7 @@ describe("relay-stream integration tests", () => {
 	// ============================================================
 	//
 	// SKIPPED: Requires full network simulation with multiple concurrent
-	// AgentLoop instances and RelayProcessor streams. Same infrastructure
+	// MainAgentLoop instances and RelayProcessor streams. Same infrastructure
 	// blocker as TASK 2. Unit tests of concurrent stream_id isolation in
 	// RelayProcessor.activeInferenceStreams exist separately.
 
@@ -676,8 +676,8 @@ describe("relay-stream integration tests", () => {
 		// Register target
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -685,8 +685,7 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				null,
-				JSON.stringify(["concurrent-model"]),
-				null,
+				JSON.stringify([{ id: "concurrent-model", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,
@@ -764,7 +763,7 @@ describe("relay-stream integration tests", () => {
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
 		const loops = [0, 1, 2].map((i) => {
-			const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+			const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 				threadId: threadIds[i],
 				userId: userIds[i],
 				modelId: "concurrent-model",
@@ -822,7 +821,7 @@ describe("relay-stream integration tests", () => {
 	}, 15000);
 
 	// SKIPPED: Requires full network simulation to verify end-to-end flow.
-	// The large prompt file creation in AgentLoop (lines 147-180) and the
+	// The large prompt file creation in MainAgentLoop (lines 147-180) and the
 	// file loading in RelayProcessor.executeInference (lines 598-625) are
 	// tested indirectly through unit tests.
 
@@ -834,8 +833,8 @@ describe("relay-stream integration tests", () => {
 		// Register target
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -843,8 +842,7 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				null,
-				JSON.stringify(["large-prompt-model"]),
-				null,
+				JSON.stringify([{ id: "large-prompt-model", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,
@@ -903,7 +901,7 @@ describe("relay-stream integration tests", () => {
 		// Use AbortController so we can cancel the loop if sync times out,
 		// preventing the test from hanging forever on `await loopPromise`.
 		const abortController = new AbortController();
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "large-prompt-model",
@@ -940,20 +938,10 @@ describe("relay-stream integration tests", () => {
 		expect(outboxEntries.length).toBeGreaterThan(0);
 		const inferencePayload = JSON.parse(outboxEntries[0].payload);
 
-		if (inferencePayload.messages_file_ref) {
-			expect(inferencePayload.messages).toEqual([]);
-			const fileRow = requesterDb
-				.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-				.get(inferencePayload.messages_file_ref) as { content: string } | null;
-
-			expect(fileRow).not.toBeNull();
-			if (fileRow) {
-				const fileMessages = JSON.parse(fileRow.content);
-				expect(fileMessages.length).toBeGreaterThan(0);
-			}
-		} else {
-			expect(inferencePayload.messages).toBeDefined();
-		}
+		// The >2MB file-based offload (messages_file_ref) has been removed; large
+		// payloads are now carried via range-pointer segments instead.
+		expect(Array.isArray(inferencePayload.segments)).toBe(true);
+		expect(inferencePayload.messages_file_ref).toBeUndefined();
 	}, 30000);
 
 	// ============================================================
@@ -962,7 +950,7 @@ describe("relay-stream integration tests", () => {
 
 	it("placeholder for AC6.2 delegation integration test (unit coverage sufficient via executeProcess tests)", () => {
 		// AC6.2 requires: Two-spoke cluster (requester + target), process message delivery,
-		// target AgentLoop execution, response sync back to requester.
+		// target MainAgentLoop execution, response sync back to requester.
 		//
 		// This is exercised via:
 		// - relay-processor-inference.test.ts: executeProcess() with mock LLM
@@ -981,8 +969,8 @@ describe("relay-stream integration tests", () => {
 	it("slow multi-chunk inference completes through full relay pipeline", async () => {
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -990,8 +978,7 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				null,
-				JSON.stringify(["slow-model"]),
-				null,
+				JSON.stringify([{ id: "slow-model", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,
@@ -1038,7 +1025,7 @@ describe("relay-stream integration tests", () => {
 		const requesterRouter = createRemoteRouter("slow-model");
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "slow-model",
@@ -1089,8 +1076,8 @@ describe("relay-stream integration tests", () => {
 	it("stream completes correctly even with simulated retransmission", async () => {
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, overlay_root, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				targetSiteId,
 				"target-host",
@@ -1098,8 +1085,7 @@ describe("relay-stream integration tests", () => {
 				null,
 				null,
 				null,
-				JSON.stringify(["retransmit-model"]),
-				null,
+				JSON.stringify([{ id: "retransmit-model", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 				0,
@@ -1142,7 +1128,7 @@ describe("relay-stream integration tests", () => {
 		const requesterRouter = createRemoteRouter("retransmit-model");
 		const ctx = makeTestAppContext(requesterDb, requesterSiteId, "requester-host");
 
-		const agentLoop = new AgentLoop(ctx, {}, requesterRouter, {
+		const agentLoop = new MainAgentLoop(ctx, {}, requesterRouter, {
 			threadId,
 			userId,
 			modelId: "retransmit-model",

@@ -1,240 +1,22 @@
-import type { ToolDefinition } from "@bound/llm";
-import type { WsStreamChunk } from "@bound/shared";
-import type { BuiltInToolResult } from "./built-in-tools";
-
-/**
- * Signal from a client tool that indicates the tool execution should be deferred
- * to the client (e.g., over WebSocket). The agent loop persists the tool_call
- * message and exits, waiting for a tool_result to be provided by the client.
- */
-export interface ClientToolCallRequest {
-	clientToolCall: true; // discriminant
-	toolName: string;
-	callId: string;
-	arguments: Record<string, unknown>;
-}
-
-/**
- * Type guard to check if a tool execution result is a client tool call request.
- */
-export function isClientToolCallRequest(result: unknown): result is ClientToolCallRequest {
-	return (
-		result != null &&
-		typeof result === "object" &&
-		"clientToolCall" in result &&
-		(result as { clientToolCall: unknown }).clientToolCall === true
-	);
-}
-
-export type AgentLoopState =
-	| "IDLE"
-	| "HYDRATE_FS"
-	| "ASSEMBLE_CONTEXT"
-	| "LLM_CALL"
-	| "PARSE_RESPONSE"
-	| "TOOL_EXECUTE"
-	| "TOOL_PERSIST"
-	| "RESPONSE_PERSIST"
-	| "FS_PERSIST"
-	| "QUEUE_CHECK"
-	| "ERROR_PERSIST"
-	| "AWAIT_POLL"
-	| "RELAY_WAIT"
-	| "RELAY_STREAM";
-
-export const VALID_TRANSITIONS: Record<AgentLoopState, readonly AgentLoopState[]> = {
-	IDLE: ["HYDRATE_FS"],
-	HYDRATE_FS: ["ASSEMBLE_CONTEXT"],
-	ASSEMBLE_CONTEXT: ["LLM_CALL", "RELAY_STREAM", "ERROR_PERSIST", "FS_PERSIST"],
-	LLM_CALL: ["LLM_CALL", "PARSE_RESPONSE", "ERROR_PERSIST"],
-	PARSE_RESPONSE: ["TOOL_EXECUTE", "RESPONSE_PERSIST", "FS_PERSIST"],
-	TOOL_EXECUTE: ["TOOL_PERSIST", "RELAY_WAIT", "ERROR_PERSIST"],
-	TOOL_PERSIST: ["LLM_CALL", "RESPONSE_PERSIST", "FS_PERSIST"],
-	RESPONSE_PERSIST: ["FS_PERSIST"],
-	FS_PERSIST: ["QUEUE_CHECK"],
-	QUEUE_CHECK: ["IDLE", "ASSEMBLE_CONTEXT"],
-	ERROR_PERSIST: [],
-	AWAIT_POLL: [],
-	RELAY_WAIT: [],
-	RELAY_STREAM: [],
-};
-
-export interface AgentLoopConfig {
-	threadId: string;
-	taskId?: string;
-	/**
-	 * Originating task type (`"heartbeat" | "cron" | "event" | "deferred"`) when
-	 * the loop is driven by the scheduler. Flows into `ContextParams.taskType`
-	 * for surface-specific volatile rendering — currently gating resolved-advisory
-	 * operator-ack notifications to the heartbeat surface (#70). Undefined for
-	 * user-facing (web/discord/boundless) loops.
-	 */
-	taskType?: string;
-	userId: string;
-	modelId?: string;
-	/** Tier of the requested model (1-5). When set alongside modelId, enables
-	 *  cost-equivalent fallback to a same-tier alternative on resolution failure. */
-	modelTier?: number;
-	abortSignal?: AbortSignal;
-	/** Called after each tool execution to signal the loop is still active. */
-	onActivity?: () => void;
-	/** Called for each non-heartbeat stream chunk during LLM inference. */
-	onStreamChunk?: (chunk: WsStreamChunk) => void;
-	tools?: Array<{
-		type: "function";
-		function: {
-			name: string;
-			description: string;
-			parameters: Record<string, unknown>;
-		};
-	}>;
-	/**
-	 * Originating surface tag for this loop — the same value space as
-	 * `threads.interface` (e.g. "web", "boundless"). Used for intake-affinity routing
-	 * (Invariant #15) and to derive the cache-TTL / interface bucket, and surfaced to
-	 * the agent as the "## Platform Context" volatile-context tag. The loop itself is
-	 * connector-agnostic: platform connectors are in-process MCP servers whose tools
-	 * arrive through the normal tool list, so nothing here branches on a specific value.
-	 */
-	platform?: string;
-	/**
-	 * Client-side tool definitions, keyed by tool name.
-	 * The agent loop includes these in the LLM tool list but defers execution
-	 * to the client. Tool calls matching these names return a ClientToolCallRequest
-	 * sentinel instead of executing locally.
-	 */
-	clientTools?: Map<
-		string,
-		{
-			type: "function";
-			function: {
-				name: string;
-				description: string;
-				parameters: Record<string, unknown>;
-			};
-		}
-	>;
-	/** When true, skip loading conversation history from the messages table.
-	 *  The loop receives context only through volatile enrichment (memory, task digest,
-	 *  standing instructions). Used for autonomous tasks like heartbeat where history
-	 *  is stale self-referential output. */
-	noHistory?: boolean;
-	/** When true, suppress all tools for this turn — the merged tool list resolves
-	 *  to `undefined`, so the loop ends after a single response. */
-	noTools?: boolean;
-	/** Hard cap on output tokens for this turn, overriding the model default.
-	 *  Used together with `noTools` for cache-warming "warm poke" turns (issue
-	 *  #10), where the turn exists only to re-read the cached prefix. */
-	maxOutputTokens?: number;
-	/**
-	 * Cooperative cancellation callback. Checked at yield points (before tool
-	 * execution, after tool result persistence). When it returns true, the loop
-	 * stops cleanly without executing further tool calls or writing completion
-	 * markers. Used by the dispatch system to coalesce rapid-fire messages.
-	 */
-	shouldYield?: () => boolean;
-	/**
-	 * Connection ID for WebSocket client delivering client tool calls.
-	 * Required when clientTools are present.
-	 */
-	connectionId?: string;
-	/**
-	 * Optional system prompt addition from the WebSocket connection.
-	 * Passed through to ContextParams and appended to the system suffix.
-	 */
-	systemPromptAddition?: string;
-	/**
-	 * Connector-authored server instructions for a connector-bound thread,
-	 * resolved from PlatformMcpRegistry.getInstructionsForThread(). Passed
-	 * through to ContextParams and surfaced verbatim on the varying side.
-	 * Undefined for threads not bound to a connector.
-	 */
-	platformInstructions?: string;
-	/**
-	 * Platform MCP tools with execute closures that call MCP client.callTool.
-	 * These are passed through to the tool registry with their execute functions intact.
-	 */
-	platformTools?: Array<{
-		kind: "platform";
-		toolDefinition: {
-			type: "function";
-			function: {
-				name: string;
-				description: string;
-				parameters: Record<string, unknown>;
-			};
-		};
-		execute?: (input: Record<string, unknown>) => Promise<string>;
-	}>;
-	/**
-	 * Unified tool registry for dispatching all tool kinds (platform, client, builtin, sandbox).
-	 * When provided, enables registry-based dispatch with backward compatibility via legacy waterfall.
-	 */
-	toolRegistry?: Map<string, RegisteredTool>;
-	/**
-	 * Cross-handler-invocation span tracker. When provided, the agent loop
-	 * opens `tool.dispatch` spans here as out-of-process tool calls are
-	 * enqueued, so the carrier injected into the WS `tool:call` frame
-	 * identifies `tool.dispatch` (not `agent-loop.tool-execute`) as the
-	 * parent. The dispatch span is closed by the WS handler on `tool:result`,
-	 * not by the agent loop itself. Optional — when absent, dispatches still
-	 * function but client tool spans dangle as before.
-	 */
-	handleMessageTracker?: import("./handle-message-tracker").HandleMessageTracker;
-}
-
-export interface AgentLoopResult {
-	messagesCreated: number;
-	toolCallsMade: number;
-	filesChanged: number;
-	error?: string;
-	/** True when the loop exited early due to shouldYield (cooperative cancellation). */
-	yielded?: boolean;
-}
-
-/**
- * A tool registered in the unified tool registry, tagged with its execution strategy.
- * The kind discriminant controls how the tool is executed:
- * - "platform": Executes via execute closure (calls MCP client.callTool), returns Promise<string>
- * - "client": Defers execution to WebSocket client, no execute function
- * - "builtin": Executes via built-in tool handlers (read/write/edit/etc), returns Promise<BuiltInToolResult>
- * - "sandbox": Executes via bash in sandbox, no execute function (dispatches through sandbox.exec)
- */
-export interface RegisteredTool {
-	kind: "platform" | "client" | "builtin" | "sandbox";
-	toolDefinition: ToolDefinition;
-	execute?: (input: Record<string, unknown>) => Promise<BuiltInToolResult | string>;
-
-	/**
-	 * Idempotency hint — N invocations with identical args leave the system in
-	 * the same final state as 1 invocation. Used by the relay retry path to
-	 * decide whether to re-dispatch on ambiguous transient errors. Mirrors the
-	 * MCP spec's `tool.annotations.idempotentHint`.
-	 *
-	 * Treat as a non-binding hint. The agent loop never relies on this for
-	 * security or correctness — only for retry policy.
-	 */
-	idempotent?: boolean;
-
-	/**
-	 * Read-only hint — the tool never mutates state. Strict subset of
-	 * idempotent (every read-only tool is idempotent; the converse is false).
-	 * Mirrors the MCP spec's `tool.annotations.readOnlyHint`.
-	 */
-	readOnly?: boolean;
-
-	/**
-	 * Per-action resolver for tools whose idempotency depends on the input
-	 * (e.g. `memory search` is read-only but `memory store` mutates). When
-	 * defined, takes precedence over the static `idempotent`/`readOnly`
-	 * fields. Returning `{}` means "unknown" — the retry path treats this
-	 * the same as no annotations.
-	 */
-	resolveAnnotations?: (args: Record<string, unknown>) => {
-		idempotent?: boolean;
-		readOnly?: boolean;
-	};
-}
+export type {
+	AgentLoopConfig,
+	AgentLoopResult,
+	AgentLoopState,
+	BuiltInToolResult,
+	ClientToolCallRequest,
+	DeferredToolResult,
+	DispatchSpanTracker,
+	RegisteredTool,
+	ToolAnnotations,
+	ToolExecutionResult,
+	ToolResultWithMetadata,
+} from "@bound/loop";
+export {
+	VALID_TRANSITIONS,
+	isClientToolCallRequest,
+	isDeferredToolResult,
+	isToolResultWithMetadata,
+} from "@bound/loop";
 
 /**
  * Context passed to native agent tool factories.
@@ -257,4 +39,70 @@ export interface ToolContext {
 	 * ToolContext construction sites that do not wire config.
 	 */
 	memoryLimits?: { pinnedCountCap: number; pinnedSizeCap: number };
+	/**
+	 * Cluster topology role of this host (`"hub"` / `"spoke"`), or undefined when
+	 * sync is not configured. Lets `hostinfo` name which node is the hub —
+	 * resolution is gated on this (see `resolveHubSiteId`), because an ungated
+	 * `sync_state` read misidentifies the hub as one of its own spokes.
+	 */
+	topologyRole?: import("./topology.js").TopologyRole;
+	/**
+	 * #201: auxiliary-agent namespace. NULL (or undefined) = main agent; a
+	 * non-null value scopes all memory reads/writes to the aux identity's
+	 * namespace. Set by the nested loop when running an aux thread.
+	 */
+	agentId?: string | null;
+	/**
+	 * #201 Car C: factory that constructs and runs an AuxAgentLoop for an aux
+	 * invocation. Provided by agent-factory where AppContext/sandbox/ModelRouter
+	 * are available. When absent, invoke creates + seeds the thread but cannot
+	 * run the nested loop (returns the thread handle for later execution).
+	 */
+	auxLoopRunner?: (params: {
+		threadId: string;
+		agentId: string;
+		persona: string;
+		modelHint: string | null;
+		allowlistedTools: string[] | null;
+		instructions: string;
+		userId: string;
+		parentThreadId: string;
+	}) => Promise<{ summary: string; error?: string }>;
+	/**
+	 * Yard: lazy accessor for the unified tool registry the current loop
+	 * dispatches through. Set by agent-factory AFTER the registry is
+	 * constructed (the registry contains the agent tools, so it cannot exist
+	 * when the tool factories run — the closure breaks the cycle). When
+	 * absent, the yard tool refuses to run rather than dispatching against a
+	 * partial toolset.
+	 */
+	getToolRegistry?: () => Map<string, import("@bound/loop").RegisteredTool>;
+	/**
+	 * Yard seam for sandbox-kind tools (`bms_bash`, including MCP bridge
+	 * subcommands). Registry entries intentionally carry no execute closure —
+	 * the loop owns sandbox execution, timeout, and relay behavior — so Yard
+	 * receives the SAME executor from agent-factory instead of growing a
+	 * special-case command runner.
+	 */
+	executeSandboxTool?: (
+		command: string,
+		timeout?: number,
+		cwd?: string,
+	) => Promise<{
+		stdout?: string;
+		stderr?: string;
+		exitCode?: number;
+	}>;
+	/**
+	 * Yard seam for client-kind tools. Executes through the existing local WS
+	 * dispatch or cross-host client_tool/client_result relay and resolves
+	 * inline, consuming the generated tool-result wake so no second agent loop
+	 * runs the same thread.
+	 */
+	executeClientTool?: (
+		name: string,
+		args: Record<string, unknown>,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	) => Promise<{ content: string; isError: boolean } | null>;
 }

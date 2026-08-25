@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "@bound/shared";
-import { execInSession } from "./iso-session";
+import { spawnLowbox } from "./lowbox-runtime";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -49,40 +49,29 @@ function spawnUnsandboxed(command: string, cwd: string, shell: ResolvedShell): S
 	};
 }
 
-/**
- * Windows fallback to the IsolationSession backend. The one-shot BaseContainer
- * spawn path (`spawnSandboxed`) returns E_NOTIMPL on Windows builds where the
- * kernel container API is a stub, so the abstract sandbox decision lands on
- * passthrough/error there. IsolationSession is a separate mxc backend that DOES
- * enforce the deny-writes-only boundary on those builds — via a process-memoized
- * provisioned session rather than a per-spawn container. Returns the normalized
- * handle on success, or null on any other platform / when IsolationSession is
- * itself unavailable (missing SDK, provision failure), so the caller can honor
- * the original passthrough/error posture. Network is left open: provisioning
- * forwards only the filesystem boundary, so `network: "none"` is not enforced on
- * this path — no regression, since passthrough enforced nothing at all.
- */
-async function trySandboxedViaIsolationSession(
+/** Bound-owned one-shot Windows AppContainer backend. */
+async function trySandboxedViaLowbox(
 	command: string,
 	cwd: string,
 	policyCwd: string,
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): Promise<SandboxSpawnResult | null> {
 	if (process.platform !== "win32") return null;
 	try {
-		const proc = await execInSession(command, policyCwd, sandbox, shell, cwd);
+		const proc = await spawnLowbox(command, cwd, policyCwd, shell, sandbox, testNamespace);
 		logger?.info("sandbox_spawn", {
 			cwd,
 			pid: proc.pid,
 			network: sandbox.network,
 			writableExtras: sandbox.writablePaths.length,
-			backend: "isolation_session",
+			backend: "appcontainer_lowbox",
 		});
 		return proc;
 	} catch (err) {
-		logger?.warn("iso_session_unavailable", {
+		logger?.warn("lowbox_unavailable", {
 			cwd,
 			reason: err instanceof Error ? err.message : String(err),
 		});
@@ -104,7 +93,37 @@ async function spawnForBash(
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): Promise<{ proc: SandboxSpawnResult; note?: string }> {
+	// Windows always uses Bound's AppContainer lowbox. The generic mxc path is
+	// POSIX-only and is never probed on Windows.
+	if (sandbox.enabled && process.platform === "win32") {
+		const lowbox = await trySandboxedViaLowbox(
+			command,
+			cwd,
+			policyCwd,
+			shell,
+			sandbox,
+			logger,
+			testNamespace,
+		);
+		if (lowbox) return { proc: lowbox };
+		if (sandbox.onUnavailable === "passthrough") {
+			logger?.warn("sandbox_passthrough", {
+				cwd,
+				reason: "AppContainer lowbox unavailable",
+				onUnavailable: "passthrough",
+			});
+			return {
+				proc: spawnUnsandboxed(command, cwd, shell),
+				note: "[sandbox] AppContainer lowbox unavailable; ran UNSANDBOXED — the filesystem write guard was NOT active for this command.",
+			};
+		}
+		throw new Error(
+			'Filesystem sandbox unavailable (AppContainer lowbox unavailable); refusing to run the command unsandboxed. Set sandbox.onUnavailable to "passthrough" only for an explicit unsandboxed fallback.',
+		);
+	}
+
 	const decision = decideSandboxSpawn(
 		sandbox,
 		sandbox.enabled ? await checkSandboxAvailable() : { supported: false },
@@ -125,46 +144,17 @@ async function spawnForBash(
 			});
 			return { proc };
 		}
-		case "error":
-			// Hard refusal: the one-shot sandbox is required but unavailable. On
-			// Windows, try IsolationSession before refusing — it enforces the same
-			// write boundary on builds where the one-shot path is a kernel stub.
-			{
-				const iso = await trySandboxedViaIsolationSession(
-					command,
-					cwd,
-					policyCwd,
-					shell,
-					sandbox,
-					logger,
-				);
-				if (iso) return { proc: iso };
-			}
-			// WARN — this aborts the command, and the reason is the actionable bit
-			// (missing binary, bad platform) the operator needs to fix the install.
+		case "error": {
 			logger?.warn("sandbox_unavailable", {
 				cwd,
 				reason: decision.reason,
 				onUnavailable: "error",
 			});
 			throw new Error(
-				`Filesystem sandbox unavailable (${decision.reason}); refusing to run the command unsandboxed. The sandbox is required by default so a backend that breaks (e.g. after an OS update) can't silently drop write protection. To run without it -- a deliberate choice that removes the write guard around your filesystem -- edit ~/.bound/less/config.json and set "sandbox": { "onUnavailable": "passthrough" } (keep trying the sandbox, fall back to an unsandboxed run with a warning when it can't) or "sandbox": false (disable the sandbox entirely).`,
+				`Filesystem sandbox unavailable (${decision.reason}); refusing to run the command unsandboxed. The sandbox is required by default so a backend that breaks can't silently drop write protection. Set sandbox.onUnavailable to "passthrough" only for an explicit unsandboxed fallback.`,
 			);
-		case "passthrough":
-			// The one-shot path fell through. On Windows, try IsolationSession before
-			// degrading — a successful session IS a real sandbox spawn (write guard
-			// active), so it short-circuits the unsandboxed path entirely.
-			{
-				const iso = await trySandboxedViaIsolationSession(
-					command,
-					cwd,
-					policyCwd,
-					shell,
-					sandbox,
-					logger,
-				);
-				if (iso) return { proc: iso };
-			}
+		}
+		case "passthrough": {
 			// Silent degradation — the one event you MUST be able to find after the
 			// fact: a command ran with NO write guard because the sandbox fell
 			// through. WARN, durable, with the reason, so "did anything run
@@ -179,6 +169,7 @@ async function spawnForBash(
 				proc: spawnUnsandboxed(command, cwd, shell),
 				note: `[sandbox] mxc unavailable (${decision.reason}); ran UNSANDBOXED — the filesystem write guard was NOT active for this command.`,
 			};
+		}
 		default:
 			// sandbox.enabled === false: the operator opted out entirely. INFO, not
 			// WARN — running unsandboxed is the configured intent here, not a
@@ -228,9 +219,20 @@ export function createBashTool(
 	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): ToolHandler {
 	return (args, signal, cwd) => {
-		return bashToolWithStreaming(args, signal, cwd, undefined, hostname, shell, sandbox, logger);
+		return bashToolWithStreaming(
+			args,
+			signal,
+			cwd,
+			undefined,
+			hostname,
+			shell,
+			sandbox,
+			logger,
+			testNamespace,
+		);
 	};
 }
 
@@ -243,6 +245,7 @@ export async function bashToolWithStreaming(
 	shell: ResolvedShell = POSIX_DEFAULT_SHELL,
 	sandbox: ResolvedSandboxConfig = DISABLED_SANDBOX,
 	logger?: BashEventLogger,
+	testNamespace?: string,
 ): Promise<ToolResult> {
 	const {
 		command,
@@ -310,6 +313,7 @@ export async function bashToolWithStreaming(
 				shell,
 				sandbox,
 				logger,
+				testNamespace,
 			);
 
 			// Handle abort: SIGTERM -> 2s wait -> SIGKILL
@@ -370,8 +374,14 @@ export async function bashToolWithStreaming(
 					while (true) {
 						const readResult = await raceAbort(reader.read());
 						if (readResult === "aborted") {
-							// Abort fired while waiting on read — cancel the reader to unblock
-							await reader.cancel().catch(() => {});
+							// Do NOT cancel the Web-stream wrapper here. For lowbox,
+							// controller.abort() already asks the native helper/watcher to
+							// terminate the job; the child process then closes its stdout
+							// pipe naturally. Calling reader.cancel() races that native close
+							// through Readable.toWeb and intermittently double-closes the
+							// underlying Windows pipe (`UV_EBADF: recv`, CI #1163). Releasing
+							// the JS lock is sufficient: the process-exit wait below owns the
+							// bounded reap, while the native stream reaches EOF on its own.
 							break;
 						}
 						const { done, value } = readResult;

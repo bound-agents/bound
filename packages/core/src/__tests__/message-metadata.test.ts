@@ -157,16 +157,15 @@ describe("messages.metadata property bag", () => {
 		expect(meta).toBeNull();
 	});
 
-	it("writeMessageMetadata overwrites existing keys and bumps modified_at", async () => {
+	it("writeMessageMetadata overwrites existing keys and advances a known earlier modified_at", () => {
 		const { threadId } = seedThread();
 		const messageId = insertMessage(threadId, { discord_platform_delivery_retry: "uuid-old" });
+		const earlier = "2000-01-01T00:00:00.000Z";
+		db.run("UPDATE messages SET modified_at = ? WHERE id = ?", [earlier, messageId]);
 
 		const before = db.query("SELECT modified_at FROM messages WHERE id = ?").get(messageId) as {
 			modified_at: string;
 		};
-
-		// Sleep past ISO-second precision to guarantee modified_at changes.
-		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		writeMessageMetadata(db, messageId, { discord_platform_delivery_retry: "uuid-new" }, siteId);
 
@@ -175,7 +174,7 @@ describe("messages.metadata property bag", () => {
 			.get(messageId) as { metadata: string; modified_at: string };
 
 		expect(JSON.parse(after.metadata)).toEqual({ discord_platform_delivery_retry: "uuid-new" });
-		expect(after.modified_at >= before.modified_at).toBe(true);
+		expect(Date.parse(after.modified_at)).toBeGreaterThan(Date.parse(before.modified_at));
 	});
 
 	it("writeMessageMetadata merges additively when called with existing keys", () => {

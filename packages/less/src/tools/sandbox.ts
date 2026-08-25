@@ -1,17 +1,14 @@
 /**
- * Optional filesystem sandboxing for the boundless bash-family tool, backed by
- * Microsoft's mxc (`@microsoft/mxc-sdk`). When enabled (the default), shell
- * commands run inside a containment that keeps the whole filesystem READABLE
- * but confines WRITES to the working directory + system temp dir (plus any
- * operator-listed extra paths). The goal is to guard the filesystem OUTSIDE
- * the working directory — the repo the agent is working in stays read-write,
- * but it can't clobber `~/.ssh`, `/etc`, a sibling checkout, etc.
+ * POSIX filesystem sandboxing for the boundless bash-family tool, backed by
+ * Microsoft's mxc (`@microsoft/mxc-sdk`): seatbelt on macOS and bubblewrap on
+ * Linux. Windows dispatches directly to Bound's native AppContainer lowbox in
+ * `bash.ts` and never enters this module's probe or spawn path.
  *
- * Cross-platform by way of mxc's abstract "process" containment, which
- * resolves to seatbelt on macOS and bubblewrap on Linux (Windows uses its
- * native sandbox backends). On a platform where mxc can't sandbox, behavior
- * follows `onUnavailable`: "passthrough" (default) runs the command unsandboxed
- * with a warning rather than break the shell; "error" refuses to run it.
+ * When enabled (the default), shell commands keep the filesystem readable but
+ * confine writes to the working directory, system temp directory, and any
+ * operator-listed extras. If the backend is unavailable, `onUnavailable`
+ * either refuses the command (`"error"`, the default) or explicitly runs it
+ * unsandboxed with a warning (`"passthrough"`).
  *
  * The pure config/policy/decision logic lives in `./sandbox-policy` (SDK-free,
  * loads on every platform) and is re-exported here for back-compat. This module
@@ -82,17 +79,10 @@ async function probeSandboxAvailable(): Promise<{ supported: boolean; reason?: s
 		if (!support.isSupported) {
 			return { supported: false, reason: support.reason ?? "platform not supported by mxc" };
 		}
-		// getPlatformSupport() only confirms the SDK build + native symbols are
-		// present — NOT that the backend can actually create a container here. On
-		// Windows the AppContainer/BaseContainer tiers resolve their symbols yet
-		// fail at container creation: BaseContainer returns E_NOTIMPL when the
-		// feature-velocity flags are off, AppContainer fails when the one-time
-		// elevated host prep (wxc-host-prep.exe) hasn't run. That failure surfaces
-		// as a fast non-zero exit from the spawned process, not a thrown error — so
-		// a symbol-only check reports "supported" while every real command then
-		// dies with a cryptic exit 255 and onUnavailable never gets to decide.
-		// Probe the real spawn path with a no-op: if mxc can't contain it, report
-		// unsupported so the passthrough/error posture takes over.
+		// getPlatformSupport() confirms the SDK build + native symbols are present,
+		// not that seatbelt/bubblewrap can create a containment on this host. Probe
+		// the real spawn path with a no-op so a missing or broken runtime reaches
+		// the caller's onUnavailable posture instead of failing cryptically.
 		return await runSandboxProbe();
 	} catch (err) {
 		return { supported: false, reason: (err as Error).message };
@@ -101,15 +91,10 @@ async function probeSandboxAvailable(): Promise<{ supported: boolean; reason?: s
 
 /**
  * Spawn a side-effect-free no-op through the real {@link spawnSandboxed} path
- * and report whether mxc contained it. Uses the same policy + containment a real
- * command gets, so the verdict matches what the next command will actually see.
- * A non-zero exit (mxc couldn't create the container), a launch throw, or a
- * timeout all read as unsupported. Reused across platforms; the no-op is the one
- * command-string difference (`true` under `sh -c` on POSIX, `cd .` — a builtin
- * in cmd and PowerShell — on Windows).
+ * and report whether mxc contained it. Uses the same policy as a real command.
  */
 async function runSandboxProbe(): Promise<{ supported: boolean; reason?: string }> {
-	const noop = process.platform === "win32" ? "cd ." : "true";
+	const noop = "true";
 	const probeCfg: ResolvedSandboxConfig = {
 		enabled: true,
 		writablePaths: [],
@@ -206,7 +191,10 @@ export async function spawnSandboxed(
 	// `usePty: false` returns a Node ChildProcess (vs a node-pty handle);
 	// `experimental: true` is required by the SDK to opt into the non-pty path.
 	// 3rd arg is workingDirectory, 4th is the child env — see the non-interactive
-	// pager/prompt rationale on `nonInteractiveEnv`.
+	// pager/prompt rationale on `nonInteractiveEnv`. `confineBunCache` points
+	// bun's install cache at a tmpdir-local path so `bun add`/`bun install`
+	// work under write confinement (the global ~/.bun cache is outside the
+	// writable roots and fails with a misleading tempdir error).
 	const child = spawnSandboxFromConfig(
 		config,
 		{
@@ -214,7 +202,7 @@ export async function spawnSandboxed(
 			experimental: true,
 		} as Parameters<typeof spawnSandboxFromConfig>[1],
 		cwd,
-		nonInteractiveEnv(),
+		nonInteractiveEnv({ confineBunCache: true }),
 	) as unknown as ChildProcess;
 	return adaptChildProcess(child);
 }

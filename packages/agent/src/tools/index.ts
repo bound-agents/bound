@@ -1,6 +1,7 @@
 import type { RegisteredTool, ToolContext } from "../types.js";
 import { createAdvisoryTool } from "./advisory.js";
 import { createArchiveTool } from "./archive.js";
+import { createAuxTool } from "./auxiliary.js";
 import { createCancelTool } from "./cancel.js";
 import { createHostinfoTool } from "./hostinfo.js";
 import { createIntrospectTool } from "./introspect.js";
@@ -11,6 +12,7 @@ import { createPurgeTool } from "./purge.js";
 import { createQueryTool } from "./query.js";
 import { createSkillTool } from "./skill.js";
 import { createTaskTool } from "./task.js";
+import { createYardTool } from "./yard.js";
 
 export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 	return [
@@ -28,6 +30,9 @@ export function createAgentTools(ctx: ToolContext): RegisteredTool[] {
 		// Grouped (Phase 3)
 		createMemoryTool(ctx),
 		createSkillTool(ctx),
+		createAuxTool(ctx),
+		// Yard (actionless QuickJS orchestration)
+		createYardTool(ctx),
 	];
 }
 
@@ -43,3 +48,5 @@ export { createModelHintTool } from "./model-hint.js";
 export { createHostinfoTool } from "./hostinfo.js";
 export { createMemoryTool } from "./memory.js";
 export { createSkillTool } from "./skill.js";
+export { createAuxTool } from "./auxiliary.js";
+export { createYardTool } from "./yard.js";

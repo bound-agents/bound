@@ -80,9 +80,8 @@ function inlineWebhookEnvelopeBody(rawPayload: string): string {
  * `task.payload ?? "Execute scheduled task."`, which for webhook-
  * triggered tasks is just the default — leaving the agent with no idea
  * what fired the webhook and forcing it to do context archaeology over
- * GitHub / MCP to reconstruct the event. Observed on 2026-05-18 in
- * thread d0372be6 when Kara's GitHub issue webhook fired and the agent
- * had to guess what triggered it.
+ * GitHub / MCP to reconstruct the event. Observed in production: a
+ * GitHub issue webhook fired and the agent had to guess what triggered it.
  *
  * Non-event task types (cron, deferred, heartbeat) do NOT consume the
  * inbox — they have their own wakeup paths and shouldn't be hijacked
@@ -101,7 +100,20 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 		return { content: fallback, processedIds: [] };
 	}
 
-	const entries = readUnprocessedInboxByRefId(db, task.thread_id, "webhook_intake");
+	// Three passive intake kinds fold into the wakeup: `webhook_intake` (raw HTTP
+	// envelopes from /webhook/:name), `connector_intake` (platform push-event
+	// batches from deliverBatch, e.g. Discord), and `rss_intake` (polled feed
+	// items from the leader-gated RSS poller). All are owned by this wakeup
+	// path, not the relay-processor. Reading each kind explicitly (rather than
+	// dropping the kind filter) keeps a stray platform-MCP `intake` row — whose
+	// payload schema is entirely different — from being folded as if it were an
+	// event envelope. Merge and order by received_at so multiple deliveries
+	// across kinds interleave oldest-first, matching single-kind behavior.
+	const entries = [
+		...readUnprocessedInboxByRefId(db, task.thread_id, "webhook_intake"),
+		...readUnprocessedInboxByRefId(db, task.thread_id, "connector_intake"),
+		...readUnprocessedInboxByRefId(db, task.thread_id, "rss_intake"),
+	].sort((a, b) => (a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0));
 	if (entries.length === 0) {
 		return { content: fallback, processedIds: [] };
 	}

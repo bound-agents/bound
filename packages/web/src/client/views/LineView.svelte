@@ -1,5 +1,7 @@
 <script lang="ts">
 import type { ThreadDetail } from "@bound/client";
+import type { YardExecutionEvent } from "@bound/shared";
+import { ChevronLeft, Paperclip } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
@@ -22,6 +24,12 @@ import { contentPreviewText } from "../lib/message-grouping";
 import { getLineColor, getLineName } from "../lib/metro-lines";
 import { modelStore } from "../lib/modelStore";
 import { navigateTo } from "../lib/router";
+import {
+	EMPTY_YARD_STATE,
+	type YardExecutionState,
+	reconcileYardExecutions,
+	reduceYardExecution,
+} from "../lib/yard-execution";
 import { shouldClearWaiting } from "../utils/waiting";
 
 const { threadId, from } = $props<{ threadId: string; from?: string }>();
@@ -47,9 +55,10 @@ let pendingFile = $state<File | null>(null);
 let thread = $state<ThreadDetail | null>(null);
 let panelMode = $state<"context" | "debugger">("context");
 
-// Streaming state: accumulates partial text from the agent while it's generating.
-// Cleared when the full persisted message arrives via message:created.
+// Streaming state: accumulates partial text and reasoning from the agent while
+// it's generating. Cleared when the full persisted message arrives via message:created.
 let streamingText = $state("");
+let streamingReasoning = $state("");
 
 // A selected-turn range emitted by the debugger's turn scrubber. When set, the
 // conversation dims other turns and scrolls the selected one into view.
@@ -63,6 +72,12 @@ function scrollToTurn(messageId: string | undefined): void {
 	scrollNonce += 1;
 	scrollRequest = { messageId, nonce: scrollNonce };
 }
+
+let yardState = $state<YardExecutionState>(EMPTY_YARD_STATE);
+const yardTrees = $derived([...yardState.live.values(), ...yardState.completed]);
+const onYardExecution = (event: YardExecutionEvent): void => {
+	if (event.thread_id === threadId) yardState = reduceYardExecution(yardState, event);
+};
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -117,6 +132,7 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			const exists = messages.some((m) => m.id === msg.id);
 			if (!exists) {
 				messages = [...messages, last.data as LocalMessage];
+				yardState = reconcileYardExecutions(yardState, messages);
 				// A UI-bearing tool_call/result just streamed in — (re)scan so its
 				// app panel mounts live, not only on the next reload.
 				scanForAppPanels();
@@ -129,6 +145,7 @@ const unsubscribeWs = wsEvents.subscribe((events) => {
 			// streaming means the turn progressed past the streaming phase.
 			if (msg.role !== "user") {
 				streamingText = "";
+				streamingReasoning = "";
 			}
 		}
 	}
@@ -139,13 +156,15 @@ async function pollMessages(): Promise<void> {
 		const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
 		// If poll discovers new non-user messages, clear streaming text —
 		// the persisted content supersedes the streaming preview.
-		if (streamingText && latest.length > messages.length) {
+		if ((streamingText || streamingReasoning) && latest.length > messages.length) {
 			const newMessages = latest.slice(messages.length);
 			if (newMessages.some((m) => m.role !== "user")) {
 				streamingText = "";
+				streamingReasoning = "";
 			}
 		}
 		messages = latest;
+		yardState = reconcileYardExecutions(yardState, messages);
 		scanForAppPanels();
 		if (
 			waiting &&
@@ -184,23 +203,32 @@ function handleThreadStatus(data: unknown): void {
 	if (waiting && !status.active) waiting = false;
 	// Clear streaming text when the agent goes idle — defense-in-depth for
 	// cases where message:created arrives late or is dropped entirely.
-	if (!status.active && streamingText) {
+	if (!status.active && (streamingText || streamingReasoning)) {
 		streamingText = "";
+		streamingReasoning = "";
 	}
 }
 
 function handleStreamChunk(data: unknown): void {
-	const evt = data as { thread_id?: string; chunk?: { type?: string; content?: string } };
+	const evt = data as {
+		thread_id?: string;
+		chunk?: { type?: string; content?: string; redacted_data?: string };
+	};
 	if (evt.thread_id !== threadId) return;
 	if (evt.chunk?.type === "text" && evt.chunk.content) {
 		streamingText += evt.chunk.content;
 	}
+	if (evt.chunk?.type === "thinking" && evt.chunk.content) {
+		streamingReasoning += evt.chunk.content;
+	}
 }
 
 onMount(async () => {
+	client.on("yard:execution", onYardExecution);
 	try {
 		thread = await client.getThread(threadId);
 		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+		yardState = reconcileYardExecutions(yardState, messages);
 		scanForAppPanels();
 		connectWebSocket();
 		subscribeToThread(threadId);
@@ -224,6 +252,7 @@ onMount(async () => {
 });
 
 onDestroy(() => {
+	client.off("yard:execution", onYardExecution);
 	unsubscribeWs();
 	unsubscribeApps();
 	unsubscribeHost();
@@ -373,9 +402,7 @@ function turnPreview(content: string): string {
 	<!-- Header -->
 	<div class="line-header">
 		<button class="back-btn" onclick={handleBackClick}>
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
-				<path d="M10 12L6 8l4-4" />
-			</svg>
+			<ChevronLeft size={14} />
 			Map
 		</button>
 
@@ -417,12 +444,14 @@ function turnPreview(content: string): string {
 				{messages}
 				{waiting}
 				{streamingText}
+				{streamingReasoning}
 				turnRange={panelMode === "debugger" ? turnRange : null}
 					scrollRequest={panelMode === "context" ? scrollRequest : null}
 				threadColor={thread?.color ?? 0}
 				{lineColor}
 				isAgentActive={agentActive}
 				appInstances={threadAppInstances}
+				yardTrees={yardTrees}
 			/>
 
 			<!-- Input bar -->
@@ -447,9 +476,7 @@ function turnPreview(content: string): string {
 				<div class="input-meta">
 					<ModelSelector modelHint={thread?.model_hint} />
 					<label class="attach">
-						<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8">
-							<path d="M12 4l-6 6c-1 1-1 3 0 4s3 1 4 0l6-6c2-2 2-5 0-7s-5-2-7 0l-7 7c-3 3-3 7 0 10s7 3 10 0l5-5" />
-						</svg>
+						<Paperclip size={11} />
 						Attach
 						<input
 							type="file"
@@ -1007,6 +1034,32 @@ function turnPreview(content: string): string {
 			border-left: none;
 			border-top: 1px solid var(--rule-soft);
 			max-height: 40vh;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.back-btn {
+			padding: 0 12px;
+		}
+		.title-block {
+			padding: 12px 14px;
+			gap: 10px;
+			flex-wrap: wrap;
+		}
+		.title {
+			font-size: 19px;
+		}
+		.input-wrap {
+			padding: 10px 14px 14px;
+		}
+		.dispatch {
+			padding: 0 16px;
+		}
+		.right-panel {
+			max-height: 50vh;
+		}
+		.panel-body {
+			padding: 16px 14px;
 		}
 	}
 </style>

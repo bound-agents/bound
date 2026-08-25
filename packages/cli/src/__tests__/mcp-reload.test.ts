@@ -4,7 +4,11 @@ import type { Tool } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { Logger, McpConfig } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import { diffMcpConfigs, reloadMcpServers } from "../commands/start/mcp";
+import {
+	connectConfiguredMcpServers,
+	diffMcpConfigs,
+	reloadMcpServers,
+} from "../commands/start/mcp";
 
 /**
  * Build a minimal MCPClient stand-in for reload tests.
@@ -134,6 +138,43 @@ describe("diffMcpConfigs", () => {
 		expect(diff.removed[0].name).toBe("will-remove");
 		expect(diff.changed).toHaveLength(1);
 		expect(diff.changed[0].name).toBe("will-change");
+	});
+});
+
+describe("connectConfiguredMcpServers", () => {
+	it("connects configured servers concurrently and preserves config order in the map", async () => {
+		const logger = createMockLogger();
+		let inFlight = 0;
+		let maxInFlight = 0;
+
+		const configs: MCPServerConfig[] = [
+			{ name: "slow", transport: "stdio", command: "slow" },
+			{ name: "fast", transport: "stdio", command: "fast" },
+		];
+
+		const clientsByName = new Map<string, MCPClient>();
+		const createClient = (config: MCPServerConfig): MCPClient => {
+			const delayMs = config.name === "slow" ? 30 : 5;
+			const client = {
+				...makeMockClient(config, [{ name: `${config.name}_tool` } as Tool], false),
+				isConnected: () => true,
+				connect: async () => {
+					inFlight++;
+					maxInFlight = Math.max(maxInFlight, inFlight);
+					await new Promise((resolve) => setTimeout(resolve, delayMs));
+					inFlight--;
+				},
+			} as unknown as MCPClient;
+			clientsByName.set(config.name, client);
+			return client;
+		};
+
+		const clients = await connectConfiguredMcpServers(configs, logger, createClient);
+
+		expect(maxInFlight).toBe(2);
+		expect([...clients.keys()]).toEqual(["slow", "fast"]);
+		expect(clients.get("slow")).toBe(clientsByName.get("slow"));
+		expect(clients.get("fast")).toBe(clientsByName.get("fast"));
 	});
 });
 

@@ -2,7 +2,22 @@ import type { SpanContext, SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { Resource } from "@opentelemetry/resources";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import type { Logger } from "./logger.js";
 import type { SerializedSpan } from "./trace-collector.js";
+
+interface ExportFailureState {
+	suppressedFailures: number;
+}
+
+const exportFailureStates = new WeakMap<SpanExporter, Map<string, ExportFailureState>>();
+
+function errorClass(error: unknown): string {
+	return error instanceof Error ? error.name : typeof error;
+}
+
+function failureKey(result: { code: number; error?: Error }): string {
+	return `${result.code}:${errorClass(result.error)}`;
+}
 
 /**
  * Re-export serialized remote spans to the local OTLP exporter.
@@ -11,7 +26,11 @@ import type { SerializedSpan } from "./trace-collector.js";
  *
  * AC5.4: This function is called when a trace_data relay response is received.
  */
-export function reExportSpans(spans: SerializedSpan[], exporter: SpanExporter | null): void {
+export function reExportSpans(
+	spans: SerializedSpan[],
+	exporter: SpanExporter | null,
+	logger?: Pick<Logger, "warn">,
+): void {
 	if (!exporter || spans.length === 0) return;
 
 	const readableSpans = spans.map((s) => ({
@@ -52,8 +71,36 @@ export function reExportSpans(spans: SerializedSpan[], exporter: SpanExporter | 
 		droppedLinksCount: 0,
 	}));
 
-	exporter.export(readableSpans as ReadableSpan[], () => {
-		// Fire and forget — export failures are non-critical
+	exporter.export(readableSpans as ReadableSpan[], (result) => {
+		const states = exportFailureStates.get(exporter) ?? new Map<string, ExportFailureState>();
+		exportFailureStates.set(exporter, states);
+
+		if (result.code === 0) {
+			for (const [key, state] of states) {
+				if (state.suppressedFailures > 0) {
+					logger?.warn("Remote span re-export recovered", {
+						error_class: key.split(":")[1],
+						suppressed_failures: state.suppressedFailures,
+					});
+				}
+			}
+			states.clear();
+			return;
+		}
+
+		const key = failureKey(result);
+		const state = states.get(key);
+		if (state) {
+			state.suppressedFailures++;
+			return;
+		}
+
+		states.set(key, { suppressedFailures: 0 });
+		logger?.warn("Remote span re-export failed", {
+			span_count: spans.length,
+			result_code: result.code,
+			error_class: errorClass(result.error),
+		});
 	});
 }
 

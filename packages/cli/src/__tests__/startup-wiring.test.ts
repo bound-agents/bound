@@ -3,7 +3,7 @@
  *
  * These tests verify that the bootstrap sequence in start.ts actually
  * performs all the operations it claims to: host registration via outbox,
- * crash recovery scanning, cron seeding, overlay start, and sync start.
+ * crash recovery scanning, cron seeding, and sync start.
  *
  * Because start.ts is one monolithic function we cannot easily spy on it
  * directly.  Instead we replicate the key bootstrap logic against a real
@@ -12,11 +12,12 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { calculateTurnCost } from "@bound/agent";
 import {
 	applyMetricsSchema,
 	applySchema,
@@ -227,7 +228,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -245,13 +246,13 @@ describe("Startup Wiring", () => {
 					tool_name: "t1",
 					created_at: new Date(Date.now() + 1).toISOString(),
 					modified_at: new Date(Date.now() + 1).toISOString(),
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
 			// Run the same crash recovery scan from start.ts step 7
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -294,6 +295,82 @@ describe("Startup Wiring", () => {
 			expect(developerMsgs[0].content).toContain(hostName);
 		});
 
+		it("does not flag a trailing tool turn owned by another host", () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const peerSiteId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "PeerLoopOwner", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', ?, 0, 'peer-active', NULL, ?, ?, ?, 0)",
+				[threadId, userId, peerSiteId, now, now, now],
+			);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_result",
+					content: "peer tool completed; its loop is still continuing",
+					model_id: "test-model",
+					tool_name: "peer-call",
+					created_at: now,
+					modified_at: now,
+					host_origin: peerSiteId,
+					deleted: 0,
+					exit_code: 0,
+					metadata: null,
+				},
+				peerSiteId,
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
+				thread_id: string;
+			}>;
+			expect(interruptedThreads.some((t) => t.thread_id === threadId)).toBe(false);
+		});
+
+		it("does not flag auxiliary-agent threads with interrupted tool-use", () => {
+			const userId = randomUUID();
+			const threadId = randomUUID();
+			const now = new Date().toISOString();
+
+			db.run(
+				"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, NULL, ?, ?, 0)",
+				[userId, "AuxOwner", now, now],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, created_at, last_message_at, modified_at, deleted, agent_id, parent_thread_id) VALUES (?, ?, 'aux', 'localhost', 0, 'aux: scout', NULL, ?, ?, ?, 0, ?, ?)",
+				[threadId, userId, now, now, now, randomUUID(), randomUUID()],
+			);
+			insertRow(
+				db,
+				"messages",
+				{
+					id: randomUUID(),
+					thread_id: threadId,
+					role: "tool_call",
+					content: JSON.stringify([{ type: "tool_use", id: "aux-t1", name: "query", input: {} }]),
+					model_id: "test-model",
+					tool_name: null,
+					created_at: now,
+					modified_at: now,
+					host_origin: siteId,
+				},
+				siteId,
+			);
+
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
+				thread_id: string;
+			}>;
+			expect(interruptedThreads.some((t) => t.thread_id === threadId)).toBe(false);
+		});
+
 		it("does not flag threads where the last message is an assistant response", () => {
 			const userId = randomUUID();
 			const threadId = randomUUID();
@@ -326,7 +403,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t1,
 					modified_at: t1,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -342,7 +419,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t2,
 					modified_at: t2,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -358,12 +435,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t3,
 					modified_at: t3,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -404,7 +481,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t1,
 					modified_at: t1,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -421,12 +498,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t2,
 					modified_at: t2,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -463,7 +540,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: now,
 					modified_at: now,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -474,7 +551,7 @@ describe("Startup Wiring", () => {
 				[randomUUID(), threadId, now, now],
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -515,7 +592,7 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t1,
 					modified_at: t1,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
@@ -531,12 +608,12 @@ describe("Startup Wiring", () => {
 					tool_name: null,
 					created_at: t2,
 					modified_at: t2,
-					host_origin: "test-host",
+					host_origin: siteId,
 				},
 				siteId,
 			);
 
-			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all() as Array<{
+			const interruptedThreads = db.query(INTERRUPTED_TOOL_USE_SCAN_SQL).all(siteId) as Array<{
 				thread_id: string;
 			}>;
 
@@ -756,25 +833,6 @@ describe("Startup Wiring", () => {
 					);
 				}
 			}
-		});
-	});
-
-	// -----------------------------------------------------------------------
-	// Test 4: Overlay scanner starts when overlay config exists
-	// -----------------------------------------------------------------------
-	describe("overlay scanner wiring", () => {
-		it("is activated when overlay config is present in optionalConfig", () => {
-			// Verify the config key used in start.ts matches what the loader stores.
-			// start.ts reads: appContext.optionalConfig.overlay
-			// config-loader stores under key: "overlay"
-			// These must match or the overlay scanner will silently never start.
-			const optionalConfig: Record<string, { ok: boolean; value?: Record<string, unknown> }> = {
-				overlay: { ok: true, value: { mounts: { "/data": "/mnt/data" } } },
-			};
-
-			const overlayResult = optionalConfig.overlay;
-			expect(overlayResult).toBeDefined();
-			expect(overlayResult.ok).toBe(true);
 		});
 	});
 
@@ -1279,23 +1337,35 @@ describe("Startup Wiring", () => {
 				eventBus.off("agent:cancel", onCancel);
 			});
 
-			it("AbortSignal from timeout must abort the agent loop", async () => {
-				// Verify that setTimeout + AbortController.abort() works as expected
-				const abortController = new AbortController();
-				let timeoutFired = false;
+			it("AbortSignal from timeout aborts only after its deadline", () => {
+				const timers: Array<{ callback: () => void; delay: number }> = [];
+				const originalSetTimeout = globalThis.setTimeout;
+				const setTimeoutMock = mock((callback: () => void, delay: number) => {
+					timers.push({ callback, delay });
+					return 0 as unknown as ReturnType<typeof setTimeout>;
+				});
+				globalThis.setTimeout = setTimeoutMock as typeof setTimeout;
 
-				const timeoutId = setTimeout(() => {
-					abortController.abort(new Error("LLM response timeout"));
-					timeoutFired = true;
-				}, 10); // Very short timeout for testing
+				try {
+					const abortController = new AbortController();
+					let timeoutFired = false;
 
-				// Wait for timeout to fire
-				await new Promise((resolve) => setTimeout(resolve, 20));
+					setTimeout(() => {
+						abortController.abort(new Error("LLM response timeout"));
+						timeoutFired = true;
+					}, 10);
 
-				expect(timeoutFired).toBe(true);
-				expect(abortController.signal.aborted).toBe(true);
+					expect(setTimeoutMock).toHaveBeenCalledTimes(1);
+					expect(timers[0]?.delay).toBe(10);
+					expect(timeoutFired).toBe(false);
+					expect(abortController.signal.aborted).toBe(false);
 
-				clearTimeout(timeoutId);
+					timers[0]?.callback();
+					expect(timeoutFired).toBe(true);
+					expect(abortController.signal.aborted).toBe(true);
+				} finally {
+					globalThis.setTimeout = originalSetTimeout;
+				}
 			});
 
 			it("agent:cancel listeners must be cleaned up after loop completes", async () => {
@@ -1323,5 +1393,35 @@ describe("Startup Wiring", () => {
 				expect(cancelHandlerCallCount).toBe(1);
 			});
 		});
+	});
+});
+
+describe("model_backends.js startup configuration", () => {
+	it("loads JavaScript backends before creating the app context", async () => {
+		const { loadStartupModelBackends } = await import("../commands/start/bootstrap");
+		const configDir = mkdtempSync(join(tmpdir(), "startup-model-backends-"));
+		try {
+			await Bun.write(
+				join(configDir, "model_backends.js"),
+				`export default { default: "local", backends: [{ id: "local", provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen", context_window: 8192, tier: 1, price(turn) { return turn.inputTokens / 100; } }] };`,
+			);
+
+			const config = await loadStartupModelBackends(configDir);
+			expect(config.default).toBe("local");
+			expect(
+				calculateTurnCost(
+					"local",
+					{
+						inputTokens: 100,
+						outputTokens: 0,
+						cacheReadTokens: 0,
+						cacheWriteTokens: 0,
+					},
+					config.backends,
+				),
+			).toBe(1);
+		} finally {
+			await cleanupTmpDir(configDir);
+		}
 	});
 });

@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
+import { findFileIdContentDeletedByPath, findSkillIdById, insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { BUNDLED_SKILLS } from "./bundled-skills";
 import type { BundledSkill } from "./bundled-skills-types";
@@ -14,9 +14,7 @@ function seedFile(db: Database, siteId: string, path: string, content: string): 
 	const sizeBytes = Buffer.byteLength(content, "utf8");
 	const now = new Date().toISOString();
 
-	const existing = db
-		.prepare("SELECT id, content, deleted FROM files WHERE path = ?")
-		.get(path) as { id: string; content: string | null; deleted: number } | null;
+	const existing = findFileIdContentDeletedByPath(db, path);
 
 	if (existing) {
 		const existingHash = createHash("sha256")
@@ -76,9 +74,7 @@ function seedBundledSkill(db: Database, siteId: string, skill: BundledSkill): vo
 
 	// Step 2: Insert skills row only if it does not already exist.
 	// Equivalent to INSERT OR IGNORE — change-log compliant version.
-	const existing = db.prepare("SELECT id FROM skills WHERE id = ?").get(skillId) as {
-		id: string;
-	} | null;
+	const existing = findSkillIdById(db, skillId);
 
 	if (!existing) {
 		const skillMd = skill.files.find((f) => f.path === "SKILL.md");
@@ -99,7 +95,6 @@ function seedBundledSkill(db: Database, siteId: string, skill: BundledSkill): vo
 				id: skillId,
 				name: skill.name,
 				description: skill.description,
-				status: "active",
 				skill_root: skillRoot,
 				content_hash: contentHash,
 				allowed_tools: skill.allowedTools,
@@ -109,8 +104,6 @@ function seedBundledSkill(db: Database, siteId: string, skill: BundledSkill): vo
 				created_by_thread: null,
 				activation_count: 0,
 				last_activated_at: null,
-				retired_by: null,
-				retired_reason: null,
 				modified_at: now,
 				deleted: 0,
 			},

@@ -1,7 +1,7 @@
 ---
 name: skill-authoring
 description: Author, activate, and manage reusable instruction sets called skills.
-allowed_tools: skill-activate skill-list skill-read skill-retire bash
+allowed_tools: skill-activate skill-list skill-read bash
 ---
 
 # Skill Authoring
@@ -37,7 +37,6 @@ See `references/format-reference.md` for the full schema.
 - `skill-list --status retired` — show retired skills only
 - `skill-list --verbose` — include allowed_tools, compatibility, content_hash
 - `skill-read {name}` — view SKILL.md content with status and telemetry header
-- `skill-retire {name}` — retire a skill; use `--reason "..."` to explain why
 
 ## Authoring workflow
 

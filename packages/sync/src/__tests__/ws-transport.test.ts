@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
-import { getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
+import { getConfirmedSyncWatermark, getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
 import { MicrotaskCoalescer } from "../ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -94,6 +94,7 @@ describe("WsTransport", () => {
 				peer_site_id TEXT PRIMARY KEY,
 				last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 				last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+				last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 				sync_errors INTEGER DEFAULT 0,
 				last_sync_at TEXT
 			)
@@ -368,6 +369,45 @@ describe("WsTransport", () => {
 
 			const cursor = getPeerCursor(db, "peer-1");
 			expect(cursor?.last_sent).toBe("2026-03-22T10:00:00.000Z_0005_hub");
+		});
+
+		// AC.5 (R-UD7): last_confirmed is the peer-acknowledged watermark and the
+		// sole anchor authority for delegation range segments. It must advance ONLY
+		// on changelog_ack — never on the optimistic send-side write (the flush in
+		// flushChangelogEntries). This test drives a flush, asserts the watermark is
+		// still HLC_ZERO, then drives an ack and asserts it advances.
+		it("advances last_confirmed ONLY on ack, never on the optimistic send", async () => {
+			transport.start();
+
+			const key = new Uint8Array(32).fill(1);
+			transport.addPeer("peer-1", () => true, key);
+
+			// Insert a hub-originated changelog entry and emit the write event so
+			// flushChangelogEntries runs (the optimistic send-side path).
+			const now = new Date().toISOString();
+			const hlc = "2026-03-22T10:00:00.000Z_0007_hub";
+			db.run(
+				`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+				[hlc, "semantic_memory", "mem-7", "hub", now, "{}"],
+			);
+			eventBus.emit("changelog:written", {
+				hlc,
+				tableName: "semantic_memory",
+				siteId: "hub",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// Optimistic send advanced last_sent...
+			expect(getPeerCursor(db, "peer-1")?.last_sent).toBe(hlc);
+			// ...but NOT the confirmed watermark.
+			expect(getConfirmedSyncWatermark(db, "peer-1")).toBe(HLC_ZERO);
+
+			// The peer now acks. ONLY now does last_confirmed advance.
+			transport.handleChangelogAck("peer-1", { cursor: hlc });
+			expect(getConfirmedSyncWatermark(db, "peer-1")).toBe(hlc);
+
+			transport.stop();
 		});
 	});
 
@@ -810,6 +850,45 @@ describe("WsTransport", () => {
 			expect(decodedB.ok && decodedB.value.type === WsMessageType.RELAY_DELIVER).toBe(true);
 		});
 
+		it("preserves relay delivery wire payloads when draining durable entries", () => {
+			const frames: Uint8Array[] = [];
+			const key = new Uint8Array(32).fill(1);
+			transport.addPeer(
+				"spoke-b",
+				(frame) => {
+					frames.push(frame);
+					return true;
+				},
+				key,
+			);
+
+			const payload = JSON.stringify({ text: "durable payload", nested: { value: 42 } });
+			const now = new Date().toISOString();
+			for (let i = 0; i < 100; i++) {
+				db.run(
+					`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, payload, created_at, expires_at, delivered)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+					[`relay-${i}`, "hub", "spoke-b", "stream_chunk", `ref-${i}`, payload, now, now],
+				);
+			}
+
+			transport.drainRelayInbox("spoke-b");
+
+			expect(frames).toHaveLength(1);
+			const delivery = decodeFrame(frames[0], key);
+			expect(delivery.ok).toBe(true);
+			if (delivery.ok) {
+				const entries = (delivery.value.payload as RelayDeliverPayload).entries;
+				expect(entries).toHaveLength(100);
+				expect(entries[0]).toMatchObject({
+					id: "relay-0",
+					source_site_id: "hub",
+					ref_id: "ref-0",
+					payload: JSON.parse(payload),
+				});
+			}
+		});
+
 		it("hub-local request dispatch: request goes to relay_inbox", () => {
 			const spokeASendFrames: Uint8Array[] = [];
 			const spokeAKey = new Uint8Array(32).fill(1);
@@ -1100,6 +1179,40 @@ describe("WsTransport", () => {
 				.query("SELECT * FROM relay_outbox WHERE id = ?")
 				.get("relay-1") as Record<string, unknown> | null;
 			expect(outboxEntry?.delivered).toBe(1);
+		});
+
+		it("hub-side relay ack only marks entries targeted to the acking spoke", () => {
+			const hubTransport = new WsTransport({
+				db,
+				siteId: "hub",
+				eventBus,
+				isHub: true,
+			});
+			const now = new Date().toISOString();
+			const expiresAt = new Date(Date.now() + 60000).toISOString();
+
+			db.run(
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+				["relay-to-a", "hub", "spoke-a", "stream_chunk", "{}", now, expiresAt],
+			);
+			db.run(
+				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
+				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+				["relay-to-b", "hub", "spoke-b", "stream_chunk", "{}", now, expiresAt],
+			);
+
+			hubTransport.handleRelayAck("spoke-a", { ids: ["relay-to-a", "relay-to-b"] });
+
+			const toA = db.query("SELECT delivered FROM relay_outbox WHERE id = ?").get("relay-to-a") as {
+				delivered: number;
+			} | null;
+			const toB = db.query("SELECT delivered FROM relay_outbox WHERE id = ?").get("relay-to-b") as {
+				delivered: number;
+			} | null;
+
+			expect(toA?.delivered).toBe(1);
+			expect(toB?.delivered).toBe(0);
 		});
 	});
 });

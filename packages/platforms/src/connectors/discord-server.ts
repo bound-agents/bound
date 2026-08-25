@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { sniffImageMediaType } from "@bound/llm";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ChannelType } from "discord.js";
+import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { z } from "zod";
+import type { PlatformCommandSpec } from "../platform-commands.js";
+import { CHANNEL_ACCESS_DENIED_CODE } from "../subscription-errors.js";
 
 // Discord.js types imported dynamically to avoid hard dep at module load
 type DiscordClient = import("discord.js").Client;
@@ -37,14 +39,54 @@ function compareSnowflakeCursors(a: string, b: string): number {
 	}
 }
 
+/**
+ * Throws a subscription-rejection error if the bot definitively cannot view the
+ * target channel of a `message.received` subscription. DMs are exempt — they
+ * are gated by the `allowed_users` allowlist, not per-channel permissions, and
+ * carry no `guild`/`permissionsFor`. A guild channel is rejected ONLY on a
+ * definitive negative: the channel is fetched, its guild + bot member + channel
+ * permissions all resolve, and `ViewChannel` is absent. Every unresolvable case
+ * (fetch throws, channel missing, cold guild-member cache, no `permissionsFor`)
+ * is treated as "cannot confirm" and does NOT throw — a subscription-time gate
+ * must not nuke a legitimate handle just because the cache is cold during a
+ * failover reconnect. `code` rides on the thrown error so the registry can tell
+ * a permanent access denial (roll the handle back) from a transient stream
+ * failure (leave it, retry later).
+ */
+async function assertBotCanViewChannel(client: DiscordClient, channelId: string): Promise<void> {
+	let channel: unknown;
+	try {
+		channel = await client.channels.fetch(channelId);
+	} catch {
+		return; // transient/unresolvable — do not block
+	}
+	if (!channel) return;
+	const c = channel as {
+		isDMBased?: () => boolean;
+		guild?: { members?: { me?: unknown } };
+		permissionsFor?: (member: unknown) => { has: (flag: bigint) => boolean } | null;
+	};
+	// DMs are gated by allowed_users, not channel permissions.
+	if (c.isDMBased?.() === true) return;
+	const me = c.guild?.members?.me;
+	if (!me || typeof c.permissionsFor !== "function") return; // unresolvable — do not block
+	const perms = c.permissionsFor(me);
+	if (!perms) return; // unresolvable — do not block
+	if (!perms.has(PermissionFlagsBits.ViewChannel)) {
+		const err = new Error(
+			`Cannot subscribe to channel ${channelId}: bot lacks View Channel permission`,
+		) as Error & { code?: number };
+		err.code = CHANNEL_ACCESS_DENIED_CODE;
+		throw err;
+	}
+}
+
 /** Event subscription storage */
 interface Subscription {
 	subscriptionId: string;
 	eventName: string;
 	params: Record<string, unknown>;
 }
-
-/** Event buffer entry */
 interface BufferedEvent {
 	eventId: string;
 	name: string;
@@ -84,6 +126,7 @@ export function createDiscordServer(
 	config: PlatformConnectorConfig,
 	client: DiscordClient,
 	logger: Logger,
+	commands?: PlatformCommandSpec[],
 ): McpServer {
 	const mcpServer = new McpServer(
 		{
@@ -250,6 +293,13 @@ export function createDiscordServer(
 			if (!eventParams.channel_id || typeof eventParams.channel_id !== "string") {
 				throw new Error("message.received requires channel_id in event params");
 			}
+			// Reject subscriptions to a guild channel the bot cannot view. A
+			// dead subscription (bot lacks View Channel) would otherwise sit in
+			// the handle/task tables forever, never delivering — Discord never
+			// sends messageCreate for a channel the bot can't see. Throwing here
+			// (before subscriptions.set) refuses registration; the code on the
+			// error lets the registry roll the handle back rather than retry.
+			await assertBotCanViewChannel(client, eventParams.channel_id);
 		}
 
 		const subscriptionId = randomUUID();
@@ -333,9 +383,10 @@ export function createDiscordServer(
 		"discord_send_message",
 		{
 			description:
-				"Send a message to a Discord DM channel. Returns an error if content exceeds 2000 characters.",
+				"Send a message to a Discord channel — a DM or a guild text channel. " +
+				"Returns an error if content exceeds 2000 characters.",
 			inputSchema: {
-				channel_id: z.string().describe("The Discord channel ID to send to"),
+				channel_id: z.string().describe("The Discord channel ID to send to (DM or guild channel)"),
 				content: z.string().describe("Message content (must be <= 2000 chars)"),
 			},
 		},
@@ -354,17 +405,22 @@ export function createDiscordServer(
 
 			try {
 				const channel = await client.channels.fetch(channel_id);
-				if (!channel || !channel.isDMBased()) {
+				// Accept any text-bearing channel (DM or guild text). isTextBased()
+				// covers DMs, guild text, threads, and announcement channels;
+				// non-text channels (category, stage, voice-without-text) lack a
+				// usable send() surface and are rejected.
+				if (!channel || channel.isTextBased?.() !== true) {
 					return {
-						content: [{ type: "text", text: "Error: channel not found or not a DM" }],
+						content: [{ type: "text", text: "Error: channel not found or not a text channel" }],
 						isError: true,
 					};
 				}
 
-				const dmChannel = channel as DiscordMessage["channel"];
-				await (dmChannel as { sendTyping(): Promise<void> }).sendTyping();
-
-				const sendableChannel = channel as { send(content: string): Promise<unknown> };
+				const sendableChannel = channel as DiscordMessage["channel"] & {
+					sendTyping(): Promise<void>;
+					send(content: string): Promise<unknown>;
+				};
+				await sendableChannel.sendTyping();
 				await sendableChannel.send(content);
 
 				return {
@@ -432,53 +488,114 @@ export function createDiscordServer(
 		"discord_list_channels",
 		{
 			description:
-				"List DM channels available for binding, derived from the bot's `allowed_users` allowlist. " +
-				"Each entry maps an allowed user ID to its DM channel ID, opening the DM if not already open " +
-				"(idempotent on Discord's side; does not notify the user). " +
-				"Returns an empty array when `allowed_users` is empty — the tool has no enumeration source in that case " +
-				"because Discord does not expose a 'list my DM channels' API to bots. " +
-				"Per-user `createDM` failures are surfaced inline as `{user_id, error}` entries (string error message) " +
-				"alongside successful `{user_id, channel_id}` entries; callers should discriminate by the presence " +
-				"of `channel_id` vs `error` on each entry. An array of all-`error` entries is distinct from `[]` " +
-				"(empty allowlist) and means every allowed user's DM resolution failed.",
+				"List Discord channels available for binding. Returns a flat array mixing two entry shapes. " +
+				"DM entries, derived from the bot's `allowed_users` allowlist, map an allowed user ID to its DM " +
+				"channel ID (`{user_id, channel_id}`), opening the DM if not already open (idempotent on Discord's " +
+				"side; does not notify the user); a per-user `createDM` failure is surfaced inline as " +
+				"`{user_id, error}`. Guild entries, derived from the guild text channels the bot can currently see, " +
+				"carry `{guild_id, guild_name, channel_id, channel_name}` (no `user_id`). Discriminate DM vs guild " +
+				"entries by the presence of `user_id` vs `guild_id`. When `allowed_users` is empty the tool emits no " +
+				"DM entries (Discord exposes no 'list my DM channels' API to bots); guild channels are still listed. " +
+				"An empty array means the bot has neither an allowlist nor any visible guild text channels.",
 			inputSchema: {},
 			annotations: {
 				readOnlyHint: true,
 			},
 		},
 		async () => {
-			if (config.allowed_users.length === 0) {
-				return {
-					content: [{ type: "text", text: JSON.stringify([]) }],
-				};
-			}
-
-			const results = await Promise.allSettled(
-				config.allowed_users.map(async (userId) => {
-					const dm = await client.users.createDM(userId);
-					return { user_id: userId, channel_id: dm.id };
-				}),
-			);
-
 			type ChannelEntry =
 				| { user_id: string; channel_id: string }
-				| { user_id: string; error: string };
+				| { user_id: string; error: string }
+				| {
+						guild_id: string;
+						guild_name: string;
+						channel_id: string;
+						channel_name: string;
+				  };
 			const entries: ChannelEntry[] = [];
-			for (let i = 0; i < results.length; i++) {
-				const result = results[i];
-				const userId = config.allowed_users[i];
-				if (result.status === "fulfilled") {
-					entries.push(result.value);
-				} else {
-					const errorMessage =
-						result.reason instanceof Error ? result.reason.message : String(result.reason);
-					// Keep the warn log for operators reading the daemon log; the
-					// inline error-shape entry is the additive caller-facing channel.
-					logger.warn("[discord-server] Failed to resolve DM for allowed user", {
-						userId,
-						error: errorMessage,
-					});
-					entries.push({ user_id: userId, error: errorMessage });
+
+			// DM entries from the allowlist (unchanged behavior).
+			if (config.allowed_users.length > 0) {
+				const results = await Promise.allSettled(
+					config.allowed_users.map(async (userId) => {
+						const dm = await client.users.createDM(userId);
+						return { user_id: userId, channel_id: dm.id };
+					}),
+				);
+
+				for (let i = 0; i < results.length; i++) {
+					const result = results[i];
+					const userId = config.allowed_users[i];
+					if (result.status === "fulfilled") {
+						entries.push(result.value);
+					} else {
+						const errorMessage =
+							result.reason instanceof Error ? result.reason.message : String(result.reason);
+						// Keep the warn log for operators reading the daemon log; the
+						// inline error-shape entry is the additive caller-facing channel.
+						logger.warn("[discord-server] Failed to resolve DM for allowed user", {
+							userId,
+							error: errorMessage,
+						});
+						entries.push({ user_id: userId, error: errorMessage });
+					}
+				}
+			}
+
+			// Guild text channels the bot can currently see. Enumerated from the
+			// discord.js guild/channel cache, which the Guilds intent populates —
+			// no per-channel API call needed. Only text-bearing channels are
+			// listed; categories/stage/voice-without-text are skipped.
+			//
+			// The Guilds intent seeds the cache with EVERY channel in a guild the
+			// bot is a member of, regardless of per-channel View Channel overwrites
+			// — so the raw cache includes rooms the bot cannot actually read.
+			// Filter those out: enumerating a channel the bot can't see invites a
+			// subscription that will never deliver (Discord never sends
+			// messageCreate for it). Skip ONLY on a definitive negative (guild
+			// member + channel permissions both resolve and ViewChannel is absent);
+			// when permissions can't be resolved, fall back to listing rather than
+			// hiding everything (no regression vs. the pre-filter behavior).
+			const guilds = (
+				client as {
+					guilds?: {
+						cache?: Map<
+							string,
+							{
+								id: string;
+								name: string;
+								members?: { me?: unknown };
+								channels?: { cache?: Map<string, unknown> };
+							}
+						>;
+					};
+				}
+			).guilds?.cache;
+			if (guilds) {
+				for (const guild of guilds.values()) {
+					const channelCache = guild.channels?.cache;
+					if (!channelCache) continue;
+					const me = guild.members?.me ?? null;
+					for (const rawChannel of channelCache.values()) {
+						const channel = rawChannel as {
+							id: string;
+							name?: string;
+							isTextBased?: () => boolean;
+							permissionsFor?: (member: unknown) => { has: (flag: bigint) => boolean } | null;
+						};
+						if (channel.isTextBased?.() !== true) continue;
+						// Definitive View Channel denial → skip. Unresolvable → keep.
+						if (me && typeof channel.permissionsFor === "function") {
+							const perms = channel.permissionsFor(me);
+							if (perms && !perms.has(PermissionFlagsBits.ViewChannel)) continue;
+						}
+						entries.push({
+							guild_id: guild.id,
+							guild_name: guild.name,
+							channel_id: channel.id,
+							channel_name: channel.name ?? "",
+						});
+					}
 				}
 			}
 
@@ -488,8 +605,51 @@ export function createDiscordServer(
 		},
 	);
 
+	// Register platform commands as Discord application commands. The command
+	// SHAPE lives here; the handler is injected domain logic (see
+	// platform-commands.ts for the dependency-direction rationale). Global
+	// commands are fine: guild-scoped registration is a propagation-speed
+	// optimization, not a correctness matter.
+	if (commands && commands.length > 0) {
+		const appCommands = commands.map((c) => ({
+			name: c.name,
+			description: c.description,
+			options: c.options.map((o) => ({
+				name: o.name,
+				description: o.description,
+				required: o.required,
+				type: 3, // STRING — all option values arrive as strings; handlers parse
+			})),
+		}));
+		const registerCommands = async () => {
+			try {
+				await client.application?.commands?.set(appCommands);
+				logger.info("[discord-server] Registered application commands", {
+					names: commands.map((c) => c.name),
+				});
+			} catch (err) {
+				logger.error("[discord-server] Failed to register application commands", {
+					error: String(err),
+				});
+			}
+		};
+		if (client.isReady?.()) {
+			void registerCommands();
+		} else {
+			client.once?.("ready", () => void registerCommands());
+		}
+	}
+
 	// Setup Discord client listeners
-	setupDiscordListeners(client, config, logger, emitEvent, interactionStore, recentMessageIds);
+	setupDiscordListeners(
+		client,
+		config,
+		logger,
+		emitEvent,
+		interactionStore,
+		recentMessageIds,
+		commands,
+	);
 
 	// Cleanup on server close
 	const originalClose = mcpServer.close.bind(mcpServer);
@@ -511,17 +671,32 @@ function setupDiscordListeners(
 	emitEvent: (eventId: string, eventName: string, data: Record<string, unknown>) => void,
 	interactionStore: Map<string, StoredInteraction>,
 	recentMessageIds: Set<string>,
+	commandSpecs?: PlatformCommandSpec[],
 ): void {
 	client.on("messageCreate", async (msg: DiscordMessage) => {
 		try {
 			// Skip bot messages
 			if (msg.author.bot) return;
 
-			// Skip non-DM messages
-			if (msg.channel.type !== ChannelType.DM) return;
+			// Accept DMs and guild text channels. Guild threads/announcement/
+			// voice-text channels all report isTextBased(); use that rather than
+			// enumerating ChannelType so new text-bearing channel kinds work
+			// without a code change. Non-text channels (categories, stage) are
+			// dropped.
+			const isDm = msg.channel.type === ChannelType.DM;
+			const isGuildText = !isDm && msg.guildId != null && msg.channel.isTextBased?.() === true;
+			if (!isDm && !isGuildText) return;
 
-			// Allowlist check
-			if (config.allowed_users.length > 0 && !config.allowed_users.includes(msg.author.id)) {
+			// Author gate. DMs use the `allowed_users` allowlist. Guild channels
+			// are gated by the channel subscription itself (the agent only hears
+			// a channel it explicitly attached to), so any member of an attached
+			// channel may trigger the agent — `allowed_users` does not apply
+			// there.
+			if (
+				isDm &&
+				config.allowed_users.length > 0 &&
+				!config.allowed_users.includes(msg.author.id)
+			) {
 				return;
 			}
 
@@ -586,6 +761,11 @@ function setupDiscordListeners(
 				}
 			}
 
+			// Resolve a human-readable channel name for guild channels (DMs have
+			// no name). Guarded behind optional chaining because the DM channel
+			// shape lacks `name`.
+			const channelName = (msg.channel as { name?: string | null }).name ?? undefined;
+
 			// Emit event
 			emitEvent(msg.id, "message.received", {
 				author: {
@@ -594,6 +774,11 @@ function setupDiscordListeners(
 					display_name: msg.author.displayName ?? msg.author.username,
 				},
 				channel_id: msg.channelId,
+				// guild_id is null for DMs, the guild snowflake for guild channels.
+				// It lets the agent (and downstream context) distinguish a DM from
+				// a server channel and address the right surface.
+				guild_id: msg.guildId ?? null,
+				channel_name: channelName,
 				content: msg.content,
 				attachments,
 				message_id: msg.id,
@@ -610,6 +795,61 @@ function setupDiscordListeners(
 			// Only handle slash commands and context menus
 			if (!interaction.isChatInputCommand() && !interaction.isContextMenuCommand()) {
 				return;
+			}
+
+			// Platform-command fast path: a registered command spec routes to
+			// its injected handler DETERMINISTICALLY — no event emission, no
+			// agent loop, no inference. The canonical consumer is /model: a
+			// user reaches for it precisely when the current model cannot
+			// complete an agent turn, so a command that needs inference to
+			// execute could never fix a broken model. Unmatched commands fall
+			// through to the normal interaction.received event path.
+			if (interaction.isChatInputCommand() && commandSpecs && commandSpecs.length > 0) {
+				const cmdInteraction = interaction as DiscordInteraction & {
+					commandName: string;
+					options: { data?: Array<{ name: string; value: unknown }> };
+					editReply(options: { content: string }): Promise<unknown>;
+				};
+				const spec = commandSpecs.find((c) => c.name === cmdInteraction.commandName);
+				if (spec) {
+					await interaction.deferReply({ ephemeral: true });
+
+					// Restricted commands mutate agent state; gate on the same
+					// allowlist that gates DM conversations. An empty allowlist
+					// means no gate (mirrors DM semantics).
+					if (
+						spec.restricted &&
+						config.allowed_users.length > 0 &&
+						!config.allowed_users.includes(interaction.user.id)
+					) {
+						await cmdInteraction.editReply({
+							content: "You are not authorized to use this command.",
+						});
+						return;
+					}
+
+					const options: Record<string, unknown> = {};
+					if (cmdInteraction.options?.data) {
+						for (const option of cmdInteraction.options.data) {
+							options[option.name] = option.value;
+						}
+					}
+
+					try {
+						const reply = await spec.handler({
+							command: spec.name,
+							options,
+							channel_id: interaction.channelId,
+							user_id: interaction.user.id,
+							server_name: config.platform ?? "discord",
+						});
+						await cmdInteraction.editReply({ content: reply.slice(0, 2000) });
+					} catch (err) {
+						const message = err instanceof Error ? err.message : String(err);
+						await cmdInteraction.editReply({ content: `Error: ${message}`.slice(0, 2000) });
+					}
+					return;
+				}
 			}
 
 			// Defer with ephemeral flag

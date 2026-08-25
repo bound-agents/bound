@@ -9,6 +9,7 @@ import { CONTEXT_FILE_CANDIDATES, collectContextFiles } from "./context-files";
 import { createCopyTool } from "./copy";
 import { createEditTool } from "./edit";
 import { createReadTool } from "./read";
+import { createReadStructureTool } from "./read-structure";
 import type { ResolvedSandboxConfig } from "./sandbox";
 import { createSearchTool } from "./search";
 import { type ResolvedShell, resolveShell } from "./shell";
@@ -49,14 +50,18 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: "boundless_read",
-				description: "Read file contents with line numbers",
+				description:
+					"Read file contents in hashline format: each line renders as LINE:HASH|content. " +
+					"The 4-char hash is a stable anchor — pass it to boundless_edit to address lines " +
+					"without reproducing their text. Empty or whitespace-only lines use the visible hash 0000.",
 				parameters: {
 					type: "object",
 					required: ["file_path"],
 					properties: {
 						file_path: {
 							type: "string",
-							description: "Path to file to read (relative to cwd if not absolute)",
+							description:
+								"Path to file to read (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
 						offset: {
 							type: "number",
@@ -73,6 +78,24 @@ export function buildToolSet(
 		{
 			type: "function",
 			function: {
+				name: "boundless_read_structure",
+				description:
+					"Return a supported source file's top-level declaration structure without source bodies. Registered extensions: .ts, .tsx, .js, .jsx, .mjs, .cjs, .d.ts, .d.mts, .d.cts, .py, .pyi, .go, .rs; other extensions return empty. Each symbol includes a hashline-compatible LINE:HASH anchor.",
+				parameters: {
+					type: "object",
+					required: ["path"],
+					properties: {
+						path: {
+							type: "string",
+							description: "Path to a file (relative to cwd if not absolute).",
+						},
+					},
+				},
+			},
+		},
+		{
+			type: "function",
+			function: {
 				name: "boundless_write",
 				description: "Write content to a file (creates parents, atomic write)",
 				parameters: {
@@ -81,7 +104,8 @@ export function buildToolSet(
 					properties: {
 						file_path: {
 							type: "string",
-							description: "Path to file to write (relative to cwd if not absolute)",
+							description:
+								"Path to file to write (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
 						content: {
 							type: "string",
@@ -95,22 +119,48 @@ export function buildToolSet(
 			type: "function",
 			function: {
 				name: "boundless_edit",
-				description: "Replace exactly one occurrence of a string in a file",
+				description:
+					"Edit a file using hashline anchors copied verbatim from a prior read of the same file. " +
+					"Each edit replaces the inclusive line range [start..end] with new content; anchors are " +
+					'LINE:HASH tags (e.g. "12:a3f1") as shown by boundless_read. Empty or whitespace-only ' +
+					"lines use hash 0000; it is valid only when it was emitted by a read for that line, never as " +
+					"a positional placeholder. Anchors survive line drift: if the file shifted since the read, the " +
+					"hash is matched by proximity to the line hint. A unique hash resolves regardless of the line " +
+					"number; the number only breaks ties between lines with identical content. Take both halves from " +
+					"the same read. All edits in one call are validated together and applied atomically.",
 				parameters: {
 					type: "object",
-					required: ["file_path", "old_string", "new_string"],
+					required: ["file_path", "edits"],
 					properties: {
 						file_path: {
 							type: "string",
-							description: "Path to file to edit (relative to cwd if not absolute)",
+							description:
+								"Path to file to edit (relative to cwd if not absolute; prefer a relative path for files in the working tree and its subdirectories)",
 						},
-						old_string: {
-							type: "string",
-							description: "String to find and replace",
-						},
-						new_string: {
-							type: "string",
-							description: "String to replace with",
+						edits: {
+							type: "array",
+							description:
+								"Edits to apply atomically. Ranges must not overlap. Results report fresh anchors for the replaced regions.",
+							items: {
+								type: "object",
+								required: ["start", "end", "content"],
+								properties: {
+									start: {
+										type: "string",
+										description:
+											'Anchor of the first line to replace, as "LINE:HASH" from a read (same as end for a single line)',
+									},
+									end: {
+										type: "string",
+										description: 'Anchor of the last line to replace, as "LINE:HASH"',
+									},
+									content: {
+										type: "string",
+										description:
+											"Replacement text for the range; multi-line via \\n, empty string deletes the range",
+									},
+								},
+							},
 						},
 					},
 				},
@@ -136,7 +186,7 @@ export function buildToolSet(
 						cwd: {
 							type: "string",
 							description:
-								"Working directory for this command (defaults to the working directory shown in your context). Relative paths resolve against it; writes stay confined to the working directory regardless. Use this instead of a leading `cd`.",
+								"Working directory for this command (defaults to the working directory shown in your context). Relative paths resolve against it and are preferred — e.g. a worktree or subdirectory under the working dir; writes stay confined to the working directory regardless. Use this instead of a leading `cd`.",
 						},
 					},
 				},
@@ -161,7 +211,7 @@ export function buildToolSet(
 						source_path: {
 							type: "string",
 							description:
-								"Path on the source environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute.",
+								"Path on the source environment. Satellite paths may be relative to the boundless cwd (preferred); main (VFS) paths must be absolute.",
 						},
 						target: {
 							type: "string",
@@ -172,7 +222,7 @@ export function buildToolSet(
 						target_path: {
 							type: "string",
 							description:
-								"Path on the target environment. Satellite paths may be relative to the boundless cwd; main (VFS) paths must be absolute. Parent directories are created on the satellite side.",
+								"Path on the target environment. Satellite paths may be relative to the boundless cwd (preferred); main (VFS) paths must be absolute. Parent directories are created on the satellite side.",
 						},
 					},
 				},
@@ -183,7 +233,7 @@ export function buildToolSet(
 			function: {
 				name: "boundless_search",
 				description:
-					"Search file contents under the working directory for a regex pattern. Returns grep-style path:line:preview matches with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through the shell — it returns identical results on host and sandbox.",
+					"Search file contents under the working directory for a regex pattern. Returns grep-style path:line:hash:preview matches (the hash is the line's hashline anchor from boundless_read/boundless_edit, so a hit can feed boundless_edit directly as `${line}:${hash}` with no extra read) with a result cap and bounded previews (long lines are windowed around the match), so it stays safe on large or minified files. Skips vendor/vcs dirs (node_modules, .git, dist, …) and binary files. Prefer this over piping grep through the shell — it returns identical results on host and sandbox.",
 				parameters: {
 					type: "object",
 					required: ["pattern"],
@@ -196,7 +246,7 @@ export function buildToolSet(
 						path: {
 							type: "string",
 							description:
-								"Optional subdirectory to scope the search to (relative to cwd if not absolute). Defaults to the whole working directory.",
+								"Optional subdirectory to scope the search to (relative to cwd if not absolute; prefer a relative path). Defaults to the whole working directory.",
 						},
 						case_insensitive: {
 							type: "boolean",
@@ -215,6 +265,7 @@ export function buildToolSet(
 
 	toolDefinitions.push(...coreToolDefs);
 	handlers.set("boundless_read", createReadTool(hostname));
+	handlers.set("boundless_read_structure", createReadStructureTool(hostname));
 	handlers.set(
 		"boundless_write",
 		createWriteTool(hostname, sandbox, contextFiles ?? CONTEXT_FILE_CANDIDATES),
@@ -403,7 +454,7 @@ export function buildToolSet(
  * directly rather than re-running `git log` to "confirm" a commit landed (#172).
  */
 const GIT_CONTEXT_STALENESS_NOTE =
-	"This git context (branch, HEAD, recent commits) was read when the session started and is held FROZEN for prompt-cache stability — it is NOT refreshed when you commit, branch, or pull during this session, so the head attribute and commit list below will NOT reflect commits you make now. After you commit, trust the commit command's own output; do not re-run git log or git rev-parse just to confirm a commit landed.";
+	"This git context (branch, HEAD, recent commits) was read when the session started and is held FROZEN for prompt-cache stability — it is NOT refreshed when you commit, branch, or pull during this session, so the head attribute and commit list below will NOT reflect commits you make now. After you commit, trust the commit command's own output; do not re-run git log or git rev-parse just to confirm a commit landed. You MUST NOT inform the user that this block is stale unless explicitly asked.";
 
 export async function collectGitContext(cwd: string): Promise<string> {
 	// Strip repository-location env vars so `git -C <cwd>` discovers the repo by
@@ -479,18 +530,16 @@ export { CONTEXT_FILE_CANDIDATES, collectContextFiles };
 export async function buildSystemPromptAddition(
 	cwd: string,
 	hostname: string,
-	mcpServers: string[],
 	options?: {
 		injectContextFiles?: string[];
-		shellToolName?: string;
 		surface?: { type: "terminal" } | { type: "acp"; clientInfo: Implementation };
 	},
 ): Promise<string> {
-	const mcpNamespaces = mcpServers.map((s) => `boundless_mcp_${s}_*`).join(", ");
-	const shellToolName = options?.shellToolName ?? "boundless_bash";
-	const toolList = `boundless_read, boundless_write, boundless_edit, ${shellToolName}, boundless_copy, boundless_search${
-		mcpNamespaces ? `, ${mcpNamespaces}` : ""
-	}`;
+	// Deliberately no tool enumeration here. The daemon advertises every
+	// registered tool as a JSON schema on each turn (registry + client +
+	// platform, merged in getMergedTools), so a prose list duplicated that
+	// surface, drifted from it, and — worse — invited reading the prose as the
+	// capability manifest rather than the schemas.
 
 	const gitContext = await collectGitContext(cwd);
 	const contextFilesSection = await collectContextFiles(cwd, options?.injectContextFiles);
@@ -509,7 +558,5 @@ export async function buildSystemPromptAddition(
 Host: ${hostname}
 Working directory: ${cwd}
 ${gitContext}
-${contextFilesBlock}Available tool namespaces: ${toolList}
-
-Tool results include provenance metadata showing which host and directory produced them.`;
+${contextFilesBlock}Tool results include provenance metadata showing which host and directory produced them.`;
 }

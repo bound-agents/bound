@@ -8,7 +8,7 @@ export type MessageRole =
 	| "tool_result"
 	| "purge";
 
-export type TaskType = "cron" | "deferred" | "event" | "heartbeat";
+export type TaskType = "cron" | "deferred" | "event" | "heartbeat" | "consolidation";
 
 export type TaskStatus = "pending" | "claimed" | "running" | "completed" | "failed" | "cancelled";
 
@@ -17,8 +17,6 @@ export type InjectMode = "results" | "status" | "file";
 export type AdvisoryType = "cost" | "frequency" | "memory" | "model" | "general";
 
 export type AdvisoryStatus = "proposed" | "approved" | "dismissed" | "deferred" | "applied";
-
-export type SkillStatus = "active" | "retired";
 
 export type MemoryTier = "pinned" | "summary" | "default" | "detail";
 
@@ -30,28 +28,39 @@ export type SyncedTableName =
 	| "tasks"
 	| "files"
 	| "hosts"
-	| "overlay_index"
 	| "cluster_config"
 	| "advisories"
 	| "skills"
+	| "agents"
 	| "memory_edges"
 	| "connector_handles"
 	| "webhooks"
+	| "rss_feeds"
 	| "client_sessions"
 	| "turns";
 
 export type ReducerType = "lww" | "append-only";
 
-export interface User {
+/**
+ * Base shape for every synced-table row. All synced tables soft-delete:
+ * `deleted = 0` is live, `deleted = 1` is tombstoned (invariant #2 — physical
+ * DELETE is forbidden on synced tables). Stored as INTEGER; bun:sqlite reads it
+ * back as `number`, so the type is `number` rather than a `0 | 1` literal union
+ * to avoid casts at every read boundary.
+ */
+export interface SoftDeletable {
+	deleted: number;
+}
+
+export interface User extends SoftDeletable {
 	id: string;
 	display_name: string;
 	platform_ids: string | null;
 	first_seen_at: string;
 	modified_at: string;
-	deleted: number;
 }
 
-export interface Thread {
+export interface Thread extends SoftDeletable {
 	id: string;
 	user_id: string;
 	interface: string;
@@ -65,11 +74,14 @@ export interface Thread {
 	created_at: string;
 	last_message_at: string;
 	modified_at: string;
-	deleted: number;
 	model_hint: string | null;
+	/** #201: NULL = main agent; non-null = auxiliary-agent identity */
+	agent_id?: string | null;
+	/** #201: dispatching parent thread for aux conversations */
+	parent_thread_id?: string | null;
 }
 
-export interface Message {
+export interface Message extends SoftDeletable {
 	id: string;
 	thread_id: string;
 	role: MessageRole;
@@ -79,12 +91,11 @@ export interface Message {
 	created_at: string;
 	modified_at: string | null;
 	host_origin: string;
-	deleted: number;
 	exit_code: number | null;
 	metadata: string | null;
 }
 
-export interface SemanticMemory {
+export interface SemanticMemory extends SoftDeletable {
 	id: string;
 	key: string;
 	value: string;
@@ -93,10 +104,11 @@ export interface SemanticMemory {
 	modified_at: string;
 	last_accessed_at: string | null;
 	tier: MemoryTier;
-	deleted: number;
+	/** #201: NULL = main agent; auxiliary-agent namespace partition. */
+	agent_id?: string | null;
 }
 
-export interface Task {
+export interface Task extends SoftDeletable {
 	id: string;
 	type: TaskType;
 	status: TaskStatus;
@@ -128,10 +140,9 @@ export interface Task {
 	created_at: string;
 	created_by: string | null;
 	modified_at: string;
-	deleted: number;
 }
 
-export interface Webhook {
+export interface Webhook extends SoftDeletable {
 	id: string;
 	name: string;
 	secret: string;
@@ -140,13 +151,45 @@ export interface Webhook {
 	task_id: string;
 	thread_id: string;
 	created_at: string;
-	deleted: number;
 	modified_at: string;
 }
 
-export type SignatureFormat = "github" | "stripe" | "slack" | "raw";
+/**
+ * A polled RSS/Atom feed bound to a thread + event task, mirroring the
+ * webhook three-row pattern (feed row + delivery thread + `event` task with
+ * `trigger_spec: rss:<name>`). Unlike webhooks (push), feeds are PULLED by
+ * the leader-gated poller in @bound/platforms, which writes one passive
+ * `rss_intake` relay_inbox row per new item and emits `connector:event` so
+ * the scheduler folds items into the task wakeup via buildEventWakeupContent.
+ */
+export interface RssFeed extends SoftDeletable {
+	id: string;
+	name: string;
+	/** Feed URL (http/https). */
+	url: string;
+	description: string | null;
+	/** Poll cadence in seconds (poller enforces a 60s floor). */
+	poll_interval_seconds: number;
+	/**
+	 * JSON array of item GUIDs already delivered, newest last, capped at
+	 * RSS_SEEN_GUIDS_CAP. This is the durable dedup cursor: relay_inbox
+	 * idempotency keys are pruned with the inbox, so seen-state must live on
+	 * the synced row to survive leader failover without re-delivering the
+	 * whole feed.
+	 */
+	seen_guids: string | null;
+	task_id: string;
+	thread_id: string;
+	created_at: string;
+	modified_at: string;
+}
 
-export interface AgentFile {
+/** Cap on the seen_guids dedup window persisted per feed. */
+export const RSS_SEEN_GUIDS_CAP = 500;
+
+export type SignatureFormat = "github" | "stripe" | "slack" | "raw" | "none";
+
+export interface AgentFile extends SoftDeletable {
 	id: string;
 	path: string;
 	content: string | null;
@@ -154,12 +197,11 @@ export interface AgentFile {
 	size_bytes: number;
 	created_at: string;
 	modified_at: string;
-	deleted: number;
 	created_by: string | null;
 	host_origin: string | null;
 }
 
-export interface Host {
+export interface Host extends SoftDeletable {
 	site_id: string;
 	host_name: string;
 	version: string | null;
@@ -169,10 +211,10 @@ export interface Host {
 	mcp_tool_annotations: string | null;
 	mcp_capabilities: string | null;
 	models: string | null;
-	overlay_root: string | null;
 	online_at: string | null;
 	modified_at: string;
 	platforms: string | null;
+	commit_hash: string | null;
 }
 
 /**
@@ -187,6 +229,10 @@ export interface Host {
 export interface HostModelEntry {
 	id: string;
 	tier?: number;
+	/** Per-response output-token ceiling advertised by the serving backend. */
+	max_output_tokens?: number;
+	/** Bound-side reasoning transport selected by this host's backend config. */
+	thinking_mode?: "tool";
 	capabilities?: {
 		streaming?: boolean;
 		tool_use?: boolean;
@@ -197,17 +243,7 @@ export interface HostModelEntry {
 	};
 }
 
-export interface OverlayIndexEntry {
-	id: string;
-	site_id: string;
-	path: string;
-	size_bytes: number;
-	content_hash: string | null;
-	indexed_at: string;
-	deleted: number;
-}
-
-export interface ClusterConfigEntry {
+export interface ClusterConfigEntry extends SoftDeletable {
 	key: string;
 	value: string;
 	modified_at: string;
@@ -226,6 +262,15 @@ export interface SyncState {
 	peer_site_id: string;
 	last_received: string;
 	last_sent: string;
+	/**
+	 * Highest HLC this peer has ACKNOWLEDGED receiving from us, advanced ONLY in
+	 * handleChangelogAck (never on the optimistic send-side write). This is the
+	 * sole anchor authority for delegation range segments: a range may cover a
+	 * row only if that row's change_log HLC <= last_confirmed for the consumer.
+	 * Distinct from last_sent (optimistic, advanced on send) — see R-UD7/R-UD11
+	 * in docs/design/specs/2026-06-29-unified-delegation.md.
+	 */
+	last_confirmed: string;
 	last_sync_at: string | null;
 	sync_errors: number;
 }
@@ -235,7 +280,7 @@ export interface HostMeta {
 	value: string;
 }
 
-export interface Advisory {
+export interface Advisory extends SoftDeletable {
 	id: string;
 	type: AdvisoryType;
 	status: AdvisoryStatus;
@@ -250,15 +295,17 @@ export interface Advisory {
 	created_by: string | null;
 	/** Thread the advisory originated from (null for advisories with no source thread). #93 */
 	thread_id: string | null;
+	/** Actor that last changed the advisory's state: "agent" or an operator user id. #192 */
+	resolved_by: string | null;
+	/** Rationale / outcome recorded at the state transition. #192 */
+	resolution_note: string | null;
 	modified_at: string;
-	deleted: number;
 }
 
-export interface Skill {
+export interface Skill extends SoftDeletable {
 	id: string;
 	name: string;
 	description: string;
-	status: SkillStatus;
 	skill_root: string;
 	content_hash: string | null;
 	allowed_tools: string | null;
@@ -268,10 +315,30 @@ export interface Skill {
 	created_by_thread: string | null;
 	activation_count: number;
 	last_activated_at: string | null;
-	retired_by: string | null;
-	retired_reason: string | null;
 	modified_at: string;
-	deleted: number;
+}
+
+/**
+ * A durable, persona-scoped auxiliary-agent identity (#201). Each invocation is
+ * ephemeral, but the identity — its persona, tool allowlist, default model, and
+ * memory namespace — persists across invocations and syncs cluster-wide (shaped
+ * like `Skill`). `retired_at` is domain state (hidden from list/invoke, its
+ * namespace still readable to the main agent) and is distinct from `deleted`,
+ * the pure sync tombstone. `tools` is a JSON array of allowed tool names, or
+ * null for unrestricted (structural denials still apply). `name` is not unique:
+ * synced tables can't enforce cluster-wide uniqueness, so dispatch resolves a
+ * name to its non-retired/non-deleted definition with a modified_at tiebreak.
+ */
+export interface Agent extends SoftDeletable {
+	id: string;
+	name: string;
+	persona: string;
+	tools: string | null;
+	model_hint: string | null;
+	retired_at: string | null;
+	created_by_thread: string | null;
+	created_at: string;
+	modified_at: string;
 }
 
 export interface SkillFileEntry {
@@ -287,7 +354,7 @@ export type ImportSkillResult =
 	| { ok: true; skillId: string; name: string }
 	| { ok: false; error: string };
 
-export interface MemoryEdge {
+export interface MemoryEdge extends SoftDeletable {
 	id: string;
 	source_key: string;
 	target_key: string;
@@ -295,10 +362,13 @@ export interface MemoryEdge {
 	weight: number;
 	created_at: string;
 	modified_at: string;
-	deleted: number;
+	/** Optional free-text context for the edge (added via ALTER TABLE migration). */
+	context: string | null;
+	/** #201: NULL = main agent; edges never cross namespaces. */
+	agent_id?: string | null;
 }
 
-export interface ConnectorHandleRow {
+export interface ConnectorHandleRow extends SoftDeletable {
 	id: string;
 	server_name: string;
 	event_name: string;
@@ -307,7 +377,6 @@ export interface ConnectorHandleRow {
 	cursor: string | null;
 	task_id: string | null;
 	created_at: string; // ISO 8601
-	deleted: number; // 0 | 1
 	modified_at: string; // ISO 8601
 }
 
@@ -318,17 +387,16 @@ export interface ConnectorHandleRow {
  * supply the thread's client tools (issue #91, invariant #21). One row per
  * (connection_id, thread_id) subscription; `id` is `${connection_id}::${thread_id}`.
  */
-export interface ClientSession {
+export interface ClientSession extends SoftDeletable {
 	id: string;
 	connection_id: string;
 	thread_id: string;
 	site_id: string;
 	created_at: string; // ISO 8601
-	deleted: number; // 0 | 1
 	modified_at: string; // ISO 8601
 }
 
-export interface Turn {
+export interface Turn extends SoftDeletable {
 	id: string;
 	thread_id: string | null;
 	task_id: string | null;
@@ -356,13 +424,14 @@ export interface SyncedTableRowMap {
 	tasks: Task;
 	files: AgentFile;
 	hosts: Host;
-	overlay_index: OverlayIndexEntry;
 	cluster_config: ClusterConfigEntry;
 	advisories: Advisory;
 	skills: Skill;
+	agents: Agent;
 	memory_edges: MemoryEdge;
 	connector_handles: ConnectorHandleRow;
 	webhooks: Webhook;
+	rss_feeds: RssFeed;
 	client_sessions: ClientSession;
 	turns: Turn;
 }
@@ -388,6 +457,26 @@ export const PERSONA_CLUSTER_CONFIG_KEY = "persona";
  */
 export const MAX_PERSONA_BYTES = 64 * 1024; // 64 KB
 
+/**
+ * `cluster_config` key gating unauthenticated webhook creation and delivery
+ * (#195). Webhooks may be created with `signature_format: "none"`, which
+ * skips HMAC validation entirely — anyone who can reach the sync server's
+ * `/webhook/:name` endpoint can trigger the bound task. That is a broad
+ * surface for arbitrary external data to reach the agent, so it is gated
+ * behind an explicit, operator-controlled kill switch that defaults to
+ * disabled (row absent or value !== "true").
+ *
+ * Checked at two points, both defense-in-depth against the switch being
+ * flipped after a `"none"` webhook already exists:
+ *  - Webhook create/update (`POST /api/webhooks`, `PATCH /api/webhooks/:id`,
+ *    `boundctl webhook create/update`) refuse to set `signature_format:
+ *    "none"` while the switch is off.
+ *  - Webhook delivery (`handleWebhookRequest`) re-checks the switch live for
+ *    every request to a `"none"`-format webhook, so disabling it also stops
+ *    delivery to webhooks created while it was on — no restart required.
+ */
+export const WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY = "webhooks_allow_unauthenticated";
+
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",
 	threads: "lww",
@@ -396,13 +485,14 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	tasks: "lww",
 	files: "lww",
 	hosts: "lww",
-	overlay_index: "lww",
 	cluster_config: "lww",
 	advisories: "lww",
 	skills: "lww",
+	agents: "lww",
 	memory_edges: "lww",
 	connector_handles: "lww",
 	webhooks: "lww",
+	rss_feeds: "lww",
 	client_sessions: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
@@ -472,11 +562,31 @@ export const RELAY_KIND_REGISTRY = {
 	// Platform MCP request — proxies arbitrary MCP protocol requests to a platform server on the target host
 	platform_request: { dispatch: "sync" },
 
+	// Client-tool request — relays a client (boundless/WS) tool call to the host
+	// holding the thread's live WS session, so the loop can run on ANY host and
+	// still serve client tools (R-UD5/R-UD8). The session host enqueues the call
+	// into its local WS dispatch, awaits the client's execution, and returns a
+	// `client_result`. async (not sync): the client may take arbitrarily long to
+	// execute, so the result returns out-of-band via relay_inbox polling.
+	client_tool: { dispatch: "async" },
+
 	// Async request kinds — fire-and-forget, processed via relay_inbox
 	cancel: { dispatch: "async" },
 	inference: { dispatch: "async" },
-	process: { dispatch: "async" },
+	// Transport-sized pieces of one serialized inference request. The receiver
+	// reassembles all parts before invoking the normal inference handler.
+	inference_part: { dispatch: "async" },
 	intake: { dispatch: "async" },
+
+	// Notification wakeup routed to the thread's live WS-session host (#91
+	// regression under unified delegation). dispatch_queue is local-only, so a
+	// notify/introspect enqueued where it was SENT wakes a loop on that host
+	// even when the thread's live boundless session (and its active loop) is
+	// on another host — two hosts, two loops, one thread. The sender routes
+	// the wakeup here instead; the receiving host enqueues into its LOCAL
+	// dispatch_queue unconditionally (no re-routing — a churning session row
+	// must not ping-pong the wakeup) and wakes the loop beside the session.
+	notify_wakeup: { dispatch: "async" },
 
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor
 	// consumer. The relay-processor must NOT markProcessed these.
@@ -487,9 +597,33 @@ export const RELAY_KIND_REGISTRY = {
 	// platform-MCP `intake` shape (intakePayloadSchema).
 	webhook_intake: { dispatch: "passive" },
 
+	// `connector_intake` carries a platform push-connector event batch
+	// written by `deliverBatch` (packages/platforms). Like `webhook_intake`
+	// it is a passive mailbox row owned by the scheduler's event-task wakeup
+	// path (buildEventWakeupContent), NOT the relay-processor: it exists so a
+	// leader-local connector wakeup carries the triggering event in its
+	// tool_result rather than falling back to the bare static task payload.
+	// Its payload is the connector's own batch content (opaque to bound),
+	// distinct from the platform-MCP `intake` shape (intakePayloadSchema).
+	connector_intake: { dispatch: "passive" },
+
+	// `rss_intake` carries one polled RSS/Atom feed item written by the
+	// leader-gated RSS poller (@bound/platforms rss-poller.ts). Same passive
+	// ownership contract as `webhook_intake`: the scheduler's event-task
+	// wakeup path (buildEventWakeupContent) folds + drains it; the
+	// relay-processor must leave it untouched. Payload shape is the poller's
+	// item envelope {feed, title, link, published, summary} — distinct from
+	// both the webhook HTTP envelope and the platform-MCP `intake` schema.
+	rss_intake: { dispatch: "passive" },
+
 	// Response kinds — stored in relay_inbox for polling loops
 	result: { dispatch: "response" },
 	error: { dispatch: "response" },
+	// Client-tool result — the session host's response to a `client_tool`
+	// request, carrying the executed client tool's output back to the loop that
+	// relayed the call. Mirrors `result`/`error` but distinct so the relay-wait
+	// stream can correlate it to the originating `client_tool` request.
+	client_result: { dispatch: "response" },
 	stream_chunk: { dispatch: "response" },
 	stream_end: { dispatch: "response" },
 	status_forward: { dispatch: "response" },
@@ -607,6 +741,31 @@ export interface PlatformRequestPayload {
 	timeout_ms: number;
 }
 
+/**
+ * `client_tool` relay request: relays a client (boundless/WS) tool call to the
+ * host holding the thread's live WS session. `thread_id` resolves the session
+ * host from the synced `client_sessions` table; `call_id` is the tool-call id
+ * (the idempotency key for the returned result, R-UD9).
+ */
+export interface ClientToolPayload {
+	thread_id: string;
+	call_id: string;
+	tool_name: string;
+	args: Record<string, unknown>;
+	timeout_ms: number;
+}
+
+/**
+ * `client_result` relay response: the session host's reply to a `client_tool`
+ * request, carrying the executed client tool's output (or an error) back to the
+ * loop that relayed the call.
+ */
+export interface ClientResultPayload {
+	call_id: string;
+	content: string;
+	is_error: boolean;
+}
+
 // Response payloads (target -> requester)
 export interface ResultPayload {
 	stdout: string;
@@ -629,14 +788,55 @@ export interface ErrorPayload {
 	definitely_not_executed?: boolean;
 }
 
-// Loop delegation payloads
-export interface ProcessPayload {
-	thread_id: string;
-	message_id: string;
-	user_id: string;
-	platform: string | null; // null = web UI delegation
-}
+/**
+ * The SINGLE wire representation of a delegated context (R-UD3). The inference
+ * relay payload carries a list of these in place of raw `messages`. There are
+ * exactly two shapes:
+ *
+ *   - `inline` — one fully-assembled message carried verbatim on the wire. The
+ *     new tail (the triggering user message, the volatile developer tail, any
+ *     unsynced or non-verbatim rows like truncation markers / purge stubs) ships
+ *     this way.
+ *   - `range` — a pointer to a contiguous, confirmed-synced PREFIX of the
+ *     thread's message rows that the consumer rebuilds byte-for-byte by re-running
+ *     the same Stage-1 projection finder + annotation the producer used. History
+ *     is an append-only prefix, so there is always AT MOST ONE range (R-UD3), and
+ *     it never covers a row whose change_log HLC exceeds the consumer's confirmed
+ *     watermark (R-UD6) — so the pointed rows are guaranteed present on the
+ *     consumer (a missing row is a hard error that cannot happen by construction,
+ *     R-UD10).
+ *
+ * This replaces both the old `messages` inline array and the `messages_file_ref`
+ * files-table offload — a single range-pointer is kilobytes regardless of token
+ * count, so the >2MB offload race is deleted, not relocated. See
+ * docs/design/specs/2026-06-29-unified-delegation.md §3/§4.
+ */
+export type ContextSegment =
+	| {
+			kind: "inline";
+			/** A fully-assembled LLMMessage, JSON-shaped (driver-agnostic). */
+			message: unknown;
+	  }
+	| {
+			kind: "range";
+			thread_id: string;
+			/**
+			 * Inclusive upper bound of the range: the `created_at` of the last
+			 * message row the range covers. The consumer loads live message rows
+			 * with `created_at <= anchor_created_at` (ASC), takes the leading
+			 * `count`, and annotates them. Paired with `count` so a mid-thread
+			 * truncation window resolves to exactly the producer's prefix.
+			 */
+			anchor_created_at: string;
+			/**
+			 * Number of leading rows (oldest-first) the range covers. The producer's
+			 * truncation telescope may drop the very oldest rows; `count` pins the
+			 * window so the consumer reproduces the same prefix length.
+			 */
+			count: number;
+	  };
 
+// Loop delegation payloads
 export interface StatusForwardPayload {
 	thread_id: string;
 	status: string; // "idle" | "thinking" | "tool_call" | etc.
@@ -700,13 +900,13 @@ export interface ContextDebugInfo {
 	/**
 	 * Safety margin (in tokens) subtracted from contextWindow before the truncation
 	 * gate fires. Absorbs variance between the cl100k_base estimator and the backend's
-	 * real tokenizer. Optional so older context_debug rows (pre-2026-04-26) still parse.
+	 * real tokenizer. Optional so older context_debug rows predating this field still parse.
 	 */
 	safetyMargin?: number;
 	/**
 	 * contextWindow - safetyMargin. The gate that actually triggers truncation compares
 	 * the token estimate against this value, NOT against contextWindow. Optional so older
-	 * context_debug rows (pre-2026-04-26) still parse.
+	 * context_debug rows predating this field still parse.
 	 */
 	effectiveBudget?: number;
 	totalEstimated: number;
@@ -719,13 +919,39 @@ export interface ContextDebugInfo {
 	 * Preserving this separately from totalEstimated lets us compute the
 	 * tiktoken-vs-actual inflation ratio per turn, which the adaptive
 	 * truncation ratio depends on. Optional so older context_debug rows
-	 * (pre-2026-05-22) still parse.
+	 * predating this field still parse.
 	 */
 	actualTotalTokens?: number;
 	model: string;
 	sections: ContextSection[];
 	budgetPressure: boolean;
 	truncated: number;
+	/**
+	 * The LLM-reported finish reason for this turn's response: `"stop"`,
+	 * `"length"`, `"tool-calls"`, `"content-filter"`, etc. Recorded so
+	 * output-token truncation is queryable from `turns.context_debug`
+	 * (`json_extract(context_debug,'$.finishReason')`) instead of requiring
+	 * a log grep. A `"length"` value means the model hit its output-token
+	 * ceiling and the response was cut off — the signature of the
+	 * "streaming interrupted" symptom.
+	 *
+	 * Optional so older `context_debug` rows predating this field still
+	 * parse, and absent on assembly-only snapshots not yet correlated with
+	 * a response.
+	 */
+	finishReason?: string;
+	/**
+	 * The effective `max_tokens` budget sent to the provider for this turn
+	 * (`config.maxOutputTokens`). `undefined` /
+	 * absent means no budget was configured and the request OMITTED
+	 * `max_tokens`, so the provider applied its own default — which for
+	 * Bedrock Converse is 4096, low enough to truncate large
+	 * thinking+text turns. Recording it lets a `finishReason: "length"`
+	 * row be read together with the budget that produced it.
+	 *
+	 * Optional so older `context_debug` rows predating this field still parse.
+	 */
+	maxOutputTokens?: number;
 	crossThreadSources?: CrossThreadSource[];
 	/**
 	 * R-VC27 relevant-memory selection injected into this turn's volatile tail,
@@ -743,7 +969,7 @@ export interface ContextDebugInfo {
 	 * - `"cold"` — full `assembleContext()` ran. The next warm turn will
 	 *   read this turn's stored state.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	cachePath?: "warm" | "cold";
 	/**
@@ -753,54 +979,66 @@ export interface ContextDebugInfo {
 	 *
 	 * Cold-side reasons:
 	 * - `"no-stored-state"` — first turn on this thread, or warm cache evicted.
-	 * - `"cache-expired"` — `predictCacheState()` returned `"cold"` (TTL elapsed).
+	 *   Also covers thread idle past the turn-state store TTL: eviction makes
+	 *   getCachedTurnState return undefined, so the long-idle case lands here.
+	 * - `"cache-expired"` — RETIRED. Previously set when `predictCacheState()`
+	 *   returned `"cold"` while cached state still existed. That heuristic gate
+	 *   was removed (it produced frequent false colds on active threads while
+	 *   the store TTL already handled idle eviction); no longer emitted. Kept in
+	 *   the union so historical `context_debug` rows still parse.
 	 * - `"tool-change"` — `computeToolFingerprint` mismatch with cached state.
 	 * - `"orphaned-tool-call"` — warm path detected an unanswered `tool_use`
 	 *   and bailed so Stage 3 sanitization could synthesize the missing
 	 *   `tool_result`. Distinct from `"budget-exceeded"` because the remedy
 	 *   is structural, not size-driven.
+	 * - `"purge-message"` — the delta contained a purge instruction, requiring
+	 *   cold Stage 2 substitution to remove cached targets and insert its summary.
 	 * - `"budget-exceeded"` — warm-path estimate exceeded
-	 *   `effectiveTruncationRatio * contextWindow` even after in-place
-	 *   compaction fired (or none was applicable).
+	 *   `truncationTargetTokens` even after in-place compaction fired (or
+	 *   none was applicable).
 	 * - `"no-history"` — `noHistory` task threads always cold-assemble.
 	 *
 	 * Warm-side reasons:
 	 * - `"warm-eligible"` — warm path ran to completion within budget.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	cachePathReason?:
 		| "no-stored-state"
 		| "cache-expired"
 		| "tool-change"
 		| "orphaned-tool-call"
+		| "purge-message"
 		| "budget-exceeded"
 		| "no-history"
 		| "warm-eligible";
 	/**
-	 * Per-thread adaptive truncation ratio resolved at the start of this
-	 * assembly. `TRUNCATION_TARGET_RATIO` (0.85) divided by the EMA of
-	 * actual/estimated inflation over the recent `turns` lookback window
-	 * (clamped so inflation < 1.0 doesn't loosen the gate). Falls back to
-	 * the base ratio on threads with insufficient samples.
+	 * Per-thread adaptive truncation target (tokens) resolved at the start of
+	 * this assembly: `contextWindow - maxOutputTokens` (the exact room the
+	 * upcoming model call needs to reserve for its own response), divided by
+	 * the EMA of actual/estimated inflation over the recent `turns` lookback
+	 * window (clamped so inflation < 1.0 doesn't loosen the gate). Falls back
+	 * to the unadjusted base target on threads with insufficient samples.
 	 *
-	 * Recording it lets us correlate budget-gate decisions with the ratio
+	 * Recording it lets us correlate budget-gate decisions with the target
 	 * that drove them on the same turn — without it, debugging "why didn't
 	 * truncation fire?" requires re-running the EMA computation against
 	 * the same row history.
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Replaces the old ratio-based `effectiveTruncationRatio` field (see
+	 * `computeBaseTruncationTarget` in context-assembly.ts).
+	 * Optional so older `context_debug` rows still parse.
 	 */
-	effectiveTruncationRatio?: number;
+	truncationTargetTokens?: number;
 	/**
 	 * The raw inflation EMA (mean of `actual / estimated` over recent valid
-	 * turns) that fed into `effectiveTruncationRatio`. `null` when the
+	 * turns) that fed into `truncationTargetTokens`. `null` when the
 	 * thread has fewer than the minimum sample count and the resolver fell
-	 * back to the base ratio. Storing it separately from
-	 * `effectiveTruncationRatio` lets us tell "estimator is accurate" from
-	 * "we don't know yet" — both currently surface as the base ratio.
+	 * back to the unadjusted base target. Storing it separately from
+	 * `truncationTargetTokens` lets us tell "estimator is accurate" from
+	 * "we don't know yet".
 	 *
-	 * Optional so older `context_debug` rows (pre-2026-05-25) still parse.
+	 * Optional so older `context_debug` rows predating this field still parse.
 	 */
 	measuredInflation?: number | null;
 	/**
@@ -838,7 +1076,7 @@ export interface ContextDebugInfo {
 	 * compares consecutive cold rebuilds on the same thread within
 	 * the cache TTL window: if `stablePrefixHash` differs but no
 	 * change_log row touched `semantic_memory | skills | files |
-	 * advisories | overlay_index` between them, that's a leak.
+	 * advisories` between them, that's a leak.
 	 *
 	 * `undefined` on warm turns (the warm path reuses the cached
 	 * `systemPrompt` and recording the hash again would just
@@ -911,7 +1149,7 @@ export interface CacheMarker {
 	 * cache_ttl (per critical invariant #17). Stored on the marker so the UI
 	 * can label the tier without re-resolving backend config.
 	 */
-	ttl: "5m" | "1h";
+	ttl: string;
 	/**
 	 * `true` when the resolved backend's `prompt_caching` capability is on AND
 	 * a marker was actually emitted on the wire. `false` when caching was
@@ -926,3 +1164,52 @@ export interface CommandRegistryEntry {
 	readonly name: string;
 	readonly description: string;
 }
+
+/**
+ * Name of the sandbox shell tool — the one that runs commands inside the
+ * database-backed VFS and dispatches MCP server commands. Single source of
+ * truth so the agent-factory registration and the orientation prose that names
+ * it (see `buildOrientationBlock` in `packages/agent`) never drift apart. NOT
+ * `boundless_bash`, which a boundless session surfaces separately and which
+ * targets the host's real working directory rather than the sandbox.
+ */
+export const SANDBOX_BASH_TOOL_NAME = "bms_bash";
+
+/**
+ * Call-id prefix for client tools dispatched from inside a Yard run
+ * (`dispatchAwaitableClientTool` in `@bound/agent`). Shared so UI surfaces
+ * can recognize Yard-origin dispatches: boundless suppresses the standalone
+ * streaming ToolCallCard for these (the Yard execution card already renders
+ * the effect as a graph node), and the agent's context pipeline filters the
+ * bookkeeping result rows these calls persist.
+ */
+export const YARD_CLIENT_CALL_ID_PREFIX = "yard-client-";
+
+export type YardExecutionNode =
+	| { kind: "run"; depth: number }
+	| { kind: "tool"; name: string }
+	| { kind: "inference"; model: string };
+
+export type YardExecutionEvent = {
+	thread_id: string;
+	trace_id: string;
+	run_id: string;
+	node_id: string;
+	parent_id: string | null;
+	seq: number;
+	phase: "started" | "completed" | "failed";
+	node: YardExecutionNode;
+	started_at?: string;
+	finished_at?: string;
+	input_preview?: string;
+	/**
+	 * Bounded preview of the generator source, carried on the tree-root
+	 * started event only. Lets the boundless committed card render the
+	 * program (highlighted) without reaching back to the persisted tool_call
+	 * row — which the card replaces.
+	 */
+	program_preview?: string;
+	result_preview?: string;
+	summary?: string;
+	tool_call_id?: string;
+};

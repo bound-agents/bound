@@ -1,4 +1,4 @@
-import { insertRow, updateRow } from "@bound/core";
+import { findTaskExistenceById, insertRow, updateRow } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import { randomUUID } from "@bound/shared";
 import { z } from "zod";
@@ -236,18 +236,15 @@ function handleUpdate(input: TaskInput, ctx: ToolContext): string {
 	// driven by the scheduler, `ctx.taskId` is the running task's id; if it
 	// matches the update target, refuse. This closes the class of incident where
 	// a webhook/event task cleared its own model_hint mid-run, silently
-	// upgrading cost (see bound_issue:task-self-clears-own-model_hint-via-task-update-20260601).
-	// To change the running task's model specifically, use the `model_hint` tool,
-	// which is the deliberate, single-field path for that intent.
+	// upgrading cost onto a more expensive default model. To change the running
+	// task's model specifically, use the `model_hint` tool, which is the
+	// deliberate, single-field path for that intent.
 	if (ctx.taskId && ctx.taskId === taskId) {
 		return "Error: a task cannot modify itself via the task tool";
 	}
 
 	// bun:sqlite .get() returns null (not undefined) when no row found
-	const existing = ctx.db.prepare("SELECT id, deleted FROM tasks WHERE id = ?").get(taskId) as {
-		id: string;
-		deleted: number;
-	} | null;
+	const existing = findTaskExistenceById(ctx.db, taskId);
 	if (!existing || existing.deleted === 1) {
 		return `Error: task '${taskId}' not found`;
 	}

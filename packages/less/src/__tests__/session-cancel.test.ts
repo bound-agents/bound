@@ -7,8 +7,10 @@ import { type CancelDeps, CancelStateMachine } from "../session/cancel";
 describe("CancelStateMachine", () => {
 	let deps: CancelDeps;
 	let stateMachine: CancelStateMachine;
+	let now: number;
 
 	beforeEach(() => {
+		now = 10_000;
 		deps = {
 			cancelThread: vi.fn(async () => {}),
 			abortInFlightTools: vi.fn(),
@@ -17,7 +19,7 @@ describe("CancelStateMachine", () => {
 			showHint: vi.fn(),
 		};
 
-		stateMachine = new CancelStateMachine("thread1", deps);
+		stateMachine = new CancelStateMachine("thread1", deps, () => now);
 	});
 
 	describe("AC7.7: Ctrl-C during active turn", () => {
@@ -47,9 +49,7 @@ describe("CancelStateMachine", () => {
 			stateMachine.turnActive = true;
 
 			await stateMachine.onCtrlC();
-			// Simulate second press within 2s by setting lastCtrlCTime to recent past
-			(stateMachine as any).lastCtrlCTime = Date.now() - 1000;
-
+			now += 1_000;
 			await stateMachine.onCtrlC();
 
 			expect(deps.gracefulExit).toHaveBeenCalledTimes(1);
@@ -59,9 +59,7 @@ describe("CancelStateMachine", () => {
 			stateMachine.turnActive = true;
 
 			await stateMachine.onCtrlC();
-			// Simulate press outside 2s window
-			(stateMachine as any).lastCtrlCTime = Date.now() - 2100;
-
+			now += 2_100;
 			await stateMachine.onCtrlC();
 
 			expect(deps.gracefulExit).not.toHaveBeenCalled();
@@ -82,9 +80,7 @@ describe("CancelStateMachine", () => {
 			stateMachine.turnActive = false;
 
 			await stateMachine.onCtrlC();
-			// Simulate second press within 2s
-			(stateMachine as any).lastCtrlCTime = Date.now() - 1000;
-
+			now += 1_000;
 			await stateMachine.onCtrlC();
 
 			expect(deps.gracefulExit).toHaveBeenCalledTimes(1);
@@ -202,39 +198,25 @@ describe("CancelStateMachine", () => {
 		it("shows hint when canceled turn but 2s window expired", async () => {
 			stateMachine.turnActive = true;
 
-			// First Ctrl-C: cancel the turn
 			await stateMachine.onCtrlC();
 			expect(deps.cancelThread).toHaveBeenCalledTimes(1);
 			expect(deps.showHint).not.toHaveBeenCalled();
 
-			// Simulate pressing after 2-second window expired
-			(stateMachine as any).lastCtrlCTime = Date.now() - 2100;
-
-			deps.showHint.mockClear();
+			now += 2_100;
 			await stateMachine.onCtrlC();
 
-			// Should show hint now (previously was silent no-op)
 			expect(deps.showHint).toHaveBeenCalledWith("Press Ctrl-C again to exit");
 			expect(deps.gracefulExit).not.toHaveBeenCalled();
 		});
 
-		it("updates lastCtrlCTime when showing hint after expired window", async () => {
+		it("updates lastCtrlCTime to the controlled clock after an expired window", async () => {
 			stateMachine.turnActive = true;
 
 			await stateMachine.onCtrlC();
-			const firstTime = (stateMachine as any).lastCtrlCTime;
-
-			// Expire the 2s window
-			(stateMachine as any).lastCtrlCTime = Date.now() - 2100;
-
-			// Wait a bit
-			await new Promise((resolve) => setTimeout(resolve, 10));
-
+			now += 2_100;
 			await stateMachine.onCtrlC();
-			const secondTime = (stateMachine as any).lastCtrlCTime;
 
-			// lastCtrlCTime should be updated
-			expect(secondTime).toBeGreaterThan(firstTime);
+			expect((stateMachine as any).lastCtrlCTime).toBe(12_100);
 		});
 	});
 

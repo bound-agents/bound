@@ -1,5 +1,6 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
+import { File, FileCode, FileText, Folder, Image, Table } from "lucide-svelte";
+import { type Component, onDestroy, onMount } from "svelte";
 import { SvelteSet } from "svelte/reactivity";
 import FilePreviewModal from "../components/FilePreviewModal.svelte";
 import Page from "../components/Page.svelte";
@@ -111,17 +112,13 @@ onDestroy(() => {
 	if (unsubscribe) unsubscribe();
 });
 
-function iconFor(name: string): string {
+function iconFor(name: string): Component {
 	const lower = name.toLowerCase();
-	if (lower.endsWith(".md") || lower.endsWith(".txt"))
-		return '<path d="M3 2h7l3 3v9H3z"/><path d="M10 2v3h3"/><path d="M5 8h6M5 11h6"/>';
-	if (/\.(ts|js|json|py|rs|go|yaml|yml)$/.test(lower))
-		return '<path d="M3 2h7l3 3v9H3z"/><path d="M10 2v3h3"/><path d="M6 9l-1.5 1.5L6 12M10 9l1.5 1.5L10 12"/>';
-	if (/\.(png|jpg|jpeg|gif|svg|webp)$/.test(lower))
-		return '<rect x="2" y="3" width="12" height="10"/><circle cx="6" cy="7" r="1"/><path d="M2 11l3-3 3 3 2-2 3 3"/>';
-	if (/\.(csv|xlsx|xls)$/.test(lower))
-		return '<rect x="2" y="3" width="12" height="10"/><path d="M2 7h12M2 10h12M6 3v10M10 3v10"/>';
-	return '<path d="M3 2h7l3 3v9H3z"/><path d="M10 2v3h3"/>';
+	if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
+	if (/\.(ts|js|json|py|rs|go|yaml|yml)$/.test(lower)) return FileCode;
+	if (/\.(png|jpg|jpeg|gif|svg|webp)$/.test(lower)) return Image;
+	if (/\.(csv|xlsx|xls)$/.test(lower)) return Table;
+	return File;
 }
 </script>
 
@@ -211,20 +208,10 @@ function iconFor(name: string): string {
 								>
 									<span class="icon-cell">
 										{#if node.type === "dir"}
-											<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-												<path d="M2 4h4l1.5 2h6.5v7H2z" />
-											</svg>
+											<Folder size={14} />
 										{:else}
-											<svg
-												width="14"
-												height="14"
-												viewBox="0 0 16 16"
-												fill="none"
-												stroke="currentColor"
-												stroke-width="1.5"
-											>
-												{@html iconFor(node.name)}
-											</svg>
+											{@const Icon = iconFor(node.name)}
+											<Icon size={14} />
 										{/if}
 									</span>
 									<span class="name" class:dir={node.type === "dir"}>
@@ -438,5 +425,31 @@ function iconFor(name: string): string {
 		text-align: center;
 		color: var(--ink-4);
 		font-style: italic;
+	}
+
+	/* Phone: stack the tree over the listing (the 260px sidebar + table can't
+	   share ~390px), cap the tree height, and let the 5-column file table scroll
+	   horizontally inside the content area instead of widening the page. */
+	@media (max-width: 640px) {
+		.files-browser {
+			grid-template-columns: 1fr;
+			min-height: 0;
+		}
+		.tree-sidebar {
+			border-right: none;
+			border-bottom: 1px solid var(--rule-soft);
+			max-height: 200px;
+		}
+		.content-area {
+			overflow-x: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+		.listing-header,
+		.listing .row {
+			min-width: 460px;
+		}
+		.breadcrumbs {
+			padding: 12px 14px;
+		}
 	}
 </style>

@@ -66,36 +66,9 @@ function formatTokensCompact(n: number): string {
 	return String(n);
 }
 
-// Each marker resolves to one of four states, driving its color:
-//
-// - `hit`      — this breakpoint served a cache read this turn (warm path). On
-//                 a split turn it is the durable system prefix; on a pure-read
-//                 turn every breakpoint reads.
-// - `write`    — this breakpoint seeded or extended a cache entry this turn. On
-//                 a split turn it is the growing message tail; on a pure-write
-//                 turn (e.g. a cold reassembly) every breakpoint writes.
-// - `disabled` — backend `prompt_caching` capability is off; nothing was
-//                 cached this turn.
-// - `idle`     — capability on but no cache activity attributable to the turn.
-//                 Renders as a faint tick with the TTL label so the position
-//                 is still visible.
-//
-// On a UNIFORM turn (only reads, or only writes) both breakpoints share one
-// state — the AI SDK aggregates cache_read / cache_write at request level, so a
-// single "story" matches reality (e.g. a cold turn that wrote 162k seeded BOTH
-// breakpoints; painting only one "write" would imply the other did nothing). On
-// a MIXED turn (both a read and a write) we split: the durable system prefix
-// reads "hit" and the growing message tail reads "write" (#98). The byte split
-// is not attributable per-breakpoint on the wire, but the presence of both a
-// read and a write lets us infer at least one of each. See
-// `deriveCacheMarkerStates` for the full heuristic.
-//
-// Inline numeric labels: on a split turn each tick carries its own distinct
-// number (read on the hit tick, write on the write tick), so there is no
-// duplication. On a uniform turn the single number is placed only on the
-// message marker to avoid printing the same value twice under the bar; the
-// system marker shows its TTL inline when present and otherwise relies on the
-// tooltip.
+// Marker states show cache reads, writes, disabled caching, or idle capability. Uniform request-level
+// accounting gives both markers one state; mixed turns infer a system-prefix hit and message-tail write.
+// Split turns label each marker; uniform turns label only the message marker to avoid duplicate values.
 
 interface RenderedMarker {
 	pct: number;

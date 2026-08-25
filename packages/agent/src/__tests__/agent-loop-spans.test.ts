@@ -15,7 +15,7 @@ import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 // Mock LLM Backend that returns configurable responses
 class MockLLMBackend implements LLMBackend {
@@ -178,7 +178,7 @@ describe("Agent Loop OTEL Spans", () => {
 		} as unknown as AppContext;
 	}
 
-	it("should create agent-loop.turn spans with thread and task attributes", async () => {
+	it("should create loop.turn spans with thread and task attributes", async () => {
 		// Create a test thread and user message
 		insertRow(
 			db,
@@ -227,7 +227,7 @@ describe("Agent Loop OTEL Spans", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -237,7 +237,7 @@ describe("Agent Loop OTEL Spans", () => {
 
 		// Verify turn span was created
 		const spans = exporter.getFinishedSpans();
-		const turnSpan = spans.find((s) => s.name === "agent-loop.turn");
+		const turnSpan = spans.find((s) => s.name === "loop.turn");
 
 		expect(turnSpan).toBeDefined();
 		expect(turnSpan?.attributes?.["thread.id"]).toBe(threadId);
@@ -292,7 +292,7 @@ describe("Agent Loop OTEL Spans", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -302,7 +302,7 @@ describe("Agent Loop OTEL Spans", () => {
 
 		// Verify turn span has token attributes
 		const spans = exporter.getFinishedSpans();
-		const turnSpan = spans.find((s) => s.name === "agent-loop.turn");
+		const turnSpan = spans.find((s) => s.name === "loop.turn");
 
 		expect(turnSpan?.attributes?.["llm.input_tokens"]).toBeDefined();
 		expect(turnSpan?.attributes?.["llm.output_tokens"]).toBeDefined();
@@ -359,7 +359,7 @@ describe("Agent Loop OTEL Spans", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -430,7 +430,7 @@ describe("Agent Loop OTEL Spans", () => {
 		const ctx = makeCtx();
 		const sandbox = createMockSandbox();
 
-		const loop = new AgentLoop(ctx, sandbox as any, router, {
+		const loop = new MainAgentLoop(ctx, sandbox as any, router, {
 			threadId,
 			userId,
 			modelId: "test-model",
@@ -439,7 +439,7 @@ describe("Agent Loop OTEL Spans", () => {
 		await loop.run();
 
 		const spans = exporter.getFinishedSpans();
-		const turnSpan = spans.find((s) => s.name === "agent-loop.turn");
+		const turnSpan = spans.find((s) => s.name === "loop.turn");
 
 		expect(turnSpan).toBeDefined();
 		// Non-thinking response should have thinking_chars = 0

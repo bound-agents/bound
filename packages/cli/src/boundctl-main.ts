@@ -12,7 +12,7 @@ import { runDrain } from "./commands/drain.js";
 import { runRestore } from "./commands/restore.js";
 import { runSetHub } from "./commands/set-hub.js";
 import { runSetPersona } from "./commands/set-persona.js";
-import { skillImport, skillList, skillRetire, skillView } from "./commands/skill.js";
+import { skillDelete, skillImport, skillList, skillView } from "./commands/skill.js";
 import { runResume, runStop } from "./commands/stop-resume.js";
 import { runSyncStatus } from "./commands/sync-status.js";
 import { taskUpdate } from "./commands/task.js";
@@ -21,6 +21,7 @@ import {
 	webhookDelete,
 	webhookList,
 	webhookRotateSecret,
+	webhookSetUnauthenticated,
 	webhookUpdate,
 } from "./commands/webhook.js";
 import { openBoundDB } from "./lib/db.js";
@@ -51,9 +52,9 @@ COMMANDS:
   sync-status                Show sync status for all peers
   consistency-check          Compare local DB against hub via sync protocol
   drain <new-hub>            Graceful hub decommissioning
-  skill list                 List all skills with status and telemetry
+  skill list                 List all skills with usage telemetry
   skill view <name>          View SKILL.md and file listing for a skill
-  skill retire <name>        Retire a skill (operator); use --reason "..." to explain
+  skill delete <name>        Delete a skill; use --reason "..." to explain
   skill import <path>        Import a skill from a local directory
   webhook list               List all webhooks
   webhook create             Create a new webhook
@@ -321,9 +322,8 @@ EXAMPLES:
 
 		try {
 			if (subcommand === "list") {
-				const statusFilter = getArgValue(args, "--status");
 				const verbose = args.includes("--verbose");
-				skillList(db, { status: statusFilter, verbose });
+				skillList(db, { verbose });
 				db.close();
 				process.exit(0);
 			}
@@ -340,18 +340,18 @@ EXAMPLES:
 				process.exit(0);
 			}
 
-			if (subcommand === "retire") {
+			if (subcommand === "delete") {
 				const name = args[2];
 				if (!name) {
 					console.error(
-						'Error: skill name is required. Usage: boundctl skill retire <name> [--reason "..."]',
+						'Error: skill name is required. Usage: boundctl skill delete <name> [--reason "..."]',
 					);
 					db.close();
 					process.exit(1);
 				}
 				const reason = getArgValue(args, "--reason");
 				const siteId = getSiteId(db);
-				skillRetire(db, siteId, name, reason);
+				skillDelete(db, siteId, name, reason);
 				db.close();
 				process.exit(0);
 			}
@@ -371,7 +371,7 @@ EXAMPLES:
 
 			// Unknown subcommand
 			console.error(`Error: unknown skill subcommand '${subcommand}'.`);
-			console.error("Available: list, view, retire, import");
+			console.error("Available: list, view, delete, import");
 			db.close();
 			process.exit(1);
 		} catch (error) {
@@ -430,7 +430,21 @@ EXAMPLES:
 				process.exit(0);
 			}
 
-			console.error("Usage: boundctl webhook {create|list|delete|update|rotate-secret}");
+			if (subcommand === "allow-unauthenticated") {
+				webhookSetUnauthenticated(db, siteId, true);
+				db.close();
+				process.exit(0);
+			}
+
+			if (subcommand === "disallow-unauthenticated") {
+				webhookSetUnauthenticated(db, siteId, false);
+				db.close();
+				process.exit(0);
+			}
+
+			console.error(
+				"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}",
+			);
 			db.close();
 			process.exit(1);
 		} catch (error) {
@@ -473,12 +487,19 @@ EXAMPLES:
 			const db = openBoundDB(dataDir);
 			try {
 				console.log("Running VACUUM...");
+				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
 				const before = db.query("PRAGMA page_count").get() as { page_count: number };
+				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
+				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
 				const freeListBefore = db.query("PRAGMA freelist_count").get() as {
 					freelist_count: number;
 				};
 				db.run("VACUUM");
+				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
+				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
 				const after = db.query("PRAGMA page_count").get() as { page_count: number };
+				// Raw read justification: PRAGMA page_size reads SQLite file metadata.
+				// Raw read justification: PRAGMA page_size reads SQLite file metadata.
 				const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
 				const reclaimedPages = before.page_count - after.page_count;
 				const reclaimedBytes = reclaimedPages * pageSize;

@@ -8,7 +8,7 @@ import {
 
 describe("renderWorkingKnowledge — stable/varying split", () => {
 	describe("Empty input", () => {
-		it("emits stable header+footer and no varying lines", () => {
+		it("emits stable open+close tags and no varying lines", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [],
@@ -19,10 +19,8 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			expect(result.stableLines).toEqual([
-				"## Working Knowledge — operational and durable",
-				"",
-				"",
-				"Bodies of summary entries are accessed via memory search using terms from the entry key.",
+				'<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">',
+				"</working-knowledge>",
 			]);
 			expect(result.varyingLines).toEqual([]);
 		});
@@ -57,10 +55,10 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			expect(result.stableLines).toContain(
-				"- stand_rule_one (modified 2026-05-22): Always validate input before processing",
+				'<memory key="stand_rule_one" tier="pinned" modified="2026-05-22">Always validate input before processing</memory>',
 			);
 			expect(result.stableLines).toContain(
-				"- stand_rule_two (modified 2026-05-22): Logging must include timestamp and level",
+				'<memory key="stand_rule_two" tier="pinned" modified="2026-05-22">Logging must include timestamp and level</memory>',
 			);
 			expect(result.varyingLines).toEqual([]);
 		});
@@ -89,13 +87,10 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			const summaryLine = result.stableLines.find((line) =>
-				line.startsWith("- summary_key_1 (modified 2026-05-22): "),
-			);
+			const openPrefix = '<memory key="summary_key_1" tier="summary" modified="2026-05-22">';
+			const summaryLine = result.stableLines.find((line) => line.startsWith(openPrefix));
 			expect(summaryLine).toBeDefined();
-			const truncatedValue = (summaryLine ?? "").substring(
-				"- summary_key_1 (modified 2026-05-22): ".length,
-			);
+			const truncatedValue = (summaryLine ?? "").slice(openPrefix.length, -"</memory>".length);
 			expect(truncatedValue).toContain("...");
 			const beforeEllipsis = truncatedValue.substring(0, truncatedValue.length - 3);
 			expect(beforeEllipsis.length).toBe(200);
@@ -104,7 +99,7 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 	});
 
 	describe("Summary with stale children", () => {
-		it("keeps parent body stable; child + [stale child of] live in varying", () => {
+		it("keeps parent body stable; stale-child element lives in varying", () => {
 			const staleChild = {
 				key: "stale_detail_1",
 				value: "This is a stale child entry that was updated after the summary",
@@ -133,24 +128,28 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			expect(result.stableLines).toContain(
-				"- parent_summary (modified 2026-05-22): Parent summary entry",
+				'<memory key="parent_summary" tier="summary" modified="2026-05-22">Parent summary entry</memory>',
 			);
-			// No marker in stable section.
+			// No staleness marker in stable section.
 			for (const line of result.stableLines) {
-				expect(line).not.toContain("[stale child of");
+				expect(line).not.toContain('stale="true"');
 			}
 
-			// Varying side: header + the child reference.
-			expect(result.varyingLines[0]).toBe("## Working Knowledge — updates");
+			// Varying side: opening tag + the child reference.
+			expect(result.varyingLines[0]).toBe("<working-knowledge-updates>");
+			expect(result.varyingLines[result.varyingLines.length - 1]).toBe(
+				"</working-knowledge-updates>",
+			);
 			const childLine = result.varyingLines.find((line) => line.includes("stale_detail_1"));
 			expect(childLine).toBeDefined();
-			expect(childLine).toContain("  - stale_detail_1:");
-			expect(childLine).toContain("[stale child of parent_summary]");
+			expect(childLine).toContain('<memory key="stale_detail_1"');
+			expect(childLine).toContain('parent="parent_summary"');
+			expect(childLine).toContain('stale="true"');
 		});
 	});
 
 	describe("Delta on a summary entry (R-VC11(a))", () => {
-		it("keeps body stable; emits keyed [changed since last turn] on the varying side", () => {
+		it("keeps body stable; emits keyed changed element on the varying side", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [
@@ -170,17 +169,19 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			expect(result.stableLines).toContain(
-				"- changed_summary (modified 2026-05-22): This summary was recently updated",
+				'<memory key="changed_summary" tier="summary" modified="2026-05-22">This summary was recently updated</memory>',
 			);
 			for (const line of result.stableLines) {
-				expect(line).not.toContain("[changed since last turn]");
+				expect(line).not.toContain('changed="true"');
 			}
-			expect(result.varyingLines).toContain("- changed_summary [changed since last turn]");
+			expect(result.varyingLines).toContain(
+				'<memory key="changed_summary" tier="summary" changed="true"/>',
+			);
 		});
 	});
 
 	describe("Delta on a pinned entry (R-VC11(b))", () => {
-		it("keeps body stable; emits keyed [changed since last turn] on the varying side", () => {
+		it("keeps body stable; emits keyed changed element on the varying side", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [
 					{
@@ -200,12 +201,14 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			expect(result.stableLines).toContain(
-				"- changed_pinned (modified 2026-05-22): This pinned rule was just updated",
+				'<memory key="changed_pinned" tier="pinned" modified="2026-05-22">This pinned rule was just updated</memory>',
 			);
 			for (const line of result.stableLines) {
-				expect(line).not.toContain("[changed since last turn]");
+				expect(line).not.toContain('changed="true"');
 			}
-			expect(result.varyingLines).toContain("- changed_pinned [changed since last turn]");
+			expect(result.varyingLines).toContain(
+				'<memory key="changed_pinned" tier="pinned" changed="true"/>',
+			);
 		});
 	});
 
@@ -230,16 +233,20 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			const stableJoined = result.stableLines.join("\n");
-			expect(stableJoined).toContain("- multi_line_pinned (modified 2026-05-22):");
+			expect(stableJoined).toContain(
+				'<memory key="multi_line_pinned" tier="pinned" modified="2026-05-22">',
+			);
 			expect(stableJoined).toContain(
 				"Line 1 of the pinned rule\nLine 2 of the pinned rule\nLine 3 continues",
 			);
-			expect(result.varyingLines).toContain("- multi_line_pinned [changed since last turn]");
+			expect(result.varyingLines).toContain(
+				'<memory key="multi_line_pinned" tier="pinned" changed="true"/>',
+			);
 		});
 	});
 
 	describe("Stale child + delta composition (R-VC11(c))", () => {
-		it("renders [stale child of] before [changed since last turn] on the varying side", () => {
+		it("carries both stale and changed attributes on one element", () => {
 			const staleChild = {
 				key: "stale_and_changed",
 				value: "This child is both stale and changed",
@@ -270,16 +277,14 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const childLine = result.varyingLines.find((line) => line.includes("stale_and_changed"));
 			expect(childLine).toBeDefined();
 			const line = childLine ?? "";
-			const staleIndex = line.indexOf("[stale child of parent]");
-			const deltaIndex = line.indexOf("[changed since last turn]");
-			expect(staleIndex).toBeGreaterThan(-1);
-			expect(deltaIndex).toBeGreaterThan(-1);
-			expect(staleIndex).toBeLessThan(deltaIndex);
+			expect(line).toContain('parent="parent"');
+			expect(line).toContain('stale="true"');
+			expect(line).toContain('changed="true"');
 		});
 	});
 
 	describe("Stale child without delta (R-VC11(c) negative case)", () => {
-		it("emits only [stale child of] on the varying side when child is not in deltaKeys", () => {
+		it("emits stale=true changed=false when child is not in deltaKeys", () => {
 			const staleChild = {
 				key: "stale_not_changed",
 				value: "This child is stale but not changed this turn",
@@ -310,8 +315,8 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const childLine = result.varyingLines.find((line) => line.includes("stale_not_changed"));
 			expect(childLine).toBeDefined();
 			const line = childLine ?? "";
-			expect(line).toContain("[stale child of parent]");
-			expect(line).not.toContain("[changed since last turn]");
+			expect(line).toContain('stale="true"');
+			expect(line).toContain('changed="false"');
 		});
 	});
 
@@ -379,25 +384,27 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			const stable = result.stableLines.join("\n");
-			expect(stable).toStartWith("## Working Knowledge — operational and durable");
+			expect(stable).toStartWith(
+				'<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">',
+			);
 			expect(stable).toContain("stand_pinned_1");
 			expect(stable).toContain("stand_pinned_2");
 			expect(stable).toContain("summary_A");
 			expect(stable).toContain("summary_B");
-			expect(stable).not.toContain("[changed since last turn]");
-			expect(stable).not.toContain("[stale child of");
+			expect(stable).not.toContain('changed="true"');
+			expect(stable).not.toContain('stale="true"');
 
 			const varying = result.varyingLines.join("\n");
-			expect(varying).toContain("- stand_pinned_2 [changed since last turn]");
-			expect(varying).toContain("- summary_B [changed since last turn]");
+			expect(varying).toContain('<memory key="stand_pinned_2" tier="pinned" changed="true"/>');
+			expect(varying).toContain('<memory key="summary_B" tier="summary" changed="true"/>');
 			expect(varying).toContain("stale_detail_alpha");
 			expect(varying).toContain("stale_detail_beta");
-			expect(varying).toContain("[stale child of summary_A]");
+			expect(varying).toContain('parent="summary_A"');
 		});
 	});
 
-	describe("Header typography uniformity (R-VC22)", () => {
-		it("uses ## (not ### or #) for both top-level headers", () => {
+	describe("Section element naming (R-VC22)", () => {
+		it("opens the stable and varying channels with their canonical elements", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [
@@ -416,16 +423,18 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			const result = renderWorkingKnowledge(input);
 
-			expect(result.stableLines[0]).toBe("## Working Knowledge — operational and durable");
-			expect(result.varyingLines[0]).toBe("## Working Knowledge — updates");
+			expect(result.stableLines[0]).toBe(
+				'<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">',
+			);
+			expect(result.varyingLines[0]).toBe("<working-knowledge-updates>");
 			for (const line of [...result.stableLines, ...result.varyingLines]) {
 				expect(line).not.toContain("###");
 			}
 		});
 	});
 
-	describe("Footer text (R-VC6)", () => {
-		it("renders exact footer text on the stable side", () => {
+	describe("Closing tag (R-VC6)", () => {
+		it("closes the stable element as its last line", () => {
 			const input: WorkingKnowledgeInput = {
 				pinned: [],
 				summaries: [],
@@ -436,8 +445,32 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 			const result = renderWorkingKnowledge(input);
 
 			const lastStable = result.stableLines[result.stableLines.length - 1];
-			expect(lastStable).toBe(
-				"Bodies of summary entries are accessed via memory search using terms from the entry key.",
+			expect(lastStable).toBe("</working-knowledge>");
+		});
+	});
+
+	describe("XML escaping", () => {
+		it("escapes XML-special characters in keys and values", () => {
+			const input: WorkingKnowledgeInput = {
+				pinned: [
+					{
+						key: "rule<&>",
+						value: 'Use "quotes" & <tags> carefully',
+						source: null,
+						modifiedAt: "2026-05-22T10:00:00Z",
+						tier: "pinned",
+						tag: "[pinned]",
+					} as StageEntry,
+				],
+				summaries: [],
+				staleChildrenBySummary: new Map(),
+				deltaKeys: new Set(),
+			};
+
+			const result = renderWorkingKnowledge(input);
+
+			expect(result.stableLines).toContain(
+				'<memory key="rule&lt;&amp;&gt;" tier="pinned" modified="2026-05-22">Use &quot;quotes&quot; &amp; &lt;tags&gt; carefully</memory>',
 			);
 		});
 	});
@@ -475,8 +508,9 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 	// rendered EVERY tier='summary' entry at full 200-char gloss, uncapped — the
 	// largest growable slab in the cached prefix (166 entries / ~8.3k tok live).
 	// Cap the full-gloss set at WORKING_KNOWLEDGE_SUMMARY_CAP most-recent; demote
-	// the overflow to title-only lines under a sub-header so nothing vanishes from
-	// view (the agent still sees every summary exists and can query the body).
+	// the overflow to title-only entries in the Discoverable Archive so nothing
+	// vanishes from view (the agent still sees every summary exists and can query
+	// the body).
 	describe("Summary cap + demote", () => {
 		const mkSummary = (key: string): StageEntry =>
 			({
@@ -498,13 +532,13 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 				staleChildrenBySummary: new Map(),
 				deltaKeys: new Set(),
 			});
-			// Every summary appears with its truncated gloss (key + " (modified …): " + body…).
+			// Every summary appears with its truncated gloss inside its element body.
 			const glossLines = result.stableLines.filter((l) =>
-				/^- _summary:k\d+ \(modified \d{4}-\d{2}-\d{2}\): body for/.test(l),
+				/^<memory key="_summary:k\d+" tier="summary" modified="\d{4}-\d{2}-\d{2}">body for/.test(l),
 			);
 			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
-			// No demote sub-header when nothing overflowed.
-			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(false);
+			// No demote sub-block when nothing overflowed.
+			expect(result.stableLines.some((l) => l.includes("<older-summaries>"))).toBe(false);
 		});
 
 		it("caps at the summary limit and does NOT render overflow in Working Knowledge (R-VC29: moved to Discoverable Archive)", () => {
@@ -521,23 +555,21 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 
 			// First CAP entries keep their full gloss.
 			const glossLines = result.stableLines.filter((l) =>
-				/^- _summary:k\d+ \(modified \d{4}-\d{2}-\d{2}\): body for/.test(l),
+				/^<memory key="_summary:k\d+" tier="summary" modified="\d{4}-\d{2}-\d{2}">body for/.test(l),
 			);
 			expect(glossLines).toHaveLength(WORKING_KNOWLEDGE_SUMMARY_CAP);
 
-			// R-VC29: NO demote sub-header in Working Knowledge — the overflow titles
+			// R-VC29: NO demote sub-block in Working Knowledge — the overflow titles
 			// now render in the Discoverable Archive, not here.
-			expect(result.stableLines.some((l) => /Older summaries/i.test(l))).toBe(false);
+			expect(result.stableLines.some((l) => l.includes("<older-summaries>"))).toBe(false);
 
-			// And NO title-only summary lines leak into Working Knowledge.
-			const titleOnly = result.stableLines.filter(
-				(l) => /^- _summary:k\d+$/.test(l), // no ": body" suffix
-			);
+			// And NO title-only summary entries leak into Working Knowledge.
+			const titleOnly = result.stableLines.filter((l) => /^<entry key="_summary:k\d+"\/>$/.test(l));
 			expect(titleOnly).toHaveLength(0);
 
 			// The kept set is still positional: the FIRST CAP keys keep gloss.
 			expect(result.stableLines).toContain(
-				`- _summary:k000 (modified 2026-05-22): ${mkSummary("_summary:k000").value.slice(0, 200)}...`,
+				`<memory key="_summary:k000" tier="summary" modified="2026-05-22">${mkSummary("_summary:k000").value.slice(0, 200)}...</memory>`,
 			);
 		});
 

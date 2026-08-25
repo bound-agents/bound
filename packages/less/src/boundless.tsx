@@ -6,6 +6,7 @@ import { hostname as getHostname } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
 import {
+	type Thread,
 	getBuildInfo,
 	initTelemetry,
 	loadBuildInfo,
@@ -22,11 +23,11 @@ import { acquireLock, releaseLock } from "./lockfile";
 import { AppLogger } from "./logging";
 import { McpServerManager } from "./mcp/manager";
 import { performAttach } from "./session/attach";
-import { deprovisionActiveSession, sweepIsoOrphans } from "./tools/iso-session";
 import { buildToolSet } from "./tools/registry";
 import { resolveSandboxConfig } from "./tools/sandbox";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
+import { TerminalTitleController, formatThreadTitleForTerminal } from "./tui/util/terminal-title";
 
 export interface ParsedArgs {
 	attachArg: string | null;
@@ -63,17 +64,23 @@ export function parseArgs(args: string[]): ParsedArgs {
 	return { attachArg, urlArg, acp };
 }
 
+export async function resolveThread(
+	client: BoundClient,
+	attachArg: string | null,
+): Promise<Thread> {
+	if (attachArg) {
+		return await client.getThread(attachArg);
+	}
+	// Tag new threads as `boundless` so the remote bound daemon can inject
+	// the right platform context into the agent's volatile state.
+	return await client.createThread({ interface: "boundless" });
+}
+
 export async function resolveThreadId(
 	client: BoundClient,
 	attachArg: string | null,
 ): Promise<string> {
-	if (attachArg) {
-		const thread = await client.getThread(attachArg);
-		return thread.id;
-	}
-	// Tag new threads as `boundless` so the remote bound daemon can inject
-	// the right platform context into the agent's volatile state.
-	const thread = await client.createThread({ interface: "boundless" });
+	const thread = await resolveThread(client, attachArg);
 	return thread.id;
 }
 
@@ -96,8 +103,7 @@ async function runAcpMode(args: {
 
 	const configDir = join(homedir(), ".bound", "less");
 	mkdirSync(configDir, { recursive: true });
-	const config = loadConfig(configDir);
-	const mcpConfig = loadMcpConfig(configDir);
+	const [config, mcpConfig] = await Promise.all([loadConfig(configDir), loadMcpConfig(configDir)]);
 	if (args.urlArg) {
 		config.url = args.urlArg;
 	}
@@ -126,13 +132,13 @@ async function runAcpMode(args: {
 			contextFiles: config.contextFiles,
 		});
 	} finally {
-		await deprovisionActiveSession();
 		logger.close();
 		await shutdownTelemetry();
 	}
 }
 
 async function main(): Promise<void> {
+	const terminalTitle = new TerminalTitleController();
 	try {
 		// Step 0: Telemetry. No-op unless OTEL_ENABLED is set. Done first so
 		// every subsequent operation that creates a span (sendMessage, tool
@@ -149,25 +155,6 @@ async function main(): Promise<void> {
 		} catch (error) {
 			process.stderr.write(`Error: ${(error as Error).message}\n`);
 			process.exit(1);
-		}
-
-		// Reap any IsolationSession sandbox agent-users orphaned by a prior hard
-		// kill (Windows only; a cheap no-op elsewhere — the session state file only
-		// exists once IsolationSession has provisioned, which is win32-gated). This
-		// is the crash-recovery half of the deprovision-on-shutdown contract: a
-		// clean exit deprovisions its own session, a hard kill leaves an Indefinite
-		// agent-user that only this sweep reclaims. Best-effort — a sweep failure
-		// must never block startup — and placed before the ACP branch so both the
-		// TUI and ACP paths are covered by a single call.
-		try {
-			const swept = await sweepIsoOrphans();
-			if (swept.reaped.length > 0) {
-				process.stderr.write(
-					`[sandbox] reaped ${swept.reaped.length} orphaned sandbox session(s)\n`,
-				);
-			}
-		} catch (err) {
-			process.stderr.write(`[sandbox] orphan sweep failed: ${(err as Error).message}\n`);
 		}
 
 		// ACP mode: run as an ACP agent server over stdio. Branch BEFORE the
@@ -197,8 +184,10 @@ async function main(): Promise<void> {
 		// Step 2: Load config
 		const configDir = join(homedir(), ".bound", "less");
 		mkdirSync(configDir, { recursive: true });
-		const config = loadConfig(configDir);
-		const mcpConfig = loadMcpConfig(configDir);
+		const [config, mcpConfig] = await Promise.all([
+			loadConfig(configDir),
+			loadMcpConfig(configDir),
+		]);
 
 		// Override config.url if --url provided (without persisting)
 		if (urlArg) {
@@ -230,13 +219,14 @@ async function main(): Promise<void> {
 		}
 
 		// Step 4: Get or create thread
-		let threadId: string;
+		let initialThread: Thread;
 		try {
-			threadId = await resolveThreadId(client, attachArg);
+			initialThread = await resolveThread(client, attachArg);
 		} catch {
 			process.stderr.write(`Error: Thread not found: ${attachArg}\n`);
 			process.exit(1);
 		}
+		const threadId = initialThread.id;
 
 		// Step 5: Acquire lockfile
 		try {
@@ -303,6 +293,8 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 
+		terminalTitle.set(formatThreadTitleForTerminal(initialThread.title));
+
 		const { waitUntilExit } = render(
 			<App
 				client={client}
@@ -315,8 +307,11 @@ async function main(): Promise<void> {
 				mcpConfigs={mcpConfig.servers}
 				logger={logger}
 				initialMessages={attachResult.messages}
-				model={config.model}
+				model={attachResult.lastUsedModelId ?? config.model}
 				toolHandlers={toolSet.handlers}
+				initialThreadTitle={initialThread.title}
+				terminalTitle={terminalTitle}
+				contextFiles={config.contextFiles}
 				shell={shell}
 				sandbox={sandbox}
 			/>,
@@ -326,11 +321,11 @@ async function main(): Promise<void> {
 		// Step 10: SIGTERM handler for graceful shutdown
 		process.on("SIGTERM", async () => {
 			await mcpManager.terminateAll();
-			await deprovisionActiveSession();
 			releaseLock(configDir, threadId);
 			client.disconnect();
 			logger.close();
 			await shutdownTelemetry();
+			terminalTitle.restore();
 			process.exit(0);
 		});
 
@@ -339,12 +334,13 @@ async function main(): Promise<void> {
 
 		// Clean up on normal exit
 		await mcpManager.terminateAll();
-		await deprovisionActiveSession();
 		releaseLock(configDir, threadId);
 		client.disconnect();
 		logger.close();
 		await shutdownTelemetry();
+		terminalTitle.restore();
 	} catch (error) {
+		terminalTitle.restore();
 		process.stderr.write(`Fatal error: ${(error as Error).message}\n`);
 		process.exit(1);
 	}

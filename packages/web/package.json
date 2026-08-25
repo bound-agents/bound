@@ -6,6 +6,7 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"scripts": {
+		"typecheck": "tsc -p . --noEmit",
 		"dev": "vite",
 		"build": "vite build && bun run ../../scripts/embed-assets.ts",
 		"preview": "vite preview"
@@ -14,10 +15,12 @@
 		"@bound/agent": "workspace:*",
 		"@bound/client": "workspace:*",
 		"@bound/core": "workspace:*",
+		"@bound/llm": "workspace:*",
 		"@bound/shared": "workspace:*",
 		"@bound/sync": "workspace:*",
 		"@modelcontextprotocol/ext-apps": "^1.7.3",
-		"@modelcontextprotocol/sdk": "^1.29.0",
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"@xyflow/svelte": "^1.6.3",
 		"d3-scale": "^4.0.2",
 		"dompurify": "^3.3.3",
 		"fflate": "^0.8.3",

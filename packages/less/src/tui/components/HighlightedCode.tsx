@@ -1,6 +1,7 @@
 import { type ThemedToken, highlightToTokens, normalizeLang } from "@bound/shared";
 import { Box, Text } from "ink";
 import type React from "react";
+import { stripTerminalControlSequences } from "../util/terminal-control";
 
 /**
  * Per-token Ink rendering for shiki-tokenized output.
@@ -10,9 +11,9 @@ import type React from "react";
  * `@bound/shared` (warmed at TUI boot in boundless.tsx) so syntax colors
  * match the web UI.
  *
- * Color override: callers (e.g. EditDiffBody) can pass `color` to force
- * every token to render with a single color — this is how diff add/remove
- * styling layers on top of syntax highlighting (diff wins, per Kara's spec).
+ * Color override remains available for callers that need a uniform foreground.
+ * Diff renderers do not use it: per #231, the gutter carries add/remove
+ * semantics while source content keeps its per-token syntax colors.
  */
 
 /** Map a file path to a lang tag suitable for shiki / normalizeLang. */
@@ -58,8 +59,7 @@ export interface HighlightedLineProps {
 	lang?: string;
 	/**
 	 * Force every token to this color (overrides per-token shiki colors).
-	 * Used by diff renderers to paint add/remove lines red/green while
-	 * still inheriting the line layout from the shared tokenizer.
+	 * Diff renderers intentionally leave this unset so syntax colors survive.
 	 */
 	color?: string;
 	/** Apply Ink's dimColor on top of token colors. */
@@ -79,17 +79,18 @@ export function HighlightedLine({
 	color,
 	dim,
 }: HighlightedLineProps): React.ReactElement {
-	if (line.length === 0) {
+	const safeLine = stripTerminalControlSequences(line);
+	if (safeLine.length === 0) {
 		// Preserve blank-line layout — shiki returns no tokens for "" so
 		// we'd render nothing and collapse the row otherwise.
 		return <Text> </Text>;
 	}
-	const lines = highlightToTokens(line, normalizeLang(lang));
+	const lines = highlightToTokens(safeLine, normalizeLang(lang));
 	const tokens = lines[0] ?? [];
 	if (tokens.length === 0) {
 		return (
 			<Text color={color} dimColor={dim}>
-				{line}
+				{safeLine}
 			</Text>
 		);
 	}
@@ -112,7 +113,7 @@ export function HighlightedCodeBlock({
 	code,
 	lang,
 }: HighlightedCodeBlockProps): React.ReactElement {
-	const lines = highlightToTokens(code, normalizeLang(lang));
+	const lines = highlightToTokens(stripTerminalControlSequences(code), normalizeLang(lang));
 	return (
 		<Box flexDirection="column">
 			{lines.map((tokens, i) => (

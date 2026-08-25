@@ -32,60 +32,75 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 
 	it("thread colors cycle sequentially 0-9", async () => {
 		const threads = [];
+		const RealDate = Date;
+		let now = Date.parse("2026-08-20T03:00:00.000Z");
+		globalThis.Date = class extends RealDate {
+			constructor(...args: ConstructorParameters<typeof RealDate>) {
+				super(...(args.length === 0 ? [now++] : args));
+			}
 
-		// Create 12 threads to see the full cycle (0-9) and wrap around
-		for (let i = 0; i < 12; i++) {
-			const request = new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			});
-			const response = await app.fetch(request);
-			expect(response.status).toBe(201);
-			const thread = await response.json();
-			threads.push(thread);
+			static now() {
+				return now;
+			}
+		} as DateConstructor;
 
-			// Add small delay to ensure created_at timestamps differ
-			await new Promise((resolve) => setTimeout(resolve, 5));
+		try {
+			// Create 12 threads to see the full cycle (0-9) and wrap around.
+			for (let i = 0; i < 12; i++) {
+				const request = new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				});
+				const response = await app.fetch(request);
+				expect(response.status).toBe(201);
+				threads.push(await response.json());
+			}
+		} finally {
+			globalThis.Date = RealDate;
 		}
 
 		// Verify colors cycle: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1
-		expect(threads[0].color).toBe(0);
-		expect(threads[1].color).toBe(1);
-		expect(threads[2].color).toBe(2);
-		expect(threads[3].color).toBe(3);
-		expect(threads[4].color).toBe(4);
-		expect(threads[5].color).toBe(5);
-		expect(threads[6].color).toBe(6);
-		expect(threads[7].color).toBe(7);
-		expect(threads[8].color).toBe(8);
-		expect(threads[9].color).toBe(9);
-		expect(threads[10].color).toBe(0); // Wraps around
-		expect(threads[11].color).toBe(1);
+		expect(threads.map((thread) => thread.color)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1]);
 	});
 
 	it("color assignment continues from most recent thread", async () => {
-		// Create 3 threads
-		for (let i = 0; i < 3; i++) {
-			const request = new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			});
-			await app.fetch(request);
-			await new Promise((resolve) => setTimeout(resolve, 5));
-		}
+		const RealDate = Date;
+		let now = Date.parse("2026-08-20T03:00:00.000Z");
+		globalThis.Date = class extends RealDate {
+			constructor(...args: ConstructorParameters<typeof RealDate>) {
+				super(...(args.length === 0 ? [now++] : args));
+			}
 
-		// Last thread should have color 2 (0, 1, 2)
-		// Next thread should be 3
-		const request = new Request("http://localhost:3000/api/threads", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({}),
-		});
-		const response = await app.fetch(request);
-		const thread = await response.json();
-		expect(thread.color).toBe(3);
+			static now() {
+				return now;
+			}
+		} as DateConstructor;
+
+		try {
+			// Create 3 threads.
+			for (let i = 0; i < 3; i++) {
+				await app.fetch(
+					new Request("http://localhost:3000/api/threads", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({}),
+					}),
+				);
+			}
+
+			const response = await app.fetch(
+				new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				}),
+			);
+
+			expect((await response.json()).color).toBe(3);
+		} finally {
+			globalThis.Date = RealDate;
+		}
 	});
 
 	it("deleted threads do not affect color sequence", async () => {
@@ -96,7 +111,6 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 			body: JSON.stringify({}),
 		});
 		await app.fetch(request1);
-		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		const request2 = new Request("http://localhost:3000/api/threads", {
 			method: "POST",
@@ -105,7 +119,6 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		});
 		const response2 = await app.fetch(request2);
 		const thread2 = await response2.json();
-		await new Promise((resolve) => setTimeout(resolve, 5));
 
 		// Soft delete the second thread
 		db.run("UPDATE threads SET deleted = 1 WHERE id = ?", [thread2.id]);
@@ -121,58 +134,110 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		expect(thread3.color).toBe(1);
 	});
 
+	it("assigns colors deterministically with a controlled clock and no elapsed wall time", async () => {
+		const RealDate = Date;
+		let now = Date.parse("2026-08-20T03:00:00.000Z");
+		globalThis.Date = class extends RealDate {
+			constructor(...args: ConstructorParameters<typeof RealDate>) {
+				super(...(args.length === 0 ? [now++] : args));
+			}
+
+			static now() {
+				return now;
+			}
+		} as DateConstructor;
+
+		try {
+			for (let i = 0; i < 3; i++) {
+				const response = await app.fetch(
+					new Request("http://localhost:3000/api/threads", {
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({}),
+					}),
+				);
+				expect(response.status).toBe(201);
+			}
+
+			const response = await app.fetch(
+				new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				}),
+			);
+
+			expect((await response.json()).color).toBe(3);
+		} finally {
+			globalThis.Date = RealDate;
+		}
+	});
+
 	it("color cycle skips system-driven (non-user-facing) threads", async () => {
-		// User-facing thread (web): color 0
-		let response = await app.fetch(
-			new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			}),
-		);
-		let thread = await response.json();
-		expect(thread.color).toBe(0);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		const RealDate = Date;
+		let nowMs = Date.parse("2026-08-20T03:00:00.000Z");
+		globalThis.Date = class extends RealDate {
+			constructor(...args: ConstructorParameters<typeof RealDate>) {
+				super(...(args.length === 0 ? [nowMs++] : args));
+			}
 
-		// boundless thread: color 1
-		response = await app.fetch(
-			new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ interface: "boundless" }),
-			}),
-		);
-		thread = await response.json();
-		expect(thread.color).toBe(1);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+			static now() {
+				return nowMs;
+			}
+		} as DateConstructor;
 
-		// Simulate webhook + scheduler threads landing directly in the DB.
-		// Both routes hardcode color: 0; pre-fix this would pin the next
-		// user-facing thread back to color 1 by anchoring the cycle to a
-		// system row instead of the boundless row.
-		const now = new Date().toISOString();
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			["webhook-test-id", "system", "webhook", "localhost", 0, now, now, now, 0],
-		);
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		const now2 = new Date().toISOString();
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			["scheduler-test-id", "system", "scheduler", "localhost", 0, now2, now2, now2, 0],
-		);
-		await new Promise((resolve) => setTimeout(resolve, 5));
+		try {
+			// User-facing thread (web): color 0
+			let response = await app.fetch(
+				new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({}),
+				}),
+			);
+			let thread = await response.json();
+			expect(thread.color).toBe(0);
 
-		// Next user-facing thread should advance from boundless's color 1 -> 2,
-		// NOT cycle off the webhook/scheduler color 0 -> 1.
-		response = await app.fetch(
-			new Request("http://localhost:3000/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ interface: "boundless" }),
-			}),
-		);
-		thread = await response.json();
-		expect(thread.color).toBe(2);
+			// boundless thread: color 1
+			response = await app.fetch(
+				new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ interface: "boundless" }),
+				}),
+			);
+			thread = await response.json();
+			expect(thread.color).toBe(1);
+
+			// Simulate webhook + scheduler threads landing directly in the DB.
+			// Both routes hardcode color: 0; pre-fix this would pin the next
+			// user-facing thread back to color 1 by anchoring the cycle to a
+			// system row instead of the boundless row.
+			const now = "2026-08-20T03:00:00.000Z";
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				["webhook-test-id", "system", "webhook", "localhost", 0, now, now, now, 0],
+			);
+			const now2 = "2026-08-20T03:00:01.000Z";
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				["scheduler-test-id", "system", "scheduler", "localhost", 0, now2, now2, now2, 0],
+			);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+
+			// Next user-facing thread should advance from boundless's color 1 -> 2,
+			// NOT cycle off the webhook/scheduler color 0 -> 1.
+			response = await app.fetch(
+				new Request("http://localhost:3000/api/threads", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ interface: "boundless" }),
+				}),
+			);
+			thread = await response.json();
+			expect(thread.color).toBe(2);
+		} finally {
+			globalThis.Date = RealDate;
+		}
 	});
 });

@@ -1,6 +1,17 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { MAX_SOURCE_STRUCTURE_INPUT_BYTES, computeLineHash } from "@bound/shared";
 import { InMemoryFs, MountableFs } from "just-bash";
 import { type BuiltInTool, createBuiltInTools } from "../built-in-tools";
+
+/** Expected hashline read rendering for a given line. */
+function hl(n: number, text: string): string {
+	return `${n}:${computeLineHash(text)}|${text}`;
+}
+
+/** Build a "LINE:HASH" edit anchor for a given line's content. */
+function anchor(line: number, text: string): string {
+	return `${line}:${computeLineHash(text)}`;
+}
 
 describe("built-in-tools", () => {
 	let fs: InstanceType<typeof InMemoryFs>;
@@ -19,8 +30,9 @@ describe("built-in-tools", () => {
 	}
 
 	it("creates exactly five tools: read, write, edit, search, retrieve_task", () => {
-		expect(tools.size).toBe(5);
+		expect(tools.size).toBe(6);
 		expect(tools.has("bms_read")).toBe(true);
+		expect(tools.has("bms_read_structure")).toBe(true);
 		expect(tools.has("bms_write")).toBe(true);
 		expect(tools.has("bms_edit")).toBe(true);
 		expect(tools.has("bms_search")).toBe(true);
@@ -36,15 +48,112 @@ describe("built-in-tools", () => {
 		}
 	});
 
+	// ─── read structure ─────────────────────────────────────────────────
+
+	describe("read structure", () => {
+		it("reads through the VFS and returns anchored symbols without function bodies", async () => {
+			fs.writeFileSync(
+				"/home/user/sample.ts",
+				"export function greeting(name: string) {\n  return `hello ${name}`;\n}\n",
+			);
+			const result = (await tool("bms_read_structure").execute({
+				path: "/home/user/sample.ts",
+			})) as string;
+			expect(result).toContain("greeting");
+			expect(result).toContain(
+				`${1}:${computeLineHash("export function greeting(name: string) {")}`,
+			);
+			expect(result).not.toContain("return `hello ${name}`");
+		});
+
+		it("rejects invalid paths, missing files, directories, binary files, and host-shaped paths", async () => {
+			fs.writeFileSync("/home/user/binary.bin", `${"a".repeat(8192)}\0content`);
+			fs.mkdirSync("/home/user/folder");
+			const cases = [
+				{},
+				{ path: 1 },
+				{ path: "/home/user/missing.ts" },
+				{ path: "/home/user/folder" },
+				{ path: "/home/user/binary.bin" },
+				{ path: "C:\\host.ts" },
+			];
+			for (const input of cases) {
+				const result = await tool("bms_read_structure").execute(input as Record<string, unknown>);
+				const text =
+					typeof result === "string"
+						? result
+						: result.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+				expect(text, JSON.stringify(input)).toContain("Error");
+			}
+		});
+
+		it("extracts Python, Go, and Rust declarations through the VFS and rejects oversized inputs", async () => {
+			const fixtures = [
+				[
+					"python.py",
+					"class Service:\n    pass\n\ndef greeting():\n    pass\n",
+					"Service",
+					"greeting",
+				],
+				[
+					"go.go",
+					"package example\n\ntype Service struct{}\nfunc Greeting() {}\n",
+					"Service",
+					"Greeting",
+				],
+				["rust.rs", "pub struct Service;\npub fn greeting() {}\n", "Service", "greeting"],
+			] as const;
+			for (const [path, source, ...names] of fixtures) {
+				fs.writeFileSync(`/home/user/${path}`, source);
+				const result = String(
+					await tool("bms_read_structure").execute({ path: `/home/user/${path}` }),
+				);
+				for (const name of names) expect(result).toContain(name);
+			}
+			fs.writeFileSync("/home/user/too-large.ts", "a".repeat(MAX_SOURCE_STRUCTURE_INPUT_BYTES + 1));
+			expect(await tool("bms_read_structure").execute({ path: "/home/user/too-large.ts" })).toBe(
+				"Error: source file exceeds read_structure input limit",
+			);
+		});
+
+		it("bounds large structure output", async () => {
+			fs.writeFileSync(
+				"/home/user/large.ts",
+				Array.from({ length: 4000 }, (_, i) => `export const item${i} = ${i};`).join("\n"),
+			);
+			const result = String(
+				await tool("bms_read_structure").execute({ path: "/home/user/large.ts" }),
+			);
+			expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(50_000);
+			expect(result).toContain("[truncated;");
+		});
+
+		it("describes every registered source language", () => {
+			const description = tool("bms_read_structure").toolDefinition.function.description;
+			expect(description).toContain(".py");
+			expect(description).toContain(".go");
+			expect(description).toContain(".rs");
+		});
+
+		it("exposes only the path parameter", () => {
+			const parameters = tool("bms_read_structure").toolDefinition.function.parameters as {
+				required: string[];
+				properties: Record<string, unknown>;
+			};
+			expect(parameters.required).toEqual(["path"]);
+			expect(Object.keys(parameters.properties)).toEqual(["path"]);
+		});
+	});
+
 	// ─── read ───────────────────────────────────────────────────────────
 
 	describe("read", () => {
 		it("reads a file with line numbers", async () => {
 			fs.writeFileSync("/home/user/hello.txt", "line one\nline two\nline three\n");
 			const result = await tool("bms_read").execute({ path: "/home/user/hello.txt" });
-			expect(result).toContain("1\tline one");
-			expect(result).toContain("2\tline two");
-			expect(result).toContain("3\tline three");
+			expect(result).toContain(hl(1, "line one"));
+			expect(result).toContain(hl(2, "line two"));
+			expect(result).toContain(hl(3, "line three"));
 		});
 
 		it("returns error on ENOENT", async () => {
@@ -68,49 +177,33 @@ describe("built-in-tools", () => {
 			expect(result).toContain("binary");
 		});
 
-		it("applies offset (1-based)", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt", offset: 3 });
-			expect(result).toContain("3\tc");
-			expect(result).toContain("4\td");
-			expect(result).not.toContain("1\ta");
-			expect(result).not.toContain("2\tb");
-		});
+		it("renders exact paginated slices for generated newline-free inputs", async () => {
+			const lineSets = [
+				["a"],
+				["alpha", "βeta", "gamma"],
+				Array.from({ length: 7 }, (_, index) => `line-${index + 1}`),
+			];
 
-		it("applies limit", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt", limit: 2 });
-			expect(result).toContain("1\ta");
-			expect(result).toContain("2\tb");
-			expect(result).not.toContain("3\tc");
-		});
+			for (const lines of lineSets) {
+				fs.writeFileSync("/home/user/lines.txt", `${lines.join("\n")}\n`);
+				for (let offset = 1; offset <= lines.length + 2; offset++) {
+					for (let limit = 1; limit <= lines.length + 1; limit++) {
+						const result = (await tool("bms_read").execute({
+							path: "/home/user/lines.txt",
+							offset,
+							limit,
+						})) as string;
+						const expected = lines.slice(offset - 1, offset - 1 + limit);
+						const rendered = expected.map((line, index) => hl(offset + index, line));
+						const continuation =
+							expected.length < lines.length - (offset - 1)
+								? `[Use offset=${offset + expected.length} to continue]`
+								: undefined;
 
-		it("applies offset + limit together", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({
-				path: "/home/user/lines.txt",
-				offset: 2,
-				limit: 2,
-			});
-			expect(result).toContain("2\tb");
-			expect(result).toContain("3\tc");
-			expect(result).not.toContain("1\ta");
-			expect(result).not.toContain("4\td");
-		});
-
-		it("shows continuation hint when more lines exist", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\nc\nd\ne\n");
-			const result = await tool("bms_read").execute({
-				path: "/home/user/lines.txt",
-				limit: 2,
-			});
-			expect(result).toContain("[Use offset=3 to continue]");
-		});
-
-		it("does NOT show continuation hint at end of file", async () => {
-			fs.writeFileSync("/home/user/lines.txt", "a\nb\n");
-			const result = await tool("bms_read").execute({ path: "/home/user/lines.txt" });
-			expect(result).not.toContain("[Use offset=");
+						expect(result).toBe([...rendered, continuation].filter(Boolean).join("\n"));
+					}
+				}
+			}
 		});
 
 		it("rejects invalid offset", async () => {
@@ -139,11 +232,10 @@ describe("built-in-tools", () => {
 			expect(result).toContain("[Use offset=");
 		});
 
-		it("pads line numbers to 6 columns", async () => {
+		it("renders lines in hashline format (LINE:HASH|content)", async () => {
 			fs.writeFileSync("/home/user/f.txt", "hello\n");
 			const result = await tool("bms_read").execute({ path: "/home/user/f.txt" });
-			// Line number should be right-padded to 6 chars
-			expect(result).toMatch(/\s+1\thello/);
+			expect(result).toMatch(/^1:[0-9a-f]{4}\|hello/m);
 		});
 	});
 
@@ -196,31 +288,17 @@ describe("built-in-tools", () => {
 	// ─── host path guard ────────────────────────────────────────────────
 
 	describe("host path guard", () => {
-		it("rejects a Windows drive-letter path on write", async () => {
-			const path = "C:\\Users\\user\\Documents\\GitHub\\bound\\scripts\\x.ts";
-			const result = await tool("bms_write").execute({ path, content: "hi" });
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("sandbox");
-			// Nothing landed in the VFS root as a junk filename
-			expect(await fs.readdir("/")).not.toContain(path);
-		});
-
-		it("rejects a slash-prefixed Windows path on write", async () => {
-			const result = await tool("bms_write").execute({
-				path: "/C:\\Users\\user\\x.ts",
-				content: "hi",
-			});
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("sandbox");
-		});
-
-		it("rejects a forward-slash drive-letter path on write", async () => {
-			const result = await tool("bms_write").execute({
-				path: "C:/Users/user/x.ts",
-				content: "hi",
-			});
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("sandbox");
+		it("rejects Windows write paths without creating VFS files", async () => {
+			for (const path of [
+				"C:\\Users\\user\\Documents\\GitHub\\bound\\scripts\\x.ts",
+				"/C:\\Users\\user\\x.ts",
+				"C:/Users/user/x.ts",
+			]) {
+				const result = await tool("bms_write").execute({ path, content: "hi" });
+				expect(result).toStartWith("Error:");
+				expect(result).toContain("sandbox");
+				expect(await fs.readdir("/")).not.toContain(path);
+			}
 		});
 
 		it("rejects a host-absolute POSIX path on write and names the writable roots", async () => {
@@ -280,7 +358,7 @@ describe("built-in-tools", () => {
 		it("rejects a Windows path on edit with the guard message, not ENOENT", async () => {
 			const result = await tool("bms_edit").execute({
 				path: "C:\\Users\\user\\code.ts",
-				edits: [{ old_text: "a", new_text: "b" }],
+				edits: [{ start: "1:abcd", end: "1:abcd", content: "b" }],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("sandbox");
@@ -308,7 +386,13 @@ describe("built-in-tools", () => {
 			fs.writeFileSync("/home/user/code.ts", "const x = 1;\nconst y = 2;\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "const x = 1;", new_text: "const x = 42;" }],
+				edits: [
+					{
+						start: anchor(1, "const x = 1;"),
+						end: anchor(1, "const x = 1;"),
+						content: "const x = 42;",
+					},
+				],
 			});
 			expect(result).toContain("-const x = 1;");
 			expect(result).toContain("+const x = 42;");
@@ -316,24 +400,24 @@ describe("built-in-tools", () => {
 			expect(await fs.readFile("/home/user/code.ts")).toBe("const x = 42;\nconst y = 2;\n");
 		});
 
-		it("returns error when old_text not found", async () => {
+		it("returns error when an anchor's hash is not found", async () => {
 			fs.writeFileSync("/home/user/code.ts", "const x = 1;\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "NOPE", new_text: "whatever" }],
+				edits: [{ start: "1:ffff", end: "1:ffff", content: "whatever" }],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("not found");
 		});
 
-		it("returns error when old_text matches multiple times", async () => {
-			fs.writeFileSync("/home/user/code.ts", "foo\nfoo\n");
+		it("disambiguates duplicate lines by proximity to the line hint", async () => {
+			fs.writeFileSync("/home/user/code.ts", "foo\nbar\nfoo\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "foo", new_text: "bar" }],
+				edits: [{ start: anchor(3, "foo"), end: anchor(3, "foo"), content: "baz" }],
 			});
-			expect(result).toStartWith("Error:");
-			expect(result).toContain("2 times");
+			expect(result).not.toStartWith("Error:");
+			expect(await fs.readFile("/home/user/code.ts")).toBe("foo\nbar\nbaz\n");
 		});
 
 		it("applies multiple edits atomically", async () => {
@@ -341,8 +425,8 @@ describe("built-in-tools", () => {
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
 				edits: [
-					{ old_text: "aaa", new_text: "AAA" },
-					{ old_text: "ccc", new_text: "CCC" },
+					{ start: anchor(1, "aaa"), end: anchor(1, "aaa"), content: "AAA" },
+					{ start: anchor(3, "ccc"), end: anchor(3, "ccc"), content: "CCC" },
 				],
 			});
 			expect(result).toContain("-aaa");
@@ -357,8 +441,8 @@ describe("built-in-tools", () => {
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
 				edits: [
-					{ old_text: "aaa", new_text: "AAA" },
-					{ old_text: "NOPE", new_text: "whatever" },
+					{ start: anchor(1, "aaa"), end: anchor(1, "aaa"), content: "AAA" },
+					{ start: "2:ffff", end: "2:ffff", content: "whatever" },
 				],
 			});
 			expect(result).toStartWith("Error:");
@@ -369,7 +453,7 @@ describe("built-in-tools", () => {
 		it("returns error on ENOENT", async () => {
 			const result = await tool("bms_edit").execute({
 				path: "/nope.txt",
-				edits: [{ old_text: "x", new_text: "y" }],
+				edits: [{ start: "1:abcd", end: "1:abcd", content: "y" }],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("not found");
@@ -379,7 +463,7 @@ describe("built-in-tools", () => {
 			fs.writeFileSync("/home/user/win.txt", "line1\r\nline2\r\nline3\r\n");
 			await tool("bms_edit").execute({
 				path: "/home/user/win.txt",
-				edits: [{ old_text: "line2", new_text: "LINE2" }],
+				edits: [{ start: anchor(2, "line2"), end: anchor(2, "line2"), content: "LINE2" }],
 			});
 			const content = await fs.readFile("/home/user/win.txt");
 			expect(content).toBe("line1\r\nLINE2\r\nline3\r\n");
@@ -391,7 +475,13 @@ describe("built-in-tools", () => {
 			fs.writeFileSync("/home/user/bom.txt", "\uFEFFhello world\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/bom.txt",
-				edits: [{ old_text: "hello", new_text: "HELLO" }],
+				edits: [
+					{
+						start: anchor(1, "hello world"),
+						end: anchor(1, "hello world"),
+						content: "HELLO world",
+					},
+				],
 			});
 			const content = await fs.readFile("/home/user/bom.txt");
 			expect(content).toContain("HELLO world");
@@ -400,25 +490,31 @@ describe("built-in-tools", () => {
 		});
 
 		it("detects overlapping edits", async () => {
-			fs.writeFileSync("/home/user/code.ts", "abcdef\n");
+			fs.writeFileSync("/home/user/code.ts", "aaa\nbbb\nccc\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
 				edits: [
-					{ old_text: "abcd", new_text: "ABCD" },
-					{ old_text: "cdef", new_text: "CDEF" },
+					{ start: anchor(1, "aaa"), end: anchor(2, "bbb"), content: "X" },
+					{ start: anchor(2, "bbb"), end: anchor(3, "ccc"), content: "Y" },
 				],
 			});
 			expect(result).toStartWith("Error:");
 			expect(result).toContain("overlap");
 			// File must be unchanged
-			expect(await fs.readFile("/home/user/code.ts")).toBe("abcdef\n");
+			expect(await fs.readFile("/home/user/code.ts")).toBe("aaa\nbbb\nccc\n");
 		});
 
 		it("produces correct unified diff header", async () => {
 			fs.writeFileSync("/home/user/code.ts", "const x = 1;\n");
 			const result = await tool("bms_edit").execute({
 				path: "/home/user/code.ts",
-				edits: [{ old_text: "const x = 1;", new_text: "const x = 2;" }],
+				edits: [
+					{
+						start: anchor(1, "const x = 1;"),
+						end: anchor(1, "const x = 1;"),
+						content: "const x = 2;",
+					},
+				],
 			});
 			expect(result).toContain("--- /home/user/code.ts");
 			expect(result).toContain("+++ /home/user/code.ts");
@@ -522,7 +618,7 @@ describe("built-in-tools", () => {
 			await fs.writeFile("/docs/readme.md", "Say hello to the docs.\n");
 		});
 
-		it("returns grep-style path:line:preview matches across files", async () => {
+		it("returns grep-style path:line:hash:preview matches across files", async () => {
 			const result = (await tool("bms_search").execute({ pattern: "greeting" })) as string;
 			expect(result).toContain("/src/alpha.ts:1:");
 			expect(result).toContain("greeting");

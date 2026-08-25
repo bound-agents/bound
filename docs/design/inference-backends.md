@@ -262,7 +262,8 @@ const driver = new OpenAICompatibleDriver({
 ```typescript
 interface BackendConfig {
   id: string;
-  provider: string;  // "anthropic" | "bedrock" | "bedrock-mantle" | "openai-compatible" | "cerebras" | "zai" | "opencode-go"
+  provider: string;  // "anthropic" | "bedrock" | "bedrock-mantle" | "openai-compatible" | "cerebras" | "zai" | "opencode-go" | "umans"
+  providerMode?: "anthropic" | "openai_responses";  // required for bedrock-mantle
   model: string;
   baseUrl?: string;
   contextWindow?: number;
@@ -284,11 +285,57 @@ Provider-specific extra fields:
 |---|---|---|
 | `anthropic` | `apiKey` | `contextWindow` (default 200 000) |
 | `bedrock` | `region` | `profile`, `contextWindow` (default 200 000) |
+| `bedrock-mantle` | `region`, `providerMode` | `profile`, `baseUrl`, `contextWindow` (default 272 000). `providerMode: "openai_responses"` routes to `/openai/v1/responses`; `"anthropic"` routes to `/anthropic/v1/messages`. Both use SigV4. |
 | `openai-compatible` | `apiKey` | `baseUrl` (default `http://localhost:8000`), `contextWindow` (default 8 192) |
 | `cerebras` | `apiKey` | `baseUrl` (default `https://api.cerebras.ai/v1`), `contextWindow` (default 128 000) |
 | `zai` | `apiKey` | `baseUrl` (default `https://api.z.ai/api/coding/paas/v4`), `contextWindow` (default 128 000) |
+| `umans` | `apiKey` | `baseUrl` (default `https://api.code.umans.ai`) — **no** `model`/`tier`/`contextWindow`/pricing (self-configuring) |
 
 `cerebras` and `zai` are thin wrappers that delegate to `OpenAICompatibleDriver` with provider-specific defaults.
+
+#### umans — self-configuring backend (`readiness` seam)
+
+`umans` is the first implementer of the optional, provider-neutral
+`LLMBackend.readiness` contract (`{ isReady(); start(registrar); dispose() }`)
+plus the `ModelDescriptor` / `ModelRegistrar` types — all optional, so the five
+existing drivers omit them and behave synchronously as before.
+
+A umans config entry constructs ONE not-ready **namespace** placeholder under
+its config `id`. The router holds a generic `notReady: Set<string>` (parallel to
+`rateLimits`) seeded from any backend exposing `readiness`; not-ready ids are
+excluded from `listEligible`/`listBackends` and `resolveModel` defers to them as
+`transient-unavailable`. The CLI-layer helper `wireBackendReadiness`
+(`packages/cli/src/commands/start/inference.ts`, called at startup and from the
+SIGHUP handler) calls `readiness.start(registrar)` with a registrar bound to the
+live shared config + router. The driver background-fetches `/v1/models/info` +
+`/v1/models` + `/v1/usage` (with retry/backoff, AbortController-cancellable on
+`dispose()`), derives the full lineup + per-model price-ranked tiers, then calls
+`registrar.register(...)`. The registrar appends one snake_case pricing row per
+model id to the shared config array (the source `calculateTurnCost` reads),
+then uses the **provider-agnostic** router primitives
+`addDynamicBackend`/`clearNotReady`/`removeBackend`/`redirectDefault` to make the
+N model ids selectable and drop the placeholder, then re-advertises. The router
+itself never writes `appContext.config` (package boundary: `@bound/llm` has no
+`@bound/core` dependency). `reload()` disposes superseded readiness handles before
+reassigning so a late fetch can't register into the live router.
+
+The driver is routed through umans's **Anthropic Messages API** with
+`cacheProvider: "anthropic"` + `usageProvider: "anthropic"` (so cache breakpoints
+are emitted and cached-token usage surfaces in the debugger; `prompt_caching:
+true`). Reasoning is controlled by a top-level **`reasoning_effort`** body field
+(a umans extension — native Anthropic has no such field, and `@ai-sdk/anthropic`
+drops unknown `providerOptions.anthropic` keys, so it is injected at the transport
+layer by a per-call fetch wrapper). The value is per-call `effort` (validated
+against the model's fetched `reasoning.levels`, falling back to `default_level`)
+or the model's `reasoning.default_level`, else omitted. `ChatParams.effort` is a
+**free-form string** (provider-validated, no longer the fixed Anthropic enum);
+`BedrockDriver` only forwards it to Converse `maxReasoningEffort` when it is one
+of that field's accepted values. An in-process concurrency **semaphore** (shared per account, sized from
+`/v1/usage`) throttles in-flight `chat()` streams; the slot is released on every
+termination path (the `withSilenceTimeout` finalization-forwarding fix in
+`agent-loop.ts` ensures consumer early-`break` cancels the upstream stream so the
+driver's `finally` fires). A future `boxed_until` from `/v1/usage` is surfaced as
+a 429 so the router backs off rather than queuing behind a server-side pause.
 
 #### createModelRouter
 

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { updateRow } from "./change-log.js";
+import { findHostSiteIdById } from "./repositories/index.js";
 
 /**
  * Host-heartbeat refresh cadence. Bumps `hosts.modified_at` via outbox-routed `updateRow`
@@ -9,11 +10,23 @@ import { updateRow } from "./change-log.js";
  */
 export const HOST_HEARTBEAT_INTERVAL = 120_000;
 
+export interface HeartbeatTimer {
+	setInterval(callback: () => void, intervalMs: number): unknown;
+	clearInterval(timer: unknown): void;
+}
+
+const systemTimer: HeartbeatTimer = {
+	setInterval,
+	clearInterval,
+};
+
 export interface HeartbeatOptions {
 	/** Heartbeat interval in milliseconds. Defaults to 120_000 (2 minutes). */
 	intervalMs?: number;
 	/** Logger for warning messages when heartbeat fails. */
 	logger?: Logger;
+	/** Timer seam for deterministic tests. */
+	timer?: HeartbeatTimer;
 }
 
 /**
@@ -32,6 +45,7 @@ export function startHostHeartbeat(
 	options?: HeartbeatOptions,
 ): { stop: () => void } {
 	const intervalMs = options?.intervalMs ?? HOST_HEARTBEAT_INTERVAL;
+	const timer = options?.timer ?? systemTimer;
 	let stopped = false;
 
 	const tick = () => {
@@ -39,9 +53,7 @@ export function startHostHeartbeat(
 		try {
 			const ts = new Date().toISOString();
 			// Only update if the host row exists
-			const existing = db.query("SELECT site_id FROM hosts WHERE site_id = ?").get(siteId) as {
-				site_id: string;
-			} | null;
+			const existing = findHostSiteIdById(db, siteId);
 			if (!existing) return;
 
 			updateRow(db, "hosts", siteId, { modified_at: ts }, siteId);
@@ -52,12 +64,12 @@ export function startHostHeartbeat(
 		}
 	};
 
-	const timerId = setInterval(tick, intervalMs);
+	const timerId = timer.setInterval(tick, intervalMs);
 
 	return {
 		stop: () => {
 			stopped = true;
-			clearInterval(timerId);
+			timer.clearInterval(timerId);
 		},
 	};
 }

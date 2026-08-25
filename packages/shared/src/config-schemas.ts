@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { durationMsSchema, durationStringSchema } from "./durations.js";
 
 // Config schemas use Zod strict mode throughout so unknown keys fail parse
 // with the exact offending key name instead of being silently stripped.
@@ -69,19 +70,39 @@ const thinkingConfigSchema = z.union([
 	z.literal(true),
 	z
 		.object({
-			type: z.enum(["enabled", "adaptive"]).optional(),
+			type: z.enum(["enabled", "adaptive", "tool"]).optional(),
 			budget_tokens: z.number().int().positive().optional(),
 			display: z.enum(["omitted", "summarized"]).optional(),
 		})
-		.strict(),
+		.strict()
+		.superRefine((value, ctx) => {
+			if (value.type === "adaptive" && value.budget_tokens !== undefined) {
+				ctx.addIssue({ code: "custom", message: "adaptive thinking cannot set budget_tokens" });
+			}
+			if (value.type === "enabled" && value.display !== undefined) {
+				ctx.addIssue({ code: "custom", message: "enabled thinking cannot set display" });
+			}
+			if (
+				value.type === "tool" &&
+				(value.budget_tokens !== undefined || value.display !== undefined)
+			) {
+				ctx.addIssue({
+					code: "custom",
+					message: "tool thinking cannot set budget_tokens or display",
+				});
+			}
+		}),
 ]);
 
 // `effort` is a top-level output_config knob on the Claude API. It
 // replaces `budget_tokens` as the depth control on Opus 4.7 and is
-// recommended alongside adaptive thinking on Opus 4.6. Valid levels:
-// low | medium | high | xhigh | max. `xhigh` is new on 4.7 and the
-// recommended default for coding/agentic work; `max` is Opus-tier only.
-const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max"]);
+// recommended alongside adaptive thinking on Opus 4.6. FREE-FORM: the accepted
+// vocabulary is provider-specific and validated per-driver, not by the schema.
+// The canonical Anthropic/Bedrock-Converse set is low | medium | high | xhigh |
+// max (`xhigh` recommended for coding/agentic work; `max` Opus-tier only), but
+// other providers (e.g. umans) advertise their own `reasoning.levels` — so the
+// schema only requires a non-empty string and leaves validation to the driver.
+const effortSchema = z.string().min(1);
 
 // Cache-Warming Config — opt-in periodic "warm poke" that keeps the LLM prompt
 // cache hot on active threads so the next real message lands on a cache-read
@@ -137,14 +158,23 @@ const modelBackendSchema = z
 			"cerebras",
 			"zai",
 			"opencode-go",
+			"umans",
 		]),
-		model: z.string().min(1),
+		// `model`, `context_window`, and `tier` are REQUIRED for every provider
+		// EXCEPT `umans`, which is config-light + self-configuring: a umans
+		// entry is a NAMESPACE that fetches its full model lineup (ids, context
+		// windows, pricing, tiers) at runtime, so it carries only
+		// provider + id + api_key + default. The object-level refinements below
+		// enforce "required unless umans" and "reject authoritative fields on
+		// umans". See the model-router umans case + UmansDriver readiness.
+		model: z.string().min(1).optional(),
+		provider_mode: z.enum(["anthropic", "openai_responses"]).optional(),
 		base_url: z.string().url().optional(),
 		api_key: z.string().optional(),
 		region: z.string().optional(),
 		profile: z.string().optional(),
-		context_window: z.number().int().positive(),
-		tier: z.number().int().min(1).max(5),
+		context_window: z.number().int().positive().optional(),
+		tier: z.number().int().min(1).max(5).optional(),
 		price_per_m_input: z.number().min(0).default(0),
 		price_per_m_output: z.number().min(0).default(0),
 		price_per_m_cache_write: z.number().min(0).optional(),
@@ -153,18 +183,20 @@ const modelBackendSchema = z
 		thinking: thinkingConfigSchema.optional(),
 		effort: effortSchema.optional(),
 		// Per-backend cap on `maxOutputTokens` forwarded to the provider.
-		// Some Bedrock models reject DEFAULT_MAX_OUTPUT_TOKENS (16_384) with
-		// "max_tokens exceeds model limit of N" — e.g. Nova Pro caps at 10_000.
-		// The agent-loop takes `min(max_output_tokens, DEFAULT_MAX_OUTPUT_TOKENS)`
-		// at call time so lowering it is always safe.
+		// Some Bedrock models reject an explicit maxTokens above their ceiling
+		// with "max_tokens exceeds model limit of N" — e.g. Nova Pro caps at 10_000.
+		// The agent-loop takes `min(max_output_tokens, configuredMax)` at call
+		// time, and when neither is set, omits max_tokens entirely so the
+		// provider uses its own default.
 		max_output_tokens: z.number().int().positive().optional(),
+		system_prompt_suffix: z.string().optional(),
 		// Prompt cache TTL hint forwarded to the provider's cache breakpoint.
 		// Bedrock supports "5m" (default) and "1h" (extended, only for Claude
 		// Opus 4.5+, Sonnet 4.5+, Haiku 4.5+). Anthropic native API supports
 		// both via `cache_control: { ttl }`. Setting "1h" on a model that
 		// doesn't support extended TTL is silently ignored by the provider
 		// and falls back to the default 5m behavior.
-		cache_ttl: z.enum(["5m", "1h"]).optional(),
+		cache_ttl: durationStringSchema().optional(),
 		// Per-backend opt-in cache-warming (issue #10). When present with
 		// `enabled: true`, the warm-poke driver keeps this backend's threads'
 		// prompt cache hot so the next real message lands on a cache-read. The
@@ -182,7 +214,7 @@ const modelBackendSchema = z
 		// on whichever host runs the fetch — NOT forwarded over the relay, so a
 		// spoke uses its own deadline rather than honoring a hub-set one. Absent /
 		// `<= 0` → no deadline (pure passthrough). See `createLoggingFetch`.
-		connect_timeout_ms: z.number().int().positive().optional(),
+		connect_timeout_ms: durationMsSchema().optional(),
 		// Arbitrary custom HTTP headers added to every request this backend
 		// sends to its upstream endpoint. A flat key-value map, layered on top
 		// of the provider's own headers (the `api_key`-derived `Authorization`
@@ -196,7 +228,32 @@ const modelBackendSchema = z
 		// `connect_timeout_ms`). Absent → no extra headers.
 		additional_headers: z.record(z.string(), z.string()).optional(),
 	})
-	.strict();
+	.strict()
+	.superRefine((backend, ctx) => {
+		if (typeof backend.thinking !== "object" || backend.thinking?.type !== "tool") return;
+		if (backend.effort !== undefined) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["effort"],
+				message: "tool thinking cannot set effort",
+			});
+		}
+		const isMantleFable =
+			backend.provider === "bedrock-mantle" && backend.model === "anthropic.claude-fable-5";
+		const supportsToolMode =
+			!isMantleFable &&
+			(backend.provider === "bedrock-mantle" ||
+				(backend.provider === "bedrock" && backend.model?.includes("anthropic")));
+		if (!supportsToolMode) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["thinking"],
+				message: isMantleFable
+					? "tool thinking is unsupported for anthropic.claude-fable-5: Mantle defaults it to adaptive reasoning and rejects explicit disable"
+					: "tool thinking requires bedrock-mantle or an Anthropic Bedrock model with explicit reasoning disable support",
+			});
+		}
+	});
 
 export const modelBackendsSchema = z
 	.object({
@@ -236,18 +293,68 @@ export const modelBackendsSchema = z
 	.refine(
 		(data) => {
 			return data.backends.every((b) => {
+				if (b.provider === "bedrock-mantle") {
+					return b.provider_mode !== undefined;
+				}
+				return true;
+			});
+		},
+		{ message: "bedrock-mantle providers require provider_mode" },
+	)
+	.refine(
+		(data) => {
+			return data.backends.every((b) => {
 				if (
 					b.provider === "cerebras" ||
 					b.provider === "anthropic" ||
 					b.provider === "zai" ||
-					b.provider === "opencode-go"
+					b.provider === "opencode-go" ||
+					b.provider === "umans"
 				) {
 					return b.api_key !== undefined;
 				}
 				return true;
 			});
 		},
-		{ message: "cerebras, anthropic, zai, and opencode-go providers require api_key" },
+		{ message: "cerebras, anthropic, zai, opencode-go, and umans providers require api_key" },
+	)
+	.refine(
+		(data) => {
+			// `model`, `context_window`, and `tier` are required for every
+			// provider EXCEPT umans (which fetches its lineup at runtime).
+			return data.backends.every((b) => {
+				if (b.provider === "umans") return true;
+				return b.model !== undefined && b.context_window !== undefined && b.tier !== undefined;
+			});
+		},
+		{
+			message:
+				"model, context_window, and tier are required for all providers except umans (which is self-configuring)",
+		},
+	)
+	.refine(
+		(data) => {
+			// umans rows are authoritatively fetched/derived: reject operator-set
+			// model / tier / context_window / capabilities / pricing. (price_per_m_*
+			// have a default of 0, so we only reject non-zero / explicitly-set
+			// values — a defaulted 0 is indistinguishable and harmless.)
+			return data.backends.every((b) => {
+				if (b.provider !== "umans") return true;
+				if (b.model !== undefined) return false;
+				if (b.tier !== undefined) return false;
+				if (b.context_window !== undefined) return false;
+				if (b.capabilities !== undefined) return false;
+				if (b.price_per_m_input !== 0) return false;
+				if (b.price_per_m_output !== 0) return false;
+				if (b.price_per_m_cache_write !== undefined) return false;
+				if (b.price_per_m_cache_read !== undefined) return false;
+				return true;
+			});
+		},
+		{
+			message:
+				"umans backends must not set model, tier, context_window, capabilities, or pricing — these are fetched/derived at runtime",
+		},
 	);
 
 export type ModelBackendsConfig = z.infer<typeof modelBackendsSchema>;
@@ -279,7 +386,7 @@ const connectorConfigSchema = z
 		signing_secret: z.string().optional(),
 		allowed_users: z.array(z.string()).default([]),
 		leadership: z.enum(["auto", "leader", "standby", "all"]).default("auto"),
-		failover_threshold_ms: z.number().int().positive().default(30_000),
+		failover_threshold_ms: durationMsSchema().default(30_000),
 	})
 	.strict();
 
@@ -300,13 +407,16 @@ export const relaySchema = z
 			.int()
 			.positive()
 			.default(2 * 1024 * 1024),
-		request_timeout_ms: z.number().int().positive().default(30_000),
+		request_timeout_ms: durationMsSchema().default(30_000),
 		prune_interval_seconds: z.number().int().positive().default(60),
 		prune_retention_seconds: z.number().int().positive().default(300),
 		drain_timeout_seconds: z.number().int().positive().default(120),
 		/** Per-host timeout for inference relay streaming (ms). Must account for
 		 *  sync delivery latency + LLM inference time. Default 300s. */
-		inference_timeout_ms: z.number().int().positive().default(300_000),
+		inference_timeout_ms: durationMsSchema().default(300_000),
+		/** Deadline for the first real model token from a relay host. Empty relay
+		 *  heartbeats prove liveness but do not satisfy this deadline. */
+		first_token_timeout_ms: durationMsSchema().default(60_000),
 	})
 	.strict();
 
@@ -317,7 +427,18 @@ export const wsSchema = z
 		backfill_interval: z.number().int().min(0).default(300),
 		backpressure_limit: z.number().int().positive().default(2097152),
 		idle_timeout: z.number().int().positive().default(120),
-		reconnect_max_interval: z.number().int().positive().default(60),
+		reconnect_max_interval: z.number().int().positive().default(10),
+		/** Receive-side liveness timeout in ms. If a spoke receives no frame from
+		 *  the hub within this window, it tears down the connection and reconnects
+		 *  — the changelog drain may be stuck even though pings keep the socket
+		 *  alive. 0 = disabled, default 300000 (5 min). */
+		receive_timeout_ms: durationMsSchema({ min: 0 }).default(300_000),
+		/** Handshake deadline in ms. A spoke socket that reaches neither `open` nor
+		 *  `close` within this window is torn down and reconnected — a stalled
+		 *  upgrade fires no close event, so nothing else re-arms the reconnect
+		 *  timer and the client would latch dark until restart.
+		 *  0 = disabled, default 20000 (20s). */
+		handshake_timeout_ms: durationMsSchema({ min: 0 }).default(20_000),
 	})
 	.strict();
 
@@ -387,14 +508,6 @@ export const mcpSchema = z
 
 export type McpConfig = z.infer<typeof mcpSchema>;
 
-export const overlaySchema = z
-	.object({
-		mounts: z.record(z.string(), z.string()),
-	})
-	.strict();
-
-export type OverlayConfig = z.infer<typeof overlaySchema>;
-
 // Memory Config — caps on pinned-memory creation as a context-management
 // control. Enabled by default: when memory.json is absent the loader skips it,
 // so the enforcement code falls back to these same defaults (see
@@ -428,7 +541,6 @@ export type ConfigType =
 	| SyncConfig
 	| KeyringConfig
 	| McpConfig
-	| OverlayConfig
 	| MemoryConfig
 	| CacheWarmingConfig;
 
@@ -441,5 +553,5 @@ export const configSchemaMap = {
 	"sync.json": syncSchema,
 	"keyring.json": keyringSchema,
 	"mcp.json": mcpSchema,
-	"overlay.json": overlaySchema,
+	"memory.json": memoryConfigSchema,
 } as const;

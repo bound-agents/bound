@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
 import type { SkillFileEntry } from "@bound/shared";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
@@ -7,13 +5,9 @@ import { MAX_SKILL_NAME_LENGTH, SKILL_NAME_REGEX, importSkillFromFiles } from ".
 import { parseToolInput, zodToToolParams } from "./tool-schema";
 
 const skillSchema = z.object({
-	action: z
-		.enum(["activate", "list", "read", "deactivate", "retire"])
-		.describe("Skill operation to perform"),
-	name: z.string().optional().describe("Skill name (for activate, read, deactivate, retire)"),
-	status: z.enum(["active", "retired"]).optional().describe("Filter by status (for list)"),
+	action: z.enum(["activate", "list", "read", "deactivate"]).describe("Skill operation to perform"),
+	name: z.string().optional().describe("Skill name (for activate, read, deactivate)"),
 	verbose: z.boolean().optional().describe("Show extra columns (for list)"),
-	reason: z.string().optional().describe("Reason for retiring (for retire)"),
 });
 
 export function createSkillTool(ctx: ToolContext): RegisteredTool {
@@ -25,12 +19,12 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 			type: "function",
 			function: {
 				name: "skill",
-				description: "Manage skills: activate, list, read, deactivate, or retire",
+				description: "Manage skills: activate, list, read, or deactivate",
 				parameters: jsonSchema,
 			},
 		},
-		// Per-action idempotency. list/read are pure queries. activate/retire
-		// flip a status flag — running them twice with the same skill name
+		// Per-action idempotency. list/read are pure queries. activate
+		// flips a status flag — running it twice with the same skill name
 		// leaves the same final state.
 		resolveAnnotations: (args: Record<string, unknown>) => {
 			switch (args.action) {
@@ -38,7 +32,6 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 				case "read":
 					return { idempotent: true, readOnly: true };
 				case "activate":
-				case "retire":
 					return { idempotent: true, readOnly: false };
 				case "deactivate":
 					// No DB mutation — the deactivation is observed from this
@@ -65,10 +58,8 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 						return await handleRead(ctx, input);
 					case "deactivate":
 						return await handleDeactivate(ctx, input);
-					case "retire":
-						return await handleRetire(ctx, input);
 					default:
-						return `Error: Invalid action '${input.action}'. Valid actions: activate, list, read, deactivate, retire`;
+						return `Error: Invalid action '${input.action}'. Valid actions: activate, list, read, deactivate`;
 				}
 			} catch (error) {
 				return `Error: ${error instanceof Error ? error.message : String(error)}`;
@@ -150,32 +141,26 @@ async function handleActivate(
 }
 
 async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
-	const whereClause = input.status ? "WHERE status = ? AND deleted = 0" : "WHERE deleted = 0";
-	const queryArgs = input.status ? [input.status] : [];
-
 	const rows = ctx.db
 		.prepare(
-			`SELECT name, status, activation_count, last_activated_at, description,
-            allowed_tools, compatibility, content_hash, retired_reason
+			`SELECT name, activation_count, last_activated_at, description,
+            allowed_tools, compatibility, content_hash
      FROM skills
-     ${whereClause}
+     WHERE deleted = 0
      ORDER BY last_activated_at DESC, name ASC`,
 		)
-		.all(...queryArgs) as Array<{
+		.all() as Array<{
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
 		allowed_tools: string | null;
 		compatibility: string | null;
 		content_hash: string | null;
-		retired_reason: string | null;
 	}>;
 
 	if (rows.length === 0) {
-		const filter = input.status ? ` (status: ${input.status})` : "";
-		return `No skills found${filter}.`;
+		return "No skills found.";
 	}
 
 	const lines: string[] = [];
@@ -183,17 +168,16 @@ async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 	// Header
 	if (input.verbose) {
 		lines.push(
-			"NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        COMPATIBILITY   CONTENT_HASH     RETIRED_REASON",
+			"NAME             ACTIVATIONS LAST USED            DESCRIPTION                     ALLOWED_TOOLS        COMPATIBILITY   CONTENT_HASH",
 		);
-		lines.push("-".repeat(160));
+		lines.push("-".repeat(140));
 	} else {
-		lines.push("NAME             STATUS   ACTIVATIONS LAST USED            DESCRIPTION");
-		lines.push("-".repeat(90));
+		lines.push("NAME             ACTIVATIONS LAST USED            DESCRIPTION");
+		lines.push("-".repeat(80));
 	}
 
 	for (const row of rows) {
 		const name = row.name.padEnd(16);
-		const status = row.status.padEnd(8);
 		const activations = String(row.activation_count ?? 0).padEnd(11);
 		const lastUsed = (row.last_activated_at?.slice(0, 19) ?? "never").padEnd(20);
 		const desc = row.description.slice(0, 33).padEnd(33);
@@ -202,12 +186,9 @@ async function handleList(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 			const tools = (row.allowed_tools ?? "").slice(0, 20).padEnd(20);
 			const compatibility = (row.compatibility ?? "").slice(0, 15).padEnd(15);
 			const hash = (row.content_hash ?? "").slice(0, 16).padEnd(16);
-			const reason = (row.retired_reason ?? "").slice(0, 20);
-			lines.push(
-				`${name} ${status} ${activations} ${lastUsed} ${desc} ${tools} ${compatibility} ${hash} ${reason}`,
-			);
+			lines.push(`${name} ${activations} ${lastUsed} ${desc} ${tools} ${compatibility} ${hash}`);
 		} else {
-			lines.push(`${name} ${status} ${activations} ${lastUsed} ${desc}`);
+			lines.push(`${name} ${activations} ${lastUsed} ${desc}`);
 		}
 	}
 
@@ -222,12 +203,11 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 	// Get skill metadata including skill_root
 	const skill = ctx.db
 		.prepare(
-			"SELECT id, name, status, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
+			"SELECT id, name, activation_count, last_activated_at, description, content_hash, skill_root FROM skills WHERE name = ? AND deleted = 0",
 		)
 		.get(input.name) as {
 		id: string;
 		name: string;
-		status: string;
 		activation_count: number;
 		last_activated_at: string | null;
 		description: string;
@@ -253,7 +233,6 @@ async function handleRead(ctx: ToolContext, input: z.infer<typeof skillSchema>):
 
 	const header = [
 		`--- Skill: ${skill.name} ---`,
-		`Status:      ${skill.status}`,
 		`Activations: ${skill.activation_count ?? 0}`,
 		`Last used:   ${skill.last_activated_at?.slice(0, 19) ?? "never"}`,
 		`Hash:        ${skill.content_hash ?? "unknown"}`,
@@ -277,102 +256,15 @@ async function handleDeactivate(
 	// Deactivation is a per-thread, context-retention concern. It writes no row:
 	// the next context rebuild observes this tool call in the thread's log and
 	// drops the skill from the pinned-skill block in the system prompt. The
-	// global skill status is untouched (use `retire` for that). Issue #173.
+	// global skill status is untouched. Removing a skill is an operator action
+	// (`boundctl skill delete` / `DELETE /api/skills/:id`). Issue #173.
 	const skill = ctx.db
-		.prepare("SELECT status FROM skills WHERE name = ? AND deleted = 0")
-		.get(input.name) as { status: string } | null;
+		.prepare("SELECT name FROM skills WHERE name = ? AND deleted = 0")
+		.get(input.name) as { name: string } | null;
 
 	if (!skill) {
 		return `Skill '${input.name}' not found; nothing to deactivate.`;
 	}
 
 	return `Skill '${input.name}' deactivated for this thread. Its instructions will no longer be pinned to your system prompt on the next context rebuild. Re-run \`skill\` activate to pin it again.`;
-}
-
-async function handleRetire(ctx: ToolContext, input: z.infer<typeof skillSchema>): Promise<string> {
-	if (!input.name) {
-		return "Error: 'name' is required for retire action";
-	}
-
-	const reason = input.reason ?? null;
-
-	// Find the skill
-	const skill = ctx.db
-		.prepare("SELECT id, status FROM skills WHERE name = ? AND deleted = 0")
-		.get(input.name) as { id: string; status: string } | null;
-
-	if (!skill) {
-		return `Error: Skill '${input.name}' not found.`;
-	}
-
-	const now = new Date().toISOString();
-
-	// Retire the skill
-	updateRow(
-		ctx.db,
-		"skills",
-		skill.id,
-		{
-			status: "retired",
-			retired_by: "agent",
-			retired_reason: reason,
-			modified_at: now,
-		},
-		ctx.siteId,
-	);
-
-	// Scan tasks for payloads referencing this skill and create advisories
-	const tasks = ctx.db
-		.prepare("SELECT id, payload, thread_id FROM tasks WHERE deleted = 0 AND payload IS NOT NULL")
-		.all() as Array<{ id: string; payload: string; thread_id: string | null }>;
-
-	let advisoryCount = 0;
-	for (const task of tasks) {
-		let payload: unknown;
-		try {
-			payload = JSON.parse(task.payload);
-		} catch {
-			continue;
-		}
-		if (
-			typeof payload === "object" &&
-			payload !== null &&
-			"skill" in payload &&
-			(payload as Record<string, unknown>).skill === input.name
-		) {
-			const advisoryId = randomUUID();
-			insertRow(
-				ctx.db,
-				"advisories",
-				{
-					id: advisoryId,
-					type: "general",
-					status: "proposed",
-					title: `Skill '${input.name}' was retired`,
-					detail: `Task ${task.id} references skill '${input.name}' which was retired by agent${reason ? `: ${reason}` : ""}.`,
-					action: `Update task ${task.id} to use a different skill or remove the skill reference.`,
-					impact: null,
-					evidence: JSON.stringify({ task_id: task.id, skill: input.name }),
-					proposed_at: now,
-					defer_until: null,
-					resolved_at: null,
-					created_by: ctx.siteId,
-					thread_id: task.thread_id ?? null,
-					modified_at: now,
-					deleted: 0,
-				},
-				ctx.siteId,
-			);
-			advisoryCount++;
-		}
-	}
-
-	const msg = reason
-		? `Skill '${input.name}' retired. Reason: ${reason}.`
-		: `Skill '${input.name}' retired.`;
-	const advisoryMsg =
-		advisoryCount > 0
-			? ` ${advisoryCount} advisory${advisoryCount === 1 ? "" : "s"} created for referencing tasks.`
-			: "";
-	return msg + advisoryMsg;
 }

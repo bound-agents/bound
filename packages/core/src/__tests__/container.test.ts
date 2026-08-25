@@ -8,7 +8,7 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createAppContext } from "../app-context";
 import { ConfigService, DatabaseService, EventBusService, bootstrapContainer } from "../container";
 
-describe("DI Container", () => {
+describe("DI Container", async () => {
 	let configDir: string;
 	let dbPath: string;
 
@@ -56,13 +56,13 @@ describe("DI Container", () => {
 		}
 	});
 
-	it("bootstraps container successfully with valid configs", () => {
-		const container = bootstrapContainer(configDir, dbPath);
+	it("bootstraps container successfully with valid configs", async () => {
+		const container = await bootstrapContainer(configDir, dbPath);
 		expect(container).toBeDefined();
 	});
 
-	it("resolves DatabaseService singleton", () => {
-		const container = bootstrapContainer(configDir, dbPath);
+	it("resolves DatabaseService singleton", async () => {
+		const container = await bootstrapContainer(configDir, dbPath);
 		const db1 = container.resolve(DatabaseService);
 		const db2 = container.resolve(DatabaseService);
 
@@ -70,32 +70,30 @@ describe("DI Container", () => {
 		expect(db1).toBe(db2);
 	});
 
-	it("resolves ConfigService singleton", () => {
-		const container = bootstrapContainer(configDir, dbPath);
+	it("resolves ConfigService singleton", async () => {
+		const container = await bootstrapContainer(configDir, dbPath);
 		const config1 = container.resolve(ConfigService);
 		const config2 = container.resolve(ConfigService);
 
 		expect(config1).toBe(config2);
 	});
 
-	it("resolves EventBusService singleton", () => {
-		const container = bootstrapContainer(configDir, dbPath);
+	it("resolves EventBusService singleton", async () => {
+		const container = await bootstrapContainer(configDir, dbPath);
 		const eventBus1 = container.resolve(EventBusService);
 		const eventBus2 = container.resolve(EventBusService);
 
 		expect(eventBus1).toBe(eventBus2);
 	});
 
-	it("throws error when config files are missing", () => {
+	it("throws error when config files are missing", async () => {
 		// Remove config files
 		require("node:fs").unlinkSync(join(configDir, "allowlist.json"));
 
-		expect(() => {
-			bootstrapContainer(configDir, dbPath);
-		}).toThrow();
+		await expect(bootstrapContainer(configDir, dbPath)).rejects.toThrow();
 	});
 
-	it("throws error when config validation fails", () => {
+	it("throws error when config validation fails", async () => {
 		// Write invalid config
 		const invalidAllowlist = {
 			default_web_user: "alice",
@@ -104,13 +102,11 @@ describe("DI Container", () => {
 
 		writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
 
-		expect(() => {
-			bootstrapContainer(configDir, dbPath);
-		}).toThrow();
+		await expect(bootstrapContainer(configDir, dbPath)).rejects.toThrow();
 	});
 
-	it("creates database with schema on bootstrap", () => {
-		bootstrapContainer(configDir, dbPath);
+	it("creates database with schema on bootstrap", async () => {
+		await bootstrapContainer(configDir, dbPath);
 
 		// Verify tables exist
 		const db = require("bun:sqlite").Database;
@@ -119,12 +115,12 @@ describe("DI Container", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(30); // 16 main tables (+ skills + connector_handles + webhooks + client_sessions) + 3 relay tables + dispatch_queue + 2 metrics tables (turns, daily_summary) + 1 FTS5 virtual + 5 FTS5 shadow
+		expect(tables.length).toBe(31); // ... + agents (#201) + 1 FTS5 virtual + 5 FTS5 shadow
 		testDb.close();
 	});
 });
 
-describe("AppContext", () => {
+describe("AppContext", async () => {
 	let configDir: string;
 	let dbPath: string;
 
@@ -171,8 +167,8 @@ describe("AppContext", () => {
 		}
 	});
 
-	it("creates AppContext with all services", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("creates AppContext with all services", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 
 		expect(ctx).toBeDefined();
 		expect(ctx.db).toBeDefined();
@@ -183,8 +179,8 @@ describe("AppContext", () => {
 		expect(ctx.hostName).toBeDefined();
 	});
 
-	it("generates site_id on first creation", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("generates site_id on first creation", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 		expect(ctx.siteId).toBeDefined();
 		expect(ctx.siteId.length).toBeGreaterThan(0);
 
@@ -196,13 +192,13 @@ describe("AppContext", () => {
 		expect(hostMeta.value).toBe(ctx.siteId);
 	});
 
-	it("reuses existing site_id on subsequent creations", () => {
-		const ctx1 = createAppContext(configDir, dbPath);
+	it("reuses existing site_id on subsequent creations", async () => {
+		const ctx1 = await createAppContext(configDir, dbPath);
 		const siteId1 = ctx1.siteId;
 		ctx1.db.close();
 
 		// Create another context with the same database path
-		const ctx2 = createAppContext(configDir, dbPath);
+		const ctx2 = await createAppContext(configDir, dbPath);
 		const siteId2 = ctx2.siteId;
 		ctx2.db.close();
 
@@ -210,15 +206,15 @@ describe("AppContext", () => {
 		expect(siteId1).toBe(siteId2);
 	});
 
-	it("loads configuration into AppContext", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("loads configuration into AppContext", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 
 		expect(ctx.config.allowlist.default_web_user).toBe("alice");
 		expect(ctx.config.modelBackends.default).toBe("ollama-local");
 	});
 
-	it("provides typed event bus", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("provides typed event bus", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 
 		let received: unknown = null;
 		ctx.eventBus.on("message:created", (data) => {
@@ -245,8 +241,8 @@ describe("AppContext", () => {
 		expect(received).toBeDefined();
 	});
 
-	it("initializes logger service", () => {
-		const ctx = createAppContext(configDir, dbPath);
+	it("initializes logger service", async () => {
+		const ctx = await createAppContext(configDir, dbPath);
 
 		expect(ctx.logger).toBeDefined();
 		expect(typeof ctx.logger.info).toBe("function");

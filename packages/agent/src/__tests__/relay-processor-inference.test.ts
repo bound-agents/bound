@@ -7,6 +7,7 @@ import { applySchema } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import { splitInferenceRequest } from "../inference-request-parts";
 import { RelayProcessor } from "../relay-processor";
 import { waitFor } from "./helpers";
 
@@ -163,7 +164,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -238,6 +243,64 @@ describe("RelayProcessor - executeInference", () => {
 		expect(cycleKinds.has("stream_end")).toBe(true);
 	});
 
+	it("reassembles out-of-order inference parts and invokes the backend exactly once", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("multipart-ok");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		const expiresAt = new Date(Date.now() + 60_000).toISOString();
+		const serialized = JSON.stringify({
+			model: "test-model",
+			segments: [{ kind: "inline", message: { role: "user", content: "電".repeat(2000) } }],
+			nowMs: 0,
+			timeout_ms: 5000,
+		});
+		const parts = splitInferenceRequest(serialized, requestId, 512).reverse();
+		const insert = db.prepare(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, 'inference_part', ?, ?, ?, ?, ?, ?, 0)`,
+		);
+		for (const part of [...parts, parts[0]]) {
+			insert.run(
+				randomUUID(),
+				"requester-site",
+				requestId,
+				`part-${requestId}-${part.index}-${randomUUID()}`,
+				streamId,
+				JSON.stringify(part),
+				expiresAt,
+				new Date().toISOString(),
+			);
+		}
+		const handle = processor.start(10);
+		await waitFor(() => backend.capturedParams.length === 1, {
+			message: "multipart inference did not invoke backend",
+		});
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number }
+				).n === 1,
+			{ message: "multipart inference did not complete" },
+		);
+		handle.stop();
+		expect(backend.capturedParams).toHaveLength(1);
+		expect((backend.capturedParams[0].messages[0].content as string).length).toBe(2000);
+	});
+
 	it("AC3.2a: flushes at 200ms timer with pending chunks", async () => {
 		const mockBackend = new MockBackend();
 
@@ -282,7 +345,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -370,7 +437,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -444,7 +515,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -543,7 +618,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -658,7 +737,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(0).toISOString(),
@@ -788,7 +871,11 @@ describe("RelayProcessor - executeInference", () => {
 				stream_id: streamIds[i],
 				payload: JSON.stringify({
 					model: `model-${i + 1}`,
-					messages: [{ role: "user" as const, content: `Hello ${i + 1}` }],
+					segments: [{ role: "user" as const, content: `Hello ${i + 1}` }].map((m) => ({
+						kind: "inline" as const,
+						message: m,
+					})),
+					nowMs: 0,
 					timeout_ms: 5000,
 				}),
 				expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -891,7 +978,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Think about this" }],
+				segments: [{ role: "user" as const, content: "Think about this" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				thinking: { type: "enabled", budget_tokens: 10000 },
 				timeout_ms: 5000,
 			}),
@@ -959,11 +1050,11 @@ describe("RelayProcessor - executeInference", () => {
 	it("clamps payload.max_tokens to the local backend's maxOutputTokens cap", async () => {
 		// Defense-in-depth: a stale requester binary (or a hub routing
 		// decision made against a peer's old capability record) can still
-		// send DEFAULT_MAX_OUTPUT_TOKENS (16_384) for a model whose
-		// provider rejects it with "max_tokens exceeds model limit of N".
-		// The receiver-side clamp takes min(payload.max_tokens, localCap)
-		// so Nova Pro's 10_000 ceiling is honored regardless of what the
-		// requester sent.
+		// send an explicit max_tokens (e.g. 16_384 from a pre-fix build)
+		// for a model whose provider rejects it with "max_tokens exceeds
+		// model limit of N". The receiver-side clamp takes
+		// min(payload.max_tokens, localCap) so Nova Pro's 10_000 ceiling
+		// is honored regardless of what the requester sent.
 		const mockBackend = new MockBackend();
 		mockBackend.setTextResponse("ok");
 
@@ -998,7 +1089,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "nova-pro",
-				messages: [{ role: "user" as const, content: "hi" }],
+				segments: [{ role: "user" as const, content: "hi" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				max_tokens: 16384, // Default from a pre-fix requester
 				timeout_ms: 5000,
 			}),
@@ -1070,7 +1165,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "opus",
-				messages: [{ role: "user" as const, content: "hi" }],
+				segments: [{ role: "user" as const, content: "hi" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				max_tokens: 16384,
 				timeout_ms: 5000,
 			}),
@@ -1183,7 +1282,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "priced-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),
@@ -1285,7 +1388,11 @@ describe("RelayProcessor - executeInference", () => {
 			stream_id: streamId,
 			payload: JSON.stringify({
 				model: "test-model",
-				messages: [{ role: "user" as const, content: "Hello" }],
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
 				timeout_ms: 5000,
 			}),
 			expires_at: new Date(now.getTime() + 60000).toISOString(),

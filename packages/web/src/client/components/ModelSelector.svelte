@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { ClusterModelInfo } from "@bound/client";
+import { type ClusterModelInfo, sortClusterModelsById } from "@bound/client";
 import { Cpu } from "lucide-svelte";
 import { onMount } from "svelte";
 import { client } from "../lib/bound";
@@ -17,8 +17,8 @@ let hintApplied = $state(false);
 onMount(async () => {
 	try {
 		const data = await client.listModels();
-		models = data.models;
-		const resolved = resolveInitialModel(data.models, data.default, modelHint);
+		models = sortClusterModelsById(data.models);
+		const resolved = resolveInitialModel(models, data.default, modelHint);
 		selectedModel = resolved.selectedModel;
 		modelStore.setModel(resolved.modelId);
 		if (modelHint && resolved.modelId === modelHint) {

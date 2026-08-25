@@ -40,6 +40,14 @@ export interface AttachResult {
 	messages: Message[];
 	pendingToolCallIds: string[];
 	mcpFailures: Array<{ serverName: string; error: string }>;
+	/**
+	 * The model that most recently produced a message in this thread, or null
+	 * when no fetched message carries one (new/empty thread, or a thread whose
+	 * model-bearing rows fell outside the fetch window). Callers use this to
+	 * seed the session's selected model so an attach resumes the thread on
+	 * the model it was last using rather than the client-config default.
+	 */
+	lastUsedModelId: string | null;
 }
 
 /**
@@ -71,7 +79,42 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	// Cap to 200 messages to avoid OOM on large threads (17k+ messages)
 	const MESSAGE_LIMIT = 200;
 	logger.info("attach_flow_start", { threadId, step: "listMessages" });
-	const messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
+	let messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
+	const turns =
+		typeof client.getContextDebug === "function"
+			? await client
+					.getContextDebug(threadId)
+					.catch(() => [] as Awaited<ReturnType<typeof client.getContextDebug>>)
+			: [];
+	if (turns.length > 0) {
+		messages = messages.map((message) => {
+			if (message.role !== "assistant") return message;
+			const messageTime = Date.parse(message.created_at);
+			const turn = [...turns]
+				.reverse()
+				.find((candidate) => Date.parse(candidate.created_at) <= messageTime);
+			if (!turn || ((turn.tokens_cache_read ?? 0) === 0 && (turn.tokens_cache_write ?? 0) === 0)) {
+				return message;
+			}
+			let metadata: Record<string, unknown> = {};
+			try {
+				const parsed = JSON.parse(message.metadata ?? "null");
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) metadata = parsed;
+			} catch {
+				// Cache usage still renders when unrelated metadata is malformed.
+			}
+			return {
+				...message,
+				metadata: JSON.stringify({
+					...metadata,
+					cache_usage: {
+						read: turn.tokens_cache_read ?? 0,
+						write: turn.tokens_cache_write ?? 0,
+					},
+				}),
+			};
+		});
+	}
 
 	// Scan for unpaired tool calls: a tool_use dispatched without a matching
 	// tool_result. The id lives in the tool_use block of a tool_call row's
@@ -135,10 +178,8 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 
 	// Step 5: Configure tools on client
 	logger.info("attach_flow_configure", { threadId });
-	const mcpServerNames = Array.from(mcpTools.keys());
-	const systemPromptAddition = await buildSystemPromptAddition(cwd, hostname, mcpServerNames, {
+	const systemPromptAddition = await buildSystemPromptAddition(cwd, hostname, {
 		injectContextFiles: params.injectContextFiles,
-		shellToolName: shell.toolName,
 		surface: params.surface,
 	});
 
@@ -153,9 +194,21 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 		mcpFailures: mcpFailures.length,
 	});
 
+	// Most recent model to have produced a message in this thread. Messages
+	// arrive in chronological order (newest-N window, ASC), so scan backwards
+	// for the first non-null model_id.
+	let lastUsedModelId: string | null = null;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].model_id) {
+			lastUsedModelId = messages[i].model_id;
+			break;
+		}
+	}
+
 	return {
 		messages,
 		pendingToolCallIds,
 		mcpFailures,
+		lastUsedModelId,
 	};
 }

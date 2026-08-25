@@ -10,6 +10,7 @@ import {
 	encodeFrame,
 } from "../ws-frames.js";
 import { WsTransport } from "../ws-transport.js";
+import { waitForCompletedRowPull } from "./wait-helpers.js";
 
 function createTestSchema(db: Database): void {
 	db.run("PRAGMA journal_mode = WAL");
@@ -31,6 +32,7 @@ function createTestSchema(db: Database): void {
 			peer_site_id TEXT PRIMARY KEY,
 			last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 			last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
+			last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
 			sync_errors INTEGER DEFAULT 0,
 			last_sync_at TEXT
 		)
@@ -274,7 +276,19 @@ describe("Hub-side handleRowPullRequest", () => {
 			tables: [{ table: "semantic_memory", pks: ["mem-1", "mem-3"] }],
 		});
 
-		await new Promise((r) => setTimeout(r, 200));
+		await waitForCompletedRowPull(
+			() => sentFrames,
+			(frames) =>
+				frames.some((frame) => {
+					const decoded = decodeFrame(frame, symmetricKey);
+					return (
+						decoded.ok &&
+						decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+						(decoded.value.payload as RowPullResponsePayload).request_id === "rp_1" &&
+						(decoded.value.payload as RowPullResponsePayload).last
+					);
+				}),
+		);
 
 		const responses = sentFrames
 			.map((f) => decodeFrame(f, symmetricKey))
@@ -303,7 +317,19 @@ describe("Hub-side handleRowPullRequest", () => {
 			tables: [{ table: "semantic_memory", pks: ["nonexistent-1", "nonexistent-2"] }],
 		});
 
-		await new Promise((r) => setTimeout(r, 200));
+		await waitForCompletedRowPull(
+			() => sentFrames,
+			(frames) =>
+				frames.some((frame) => {
+					const decoded = decodeFrame(frame, symmetricKey);
+					return (
+						decoded.ok &&
+						decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+						(decoded.value.payload as RowPullResponsePayload).request_id === "rp_2" &&
+						(decoded.value.payload as RowPullResponsePayload).last
+					);
+				}),
+		);
 
 		const responses = sentFrames
 			.map((f) => decodeFrame(f, symmetricKey))
@@ -332,7 +358,19 @@ describe("Hub-side handleRowPullRequest", () => {
 			],
 		});
 
-		await new Promise((r) => setTimeout(r, 200));
+		await waitForCompletedRowPull(
+			() => sentFrames,
+			(frames) =>
+				frames.some((frame) => {
+					const decoded = decodeFrame(frame, symmetricKey);
+					return (
+						decoded.ok &&
+						decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+						(decoded.value.payload as RowPullResponsePayload).request_id === "rp_3" &&
+						(decoded.value.payload as RowPullResponsePayload).last
+					);
+				}),
+		);
 
 		const responses = sentFrames
 			.map((f) => decodeFrame(f, symmetricKey))
@@ -347,6 +385,22 @@ describe("Hub-side handleRowPullRequest", () => {
 
 		const lastFrame = responses[responses.length - 1];
 		expect(lastFrame.payload.last).toBe(true);
+	});
+
+	it("rejects unknown table names before querying", () => {
+		hubTransport.handleRowPullRequest("spoke-1", {
+			request_id: "rp_invalid",
+			tables: [{ table: "sqlite_master", pks: ["1"] }],
+		});
+
+		const decoded = sentFrames.map((f) => decodeFrame(f, symmetricKey)).find((r) => r.ok);
+		expect(decoded?.ok).toBe(true);
+		if (!decoded?.ok) return;
+		expect(decoded.value.type).toBe(WsMessageType.ERROR);
+		expect(decoded.value.payload).toEqual({
+			code: "invalid_table",
+			message: "Row pull requested an unknown table",
+		});
 	});
 });
 
@@ -532,7 +586,18 @@ describe("Bidirectional executeBackfill", () => {
 				request_id: "rp_test",
 				tables,
 			});
-			await new Promise((r) => setTimeout(r, 200));
+			await waitForCompletedRowPull(
+				() => hubSentFrames,
+				(frames) =>
+					frames.some((frame) => {
+						const decoded = decodeFrame(frame, symmetricKey);
+						return (
+							decoded.ok &&
+							decoded.value.type === WsMessageType.ROW_PULL_RESPONSE &&
+							(decoded.value.payload as RowPullResponsePayload).last
+						);
+					}),
+			);
 
 			for (const frame of hubSentFrames) {
 				const decoded = decodeFrame(frame, symmetricKey);

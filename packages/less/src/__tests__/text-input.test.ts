@@ -10,7 +10,13 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 /**
  * Minimal harness: just a TextInput that displays submitted value.
  */
-function TestHarness({ disabled = false }: { disabled?: boolean }) {
+function TestHarness({
+	disabled = false,
+	hasFocus = true,
+}: {
+	disabled?: boolean;
+	hasFocus?: boolean;
+}) {
 	const [submitted, setSubmitted] = useState<string | null>(null);
 
 	return React.createElement(
@@ -20,6 +26,7 @@ function TestHarness({ disabled = false }: { disabled?: boolean }) {
 			onSubmit: (val: string) => setSubmitted(val),
 			placeholder: "type here",
 			disabled,
+			hasFocus,
 		}),
 		submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
 	);
@@ -42,6 +49,38 @@ describe("TextInput", () => {
 
 		const frame = lastFrame();
 		expect(frame).toContain("hi");
+	});
+
+	it("does not capture keystrokes when it lacks focus (modal steals focus)", async () => {
+		// A dismissable banner mounted above the input closes on 'x'. ink
+		// broadcasts the keypress to every active handler, so without the
+		// hasFocus gate the 'x' would also land as a character here.
+		const { lastFrame, stdin } = render(React.createElement(TestHarness, { hasFocus: false }));
+		await tick();
+
+		stdin.write("x");
+		await tick();
+
+		const frame = lastFrame();
+		expect(frame).not.toContain("x");
+	});
+
+	it("resumes capturing keystrokes once focus returns", async () => {
+		const { lastFrame, stdin, rerender } = render(
+			React.createElement(TestHarness, { hasFocus: false }),
+		);
+		await tick();
+
+		stdin.write("a");
+		await tick();
+		expect(lastFrame()).not.toContain("a");
+
+		rerender(React.createElement(TestHarness, { hasFocus: true }));
+		await tick();
+
+		stdin.write("b");
+		await tick();
+		expect(lastFrame()).toContain("b");
 	});
 
 	it("does not append character when ctrl key is held (Ctrl-C)", async () => {
@@ -628,5 +667,310 @@ describe("findCursorInLines", () => {
 			cursorLine: 2,
 			cursorCol: 2,
 		});
+	});
+});
+
+describe("TextInput Esc clear", () => {
+	const tickLocal = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+	it("Esc clears a non-empty input buffer", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tickLocal();
+
+		stdin.write("hello");
+		await tickLocal();
+		expect(lastFrame()).toContain("hello");
+
+		stdin.write("\x1b");
+		await tickLocal();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("hello");
+		// Cleared — placeholder shows again.
+		expect(frame).toContain("type here");
+	});
+
+	it("Esc on an already-empty input is a no-op", async () => {
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tickLocal();
+
+		stdin.write("\x1b");
+		await tickLocal();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("type here");
+	});
+
+	it("Esc does not clear when the input lacks focus", async () => {
+		const { lastFrame, stdin, rerender } = render(React.createElement(TestHarness));
+		await tickLocal();
+
+		stdin.write("hello");
+		await tickLocal();
+
+		rerender(React.createElement(TestHarness, { hasFocus: false }));
+		await tickLocal();
+
+		stdin.write("\x1b");
+		await tickLocal();
+
+		expect(lastFrame()).toContain("hello");
+	});
+});
+
+describe("paste sanitization (tab/newline width desync)", () => {
+	it("expands pasted tabs and flattens newlines so row accounting stays exact", async () => {
+		// 2026-07-17: pasting a tab-bearing line made every subsequent
+		// keystroke re-emit the input box's top border — a literal \t is one
+		// character to breakLines but up to 8 columns to the terminal, so
+		// Ink's logical line count desynced from the physical rows and
+		// log-update under-erased. Tabs land as spaces; a multiline paste
+		// into this single-line input lands with single spaces.
+		const { lastFrame, stdin } = render(React.createElement(TestHarness));
+		await tick();
+
+		stdin.write("\treturn { a: 1 }\nnext line");
+		await tick();
+
+		const frame = lastFrame() ?? "";
+		expect(frame).not.toContain("\t");
+		expect(frame).toContain("    return { a: 1 } next line");
+	});
+});
+
+describe("history recall (↑/↓)", () => {
+	function HistoryHarness({ history }: { history: string[] }) {
+		const [submitted, setSubmitted] = useState<string | null>(null);
+		return React.createElement(
+			React.Fragment,
+			null,
+			React.createElement(TextInput, {
+				onSubmit: (val: string) => setSubmitted(val),
+				placeholder: "type here",
+				history,
+			}),
+			submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
+		);
+	}
+
+	it("↑ recalls the newest entry, ↑ again walks older", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["oldest", "newest"] }),
+		);
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("newest");
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("oldest");
+	});
+
+	it("↓ walks forward and finally restores the interrupted draft", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["prior message"] }),
+		);
+		await tick();
+		stdin.write("dra");
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("prior message");
+		stdin.write("\x1B[B");
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("dra");
+		expect(frame).not.toContain("prior message");
+	});
+
+	it("↑ at the oldest entry stays put (no wrap)", async () => {
+		const { lastFrame, stdin } = render(React.createElement(HistoryHarness, { history: ["only"] }));
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("only");
+	});
+
+	it("recalled multi-line text is sanitized to a single line", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["line one\nline two"] }),
+		);
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("line one line two");
+	});
+
+	it("editing after recall detaches from history (typed char lands in recalled text)", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(HistoryHarness, { history: ["recalled"] }),
+		);
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		stdin.write("!");
+		await tick();
+		expect(lastFrame()).toContain("recalled!");
+		// ↓ after detach is a no-op (not browsing anymore) — text stays.
+		stdin.write("\x1B[B");
+		await tick();
+		expect(lastFrame()).toContain("recalled!");
+	});
+
+	it("↑ with no history does nothing", async () => {
+		const { lastFrame, stdin } = render(React.createElement(HistoryHarness, { history: [] }));
+		await tick();
+		stdin.write("\x1B[A");
+		await tick();
+		expect(lastFrame()).toContain("type here");
+	});
+});
+
+describe("slash-command completion menu", () => {
+	const COMPLETIONS = [
+		{ value: "/help", description: "Show available commands" },
+		{ value: "/model", description: "Switch model", takesArgs: true },
+		{ value: "/mcp", description: "MCP server configuration" },
+	];
+
+	function MenuHarness() {
+		const [submitted, setSubmitted] = useState<string | null>(null);
+		return React.createElement(
+			React.Fragment,
+			null,
+			React.createElement(TextInput, {
+				onSubmit: (val: string) => setSubmitted(val),
+				placeholder: "type here",
+				completions: COMPLETIONS,
+			}),
+			submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
+		);
+	}
+
+	it("typing / opens the menu with all commands", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/");
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/help");
+		expect(frame).toContain("/model");
+		expect(frame).toContain("Show available commands");
+	});
+
+	it("narrowing the prefix filters the menu", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/m");
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/model");
+		expect(frame).toContain("/mcp");
+		expect(frame).not.toContain("/help");
+	});
+
+	it("a space closes the menu (arguments have begun)", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/model x");
+		await tick();
+		expect(lastFrame()).not.toContain("Switch model");
+	});
+
+	it("Tab completes the selected command; takesArgs appends a space", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/mo");
+		await tick();
+		stdin.write("\t");
+		await tick();
+		// Completed to "/model " — menu is gone (trailing space ends the bare-token state).
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain("/model");
+		expect(frame).not.toContain("Switch model");
+		// Keep typing the argument directly.
+		stdin.write("opus");
+		await tick();
+		expect(lastFrame()).toContain("/model opus");
+	});
+
+	it("Enter submits the SELECTED command, not the partial buffer", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/he");
+		await tick();
+		stdin.write("\r");
+		await tick();
+		expect(lastFrame()).toContain("submitted:/help");
+	});
+
+	it("↓ moves the selection before Enter submits it", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("/m");
+		await tick();
+		stdin.write("\x1B[B");
+		await tick();
+		stdin.write("\r");
+		await tick();
+		// /m matches [/model, /mcp]; ↓ selects the second.
+		expect(lastFrame()).toContain("submitted:/mcp");
+	});
+
+	it("no menu for non-slash input; ↑/↓ keep their history meaning", async () => {
+		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		await tick();
+		stdin.write("hello");
+		await tick();
+		expect(lastFrame()).not.toContain("/help");
+	});
+});
+
+describe("image paste chords", () => {
+	it("Ctrl+V fires onPasteImage without touching the buffer", async () => {
+		let pastes = 0;
+		const { lastFrame, stdin } = render(
+			React.createElement(TextInput, {
+				onSubmit: () => {},
+				placeholder: "type here",
+				onPasteImage: () => {
+					pastes++;
+				},
+			}),
+		);
+		await tick();
+		stdin.write("h");
+		await tick();
+		stdin.write("\x16"); // Ctrl+V
+		await tick();
+		expect(pastes).toBe(1);
+		// Buffer unchanged — the chord is swallowed, not inserted.
+		expect(lastFrame()).toContain("h");
+		expect(lastFrame()).not.toContain("\x16");
+	});
+
+	it("Esc clears text first, then fires onEscapeEmpty on the second press", async () => {
+		let drops = 0;
+		const { lastFrame, stdin } = render(
+			React.createElement(TextInput, {
+				onSubmit: () => {},
+				placeholder: "type here",
+				onEscapeEmpty: () => {
+					drops++;
+				},
+			}),
+		);
+		await tick();
+		stdin.write("abc");
+		await tick();
+		stdin.write("\x1b"); // Esc #1: clears the buffer, no drop yet
+		await tick();
+		expect(lastFrame()).toContain("type here"); // placeholder back
+		expect(drops).toBe(0);
+		stdin.write("\x1b"); // Esc #2: buffer empty → drop fires
+		await tick();
+		expect(drops).toBe(1);
 	});
 });

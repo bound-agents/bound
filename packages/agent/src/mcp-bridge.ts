@@ -199,6 +199,59 @@ export function getRemoteMcpToolAnnotations(
 }
 
 /**
+ * Render one line per parameter from a tool's JSON Schema: name, required/optional,
+ * type (with `array of <item type>` for arrays), enum values, and description.
+ *
+ * Shared by help rendering (formatMcpHelp) and error echo (formatToolParamHint)
+ * so a failed call and `--help` describe parameters identically. Takes the raw
+ * inputSchema rather than a Tool so the relay path — which caches only schemas —
+ * can use it too.
+ */
+export function formatToolParamLines(inputSchema: unknown): string[] {
+	const schema = inputSchema as
+		| { properties?: Record<string, unknown>; required?: string[] }
+		| undefined;
+	const props = schema?.properties ?? {};
+	const required = new Set(schema?.required ?? []);
+	const lines: string[] = [];
+	for (const [param, def] of Object.entries(props)) {
+		const propDef = def as {
+			description?: string;
+			type?: string | string[];
+			enum?: unknown[];
+			items?: { type?: string };
+		};
+		const qualifiers: string[] = [required.has(param) ? "required" : "optional"];
+		const typeName = Array.isArray(propDef.type) ? propDef.type.join("|") : propDef.type;
+		if (typeName === "array") {
+			qualifiers.push(propDef.items?.type ? `array of ${propDef.items.type}` : "array");
+		} else if (typeName) {
+			qualifiers.push(typeName);
+		}
+		if (Array.isArray(propDef.enum) && propDef.enum.length > 0) {
+			qualifiers.push(`one of: ${propDef.enum.join(", ")}`);
+		}
+		let line = `  ${param} (${qualifiers.join(", ")})`;
+		if (propDef.description) line += ` — ${propDef.description}`;
+		lines.push(line);
+	}
+	return lines;
+}
+
+/**
+ * Compact parameter summary appended to a failed tool call's stderr, so the
+ * model can self-correct on the next attempt instead of blind-mutating args
+ * across retries (observed: a call failed with "missing required parameter:
+ * method" and nothing in the error to correct against). Returns "" for
+ * tools with no declared parameters — their error output stays byte-identical.
+ */
+export function formatToolParamHint(toolName: string, inputSchema: unknown): string {
+	const lines = formatToolParamLines(inputSchema);
+	if (lines.length === 0) return "";
+	return `\n\n${toolName} parameters:\n${lines.join("\n")}\n`;
+}
+
+/**
  * Format MCP help text from a tool list, identically regardless of caller.
  *
  * Shared by the local dispatch path (generateMCPCommands handler) and the relay
@@ -228,24 +281,11 @@ export function formatMcpHelp(
 				exitCode: 1,
 			};
 		}
-		const schema = tool.inputSchema as
-			| { properties?: Record<string, unknown>; required?: string[] }
-			| undefined;
-		const props = schema?.properties ?? {};
-		const required = new Set(schema?.required ?? []);
 		let out = `${subcommand}`;
 		if (tool.description) out += ` — ${tool.description}`;
 		out += "\n\nParameters:\n";
-		for (const [param, def] of Object.entries(props)) {
-			const propDef = def as { description?: string };
-			const req = required.has(param) ? "(required)" : "(optional)";
-			out += `  ${param} ${req}`;
-			if (propDef.description) out += ` — ${propDef.description}`;
-			out += "\n";
-		}
-		if (Object.keys(props).length === 0) {
-			out += "  (no parameters)\n";
-		}
+		const paramLines = formatToolParamLines(tool.inputSchema);
+		out += paramLines.length > 0 ? `${paramLines.join("\n")}\n` : "  (no parameters)\n";
 		return { stdout: out, stderr: "", exitCode: 0 };
 	}
 
@@ -291,22 +331,26 @@ export async function generateMCPCommands(
 	const commands: CommandDefinition[] = [];
 	const serverNames = new Set<string>();
 
-	for (const [serverName, client] of clients) {
-		if (!client.isConnected()) {
-			continue;
-		}
+	const connectedClients = Array.from(clients).filter(([_serverName, client]) =>
+		client.isConnected(),
+	);
+	const toolInventories = await Promise.all(
+		connectedClients.map(async ([serverName, client]) => {
+			try {
+				return { serverName, client, toolsList: await client.listTools() };
+			} catch {
+				// Failed to list tools from MCP server during startup — skip this server.
+				// No logger available in this context, silently continue.
+				return null;
+			}
+		}),
+	);
 
+	for (const inventory of toolInventories) {
+		if (!inventory) continue;
+		const { serverName, client, toolsList } = inventory;
 		const config = client.getConfig();
 		const allowTools = config.allow_tools;
-
-		let toolsList: Tool[] = [];
-		try {
-			toolsList = await client.listTools();
-		} catch (_error) {
-			// Failed to list tools from MCP server during startup — skip this server
-			// No logger available in this context, silently continue
-			continue;
-		}
 
 		const serverConfirms = confirmGates.get(serverName) ?? [];
 
@@ -413,21 +457,27 @@ export async function generateMCPCommands(
 				// outcome; a UI-capable surface renders the result, error or not.
 				const uiResourceUri = (entry.tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta
 					?.ui?.resourceUri;
+
+				// Pass all args except 'subcommand' to callTool, with type coercion.
+				// Args arrive as strings from the bash --key value parser. MCP servers
+				// validate against their input schema, so "10" when number is expected
+				// or "true" when boolean is expected causes validation failures.
+				// Coerce values using the tool's input schema before dispatch.
+				const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
+				const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 				if (typeof uiResourceUri === "string") {
 					const store = loopContextStorage.getStore();
 					if (store) {
-						store.mcpApp = { server: serverName, tool: subcommand, uiResourceUri };
+						store.mcpApp = {
+							server: serverName,
+							tool: subcommand,
+							uiResourceUri,
+							input: toolArgs,
+						};
 					}
 				}
 
 				try {
-					// Pass all args except 'subcommand' to callTool, with type coercion.
-					// Args arrive as strings from the bash --key value parser. MCP servers
-					// validate against their input schema, so "10" when number is expected
-					// or "true" when boolean is expected causes validation failures.
-					// Coerce values using the tool's input schema before dispatch.
-					const { subcommand: _, ...rawArgs } = args as Record<string, unknown>;
-					const toolArgs = coerceArgsFromSchema(rawArgs, entry.tool.inputSchema);
 					const result = await currentClient.callTool(subcommand, toolArgs);
 
 					// Convert mixed media to JSON ContentBlock[] so the agent loop
@@ -455,14 +505,16 @@ export async function generateMCPCommands(
 
 					return {
 						stdout,
-						stderr: result.isError ? result.content : "",
+						stderr: result.isError
+							? result.content + formatToolParamHint(subcommand, entry.tool.inputSchema)
+							: "",
 						exitCode: result.isError ? 1 : 0,
 					};
 				} catch (error) {
 					const message = formatError(error);
 					return {
 						stdout: "",
-						stderr: `Failed to call tool ${subcommand}: ${message}\n`,
+						stderr: `Failed to call tool ${subcommand}: ${message}\n${formatToolParamHint(subcommand, entry.tool.inputSchema)}`,
 						exitCode: 1,
 					};
 				}
@@ -947,102 +999,126 @@ export async function updateHostMCPInfo(
 			}
 		> = {};
 
-		for (const [serverName, client] of clients) {
-			if (!client.isConnected()) continue;
-			mcp_tools.push(serverName);
+		const serverMetadata = await Promise.all(
+			Array.from(clients)
+				.filter(([_serverName, client]) => client.isConnected())
+				.map(async ([serverName, client]) => {
+					const capability: (typeof mcp_capabilities)[string] = {};
+					let serverAnnotations: Record<string, Record<string, boolean | undefined>> | undefined;
 
-			const capability: (typeof mcp_capabilities)[string] = {};
-
-			// serverInfo getters can throw if a server's initialize state is
-			// malformed — never let one server's bad handshake abort the whole
-			// metadata update (which would leave every server's capabilities
-			// stale and unwritten). Same best-effort posture as the list* calls.
-			try {
-				const info = client.getServerInfo?.();
-				const description = client.getServerDescription?.();
-				const instructions = client.getServerInstructions?.();
-				const serverInfo: NonNullable<(typeof capability)["serverInfo"]> = {};
-				if (info?.name) serverInfo.name = info.name;
-				if (info?.title) serverInfo.title = info.title;
-				if (info?.version) serverInfo.version = info.version;
-				if (description) serverInfo.description = truncate(description, MAX_DESCRIPTION_CHARS);
-				if (instructions) serverInfo.instructions = truncate(instructions, MAX_INSTRUCTIONS_CHARS);
-				if (Object.keys(serverInfo).length > 0) capability.serverInfo = serverInfo;
-			} catch {
-				// serverInfo capture failed — leave it unset for this server.
-			}
-
-			// Best-effort listTools — never fail the metadata update on a
-			// transient MCP error. A server with no captured annotations just
-			// looks "unknown" to the retry policy, which falls back to the
-			// strict no-info posture.
-			try {
-				const tools = await client.listTools();
-				capability.tools = tools.slice(0, MAX_CAPABILITY_LIST).map((tool) => {
-					// MCP Apps binding: a UI-bearing tool carries `_meta.ui.resourceUri`
-					// pointing at a `ui://…;profile=mcp-app` resource. Preserve it so the
-					// Connections page can show which tools render MCP Apps — name +
-					// description alone would silently drop the binding.
-					const uiResourceUri = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta?.ui
-						?.resourceUri;
-					return {
-						name: tool.name,
-						...(tool.description
-							? { description: truncate(tool.description, MAX_DESCRIPTION_CHARS) }
-							: {}),
-						...(typeof uiResourceUri === "string" ? { uiResourceUri } : {}),
-					};
-				});
-				const serverAnnotations: Record<string, Record<string, boolean | undefined>> = {};
-				for (const tool of tools) {
-					const ann = tool.annotations as
-						| {
-								idempotentHint?: boolean;
-								readOnlyHint?: boolean;
-								destructiveHint?: boolean;
-						  }
-						| undefined;
-					if (!ann) continue;
-					const compact: Record<string, boolean | undefined> = {};
-					if (ann.idempotentHint !== undefined) compact.idempotentHint = ann.idempotentHint;
-					if (ann.readOnlyHint !== undefined) compact.readOnlyHint = ann.readOnlyHint;
-					if (ann.destructiveHint !== undefined) compact.destructiveHint = ann.destructiveHint;
-					if (Object.keys(compact).length > 0) {
-						serverAnnotations[tool.name] = compact;
+					// serverInfo getters can throw if a server's initialize state is
+					// malformed — never let one server's bad handshake abort the whole
+					// metadata update (which would leave every server's capabilities
+					// stale and unwritten). Same best-effort posture as the list* calls.
+					try {
+						const info = client.getServerInfo?.();
+						const description = client.getServerDescription?.();
+						const instructions = client.getServerInstructions?.();
+						const serverInfo: NonNullable<(typeof capability)["serverInfo"]> = {};
+						if (info?.name) serverInfo.name = info.name;
+						if (info?.title) serverInfo.title = info.title;
+						if (info?.version) serverInfo.version = info.version;
+						if (description) serverInfo.description = truncate(description, MAX_DESCRIPTION_CHARS);
+						if (instructions)
+							serverInfo.instructions = truncate(instructions, MAX_INSTRUCTIONS_CHARS);
+						if (Object.keys(serverInfo).length > 0) capability.serverInfo = serverInfo;
+					} catch {
+						// serverInfo capture failed — leave it unset for this server.
 					}
-				}
-				if (Object.keys(serverAnnotations).length > 0) {
-					mcp_tool_annotations[serverName] = serverAnnotations;
-				}
-			} catch {
-				// listTools failed for this server — leave annotations empty.
-			}
 
-			// Prompts and resources are optional MCP capabilities — listing
-			// throws when unsupported. Listing failed ≠ listed-and-empty: omit
-			// the field on error so the UI can say "unavailable" vs "none".
-			try {
-				const prompts = await client.listPrompts();
-				capability.prompts = prompts.slice(0, MAX_CAPABILITY_LIST).map((p) => ({
-					name: p.name,
-					...(p.description ? { description: truncate(p.description, MAX_DESCRIPTION_CHARS) } : {}),
-				}));
-			} catch {
-				// prompts capability unsupported or listing failed
-			}
-			try {
-				const resources = await client.listResources();
-				capability.resources = resources.slice(0, MAX_CAPABILITY_LIST).map((r) => ({
-					uri: r.uri,
-					...(r.name ? { name: r.name } : {}),
-					...(r.description ? { description: truncate(r.description, MAX_DESCRIPTION_CHARS) } : {}),
-					...(r.mimeType ? { mimeType: r.mimeType } : {}),
-				}));
-			} catch {
-				// resources capability unsupported or listing failed
-			}
+					const [toolsResult, promptsResult, resourcesResult] = await Promise.all([
+						client.listTools().then(
+							(tools) => ({ ok: true as const, tools }),
+							() => ({ ok: false as const }),
+						),
+						client.listPrompts().then(
+							(prompts) => ({ ok: true as const, prompts }),
+							() => ({ ok: false as const }),
+						),
+						client.listResources().then(
+							(resources) => ({ ok: true as const, resources }),
+							() => ({ ok: false as const }),
+						),
+					]);
 
-			mcp_capabilities[serverName] = capability;
+					// Best-effort listTools — never fail the metadata update on a
+					// transient MCP error. A server with no captured annotations just
+					// looks "unknown" to the retry policy, which falls back to the
+					// strict no-info posture.
+					if (toolsResult.ok) {
+						const tools = toolsResult.tools;
+						capability.tools = tools.slice(0, MAX_CAPABILITY_LIST).map((tool) => {
+							// MCP Apps binding: a UI-bearing tool carries `_meta.ui.resourceUri`
+							// pointing at a `ui://…;profile=mcp-app` resource. Preserve it so the
+							// Connections page can show which tools render MCP Apps — name +
+							// description alone would silently drop the binding.
+							const uiResourceUri = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta
+								?.ui?.resourceUri;
+							return {
+								name: tool.name,
+								...(tool.description
+									? { description: truncate(tool.description, MAX_DESCRIPTION_CHARS) }
+									: {}),
+								...(typeof uiResourceUri === "string" ? { uiResourceUri } : {}),
+							};
+						});
+						const annotations: Record<string, Record<string, boolean | undefined>> = {};
+						for (const tool of tools) {
+							const ann = tool.annotations as
+								| {
+										idempotentHint?: boolean;
+										readOnlyHint?: boolean;
+										destructiveHint?: boolean;
+								  }
+								| undefined;
+							if (!ann) continue;
+							const compact: Record<string, boolean | undefined> = {};
+							if (ann.idempotentHint !== undefined) compact.idempotentHint = ann.idempotentHint;
+							if (ann.readOnlyHint !== undefined) compact.readOnlyHint = ann.readOnlyHint;
+							if (ann.destructiveHint !== undefined) compact.destructiveHint = ann.destructiveHint;
+							if (Object.keys(compact).length > 0) {
+								annotations[tool.name] = compact;
+							}
+						}
+						if (Object.keys(annotations).length > 0) {
+							serverAnnotations = annotations;
+						}
+					}
+
+					// Prompts and resources are optional MCP capabilities — listing
+					// throws when unsupported. Listing failed ≠ listed-and-empty: omit
+					// the field on error so the UI can say "unavailable" vs "none".
+					if (promptsResult.ok) {
+						const prompts = promptsResult.prompts;
+						capability.prompts = prompts.slice(0, MAX_CAPABILITY_LIST).map((p) => ({
+							name: p.name,
+							...(p.description
+								? { description: truncate(p.description, MAX_DESCRIPTION_CHARS) }
+								: {}),
+						}));
+					}
+					if (resourcesResult.ok) {
+						const resources = resourcesResult.resources;
+						capability.resources = resources.slice(0, MAX_CAPABILITY_LIST).map((r) => ({
+							uri: r.uri,
+							...(r.name ? { name: r.name } : {}),
+							...(r.description
+								? { description: truncate(r.description, MAX_DESCRIPTION_CHARS) }
+								: {}),
+							...(r.mimeType ? { mimeType: r.mimeType } : {}),
+						}));
+					}
+
+					return { serverName, capability, serverAnnotations };
+				}),
+		);
+
+		for (const metadata of serverMetadata) {
+			mcp_tools.push(metadata.serverName);
+			if (metadata.serverAnnotations) {
+				mcp_tool_annotations[metadata.serverName] = metadata.serverAnnotations;
+			}
+			mcp_capabilities[metadata.serverName] = metadata.capability;
 		}
 
 		updateRow(

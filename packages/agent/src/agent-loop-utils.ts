@@ -1,19 +1,52 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow } from "@bound/core";
 import {
-	type CapabilityRequirements,
-	type ContentBlock,
-	LLMError,
-	type LLMMessage,
-	type StreamChunk,
-} from "@bound/llm";
+	findFileContentByIdActive,
+	findFirstLiveUserMessageByThreadSince,
+	findLatestLiveAssistantMessageCreatedAtByThread,
+	insertRow,
+	listRecentLiveMessageContentByThread,
+} from "@bound/core";
+import type { CapabilityRequirements, ContentBlock, LLMMessage, StreamChunk } from "@bound/llm";
+// isTransientLLMError now lives in @bound/loop (error-classification.ts) so the
+// base loop and any extension agent share one definition. Re-exported here for
+// existing callers and tests that import it from this module.
+export { isTransientLLMError } from "@bound/loop";
 import { createLogger } from "@bound/shared";
+import { calculateDynamicPrice } from "./dynamic-pricing";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
 import type { RegisteredTool } from "./types";
+import { isYardClientBookkeepingRow } from "./yard-client-rows";
 
 const logger = createLogger("@bound/agent", "agent-loop-utils");
+const warnedDynamicPricingFallbacks = new Set<string>();
+
+export function refreshModelHintAtTurnBoundary(
+	config: { modelId?: string },
+	readEffectiveModelHint: () => string,
+	onChange: () => void,
+): boolean {
+	const nextModelId = readEffectiveModelHint();
+	if (nextModelId === config.modelId) return false;
+	config.modelId = nextModelId;
+	onChange();
+	return true;
+}
+
+export function acquireSummaryBackendWithFallback<T>(
+	turnModelId: string,
+	defaultModelId: string,
+	modelIds: string[],
+	acquire: (modelId: string) => T | null,
+): T | null {
+	const candidates = [turnModelId, defaultModelId, ...modelIds];
+	for (const modelId of new Set(candidates.filter(Boolean))) {
+		const backend = acquire(modelId);
+		if (backend) return backend;
+	}
+	return null;
+}
 
 /**
  * Parse persisted message content for the in-memory LLM message path.
@@ -48,49 +81,6 @@ export function parseContentBlocks(content: string): string | ContentBlock[] {
 }
 
 /**
- * Determines whether an LLM error is a transient transport issue worth retrying.
- * Returns false for client errors (4xx except 429) — these indicate a malformed
- * request that will fail identically on retry.
- */
-export function isTransientLLMError(error: unknown): boolean {
-	const errMsg = error instanceof Error ? error.message : String(error);
-
-	// If we have a status code, use it as the primary signal.
-	// 4xx errors (except 429 rate-limit) are client errors — not transient.
-	if (error instanceof LLMError && error.statusCode !== undefined) {
-		if (error.statusCode === 429) return false; // handled separately by rate-limit logic
-		if (error.statusCode >= 400 && error.statusCode < 500) return false;
-		// 5xx is a server fault, not a client error — the textbook transient case.
-		// bedrock-mantle intermittently 500s mid-stream (server_error); the bridge
-		// throws it as a 5xx LLMError (commit eda6ce6b). Retry (with backoff at the
-		// call site) clears the intermittent blip — verified via probe (4/6 cold
-		// attempts succeeded). withEmptyRetry already proved instant no-backoff
-		// retry of this same fault does NOT clear it, so the retry path must wait.
-		if (error.statusCode >= 500) return true;
-	}
-
-	// Pattern-match on known transient transport error messages.
-	// "timed out" (two words) catches the runtime fetch transport's own
-	// ~300s ceiling, which fires below the AI SDK and wraps as a TimeoutError
-	// ("The operation timed out") with no HTTP status — a connection that
-	// times out with no response is transient. Deliberately NOT "timeout"
-	// (one word): message-handler's 35-min inactivity abort uses "LLM
-	// response timeout" and must surface as a genuine stall, not retry.
-	return (
-		errMsg.includes("http2") ||
-		errMsg.includes("ECONNRESET") ||
-		errMsg.includes("socket hang up") ||
-		// undici's message when the TCP socket drops mid-request without a
-		// response — fires on z.ai and other streaming endpoints that hold
-		// connections open for long completions. Distinct from "socket hang
-		// up" (node http) and ECONNRESET (raw TCP reset).
-		errMsg.includes("socket connection was closed") ||
-		errMsg.includes("timed out") ||
-		errMsg.includes("ETIMEDOUT")
-	);
-}
-
-/**
  * Finds the first user message in a thread that arrived after the last
  * assistant response — i.e., a message that was likely skipped because
  * the agent loop was already active when it was delivered.
@@ -102,21 +92,11 @@ export function findPendingUserMessage(
 	db: Database,
 	threadId: string,
 ): { id: string; content: string; role: "user" } | null {
-	const lastAssistant = db
-		.prepare<{ created_at: string }, [string]>(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId);
+	const lastAssistant = findLatestLiveAssistantMessageCreatedAtByThread(db, threadId);
 
 	const cutoff = lastAssistant?.created_at ?? "1970-01-01T00:00:00.000Z";
 
-	return (
-		(db
-			.prepare<{ id: string; content: string; role: "user" }, [string, string]>(
-				"SELECT id, content, role FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 AND created_at > ? ORDER BY created_at ASC LIMIT 1",
-			)
-			.get(threadId, cutoff) as { id: string; content: string; role: "user" } | null) ?? null
-	);
+	return findFirstLiveUserMessageByThreadSince(db, threadId, cutoff);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,12 +188,33 @@ export function calculateTurnCost(
 	const cfg = backends.find((b) => b.id === modelId);
 	if (!cfg) return 0;
 
-	const inputCost = (usage.inputTokens * (cfg.price_per_m_input ?? 0)) / 1_000_000;
-	const outputCost = (usage.outputTokens * (cfg.price_per_m_output ?? 0)) / 1_000_000;
-	const cacheReadCost =
-		((usage.cacheReadTokens ?? 0) * (cfg.price_per_m_cache_read ?? 0)) / 1_000_000;
-	const cacheWriteCost =
-		((usage.cacheWriteTokens ?? 0) * (cfg.price_per_m_cache_write ?? 0)) / 1_000_000;
+	const pricesPerM = {
+		input: cfg.price_per_m_input ?? 0,
+		output: cfg.price_per_m_output ?? 0,
+		cacheRead: cfg.price_per_m_cache_read ?? 0,
+		cacheWrite: cfg.price_per_m_cache_write ?? 0,
+	};
+	const dynamic = calculateDynamicPrice(modelId, {
+		modelId,
+		inputTokens: usage.inputTokens,
+		outputTokens: usage.outputTokens,
+		cacheReadTokens: usage.cacheReadTokens ?? 0,
+		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+		pricesPerM,
+	});
+	if (dynamic?.value !== null && dynamic !== null) return dynamic.value;
+	if (dynamic?.error && !warnedDynamicPricingFallbacks.has(modelId)) {
+		warnedDynamicPricingFallbacks.add(modelId);
+		logger.warn("Dynamic price callback failed; falling back to static pricing", {
+			modelId,
+			error: dynamic.error,
+		});
+	}
+
+	const inputCost = (usage.inputTokens * pricesPerM.input) / 1_000_000;
+	const outputCost = (usage.outputTokens * pricesPerM.output) / 1_000_000;
+	const cacheReadCost = ((usage.cacheReadTokens ?? 0) * pricesPerM.cacheRead) / 1_000_000;
+	const cacheWriteCost = ((usage.cacheWriteTokens ?? 0) * pricesPerM.cacheWrite) / 1_000_000;
 
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
@@ -253,25 +254,43 @@ export function getResolvedModelId(resolution: ModelResolution | null, fallback?
 }
 
 /**
+ * Conservative output budget used when neither the loop nor the backend
+ * advertises one. This must stay aligned with context assembly's fallback
+ * reserve: the number subtracted from the context window is also the number
+ * sent on the wire. Omitting max_tokens lets some providers substitute their
+ * model-wide maximum (observed: 128k on GLM-5), invalidating assembly's 8k
+ * reserve and producing a context-length 400 once history grows.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 8_000;
+
+/**
  * Reconciles the agent-loop default `max_tokens` budget with a per-backend
  * cap configured in `model_backends.json#max_output_tokens`. Returns
- * `min(defaultMax, cap)` when `cap` is a positive integer, otherwise
- * returns `defaultMax` unchanged.
+ * `min(defaultMax, cap)` when both are positive integers. When only one is
+ * present, returns it. When neither is present, returns the conservative 8k
+ * fallback rather than omitting max_tokens and accepting a provider-defined
+ * default that may consume most of the context window.
  *
- * Exists because some Bedrock models reject the default
- * `DEFAULT_MAX_OUTPUT_TOKENS` (16_384) with
- * `max_tokens exceeds model limit of N` — notably Nova Pro (N=10_000).
- * The backend cap is treated as an upper bound only: if an operator
- * misconfigures a cap above the default, the default still wins so the
- * per-turn budget can never be raised behind the loop's back.
+ * Exists because some Bedrock models reject an explicit `maxTokens` above
+ * their ceiling with `max_tokens exceeds model limit of N` — notably
+ * Nova Pro. The backend cap is treated as an upper bound only: if an operator
+ * sets a cap above the configured default, the default still wins.
  *
- * Exported so both the agent-loop (local path) and the relay-processor
- * (receiver side) can reuse a single definition — defence-in-depth against
- * stale requester payloads that still carry the old default.
+ * Exported so both the agent-loop (local path) and relay-processor (receiver
+ * side) reuse one definition — defence-in-depth against stale requester
+ * payloads and provider defaults.
  */
-export function clampMaxOutputTokens(defaultMax: number, cap: number | undefined): number {
-	if (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0) return defaultMax;
-	return Math.min(defaultMax, Math.floor(cap));
+export function clampMaxOutputTokens(
+	defaultMax: number | undefined,
+	cap: number | undefined,
+): number {
+	const hasDefault =
+		typeof defaultMax === "number" && Number.isFinite(defaultMax) && defaultMax > 0;
+	const hasCap = typeof cap === "number" && Number.isFinite(cap) && cap > 0;
+	if (hasDefault && hasCap) return Math.min(defaultMax, Math.floor(cap));
+	if (hasDefault) return defaultMax;
+	if (hasCap) return Math.floor(cap);
+	return DEFAULT_MAX_OUTPUT_TOKENS;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,13 +310,7 @@ export function deriveCapabilityRequirements(
 	}
 
 	try {
-		const recentMsgs = db
-			.query(
-				`SELECT content FROM messages
-				 WHERE thread_id = ? AND deleted = 0
-				 ORDER BY created_at DESC LIMIT 5`,
-			)
-			.all(threadId) as Array<{ content: string }>;
+		const recentMsgs = listRecentLiveMessageContentByThread(db, threadId, 5);
 
 		const hasImageBlock = recentMsgs.some((m) => {
 			try {
@@ -594,12 +607,25 @@ interface DbMessageRow {
  * been seen via the `toolCallSeen` flag so the predicate is accurate even
  * when the delta contains many consecutive `tool_result` rows.
  */
+export function deltaRequiresColdReassembly(rows: DbMessageRow[]): boolean {
+	// A purge row is an instruction over the entire history, not an LLM turn.
+	// The warm path only appends new rows to an already-materialized prefix, so
+	// it cannot remove the targeted cached messages or place the replacement
+	// summary correctly. Force the full purge-substitution stage to run.
+	return rows.some((row) => row.role === "purge");
+}
+
 export function convertDbRowToLLMMessage(
 	row: DbMessageRow,
 	previousRole?: string,
 	toolCallSeen?: boolean,
 ): LLMMessage | null {
 	const { role, content, tool_name, model_id, host_origin } = row;
+
+	// These roles only have meaning in the DB context pipeline. `purge` is
+	// consumed by purge substitution, and persisted `system` rows are forbidden
+	// legacy/corrupt input. Neither is legal in the AI SDK ModelMessage schema.
+	if (role === "purge" || role === "system") return null;
 
 	// Validate tool pairs. `tool_result` must follow `tool_call` directly OR
 	// be part of a run of `tool_result` messages responding to that call
@@ -612,15 +638,25 @@ export function convertDbRowToLLMMessage(
 		}
 	}
 
+	// Alert rows (inference failures persisted via emitAlert) must be
+	// converted to developer-role messages here, matching the cold path's
+	// Stage 2.5 conversion in context-assembly.ts. Without this, the warm
+	// path emits role:"alert" which fails the AI SDK's ModelMessage[] schema
+	// validation (InvalidPromptError), permanently poisoning the thread.
+	// See Invariant #9 (alert is not a wire role) and #19 (developer is the
+	// role for injected system context).
+	const isAlert = role === "alert";
 	const msg: LLMMessage = {
-		role: role as LLMMessage["role"],
+		role: (isAlert ? "developer" : role) as LLMMessage["role"],
 		// Readback seam: any role whose row holds a serialized ContentBlock[]
 		// (a user prompt with an attached image, a tool_result with a binary
 		// blob) is parsed back to blocks here. Without this, the driver
 		// receives the literal JSON text and the image/document never reaches
 		// the model. The live tool-result branch in agent-loop.ts handles the
 		// just-executed case; this covers every DB-readback path.
-		content: parseContentBlocks(content),
+		content: parseContentBlocks(
+			isAlert && typeof content === "string" ? `[system alert] ${content}` : content,
+		),
 	};
 
 	if (tool_name) {
@@ -650,6 +686,12 @@ export function convertDeltaMessages(rows: DbMessageRow[]): LLMMessage[] {
 	let toolCallSeen = false;
 
 	for (const row of rows) {
+		// Yard client-dispatch bookkeeping rows have no declaring tool_call and
+		// their content already rides inside the aggregate yard tool_result.
+		// Skipping BEFORE conversion leaves lastRole/toolCallSeen untouched, so a
+		// parallel batch interleaved with bookkeeping rows stays intact. Mirrors
+		// cold Stage 1 and the delegation codec — see yard-client-rows.ts.
+		if (isYardClientBookkeepingRow(row)) continue;
 		const msg = convertDbRowToLLMMessage(row, lastRole, toolCallSeen);
 		if (msg) {
 			messages.push(msg);
@@ -840,9 +882,7 @@ export function resolveToolAnnotations(
  */
 export function createFileRefResolver(db: Database): (fileId: string) => string | null {
 	return (fileId: string) => {
-		const row = db.query("SELECT content FROM files WHERE id = ? AND deleted = 0").get(fileId) as {
-			content: string | null;
-		} | null;
+		const row = findFileContentByIdActive(db, fileId);
 		return row?.content ?? null;
 	};
 }

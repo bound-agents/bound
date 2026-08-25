@@ -6,7 +6,7 @@ Thanks for your interest in contributing! This document is the developer-facing 
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) 1.2+
+- [Bun](https://bun.sh) 1.4+
 - An LLM backend for end-to-end testing (Ollama works offline; Bedrock/OpenAI-compatible also supported)
 - For Playwright e2e: system dependencies per `bun run test:e2e` output
 
@@ -43,10 +43,13 @@ bun run lint:fix
 
 # Typecheck (per-package — no composite mode at root)
 tsc -p packages/shared --noEmit
-bun run typecheck                                    # All packages sequentially
+bun run typecheck                                    # All packages in parallel (bun run --parallel)
 
 # Build (produces binaries in dist/)
 bun run build
+
+# Documentation
+bun run --cwd packages/docs check                  # Lint, build, links, and structure
 ```
 
 ## Repo Layout
@@ -62,13 +65,13 @@ packages/
   sync/         Ed25519 WS sync, XChaCha20 encryption, LWW/append reducers
   sandbox/      Virtual filesystem (InMemoryFs/ClusterFs), command framework
   llm/          Driver shims (Bedrock, OpenAI-compatible) over Vercel AI SDK
-  agent/        Agent loop, 8-stage context pipeline, commands, scheduler, MCP bridge
+  loop/         Reusable loop contracts, stream parsing, retry/timeout utilities
+  agent/        Main-agent context pipeline, commands, scheduler, MCP bridge
   platforms/    MCP-based platform connectors (Discord), connector handles, connector tool
   web/          Hono API + Svelte 5 SPA
   client/       BoundClient (HTTP + WS) for external consumers
-  mcp-server/   Standalone stdio MCP server (bound-mcp)
   less/         Terminal coding agent client (boundless)
-  cli/          bound/boundctl/bound-mcp/boundless binaries
+  cli/          bound/boundctl/boundless binaries
 ```
 
 For design rationale per package, see `docs/design/` — seven topic files covering core infrastructure, sync protocol, agent system, sandboxing, inference backends, web+platforms, and the top-level architecture overview.
@@ -95,8 +98,6 @@ For design rationale per package, see `docs/design/` — seven topic files cover
 - **Mock LLM**: implement the `LLMBackend` interface with `setTextResponse()` / `setToolThenTextResponse()` — see existing tests in `packages/agent`.
 - **Typecheck in tests**: the typecheck config excludes `__tests__/` directories, so missing fields on test-only fixtures can be silent. Mirror production shapes precisely when constructing `StreamChunk.done.usage` etc.
 
-**Behavioral probes.** Tests under `packages/agent/src/__tests__/probes/` exercise real LLM drivers and consume inference budget. They are gated behind `BOUND_RUN_BEHAVIORAL_PROBE=1` and run on a separate cadence (weekly via the behavioral-probe workflow) rather than per-PR. Per-PR CI skips them. See `docs/test-plans/2026-05-22-volatile-context-probe.md` for the §8.6 procedure and operator workflow setup instructions.
-
 ## Critical Invariants
 
 These rules exist because violating them has historically caused real production incidents (sync loss, SQL injection risk, cache misses, hot loops). The list below is the index — the full explanation, rationale, and mitigation for each lives in [docs/invariants.md](docs/invariants.md). Read the linked section before writing code that touches the subject. They're numbered flat (no category grouping), because the numbers and the old category headings disagreed about order.
@@ -115,13 +116,16 @@ These rules exist because violating them has historically caused real production
 12. [Canonical edge relations](docs/invariants.md#12-canonical-edge-relations) — `memory_edges.relation` must be one of the 10 `CANONICAL_RELATIONS`.
 13. [Config schemas are closed (strict mode)](docs/invariants.md#13-config-schemas-are-closed-strict-mode) — declare every config field in its Zod schema or the loader rejects the file.
 14. [Hub response-kind routing](docs/invariants.md#14-hub-response-kind-routing) — hub-targeted response kinds go into `relay_inbox`, not `executeImmediate()`.
-15. [Platform intake affinity](docs/invariants.md#15-platform-intake-affinity) — `intake` relay with a `platform` field routes to the host with that connector.
+15. [Platform intake affinity (optimization)](docs/invariants.md#15-platform-intake-affinity-optimization-not-a-requirement) — `intake` with a `platform` field prefers that connector's host, but the loop runs locally there; affinity saves a round-trip, it is not required.
 16. [Extended-thinking routing](docs/invariants.md#16-extended-thinking-routing) — `thinking` / `effort` fold into `reasoningConfig`; mirror new fields in `inferenceRequestPayloadSchema`.
 17. [Shared-config → router hand-off](docs/invariants.md#17-shared-config-to-router-hand-off) — new per-backend fields must be copied in `toRouterConfig()` or they never reach the router.
-18. [`ProcessPayload.message_id` must reference a real `messages` row](docs/invariants.md#18-forwarded-message_id-must-reference-a-real-messages-row) — forward a real id; notifications are the trap (use `resolveDelegationMessageId()`).
+18. [Forwarded message_id must reference a real `messages` row (RETIRED)](docs/invariants.md#18-forwarded-message_id-must-reference-a-real-messages-row-retired) — retired 2026-06-29; `ProcessPayload` / whole-loop delegation no longer exist (see #22).
 19. [`role: "system"` is forbidden in the `messages` table](docs/invariants.md#19-the-system-role-is-forbidden-in-the-messages-table) — use `role: "developer"` for injected system context.
 20. [No foreign key constraints on synced tables](docs/invariants.md#20-no-foreign-key-constraints-on-synced-tables) — replay inserts rows out of order; FK clauses would fail intermittently.
-21. [Client-session affinity wins over model-based delegation](docs/invariants.md#21-client-session-affinity-wins-over-model-based-delegation) — a live boundless / `BoundClient` session pins client-tool execution to its host.
+21. [Client tools relay to the session host](docs/invariants.md#21-client-tools-relay-to-the-session-host-affinity-is-an-optimization) — a client tool relays (`client_tool`/`client_result`) to the WS-session host; affinity is an optimization, not a must-run-here.
+22. [One delegation path — consumer never re-assembles](docs/invariants.md#22-one-delegation-path--consumer-never-re-assembles) — the producer assembles + ships segments; the consumer resolves via `resolveSegments` and never re-assembles. No `process` kind, no files-offload.
+23. [Relay history is one range-pointer over confirmed-synced rows](docs/invariants.md#23-relay-history-is-one-range-pointer-over-confirmed-synced-rows) — a range covers a row only if its HLC ≤ `last_confirmed`; `getConfirmedSyncWatermark` is the sole anchor.
+24. [Assembly is pure over (DB, AssemblyContext)](docs/invariants.md#24-assembly-is-pure-over-db-assemblycontext) — `assembleContext` output depends only on `(DB, clock)`; "now" enters only via `AssemblyClock`.
 
 ## Common Gotchas
 
@@ -136,7 +140,6 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [`bun test packages/cli` prints init stdout — check the exit code](docs/gotchas.md#bun-test-cli-prints-init-stdout)
 - [Mixed positional + flag arg parsing](docs/gotchas.md#mixed-positional-and-flag-arg-parsing)
 - [`loopContextStorage` (AsyncLocalStorage) scope](docs/gotchas.md#loopcontextstorage-scope-asynclocalstorage)
-- [`bound-mcp` polling can return stale turns](docs/gotchas.md#bound-mcp-polling-can-return-stale-turns)
 - [bound CLI config and data dirs](docs/gotchas.md#bound-cli-config-and-data-dirs)
 - [Stale binaries](docs/gotchas.md#stale-binaries)
 - [Universal 256 KiB tool-result cap](docs/gotchas.md#universal-256-kib-tool-result-cap)
@@ -146,6 +149,11 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Cross-provider `tool_use` portability (id and name)](docs/gotchas.md#cross-provider-tool_use-portability-id-and-name)
 - [`thinking`-signature portability](docs/gotchas.md#thinking-signature-portability)
 - [`boundless_bash` runs inside a filesystem sandbox by default](docs/gotchas.md#boundless_bash-runs-inside-a-filesystem-sandbox-by-default)
+- [Mantle GPT-5.x automatic prompt cache is exact-match, not prefix](docs/gotchas.md#mantle-gpt-5x-automatic-prompt-cache-is-exact-match-not-prefix)
+- [Importing a package can create logs/bound.log in cwd](docs/gotchas.md#importing-a-package-can-create-logsboundlog-in-cwd)
+- [Yard's `input` can arrive as JSON text, not a value](docs/gotchas.md#yards-input-can-arrive-as-json-text-not-a-value)
+- [`bun add` / `bun install` fail against the global cache under the boundless sandbox](docs/gotchas.md#bun-add--bun-install-fail-against-the-global-cache-under-the-boundless-sandbox)
+- [`bun --cwd <pkg> run <script>` silently no-ops](docs/gotchas.md#bun---cwd-pkg-run-script-silently-no-ops)
 
 ## Recurring Checklists
 
@@ -155,11 +163,12 @@ Accumulated the hard way — check here before writing a bug report. The list be
 2. Add the name to `SyncedTableName` and `TABLE_REDUCER_MAP` in `packages/shared/src/types.ts`.
 3. If its primary key is not `id`, add an entry to `TABLE_PK_COLUMN` in `packages/core/src/change-log.ts`.
 4. Decide the reducer (`lww` or `append-only`) — wiring lives in `packages/sync/src/reducers.ts`, keyed off `TABLE_REDUCER_MAP`.
-5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL.
-6. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
-7. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
-8. Add the table to `SYNCED_TABLE_NAMES` in `packages/core/src/schema-introspection.ts` so `getSyncedTableSchemas()` exposes its columns in the agent's stable-prefix `## Database Schema` block. Tables not listed there are invisible to the `query` command's schema hint.
-9. Add the table to `SNAPSHOT_TABLE_ORDER` in `packages/sync/src/ws-transport.ts` — this list controls the order in which tables are seeded to new spoke nodes joining the cluster. Omission here causes silent data loss on new spokes (that table's data will never appear in snapshots).
+5. Use only `insertRow` / `updateRow` / `softDelete` for writes — never raw SQL. A write that must intentionally skip the changelog (per-host hint, local-only metric, crash recovery, one-time migration) goes through `dangerouslyExecuteRawWrite(db, { sql, params, reason })` — the single bypass the outbox CI gate permits.
+6. Put reads in the repository layer (`packages/core/src/repositories/`): a per-table module for single-table finders, `repositories/queries/` for cross-table JOINs. Don't inline `db.query(...)` in feature code — `scripts/validate-read-centralization.ts` ratchets inline reads down against a baseline. (Reads of non-synced tables / arbitrary SQL stay raw and are excluded from the gate.)
+7. Add migration logic if upgrading existing deployments (see `metrics-schema.ts` for the `turns` INTEGER→TEXT id migration as a template).
+8. Update `docs/design/sync-protocol.md` if the reducer behavior is non-obvious.
+9. Add the table to `SYNCED_TABLE_NAMES` in `packages/core/src/schema-introspection.ts` so `getSyncedTableSchemas()` exposes its columns in the agent's stable-prefix `## Database Schema` block. Tables not listed there are invisible to the `query` command's schema hint.
+10. Add the table to `SNAPSHOT_TABLE_ORDER` in `packages/sync/src/ws-transport.ts` — this list controls the order in which tables are seeded to new spoke nodes joining the cluster. Omission here causes silent data loss on new spokes (that table's data will never appear in snapshots).
 
 ### Adding a config field
 
@@ -184,7 +193,8 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - `bun run lint` clean (or `bun run lint:fix` first)
 - `bun run typecheck` clean across all packages
 - Relevant tests added or updated
-- For user-visible changes: update `README.md` and/or `docs/design/*`
+- **Every non-internal feature change ships with documentation in the same PR.** If a change adds or alters something an operator or the agent can observe — a new tool or tool action, a config field, a CLI command, an API route, a UI surface, a behavioral rule — it needs a docs page or a revision to one under `packages/docs/src/content/docs/`, plus a sidebar entry in `packages/docs/src/sidebar.ts` if the page is new. Follow the [documentation style guide](packages/docs/STYLE_GUIDE.md). Purely internal work (refactors, test-only changes, perf, build plumbing) is exempt. Undocumented features are indistinguishable from bugs to everyone who didn't write them.
+- For user-visible changes: also update `README.md` and/or `docs/design/*`
 - For new invariants or gotchas: add them to [docs/invariants.md](docs/invariants.md) / [docs/gotchas.md](docs/gotchas.md) and add an index line here
 
 See the git log for commit message style — concise, conventional-commits-ish (`feat(web):`, `fix(llm):`, etc.), present tense.
@@ -201,5 +211,5 @@ See the git log for commit message style — concise, conventional-commits-ish (
 - [docs/design/sandbox.md](docs/design/sandbox.md) — VFS, command framework, boundless filesystem sandbox
 - [docs/design/inference-backends.md](docs/design/inference-backends.md) — LLM driver shims, model routing
 - [docs/design/web-and-discord.md](docs/design/web-and-discord.md) — HTTP API, WS protocol, platform connectors
-- [docs/cli-operations.md](docs/cli-operations.md) — operator-facing CLI reference
-- [docs/config.md](docs/config.md) — per-field reference for every config file
+- [Docs site — CLI & Operations](https://bound-agents.github.io/bound/guides/cli-operations/) — operator-facing CLI reference
+- [Docs site — Configuration Reference](https://bound-agents.github.io/bound/reference/configuration/) — per-field reference for every config file

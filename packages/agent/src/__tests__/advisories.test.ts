@@ -2,6 +2,7 @@ import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema } from "@bound/core";
 import type { Advisory } from "@bound/shared";
+import fc from "fast-check";
 import {
 	applyAdvisory,
 	approveAdvisory,
@@ -63,12 +64,113 @@ describe("Advisories", () => {
 		// Clear changelog from create
 		db.prepare("DELETE FROM change_log WHERE row_id = ?").run(advisoryId);
 
-		approveAdvisory(db, advisoryId, siteId);
+		approveAdvisory(db, advisoryId, { note: "verified, merging", by: "agent" }, siteId);
 
 		const changelogEntries = db
 			.prepare("SELECT * FROM change_log WHERE table_name = 'advisories' AND row_id = ?")
 			.all(advisoryId);
 		expect(changelogEntries.length).toBeGreaterThanOrEqual(1);
+	});
+
+	function seed(): string {
+		return createAdvisory(
+			db,
+			{
+				type: "cost",
+				title: "Seed",
+				detail: "Detail",
+				action: "Action",
+				impact: "low",
+				evidence: "Evidence",
+			},
+			siteId,
+		);
+	}
+
+	it("preserves terminal resolution fields and excludes resolved advisories from pending", () => {
+		fc.assert(
+			fc.property(
+				fc.constantFrom("approved", "dismissed", "applied"),
+				fc.string({ minLength: 1, maxLength: 64 }),
+				fc.string({ minLength: 1, maxLength: 128 }),
+				fc.array(fc.string({ minLength: 1, maxLength: 32 }), { maxLength: 5 }),
+				(status, actor, note, untouchedTitles) => {
+					const resolvedId = seed();
+					const untouchedIds = untouchedTitles.map((title) =>
+						createAdvisory(
+							db,
+							{
+								type: "general",
+								title,
+								detail: "Detail",
+								action: null,
+								impact: null,
+								evidence: null,
+							},
+							siteId,
+						),
+					);
+
+					const resolution = { by: actor, note };
+					const result =
+						status === "approved"
+							? approveAdvisory(db, resolvedId, resolution, siteId)
+							: status === "dismissed"
+								? dismissAdvisory(db, resolvedId, resolution, siteId)
+								: (() => {
+										const approved = approveAdvisory(db, resolvedId, resolution, siteId);
+										return approved.ok
+											? applyAdvisory(db, resolvedId, resolution, siteId)
+											: approved;
+									})();
+					if (!result.ok) return false;
+
+					const row = db
+						.prepare(
+							"SELECT status, resolution_note, resolved_by, resolved_at FROM advisories WHERE id = ?",
+						)
+						.get(resolvedId) as Advisory;
+					const pendingIds = getPendingAdvisories(db).map((advisory) => advisory.id);
+					return (
+						row.status === status &&
+						row.resolution_note === note &&
+						row.resolved_by === actor &&
+						row.resolved_at !== null &&
+						!pendingIds.includes(resolvedId) &&
+						untouchedIds.every((id) => pendingIds.includes(id))
+					);
+				},
+			),
+			{ numRuns: 50 },
+		);
+	});
+
+	it("preserves defer resolution fields", () => {
+		fc.assert(
+			fc.property(
+				fc.string({ minLength: 1, maxLength: 64 }),
+				fc.string({ minLength: 1, maxLength: 128 }),
+				(actor, note) => {
+					const id = seed();
+					const deferUntil = "2099-01-01T00:00:00.000Z";
+					const result = deferAdvisory(db, id, deferUntil, { by: actor, note }, siteId);
+					if (!result.ok) return false;
+					const row = db
+						.prepare(
+							"SELECT status, defer_until, resolution_note, resolved_by, resolved_at FROM advisories WHERE id = ?",
+						)
+						.get(id) as Advisory;
+					return (
+						row.status === "deferred" &&
+						row.defer_until === deferUntil &&
+						row.resolution_note === note &&
+						row.resolved_by === actor &&
+						row.resolved_at === null
+					);
+				},
+			),
+			{ numRuns: 50 },
+		);
 	});
 
 	it("should create an advisory", () => {
@@ -131,200 +233,6 @@ describe("Advisories", () => {
 		expect(pending[1].id).toBe(id2);
 	});
 
-	it("should approve an advisory", () => {
-		const id = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test",
-				detail: "Detail",
-				action: "Action",
-				impact: "low",
-				evidence: "Evidence",
-			},
-			siteId,
-		);
-
-		const result = approveAdvisory(db, id, siteId);
-		expect(result.ok).toBe(true);
-
-		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
-		expect(advisory.status).toBe("approved");
-		expect(advisory.resolved_at).toBeDefined();
-	});
-
-	it("should dismiss an advisory", () => {
-		const id = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test",
-				detail: "Detail",
-				action: "Action",
-				impact: "low",
-				evidence: "Evidence",
-			},
-			siteId,
-		);
-
-		const result = dismissAdvisory(db, id, siteId);
-		expect(result.ok).toBe(true);
-
-		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
-		expect(advisory.status).toBe("dismissed");
-		expect(advisory.resolved_at).toBeDefined();
-	});
-
-	it("should defer an advisory", () => {
-		const id = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test",
-				detail: "Detail",
-				action: "Action",
-				impact: "low",
-				evidence: "Evidence",
-			},
-			siteId,
-		);
-
-		const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-		const result = deferAdvisory(db, id, futureDate, siteId);
-		expect(result.ok).toBe(true);
-
-		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
-		expect(advisory.status).toBe("deferred");
-		expect(advisory.defer_until).toBe(futureDate);
-	});
-
-	it("should apply an advisory", () => {
-		const id = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test",
-				detail: "Detail",
-				action: "Action",
-				impact: "low",
-				evidence: "Evidence",
-			},
-			siteId,
-		);
-
-		const result = applyAdvisory(db, id, siteId);
-		expect(result.ok).toBe(true);
-
-		const advisory = db.prepare("SELECT * FROM advisories WHERE id = ?").get(id) as Advisory;
-		expect(advisory.status).toBe("applied");
-		expect(advisory.resolved_at).toBeDefined();
-	});
-
-	it("should exclude approved advisories from pending", () => {
-		const id1 = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test 1",
-				detail: "Detail 1",
-				action: "Action 1",
-				impact: "low",
-				evidence: "Evidence 1",
-			},
-			siteId,
-		);
-
-		const id2 = createAdvisory(
-			db,
-			{
-				type: "frequency",
-				title: "Test 2",
-				detail: "Detail 2",
-				action: "Action 2",
-				impact: "high",
-				evidence: "Evidence 2",
-			},
-			siteId,
-		);
-
-		approveAdvisory(db, id1, siteId);
-
-		const pending = getPendingAdvisories(db);
-
-		expect(pending.length).toBe(1);
-		expect(pending[0].id).toBe(id2);
-	});
-
-	it("should exclude dismissed advisories from pending", () => {
-		const id1 = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test 1",
-				detail: "Detail 1",
-				action: "Action 1",
-				impact: "low",
-				evidence: "Evidence 1",
-			},
-			siteId,
-		);
-
-		const id2 = createAdvisory(
-			db,
-			{
-				type: "frequency",
-				title: "Test 2",
-				detail: "Detail 2",
-				action: "Action 2",
-				impact: "high",
-				evidence: "Evidence 2",
-			},
-			siteId,
-		);
-
-		dismissAdvisory(db, id1, siteId);
-
-		const pending = getPendingAdvisories(db);
-
-		expect(pending.length).toBe(1);
-		expect(pending[0].id).toBe(id2);
-	});
-
-	it("should exclude applied advisories from pending", () => {
-		const id1 = createAdvisory(
-			db,
-			{
-				type: "cost",
-				title: "Test 1",
-				detail: "Detail 1",
-				action: "Action 1",
-				impact: "low",
-				evidence: "Evidence 1",
-			},
-			siteId,
-		);
-
-		const id2 = createAdvisory(
-			db,
-			{
-				type: "frequency",
-				title: "Test 2",
-				detail: "Detail 2",
-				action: "Action 2",
-				impact: "high",
-				evidence: "Evidence 2",
-			},
-			siteId,
-		);
-
-		applyAdvisory(db, id1, siteId);
-
-		const pending = getPendingAdvisories(db);
-
-		expect(pending.length).toBe(1);
-		expect(pending[0].id).toBe(id2);
-	});
-
 	it("should not include deferred advisories with future dates in pending", () => {
 		const id = createAdvisory(
 			db,
@@ -340,7 +248,7 @@ describe("Advisories", () => {
 		);
 
 		const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-		deferAdvisory(db, id, futureDate, siteId);
+		deferAdvisory(db, id, futureDate, { note: "ok", by: "agent" }, siteId);
 
 		const pending = getPendingAdvisories(db);
 

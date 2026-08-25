@@ -6,11 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import {
-	computeInflationRatio,
-	resolveAdaptiveTruncation,
-	resolveAdaptiveTruncationRatio,
-} from "../inflation-ratio";
+import { computeInflationRatio, resolveAdaptiveTruncationTarget } from "../inflation-ratio";
 
 describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => {
 	let db: Database;
@@ -82,7 +78,7 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		// Many older agent tests build a DB with applySchema only and skip
 		// applyMetricsSchema. The agent loop calls into here on every
 		// assembly, so the helper must not crash — it must report "no data"
-		// and let callers fall back to the base ratio.
+		// and let callers fall back to the base target.
 		const noMetricsDir = mkdtempSync(join(tmpdir(), "inflation-ratio-no-metrics-"));
 		const noMetricsPath = join(noMetricsDir, "test.db");
 		const noMetricsDb = createDatabase(noMetricsPath);
@@ -167,35 +163,42 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		expect(computeInflationRatio(db, threadId)).toBeNull();
 	});
 
-	it("resolves to the base ratio when no usable history exists (cold start)", () => {
-		// Empty thread → null from computeInflationRatio → resolved ratio
-		// equals the supplied base. New threads get the original 0.85 budget
-		// until they accumulate enough turns to measure their own inflation.
-		expect(resolveAdaptiveTruncationRatio(db, threadId, 0.85)).toBeCloseTo(0.85, 5);
+	it("resolves to the base target when no usable history exists (cold start)", () => {
+		// Empty thread → null from computeInflationRatio → resolved target
+		// equals the supplied base. New threads get the unadjusted
+		// contextWindow-minus-maxOutputTokens target until they accumulate
+		// enough turns to measure their own inflation.
+		const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+		expect(result.target).toBe(170_000);
+		expect(result.inflation).toBeNull();
 	});
 
-	it("tightens the ratio proportionally to measured inflation (option 2)", () => {
+	it("tightens the target proportionally to measured inflation (option 2)", () => {
 		const t0 = new Date("2026-05-22T19:00:00Z");
 		// Three turns showing 2.0x inflation (LLM input is twice tiktoken estimate)
 		insertTurn(t0, { estimated: 100000, actualTotal: 200000 });
 		insertTurn(new Date(t0.getTime() + 1000), { estimated: 100000, actualTotal: 200000 });
 		insertTurn(new Date(t0.getTime() + 2000), { estimated: 100000, actualTotal: 200000 });
 
-		// 0.85 base / 2.0 inflation = 0.425
-		expect(resolveAdaptiveTruncationRatio(db, threadId, 0.85)).toBeCloseTo(0.425, 5);
+		// 170_000 base / 2.0 inflation = 85_000
+		const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+		expect(result.target).toBe(85_000);
+		expect(result.inflation).toBeCloseTo(2.0, 5);
 	});
 
-	it("does NOT loosen the ratio when inflation < 1.0 (estimator overcounts)", () => {
+	it("does NOT loosen the target when inflation < 1.0 (estimator overcounts)", () => {
 		const t0 = new Date("2026-05-22T20:00:00Z");
 		// Three turns showing 0.8x — tiktoken overestimated. The clamp at 1.0
-		// prevents us from raising the truncation ratio above its base, since
-		// loosening would risk blowing the configured forcing budget on the
-		// next turn that swings back over the line.
+		// prevents us from raising the truncation target above its base, since
+		// loosening would risk blowing the configured budget on the next turn
+		// that swings back over the line.
 		insertTurn(t0, { estimated: 100000, actualTotal: 80000 });
 		insertTurn(new Date(t0.getTime() + 1000), { estimated: 100000, actualTotal: 80000 });
 		insertTurn(new Date(t0.getTime() + 2000), { estimated: 100000, actualTotal: 80000 });
 
-		expect(resolveAdaptiveTruncationRatio(db, threadId, 0.85)).toBeCloseTo(0.85, 5);
+		const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+		expect(result.target).toBe(170_000);
+		expect(result.inflation).toBeCloseTo(0.8, 5);
 	});
 
 	it("scopes ratios to the requested thread (does not pollute across threads)", () => {
@@ -219,7 +222,7 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		expect(computeInflationRatio(db, otherThread)).toBeCloseTo(5.0, 5);
 	});
 
-	// Regression: thread c879be2b-fe29-421d-b1a6-b9b1579e5648 (2026-05-24).
+	// Regression, observed live.
 	// The pre-fix agent-loop wrote actualTotalTokens = inputTokens +
 	// cacheReadTokens + cacheWriteTokens. Both AI SDK Bedrock@4.x and
 	// Anthropic@3.x already sum (raw_input + cR + cW) into the standardized
@@ -227,12 +230,13 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 	// cache-write turn. The result was a recorded inflation of ~2.7x on
 	// cache-write turns (live data) versus ~1.4x on no-cache turns —
 	// poisoning the EMA, monotonically tightening the adaptive truncation
-	// ratio, and forcing warm-path budget bails forever.
+	// target, and forcing warm-path budget bails forever.
 	//
 	// This test pins the EMA's healthy band against a synthetic Bedrock-like
 	// turn sequence where actualTotalTokens has been recorded correctly.
 	// Inflation should stay in 1.3-1.5x (legit tiktoken-vs-Bedrock drift on
-	// opus), and effective truncation ratio should NOT collapse below 0.5.
+	// opus), and the resolved target should NOT collapse below 110_000
+	// (equivalent to the old ratio floor of 0.55 against a 200k window).
 	it("inflation EMA stays in healthy band when actualTotalTokens excludes double-counting", () => {
 		const t0 = new Date("2026-05-23T20:00:00Z");
 
@@ -270,21 +274,23 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		// biome-ignore lint/style/noNonNullAssertion: just asserted above
 		expect(ratio!).toBeLessThan(1.55);
 
-		// Adaptive truncation ratio derived from this EMA must stay
-		// well above 0.5. If it drops below, the spiral has returned.
-		const adaptive = resolveAdaptiveTruncationRatio(db, threadId, 0.85);
-		expect(adaptive).toBeGreaterThan(0.55);
+		// Target derived from this EMA (against the same 170_000 base used
+		// elsewhere in this file — equivalent to 0.85 * 200_000) must stay
+		// well above 110_000 (the old 0.55 ratio floor). If it drops below,
+		// the spiral has returned.
+		const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+		expect(result.target).toBeGreaterThan(110_000);
 		// And of course it should still be tightened from the base
 		// (otherwise we'd be ignoring the legit drift entirely).
-		expect(adaptive).toBeLessThan(0.65);
+		expect(result.target).toBeLessThan(130_000);
 	});
 
 	// Regression: pre-fix simulation of the SAME thread WITH the
 	// double-counting bug active. This test documents what the bad
 	// numerator looked like — included for forensic clarity. The
-	// adaptive ratio collapse below 0.5 it produces is what the live
+	// target collapse below 100_000 it produces is what the live
 	// thread experienced, and what the cache-aware EMA fix prevents.
-	it("documents the pre-fix collapse: doubled actualTotalTokens drives ratio below 0.5", () => {
+	it("documents the pre-fix collapse: doubled actualTotalTokens drives target below 100_000", () => {
 		const t0 = new Date("2026-05-23T21:00:00Z");
 
 		// What pre-fix would have written: input + cR + cW = ~2x the
@@ -314,48 +320,45 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 		// biome-ignore lint/style/noNonNullAssertion: just asserted above
 		expect(ratio!).toBeGreaterThan(1.8);
 
-		// And the adaptive ratio collapses past 0.5 — the warm-path
-		// budget bails on every turn under this load.
-		const adaptive = resolveAdaptiveTruncationRatio(db, threadId, 0.85);
-		expect(adaptive).toBeLessThan(0.5);
+		// And the resolved target collapses past 100_000 (against the
+		// 170_000 base) — the warm-path budget bails on every turn under
+		// this load.
+		const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+		expect(result.target).toBeLessThan(100_000);
 	});
 
-	// resolveAdaptiveTruncation exposes the same computation as
-	// resolveAdaptiveTruncationRatio plus the raw inflation EMA, so the
-	// agent loop can record both onto context_debug without re-running the
-	// lookback query. The agreement-with-legacy assertions guard against
-	// drift between the two entry points.
-	describe("resolveAdaptiveTruncation — exposes ratio + raw inflation", () => {
+	describe("resolveAdaptiveTruncationTarget — determinism and repeatability", () => {
 		it("returns inflation: null on cold start (insufficient samples)", () => {
-			const result = resolveAdaptiveTruncation(db, threadId, 0.85);
-			expect(result.ratio).toBeCloseTo(0.85, 5);
+			const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+			expect(result.target).toBe(170_000);
 			expect(result.inflation).toBeNull();
 		});
 
-		it("returns matching ratio + numeric inflation when samples exist", () => {
+		it("is deterministic across repeated calls on the same DB state", () => {
 			const t0 = new Date("2026-05-25T10:00:00Z");
 			insertTurn(t0, { estimated: 100000, actualTotal: 200000 });
 			insertTurn(new Date(t0.getTime() + 1000), { estimated: 100000, actualTotal: 200000 });
 			insertTurn(new Date(t0.getTime() + 2000), { estimated: 100000, actualTotal: 200000 });
 
-			const result = resolveAdaptiveTruncation(db, threadId, 0.85);
-			expect(result.inflation).toBeCloseTo(2.0, 5);
-			expect(result.ratio).toBeCloseTo(0.425, 5);
-			// Must agree with the legacy entry point on the same data.
-			expect(result.ratio).toBeCloseTo(resolveAdaptiveTruncationRatio(db, threadId, 0.85), 5);
+			const a = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+			const b = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
+			expect(a.inflation).toBeCloseTo(2.0, 5);
+			expect(a.target).toBe(85_000);
+			expect(a.target).toBe(b.target);
+			expect(a.inflation).toBe(b.inflation);
 		});
 
-		it("preserves the inflation < 1.0 clamp behavior on the ratio", () => {
+		it("preserves the inflation < 1.0 clamp behavior on the target", () => {
 			const t0 = new Date("2026-05-25T11:00:00Z");
 			insertTurn(t0, { estimated: 100000, actualTotal: 80000 });
 			insertTurn(new Date(t0.getTime() + 1000), { estimated: 100000, actualTotal: 80000 });
 			insertTurn(new Date(t0.getTime() + 2000), { estimated: 100000, actualTotal: 80000 });
 
-			const result = resolveAdaptiveTruncation(db, threadId, 0.85);
+			const result = resolveAdaptiveTruncationTarget(db, threadId, 170_000);
 			// Raw inflation is reported as-measured (0.8) — the clamp lives on
-			// the ratio side so observers can still see "estimator overcounts".
+			// the target side so observers can still see "estimator overcounts".
 			expect(result.inflation).toBeCloseTo(0.8, 5);
-			expect(result.ratio).toBeCloseTo(0.85, 5);
+			expect(result.target).toBe(170_000);
 		});
 	});
 });

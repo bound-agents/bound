@@ -1,8 +1,9 @@
 import type { BoundClient, ConnectionState } from "@bound/client";
-import type { Message } from "@bound/shared";
+import type { ContentBlock } from "@bound/llm";
+import { type Message, YARD_CLIENT_CALL_ID_PREFIX } from "@bound/shared";
 import { Box, Static, Text, useStdout } from "ink";
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	ActionBar,
 	Banner,
@@ -12,11 +13,52 @@ import {
 	StatusBar,
 	TextInput,
 	ToolCallCard,
+	YardExecutionCard,
 	computeStdoutRowBudget,
 } from "../components";
+import {
+	analyzeToolCallContent,
+	formatDuration,
+	isCompactToolName,
+	summarizeToolArgs,
+} from "../components/MessageBlock";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
+import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { type YardTreeSnapshot, useYardExecutions } from "../hooks/useYardExecutions";
+import { readClipboardImage } from "../util/clipboard-image";
+import { renderHalfBlocks } from "../util/half-blocks";
+import {
+	hashImageBytes,
+	stampImageDescription,
+	storeImageGraphics,
+	storeImagePreview,
+} from "../util/image-preview";
+import { extractFullText } from "../util/message-text";
+import { decodePng } from "../util/png";
 import { createResizeRedrawHandler } from "../util/resizeRedraw";
+import {
+	detectGraphicsProtocol,
+	encodeItermImage,
+	encodeKittyImage,
+	fitCellBox,
+	graphicsCursorMode,
+} from "../util/terminal-graphics";
+
+/**
+ * Slash-command palette for the input's completion menu. Kept adjacent to
+ * handleSubmit's dispatch (below) and the /help listing — the three MUST
+ * agree; a command in one and not the others is either undiscoverable or a
+ * lie. takesArgs controls whether Tab-completion appends a trailing space.
+ */
+export const CHAT_SLASH_COMPLETIONS = [
+	{ value: "/help", description: "Show available commands" },
+	{ value: "/model", description: "Switch model (picker without a name)", takesArgs: true },
+	{ value: "/attach", description: "Switch to a different thread" },
+	{ value: "/mcp", description: "MCP server configuration" },
+	{ value: "/inspect", description: "Browse the transcript at full fidelity" },
+	{ value: "/clear", description: "Start a new thread" },
+];
 
 /**
  * Per-tool_result metadata derived from its originating tool_call:
@@ -25,7 +67,7 @@ import { createResizeRedrawHandler } from "../util/resizeRedraw";
  * - `isLastInGroup`: false when more sibling results from the same parallel
  *   tool_call are still expected; true for the final one. ChatView uses this
  *   to collapse the inter-result gap so a parallel-call group renders as one
- *   continuous blue-striped card.
+ *   continuous cyan-striped card.
  */
 export type ToolResultMeta = {
 	filePath?: string;
@@ -37,6 +79,22 @@ export type ToolResultMeta = {
 	 * name, so without this the header would echo a useless id.
 	 */
 	toolName?: string;
+	/** The originating tool_use's `input` args — compact result lines render from these. */
+	input?: Record<string, unknown>;
+	/** id of the owning tool_call message — used for group-continuation margins. */
+	callMsgId?: string;
+	/**
+	 * Number of tool_use blocks in the owning call. Results of PARALLEL groups
+	 * (total > 1) re-render their ⏵ request row so each result immediately
+	 * follows its request — the call's own listing is suppressed.
+	 */
+	total?: number;
+	/**
+	 * `created_at` of the owning tool_call message. Paired with the result's
+	 * own `created_at` it yields wall-clock duration for the completed call —
+	 * both frozen by the time the result row commits (Static-safe).
+	 */
+	callCreatedAt?: string;
 };
 
 /**
@@ -61,7 +119,14 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 	// Each entry knows its parent call and the call's total tool_use count.
 	const toolUseToInfo = new Map<
 		string,
-		{ filePath?: string; toolName?: string; callMsgId: string; total: number }
+		{
+			filePath?: string;
+			toolName?: string;
+			input?: Record<string, unknown>;
+			callMsgId: string;
+			total: number;
+			callCreatedAt: string;
+		}
 	>();
 	for (const msg of messages) {
 		if (msg.role !== "tool_call") continue;
@@ -80,10 +145,24 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 					b.type === "tool_use" && typeof b.id === "string",
 			);
 			for (const block of uses) {
+				// boundless_* file tools carry `file_path`; the sandbox bms_* tools
+				// carry `path`. Missing this made a bms_read compact line dump its
+				// first hashline as the "target" instead of the file.
 				const filePath =
-					typeof block.input?.file_path === "string" ? block.input.file_path : undefined;
+					typeof block.input?.file_path === "string"
+						? block.input.file_path
+						: typeof block.input?.path === "string"
+							? block.input.path
+							: undefined;
 				const toolName = typeof block.name === "string" ? block.name : undefined;
-				toolUseToInfo.set(block.id, { filePath, toolName, callMsgId: msg.id, total: uses.length });
+				toolUseToInfo.set(block.id, {
+					filePath,
+					toolName,
+					input: block.input,
+					callMsgId: msg.id,
+					total: uses.length,
+					callCreatedAt: msg.created_at,
+				});
 			}
 		} catch {
 			// Non-parseable content — skip; not all tool_call messages parse cleanly.
@@ -104,9 +183,142 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
 			filePath: info.filePath,
 			isLastInGroup: seen === info.total,
 			toolName: info.toolName,
+			input: info.input,
+			callMsgId: info.callMsgId,
+			total: info.total,
+			callCreatedAt: info.callCreatedAt,
 		});
 	}
 	return result;
+}
+
+/**
+ * Per-message layout margins for the session-log Static, plus whether the
+ * transcript currently ends inside a compact read/search/query run (the dynamic
+ * area below adds its own top gap in that case, since the run's rows carry no
+ * bottom margin).
+ *
+ * Compact tools collapse to one line per invocation and consecutive calls stack
+ * with no blank line between them — they dominate coding sessions, so the
+ * transcript stays scannable. Because Ink's <Static> commits each row exactly
+ * once and never repaints it, a row's margins may depend only on messages that
+ * precede it (its own suppressed call, the prior compact run) — never on what
+ * arrives later. That is why grouping is expressed as marginTop on the
+ * FOLLOWING row ("am I continuing a run?") rather than marginBottom on the last
+ * row ("is anything after me?"), which would need the future.
+ */
+export function buildTranscriptMargins(
+	messages: Message[],
+	meta: Map<string, ToolResultMeta>,
+): { margins: Map<string, { top: number; bottom: number }>; endsInCompactRun: boolean } {
+	const margins = new Map<string, { top: number; bottom: number }>();
+	// Rolling state over already-committed rows. `compactRun` means the last
+	// VISIBLE row is a compact one-liner; `visibleCallMsgId` is the owning
+	// call of the last visible tool row. Suppressed (zero-height) calls leave
+	// both untouched — they don't change what's on screen, so letting them
+	// flip the state would misplace gaps around rows they never rendered.
+	let compactRun = false;
+	let visibleCallMsgId: string | undefined;
+	for (const msg of messages) {
+		if (msg.role === "tool_call") {
+			const { suppressed } = analyzeToolCallContent(msg.content);
+			if (suppressed) {
+				// Zero-height row — any margin would render as a stray blank
+				// line, and the visible-row state is unaffected.
+				margins.set(msg.id, { top: 0, bottom: 0 });
+			} else {
+				margins.set(msg.id, { top: compactRun ? 1 : 0, bottom: 0 });
+				compactRun = false;
+				visibleCallMsgId = msg.id;
+			}
+			continue;
+		}
+		if (msg.role === "tool_result") {
+			const m = meta.get(msg.id);
+			const isError = msg.exit_code != null && msg.exit_code !== 0;
+			if (m?.toolName != null && isCompactToolName(m.toolName) && !isError) {
+				// Compact one-liner: stacks directly onto whatever visible row
+				// precedes it (a run sibling, or a full row whose own bottom
+				// margin supplies the gap).
+				margins.set(msg.id, { top: 0, bottom: 0 });
+				compactRun = true;
+				visibleCallMsgId = m.callMsgId;
+			} else {
+				// Full-width result (or ⏵-paired result for parallel groups):
+				// abuts the group it visibly continues; takes the separating
+				// gap when it interrupts a compact run it doesn't belong to.
+				const continuesVisibleGroup = m?.callMsgId != null && m.callMsgId === visibleCallMsgId;
+				margins.set(msg.id, {
+					top: !continuesVisibleGroup && compactRun ? 1 : 0,
+					bottom: m && !m.isLastInGroup ? 0 : 1,
+				});
+				compactRun = false;
+				visibleCallMsgId = m?.callMsgId;
+			}
+			continue;
+		}
+		margins.set(msg.id, { top: compactRun ? 1 : 0, bottom: 1 });
+		compactRun = false;
+		visibleCallMsgId = undefined;
+	}
+	return { margins, endsInCompactRun: compactRun };
+}
+
+/**
+ * Minimum activity for an assistant turn-header summary: a couple of quick
+ * tool calls aren't a journey worth narrating, but a long run (or a slow one)
+ * is — the header tells the reader what the turn cost at the moment they
+ * start reading its conclusion.
+ */
+const ACTIVITY_MIN_TOOLS = 3;
+const ACTIVITY_MIN_MS = 10_000;
+
+/**
+ * Walk messages once and, for each assistant message that concludes a run of
+ * tool activity, produce a one-line summary of that run (`14 tools · 1m 40s`).
+ * Rendered dim after the `agent` header by MessageBlock.
+ *
+ * Static-safe by the same argument as the margin map: a summary depends only
+ * on messages that PRECEDE the assistant message it annotates, so the row
+ * renders correctly the first time and never needs a repaint. Duration is
+ * wall-clock from the run's first tool_call commit to the assistant commit —
+ * both timestamps frozen before the assistant row exists.
+ */
+export function buildTurnActivityMap(messages: Message[]): Map<string, string> {
+	const out = new Map<string, string>();
+	let toolCount = 0;
+	let runStartMs: number | null = null;
+	for (const msg of messages) {
+		if (msg.role === "tool_call") {
+			if (runStartMs === null) runStartMs = Date.parse(msg.created_at);
+			continue;
+		}
+		if (msg.role === "tool_result") {
+			toolCount += 1;
+			continue;
+		}
+		if (msg.role === "assistant") {
+			if (toolCount > 0 && runStartMs !== null && Number.isFinite(runStartMs)) {
+				const ms = Date.parse(msg.created_at) - runStartMs;
+				const qualifies =
+					toolCount >= ACTIVITY_MIN_TOOLS || (Number.isFinite(ms) && ms >= ACTIVITY_MIN_MS);
+				if (qualifies && Number.isFinite(ms) && ms >= 0) {
+					out.set(
+						msg.id,
+						`${toolCount} ${toolCount === 1 ? "tool" : "tools"} · ${formatDuration(ms)}`,
+					);
+				}
+			}
+			toolCount = 0;
+			runStartMs = null;
+			continue;
+		}
+		// user / system / alert rows break the run: activity before them
+		// belongs to a different turn than any assistant message after.
+		toolCount = 0;
+		runStartMs = null;
+	}
+	return out;
 }
 
 /**
@@ -122,7 +334,8 @@ export function buildToolResultMetaMap(messages: Message[]): Map<string, ToolRes
  */
 type SplashItem = { kind: "splash" };
 type MessageItem = { kind: "message"; msg: Message };
-type StaticItem = SplashItem | MessageItem;
+type YardItem = { kind: "yard"; msgId: string; snapshot: YardTreeSnapshot };
+type StaticItem = SplashItem | MessageItem | YardItem;
 
 /**
  * Module-scoped sentinel so its identity is stable across renders. The Static
@@ -155,6 +368,17 @@ export function partitionPendingMessage(messages: Message[]): {
 	return { committed, pending };
 }
 
+/**
+ * Spinner label for a live Yard run: whole-invocation progress (`Yard ·
+ * 3/12 effects`) instead of a per-segment "Thinking" that resets between
+ * loop turns and reads as a stall during minutes-long runs (thread 2b372dca).
+ */
+function yardSpinnerLabel(tree: YardTreeSnapshot): string {
+	const leaves = tree.nodes.filter((node) => node.node.kind !== "run");
+	const done = leaves.filter((node) => node.phase !== "started").length;
+	return `Yard · ${done}/${leaves.length} effects`;
+}
+
 export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
@@ -169,7 +393,16 @@ export interface ChatViewProps {
 	 */
 	commitHash: string;
 	messages: Message[];
-	inFlightTools: Map<string, { toolName: string; startTime: number; stdout?: string }>;
+	inFlightTools: Map<
+		string,
+		{
+			toolName: string;
+			startTime: number;
+			stdout?: string;
+			args?: Record<string, unknown>;
+			threadId?: string;
+		}
+	>;
 	mcpServerCount: number;
 	bannerMessage: string | null;
 	bannerType: "error" | "info" | null;
@@ -179,9 +412,11 @@ export interface ChatViewProps {
 	onModelPicker: () => void;
 	onAttachThread: () => void;
 	onMcpView: () => void;
+	/** Open the full-fidelity transcript inspector (`/inspect`). */
+	onInspect: () => void;
 	onClear: () => void;
 	onBannerDismiss: () => void;
-	onSendMessage: (message: string) => void;
+	onSendMessage: (message: string | ContentBlock[]) => void;
 	/**
 	 * When false, the dynamic interactive area (input, status bar, action bar,
 	 * banners) is suppressed while `<Static>` remains mounted. This preserves
@@ -201,7 +436,7 @@ export interface ChatViewProps {
  * (input, status, tool cards) is redrawn by Ink as needed.
  */
 export function ChatView({
-	client: _client,
+	client,
 	threadId,
 	model,
 	connectionState,
@@ -218,6 +453,7 @@ export function ChatView({
 	onModelPicker,
 	onAttachThread,
 	onMcpView,
+	onInspect,
 	onClear,
 	onBannerDismiss,
 	onSendMessage,
@@ -225,7 +461,41 @@ export function ChatView({
 }: ChatViewProps): React.ReactElement {
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
+	// Staged image attachment (Ctrl+V). Bytes, hash, and half-block preview
+	// are all prepared at paste time — the preview parks in the session cache
+	// under the content hash stamped into the block's description, so the
+	// committed message renders it synchronously (see util/image-preview.ts).
+	const [stagedImage, setStagedImage] = useState<{
+		block: ContentBlock;
+		label: string;
+		preview: string[];
+	} | null>(null);
+	const yardExecutions = useYardExecutions(client, threadId);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
+	// The oldest live Yard run on this thread anchors the processing spinner:
+	// a scatter-gather run works for minutes while the generic "Thinking"
+	// counter kept resetting per loop segment, reading as a stall (thread
+	// 2b372dca). Anchoring elapsed at the run's start makes the indicator
+	// reflect the invocation as a whole.
+	const liveYard = yardExecutions.live[0];
+	// In-flight tools that actually render as streaming cards: yard-client
+	// dispatches live on the Yard card, and other threads' (aux) tools belong
+	// to their own transcripts. The spinner gate below must count DISPLAYED
+	// cards, not raw map size — during a Yard run every in-flight tool is
+	// filtered, and gating on the raw size left NO liveness indicator at all
+	// (thread 2b372dca: "not clear if the system is actually working").
+	const visibleInFlight = useMemo(
+		() =>
+			Array.from(inFlightTools.entries()).filter(
+				([callId, t]) =>
+					!callId.startsWith(YARD_CLIENT_CALL_ID_PREFIX) &&
+					(!t.threadId || t.threadId === threadId),
+			),
+		[inFlightTools, threadId],
+	);
+	// Live HUD: context-window gauge (context:debug events) + cluster spend
+	// (spoke-local /api/metrics over the synced turns table).
+	const hud = useSessionHud(client, threadId);
 	const { stdout } = useStdout();
 	// Repaint nonce: bumped on a width change to force <Static> to remount and
 	// re-emit every committed item at the new width. See resizeRedraw.ts for the
@@ -252,9 +522,37 @@ export function ChatView({
 	// keeping per-frame cost flat as scrollback grows.
 	const toolResultMeta = useMemo(() => buildToolResultMetaMap(messages), [messages]);
 
+	// Per-assistant-message activity summaries (`14 tools · 1m 40s`), rendered
+	// dim after the `agent` header. Same memoization rationale as the meta map.
+	const turnActivity = useMemo(() => buildTurnActivityMap(messages), [messages]);
+
 	// Split off the optimistic "sending…" placeholder: it renders in the
 	// dynamic area below, NOT in <Static>. See partitionPendingMessage / #134.
 	const { committed, pending } = useMemo(() => partitionPendingMessage(messages), [messages]);
+
+	// Prior user submissions for ↑/↓ recall, oldest → newest. Includes the
+	// optimistic pending placeholder's text (it IS a submission) via the raw
+	// messages array; dedupes consecutive repeats the way readline does so
+	// hammering ↑ doesn't step through five identical "continue"s.
+	const inputHistory = useMemo(() => {
+		const out: string[] = [];
+		for (const m of messages) {
+			if (m.role !== "user") continue;
+			const text = extractFullText(m).trim();
+			if (text.length === 0) continue;
+			if (out[out.length - 1] !== text) out.push(text);
+		}
+		return out;
+	}, [messages]);
+
+	// Per-message layout margins (compact read/search grouping) plus whether
+	// the transcript currently ends inside a compact run — the dynamic area
+	// below supplies the separating gap in that case, since compact rows
+	// carry no bottom margin of their own.
+	const layout = useMemo(
+		() => buildTranscriptMargins(committed, toolResultMeta),
+		[committed, toolResultMeta],
+	);
 
 	// Static items: discriminated union of [splash header sentinel, ...committed].
 	// Ink's <Static> tracks rendered indices internally and only renders items at
@@ -264,10 +562,25 @@ export function ChatView({
 	// the desired behavior. Committed messages always append at the tail, so the
 	// appended-only invariant holds. The pending placeholder is deliberately
 	// excluded — Static can never repaint an in-place reconciliation (#134).
-	const staticItems = useMemo<StaticItem[]>(
-		() => [SPLASH_ITEM, ...committed.map((msg): StaticItem => ({ kind: "message", msg }))],
-		[committed],
-	);
+	const staticItems = useMemo<StaticItem[]>(() => {
+		const completedByCall = new Map(
+			yardExecutions.completed
+				.filter((tree): tree is YardTreeSnapshot & { toolCallId: string } =>
+					Boolean(tree.toolCallId),
+				)
+				.map((tree) => [tree.toolCallId, tree]),
+		);
+		return [
+			SPLASH_ITEM,
+			...committed.map((msg): StaticItem => {
+				const snapshot =
+					msg.role === "tool_result" && msg.tool_name
+						? completedByCall.get(msg.tool_name)
+						: undefined;
+				return snapshot ? { kind: "yard", msgId: msg.id, snapshot } : { kind: "message", msg };
+			}),
+		];
+	}, [committed, yardExecutions.completed]);
 	// Account for the rounded input frame: 2 cols of border + 2 cols of
 	// paddingX={1} + 2 cols of "❯ " prompt = 6 cols of chrome around the
 	// input. Off-by-one here makes the explicit \n breaks emitted by
@@ -282,6 +595,14 @@ export function ChatView({
 			: connectionState === "disconnected"
 				? "red"
 				: "yellow";
+
+	// A dismissable banner captures 'x' to close (see Banner). While one is
+	// mounted it must steal focus from the chat input — ink broadcasts every
+	// keypress to all active handlers, so without this the dismiss 'x' lands in
+	// the banner AND as a literal character in the input. Both the connection/
+	// info/error banner and the slash-command error banner are dismissable.
+	const overlayCapturingInput =
+		(bannerMessage != null && bannerType != null) || commandError != null;
 
 	/**
 	 * Parse and handle slash commands.
@@ -319,6 +640,11 @@ export function ChatView({
 				return;
 			}
 
+			if (command === "inspect") {
+				onInspect();
+				return;
+			}
+
 			if (command === "clear") {
 				onClear();
 				return;
@@ -328,8 +654,81 @@ export function ChatView({
 			return;
 		}
 
+		// Attach the staged image (if any): text rides as a leading text block,
+		// image after — caption order. Staging clears immediately so a slow
+		// send can't double-attach on a second Enter.
+		if (stagedImage) {
+			const blocks: ContentBlock[] =
+				input.trim().length > 0
+					? [{ type: "text", text: input }, stagedImage.block]
+					: [stagedImage.block];
+			setStagedImage(null);
+			onSendMessage(blocks);
+			return;
+		}
 		onSendMessage(input);
 	};
+
+	/**
+	 * Ctrl+V: read an image off the OS clipboard and stage it. Everything the
+	 * committed render needs is prepared HERE, while the bytes are in hand —
+	 * the half-block preview parks in the session cache under the content
+	 * hash stamped into the block's description (which survives the server's
+	 * base64→file_ref rewrite), so no async work ever runs against <Static>.
+	 */
+	const handlePasteImage = useCallback(() => {
+		void (async () => {
+			const img = await readClipboardImage();
+			if (!img) {
+				setCommandError("No image on the clipboard");
+				return;
+			}
+			const decoded = decodePng(img.bytes);
+			const hash = hashImageBytes(img.bytes);
+			// Preview sized for the chip + committed card: readable but never
+			// viewport-dominating. Every line is one real text row (half-block
+			// art is pure SGR), so the dynamic region's height stays counted.
+			const preview = decoded
+				? renderHalfBlocks(decoded, {
+						maxCols: Math.min(64, Math.max(20, termColumns - 8)),
+						maxRows: 9,
+					})
+				: [];
+			storeImagePreview(hash, preview);
+			const width = decoded?.width ?? 0;
+			const height = decoded?.height ?? 0;
+			const base64 = Buffer.from(img.bytes).toString("base64");
+			// Progressive enhancement: if the terminal speaks a graphics protocol,
+			// encode the real image ONCE, here, and park it beside the half-block
+			// preview. The committed render prefers it; terminals without a
+			// protocol never get a payload and fall back to half-blocks. Graphics
+			// live ONLY in the <Static> transcript (see terminal-graphics.ts).
+			const protocol = decoded ? detectGraphicsProtocol() : null;
+			if (decoded && protocol) {
+				const box = fitCellBox(width, height, Math.min(80, Math.max(20, termColumns - 4)), 24);
+				const mode = graphicsCursorMode(protocol);
+				const graphicsEscape =
+					protocol === "kitty"
+						? encodeKittyImage(base64, box, mode)
+						: encodeItermImage(base64, box, img.bytes.byteLength, mode);
+				storeImageGraphics(hash, { escape: graphicsEscape, rows: box.rows, cols: box.cols, mode });
+			}
+			const block: ContentBlock = {
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: base64,
+				},
+				description: stampImageDescription(width, height, hash),
+			};
+			setStagedImage({
+				block,
+				label: decoded ? `image ${width}×${height}` : "image (unrecognized PNG variant)",
+				preview,
+			});
+		})();
+	}, [termColumns]);
 
 	return (
 		<Box flexDirection="column">
@@ -347,23 +746,32 @@ export function ChatView({
 								</Box>
 							);
 						}
+						if (item.kind === "yard") {
+							return (
+								<Box key={`yard:${item.msgId}`} marginBottom={1}>
+									<YardExecutionCard tree={item.snapshot} terminalColumns={termColumns} />
+								</Box>
+							);
+						}
 						const msg = item.msg;
 						const meta = toolResultMeta.get(msg.id);
-						// Margin rule: collapse the gap inside a tool group so the blue
-						// stripe runs continuously through call → results.
-						//   - tool_call → next: always 0 (touches its first result, or
-						//     in degenerate cases still fine to abut).
-						//   - tool_result, mid-group: 0 (touches sibling result).
-						//   - tool_result, last in group: 1 (separates from next turn).
-						//   - everything else: 1 (default turn-to-turn separation).
-						const marginBottom = msg.role === "tool_call" ? 0 : meta && !meta.isLastInGroup ? 0 : 1;
+						// Margins come from buildTranscriptMargins: tool groups render
+						// as one continuous cyan card, and compact read/search
+						// invocations stack one line each with no gap between them
+						// (see that function's contract for the Static-safety rationale).
+						const m = layout.margins.get(msg.id) ?? { top: 0, bottom: 1 };
 						return (
-							<Box key={msg.id} marginBottom={marginBottom}>
+							<Box key={msg.id} marginTop={m.top} marginBottom={m.bottom}>
 								<MessageBlock
 									message={msg}
 									filePath={meta?.filePath}
 									toolName={meta?.toolName}
+									toolInput={meta?.input}
+									showRequest={meta?.total != null && meta.total > 1}
+									callCreatedAt={meta?.callCreatedAt}
+									activitySummary={turnActivity.get(msg.id)}
 									terminalColumns={termColumns}
+									cwd={cwd}
 								/>
 							</Box>
 						);
@@ -376,6 +784,19 @@ export function ChatView({
 			    preventing the splash header from re-rendering on return to ChatView. */}
 			{active && (
 				<>
+					{/* A compact read/search run carries no bottom margin (its rows
+					    stack); supply the turn-separating gap before the dynamic area. */}
+					{layout.endsInCompactRun && <Box height={1} />}
+					{yardExecutions.live.map((tree) => (
+						<Box key={`yard-live:${tree.traceId}:${tree.runId}`} marginBottom={1}>
+							<YardExecutionCard
+								tree={tree}
+								running
+								terminalColumns={termColumns}
+								maxGraphRows={Math.max(4, termRows - 10)}
+							/>
+						</Box>
+					))}
 					{/* Banners */}
 					{bannerMessage && bannerType && (
 						<Box marginBottom={1}>
@@ -390,6 +811,7 @@ export function ChatView({
 								["/model [name]", "Switch model (opens picker if no name)"],
 								["/attach", "Switch to a different thread"],
 								["/mcp", "MCP server configuration"],
+								["/inspect", "Browse the transcript at full fidelity"],
 								["/clear", "Start a new thread"],
 							].map(([cmd, desc]) => (
 								<Box key={cmd}>
@@ -413,7 +835,7 @@ export function ChatView({
 					    repaints. See partitionPendingMessage / #134. */}
 					{pending && (
 						<Box marginBottom={1}>
-							<MessageBlock message={pending} terminalColumns={termColumns} />
+							<MessageBlock message={pending} terminalColumns={termColumns} cwd={cwd} />
 						</Box>
 					)}
 
@@ -422,22 +844,31 @@ export function ChatView({
 					    the whole dynamic region stays under the viewport — otherwise
 					    Ink's `outputHeight >= rows` branch strands the spinner card in
 					    scrollback (see computeStdoutRowBudget). */}
-					{Array.from(inFlightTools.entries()).map(([callId, { toolName, startTime, stdout }]) => (
+					{visibleInFlight.map(([callId, { toolName, startTime, stdout, args }]) => (
 						<Box key={callId} marginBottom={1}>
 							<ToolCallCard
 								toolName={toolName}
 								startTime={startTime}
 								stdout={stdout}
+								argsSummary={args ? summarizeToolArgs(toolName, args) : undefined}
 								terminalColumns={termColumns}
-								maxStdoutRows={computeStdoutRowBudget(termRows, inFlightTools.size)}
+								maxStdoutRows={computeStdoutRowBudget(termRows, visibleInFlight.length)}
 							/>
 						</Box>
 					))}
 
-					{/* Processing indicator */}
-					{isProcessing && inFlightTools.size === 0 && (
+					{/* Processing indicator. Gated on DISPLAYED cards, not the raw
+					    in-flight map — during a Yard run every in-flight tool is
+					    filtered (yard-client / aux-thread), and gating on raw size
+					    left no liveness signal at all. A live Yard run labels the
+					    spinner with whole-invocation progress and anchors elapsed
+					    at the run's start (thread 2b372dca). */}
+					{(isProcessing || liveYard) && visibleInFlight.length === 0 && (
 						<Box>
-							<Spinner label="Thinking" />
+							<Spinner
+								label={liveYard ? yardSpinnerLabel(liveYard) : "Thinking"}
+								startTime={liveYard?.startedAt ? Date.parse(liveYard.startedAt) : undefined}
+							/>
 						</Box>
 					)}
 
@@ -445,6 +876,24 @@ export function ChatView({
 					{ctrlCHint && (
 						<Box>
 							<Text dimColor>{ctrlCHint}</Text>
+						</Box>
+					)}
+
+					{/* Staged image chip (Ctrl+V): the half-block preview plus a
+					    caption line. Every preview line is one real text row (pure
+					    SGR half-block art), so the dynamic region's height stays
+					    fully counted by Ink and log-update can repaint it cleanly on
+					    every keystroke. Real graphics escapes CANNOT live here — see
+					    GraphicsImage's doc: the whole dynamic frame re-emits per
+					    keystroke, so each redraw blits a fresh image and stacks. Real
+					    pixels stay in the committed card (<Static>, emit-once). */}
+					{stagedImage && (
+						<Box flexDirection="column" marginBottom={0}>
+							{stagedImage.preview.map((line, i) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable once staged
+								<Text key={i}>{line}</Text>
+							))}
+							<Text dimColor>⧉ {stagedImage.label} staged · Enter sends · Esc removes</Text>
 						</Box>
 					)}
 
@@ -457,6 +906,11 @@ export function ChatView({
 								onSubmit={handleSubmit}
 								disabled={connectionState !== "connected"}
 								columns={inputColumns}
+								hasFocus={!overlayCapturingInput}
+								history={inputHistory}
+								completions={CHAT_SLASH_COMPLETIONS}
+								onPasteImage={handlePasteImage}
+								onEscapeEmpty={() => setStagedImage(null)}
 							/>
 						</Box>
 					</Box>
@@ -468,12 +922,14 @@ export function ChatView({
 						connectionState={connectionState}
 						mcpServerCount={mcpServerCount}
 						cwd={cwd}
+						hud={hud}
 					/>
 					<ActionBar
 						actions={[
 							{ keys: "/model", label: "switch model" },
 							{ keys: "/attach", label: "switch thread" },
 							{ keys: "/mcp", label: "MCP config" },
+							{ keys: "Esc", label: "clear input" },
 							{ keys: "Ctrl-C", label: "exit" },
 						]}
 					/>

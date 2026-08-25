@@ -2,7 +2,7 @@
  * Regression tests for the ModelBackendsConfig → ModelRouter hand-off
  * performed by `initInference` in commands/start/inference.ts.
  *
- * Historical bug (2026-04-25): `initInference` hand-picks fields from the
+ * Historical bug: `initInference` hand-picks fields from the
  * parsed schema to build the router's BackendConfig. The `thinking` field
  * was never copied, so even after the Zod schema was fixed to preserve
  * `thinking`, the router received `undefined` and extended thinking stayed
@@ -71,9 +71,16 @@ describe("toRouterConfig", () => {
 		expect(router.getThinkingConfig("opus")).toBeUndefined();
 	});
 
+	it("propagates `system_prompt_suffix` to the router", () => {
+		const cfg = bedrockOpusWithThinking();
+		cfg.backends[0].system_prompt_suffix = "Configured model only.";
+		const router = createModelRouter(toRouterConfig(cfg));
+		expect(router.getSystemPromptSuffix("opus")).toBe("Configured model only.");
+	});
+
 	it("propagates `max_output_tokens` so router.getMaxOutputTokens() returns it", () => {
-		// Nova Pro caps at 10_000; without this hand-off the default
-		// DEFAULT_MAX_OUTPUT_TOKENS (16_384) lands at Bedrock and triggers
+		// Nova Pro caps at 10_000; without this hand-off an explicit
+		// max_tokens above the ceiling lands at Bedrock and triggers
 		// "max_tokens exceeds model limit of 10000". Locking in the
 		// snake_case → camelCase copy here prevents silent regressions.
 		const cfg: SharedModelBackendsConfig = {
@@ -127,5 +134,25 @@ describe("toRouterConfig", () => {
 
 	it("leaves connectTimeoutMs undefined when connect_timeout_ms is not configured", () => {
 		expect(toRouterConfig(bedrockOpusWithThinking()).backends[0].connectTimeoutMs).toBeUndefined();
+	});
+
+	it("propagates `provider_mode` → BackendConfig.providerMode", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{
+					id: "mantle-sonnet",
+					provider: "bedrock-mantle",
+					provider_mode: "anthropic",
+					model: "anthropic.claude-sonnet-5",
+					region: "us-east-1",
+					context_window: 200000,
+					tier: 1,
+					price_per_m_input: 3,
+					price_per_m_output: 15,
+				},
+			],
+			default: "mantle-sonnet",
+		};
+		expect(toRouterConfig(cfg).backends[0].providerMode).toBe("anthropic");
 	});
 });

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bound is a distributed, model-agnostic personal agent system built as a Bun monorepo with 10 packages. All state lives in a SQLite database that replicates across hosts via an event-sourced sync protocol.
+Bound is a distributed, model-agnostic personal agent system built as a Bun monorepo with 12 packages. All state lives in a SQLite database that replicates across hosts via an event-sourced sync protocol.
 
 ```
                          +------------------+
@@ -14,15 +14,20 @@ Bound is a distributed, model-agnostic personal agent system built as a Bun mono
               |                   |                   |
      +--------v--------+ +-------v--------+ +--------v--------+
      |  @bound/web     | | @bound/platforms | |  @bound/agent   |
-     |  Hono + Svelte  | | connector fwk  | |  Loop + Sched   |
+     |  Hono + Svelte  | | connector fwk  | | Sched + tools   |
      +--------+--------+ +-------+--------+ +----+-------+----+
               |                   |               |       |
               +-------------------+-------+-------+       |
                                           |               |
                                  +--------v--------+  +---v-----------+
-                                 |  @bound/sandbox | |  @bound/llm    |
-                                 |  ClusterFs/Bash | |  4 LLM drivers |
+                                 |  @bound/sandbox | |  @bound/loop   |
+                                 |  ClusterFs/Bash | | loop contracts |
                                  +--------+--------+ +---+------------+
+                                          |               |
+                                          |          +----v-----------+
+                                          |          |  @bound/llm    |
+                                          |          |  4 LLM drivers |
+                                          |          +----+-----------+
                                           |               |
                               +-----------v---------------v-----------+
                               |            @bound/core                 |
@@ -48,16 +53,14 @@ shared  <--  core  <--  sync
   |           |
   +----+------+----------+
        |      |          |
-    sandbox  llm       agent  <--  web
-       ^      ^          ^         ^
-       |      |          |         |
-       +------+----------+---------+
-                         |
-                      platforms
-                         |
-                        cli  (imports all)
-
-shared  <--  mcp-server              (standalone stdio binary)
+    sandbox  llm       loop  <--  agent  <--  web
+       ^      ^          ^          ^         ^
+       |      |          |          |         |
+       +------+----------+----------+---------+
+                              |
+                           platforms
+                              |
+                             cli  (imports all)
 ```
 
 ## Data Flow
@@ -143,10 +146,12 @@ Requester                          Hub                         Target
 ```
 
 Relay message kinds:
-- **Request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `cancel`, `inference`, `process`, `intake`, `platform_deliver`, `event_broadcast`
-- **Response kinds:** `result`, `error`, `stream_chunk`, `stream_end`, `status_forward`
+- **Sync request kinds:** `tool_call`, `resource_read`, `prompt_invoke`, `cache_warm`, `platform_request`
+- **Async request kinds:** `client_tool`, `cancel`, `inference`, `intake`
+- **Passive kinds:** `webhook_intake` (durable mailbox owned by the scheduler, not the relay-processor)
+- **Response kinds:** `result`, `error`, `client_result`, `stream_chunk`, `stream_end`, `status_forward`, `trace_data`
 
-`intake` routes inbound platform messages to the spoke with platform affinity. `platform_deliver` routes outbound assistant responses to the platform leader host. `event_broadcast` (target `*`) fans out custom events to all spokes.
+`intake` routes an inbound platform message to the spoke with platform affinity; the selected host then runs the loop locally. `platform_request` proxies an MCP platform request (e.g. `events/list`) to the host running that connector. Outbound assistant responses are not a dedicated kind — the agent calls the connector's tool (e.g. `discord_send_message`), relayed to the leader host via the uniform tool dispatch if needed. The `process` (whole-loop delegation) kind was removed (`docs/design/specs/2026-06-29-unified-delegation.md`).
 
 ## Database Schema
 
@@ -161,7 +166,6 @@ Relay message kinds:
 | `tasks` | Scheduled/deferred/event-driven tasks | LWW |
 | `files` | Virtual filesystem contents | LWW |
 | `hosts` | Known hosts in the cluster (includes `models` JSON array) | LWW |
-| `overlay_index` | Content-addressed overlay file index | LWW |
 | `cluster_config` | Cluster-wide settings (hub, emergency_stop) | LWW |
 | `advisories` | Cost/frequency/model advisories | LWW |
 | `skills` | Operator-defined skill prompts injected into agent context | LWW |
@@ -190,7 +194,7 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 
 **Context assembly pipeline.** 8 stages transform raw message history into an optimized LLM prompt, handling purge substitution, tool pair sanitization, budget validation, persona injection, and stable orientation (available commands, model info, host identity).
 
-**MCP integration via @modelcontextprotocol/sdk.** Agent tools are implemented as native `RegisteredTool` factories with structured JSON schemas, dispatched through a unified tool registry. MCP server tools are exposed via subcommand dispatch through the bash sandbox: one `CommandDefinition` per MCP server (named by server, e.g. `github`), with a `subcommand` parameter selecting the individual tool. This reduces LLM tool definition count and simplifies cross-host delegation tracking. Cross-host tool proxying uses the relay transport (`tool_call` relay kind). The standalone `bound-mcp` binary (`@bound/mcp-server`) exposes a `bound_chat` MCP tool over stdio, allowing external MCP clients to drive the agent; it depends only on `@bound/shared`, `@modelcontextprotocol/sdk`, and `zod`.
+**MCP integration via @modelcontextprotocol/sdk.** Agent tools are implemented as native `RegisteredTool` factories with structured JSON schemas, dispatched through a unified tool registry. MCP server tools are exposed via subcommand dispatch through the bash sandbox: one `CommandDefinition` per MCP server (named by server, e.g. `github`), with a `subcommand` parameter selecting the individual tool. This reduces LLM tool definition count and simplifies cross-host delegation tracking. Cross-host tool proxying uses the relay transport (`tool_call` relay kind).
 
 **Inference relay over store-and-forward.** Remote LLM inference uses the sync relay transport: the requester writes an `inference` relay message; the target streams `stream_chunk`/`stream_end` responses back via the same relay. The agent loop enters `RELAY_STREAM` state during remote inference, polling `relay_inbox` for chunks. Chunks carry a monotonic `seq` field for reordering. Failover retries on the next eligible host after a configurable per-host timeout (default 300s).
 
@@ -210,4 +214,4 @@ The `relay_outbox` and `relay_inbox` tables carry a nullable `stream_id TEXT` co
 - [Inference Backends](inference-backends.md) -- LLM driver shims, capabilities, model routing
 - [Agent System](agent-system.md) -- agent loop, scheduler, commands, MCP bridge
 - [Web and Discord](web-and-discord.md) -- HTTP API, WebSocket, Svelte UI, Discord bot
-- [CLI and Operations](../cli-operations.md) -- init, start, management commands, binary build
+- [CLI and Operations](https://bound-agents.github.io/bound/guides/cli-operations/) -- init, start, management commands, binary build

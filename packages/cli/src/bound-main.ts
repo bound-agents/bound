@@ -34,11 +34,11 @@ OPTIONS:
   bound init --cerebras            Initialize with Cerebras Cloud preset
   bound init --zai                 Initialize with z.AI (GLM) preset
   bound init --opencode-go         Initialize with OpenCode Go preset
+  bound init --umans               Initialize with umans.ai preset (self-configuring; needs UMANS_API_KEY)
   bound init --hub                 Initialize as relay hub (no local inference; proxies to spokes)
   bound init --name <name>         Set operator name
   bound init --with-sync           Also create sync.json template
   bound init --with-mcp            Also create mcp.json template
-  bound init --with-overlay        Also create overlay.json template
   bound init --force               Overwrite existing config
 
   bound start                       Start the orchestrator
@@ -66,11 +66,11 @@ EXAMPLES:
 			cerebras: args.includes("--cerebras"),
 			zai: args.includes("--zai"),
 			opencodeGo: args.includes("--opencode-go"),
+			umans: args.includes("--umans"),
 			region: regionIdx !== -1 ? args[regionIdx + 1] : undefined,
 			name: nameIdx !== -1 ? args[nameIdx + 1] : undefined,
 			withSync: args.includes("--with-sync"),
 			withMcp: args.includes("--with-mcp"),
-			withOverlay: args.includes("--with-overlay"),
 			force: args.includes("--force"),
 			configDir: configDirIdx !== -1 ? args[configDirIdx + 1] : "config",
 		};

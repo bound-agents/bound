@@ -1,6 +1,20 @@
 type ImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
 /**
+ * Anthropic (and Bedrock's Anthropic passthrough) rejects any image whose
+ * BASE64 payload exceeds 5 MB — the limit is measured on the encoded string,
+ * not the raw bytes (verified against a live rejection: a 4,063,198-byte PNG
+ * was refused as "5417600 bytes > 5242880 bytes", exactly its base64 length).
+ */
+export const PROVIDER_IMAGE_BASE64_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * The corresponding RAW byte budget: base64 inflates 3→4, so raw bytes must
+ * stay under 3/4 of the base64 cap to encode inside it.
+ */
+export const PROVIDER_IMAGE_RAW_MAX_BYTES = (PROVIDER_IMAGE_BASE64_MAX_BYTES / 4) * 3;
+
+/**
  * Sniff the actual image format from magic bytes.
  *
  * Upstream sources (Discord, MCP servers) sometimes declare a MIME type that

@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { updateRow } from "@bound/core";
+import {
+	findFirstMessageContentByThreadAndRole,
+	findThreadTitleById,
+	updateRow,
+} from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import type { Result } from "@bound/shared";
-import type { Message, Thread } from "@bound/shared";
 
 /**
  * Extract a human-readable title from a JSON task payload.
@@ -34,6 +37,27 @@ function titleFromPayload(content: string): string | null {
 	}
 }
 
+/**
+ * Build a fallback title from raw message content.
+ * Tries JSON payload extraction first, then truncates at a word boundary.
+ */
+function fallbackTitleFromContent(content: string): string {
+	const payloadTitle = titleFromPayload(content);
+	if (payloadTitle) return payloadTitle;
+
+	// Sanitize newlines/whitespace (same treatment as the LLM path)
+	let text = content.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+
+	// Truncate at word boundary before 50 chars
+	if (text.length > 50) {
+		const cut = text.substring(0, 50);
+		const lastSpace = cut.lastIndexOf(" ");
+		text = lastSpace > 10 ? `${cut.substring(0, lastSpace)}...` : `${cut}...`;
+	}
+
+	return text;
+}
+
 export async function generateThreadTitle(
 	db: Database,
 	threadId: string,
@@ -42,9 +66,7 @@ export async function generateThreadTitle(
 ): Promise<Result<string, Error>> {
 	try {
 		// Check if thread already has a title (at-most-once guarantee)
-		const thread = db.prepare("SELECT title FROM threads WHERE id = ?").get(threadId) as
-			| Pick<Thread, "title">
-			| undefined;
+		const thread = findThreadTitleById(db, threadId);
 
 		if (thread?.title) {
 			// Title already exists, return early
@@ -52,18 +74,10 @@ export async function generateThreadTitle(
 		}
 
 		// Get the first user message
-		const firstUserMessage = db
-			.prepare(
-				"SELECT content FROM messages WHERE thread_id = ? AND role IN ('user') ORDER BY created_at LIMIT 1",
-			)
-			.get(threadId) as Pick<Message, "content"> | undefined;
+		const firstUserMessage = findFirstMessageContentByThreadAndRole(db, threadId, "user");
 
 		// Get the first assistant response
-		const firstAssistantMessage = db
-			.prepare(
-				"SELECT content FROM messages WHERE thread_id = ? AND role IN ('assistant') ORDER BY created_at LIMIT 1",
-			)
-			.get(threadId) as Pick<Message, "content"> | undefined;
+		const firstAssistantMessage = findFirstMessageContentByThreadAndRole(db, threadId, "assistant");
 
 		if (!firstUserMessage) {
 			return {
@@ -73,7 +87,7 @@ export async function generateThreadTitle(
 		}
 
 		// Build a prompt for title generation
-		const prompt = `Generate a short, single-line title (5-10 words) for this conversation. No markdown, no quotes, no punctuation at the start. Return ONLY the title text on one line.
+		const prompt = `Generate a short, single-line title (5-10 words) for this conversation. Describe what the user asked about, not the response. No markdown, no quotes, no punctuation at the start. Return ONLY the title text on one line.
 
 User: ${firstUserMessage.content}
 ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
@@ -111,9 +125,7 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 
 		// Fallback per spec R-E17: use first 50 chars of user message if LLM returned empty
 		if (!title) {
-			title =
-				titleFromPayload(firstUserMessage.content) ??
-				firstUserMessage.content.substring(0, 50).trim();
+			title = fallbackTitleFromContent(firstUserMessage.content);
 		}
 
 		// Store the generated title
@@ -123,15 +135,10 @@ ${firstAssistantMessage ? `Assistant: ${firstAssistantMessage.content}` : ""}`;
 	} catch (error) {
 		// Fallback per spec R-E17: on failure, use first 50 chars of user's first message
 		try {
-			const fallbackMsg = db
-				.prepare(
-					"SELECT content FROM messages WHERE thread_id = ? AND role = 'user' ORDER BY created_at LIMIT 1",
-				)
-				.get(threadId) as Pick<Message, "content"> | null;
+			const fallbackMsg = findFirstMessageContentByThreadAndRole(db, threadId, "user");
 
 			if (fallbackMsg) {
-				const fallbackTitle =
-					titleFromPayload(fallbackMsg.content) ?? fallbackMsg.content.substring(0, 50).trim();
+				const fallbackTitle = fallbackTitleFromContent(fallbackMsg.content);
 				updateRow(db, "threads", threadId, { title: fallbackTitle }, siteId);
 				return { ok: true, value: fallbackTitle };
 			}

@@ -509,6 +509,33 @@ describe("Relay Router", () => {
 			}
 		});
 
+		it("object-format HostModelEntry carries the advertised output-token ceiling", () => {
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (site_id, host_name, sync_url, models, online_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, 0)`,
+				[
+					"remote-output-cap",
+					"Remote Output Cap",
+					"https://remote.example",
+					JSON.stringify([
+						{
+							id: "fable",
+							tier: 1,
+							max_output_tokens: 64_000,
+							capabilities: { max_context: 700_000, tool_use: true },
+						},
+					]),
+					now,
+					now,
+				],
+			);
+
+			const result = findEligibleHostsByModel(db, "fable", "local-site");
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.hosts[0]?.maxOutputTokens).toBe(64_000);
+		});
+
 		it("object-format HostModelEntry is parsed and returned with capabilities (AC7.1)", () => {
 			const now = new Date().toISOString();
 			db.run(

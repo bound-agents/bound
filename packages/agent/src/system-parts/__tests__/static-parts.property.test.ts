@@ -29,6 +29,42 @@ function freshDb(): Database {
 	return db;
 }
 
+/**
+ * Seed a `hosts` row directly. Raw SQL is fine in tests — the outbox
+ * invariant governs production code paths, not fixture setup.
+ */
+function seedHost(
+	db: Database,
+	siteId: string,
+	opts: { models?: string | null; mcpServers?: string | null; platforms?: string | null } = {},
+): void {
+	db.prepare(
+		"INSERT INTO hosts (site_id, host_name, models, mcp_servers, platforms, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, 0)",
+	).run(
+		siteId,
+		"seed-host",
+		opts.models ?? null,
+		opts.mcpServers ?? null,
+		opts.platforms ?? null,
+		"2026-01-01T00:00:00.000Z",
+	);
+}
+
+/**
+ * Seed a `sync_state` peer cursor row. On a spoke the only peer is the hub,
+ * so this is how a spoke's DB encodes "which node is my hub".
+ */
+function seedSyncPeer(db: Database, peerSiteId: string): void {
+	db.prepare(
+		"INSERT INTO sync_state (peer_site_id, last_received, last_sent, sync_errors, last_sync_at) VALUES (?, ?, ?, 0, ?)",
+	).run(
+		peerSiteId,
+		"2026-01-01T00:00:00.000Z",
+		"2026-01-01T00:00:00.000Z",
+		"2026-01-01T00:00:00.000Z",
+	);
+}
+
 const cmdName = fc
 	.string({ minLength: 1, maxLength: 16 })
 	.filter((s) => /^[a-z][a-z0-9_-]*$/.test(s));
@@ -237,6 +273,67 @@ describe("buildStaticSystemParts — property tests", () => {
 		db.close();
 	});
 
+	it("Y8b: spoke names its hub from the sync_state peer (host_name + site)", () => {
+		const db = freshDb();
+		const hubSite = "6873167c1d2e3f405162738495a6b7c8";
+		seedHost(db, hubSite); // host_name "seed-host"
+		seedSyncPeer(db, hubSite);
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "7cf34dd659c0",
+			siteId: "110ef7e107b038db961083b2b1b0ad83",
+			topologyRole: "spoke",
+		}).find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes(`Cluster hub: seed-host (site ${hubSite})`)) {
+			throw new Error(`hub not named from sync peer; got:\n${orientation}`);
+		}
+		db.close();
+	});
+
+	it("Y8c: hub node renders 'this host' rather than naming a spoke peer", () => {
+		// A hub holds a sync_state cursor row per connected spoke (seedNewPeer).
+		// The role gate must keep an ungated `sync_state LIMIT 1` read from
+		// surfacing one of those spokes as the hub.
+		const db = freshDb();
+		seedSyncPeer(db, "spoke-aaaa1111222233334444555566667777");
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "box-001",
+			siteId: "6873167c1d2e3f405162738495a6b7c8",
+			topologyRole: "hub",
+		}).find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("Cluster hub: this host")) {
+			throw new Error(`hub did not self-identify; got:\n${orientation}`);
+		}
+		if (orientation.includes("spoke-aaaa")) {
+			throw new Error("hub misidentified a spoke peer as the hub");
+		}
+		db.close();
+	});
+
+	it("Y8d: no Cluster hub line when topologyRole is undefined", () => {
+		const db = freshDb();
+		seedSyncPeer(db, "6873167c1d2e3f405162738495a6b7c8");
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "7cf34dd659c0",
+			siteId: "110ef7e107b038db961083b2b1b0ad83",
+		}).find((p) => p.startsWith("## Orientation"));
+		if (!orientation) throw new Error("orientation missing");
+		if (orientation.includes("Cluster hub:")) {
+			throw new Error("Cluster hub line should be absent when role is undefined");
+		}
+		db.close();
+	});
+
 	it("Y-cache-stability: byte-equal output on consecutive calls with same DB", () => {
 		// The R-VC25 stable-prefix invariant. This output rides the
 		// system-level cache breakpoint; bytes MUST be byte-identical
@@ -254,5 +351,265 @@ describe("buildStaticSystemParts — property tests", () => {
 		const c = buildStaticSystemParts(args).join("\n\n");
 		if (a !== b || b !== c) throw new Error("cache-stability regression");
 		db.close();
+	});
+
+	it("Y9: host capabilities — local backends, MCP servers, platforms render from the hosts row", () => {
+		const db = freshDb();
+		seedHost(db, "site-X", {
+			models: JSON.stringify([
+				{ id: "opus", tier: 1 },
+				{ id: "haiku", tier: 3 },
+				{ id: "gpt-5.5", tier: 1 },
+			]),
+			mcpServers: JSON.stringify(["github", "atproto", "pdf"]),
+			platforms: JSON.stringify(["discord"]),
+		});
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("### Host Capabilities")) {
+			throw new Error("capabilities block missing");
+		}
+		// Bytewise-sorted model ids.
+		if (!orientation.includes("Local inference backends: gpt-5.5, haiku, opus")) {
+			throw new Error("local backends not rendered sorted");
+		}
+		if (!orientation.includes("MCP servers: atproto, github, pdf")) {
+			throw new Error("mcp servers not rendered sorted");
+		}
+		if (!orientation.includes("Platform connectors: discord")) {
+			throw new Error("platform connectors not rendered");
+		}
+	});
+
+	it("Y9c: MCP servers line carries the bms_bash access note (not boundless_bash)", () => {
+		const db = freshDb();
+		seedHost(db, "site-X", {
+			mcpServers: JSON.stringify(["github", "atproto", "pdf"]),
+		});
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		// The access note names the sandbox shell explicitly so the two shells
+		// available on a boundless session are not confused.
+		if (!orientation.includes("bms_bash")) {
+			throw new Error("MCP servers access note should name bms_bash");
+		}
+		if (!orientation.includes("boundless_bash")) {
+			throw new Error("MCP servers access note should contrast with boundless_bash");
+		}
+		// The example uses the first (bytewise-sorted) server name.
+		if (!orientation.includes("atproto --help")) {
+			throw new Error("access note should show a concrete <server> --help example");
+		}
+	});
+
+	it("Y9d: no MCP servers → no access note (no dangling bms_bash line)", () => {
+		const db = freshDb();
+		seedHost(db, "site-X", { mcpServers: "[]" });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		// The access note is gated on the servers line; absent servers, the
+		// Host Capabilities block must not mention the sandbox shell.
+		const capStart = orientation.indexOf("### Host Capabilities");
+		const capBlock = orientation.slice(capStart);
+		if (capBlock.includes("bms_bash")) {
+			throw new Error("access note should be omitted when there are no MCP servers");
+		}
+	});
+
+	it("Y9e: Additional MCP Commands footer names bms_bash, not the generic 'bash tool'", () => {
+		const db = freshDb();
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [{ name: "github", description: "GitHub MCP server" }],
+			hostName: "host-X",
+			siteId: "site-X",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("`bms_bash` sandbox shell")) {
+			throw new Error("MCP commands footer should name the bms_bash sandbox shell");
+		}
+		if (orientation.includes("dispatched through the bash tool")) {
+			throw new Error("the generic 'bash tool' phrasing should be gone");
+		}
+	});
+
+	it("Y10: backendless host (models=[]) renders the explicit routes-to-peers line", () => {
+		const db = freshDb();
+		seedHost(db, "site-hub", { models: "[]", mcpServers: "[]", platforms: "[]" });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "hub-host",
+			siteId: "site-hub",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes("Local inference backends: none (inference routes to cluster peers)")
+		) {
+			throw new Error("backendless line not rendered");
+		}
+		// Empty server/platform lists are omitted entirely (no dangling label).
+		if (orientation.includes("MCP servers:")) throw new Error("empty MCP line should be omitted");
+		if (orientation.includes("Platform connectors:")) {
+			throw new Error("empty platforms line should be omitted");
+		}
+	});
+
+	it("Y11: capabilities block omitted when no matching hosts row exists", () => {
+		const db = freshDb();
+		// No seedHost — empty hosts table.
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "host-Y",
+			siteId: "site-Y",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (orientation.includes("### Host Capabilities")) {
+			throw new Error("capabilities block should be omitted with no hosts row");
+		}
+		// Host Identity still renders.
+		if (!orientation.includes("### Host Identity")) throw new Error("host identity regression");
+	});
+
+	it("Y12: capabilities block omitted when siteId is undefined", () => {
+		const db = freshDb();
+		seedHost(db, "site-Z", { models: JSON.stringify(["opus"]) });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: undefined,
+			siteId: undefined,
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (orientation.includes("### Host Capabilities")) {
+			throw new Error("capabilities block should be omitted without a siteId");
+		}
+	});
+
+	it("Y13: capabilities render is order-independent (bytewise determinism)", () => {
+		const dbForward = freshDb();
+		seedHost(dbForward, "site-D", {
+			models: JSON.stringify([{ id: "sonnet" }, { id: "opus" }, { id: "haiku" }]),
+			mcpServers: JSON.stringify(["zeta", "alpha", "mu"]),
+		});
+		const forward = buildStaticSystemParts({
+			db: dbForward,
+			persona: null,
+			commandRegistry: [],
+			hostName: "h",
+			siteId: "site-D",
+		}).join("\n\n");
+		dbForward.close();
+
+		const dbReversed = freshDb();
+		seedHost(dbReversed, "site-D", {
+			models: JSON.stringify([{ id: "haiku" }, { id: "opus" }, { id: "sonnet" }]),
+			mcpServers: JSON.stringify(["mu", "alpha", "zeta"]),
+		});
+		const reversed = buildStaticSystemParts({
+			db: dbReversed,
+			persona: null,
+			commandRegistry: [],
+			hostName: "h",
+			siteId: "site-D",
+		}).join("\n\n");
+		dbReversed.close();
+
+		if (forward !== reversed) throw new Error("capabilities render is input-order-sensitive");
+	});
+
+	it("Y14: cluster inference count — counts other hosts with non-empty models", () => {
+		const db = freshDb();
+		seedHost(db, "site-self", { models: JSON.stringify(["opus"]) });
+		seedHost(db, "site-peer-1", { models: JSON.stringify([{ id: "sonnet" }]) });
+		seedHost(db, "site-peer-2", { models: JSON.stringify(["haiku", "gpt-5.5"]) });
+		seedHost(db, "site-backendless", { models: "[]" }); // must NOT count
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "self",
+			siteId: "site-self",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (!orientation.includes("Other hosts with inference backends configured: 2")) {
+			throw new Error("cluster inference count wrong (backendless peer should not count)");
+		}
+	});
+
+	it("Y15: sole inference provider — renders the explicit none line", () => {
+		const db = freshDb();
+		seedHost(db, "site-only", { models: JSON.stringify(["opus"]) });
+		seedHost(db, "site-other", { models: "[]" }); // backendless peer
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "only",
+			siteId: "site-only",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes(
+				"Other hosts with inference backends configured: none (this host is the only declared inference provider — run hostinfo for live status)",
+			)
+		) {
+			throw new Error("sole-provider line not rendered");
+		}
+	});
+
+	it("Y16: backendless host with inference peers — both lines render together", () => {
+		const db = freshDb();
+		seedHost(db, "site-hub", { models: "[]" });
+		seedHost(db, "site-worker", { models: JSON.stringify(["opus"]) });
+		const orientation = buildStaticSystemParts({
+			db,
+			persona: null,
+			commandRegistry: [],
+			hostName: "hub",
+			siteId: "site-hub",
+		}).find((p) => p.startsWith("## Orientation"));
+		db.close();
+		if (!orientation) throw new Error("orientation missing");
+		if (
+			!orientation.includes("Local inference backends: none (inference routes to cluster peers)")
+		) {
+			throw new Error("backendless line missing");
+		}
+		if (!orientation.includes("Other hosts with inference backends configured: 1")) {
+			throw new Error("peer count missing — 'routes to cluster peers' has no number behind it");
+		}
 	});
 });

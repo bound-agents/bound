@@ -22,8 +22,8 @@ describe("isUserFacingInterface", () => {
 		expect(isUserFacingInterface("scheduler")).toBe(false);
 	});
 
-	it("returns false for mcp", () => {
-		expect(isUserFacingInterface("mcp")).toBe(false);
+	it("returns false for webhook", () => {
+		expect(isUserFacingInterface("webhook")).toBe(false);
 	});
 
 	it("returns false for null/undefined/empty", () => {

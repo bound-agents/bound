@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type { ModelRouter } from "@bound/llm";
 import type { StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
 import { createLogger } from "@bound/shared";
@@ -6,11 +7,17 @@ import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { MountableFs } from "just-bash";
 import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
-import { handleWebhookRequest } from "./webhook-handler.js";
+import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "./webhook-handler.js";
 import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
 
 const logger = createLogger("@bound/web", "server-start");
+const LOOPBACK_BIND_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const UNSAFE_WEB_BIND_OVERRIDE = "BOUND_ALLOW_UNSAFE_WEB_BIND";
+// A heartbeating connection unheard-from for this long while holding an
+// in-flight client tool call is treated as wedged/dead and force-closed. 45s =
+// 3 missed 15s client heartbeats: rides out a GC pause, still recovers fast.
+const WS_LIVENESS_STALE_MS = 45_000;
 
 export type { ModelsConfig, BackendPricing };
 
@@ -37,7 +44,6 @@ export interface WebServerConfig {
 	 */
 	hubUrl?: string;
 	statusForwardCache?: Map<string, StatusForwardPayload>;
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>;
 	activeLoops?: Set<string>;
 	requestConsistency?: (tables: string[]) => Promise<Map<string, { count: number; pks: string[] }>>;
 	/**
@@ -62,6 +68,11 @@ export interface WebServerConfig {
 	 * browser to them. Web-router only.
 	 */
 	mcpConfig?: McpConfig | null;
+	/**
+	 * In-process model router. When provided, exposes `POST /v1/responses`
+	 * (OpenAI Responses-API-compatible inference over HTTP).
+	 */
+	modelRouter?: ModelRouter | null;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -82,6 +93,38 @@ export interface WebServer {
 	) => void;
 }
 
+function extractHostName(hostHeader: string): string {
+	if (hostHeader.startsWith("[")) {
+		const end = hostHeader.indexOf("]");
+		return end === -1 ? hostHeader : hostHeader.slice(0, end + 1);
+	}
+	return hostHeader.split(":")[0];
+}
+
+function isLoopbackHost(host: string): boolean {
+	return LOOPBACK_BIND_HOSTS.has(host);
+}
+
+function hasValidLoopbackHostHeader(request: Request): boolean {
+	const host = request.headers.get("host");
+	if (!host) return true;
+	return isLoopbackHost(extractHostName(host));
+}
+
+function assertSafeWebBindHost(host: string): void {
+	if (isLoopbackHost(host)) return;
+	if (process.env[UNSAFE_WEB_BIND_OVERRIDE] === "1") {
+		logger.warn("Starting web server on a non-loopback host by explicit override", {
+			host,
+			override: UNSAFE_WEB_BIND_OVERRIDE,
+		});
+		return;
+	}
+	throw new Error(
+		`Refusing to bind unauthenticated web server to ${host}; set ${UNSAFE_WEB_BIND_OVERRIDE}=1 to override`,
+	);
+}
+
 /**
  * Create the web server: API routes, WebSocket, static assets, DNS-rebinding protection.
  * Binds to WEB_PORT (default 3001) on WEB_BIND_HOST (default localhost).
@@ -93,6 +136,7 @@ export async function createWebServer(
 ): Promise<WebServer> {
 	const port = config.port ?? 3001;
 	const host = config.host ?? "localhost";
+	assertSafeWebBindHost(host);
 
 	// Create WebSocket handler first to get emitToolCancel
 	const wsHandler = createWebSocketHandler({
@@ -100,6 +144,7 @@ export async function createWebServer(
 		db,
 		siteId: config.siteId,
 		defaultUserId: config.operatorUserId,
+		logger,
 		handleMessageTracker: config.handleMessageTracker,
 	});
 
@@ -113,12 +158,12 @@ export async function createWebServer(
 		syncPort: config.syncPort,
 		hubUrl: config.hubUrl,
 		statusForwardCache: config.statusForwardCache,
-		activeDelegations: config.activeDelegations,
 		activeLoops: config.activeLoops,
 		emitToolCancel: wsHandler.emitToolCancel,
 		requestConsistency: config.requestConsistency,
 		clusterFs: config.clusterFs,
 		mcpConfig: config.mcpConfig,
+		modelRouter: config.modelRouter,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);
@@ -132,15 +177,27 @@ export async function createWebServer(
 	});
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
+	let reapInterval: ReturnType<typeof setInterval> | null = null;
+	let livenessInterval: ReturnType<typeof setInterval> | null = null;
 
 	return {
 		async start(): Promise<void> {
 			server = Bun.serve({
 				port,
 				hostname: host,
+				// SSE streaming (e.g. /v1/responses) can have long gaps between
+				// the initial events and the first model token — Opus with 155K
+				// input tokens has a TTFT well over 10s. Bun's default
+				// idleTimeout (10s) kills the connection mid-stream. 255 is
+				// Bun's hard cap; the SSE heartbeat in SseEmitter keeps the
+				// connection alive during the TTFT gap.
+				idleTimeout: 255,
 				fetch(request: Request, server) {
 					const url = new URL(request.url);
 					if (url.pathname === "/ws" && request.headers.get("upgrade") === "websocket") {
+						if (!hasValidLoopbackHostHeader(request)) {
+							return new Response("Invalid Host header", { status: 400 });
+						}
 						if (server.upgrade(request, { data: undefined })) {
 							return;
 						}
@@ -151,10 +208,44 @@ export async function createWebServer(
 				websocket: wsHandler,
 			});
 
+			// Reap sessions orphaned by an unclean shutdown — a killed process
+			// or crashed host never fires WebSocket `close`, so `deleted = 0`
+			// rows accumulate and the thread-list badge shows stale sessions.
+			const startupReaped = wsHandler.reapStaleSessions();
+			if (startupReaped > 0) {
+				logger.info("Reaped orphaned client sessions on startup", {
+					count: startupReaped,
+				});
+			}
+
+			// Periodic reaper for dropped TCP connections that never fire close.
+			reapInterval = setInterval(() => {
+				const reaped = wsHandler.reapStaleSessions();
+				if (reaped > 0) {
+					logger.debug("Reaped stale client sessions", { count: reaped });
+				}
+			}, 60_000);
+
+			// Liveness sweep: force-close heartbeating connections that have gone
+			// silent while holding an in-flight client tool call, so a wedged/dead
+			// editor whose socket is still TCP-open no longer parks its thread until
+			// the operator kills the TUI. staleMs (45s) is 3 missed 15s client
+			// heartbeats — long enough to ride out a GC pause, short enough to
+			// recover fast. Only connections that heartbeat are eligible (older
+			// clients / the web UI are untouched), so this is safe to run always.
+			livenessInterval = setInterval(() => {
+				const closed = wsHandler.sweepUnresponsiveConnections(WS_LIVENESS_STALE_MS);
+				if (closed > 0) {
+					logger.info("Force-closed unresponsive client connections", { count: closed });
+				}
+			}, 15_000);
+
 			logger.info("Web server listening", { host, port, url: `http://${host}:${port}` });
 		},
 
 		async stop(): Promise<void> {
+			if (reapInterval) clearInterval(reapInterval);
+			if (livenessInterval) clearInterval(livenessInterval);
 			wsHandler.cleanup();
 			if (server) {
 				server.stop(true);
@@ -210,7 +301,7 @@ export async function createSyncServer(
 			server = Bun.serve({
 				port,
 				hostname: host,
-				maxRequestBodySize: 128 * 1024 * 1024, // 128 MB — chunked push keeps payloads well under this
+				maxRequestBodySize: MAX_WEBHOOK_BODY_BYTES,
 				fetch(request: Request, bunServer) {
 					const url = new URL(request.url);
 					if (url.pathname === "/sync/ws" && request.headers.get("upgrade") === "websocket") {

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
 import { insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
-import { handleWebhookRequest } from "../webhook-handler.js";
+import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "../webhook-handler.js";
 
 describe("handleWebhookRequest", () => {
 	let db: Database;
@@ -118,10 +118,78 @@ describe("handleWebhookRequest", () => {
 		expect(text).toBe("");
 	});
 
+	test("security: unknown webhook name is rejected before reading the request body", async () => {
+		const body = new ReadableStream({
+			pull(controller) {
+				controller.error(new Error("body should not be consumed for unknown webhook"));
+			},
+		});
+		const request = new Request("http://localhost:3000/webhook/nonexistent", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, "nonexistent", {
+			db,
+			siteId,
+		});
+
+		expect(response.status).toBe(404);
+	});
+
+	test("security: webhook requests over the body limit return 404 before body read", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "test_webhook";
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "github",
+				description: "Test webhook",
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const body = new ReadableStream({
+			pull(controller) {
+				controller.error(new Error("oversized body should not be consumed"));
+			},
+		});
+		const request = new Request("http://localhost:3000/webhook/test_webhook", {
+			method: "POST",
+			headers: {
+				"Content-Length": String(MAX_WEBHOOK_BODY_BYTES + 1),
+				"Content-Type": "application/json",
+			},
+			body,
+		});
+
+		const response = await handleWebhookRequest(request, webhookName, {
+			db,
+			siteId,
+		});
+
+		expect(response.status).toBe(404);
+	});
+
 	// ──────────────────────────────────────────────────────────────────
-	// AC2.3: Empty body returns 400
+	// AC2.3: Empty body returns 404 (uniform with unknown-name / bad-signature
+	// to avoid a webhook-name enumeration oracle)
 	// ──────────────────────────────────────────────────────────────────
-	test("AC2.3: POST with empty body returns 400", async () => {
+	test("AC2.3: POST with empty body returns 404", async () => {
 		// Create a webhook row
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -160,7 +228,7 @@ describe("handleWebhookRequest", () => {
 			eventBus,
 		});
 
-		expect(response.status).toBe(400);
+		expect(response.status).toBe(404);
 		const text = await response.text();
 		expect(text).toBe("");
 	});
@@ -274,7 +342,7 @@ describe("handleWebhookRequest", () => {
 	// ──────────────────────────────────────────────────────────────────
 	// AC1.5: Invalid signature returns 401
 	// ──────────────────────────────────────────────────────────────────
-	test("AC1.5: POST with invalid signature returns 401", async () => {
+	test("AC1.5: POST with invalid signature returns 404", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
 		const webhookName = "test_webhook";
@@ -315,7 +383,7 @@ describe("handleWebhookRequest", () => {
 			eventBus,
 		});
 
-		expect(response.status).toBe(401);
+		expect(response.status).toBe(404);
 		const text = await response.text();
 		expect(text).toBe("");
 
@@ -575,6 +643,65 @@ describe("handleWebhookRequest", () => {
 		// Verify idempotency_key matches the delivery ID pattern
 		const entry = inboxEntries[0] as any;
 		expect(entry.idempotency_key).toBe(`github-${deliveryId}`);
+	});
+
+	test("security: duplicate delivery does not emit a second scheduler event", async () => {
+		const webhookId = randomUUID();
+		const webhookSecret = "test_secret_123";
+		const webhookName = "test_webhook";
+		const taskId = randomUUID();
+
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: webhookId,
+				name: webhookName,
+				secret: webhookSecret,
+				signature_format: "github",
+				description: "Test webhook",
+				task_id: taskId,
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		let eventCount = 0;
+		eventBus.on("connector:event", () => {
+			eventCount++;
+		});
+
+		const body = Buffer.from('{"action":"opened"}');
+		const expectedHmac = createHmac("sha256", webhookSecret).update(body).digest("hex");
+		const deliveryId = "12345-67890-unique";
+		const makeRequest = () =>
+			new Request("http://localhost:3000/webhook/test_webhook", {
+				method: "POST",
+				headers: {
+					"X-Hub-Signature-256": `sha256=${expectedHmac}`,
+					"X-GitHub-Delivery": deliveryId,
+					"Content-Type": "application/json",
+				},
+				body,
+			});
+
+		const response1 = await handleWebhookRequest(makeRequest(), webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+		const response2 = await handleWebhookRequest(makeRequest(), webhookName, {
+			db,
+			siteId,
+			eventBus,
+		});
+
+		expect(response1.status).toBe(202);
+		expect(response2.status).toBe(202);
+		expect(eventCount).toBe(1);
 	});
 
 	test("AC3.4: Request without delivery header gets unique ID (no dedup)", async () => {

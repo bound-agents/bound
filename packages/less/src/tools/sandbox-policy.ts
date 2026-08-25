@@ -23,18 +23,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
  * `@microsoft/mxc-sdk@0.6.1`. A missing or out-of-window version throws at
  * spawn. Bump this in lockstep with the dependency.
  *
- * NOT a backend selector. The schema version does NOT pick the platform backend:
- * `createConfigFromPolicy` maps the abstract "process" containment to a fixed
- * per-OS structure (seatbelt / bubblewrap / Windows BaseContainer) regardless of
- * version, and there is no `appcontainer` containment branch in the SDK at all.
- * An earlier revision pinned win32 to 0.4.0-alpha believing it would fall back to
- * AppContainer — verified inert: the wire payload carried 0.4.0-alpha and the
- * native `wxc-exec` still selected BaseContainer (the `wxc-exec --probe` detector
- * picks `base-container` whenever the BaseContainer API symbol resolves, which it
- * does on 24H2+). Do not re-introduce a per-platform version pin to change the
- * backend; it cannot. The Windows sandbox is gated on feature-velocity keys, not
- * the schema version — see `checkSandboxAvailable` in `./sandbox` and the
- * "boundless" sandbox section in README.md.
+ * NOT a backend selector. This schema version applies only to the mxc-backed
+ * POSIX path (seatbelt on macOS and bubblewrap on Linux). Windows dispatches
+ * directly to Bound's native lowbox helper before this policy reaches mxc, so a
+ * per-platform version pin cannot change the Windows backend.
  */
 export const POLICY_VERSION = "0.6.0-alpha";
 
@@ -104,14 +96,33 @@ export const DISABLED_SANDBOX: ResolvedSandboxConfig = {
  *
  * These override inherited values (e.g. a host `PAGER=less`) on purpose: an
  * interactive pager cannot function in this context regardless of preference.
+ *
+ * `confineBunCache` (set by the SANDBOXED spawn paths only): bun stages
+ * package installs in its global cache (`~/.bun/install/cache`) before
+ * linking into node_modules, and that path sits outside the sandbox's
+ * writable roots (cwd + tmpdir) — so every `bun add` / `bun install` under
+ * confinement dies with the misleading "unable to write files to tempdir:
+ * PermissionDenied" (TMPDIR is irrelevant; the write that fails is the cache
+ * dir's). Pointing `BUN_INSTALL_CACHE_DIR` at a tmpdir-local cache keeps
+ * installs working with zero caller ceremony. Installed packages are ordinary
+ * files (hardlink count 1), so a cleared tmp cache never breaks an existing
+ * node_modules. An operator-set `BUN_INSTALL_CACHE_DIR` is honored — they may
+ * have deliberately pointed it somewhere writable. Unsandboxed spawns keep
+ * the warm global cache.
  */
-export function nonInteractiveEnv(): Record<string, string | undefined> {
-	return {
+export function nonInteractiveEnv(
+	opts: { confineBunCache?: boolean } = {},
+): Record<string, string | undefined> {
+	const env: Record<string, string | undefined> = {
 		...process.env,
 		GIT_PAGER: "cat",
 		PAGER: "cat",
 		GIT_TERMINAL_PROMPT: "0",
 	};
+	if (opts.confineBunCache && !process.env.BUN_INSTALL_CACHE_DIR) {
+		env.BUN_INSTALL_CACHE_DIR = join(tmpdir(), "bound-bun-install-cache");
+	}
+	return env;
 }
 
 /**
@@ -237,6 +248,17 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	};
 	addPath(cwd);
 	addPath(tmpdir());
+	// README contract: "writes are confined to the working directory and /tmp".
+	// On Linux os.tmpdir() IS /tmp so the line above already covers it, but on
+	// macOS os.tmpdir() is /var/folders/<user>/T — the literal /tmp (realpath
+	// /private/tmp) was never in the set, so portable shell idioms like
+	// `cat > /tmp/x` died with EPERM. Guarded by existence so Windows (no
+	// /tmp) is unaffected.
+	try {
+		if (statSync("/tmp").isDirectory()) addPath("/tmp");
+	} catch {
+		// no /tmp on this platform — nothing to grant
+	}
 	for (const dir of gitWorktreeWritablePaths(cwd)) addPath(dir);
 	for (const extra of cfg.writablePaths) addPath(extra);
 	return [...writable];
@@ -259,24 +281,14 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
  * a missing source aborts the sandbox, and a non-repo cwd (or a worktree/submodule
  * whose `.git` is a file, not a dir) simply has nothing to bind.
  *
- * WINDOWS CARVE-OUT (returns `[]` on win32): none of mxc's Windows backends can
- * express "readable but not writable" for a subpath of a writable parent. The
- * DACL and base-container tiers only have additive allow-ACLs plus a full-access
- * *deny* — and a full-access deny on `.git/config` would also block git's own
- * *reads* of config and break the repo. There is no write-only deny primitive,
- * so the only Windows options are "no protection" or "break git"; we choose no
- * protection and leave `.git` writable there until mxc grows the primitive
- * (tracked upstream — see CONTRIBUTING "Common Gotchas" and the bound issue).
- * Linux (bubblewrap) and the in-process file-tool guard still apply on every
- * other platform.
+ * The protected path set is platform-independent. POSIX shell confinement
+ * consumes it as read-only bind paths; the bound-owned Windows lowbox helper
+ * enforces the same carve-out through scoped DACLs. Keeping it here also makes
+ * the in-process file tools refuse writes consistently on every platform.
  */
 const GIT_EXEC_SURFACE_RELPATHS = [".git/hooks", ".git/config"] as const;
 
-export function computeGitProtectedPaths(
-	cwd: string,
-	platform: NodeJS.Platform = process.platform,
-): string[] {
-	if (platform === "win32") return [];
+export function computeGitProtectedPaths(cwd: string, _platform?: NodeJS.Platform): string[] {
 	const protectedPaths: string[] = [];
 	for (const rel of GIT_EXEC_SURFACE_RELPATHS) {
 		try {

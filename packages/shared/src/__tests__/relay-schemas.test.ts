@@ -9,7 +9,8 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 	it("accepts payload with thinking config", () => {
 		const payload = {
 			model: "opus",
-			messages: [{ role: "user", content: "hello" }],
+			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
+			nowMs: 0,
 			thinking: { type: "enabled", budget_tokens: 10000 },
 		};
 		const result = inferenceRequestPayloadSchema.safeParse(payload);
@@ -22,7 +23,8 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 	it("accepts payload without thinking config", () => {
 		const payload = {
 			model: "opus",
-			messages: [{ role: "user", content: "hello" }],
+			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
+			nowMs: 0,
 		};
 		const result = inferenceRequestPayloadSchema.safeParse(payload);
 		expect(result.success).toBe(true);
@@ -34,8 +36,9 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 	it("rejects thinking with invalid type", () => {
 		const payload = {
 			model: "opus",
-			messages: [{ role: "user", content: "hello" }],
-			thinking: { type: "disabled", budget_tokens: 10000 },
+			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
+			nowMs: 0,
+			thinking: { type: "bogus", budget_tokens: 10000 },
 		};
 		const result = inferenceRequestPayloadSchema.safeParse(payload);
 		expect(result.success).toBe(false);
@@ -44,11 +47,26 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 	it("rejects thinking with negative budget_tokens", () => {
 		const payload = {
 			model: "opus",
-			messages: [{ role: "user", content: "hello" }],
+			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
+			nowMs: 0,
 			thinking: { type: "enabled", budget_tokens: -100 },
 		};
 		const result = inferenceRequestPayloadSchema.safeParse(payload);
 		expect(result.success).toBe(false);
+	});
+});
+
+describe("inferenceRequestPayloadSchema cache_ttl field", () => {
+	it("mirrors arbitrary valid duration strings across the relay", () => {
+		for (const cache_ttl of ["30m", "PT30M"]) {
+			const result = inferenceRequestPayloadSchema.safeParse({
+				model: "gpt-5.6",
+				segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
+				nowMs: 0,
+				cache_ttl,
+			});
+			expect(result.success, cache_ttl).toBe(true);
+		}
 	});
 });
 
@@ -107,12 +125,10 @@ describe("inferenceRequestPayloadSchema native tool definitions", () => {
 		// Serialize through the relay payload schema
 		const payload = {
 			model: "claude-3-5-sonnet-20241022",
-			messages: [
-				{
-					role: "user",
-					content: "Hello, schedule something",
-				},
+			segments: [
+				{ kind: "inline", message: { role: "user", content: "Hello, schedule something" } },
 			],
+			nowMs: 0,
 			tools: [nativeToolDefinition],
 		};
 
@@ -186,7 +202,8 @@ describe("inferenceRequestPayloadSchema native tool definitions", () => {
 
 		const payload = {
 			model: "claude-3-5-sonnet-20241022",
-			messages: [{ role: "user", content: "test" }],
+			segments: [{ kind: "inline", message: { role: "user", content: "test" } }],
+			nowMs: 0,
 			tools,
 		};
 

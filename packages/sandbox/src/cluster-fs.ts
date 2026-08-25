@@ -1,7 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { insertRow, updateRow } from "@bound/core";
-import { type IFileSystem, InMemoryFs, MountableFs, OverlayFs } from "just-bash";
+import {
+	listFilePathContentByPrefixActive,
+	listWorkspaceFiles,
+	listWorkspaceFilesModifiedSince,
+} from "@bound/core";
+import { type IFileSystem, InMemoryFs, MountableFs } from "just-bash";
 
 /**
  * Check whether an error is an expected filesystem error (ENOENT or EISDIR).
@@ -17,7 +21,6 @@ function isExpectedFsError(err: unknown): boolean {
 
 export interface ClusterFsConfig {
 	hostName: string;
-	overlayMounts?: Record<string, string>;
 	syncEnabled: boolean;
 	db?: Database;
 	siteId?: string;
@@ -26,22 +29,11 @@ export interface ClusterFsConfig {
 export interface ClusterFsResult {
 	fs: MountableFs;
 	/**
-	 * Check staleness of a cached file against the overlay index.
-	 * Returns null if the path is not found in either the files table or overlay index.
-	 */
-	checkStaleness: (path: string) => StalenessResult | null;
-	/**
 	 * Enumerate all paths that exist in the in-memory filesystem instances
-	 * (baseFs and homeUserFs). Never touches OverlayFs instances.
-	 * Used by snapshotWorkspace to diff only agent-written paths.
+	 * (baseFs and homeUserFs). Used by snapshotWorkspace to diff only
+	 * agent-written paths.
 	 */
 	getInMemoryPaths: () => string[];
-}
-
-export interface StalenessResult {
-	stale: boolean;
-	cachedHash: string;
-	indexHash: string;
 }
 
 export interface FileChange {
@@ -52,10 +44,7 @@ export interface FileChange {
 }
 
 /**
- * Create a ClusterFs with optional auto-caching of overlay reads.
- *
- * When syncEnabled is true and db/siteId are provided, files read from
- * overlay mounts are automatically cached to the files table for sync.
+ * Create a ClusterFs.
  */
 export function createClusterFs(config: ClusterFsConfig): MountableFs;
 export function createClusterFs(
@@ -69,49 +58,8 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs | ClusterF
 	const homeUserFs = new InMemoryFs();
 	fs.mount("/home/user", homeUserFs);
 
-	// Track overlay mount points for auto-cache path detection
-	const overlayMountPoints = new Set<string>();
-
-	// Mount overlay filesystems if provided.
-	// MountableFs strips the mount prefix and passes relative paths to the
-	// sub-filesystem, so the OverlayFs mountPoint must be "/" to match.
-	if (config.overlayMounts) {
-		for (const [realPath, mountPath] of Object.entries(config.overlayMounts)) {
-			const overlayFs = new OverlayFs({
-				root: realPath,
-				mountPoint: "/",
-				readOnly: false,
-			});
-			fs.mount(mountPath, overlayFs);
-			overlayMountPoints.add(mountPath);
-		}
-	}
-
-	// If db and siteId are provided, enable auto-cache and staleness checking
+	// If db and siteId are provided, expose the in-memory path enumerator
 	if (config.db && config.siteId) {
-		const db = config.db;
-		const siteId = config.siteId;
-
-		// Wrap readFile to auto-cache overlay reads when sync is enabled
-		if (config.syncEnabled && overlayMountPoints.size > 0) {
-			const originalReadFile = fs.readFile.bind(fs);
-			fs.readFile = async (path: string, options?: unknown): Promise<string> => {
-				const content = await originalReadFile(path, options as undefined);
-
-				// Check if this path belongs to an overlay mount
-				const isOverlayPath = isUnderOverlayMount(path, overlayMountPoints);
-				if (isOverlayPath) {
-					autoCacheFile(db, siteId, path, content);
-				}
-
-				return content;
-			};
-		}
-
-		const checkStaleness = (path: string): StalenessResult | null => {
-			return checkFileStaleness(db, path);
-		};
-
 		const getInMemoryPaths = (): string[] => {
 			const paths: string[] = [];
 			for (const p of baseFs.getAllPaths()) {
@@ -125,107 +73,10 @@ export function createClusterFs(config: ClusterFsConfig): MountableFs | ClusterF
 			return paths;
 		};
 
-		return { fs, checkStaleness, getInMemoryPaths };
+		return { fs, getInMemoryPaths };
 	}
 
 	return fs;
-}
-
-/**
- * Check if a virtual path falls under any overlay mount point.
- */
-function isUnderOverlayMount(path: string, overlayMountPoints: Set<string>): boolean {
-	for (const mount of overlayMountPoints) {
-		if (path === mount || path.startsWith(`${mount}/`)) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/**
- * Auto-cache a file read from an overlay into the files table.
- * Uses insertRow/updateRow from @bound/core to maintain the change-log outbox.
- */
-function autoCacheFile(db: Database, siteId: string, path: string, content: string): void {
-	const contentHash = createHash("sha256").update(content).digest("hex");
-	const sizeBytes = Buffer.byteLength(content);
-	const now = new Date().toISOString();
-
-	// Check if already cached with the same hash
-	const existing = db
-		.query("SELECT id, content FROM files WHERE path = ? AND deleted = 0")
-		.get(path) as { id: string; content: string } | null;
-
-	if (existing) {
-		const existingHash = createHash("sha256").update(existing.content).digest("hex");
-		if (existingHash === contentHash) {
-			// Content unchanged, skip update
-			return;
-		}
-		updateRow(
-			db,
-			"files",
-			existing.id,
-			{
-				content,
-				size_bytes: sizeBytes,
-			},
-			siteId,
-		);
-	} else {
-		insertRow(
-			db,
-			"files",
-			{
-				id: path,
-				path,
-				content,
-				is_binary: 0,
-				deleted: 0,
-				size_bytes: sizeBytes,
-				created_at: now,
-				modified_at: now,
-				created_by: null,
-				host_origin: null,
-			},
-			siteId,
-		);
-	}
-}
-
-/**
- * Check staleness of a cached file by comparing its content hash
- * against the overlay_index entry's content_hash.
- *
- * Returns null if the path is not found in both the files table and overlay index.
- */
-function checkFileStaleness(db: Database, path: string): StalenessResult | null {
-	const cachedFile = db
-		.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-		.get(path) as { content: string } | null;
-
-	if (!cachedFile) {
-		return null;
-	}
-
-	// Look up overlay index entry by path
-	const indexEntry = db
-		.query("SELECT content_hash FROM overlay_index WHERE path = ? AND deleted = 0")
-		.get(path) as { content_hash: string } | null;
-
-	if (!indexEntry || !indexEntry.content_hash) {
-		return null;
-	}
-
-	const cachedHash = createHash("sha256").update(cachedFile.content).digest("hex");
-	const indexHash = indexEntry.content_hash;
-
-	return {
-		stale: cachedHash !== indexHash,
-		cachedHash,
-		indexHash,
-	};
 }
 
 export async function snapshotWorkspace(
@@ -372,16 +223,7 @@ function decodeFileContent(content: string | null, isBinary: number): string {
 }
 
 export async function hydrateWorkspace(fs: MountableFs, db: Database): Promise<void> {
-	const query = db.prepare(`
-		SELECT path, content, is_binary FROM files
-		WHERE deleted = 0 AND path NOT LIKE '/mnt/%'
-	`);
-
-	for (const row of query.all() as Array<{
-		path: string;
-		content: string | null;
-		is_binary: number;
-	}>) {
+	for (const row of listWorkspaceFiles(db)) {
 		await fs.writeFile(row.path, decodeFileContent(row.content, row.is_binary));
 	}
 }
@@ -413,16 +255,7 @@ export async function rehydrateWorkspaceIncremental(
 	sinceIso: string,
 ): Promise<string> {
 	const cursor = new Date().toISOString();
-	const query = db.prepare(`
-		SELECT path, content, is_binary FROM files
-		WHERE deleted = 0 AND path NOT LIKE '/mnt/%' AND modified_at > ?
-	`);
-
-	for (const row of query.all(sinceIso) as Array<{
-		path: string;
-		content: string | null;
-		is_binary: number;
-	}>) {
+	for (const row of listWorkspaceFilesModifiedSince(db, sinceIso)) {
 		await fs.writeFile(row.path, decodeFileContent(row.content, row.is_binary));
 	}
 
@@ -458,13 +291,8 @@ export async function hydrateRemoteCache(
 	db: Database,
 	hostName: string,
 ): Promise<void> {
-	const query = db.prepare(`
-		SELECT path, content FROM files
-		WHERE path LIKE ? AND deleted = 0
-	`);
-
 	const pattern = `/mnt/${hostName}/%`;
-	for (const row of query.all(pattern) as Array<{ path: string; content: string }>) {
-		await fs.writeFile(row.path, row.content);
+	for (const row of listFilePathContentByPrefixActive(db, pattern)) {
+		await fs.writeFile(row.path, row.content ?? "");
 	}
 }

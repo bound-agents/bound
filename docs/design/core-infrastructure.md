@@ -68,14 +68,13 @@ type SyncedTableName =
   | "tasks"
   | "files"
   | "hosts"
-  | "overlay_index"
   | "cluster_config"
   | "advisories"
   | "skills"
   | "memory_edges";
 ```
 
-These twelve names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
+These eleven names are the tables that participate in cross-host replication. Every write to one of these tables must be accompanied by a `change_log` entry (see [Change Log](#change-log-and-transactional-outbox)).
 
 #### TABLE_REDUCER_MAP
 
@@ -96,7 +95,6 @@ Maps each synced table to its conflict resolution strategy. `"lww"` (last-write-
 | `Task` | `id: string` | `deleted: number` | Full task scheduling state; see field notes below |
 | `AgentFile` | `id: string` | `deleted: number` | Stored as text or binary; `content` is the raw payload |
 | `Host` | `site_id: string` | — (schema only) | Describes a Bound node in the cluster; the TS interface omits `deleted`, the SQL table carries it for replication hygiene |
-| `OverlayIndexEntry` | `id: string` | `deleted: number` | File index for a host's overlay filesystem |
 | `ClusterConfigEntry` | `key: string` | — | Key-value cluster-wide config; LWW by `modified_at` |
 | `Advisory` | `id: string` | — (schema only) | Agent self-advisory lifecycle; the TS interface omits `deleted`, the SQL table carries it |
 | `Skill` | `id: string` | — (schema only) | Deterministic UUID from name; `status` is `"active"\|"retired"`; `skill_root` is the VFS path; context assembly uses `activation_count` and `last_activated_at`. The TS interface omits `deleted`, the SQL table carries it |
@@ -188,8 +186,7 @@ interface EventMap {
   "alert:created":         { message: Message; thread_id: string };
   "agent:cancel":          { thread_id: string };
   "status:forward":        StatusForwardPayload;
-  "platform:deliver":      PlatformDeliverPayload;
-  "platform:webhook":      { platform: string; rawBody: string; headers: Record<string, string> };
+  "connector:event":       { trigger_key: string; task_id: string; handle_id: string; batch_size: number };
   "context:debug":         { thread_id: string; turn_id: number; debug: ContextDebugInfo };
   "notify:enqueued":       { thread_id: string };
   "model:fallback": {
@@ -206,7 +203,7 @@ interface EventMap {
 }
 ```
 
-`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"status:forward"` carries delegated loop state from remote hosts. `"platform:deliver"` routes outbound assistant responses to the platform leader; `"platform:webhook"` carries inbound webhook payloads for signature verification and dispatch. `"changelog:written"`, `"relay:outbox-written"`, and `"relay:inbox"` wake the sync and relay subsystems when new work is appended.
+`"message:broadcast"` is emitted after a local agent loop run to push the new assistant message to WebSocket clients without re-triggering the agent loop handler. `"status:forward"` carries delegated loop state from remote hosts. `"connector:event"` wakes the scheduler's bound event task when a platform connector delivers a buffered event batch or a webhook arrives (the `/webhook/:name` handler emits it after writing the `webhook_intake` inbox row). `"changelog:written"`, `"relay:outbox-written"`, and `"relay:inbox"` wake the sync and relay subsystems when new work is appended.
 
 To add a new event to the system, add an entry to this interface. The `TypedEventEmitter` class (below) enforces the payload type at every call site.
 
@@ -342,6 +339,7 @@ type ModelBackendsConfig = {
   backends: Array<{
     id: string;
     provider: "bedrock" | "bedrock-mantle" | "anthropic" | "openai-compatible" | "cerebras" | "zai" | "opencode-go";
+    provider_mode?: "anthropic" | "openai_responses"; // Required for bedrock-mantle
     model: string;
     base_url?: string;              // Required for openai-compatible
     api_key?: string;               // Required for cerebras, anthropic, zai, and opencode-go
@@ -376,7 +374,6 @@ Three cross-field constraints are enforced: `default` must reference a `backend.
 | `syncSchema` | `sync.json` | Optional hub URL, nested `relay` (payload/timeout/prune/drain/inference limits), and `ws` (backpressure, idle timeout, reconnect) configs |
 | `keyringSchema` | `keyring.json` | Per-host public key and URL map |
 | `mcpSchema` | `mcp.json` | MCP server definitions (stdio or http transport) |
-| `overlaySchema` | `overlay.json` | Virtual filesystem mount points |
 
 **`networkSchema`:**
 
@@ -426,7 +423,6 @@ const configSchemaMap: {
   "sync.json":            typeof syncSchema;
   "keyring.json":         typeof keyringSchema;
   "mcp.json":             typeof mcpSchema;
-  "overlay.json":         typeof overlaySchema;
 }
 ```
 
@@ -544,19 +540,11 @@ Index: unique on `path` where `deleted = 0`.
 **`hosts`**
 ```sql
 site_id TEXT PRIMARY KEY, host_name TEXT NOT NULL, version TEXT, sync_url TEXT,
-mcp_servers TEXT, mcp_tools TEXT, models TEXT, overlay_root TEXT,
+mcp_servers TEXT, mcp_tools TEXT, models TEXT,
 online_at TEXT, modified_at TEXT NOT NULL,
 platforms TEXT, deleted INTEGER DEFAULT 0
 ```
 JSON-encoded arrays/objects stored as TEXT in `mcp_servers`, `mcp_tools`, `models`, and `platforms`. `platforms` is a JSON array of platform names for which this host is the leader (e.g. `["discord"]`).
-
-**`overlay_index`**
-```sql
-id TEXT PRIMARY KEY, site_id TEXT NOT NULL, path TEXT NOT NULL,
-size_bytes INTEGER NOT NULL, content_hash TEXT, indexed_at TEXT NOT NULL,
-deleted INTEGER DEFAULT 0
-```
-Index: on `(site_id, path)` where `deleted = 0`.
 
 **`cluster_config`**
 ```sql
@@ -846,7 +834,7 @@ function loadOptionalConfigs(configDir: string): OptionalConfigs
 type OptionalConfigs = Record<string, Result<Record<string, unknown>, ConfigError>>
 ```
 
-Attempts to load all seven optional config files. Files that are absent (ENOENT) are silently omitted from the returned map. Files that are present but fail validation are included as `err(ConfigError)` entries so the caller can surface them. The keys in the returned map are the logical config names (`"network"`, `"platforms"`, `"sync"`, `"keyring"`, `"mcp"`, `"overlay"`, `"cronSchedules"`).
+Attempts to load all six optional config files. Files that are absent (ENOENT) are silently omitted from the returned map. Files that are present but fail validation are included as `err(ConfigError)` entries so the caller can surface them. The keys in the returned map are the logical config names (`"network"`, `"platforms"`, `"sync"`, `"keyring"`, `"mcp"`, `"cronSchedules"`).
 
 ```typescript
 const optionals = loadOptionalConfigs("/etc/bound/config");
@@ -1066,3 +1054,33 @@ recordTurn(db, {
 const todaySpend = getDailySpend(db, "2026-03-23");
 console.log(`Today's spend: $${todaySpend.toFixed(4)}`);
 ```
+
+---
+
+### Virtual Filesystem Persistence
+
+The agent sandbox operates over a composable virtual filesystem abstraction that allows in-memory and passthrough filesystem instances to be mounted at different path prefixes. The `@bound/sandbox` package's `createClusterFs` factory returns a `ClusterFsResult` object that wraps a `MountableFs` root and exposes an optional computed method for path enumeration. The full state of the agent's in-memory filesystem survives process restarts through a snapshot-hydrate-persist pipeline backed by the `files` synced table.
+
+#### Scope and Exclusions
+
+Snapshot and hydration cover all paths stored in in-memory filesystem instances — specifically the root `InMemoryFs` (which holds paths like `/tmp/`, `/workspace/`, arbitrary agent-created directories) and the `/home/user/` mounted `InMemoryFs`. System pseudo-paths (`/dev/`, `/proc/`, `/bin/`, `/usr/`) are never created in those instances, so they are naturally excluded from enumeration.
+
+#### Path Enumeration
+
+`ClusterFsResult.getInMemoryPaths()` returns a flat list of all paths present in the tracked in-memory instances. The implementation queries only the InMemoryFs instances that `createClusterFs` holds by direct reference (the root and the `/home/user/` mount), concatenating their `getAllPaths()` output with the appropriate mount-point prefix. This is an explicit allowlist by direct reference, not a type-based filter or traversal of the full `MountableFs` tree — if a filesystem instance is not tracked in this list, its paths do not appear in the snapshot.
+
+#### Snapshot and Hydration
+
+`snapshotWorkspace(fs, options?)` accepts an optional `paths` parameter. When supplied, it iterates that explicit list rather than calling `getAllPaths()` on the full filesystem and filtering. The function returns a map of `path → { hash, size }`, which serves as the input to the diff-and-persist logic. `hydrateWorkspace(db, fs, siteId)` queries the `files` table with `WHERE deleted = 0` and writes all matching rows back into the in-memory filesystem.
+
+#### Pre-Snapshot Hook
+
+The `BashLike` interface (defined in `@bound/agent`) includes an optional `capturePreSnapshot?: () => Promise<void>` method. The agent loop calls this hook at the `HYDRATE_FS` stage, before any tool execution begins, to record the pre-execution filesystem state. This enables the diff logic in `persistWorkspaceChanges` to detect exactly what changed during the loop and write only those deltas to the database.
+
+#### Size Limits
+
+Existing per-file (1 MB) and per-workspace (50 MB) size limits apply unchanged. Files exceeding the per-file limit are silently excluded from the snapshot. Workspaces exceeding the aggregate limit cause `persistWorkspaceChanges` to return an error, which the agent loop logs and surfaces to the user.
+
+#### Wiring in Production
+
+The CLI's `agentLoopFactory` closure constructs a per-invocation `loopSandbox` wrapper object that implements the `BashLike` interface. A closure-scoped `preSnapshot` variable holds the captured state. `capturePreSnapshot` calls `snapshotWorkspace(clusterFs, { paths: clusterFsObj.getInMemoryPaths() })` and stores the result. `persistFs` calls `snapshotWorkspace` again for the post-snapshot, diffs the two via `persistWorkspaceChanges`, resets `preSnapshot` to null, and returns `{ changes }`. Because `loopSandbox` is created fresh per `agentLoopFactory` invocation, concurrent agent loops have isolated snapshot state with no risk of cross-contamination.

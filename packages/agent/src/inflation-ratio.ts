@@ -11,7 +11,7 @@ const DEFAULT_LOOKBACK = 10;
 /**
  * Minimum number of valid samples required before we trust the ratio.
  * One or two turns is too noisy; below this threshold we return null and
- * the caller falls back to its base TRUNCATION_TARGET_RATIO assumption.
+ * the caller falls back to its unadjusted `computeBaseTruncationTarget` value.
  */
 const DEFAULT_MIN_SAMPLES = 3;
 
@@ -75,39 +75,34 @@ export function computeInflationRatio(
 }
 
 /**
- * Resolves the truncation ratio for assembleContext, factoring in the
- * thread's measured tiktoken-vs-actual inflation.
+ * Resolves the truncation target (in tokens) for assembleContext, factoring
+ * in the thread's measured tiktoken-vs-actual inflation.
  *
- * `effective = baseRatio / max(1.0, measuredInflation)`
+ * `target = floor(baseTarget / max(1.0, measuredInflation))`
  *
- * The clamp at 1.0 prevents us from raising the ratio above its base when
+ * `baseTarget` is the physical target before per-thread adjustment —
+ * `contextWindow - maxOutputTokens` (see `computeBaseTruncationTarget` in
+ * context-assembly.ts), NOT a ratio. Dividing it down by the inflation EMA
+ * keeps the same intent the old ratio-based scheme had: tiktoken's
+ * cl100k_base under-counts thinking-heavy threads by 1.5-2x, so the
+ * estimator-visible budget must shrink by the same factor for the real
+ * wire payload to still fit inside `baseTarget` real tokens.
+ *
+ * The clamp at 1.0 prevents us from raising the target above its base when
  * tiktoken overestimates (inflation < 1.0); loosening would let the next
- * turn that swings back over the line blow the configured forcing budget.
+ * turn that swings back over the line blow the configured budget.
  *
- * Returns `baseRatio` unchanged when computeInflationRatio has insufficient
- * data. New threads keep the original behavior until they have enough turns
- * for the EMA to be meaningful.
+ * Returns `{ target: baseTarget, inflation: null }` when
+ * `computeInflationRatio` has insufficient data. New threads keep the
+ * unadjusted base target until they accumulate enough turns for the EMA to
+ * be meaningful.
  */
-export function resolveAdaptiveTruncationRatio(
+export function resolveAdaptiveTruncationTarget(
 	db: Database,
 	threadId: string,
-	baseRatio: number,
-): number {
-	return resolveAdaptiveTruncation(db, threadId, baseRatio).ratio;
-}
-
-/**
- * Same computation as `resolveAdaptiveTruncationRatio`, but exposes the raw
- * inflation EMA alongside the resolved ratio so callers (notably the agent
- * loop's `context_debug` writer) can record both without re-running the
- * lookback query. `inflation === null` signals "insufficient samples".
- */
-export function resolveAdaptiveTruncation(
-	db: Database,
-	threadId: string,
-	baseRatio: number,
-): { ratio: number; inflation: number | null } {
+	baseTarget: number,
+): { target: number; inflation: number | null } {
 	const inflation = computeInflationRatio(db, threadId);
-	if (inflation === null) return { ratio: baseRatio, inflation: null };
-	return { ratio: baseRatio / Math.max(1.0, inflation), inflation };
+	if (inflation === null) return { target: baseTarget, inflation: null };
+	return { target: Math.max(0, Math.floor(baseTarget / Math.max(1.0, inflation))), inflation };
 }

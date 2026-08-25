@@ -7,10 +7,7 @@ class MockBoundClient {
 	skills: Skill[] = [];
 	skillDetails: Record<string, { content: string; files: { path: string; size: number }[] }> = {};
 
-	async listSkills(options?: { status?: string }): Promise<Skill[]> {
-		if (options?.status) {
-			return this.skills.filter((s) => s.status === options.status);
-		}
+	async listSkills(): Promise<Skill[]> {
 		return this.skills;
 	}
 
@@ -23,18 +20,10 @@ class MockBoundClient {
 		return { skill, ...detail };
 	}
 
-	async retireSkill(id: string, _reason?: string): Promise<{ skill: Skill }> {
-		const skill = this.skills.find((s) => s.id === id);
-		if (!skill) throw new Error("Skill not found");
-		skill.status = "retired";
-		return { skill };
-	}
-
-	async activateSkill(id: string): Promise<{ skill: Skill }> {
-		const skill = this.skills.find((s) => s.id === id);
-		if (!skill) throw new Error("Skill not found");
-		skill.status = "active";
-		return { skill };
+	async deleteSkill(id: string): Promise<void> {
+		const idx = this.skills.findIndex((s) => s.id === id);
+		if (idx === -1) throw new Error("Skill not found");
+		this.skills.splice(idx, 1);
 	}
 }
 
@@ -49,7 +38,6 @@ describe("SkillsView Component", () => {
 			id: randomUUID(),
 			name: "Test Skill 1",
 			description: "First test skill",
-			status: "active",
 			skill_root: "/skills/test1",
 			content_hash: "hash1",
 			allowed_tools: "tool1, tool2",
@@ -59,8 +47,6 @@ describe("SkillsView Component", () => {
 			created_by_thread: "thread-1",
 			activation_count: 5,
 			last_activated_at: new Date().toISOString(),
-			retired_by: null,
-			retired_reason: null,
 			modified_at: new Date().toISOString(),
 			deleted: 0,
 		};
@@ -69,7 +55,6 @@ describe("SkillsView Component", () => {
 			id: randomUUID(),
 			name: "Test Skill 2",
 			description: "Second test skill",
-			status: "retired",
 			skill_root: "/skills/test2",
 			content_hash: "hash2",
 			allowed_tools: "tool3",
@@ -79,8 +64,6 @@ describe("SkillsView Component", () => {
 			created_by_thread: "thread-2",
 			activation_count: 3,
 			last_activated_at: new Date(Date.now() - 86400000).toISOString(),
-			retired_by: "thread-1",
-			retired_reason: "No longer needed",
 			modified_at: new Date().toISOString(),
 			deleted: 0,
 		};
@@ -99,32 +82,14 @@ describe("SkillsView Component", () => {
 		};
 	});
 
-	describe("Task 2: List with DataTable and status filter", () => {
-		it("AC3.2: Lists all skills with name, status, description, last activated", async () => {
+	describe("Task 2: List with DataTable", () => {
+		it("AC3.2: Lists all skills with name, description, last activated", async () => {
 			const skills = await client.listSkills();
 
 			expect(skills).toHaveLength(2);
 			expect(skills[0].name).toBe("Test Skill 1");
 			expect(skills[0].description).toBe("First test skill");
-			expect(skills[0].status).toBe("active");
 			expect(skills[0].last_activated_at).toBeTruthy();
-		});
-
-		it("AC3.3: Filters by status - all", async () => {
-			const skills = await client.listSkills();
-			expect(skills).toHaveLength(2);
-		});
-
-		it("AC3.3: Filters by status - active only", async () => {
-			const skills = await client.listSkills({ status: "active" });
-			expect(skills).toHaveLength(1);
-			expect(skills[0].status).toBe("active");
-		});
-
-		it("AC3.3: Filters by status - retired only", async () => {
-			const skills = await client.listSkills({ status: "retired" });
-			expect(skills).toHaveLength(1);
-			expect(skills[0].status).toBe("retired");
 		});
 	});
 
@@ -156,15 +121,11 @@ describe("SkillsView Component", () => {
 		});
 	});
 
-	describe("Task 3: Retire and re-activate (for completeness)", () => {
-		it("Retires an active skill", async () => {
-			const result = await client.retireSkill(client.skills[0].id, "Test reason");
-			expect(result.skill.status).toBe("retired");
-		});
-
-		it("Re-activates a retired skill", async () => {
-			const result = await client.activateSkill(client.skills[1].id);
-			expect(result.skill.status).toBe("active");
+	describe("Task 3: Delete", () => {
+		it("Deletes a skill", async () => {
+			const id = client.skills[0].id;
+			await client.deleteSkill(id);
+			expect(client.skills.find((s) => s.id === id)).toBeUndefined();
 		});
 	});
 });

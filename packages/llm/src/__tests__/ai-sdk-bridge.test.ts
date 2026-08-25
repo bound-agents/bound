@@ -18,7 +18,7 @@ import {
 	sanitizeToolUseId,
 	toModelMessages,
 	toToolSet,
-} from "../ai-sdk-bridge";
+} from "../bridge";
 import type { LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 
@@ -86,7 +86,7 @@ describe("toModelMessages — basic role mapping", () => {
 	});
 
 	it("emits a trailing user message when developer content follows an assistant turn (was: merged into earlier user, ended with assistant)", () => {
-		// Regression: 2026-05-17, thread f096a101 / 98926e2d. The introspect
+		// Regression, observed live. The introspect
 		// tool injects a developer-role message into the target thread AFTER
 		// the trailing assistant turn. The bridge used to walk back to the
 		// most recent user message and merge dev content into it, leaving
@@ -256,8 +256,7 @@ describe("toModelMessages — conversation-start invariant", () => {
 // with "This model does not support assistant message prefill. The
 // conversation must end with a user message."
 //
-// The introspect-into-claude-opus incident (2026-05-17, thread f096a101 /
-// 98926e2d) was a direct hit on this constraint: the introspect tool injects
+// The introspect-into-claude-opus incident was a direct hit on this constraint: the introspect tool injects
 // a developer-role message AFTER the existing trailing assistant, and the
 // bridge's old behavior buried the dev content into an earlier user message,
 // leaving `assistant` as the last message. Both introspect attempts hit the
@@ -334,11 +333,11 @@ describe("toModelMessages — conversation-end invariant (developer injection af
 	});
 
 	it("truncated-loop shape: [assistant, tool_call, tool_result, assistant, developer] (NO user in window) ends with user", () => {
-		// Regression for thread 60db514d (2026-05-31, notify-into-truncated-
+		// Regression, observed live (notify-into-truncated-
 		// opus-loop): a long autonomous boundless loop gets truncated to a
 		// window of ONLY assistant/tool turns — every user message scrolled
 		// out of context. A background-task notification then lands as a tail
-		// developer message. The 2026-05-17 fix discriminated HEAD vs TAIL by
+		// developer message. The original fix discriminated HEAD vs TAIL by
 		// `result.some(user)`; with no surviving user message that check was
 		// false, so the dev was wrongly `unshift`ed as a head user, leaving
 		// the conversation STILL ending on the assistant message → Bedrock's
@@ -1590,10 +1589,9 @@ describe("toModelMessages — tool_use.name sanitization (cross-provider portabi
 	// provider streams a malformed tool_use (Kimi/Moonshot template-token
 	// leakage on the OpenAI-compatible path), the persisted ContentBlock has a
 	// `name` field that violates Anthropic's `^[a-zA-Z0-9_-]+$` regex AND
-	// Bedrock's 64-char `[a-zA-Z0-9_-]{1,64}` validation. The bridge applies
-	// the same sanitizeToolName transform that stream-utils.ts exports and
-	// that the streaming-boundary path in mapChunks uses, so the wire form is
-	// always within every provider's accepted charset and length cap.
+	// Bedrock's 64-char `[a-zA-Z0-9_-]{1,64}` validation. toModelMessages applies
+	// `sanitizeToolNameForEnvelope` at the read boundary, so the wire form is
+	// always within the target envelope's accepted charset and length cap.
 
 	it("sanitizes illegal characters in tool_use.name on a tool_call message", () => {
 		const out = toModelMessages([
@@ -1720,9 +1718,9 @@ describe("toModelMessages — tool_use.name sanitization (cross-provider portabi
 	});
 });
 
-describe("toModelMessages — full recovery on the corrupted shape from thread 81bd5e8d", () => {
-	// Reproduction of the exact ContentBlock that poisoned thread 81bd5e8d
-	// on 2026-05-21: kimi-k2.5 via OpenAI-compatible Bedrock path leaked its
+describe("toModelMessages — full recovery on a corrupted live shape", () => {
+	// Reproduction of the exact ContentBlock that poisoned a live thread:
+	// kimi-k2.5 via OpenAI-compatible Bedrock path leaked its
 	// own `<|tool_call_argument_begin|>` template token into a tool_use,
 	// resulting in a persisted block where both `id` and `name` are 200+ char
 	// strings containing illegal characters (`.`, `:`, `<`, `|`, `>`, `{`,
@@ -1842,7 +1840,7 @@ describe("toModelMessages — tool-pair completeness backstop (orphan recovery)"
 	}
 
 	it("synthesizes a stub tool-result for an unmatched tool_use (call with no result)", () => {
-		// Reconstructed shape from thread 53c7635e 2026-06-14: a parallel batch
+		// Reconstructed shape from a live thread: a parallel batch
 		// where one of two tool_use ids lost its tool_result before assembly,
 		// so the wire carried tool-call(CJSyxw) with no matching tool-result —
 		// Bedrock 400 "Expected toolResult blocks ... for the following Ids".
@@ -1891,6 +1889,34 @@ describe("toModelMessages — tool-pair completeness backstop (orphan recovery)"
 		expect(callIds).toEqual([]);
 		// The orphan result must not survive onto the wire.
 		expect(resultIds).toEqual([]);
+	});
+
+	it("replaces a tool_result separated from its tool_call by an intervening message", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_call",
+					content: [{ type: "tool_use", id: "tooluse_interleaved", name: "query", input: {} }],
+				},
+				{ role: "developer", content: "background notification" },
+				{
+					role: "tool_result",
+					tool_use_id: "tooluse_interleaved",
+					content: [{ type: "text", text: "late result" }],
+				},
+			],
+			{ targetEnvelope: BEDROCK_PERMISSIVE_ENVELOPE },
+		);
+		const result = out
+			.flatMap((m) =>
+				Array.isArray(m.content) ? (m.content as Array<Record<string, unknown>>) : [],
+			)
+			.find((part) => part.type === "tool-result" && part.toolCallId === "tooluse_interleaved") as {
+			output?: { value?: string };
+		};
+		expect(result.output?.value).toBe("[no tool result recorded: the call did not complete]");
+		expect(out.filter((m) => m.role === "tool")).toHaveLength(1);
 	});
 
 	it("leaves a well-formed parallel batch untouched", () => {
@@ -2410,6 +2436,145 @@ describe("toModelMessages — cache marker", () => {
 		expect(out).toHaveLength(1);
 		expect(out[0].providerOptions).toBeUndefined();
 	});
+
+	it("openai: attaches part-level promptCacheBreakpoint to a string user message (lifted to parts)", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		expect(out).toHaveLength(1);
+		// The Responses converter ignores MESSAGE-level providerOptions on user
+		// messages — the marker must ride PART-level, which requires lifting
+		// string content to parts form.
+		expect(out[0].providerOptions).toBeUndefined();
+		const parts = out[0].content as Array<Record<string, unknown>>;
+		expect(parts).toEqual([
+			{
+				type: "text",
+				text: "hi",
+				providerOptions: { openai: { promptCacheBreakpoint: { mode: "explicit" } } },
+			},
+		]);
+	});
+
+	it("openai: marks the LAST text part of a multi-part user message", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "first" },
+						{ type: "text", text: "second" },
+					],
+				},
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		const parts = out[0].content as Array<Record<string, unknown>>;
+		expect(parts[0].providerOptions).toBeUndefined();
+		expect(parts[1].providerOptions).toEqual({
+			openai: { promptCacheBreakpoint: { mode: "explicit" } },
+		});
+	});
+
+	it("openai: converts a text-shape tool output to content shape to carry the breakpoint", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "call_1", name: "do_thing", input: {} }],
+				},
+				{ role: "tool_result", tool_use_id: "call_1", content: "result text" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		const toolMsg = out.find((m) => m.role === "tool");
+		expect(toolMsg).toBeDefined();
+		const parts = toolMsg?.content as unknown as Array<Record<string, unknown>>;
+		expect(parts[0].output).toEqual({
+			type: "content",
+			value: [
+				{
+					type: "text",
+					text: "result text",
+					providerOptions: { openai: { promptCacheBreakpoint: { mode: "explicit" } } },
+				},
+			],
+		});
+	});
+
+	it("openai: walks back past an assistant message to a markable position", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "question" },
+				{ role: "assistant", content: "answer" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		// Assistant output items have no breakpoint slot on the Responses wire;
+		// the marker must land on the user message instead (boundary moves
+		// earlier — semantically safe).
+		expect(out[1].providerOptions).toBeUndefined();
+		const userParts = out[0].content as Array<Record<string, unknown>>;
+		expect(userParts[0].providerOptions).toEqual({
+			openai: { promptCacheBreakpoint: { mode: "explicit" } },
+		});
+	});
+
+	it("openai: collapsing markers onto one boundary attaches only once", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "question" },
+				{ role: "assistant", content: "answer" },
+				{ role: "cache", content: "" },
+				{ role: "cache", content: "" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		const userParts = out[0].content as Array<Record<string, unknown>>;
+		const provOpts = userParts[0].providerOptions as Record<string, Record<string, unknown>>;
+		expect(provOpts.openai.promptCacheBreakpoint).toEqual({ mode: "explicit" });
+	});
+
+	it("openai: caps message-level breakpoints at MAX_OPENAI_MESSAGE_BREAKPOINTS", () => {
+		// Four distinct user-turn boundaries, four markers — only the first
+		// three (in message order) may attach; the driver holds the fourth
+		// breakpoint for the system anchor.
+		const messages: LLMMessage[] = [];
+		for (let i = 0; i < 4; i++) {
+			messages.push({ role: "user", content: `turn ${i}` });
+			messages.push({ role: "cache", content: "" });
+			messages.push({ role: "assistant", content: `reply ${i}` });
+		}
+		const out = toModelMessages(messages, { cacheProvider: "openai" });
+		const marked = out.filter((m) => {
+			if (m.role !== "user" || !Array.isArray(m.content)) return false;
+			return (m.content as Array<Record<string, unknown>>).some((p) => {
+				const po = p.providerOptions as Record<string, Record<string, unknown>> | undefined;
+				return po?.openai?.promptCacheBreakpoint !== undefined;
+			});
+		});
+		expect(marked).toHaveLength(3);
+	});
+
+	it("openai: drops leading cache marker with no prior message", () => {
+		const out = toModelMessages(
+			[
+				{ role: "cache", content: "" },
+				{ role: "user", content: "hi" },
+			],
+			{ cacheProvider: "openai" },
+		);
+		expect(out).toHaveLength(1);
+		expect(out[0].providerOptions).toBeUndefined();
+		expect(typeof out[0].content).toBe("string");
+	});
 });
 
 describe("toToolSet", () => {
@@ -2439,7 +2604,7 @@ describe("toToolSet", () => {
 		expect(tools.get_weather.description).toBe("Get weather for a city");
 	});
 
-	it("projects closed object schemas into provider-generic strict tool shape", async () => {
+	it("passes closed object schemas through unchanged with no strict flag", async () => {
 		const tools = toToolSet([
 			{
 				type: "function",
@@ -2464,31 +2629,29 @@ describe("toToolSet", () => {
 		]);
 		expect(tools).toBeDefined();
 		if (!tools) throw new Error("tools undefined");
-		expect((tools.boundless_bash as { strict?: boolean }).strict).toBe(true);
+		expect((tools.boundless_bash as { strict?: boolean }).strict).toBeUndefined();
 		const schema = await Promise.resolve(
 			(tools.boundless_bash.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
 		);
+		// Optionals stay optional: no forced `required`, no nullable rewrites,
+		// no additionalProperties injection. The strictifier was removed after
+		// determining strict projection didn't help the models it targeted.
 		expect(schema).toEqual({
 			type: "object",
 			properties: {
 				command: { type: "string" },
-				timeout: { type: ["number", "null"] },
+				timeout: { type: "number" },
 				options: {
-					type: ["object", "null"],
-					properties: {
-						cwd: { type: "string" },
-						login: { type: ["boolean", "null"] },
-					},
-					required: ["cwd", "login"],
-					additionalProperties: false,
+					type: "object",
+					properties: { cwd: { type: "string" }, login: { type: "boolean" } },
+					required: ["cwd"],
 				},
 			},
-			required: ["command", "timeout", "options"],
-			additionalProperties: false,
+			required: ["command"],
 		});
 	});
 
-	it("leaves deliberately open schemas non-strict", async () => {
+	it("passes deliberately open schemas through unchanged", async () => {
 		const tools = toToolSet([
 			{
 				type: "function",
@@ -2515,44 +2678,6 @@ describe("toToolSet", () => {
 			properties: { subcommand: { type: "string" } },
 			required: ["subcommand"],
 			additionalProperties: true,
-		});
-	});
-
-	it("can strictify schemas without emitting a provider strict flag", async () => {
-		const tools = toToolSet(
-			[
-				{
-					type: "function",
-					function: {
-						name: "query",
-						description: "Run a read-only query",
-						parameters: {
-							type: "object",
-							properties: {
-								sql: { type: "string" },
-								limit: { type: "number" },
-							},
-							required: ["sql"],
-						},
-					},
-				},
-			],
-			{ emitStrictFlag: false },
-		);
-		expect(tools).toBeDefined();
-		if (!tools) throw new Error("tools undefined");
-		expect((tools.query as { strict?: boolean }).strict).toBeUndefined();
-		const schema = await Promise.resolve(
-			(tools.query.inputSchema as unknown as { jsonSchema: unknown }).jsonSchema,
-		);
-		expect(schema).toEqual({
-			type: "object",
-			properties: {
-				sql: { type: "string" },
-				limit: { type: ["number", "null"] },
-			},
-			required: ["sql", "limit"],
-			additionalProperties: false,
 		});
 	});
 });
@@ -2689,7 +2814,7 @@ describe("mapChunks — coalescePrefixItems (Mantle GPT-5.x multi-message-item r
 	// distinct id), interleaved with reasoning rounds, where each item RE-STATES
 	// the whole answer one (often multibyte) codepoint longer than the previous.
 	// The final item is the complete answer; the earlier ones are progressive
-	// drafts. Verified live 2026-06-07 against openai.gpt-5.5 at effort=high:
+	// drafts. Verified live against openai.gpt-5.5 at effort=high:
 	// concatenating all items' deltas (the default `outputText += text`) produced
 	// a sixfold-duplicated assistant message. The invariant the data hands us:
 	// each item is a strict prefix-extension of the previous, monotonically
@@ -2851,7 +2976,7 @@ describe("mapChunks — finish / usage", () => {
 
 	it("reads input_tokens from inputTokenDetails.noCacheTokens when present (NOT the summed inputTokens)", async () => {
 		// Live regression observed via probe against
-		// `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168` (2026-05-26):
+		// `@ai-sdk/amazon-bedrock@4.0.96` + `ai@6.0.168`:
 		// the AI SDK exposes `totalUsage.inputTokens` as the SUMMED total
 		// (`noCache + cacheRead + cacheWrite`), not the non-cached
 		// portion. Probe output for a request with 11 noCache + 3506
@@ -3221,6 +3346,41 @@ describe("mapChunks — finish / usage", () => {
 		expect(threw).toBe(true);
 	});
 
+	it("does NOT render a non-Error carrier as [object Object]", async () => {
+		// The gap that let this ship: the assertion above only checks THAT we
+		// throw, never what the message says. `String({statusCode: 403})` is
+		// "[object Object]", and that string became the LLMError message, which
+		// /v1/responses copies verbatim into response.failed.error.message and
+		// external clients print. Observed live via polytoken:
+		//   provider error server_error: [object Object]
+		const iter = mapChunks(events({ type: "error", error: { statusCode: 403 } }));
+		let message = "";
+		try {
+			await collect(iter);
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).not.toContain("[object Object]");
+		expect(message).toContain("403");
+	});
+
+	it("surfaces the provider message out of a status-bearing carrier", async () => {
+		const iter = mapChunks(
+			events({
+				type: "error",
+				error: { statusCode: 403, message: "AccessDeniedException" },
+			}),
+		);
+		let message = "";
+		try {
+			await collect(iter);
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).toContain("AccessDeniedException");
+		expect(message).toContain("403");
+	});
+
 	it("ignores events we don't model (start, text-start, reasoning-end, etc.)", async () => {
 		const out = await collect(
 			mapChunks(
@@ -3291,5 +3451,134 @@ describe("mapError", () => {
 		expect(out).toBeInstanceOf(LLMError);
 		expect(out.provider).toBe("bedrock");
 		expect(out.originalError).toBeInstanceOf(Error);
+	});
+});
+
+// ── midConversationSystem: native { role: "system" } emission ──
+
+describe("midConversationSystem", () => {
+	it('emits developer as native { role: "system" } when it ends the array', () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "enrichment" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "system", content: "enrichment" },
+		]);
+	});
+
+	it("coalesces consecutive developer directives into one trailing system message", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "first" },
+				{ role: "developer", content: "second" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "system", content: "first\n\nsecond" },
+		]);
+	});
+
+	it("falls back to legacy merge when developer before a following user would be illegal", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "between users" },
+				{ role: "user", content: "next" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "user", content: "<system-context>\nbetween users\n</system-context>\n\nnext" },
+		]);
+	});
+
+	it("falls back to legacy merge when developer follows assistant (directive placement constraint)", () => {
+		// The agent loop appends a developer tail after every assistant
+		// turn. A contentful system message after assistant is not a legal
+		// directive slot, so the bridge keeps the legacy pendingDev merge path,
+		// which creates a trailing user message.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "there" },
+				{ role: "developer", content: "enrichment tail" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out).toEqual([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "there" },
+			{ role: "user", content: "<system-context>\nenrichment tail\n</system-context>" },
+		]);
+	});
+
+	it("does NOT wrap content in <system-context> tags", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "developer", content: "note" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out[1]).toEqual({ role: "system", content: "note" });
+		expect(out[1].content).not.toContain("<system-context>");
+	});
+
+	it("does not prepend a <system-notification /> before a leading system message", () => {
+		// A developer message before an assistant becomes { role: "system" }
+		// at position 0. The conversation-start invariant must NOT inject a
+		// junk <system-notification /> user message before it.
+		const out = toModelMessages(
+			[
+				{ role: "developer", content: "wakeup" },
+				{ role: "assistant", content: "response" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out[0]).toEqual({ role: "system", content: "wakeup" });
+		expect(out).not.toContainEqual(expect.objectContaining({ content: "<system-notification />" }));
+	});
+
+	it("still prepends <system-notification /> when first message is assistant (not system)", () => {
+		const out = toModelMessages([{ role: "assistant", content: "stranded" }], {
+			midConversationSystem: true,
+		});
+		expect(out[0]).toEqual({ role: "user", content: "<system-notification />" });
+	});
+
+	it("falls back to legacy merge when midConversationSystem is false/omitted", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "hi" },
+			{ role: "developer", content: "note" },
+		]);
+		expect(out).toEqual([
+			{ role: "user", content: "hi\n\n<system-context>\nnote\n</system-context>" },
+		]);
+	});
+
+	it("extracts text from developer block content before emitting as system", () => {
+		const out = toModelMessages(
+			[
+				{
+					role: "developer",
+					content: [
+						{ type: "text", text: "part-a" },
+						{ type: "text", text: "part-b" },
+					],
+				},
+				{ role: "assistant", content: "response" },
+			],
+			{ midConversationSystem: true },
+		);
+		expect(out[0]).toEqual({ role: "system", content: "part-apart-b" });
 	});
 });

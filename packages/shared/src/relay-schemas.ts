@@ -3,6 +3,7 @@
  * relay payloads at trust boundaries (incoming relay messages, sync responses).
  */
 import { z } from "zod";
+import { durationStringSchema } from "./durations.js";
 
 export const toolCallPayloadSchema = z.object({
 	tool: z.string().min(1),
@@ -31,13 +32,86 @@ export const cancelPayloadSchema = z.object({
 	reason: z.string().optional(),
 });
 
+// Notification wakeup routed to the thread's live WS-session host (#91
+// regression under unified delegation). `payload` is the dispatch_queue
+// notification body (proactive/introspect/task_complete shapes) — opaque to
+// the relay; the receiving host enqueues it verbatim into its LOCAL
+// dispatch_queue and wakes the thread beside its session.
+export const notifyWakeupPayloadSchema = z.object({
+	thread_id: z.string().min(1),
+	payload: z.record(z.string(), z.unknown()),
+});
+
+export const clientToolPayloadSchema = z.object({
+	thread_id: z.string().min(1),
+	call_id: z.string().min(1),
+	tool_name: z.string().min(1),
+	args: z.record(z.string(), z.unknown()),
+	timeout_ms: z.number().int().positive(),
+});
+
+export const clientResultPayloadSchema = z.object({
+	call_id: z.string().min(1),
+	content: z.string(),
+	is_error: z.boolean(),
+});
+
+/**
+ * The single delegation wire representation (R-UD3). Mirrors the `ContextSegment`
+ * type in types.ts. A delegated inference payload carries `segments` instead of
+ * raw `messages`: zero or more `inline` segments plus AT MOST ONE `range` segment
+ * over the confirmed-synced history prefix. There is no `messages_file_ref` — a
+ * range-pointer is kilobytes regardless of token count, so the >2MB files-table
+ * offload race is removed, not relocated.
+ */
+export const contextSegmentSchema = z.union([
+	z.object({ kind: z.literal("inline"), message: z.unknown() }),
+	z.object({
+		kind: z.literal("range"),
+		thread_id: z.string().min(1),
+		anchor_created_at: z.string().min(1),
+		count: z.number().int().nonnegative(),
+	}),
+]);
+
+export const inferenceRequestPartPayloadSchema = z.object({
+	version: z.literal(1),
+	request_id: z.string().min(1),
+	index: z.number().int().nonnegative(),
+	count: z.number().int().positive(),
+	data: z.string(),
+});
+
 export const inferenceRequestPayloadSchema = z.object({
 	model: z.string().min(1),
-	messages: z.array(z.unknown()),
+	/**
+	 * The delegated context as segments (R-UD3). The consumer resolves these via
+	 * `resolveSegments` and NEVER re-assembles — it has no AssemblyAuthority.
+	 */
+	segments: z.array(contextSegmentSchema),
+	/**
+	 * The producer's AssemblyClock instant (epoch ms). The consumer threads this
+	 * into the annotator when resolving range segments so the `<user-message
+	 * sent="…">` year branch reproduces the producer's bytes exactly (R-UD4).
+	 */
+	nowMs: z.number().int().nonnegative(),
 	tools: z.array(z.unknown()).optional(),
 	system: z.string().optional(),
 	max_tokens: z.number().int().positive().optional(),
 	temperature: z.number().optional(),
+	// Mirrors ChatParams.top_p — nucleus-sampling cutoff, forwarded verbatim.
+	top_p: z.number().optional(),
+	// Mirrors ChatParams.tool_choice — AI-SDK-neutral tool-selection strategy.
+	// Only meaningful alongside `tools`; the executing driver omits it when no
+	// tools are present.
+	tool_choice: z
+		.union([
+			z.literal("auto"),
+			z.literal("none"),
+			z.literal("required"),
+			z.object({ type: z.literal("tool"), toolName: z.string() }),
+		])
+		.optional(),
 	// Mirrors ChatParams.thinking in @bound/llm — both the legacy
 	// `{type:"enabled", budget_tokens}` shape (pre-4.7) and the adaptive
 	// shape (Opus 4.6+, required on 4.7) are supported over the wire.
@@ -51,18 +125,14 @@ export const inferenceRequestPayloadSchema = z.object({
 				type: z.literal("adaptive"),
 				display: z.enum(["omitted", "summarized"]).optional(),
 			}),
+			z.object({ type: z.literal("disabled") }),
 		])
 		.optional(),
-	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
-	cache_ttl: z.enum(["5m", "1h"]).optional(),
-	messages_file_ref: z.string().optional(),
-});
-
-export const processPayloadSchema = z.object({
-	thread_id: z.string().min(1),
-	message_id: z.string().min(1),
-	user_id: z.string().min(1),
-	platform: z.string().nullable(),
+	// Free-form, provider-validated (see ChatParams.effort) — forwarded verbatim
+	// over the relay so a hub-delegated turn carries whatever level the caller
+	// chose; the executing host's driver validates/maps it.
+	effort: z.string().min(1).optional(),
+	cache_ttl: durationStringSchema().optional(),
 });
 
 export const intakePayloadSchema = z.object({
@@ -202,10 +272,13 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	platform_request: platformRequestPayloadSchema,
 	cancel: cancelPayloadSchema,
 	inference: inferenceRequestPayloadSchema,
-	process: processPayloadSchema,
+	inference_part: inferenceRequestPartPayloadSchema,
 	intake: intakePayloadSchema,
+	notify_wakeup: notifyWakeupPayloadSchema,
+	client_tool: clientToolPayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,
+	client_result: clientResultPayloadSchema,
 	stream_chunk: streamChunkPayloadSchema,
 	stream_end: streamEndPayloadSchema,
 	status_forward: statusForwardPayloadSchema,

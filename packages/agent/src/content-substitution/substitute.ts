@@ -5,6 +5,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { BackendCapabilities, LLMMessage } from "@bound/llm";
+import { PROVIDER_IMAGE_BASE64_MAX_BYTES } from "@bound/llm";
 
 export interface SubstituteUnsupportedBlocksParams {
 	msg: LLMMessage;
@@ -88,6 +89,20 @@ export function substituteUnsupportedBlocks(params: SubstituteUnsupportedBlocksP
 			const source = block.source as
 				| { type?: string; file_id?: string; data?: string; media_type?: string }
 				| undefined;
+			// Oversized inline base64 (legacy rows that predate the file_ref
+			// rewrite): same provider cap applies — degrade instead of shipping
+			// a payload the API is guaranteed to reject.
+			if (
+				source?.type === "base64" &&
+				typeof source.data === "string" &&
+				source.data.length > PROVIDER_IMAGE_BASE64_MAX_BYTES
+			) {
+				const description = typeof block.description === "string" ? block.description : "image";
+				return {
+					type: "text" as const,
+					text: `[Image omitted: ${description} — ${source.data.length} bytes base64 exceeds the provider 5 MB image limit]`,
+				};
+			}
 			if (source?.type === "file_ref" && source.file_id) {
 				const fileRow = db
 					.query("SELECT content, is_binary FROM files WHERE id = ? AND deleted = 0")
@@ -97,6 +112,20 @@ export function substituteUnsupportedBlocks(params: SubstituteUnsupportedBlocksP
 					return {
 						type: "text" as const,
 						text: `[Image file unavailable: ${source.file_id}]`,
+					};
+				}
+				// Provider image cap guard: Anthropic rejects the WHOLE request when
+				// any single image's base64 exceeds 5 MB (5,242,880 bytes, measured
+				// on the encoded string — files.content stores base64, so length is
+				// the exact number the API checks). One oversized image persisted
+				// into history would otherwise wedge its thread permanently: every
+				// subsequent turn re-hydrates the same block and dies at the same
+				// validation. Degrade to a labeled placeholder instead.
+				if (fileRow.content.length > PROVIDER_IMAGE_BASE64_MAX_BYTES) {
+					const description = typeof block.description === "string" ? block.description : "image";
+					return {
+						type: "text" as const,
+						text: `[Image omitted: ${description} — ${fileRow.content.length} bytes base64 exceeds the provider 5 MB image limit]`,
 					};
 				}
 				const mediaType = (source.media_type ?? "image/jpeg") as

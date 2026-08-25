@@ -8,7 +8,7 @@ import type {
 	Task,
 	Thread,
 } from "@bound/shared";
-import { injectTraceContext } from "@bound/shared";
+import { injectTraceContext } from "@bound/shared/trace-collector";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { type ClientTracingSession, createClientTracingSession } from "./tracing.js";
@@ -18,17 +18,21 @@ import type {
 	BoundClientEvents,
 	CancelResult,
 	ConnectionState,
+	ConnectorBindingEntry,
+	ConnectorBindingsResponse,
 	ContextDebugTurn,
-	CreateMcpThreadResult,
+	CreateRssFeedOptions,
 	CreateThreadOptions,
 	CreateWebhookOptions,
 	FileListEntry,
 	HostStatus,
 	MemoryGraphResponse,
+	MetricsTokenTotals,
 	ModelsResponse,
 	NetworkStatus,
 	RedactMessageResult,
 	RedactThreadResult,
+	RssFeedListEntry,
 	SendMessageOptions,
 	TaskListEntry,
 	ThreadDetail,
@@ -37,10 +41,13 @@ import type {
 	ToolCallRequest,
 	ToolCallResult,
 	ToolDefinition,
+	UpdateConnectorBindingOptions,
+	UpdateRssFeedOptions,
 	UpdateWebhookOptions,
 	WebhookCreateResponse,
 	WebhookListEntry,
 	WebhookRotateResponse,
+	WebhookUnauthenticatedSwitch,
 	WebhookUrlsResponse,
 } from "./types.js";
 
@@ -81,12 +88,23 @@ export class BoundClient {
 	private ws: WebSocket | null = null;
 	private readonly wsUrl: string;
 	private readonly subscriptions = new Set<string>();
+	/** Latest server-derived in-flight count, retained for listeners that mount after subscribe. */
+	private readonly backgroundCounts = new Map<string, number>();
 	private clientTools: ToolDefinition[] = [];
 	private toolCallHandler: ((call: ToolCallRequest) => Promise<ToolCallResult>) | null = null;
 	private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 	private shouldReconnect = false;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempt = 0;
+	/**
+	 * Application-level heartbeat. Rides the same JS timer path the client uses
+	 * for everything else, so it stops the instant the event loop wedges — the
+	 * signal the server's liveness sweep keys on to reap a wedged editor's
+	 * in-flight tool call (server would otherwise wait on a socket that Bun may
+	 * keep alive with below-JS protocol pongs). 15s = one third of the server's
+	 * 45s staleness window, so a healthy client always lands ≥1 beat inside it.
+	 */
+	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	private configureOptions?: { systemPromptAddition?: string };
 	private _connectionState: ConnectionState = "disconnected";
 	/**
@@ -101,6 +119,11 @@ export class BoundClient {
 	/** Public read-only accessor for the bound API base URL (trailing slash stripped). */
 	getBaseUrl(): string {
 		return this.baseUrl;
+	}
+
+	/** Latest server-derived background-operation count for a thread. */
+	getBackgroundCount(threadId: string): number {
+		return this.backgroundCounts.get(threadId) ?? 0;
 	}
 
 	/**
@@ -387,6 +410,16 @@ export class BoundClient {
 				return;
 			}
 
+			// A subscribe seed can arrive before the corresponding React view mounts.
+			// Retain it so late listeners hydrate from the same server-derived state.
+			if (
+				msg.type === "background:count" &&
+				typeof msg.thread_id === "string" &&
+				typeof msg.count === "number"
+			) {
+				this.backgroundCounts.set(msg.thread_id, msg.count);
+			}
+
 			// For events that wrap their payload under `data`, unwrap before emitting.
 			// The server uses this pattern for: message:created, task:updated,
 			// file:updated, context:debug, alert.
@@ -413,6 +446,26 @@ export class BoundClient {
 	private sendWsMessage(msg: Record<string, unknown>): void {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			this.ws.send(JSON.stringify(msg));
+		}
+	}
+
+	/**
+	 * Begin (or restart) the application-level heartbeat. Sends { type: "ping" }
+	 * every 15s while the socket is open; the server treats prolonged silence
+	 * from a heartbeating connection as a wedged/dead client (see BoundClient's
+	 * heartbeatTimer field). Idempotent — clears any prior timer first.
+	 */
+	private startHeartbeat(): void {
+		this.stopHeartbeat();
+		this.heartbeatTimer = setInterval(() => {
+			this.sendWsMessage({ type: "ping" });
+		}, 15_000);
+	}
+
+	private stopHeartbeat(): void {
+		if (this.heartbeatTimer) {
+			clearInterval(this.heartbeatTimer);
+			this.heartbeatTimer = null;
 		}
 	}
 
@@ -511,8 +564,12 @@ export class BoundClient {
 		});
 	}
 
-	async createMcpThread(): Promise<CreateMcpThreadResult> {
-		return this.fetchJson("/api/mcp/threads", { method: "POST" });
+	async renameThread(id: string, title: string): Promise<ThreadDetail> {
+		return this.fetchJson(`/api/threads/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ title }),
+		});
 	}
 
 	async getThread(id: string): Promise<ThreadDetail> {
@@ -526,6 +583,21 @@ export class BoundClient {
 
 	async getContextDebug(threadId: string): Promise<ContextDebugTurn[]> {
 		return this.fetchJson(`/api/threads/${threadId}/context-debug`);
+	}
+
+	/**
+	 * Cluster-wide token/cost totals for a time range, from `GET /api/metrics`.
+	 * The spoke's web server aggregates the synced `turns` table locally, so
+	 * this answers for the whole cluster without a hub round-trip. Returns just
+	 * the `tokens.totals` slice — the full response (timelines, relay stats)
+	 * stays a web-UI concern.
+	 */
+	async getMetricsTotals(from: Date, to: Date): Promise<MetricsTokenTotals> {
+		const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
+		const data = await this.fetchJson<{ tokens: { totals: MetricsTokenTotals } }>(
+			`/api/metrics?${params}`,
+		);
+		return data.tokens.totals;
 	}
 
 	// ---- Messages ----
@@ -700,20 +772,36 @@ export class BoundClient {
 		return this.fetchJson("/api/advisories/count");
 	}
 
-	async approveAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/approve`, { method: "POST" });
+	async approveAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/approve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
-	async dismissAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/dismiss`, { method: "POST" });
+	async dismissAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/dismiss`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
-	async deferAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/defer`, { method: "POST" });
+	async deferAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/defer`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
-	async applyAdvisory(id: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/apply`, { method: "POST" });
+	async applyAdvisory(id: string, note: string): Promise<Advisory> {
+		return this.fetchJson(`/api/advisories/${id}/apply`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ note }),
+		});
 	}
 
 	// ---- Webhooks ----
@@ -760,6 +848,80 @@ export class BoundClient {
 		return this.fetchJson(`/api/webhooks/${id}/urls`);
 	}
 
+	/**
+	 * Read the cluster-wide unauthenticated-webhook kill switch (#195).
+	 * `allow_unauthenticated: false` (the default) blocks creating and
+	 * delivering `signature_format: "none"` webhooks.
+	 */
+	async getWebhookUnauthenticatedSwitch(): Promise<WebhookUnauthenticatedSwitch> {
+		return this.fetchJson("/api/webhooks/unauthenticated-switch");
+	}
+
+	/** Flip the cluster-wide unauthenticated-webhook kill switch (#195). */
+	async setWebhookUnauthenticatedSwitch(allow: boolean): Promise<WebhookUnauthenticatedSwitch> {
+		return this.fetchJson("/api/webhooks/unauthenticated-switch", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ allow_unauthenticated: allow }),
+		});
+	}
+
+	// ---- RSS feeds ----
+
+	async listRssFeeds(): Promise<RssFeedListEntry[]> {
+		return this.fetchJson("/api/rss-feeds");
+	}
+
+	async getRssFeed(id: string): Promise<RssFeedListEntry> {
+		return this.fetchJson(`/api/rss-feeds/${id}`);
+	}
+
+	async createRssFeed(options: CreateRssFeedOptions): Promise<RssFeedListEntry> {
+		return this.fetchJson("/api/rss-feeds", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
+	async updateRssFeed(id: string, options: UpdateRssFeedOptions): Promise<RssFeedListEntry> {
+		return this.fetchJson(`/api/rss-feeds/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
+	async deleteRssFeed(id: string): Promise<void> {
+		await this.fetchVoid(`/api/rss-feeds/${id}`, { method: "DELETE" });
+	}
+
+	// ---- Connector bindings ----
+
+	async listConnectorBindings(): Promise<ConnectorBindingsResponse> {
+		return this.fetchJson("/api/connectors/bindings");
+	}
+
+	async detachConnectorBinding(id: string): Promise<void> {
+		await this.fetchVoid(`/api/connectors/bindings/${id}`, { method: "DELETE" });
+	}
+
+	/**
+	 * Update a connector binding's model. The model lives on the binding's backing
+	 * event task (mirrored onto its delivery thread), since `connector_handles` has
+	 * no model column of its own.
+	 */
+	async updateConnectorBinding(
+		id: string,
+		options: UpdateConnectorBindingOptions,
+	): Promise<ConnectorBindingEntry> {
+		return this.fetchJson(`/api/connectors/bindings/${id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(options),
+		});
+	}
+
 	// ---- Status ----
 
 	async getStatus(): Promise<HostStatus> {
@@ -786,11 +948,8 @@ export class BoundClient {
 
 	// ---- Skills ----
 
-	async listSkills(options?: { status?: string }): Promise<Skill[]> {
-		const params = new URLSearchParams();
-		if (options?.status) params.set("status", options.status);
-		const qs = params.toString();
-		return this.fetchJson(`/api/skills${qs ? `?${qs}` : ""}`);
+	async listSkills(): Promise<Skill[]> {
+		return this.fetchJson("/api/skills");
 	}
 
 	async getSkill(
@@ -839,17 +998,7 @@ export class BoundClient {
 		});
 	}
 
-	async retireSkill(id: string, reason?: string): Promise<{ skill: Skill }> {
-		return this.fetchJson(`/api/skills/${id}/retire`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ reason }),
-		});
-	}
-
-	async activateSkill(id: string): Promise<{ skill: Skill }> {
-		return this.fetchJson(`/api/skills/${id}/activate`, {
-			method: "POST",
-		});
+	async deleteSkill(id: string): Promise<void> {
+		await this.fetchVoid(`/api/skills/${id}`, { method: "DELETE" });
 	}
 }

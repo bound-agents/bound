@@ -27,7 +27,7 @@ This SKILL.md is the index. The detail lives in `references/`:
   connector-authored instructions, and webhooks. **Read this when an event woke
   you and you are unsure where the message came from or which tools you have.**
 - `references/sandbox.md` — the virtual filesystem your `read`/`write`/`edit`/`bash`
-  tools act on: the VFS, overlay mounts, the 256 KiB tool-result cap, the
+  tools act on: the VFS, the 256 KiB tool-result cap, the
   deferred `files`-table snapshot, and the boundless real-disk distinction.
 - `references/config.md` — operator-owned host configuration: where it lives
   (`config/` on host disk, **not** the sandbox), strict schemas, and why your
@@ -40,8 +40,8 @@ This SKILL.md is the index. The detail lives in `references/`:
 ## What bound gives you
 
 - **Cross-session memory** that persists across conversations, hosts, and
-  surfaces (web UI, Discord, the `boundless` terminal client, and the `bound-mcp`
-  proxy). The SQLite database is the single source of truth.
+  surfaces (web UI, Discord, and the `boundless` terminal client). The SQLite
+  database is the single source of truth.
 - **Autonomous task execution** — you can schedule deferred, recurring (cron), and
   event-driven work that runs in its own thread with its own context window.
 - **Tools** — native agent tools with structured JSON-schema parameters, built-in

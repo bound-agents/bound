@@ -16,9 +16,9 @@ import { ModelRouter } from "@bound/llm";
 import type { LLMMessage } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { type CachedTurnState, computeToolFingerprint } from "../cached-turn-state";
-import { TRUNCATION_TARGET_RATIO } from "../context-assembly";
+import { computeBaseTruncationTarget } from "../context-assembly";
 
 // FTS5 schema setup adds overhead on CI runners; bump default timeout
 setDefaultTimeout(10000);
@@ -81,6 +81,38 @@ describe("warm-cold-path", () => {
 			}
 
 			expect(coldPathExecuted).toBe(true);
+		});
+	});
+
+	describe("capability-safe warm reuse", () => {
+		it("rejects cached vision history when the next target is text-only", () => {
+			const cached: CachedTurnState = {
+				messages: [
+					{
+						role: "user",
+						content: [
+							{
+								type: "image",
+								source: { type: "file_ref", file_id: "image-1", media_type: "image/png" },
+							},
+						],
+					},
+				],
+				systemPrompt: "system",
+				cacheMessagePositions: [],
+				fixedCacheIdx: -1,
+				lastMessageCreatedAt: new Date().toISOString(),
+				toolFingerprint: "same-tools",
+				modelId: "fable",
+				vision: true,
+			};
+
+			const warmEligible =
+				cached.toolFingerprint === "same-tools" &&
+				cached.modelId === "glm-5.2" &&
+				cached.vision === false;
+
+			expect(warmEligible).toBe(false);
 		});
 	});
 
@@ -292,10 +324,13 @@ describe("warm-cold-path", () => {
 		});
 	});
 
-	describe("AC3.1: predictCacheState cold triggers full assembleContext rebuild", () => {
-		it("cold cache state forces cold path even with stored state", () => {
-			// isWarmPathEligible = (cacheState === "warm") && ...
-			// If cacheState === "cold", then isWarmPathEligible = false
+	describe("AC3.1: warm-path eligibility no longer consults predictCacheState", () => {
+		it("valid stored state + matching fingerprint is warm-eligible regardless of cache-state heuristic", () => {
+			// Contract change: the predictCacheState "cold" guess no longer forces
+			// a cold rebuild when usable cached state exists. The turn-state store's
+			// TTL eviction handles the idle-past-cache-lifetime case (state becomes
+			// undefined → cold via no-stored-state). isWarmPathEligible now depends
+			// only on having cached state with a matching tool fingerprint.
 			const cachedTurnState: CachedTurnState = {
 				messages: [{ role: "user", content: "test" }],
 				systemPrompt: "system",
@@ -304,22 +339,23 @@ describe("warm-cold-path", () => {
 				lastMessageCreatedAt: "2026-04-23T10:00:00Z",
 				toolFingerprint: "same_fp",
 			};
+			const currentFingerprint = "same_fp";
 
-			let coldPathExecuted = false;
+			const isWarmPathEligible =
+				cachedTurnState !== undefined && cachedTurnState.toolFingerprint === currentFingerprint;
 
-			// Simulate with cold cache state
-			const cacheState = "cold" as const;
+			expect(isWarmPathEligible).toBe(true);
+		});
+
+		it("evicted (undefined) stored state falls to the cold path", () => {
+			// The idle-thread case: store TTL evicted the entry, so warm-path
+			// eligibility fails on the undefined check and we cold-assemble.
+			const cachedTurnState: CachedTurnState | undefined = undefined;
 			const currentFingerprint = "same_fp";
 			const isWarmPathEligible =
-				cacheState === "warm" &&
 				cachedTurnState !== undefined &&
-				cachedTurnState.toolFingerprint === currentFingerprint;
-
-			if (!isWarmPathEligible) {
-				coldPathExecuted = true;
-			}
-
-			expect(coldPathExecuted).toBe(true);
+				(cachedTurnState as CachedTurnState).toolFingerprint === currentFingerprint;
+			expect(isWarmPathEligible).toBe(false);
 		});
 	});
 
@@ -503,19 +539,21 @@ describe("warm-cold-path", () => {
 		});
 	});
 
-	describe("AC6.1: Cold-path assembly targets 0.85 of contextWindow", () => {
-		it("verifies TRUNCATION_TARGET_RATIO is 0.85", () => {
-			expect(TRUNCATION_TARGET_RATIO).toBe(0.85);
+	describe("AC6.1: Cold-path assembly targets contextWindow - maxOutputTokens", () => {
+		it("verifies computeBaseTruncationTarget subtracts the output reserve", () => {
+			// At 200k context / 8k default output reserve, target = 192k — the
+			// exact room the model's own response needs to be reserved, not an
+			// arbitrary 85% ratio.
+			expect(computeBaseTruncationTarget(200000, 8000)).toBe(192000);
 		});
 
 		it("truncation target calculation at 200k context window", () => {
 			const contextWindow = 200000;
-			const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const truncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 
-			// Should target 85% = 170k tokens
+			// Headroom = exactly maxOutputTokens
 			expect(truncationTarget).toBe(170000);
-
-			// Headroom = 15% = 30k tokens
 			const headroom = contextWindow - truncationTarget;
 			expect(headroom).toBe(30000);
 		});
@@ -524,7 +562,8 @@ describe("warm-cold-path", () => {
 	describe("AC6.2: Warm-path turns fit within headroom (500 tokens/turn × 20 turns)", () => {
 		it("20 warm-path turns at 500 tokens each fit in 30k headroom", () => {
 			const contextWindow = 200000;
-			const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const truncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 			const headroom = contextWindow - truncationTarget;
 
 			// 20 turns × 500 tokens = 10k tokens
@@ -541,7 +580,8 @@ describe("warm-cold-path", () => {
 	describe("AC6.3: Initial cold-path assembly doesn't exceed contextWindow", () => {
 		it("truncation ensures final total <= contextWindow", () => {
 			const contextWindow = 200000;
-			const truncationTarget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const truncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 
 			// After truncation targets truncationTarget tokens, total should be <= contextWindow
 			// The cold path maintains: system + history (truncated) + tools + volatile <= contextWindow
@@ -560,7 +600,8 @@ describe("warm-cold-path", () => {
 	describe("AC6.4: Thread with large tool results triggers reassembly quickly", () => {
 		it("rapid accumulation of large tool results triggers reassembly within 3-4 turns", () => {
 			const contextWindow = 200000;
-			const headroom = contextWindow - Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			const maxOutputTokens = 30000;
+			const headroom = contextWindow - computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 
 			// Each turn adds a large tool result (~5k tokens)
 			const tokensPerLargeTurn = 5000;
@@ -580,6 +621,7 @@ describe("warm-cold-path", () => {
 	describe("integration: multi-invocation warm/cold cycles", () => {
 		// Mock LLM Backend for testing
 		class MockLLMBackend implements LLMBackend {
+			constructor(private readonly vision = false) {}
 			private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
 			private callCount = 0;
 			private capturedParams: ChatParams[] = [];
@@ -681,7 +723,7 @@ describe("warm-cold-path", () => {
 					tool_use: true,
 					system_prompt: true,
 					prompt_caching: true,
-					vision: false,
+					vision: this.vision,
 					max_context: 200000,
 				};
 			}
@@ -792,16 +834,21 @@ describe("warm-cold-path", () => {
 				};
 			});
 
-			// Shared store so warm-path state survives across AgentLoop instances
+			// Shared store so warm-path state survives across MainAgentLoop instances
 			const sharedStore = new InMemoryTurnStateStore();
 
 			// First invocation (cold path expected)
 			const pathLogs1: CachePathLog[] = [];
 			const ctx1 = makeCtx(pathLogs1, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 
 			const result1 = await agentLoop1.run();
 			expect(result1).toHaveProperty("messagesCreated");
@@ -829,15 +876,20 @@ describe("warm-cold-path", () => {
 				],
 			);
 
-			// Second invocation: FRESH AgentLoop instance (simulates client-tool defer + wakeup,
+			// Second invocation: FRESH MainAgentLoop instance (simulates client-tool defer + wakeup,
 			// or any other path that tears down the agent loop between turns).
 			// Warm path expected IF cached turn state survives instance teardown.
 			const pathLogs2: CachePathLog[] = [];
 			const ctx2 = makeCtx(pathLogs2, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 
 			const result2 = await agentLoop2.run();
 			expect(result2).toHaveProperty("messagesCreated");
@@ -847,8 +899,98 @@ describe("warm-cold-path", () => {
 
 			// THE ACTUAL ASSERTION: second invocation's first LLM call should take the warm path.
 			// If this fails with reason="no-stored-state", it confirms cached turn state
-			// is instance-scoped and cannot survive AgentLoop teardown.
+			// is instance-scoped and cannot survive MainAgentLoop teardown.
 			expect(pathLogs2.length).toBeGreaterThanOrEqual(1);
+			expect(pathLogs2[0]).toEqual({ path: "warm", reason: "warm-eligible" });
+		});
+
+		it("AC3.1-regression: warm path is taken even when the prior turn reported ZERO cache activity", async () => {
+			// The bug: warm eligibility used to require predictCacheState === "warm",
+			// which keys off the prior turn's cache_read/write tokens. A prior turn
+			// reporting 0/0 (common on an active thread) made it guess "cold",
+			// discarding usable cached state and forcing an expensive cold rebuild.
+			// After the fix, warmth depends only on cached state + tool fingerprint,
+			// so zero prior cache activity no longer false-colds the next turn.
+			globalDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					globalThreadId,
+					globalUserId,
+					"web",
+					"local",
+					0,
+					"Test Thread",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const mockBackend = new MockLLMBackend();
+			// Both turns report 0/0 cache tokens — the false-cold trigger.
+			const zeroCacheDone = {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: 0,
+					cache_read_tokens: 0,
+					estimated: false,
+				},
+			};
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Response 1" };
+				yield zeroCacheDone;
+			});
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Response 2" };
+				yield zeroCacheDone;
+			});
+
+			const sharedStore = new InMemoryTurnStateStore();
+
+			const pathLogs1: CachePathLog[] = [];
+			const agentLoop1 = new MainAgentLoop(
+				makeCtx(pathLogs1, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await agentLoop1.run();
+			expect(pathLogs1[0]?.path).toBe("cold"); // first turn always cold
+
+			// Follow-up user message.
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					"Follow up",
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const pathLogs2: CachePathLog[] = [];
+			const agentLoop2 = new MainAgentLoop(
+				makeCtx(pathLogs2, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await agentLoop2.run();
+
+			// Despite zero cache activity on turn 1, turn 2 reuses the warm path.
 			expect(pathLogs2[0]).toEqual({ path: "warm", reason: "warm-eligible" });
 		});
 
@@ -893,18 +1035,28 @@ describe("warm-cold-path", () => {
 
 			// First run
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			await agentLoop1.run();
 
 			// Second run (should trigger reassembly if DB cache is invalidated)
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			const result2 = await agentLoop2.run();
 
 			expect(result2).toHaveProperty("messagesCreated");
@@ -975,20 +1127,30 @@ describe("warm-cold-path", () => {
 
 			// First invocation with one tool
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-				tools: [tool1],
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+					tools: [tool1],
+				},
+			);
 			await agentLoop1.run();
 
 			// Second invocation with added tool (fingerprint changed)
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-				tools: [tool1, tool2],
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+					tools: [tool1, tool2],
+				},
+			);
 			const result2 = await agentLoop2.run();
 
 			expect(result2).toHaveProperty("messagesCreated");
@@ -1037,19 +1199,29 @@ describe("warm-cold-path", () => {
 
 			// First invocation: generates volatile context
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const agentLoop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop1 = new MainAgentLoop(
+				ctx1,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			const result1 = await agentLoop1.run();
 			expect(result1).toHaveProperty("messagesCreated");
 
 			// Second invocation: generates fresh volatile context (even if warm path)
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const agentLoop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
-				threadId: globalThreadId,
-				userId: globalUserId,
-			});
+			const agentLoop2 = new MainAgentLoop(
+				ctx2,
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{
+					threadId: globalThreadId,
+					userId: globalUserId,
+				},
+			);
 			const result2 = await agentLoop2.run();
 			expect(result2).toHaveProperty("messagesCreated");
 
@@ -1098,7 +1270,7 @@ describe("warm-cold-path", () => {
 
 			// First invocation: cold path, caches state
 			const ctx1 = makeCtx(undefined, sharedStore);
-			const loop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop1 = new MainAgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1125,7 +1297,7 @@ describe("warm-cold-path", () => {
 
 			// Second invocation: should use warm path from cached state
 			const ctx2 = makeCtx(undefined, sharedStore);
-			const loop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop2 = new MainAgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1136,8 +1308,148 @@ describe("warm-cold-path", () => {
 			expect(mockBackend.getCallCount()).toBeGreaterThanOrEqual(2);
 		});
 
+		it("keeps an earlier image attached to its original user turn when a warm delta adds a later prompt", async () => {
+			globalDb.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					globalThreadId,
+					globalUserId,
+					"web",
+					"local",
+					0,
+					"Warm image chronology",
+					null,
+					null,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					new Date().toISOString(),
+					0,
+				],
+			);
+
+			const earlierPrompt = "OLDER_IMAGE_PROMPT";
+			const laterPrompt = "LATER_TEXT_PROMPT";
+			const earlierContent = JSON.stringify([
+				{ type: "text", text: earlierPrompt },
+				{
+					type: "image",
+					source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+					description: "chronology sentinel",
+				},
+			]);
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					earlierContent,
+					null,
+					null,
+					new Date().toISOString(),
+					new Date().toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const mockBackend = new MockLLMBackend(true);
+			for (const text of ["first reply", "second reply"]) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: text };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 5,
+							cache_write_tokens: 100,
+							cache_read_tokens: 0,
+							estimated: false,
+						},
+					};
+				});
+			}
+
+			const sharedStore = new InMemoryTurnStateStore();
+			const firstPathLogs: CachePathLog[] = [];
+			const firstLoop = new MainAgentLoop(
+				makeCtx(firstPathLogs, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await firstLoop.run();
+			expect(firstPathLogs[0]?.path).toBe("cold");
+
+			const callsBeforeSecondLoop = mockBackend.getCallCount();
+
+			globalDb.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					globalThreadId,
+					"user",
+					laterPrompt,
+					null,
+					null,
+					new Date(Date.now() + 1_000).toISOString(),
+					new Date(Date.now() + 1_000).toISOString(),
+					"local",
+					0,
+				],
+			);
+
+			const secondPathLogs: CachePathLog[] = [];
+			const secondLoop = new MainAgentLoop(
+				makeCtx(secondPathLogs, sharedStore),
+				createMockSandbox(),
+				createMockRouter(mockBackend),
+				{ threadId: globalThreadId, userId: globalUserId },
+			);
+			await secondLoop.run();
+			expect(secondPathLogs[0]?.path).toBe("warm");
+
+			const secondInference =
+				mockBackend
+					.getCapturedParams()
+					.slice(callsBeforeSecondLoop)
+					.find((params) => params.messages.some((message) => message.role === "developer"))
+					?.messages ?? [];
+			const earlierIdx = secondInference.findIndex(
+				(message) =>
+					message.role === "user" &&
+					Array.isArray(message.content) &&
+					message.content.some(
+						(block) =>
+							block.type === "text" &&
+							typeof block.text === "string" &&
+							block.text.includes(earlierPrompt),
+					),
+			);
+			const laterIdx = secondInference.findIndex(
+				(message) =>
+					message.role === "user" &&
+					(typeof message.content === "string"
+						? message.content.includes(laterPrompt)
+						: message.content.some(
+								(block) =>
+									block.type === "text" &&
+									typeof block.text === "string" &&
+									block.text.includes(laterPrompt),
+							)),
+			);
+
+			expect(earlierIdx).toBeGreaterThanOrEqual(0);
+			expect(laterIdx).toBeGreaterThan(earlierIdx);
+			const earlierMessage = secondInference[earlierIdx];
+			expect(Array.isArray(earlierMessage?.content)).toBe(true);
+			expect((earlierMessage?.content as Array<{ type: string }>)[2]?.type).toBe("image");
+		});
+
 		it("falls back to cold reassembly when warm-path delta would leave an orphaned tool_call", async () => {
-			// Regression for thread 6b6ddeb0-ad1 (2026-04-26). Setup: the prior
+			// Regression, observed live. Setup: the prior
 			// agent-loop had dispatched a boundless_bash client tool and yielded
 			// while waiting for the WS reply. The tool_call was persisted to the
 			// DB but no tool_result had arrived yet. When the user typed a
@@ -1228,7 +1540,7 @@ describe("warm-cold-path", () => {
 			// First invocation: cold path, populates cached turn state.
 			const pathLogs1: CachePathLog[] = [];
 			const ctx1 = makeCtx(pathLogs1, sharedStore);
-			const loop1 = new AgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop1 = new MainAgentLoop(ctx1, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1283,7 +1595,7 @@ describe("warm-cold-path", () => {
 			// reassembly rather than shipping an orphan to the backend.
 			const pathLogs2: CachePathLog[] = [];
 			const ctx2 = makeCtx(pathLogs2, sharedStore);
-			const loop2 = new AgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop2 = new MainAgentLoop(ctx2, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});
@@ -1340,8 +1652,7 @@ describe("warm-cold-path", () => {
 		});
 
 		it("compacts oversized tool_results in place when warm-path budget would otherwise bail", async () => {
-			// Regression for thread c879be2b-fe29-421d-b1a6-b9b1579e5648
-			// (2026-05-24). When the warm-path budget gate fails because
+			// Regression, observed live. When the warm-path budget gate fails because
 			// stored tool_results have grown past the effective budget, we
 			// must NOT immediately clear CachedTurnState and bail to a cold
 			// rebuild. The cold rebuild produces a different byte-prefix,
@@ -1401,16 +1712,18 @@ describe("warm-cold-path", () => {
 			// cold+warm turns, an oversized tool_result is sitting in the
 			// cached storedMessages array".
 			const sharedStore = new InMemoryTurnStateStore();
-			// 800k chars ≈ 200k tokens. Against a 200k contextWindow at
-			// 0.85 ratio = 170k effective budget, this guarantees the
-			// budget gate fires. Compaction shrinks it to a ~few-hundred
-			// char stub, so post-compaction we're back under budget.
+			// 1M chars ≈ 222k tokens. Against a 200k contextWindow with no
+			// configured maxOutputTokens (falls back to
+			// DEFAULT_OUTPUT_TOKEN_RESERVE = 8k), the base truncation target
+			// is 192k — this guarantees the budget gate fires. Compaction
+			// shrinks it to a ~few-hundred char stub, so post-compaction
+			// we're back under budget.
 			//
 			// We use a varied-character pattern (not all "X") because
 			// js-tiktoken collapses long runs of identical characters into
-			// short token sequences, and an 800k-char "X" string would
-			// only count as ~few hundred tokens — not enough to trip the
-			// budget gate.
+			// short token sequences, and a 1M-char "X" string would only
+			// count as ~few hundred tokens — not enough to trip the budget
+			// gate.
 			const buildVariedContent = (size: number) => {
 				const chunks: string[] = [];
 				const pattern = "the quick brown fox jumps over the lazy dog. ";
@@ -1419,7 +1732,7 @@ describe("warm-cold-path", () => {
 				}
 				return chunks.join("").slice(0, size);
 			};
-			const inflatedToolResultContent = buildVariedContent(800_000);
+			const inflatedToolResultContent = buildVariedContent(1_000_000);
 			// At 200k contextWindow the cold-path Stage 1.7 default
 			// recent-window is 20 messages. Seed enough recent-window
 			// padding that the oversized tool_result lands well outside
@@ -1516,7 +1829,7 @@ describe("warm-cold-path", () => {
 
 			const pathLogs: CachePathLog[] = [];
 			const ctx = makeCtx(pathLogs, sharedStore);
-			const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 				threadId: globalThreadId,
 				userId: globalUserId,
 			});

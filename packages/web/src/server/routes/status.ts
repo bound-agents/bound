@@ -1,12 +1,18 @@
-import { createRelayOutboxEntry } from "@bound/agent";
 import {
 	cancelClientToolCalls,
 	compareAllTables,
+	countRunningTasks,
 	countUnsyncableLocalOnly,
+	findHostSiteIdAndNameById,
+	findLiveThreadById,
+	getHostMetaHostName,
+	getPeerSiteId,
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
-	writeOutbox,
+	listHostsOrderedByName,
+	listRemoteHostModelLiveness,
+	listSyncState,
 } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
@@ -43,7 +49,6 @@ export function createStatusRoutes(
 	hostName: string,
 	siteId: string,
 	modelsConfig?: ModelsConfig | (() => ModelsConfig | undefined),
-	activeDelegations?: Map<string, { targetSiteId: string; processOutboxId: string }>,
 	logger?: ReturnType<typeof createLogger>,
 	emitToolCancel?: (
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
@@ -58,14 +63,12 @@ export function createStatusRoutes(
 	app.get("/", (c) => {
 		try {
 			const uptime = process.uptime();
-			const activeLoops = db
-				.query("SELECT COUNT(*) as count FROM tasks WHERE status = 'running' AND deleted = 0")
-				.get() as { count: number };
+			const activeLoops = countRunningTasks(db);
 
 			const status = {
 				host_info: {
 					uptime_seconds: Math.floor(uptime),
-					active_loops: activeLoops.count,
+					active_loops: activeLoops?.count ?? 0,
 				},
 			};
 
@@ -84,26 +87,17 @@ export function createStatusRoutes(
 
 	app.get("/network", (c) => {
 		try {
-			const hosts = db
-				.query("SELECT * FROM hosts WHERE deleted = 0 ORDER BY host_name ASC")
-				.all() as Array<Record<string, unknown>>;
+			const hosts = listHostsOrderedByName(db);
 
-			const syncState = db.query("SELECT * FROM sync_state").all() as Array<
-				Record<string, unknown>
-			>;
+			const syncState = listSyncState(db);
 
 			const localSiteId = getSiteId(db);
 
 			// Determine hub: if we have a sync_state peer, that's our hub (spoke mode).
 			// Otherwise we ARE the hub.
 			let hub: { siteId: string; hostName: string } | null = null;
-			const peerRow = db.query("SELECT peer_site_id FROM sync_state LIMIT 1").get() as {
-				peer_site_id: string;
-			} | null;
-			const hubSiteId = peerRow?.peer_site_id ?? localSiteId;
-			const hubHostRow = db
-				.query("SELECT site_id, host_name FROM hosts WHERE site_id = ? AND deleted = 0")
-				.get(hubSiteId) as { site_id: string; host_name: string } | null;
+			const hubSiteId = getPeerSiteId(db) ?? localSiteId;
+			const hubHostRow = findHostSiteIdAndNameById(db, hubSiteId);
 			if (hubHostRow) {
 				hub = { siteId: hubHostRow.site_id, hostName: hubHostRow.host_name };
 			}
@@ -143,18 +137,7 @@ export function createStatusRoutes(
 
 		// AC5.1: Query remote models from hosts table
 		// Exclude local host by site_id (unique key) not host_name (not guaranteed unique)
-		const remoteHosts = db
-			.query(
-				`SELECT host_name, models, online_at, modified_at
-				 FROM hosts
-				 WHERE deleted = 0 AND models IS NOT NULL AND site_id != ?`,
-			)
-			.all(siteId) as Array<{
-			host_name: string;
-			models: string;
-			online_at: string | null;
-			modified_at: string | null;
-		}>;
+		const remoteHosts = listRemoteHostModelLiveness(db, siteId);
 
 		const remoteModels: ClusterModelInfo[] = [];
 		for (const host of remoteHosts) {
@@ -198,7 +181,7 @@ export function createStatusRoutes(
 		try {
 			const { threadId } = c.req.param();
 
-			const thread = db.query("SELECT * FROM threads WHERE id = ? AND deleted = 0").get(threadId);
+			const thread = findLiveThreadById(db, threadId);
 
 			if (!thread) {
 				return c.json(
@@ -212,10 +195,7 @@ export function createStatusRoutes(
 			// Get siteId and hostName for message persistence
 			const localSiteId = getSiteId(db);
 
-			const hostNameRow = db.query("SELECT value FROM host_meta WHERE key = 'host_name'").get() as
-				| { value: string }
-				| undefined;
-			const hostNameValue = hostNameRow?.value ?? "unknown";
+			const hostNameValue = getHostMetaHostName(db) ?? "unknown";
 
 			// Read pending client tool calls BEFORE expiring them (AC3.1)
 			const pendingBefore = getPendingClientToolCalls(db, threadId);
@@ -279,26 +259,12 @@ export function createStatusRoutes(
 				siteId,
 			);
 
-			// Emit cancel event on eventBus to signal agent loop to stop
+			// Emit cancel event on eventBus to signal agent loop to stop. The loop
+			// runs locally on the trigger host (single delegation path, R-UD1), so
+			// the local agent:cancel event reaches it; there is no whole-loop
+			// delegation to propagate a cancel to anymore. In-flight relayed
+			// inference is cancelled by the loop's own relay cancel path.
 			eventBus.emit("agent:cancel", { thread_id: threadId });
-
-			// AC6.4: Propagate cancel to delegated processing host
-			const delegation = activeDelegations?.get(threadId);
-			if (delegation) {
-				const cancelEntry = createRelayOutboxEntry(
-					delegation.targetSiteId,
-					siteId,
-					"cancel",
-					JSON.stringify({}),
-					30_000,
-					delegation.processOutboxId, // ref_id matches the process message
-				);
-				try {
-					writeOutbox(db, cancelEntry);
-				} catch {
-					// Non-fatal
-				}
-			}
 
 			return c.json({
 				cancelled: true,

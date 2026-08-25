@@ -49,6 +49,14 @@ let editError = $state<string | null>(null);
 // Loading states
 let actionInProgress = $state<string | null>(null);
 
+// Cluster-wide unauthenticated-webhook kill switch (#195). Default off: a
+// "none"-format webhook can be neither created nor delivered until an operator
+// flips this on here. Gated visibly so allowing unsigned inbound is a
+// deliberate choice, not a silent default.
+let allowUnauthenticated = $state(false);
+let switchBusy = $state(false);
+let switchError = $state<string | null>(null);
+
 const columns = [
 	{ key: "name", label: "Name", width: "2fr", mono: true },
 	{ key: "signature_format", label: "Format", width: "1fr" },
@@ -59,6 +67,7 @@ const columns = [
 onMount(() => {
 	loadWebhooks();
 	loadModels();
+	loadUnauthenticatedSwitch();
 });
 
 async function loadWebhooks(): Promise<void> {
@@ -82,6 +91,36 @@ async function loadModels(): Promise<void> {
 		defaultModel = resp.default;
 	} catch (err: unknown) {
 		console.error("Failed to load models for webhook dropdown:", err);
+	}
+}
+
+async function loadUnauthenticatedSwitch(): Promise<void> {
+	try {
+		const resp = await client.getWebhookUnauthenticatedSwitch();
+		allowUnauthenticated = resp.allow_unauthenticated;
+	} catch (err: unknown) {
+		console.error("Failed to load unauthenticated-webhook switch:", err);
+	}
+}
+
+async function handleToggleUnauthenticated(next: boolean): Promise<void> {
+	switchBusy = true;
+	switchError = null;
+	try {
+		const resp = await client.setWebhookUnauthenticatedSwitch(next);
+		allowUnauthenticated = resp.allow_unauthenticated;
+		// A create/edit form may be sitting on the now-invalid "none" option;
+		// snap it back to a signed default so the operator can't submit a
+		// request the server will 403.
+		if (!allowUnauthenticated) {
+			if (createFormat === "none") createFormat = "github";
+			if (editFormat === "none") editFormat = "github";
+		}
+	} catch (err: unknown) {
+		console.error("Failed to update unauthenticated-webhook switch:", err);
+		switchError = err instanceof Error ? err.message : "Failed to update switch.";
+	} finally {
+		switchBusy = false;
 	}
 }
 
@@ -310,6 +349,15 @@ function formatDate(iso: string): string {
 				<div class="list-header">
 					<h2 class="section-title">Webhooks · {webhooks.length}</h2>
 					<div class="spacer"></div>
+					<label class="unauth-toggle" title="When on, webhooks with signature format 'none' can be created and will receive deliveries. Off by default: unsigned inbound is blocked cluster-wide.">
+						<input
+							type="checkbox"
+							checked={allowUnauthenticated}
+							disabled={switchBusy}
+							onchange={(e) => handleToggleUnauthenticated(e.currentTarget.checked)}
+						/>
+						Allow unauthenticated webhooks
+					</label>
 					<Btn
 						variant="accent"
 						size="sm"
@@ -382,6 +430,9 @@ function formatDate(iso: string): string {
 						>
 							<option value="github">GitHub</option>
 							<option value="generic">Generic JSON</option>
+							{#if allowUnauthenticated}
+								<option value="none">None (unauthenticated)</option>
+							{/if}
 						</select>
 					</div>
 
@@ -564,6 +615,9 @@ function formatDate(iso: string): string {
 							>
 								<option value="github">GitHub</option>
 								<option value="generic">Generic JSON</option>
+								{#if allowUnauthenticated || editFormat === "none"}
+									<option value="none">None (unauthenticated)</option>
+								{/if}
 							</select>
 						</div>
 
@@ -745,6 +799,16 @@ function formatDate(iso: string): string {
 		margin: 2px 0 12px 0;
 		padding-bottom: 8px;
 		border-bottom: 1px solid var(--rule-soft);
+	}
+
+	.unauth-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12px;
+		color: var(--text-soft);
+		cursor: pointer;
+		user-select: none;
 	}
 
 	.section-title {

@@ -1,9 +1,16 @@
 /**
- * Agent loop factory: creates per-invocation AgentLoop instances with
+ * Agent loop factory: creates per-invocation MainAgentLoop instances with
  * isolated snapshot state and full sandbox/tool wiring.
  */
 
-import { AgentLoop, createAgentTools, createBuiltInTools } from "@bound/agent";
+import {
+	AuxAgentLoop,
+	ConcurrentCap,
+	MainAgentLoop,
+	createAgentTools,
+	createBuiltInTools,
+	dispatchAwaitableClientTool,
+} from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
@@ -48,7 +55,30 @@ export const sandboxTool: ToolDefinition = {
 	},
 };
 
-export type AgentLoopFactory = (config: AgentLoopConfig) => AgentLoop;
+export interface AuxLoopParentContext {
+	clientTools?: AgentLoopConfig["clientTools"];
+	connectionId?: string;
+	/** Surface tag inherited from the dispatching loop (web, boundless, discord, ...). */
+	platform?: string;
+	/** Full per-session context block (boundless cwd/git/context files, when present). */
+	systemPromptAddition?: string;
+	/** Connector/platform-authored instructions from the dispatching loop. */
+	platformInstructions?: string;
+	/**
+	 * The dispatching loop's abort signal. A synchronous aux invocation blocks
+	 * the parent in `await auxLoop.run()`, so the parent cannot observe its own
+	 * abort until the child returns — the child must share the brake line.
+	 * Without this, `agent:cancel` aborted the parent's controller while the
+	 * nested aux kept issuing LLM calls for its full natural lifetime
+	 * (observed live: ten minutes past three operator cancels).
+	 */
+	abortSignal?: AbortSignal;
+}
+
+export interface AgentLoopFactory {
+	(config: AgentLoopConfig): MainAgentLoop;
+	createAuxLoopRunner(parent: AuxLoopParentContext): NonNullable<ToolContext["auxLoopRunner"]>;
+}
 
 /**
  * Create a unified tool registry from all tool sources.
@@ -150,7 +180,242 @@ export function createAgentLoopFactory(
 		? createVfsRehydrator(clusterFsObj.fs, appContext.db)
 		: undefined;
 
-	return (config: AgentLoopConfig): AgentLoop => {
+	const createAuxLoopRunner = (
+		parent: AuxLoopParentContext,
+	): NonNullable<ToolContext["auxLoopRunner"]> => {
+		const builtInTools = clusterFsObj ? createBuiltInTools(clusterFsObj.fs) : undefined;
+		const builtInToolDefs = builtInTools
+			? Array.from(builtInTools.values(), (tool) => tool.toolDefinition)
+			: [];
+		const memoryConfigResult = appContext.optionalConfig.memory;
+		const memoryLimits =
+			memoryConfigResult?.ok && memoryConfigResult.value
+				? {
+						pinnedCountCap: (memoryConfigResult.value as { pinned_count_cap: number })
+							.pinned_count_cap,
+						pinnedSizeCap: (memoryConfigResult.value as { pinned_size_cap: number })
+							.pinned_size_cap,
+					}
+				: undefined;
+		const syncResult = appContext.optionalConfig.sync;
+		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
+		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
+		// #201 Car C: aux loop runner — constructs and runs an AuxAgentLoop
+		// for an auxiliary agent invocation. Shares the VFS and underlying
+		// sandbox, but has its own snapshot state to avoid collision with
+		// the parent loop's FS persist.
+		const auxCap = new ConcurrentCap(20);
+
+		const rawAuxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+			let auxPreSnapshot: Map<string, string> | null = null;
+
+			const auxSandbox = {
+				exec: sandbox
+					? async (cmd: string, opts?: Record<string, unknown>) => {
+							const store = {
+								threadId: params.threadId,
+								taskId: undefined as string | undefined,
+								relayRequest: undefined as unknown | undefined,
+								mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
+							};
+							const result = await loopContextStorage.run(store, () =>
+								sandbox.bash.exec(cmd, opts),
+							);
+							if (store.relayRequest && isRelayRequest(store.relayRequest)) {
+								const req = store.relayRequest;
+								store.relayRequest = undefined;
+								return req;
+							}
+							if (store.mcpApp) {
+								return { ...(result as object), mcpApp: store.mcpApp };
+							}
+							return result;
+						}
+					: undefined,
+				checkMemoryThreshold: sandbox ? () => sandbox.checkMemoryThreshold() : undefined,
+				rehydrateFs,
+				writeFile: clusterFsObj
+					? async (path: string, content: string): Promise<void> => {
+							await clusterFsObj.fs.writeFile(path, content);
+						}
+					: undefined,
+				capturePreSnapshot: async (): Promise<void> => {
+					if (!clusterFsObj) return;
+					auxPreSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+						paths: clusterFsObj.getInMemoryPaths(),
+					});
+				},
+				persistFs: async (): Promise<{ changes: number; changedPaths?: string[] }> => {
+					if (!clusterFsObj || !auxPreSnapshot) {
+						return { changes: 0 };
+					}
+					const postSnapshot = await snapshotWorkspace(clusterFsObj.fs, {
+						paths: clusterFsObj.getInMemoryPaths(),
+					});
+					const changedPaths = diffWorkspace(auxPreSnapshot, postSnapshot).map((c) => c.path);
+					const result = await persistWorkspaceChanges(
+						appContext.db,
+						appContext.siteId,
+						auxPreSnapshot,
+						postSnapshot,
+						appContext.eventBus,
+						undefined,
+						clusterFsObj.fs,
+					);
+					auxPreSnapshot = postSnapshot;
+					if (!result.ok) {
+						return { changes: 0 };
+					}
+					return { changes: result.value.changes, changedPaths };
+				},
+				builtInTools,
+			};
+
+			// Aux ToolContext with agentId set for memory namespace scoping.
+			// Same lazy-registry pattern as the main path below: yard dispatches
+			// yielded tool effects through the registry that is built FROM these
+			// tools, so the accessor closes over a let-binding assigned after
+			// construction. The aux registry already encodes the capability
+			// boundary (EXCLUDED_TOOLS + allowlist), so a yard run inside an aux
+			// sees exactly the aux's effective toolset — nested calls cannot
+			// escalate back to the main agent's tools.
+			// biome-ignore lint/style/useConst: assigned below, after the accessor closure that captures it is constructed
+			let auxToolRegistry: Map<string, RegisteredTool> | undefined;
+			const auxToolCtx: ToolContext = {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				threadId: params.threadId,
+				modelRouter,
+				fs: clusterFsObj?.fs,
+				memoryLimits,
+				topologyRole,
+				agentId: params.agentId,
+				executeSandboxTool: async (command, timeout, cwd) => {
+					if (!auxSandbox.exec) throw new Error("sandbox execution not available");
+					return auxSandbox.exec(command, { timeout, cwd });
+				},
+				executeClientTool: (name, args, timeoutMs, signal) =>
+					dispatchAwaitableClientTool({
+						db: appContext.db,
+						eventBus: appContext.eventBus,
+						siteId: appContext.siteId,
+						threadId: params.threadId,
+						toolName: name,
+						args,
+						connectionId: parent.connectionId,
+						timeoutMs,
+						signal,
+					}),
+				getToolRegistry: () => {
+					if (!auxToolRegistry) throw new Error("aux tool registry accessed before construction");
+					return auxToolRegistry;
+				},
+			};
+
+			// Capability boundary — always excluded from aux toolset
+			const EXCLUDED_TOOLS = new Set(["aux", "task", "cancel", "notify", "introspect"]);
+			let filteredAgentTools = createAgentTools(auxToolCtx).filter(
+				(t) => !EXCLUDED_TOOLS.has(t.toolDefinition.function.name),
+			);
+			if (params.allowlistedTools) {
+				const allow = new Set(params.allowlistedTools);
+				filteredAgentTools = filteredAgentTools.filter((t) =>
+					allow.has(t.toolDefinition.function.name),
+				);
+			}
+
+			// Inherit the dispatching thread's client (WS) tools so an aux running
+			// under a boundless session can actually reach the operator's working
+			// directory. Without this an aux only ever sees the sandboxed VFS and
+			// cannot read the repo it was asked to investigate. Delivery works
+			// because the WS layer falls back to the PARENT thread's subscriptions
+			// (nothing ever subscribes to an aux thread), and AuxAgentLoop resolves
+			// these inline instead of deferring — a nested loop has no re-wake path.
+			const parentClientTools = parent.clientTools;
+			const auxClientTools = (() => {
+				if (!parentClientTools) return undefined;
+				if (!params.allowlistedTools) return parentClientTools;
+				const allow = new Set(params.allowlistedTools);
+				const scoped = new Map(
+					Array.from(parentClientTools.entries()).filter(([name]) => allow.has(name)),
+				);
+				return scoped.size > 0 ? scoped : undefined;
+			})();
+			const auxClientToolDefs = auxClientTools ? Array.from(auxClientTools.values()) : [];
+
+			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
+			auxToolRegistry = createToolRegistry(
+				builtInTools,
+				auxClientTools,
+				filteredAgentTools,
+				appContext.logger,
+				undefined,
+			);
+
+			const auxLoop = new AuxAgentLoop(appContext, auxSandbox, modelRouter, {
+				threadId: params.threadId,
+				userId: params.userId,
+				modelId: params.modelHint ?? undefined,
+				// Preserve the parent surface's complete injected context verbatim —
+				// notably boundless cwd/git/context-file blocks.
+				systemPromptAddition: parent.systemPromptAddition,
+				// The aux identity REPLACES the main persona in the stable prefix.
+				// It used to be appended to systemPromptAddition instead, which left
+				// the main persona loaded from cluster_config underneath — every aux
+				// thread spoke as the main agent with its own persona as a footnote.
+				personaOverride: params.persona,
+				platformInstructions: parent.platformInstructions,
+				platform: parent.platform ?? "aux",
+				tools: [sandboxTool, ...builtInToolDefs, ...auxToolDefs, ...auxClientToolDefs],
+				toolRegistry: auxToolRegistry,
+				clientTools: auxClientTools,
+				// Carries the parent's WS connection so the inline client-tool
+				// dispatch takes the local path rather than resolving a relay host.
+				connectionId: parent.connectionId,
+				// Couple the parent's brake line: agent:cancel aborts the parent's
+				// controller, and a synchronous aux blocks the parent until it
+				// returns — so the nested loop must observe the same signal.
+				abortSignal: parent.abortSignal,
+			});
+
+			const loopResult = await auxLoop.run();
+
+			// Extract the last assistant message as the summary
+			const lastAssistant = appContext.db
+				.prepare(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(params.threadId) as { content: string } | null;
+
+			return {
+				summary: lastAssistant?.content ?? "(no response)",
+				error: loopResult.error,
+			};
+		};
+
+		// #201: wrap the runner with a concurrent-invocation cap so an agent
+		// cannot spawn unbounded nested loops. The cap lives in this closure
+		// and is shared across all invocations on this host.
+		const auxLoopRunner: ToolContext["auxLoopRunner"] = async (params) => {
+			if (!auxCap.acquire()) {
+				return {
+					summary: `Error: concurrent auxiliary agent cap reached (${auxCap.capacity}). Wait for in-flight invocations to complete before invoking again.`,
+					error: "concurrent-cap",
+				};
+			}
+			try {
+				return await rawAuxLoopRunner(params);
+			} finally {
+				auxCap.release();
+			}
+		};
+
+		return auxLoopRunner;
+	};
+
+	const factory = (config: AgentLoopConfig): MainAgentLoop => {
 		// Per-invocation snapshot state. Each call gets its own
 		// closure so concurrent agent loops do not share preSnapshot.
 		let preSnapshot: Map<string, string> | null = null;
@@ -269,6 +534,25 @@ export function createAgentLoopFactory(
 							.pinned_size_cap,
 					}
 				: undefined;
+		// Topology role: spoke when a hub URL is configured, hub otherwise
+		// (mirrors agent-loop's topologyRole derivation for the orientation block).
+		const syncResult = appContext.optionalConfig.sync;
+		const syncConfig = syncResult?.ok ? (syncResult.value as { hub?: unknown }) : undefined;
+		const topologyRole: "hub" | "spoke" = syncConfig?.hub ? "spoke" : "hub";
+		const auxLoopRunner = createAuxLoopRunner({
+			clientTools: config.clientTools,
+			connectionId: config.connectionId,
+			platform: config.platform,
+			systemPromptAddition: config.systemPromptAddition,
+			platformInstructions: config.platformInstructions,
+			abortSignal: config.abortSignal,
+		});
+
+		// Yard dispatches yielded tool effects through the same unified registry
+		// the loop uses, but the registry is built FROM the agent tools — so the
+		// yard factory receives a lazy accessor over a let-binding assigned below.
+		// biome-ignore lint/style/useConst: assigned below, after the accessor closure that captures it is constructed
+		let toolRegistry: Map<string, RegisteredTool> | undefined;
 		const toolCtx: ToolContext = {
 			db: appContext.db,
 			siteId: appContext.siteId,
@@ -279,12 +563,34 @@ export function createAgentLoopFactory(
 			modelRouter,
 			fs: clusterFsObj?.fs,
 			memoryLimits,
+			topologyRole,
+			auxLoopRunner,
+			executeSandboxTool: async (command, timeout, cwd) => {
+				if (!loopSandbox.exec) throw new Error("sandbox execution not available");
+				return loopSandbox.exec(command, { timeout, cwd });
+			},
+			executeClientTool: (name, args, timeoutMs, signal) =>
+				dispatchAwaitableClientTool({
+					db: appContext.db,
+					eventBus: appContext.eventBus,
+					siteId: appContext.siteId,
+					threadId: config.threadId,
+					toolName: name,
+					args,
+					connectionId: config.connectionId,
+					timeoutMs,
+					signal,
+				}),
+			getToolRegistry: () => {
+				if (!toolRegistry) throw new Error("tool registry accessed before construction");
+				return toolRegistry;
+			},
 		};
 		const agentTools = createAgentTools(toolCtx);
 
 		// Create the unified tool registry for registry-based dispatch.
 		// Platform tools are registered with their execute closures intact for MCP dispatch.
-		const toolRegistry = createToolRegistry(
+		toolRegistry = createToolRegistry(
 			builtInTools,
 			config.clientTools,
 			agentTools,
@@ -292,10 +598,12 @@ export function createAgentLoopFactory(
 			config.platformTools,
 		);
 
-		return new AgentLoop(appContext, loopSandbox, modelRouter, {
+		return new MainAgentLoop(appContext, loopSandbox, modelRouter, {
 			...config,
 			tools: [sandboxTool, ...builtInToolDefs, ...platformToolDefs],
 			toolRegistry,
 		});
 	};
+	factory.createAuxLoopRunner = createAuxLoopRunner;
+	return factory;
 }

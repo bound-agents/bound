@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { insertRow } from "@bound/core";
+import {
+	dangerouslyExecuteRawWrite,
+	findTaskClaimById,
+	findTaskIdAndStatusById,
+	findTaskIdById,
+	insertRow,
+	listHostsWithLiveness,
+} from "@bound/core";
 import type { Task } from "@bound/shared";
 import { BOUND_NAMESPACE, deterministicUUID, formatError } from "@bound/shared";
 
@@ -180,14 +187,7 @@ export function shouldDispatchHere(
 	}
 
 	const cutoff = Date.now() - staleMs;
-	const rows = db
-		.query("SELECT site_id, host_name, modified_at, online_at FROM hosts WHERE deleted = 0")
-		.all() as Array<{
-		site_id: string;
-		host_name: string | null;
-		modified_at: string | null;
-		online_at: string | null;
-	}>;
+	const rows = listHostsWithLiveness(db);
 
 	const candidates: FiringCandidateHost[] = [];
 	const seen = new Set<string>();
@@ -230,6 +230,8 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 	const day = parseCronField(dayStr, 1, 31);
 	const month = parseCronField(monthStr, 1, 12);
 	const weekday = parseCronField(weekdayStr, 0, 6);
+	const dayWildcard = dayStr === "*";
+	const weekdayWildcard = weekdayStr === "*";
 
 	// Find the next matching time.
 	//
@@ -260,8 +262,12 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 		const monthMatch = month.has(mon);
 		const weekdayMatch = weekday.has(dow);
 
-		// Both day and weekday must match (OR condition per cron spec)
-		const dateMatch = (dayMatch || weekdayMatch) && monthMatch;
+		const calendarDayMatch = dayWildcard
+			? weekdayMatch
+			: weekdayWildcard
+				? dayMatch
+				: dayMatch || weekdayMatch;
+		const dateMatch = calendarDayMatch && monthMatch;
 
 		if (minuteMatch && hourMatch && dateMatch) {
 			return next;
@@ -271,6 +277,13 @@ function parseCron(cronExpr: string, from: Date = new Date()): Date {
 	}
 
 	throw new Error("Could not find next cron execution time");
+}
+
+function parseCronNumber(token: string): number {
+	if (!/^\d+$/.test(token)) {
+		throw new Error(`Invalid numeric value: ${token}`);
+	}
+	return Number(token);
 }
 
 function parseCronField(field: string, min: number, max: number): Set<number> {
@@ -295,8 +308,11 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 
 	if (field.includes("/")) {
 		const [range, step] = field.split("/");
-		const stepNum = Number.parseInt(step, 10);
-		if (Number.isNaN(stepNum)) {
+		if (!/^-?\d+$/.test(step)) {
+			throw new Error(`Invalid step value: ${step}`);
+		}
+		const stepNum = Number(step);
+		if (stepNum <= 0) {
 			throw new Error(`Invalid step value: ${step}`);
 		}
 
@@ -305,11 +321,11 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 
 		if (range !== "*") {
 			const rangeParts = range.split("-");
-			start = Number.parseInt(rangeParts[0], 10);
-			end = rangeParts[1] ? Number.parseInt(rangeParts[1], 10) : end;
-			if (Number.isNaN(start) || Number.isNaN(end)) {
+			if (rangeParts.length > 2) {
 				throw new Error(`Invalid range: ${range}`);
 			}
+			start = parseCronNumber(rangeParts[0]);
+			end = rangeParts[1] ? parseCronNumber(rangeParts[1]) : end;
 		}
 
 		for (let i = start; i <= end; i += stepNum) {
@@ -321,10 +337,11 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 	}
 
 	if (field.includes("-")) {
-		const [start, end] = field.split("-").map((s) => Number.parseInt(s, 10));
-		if (Number.isNaN(start) || Number.isNaN(end)) {
+		const rangeParts = field.split("-");
+		if (rangeParts.length !== 2) {
 			throw new Error(`Invalid range: ${field}`);
 		}
+		const [start, end] = rangeParts.map(parseCronNumber);
 		for (let i = start; i <= end; i++) {
 			if (i >= min && i <= max) {
 				result.add(i);
@@ -333,8 +350,8 @@ function parseCronField(field: string, min: number, max: number): Set<number> {
 		return result;
 	}
 
-	const num = Number.parseInt(field, 10);
-	if (Number.isNaN(num) || num < min || num > max) {
+	const num = parseCronNumber(field);
+	if (num < min || num > max) {
 		throw new Error(`Invalid cron field: ${field} (must be ${min}-${max})`);
 	}
 	result.add(num);
@@ -369,9 +386,7 @@ export function isDependencySatisfied(db: Database, task: Task): boolean {
 	}
 
 	for (const depId of dependencyIds) {
-		const depTask = db.query("SELECT id, status FROM tasks WHERE id = ?").get(depId) as
-			| { id: string; status: string }
-			| undefined;
+		const depTask = findTaskIdAndStatusById(db, depId);
 
 		if (!depTask) {
 			// Dependency not found - consider it failed
@@ -432,14 +447,7 @@ export function verifyLeaseStillHeld(
 				deleted: number;
 			} | null;
 	  } {
-	const row = db
-		.query("SELECT claimed_by, lease_id, status, deleted FROM tasks WHERE id = ?")
-		.get(taskId) as {
-		claimed_by: string | null;
-		lease_id: string | null;
-		status: string;
-		deleted: number;
-	} | null;
+	const row = findTaskClaimById(db, taskId);
 	if (!row) {
 		return { held: false, reason: "row_missing", actual: null };
 	}
@@ -524,9 +532,7 @@ export function seedHeartbeat(db: Database, siteId: string): void {
 	const modelHint = null;
 
 	// Check if heartbeat task already exists (idempotent)
-	const existing = db.query("SELECT id FROM tasks WHERE id = ?").get(id) as {
-		id: string;
-	} | null;
+	const existing = findTaskIdById(db, id);
 
 	if (!existing) {
 		insertRow(
@@ -574,8 +580,74 @@ export function seedHeartbeat(db: Database, siteId: string): void {
 	// history — it receives volatile enrichment (standing instructions, task digest,
 	// thread activity) which provides all necessary context. Loading history on a
 	// long-running heartbeat thread wastes tokens on stale self-referential output.
-	db.prepare(
-		"UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0", // outbox-exempt: legacy migration
-		// TODO: follow-up RFC — route through insertRow/updateRow or formalize as semantic exception
-	).run();
+	dangerouslyExecuteRawWrite(db, {
+		sql: "UPDATE tasks SET no_history = 1 WHERE type = 'heartbeat' AND no_history = 0",
+		reason:
+			"one-time startup migration of a per-host semantic flag (heartbeat tasks don't load history); idempotent and self-converging, no cross-host write needed",
+	});
+}
+
+/**
+ * Default consolidation cadence. Like the heartbeat, this is a system-managed,
+ * uncancellable task seeded once per install. 4-hour interval.
+ */
+export const DEFAULT_CONSOLIDATION_INTERVAL_MS = 14_400_000; // 4 hours
+
+export function seedConsolidation(db: Database, siteId: string): void {
+	const id = deterministicUUID(BOUND_NAMESPACE, "consolidation");
+	const now = new Date();
+	const intervalMs = DEFAULT_CONSOLIDATION_INTERVAL_MS;
+	const nextBoundary = Math.ceil(now.getTime() / intervalMs) * intervalMs;
+	const nextRunAt = new Date(nextBoundary).toISOString();
+	const triggerSpec = JSON.stringify({ type: "consolidation", interval_ms: intervalMs });
+
+	const existing = findTaskIdById(db, id);
+
+	if (!existing) {
+		insertRow(
+			db,
+			"tasks",
+			{
+				id,
+				type: "consolidation",
+				status: "pending",
+				trigger_spec: triggerSpec,
+				payload: null,
+				created_at: now.toISOString(),
+				created_by: "system",
+				thread_id: null,
+				origin_thread_id: null,
+				claimed_by: null,
+				claimed_at: null,
+				lease_id: null,
+				next_run_at: nextRunAt,
+				last_run_at: null,
+				run_count: 0,
+				max_runs: null,
+				requires: null,
+				model_hint: null,
+				no_history: 1,
+				inject_mode: "status",
+				depends_on: null,
+				require_success: 0,
+				alert_threshold: 5,
+				consecutive_failures: 0,
+				event_depth: 0,
+				no_quiescence: 0,
+				system_prompt_addition: null,
+				heartbeat_at: null,
+				result: null,
+				error: null,
+				modified_at: now.toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+	}
+
+	dangerouslyExecuteRawWrite(db, {
+		sql: "UPDATE tasks SET no_history = 1 WHERE type = 'consolidation' AND no_history = 0",
+		reason:
+			"one-time startup migration of a per-host semantic flag (consolidation tasks don't load history); idempotent and self-converging, no cross-host write needed",
+	});
 }

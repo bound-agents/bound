@@ -13,10 +13,11 @@
  *   N8 Empty input → empty output.
  */
 
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import type { Message } from "@bound/shared";
+import { countContentTokens } from "@bound/shared";
 import fc from "fast-check";
-import { MODEL_SWITCH_CAP, annotateMessages } from "../annotate";
+import { MODEL_SWITCH_CAP, annotateMessages, annotateMessagesWithTokens } from "../annotate";
 
 const NOW_ISO = "2026-05-25T12:00:00.000Z";
 const NOW_MS = new Date(NOW_ISO).getTime();
@@ -173,7 +174,7 @@ describe("annotateMessages — property tests", () => {
 	});
 
 	it("N7 (load-bearing): timestamp annotation is byte-stable across ANY nowMs — no age-based cliff", () => {
-		// Live regression on thread `6fff1513-...` 2026-05-26: the prior
+		// Live regression: the prior
 		// annotation rule applied a timestamp prefix only when the user
 		// message was ≥ 60s old. For autonomous tasks (single user_1
 		// followed by long inner loops), this caused a one-time byte shift
@@ -269,6 +270,136 @@ describe("annotateMessages — property tests", () => {
 		}
 	});
 
+	it('N10: user message carries a from="..." attribute when metadata stamps a user_name', () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hello there", {
+					created_at: created,
+					metadata: JSON.stringify({ tz_offset: -420, user_name: "Kara" }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content;
+		if (typeof content !== "string") throw new Error("expected string content");
+		if (!/^<user-message from="Kara" sent="[^"]+">\n/.test(content)) {
+			throw new Error(`missing from attribute on envelope: ${content}`);
+		}
+	});
+
+	it("N10b: no from attribute when metadata has no user_name (old rows unchanged)", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		// Both a null-metadata row and a tz-only row must render byte-identically
+		// to the pre-feature envelope so existing threads keep their cachePoint.
+		for (const metadata of [null, JSON.stringify({ tz_offset: -420 })]) {
+			const out = annotateMessages({
+				messages: [msg("user", "u1", "hello there", { created_at: created, metadata })],
+				nowMs: NOW_MS,
+			});
+			const content = out[0].content;
+			if (typeof content !== "string") throw new Error("expected string content");
+			if (content.includes(" from=")) {
+				throw new Error(`unexpected from attribute for metadata=${metadata}: ${content}`);
+			}
+			if (!/^<user-message sent="[^"]+">\n/.test(content)) {
+				throw new Error(`envelope shape changed for metadata=${metadata}: ${content}`);
+			}
+		}
+	});
+
+	it("N10c: a user_name with XML-significant characters is escaped in the attribute", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hi", {
+					created_at: created,
+					metadata: JSON.stringify({ user_name: 'A&B <"x">' }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content as string;
+		if (!content.includes('from="A&amp;B &lt;&quot;x&quot;&gt;"')) {
+			throw new Error(`user_name not escaped: ${content}`);
+		}
+	});
+
+	it('N11: user message carries a role="..." attribute when metadata stamps a sender_role', () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "diagnose run 1234", {
+					created_at: created,
+					metadata: JSON.stringify({ user_name: "Polaris", sender_role: "main" }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content;
+		if (typeof content !== "string") throw new Error("expected string content");
+		// #201 envelope attribute order is `from role sent`.
+		if (!/^<user-message from="Polaris" role="main" sent="[^"]+">\n/.test(content)) {
+			throw new Error(`missing or misordered role attribute on envelope: ${content}`);
+		}
+	});
+
+	it("N11b: role attribute appears with sent even when no from is stamped", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hi", {
+					created_at: created,
+					metadata: JSON.stringify({ sender_role: "user" }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content;
+		if (typeof content !== "string") throw new Error("expected string content");
+		if (!/^<user-message role="user" sent="[^"]+">\n/.test(content)) {
+			throw new Error(`missing role attribute without from: ${content}`);
+		}
+	});
+
+	it("N11c: no role attribute when metadata has no sender_role (old rows unchanged)", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		// A null-metadata row, a tz-only row, and a from-only row must all render
+		// with no role= so pre-feature envelopes keep their exact bytes (cachePoint).
+		for (const metadata of [
+			null,
+			JSON.stringify({ tz_offset: -420 }),
+			JSON.stringify({ user_name: "Kara" }),
+		]) {
+			const out = annotateMessages({
+				messages: [msg("user", "u1", "hello there", { created_at: created, metadata })],
+				nowMs: NOW_MS,
+			});
+			const content = out[0].content;
+			if (typeof content !== "string") throw new Error("expected string content");
+			if (content.includes(" role=")) {
+				throw new Error(`unexpected role attribute for metadata=${metadata}: ${content}`);
+			}
+		}
+	});
+
+	it("N11d: a sender_role with XML-significant characters is escaped in the attribute", () => {
+		const created = "2026-05-25T11:00:00.000Z";
+		const out = annotateMessages({
+			messages: [
+				msg("user", "u1", "hi", {
+					created_at: created,
+					metadata: JSON.stringify({ sender_role: 'a&<"b>' }),
+				}),
+			],
+			nowMs: NOW_MS,
+		});
+		const content = out[0].content as string;
+		if (!content.includes('role="a&amp;&lt;&quot;b&gt;"')) {
+			throw new Error(`sender_role not escaped: ${content}`);
+		}
+	});
+
 	it("N7b (property): annotation is independent of nowMs for any user message", () => {
 		fc.assert(
 			fc.property(
@@ -292,5 +423,76 @@ describe("annotateMessages — property tests", () => {
 	it("N8: empty input → empty output", () => {
 		const out = annotateMessages({ messages: [], nowMs: NOW_MS });
 		if (out.length !== 0) throw new Error("expected empty output");
+	});
+
+	// N9: perMessageTokens is aligned 1:1 with the annotated output AND each entry
+	// equals a from-scratch countContentTokens over that annotated message. This
+	// pins the identity-cache optimization to be lossless — the precomputed counts
+	// downstream stages reuse must equal what re-tokenizing would have produced.
+	it("N9: perMessageTokens aligns with output and equals countContentTokens", () => {
+		fc.assert(
+			fc.property(
+				fc.array(
+					fc.record({
+						role: fc.constantFrom("user", "assistant", "tool_result", "tool_call"),
+						id: fc
+							.string({ minLength: 1, maxLength: 12 })
+							.filter((s) => /^[a-zA-Z0-9_-]+$/.test(s)),
+						content: fc.string({ maxLength: 60 }).filter((s) => !/[\n\r]/.test(s)),
+						model: fc.constantFrom("m1", "m2"),
+					}),
+					{ maxLength: 12 },
+				),
+				(specs) => {
+					// Each message gets a globally-unique id so the identity cache's
+					// invariant holds — (id, modified_at) uniquely determines content, as
+					// it does in production (immutable rows). Reusing ids across
+					// fast-check runs with different content would (correctly) return a
+					// prior run's cached count.
+					const runTag = `${Math.random()}`;
+					const msgs: Message[] = specs.map((s, i) =>
+						msg(s.role as Message["role"], `${runTag}-${s.id}-${i}`, s.content, {
+							model_id: s.role === "assistant" ? s.model : null,
+							tool_name: s.role === "tool_result" ? "t" : null,
+						}),
+					);
+					const { messages: out, perMessageTokens } = annotateMessagesWithTokens({
+						messages: msgs,
+						nowMs: NOW_MS,
+					});
+					if (perMessageTokens.length !== out.length) return false;
+					for (let i = 0; i < out.length; i++) {
+						if (perMessageTokens[i] !== countContentTokens(out[i].content)) return false;
+					}
+					return true;
+				},
+			),
+			{ numRuns: 300 },
+		);
+	});
+
+	it("N9b: sum of perMessageTokens equals the old full-array reduce", () => {
+		// Unique ids per run: the identity cache is process-global and persists
+		// across tests, so fixed ids could collide with another test's entries
+		// (which map the same id to different content). Production ids are UUIDs.
+		const tag = `n9b-${Math.random()}`;
+		const msgs: Message[] = [
+			msg("user", `${tag}-u1`, "hello world this is a user message"),
+			msg("assistant", `${tag}-a1`, "assistant reply with some tokens", { model_id: "m1" }),
+			msg(
+				"tool_call",
+				`${tag}-tc1`,
+				JSON.stringify([{ type: "tool_use", id: "x", name: "n", input: {} }]),
+				{ model_id: "m1" },
+			),
+			msg("tool_result", `${tag}-tr1`, "the tool result body", { tool_name: "x" }),
+		];
+		const { messages: out, perMessageTokens } = annotateMessagesWithTokens({
+			messages: msgs,
+			nowMs: NOW_MS,
+		});
+		const sumViaCache = perMessageTokens.reduce((a, b) => a + b, 0);
+		const sumViaReduce = out.reduce((a, m) => a + countContentTokens(m.content), 0);
+		expect(sumViaCache).toBe(sumViaReduce);
 	});
 });

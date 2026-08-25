@@ -1,5 +1,11 @@
 import type { WsStreamChunk } from "./relay-schemas.js";
-import type { ContextDebugInfo, Message, RelayKind, StatusForwardPayload } from "./types.js";
+import type {
+	ContextDebugInfo,
+	Message,
+	RelayKind,
+	StatusForwardPayload,
+	YardExecutionEvent,
+} from "./types.js";
 
 export interface EventMap {
 	"message:created": { message: Message; thread_id: string; trace_context?: string };
@@ -40,6 +46,7 @@ export interface EventMap {
 		traceContext?: Record<string, string> | null;
 	};
 	"stream:chunk": { thread_id: string; chunk: WsStreamChunk };
+	"yard:execution": YardExecutionEvent;
 	"connector:event": {
 		trigger_key: string;
 		task_id: string;
@@ -47,4 +54,10 @@ export interface EventMap {
 		batch_size: number;
 	};
 	"connector:handle_synced": { handle_id: string; server_name: string };
+	/**
+	 * Number of background (deferred, #76) tool calls currently in flight on a
+	 * thread. Recomputed from `messages` on every change rather than incremented,
+	 * so a client that missed a frame resyncs to truth on the next event.
+	 */
+	"background:count": { thread_id: string; count: number };
 }

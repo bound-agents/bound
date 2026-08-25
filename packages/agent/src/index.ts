@@ -8,7 +8,11 @@ export type {
 	ToolContext,
 } from "./types";
 export { isClientToolCallRequest } from "./types";
-export type { ContextParams } from "./context-assembly";
+export { compileDynamicPricing } from "./dynamic-pricing";
+export { loadModelBackendsConfig } from "./model-backends-config";
+export type { LoadedModelBackendsConfig } from "./model-backends-config";
+export type { ContextParams, AssemblyClock, AssemblyContext } from "./context-assembly";
+export { realTimeClock, frozenClock } from "./context-assembly";
 export type { ModelResolution } from "./model-resolution";
 
 // Export RxJS utilities
@@ -18,6 +22,7 @@ export {
 	type RelayStreamDeps,
 	type RelayStreamOptions,
 } from "./relay-stream$.js";
+export { createRelayInferenceStream } from "./relay-inference-stream.js";
 export {
 	createRelayWait$,
 	type RelayWaitDeps,
@@ -27,24 +32,35 @@ export {
 
 // Export model resolution
 export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
+export { createModelCommandSpec } from "./platform-command-handlers";
+export type { PlatformCommandHandlerDeps } from "./platform-command-handlers";
 
-// Export delegation
+// Export delegation / client-session helpers. Whole-loop delegation
+// (getDelegationTarget / getClientSessionDelegationTarget / hasLocalClientSession)
+// is gone under the single delegation path (R-UD1); what remains are the
+// client-session liveness helpers used by hostinfo + notify/introspect warnings.
 export {
-	getClientSessionDelegationTarget,
+	clientSessionWakeupWarning,
 	getClientSessions,
-	getDelegationTarget,
-	getRecentToolCalls,
-	hasLocalClientSession,
+	isClientSessionLive,
+	resolveClientSessionHost,
 } from "./delegation";
+export { routeNotificationWakeup, deliverNotificationWakeup } from "./wakeup-routing";
+export { dispatchAwaitableClientTool } from "./client-tool-dispatch";
 
 // Export agent loop
-export { AgentLoop } from "./agent-loop";
+export { MainAgentLoop } from "./agent-loop";
+export { BoundAgentLoop } from "./bound-agent-loop";
+export { AuxAgentLoop } from "./aux-agent-loop";
+export { ConcurrentCap } from "./concurrent-cap";
+export type { BoundPreparedFrame, BashLike } from "./bound-agent-loop";
 export { persistImageBlocksAsFileRefs, persistBinaryResource } from "./tool-result-images";
 export {
 	findPendingUserMessage,
 	insertThreadMessage,
 	calculateTurnCost,
 	estimateMaxTurnCost,
+	createFileRefResolver,
 } from "./agent-loop-utils";
 export {
 	HandleMessageTracker,
@@ -116,7 +132,12 @@ export { generateThreadTitle } from "./title-generation";
 
 // Export summary extraction
 export type { ExtractionResult } from "./summary-extraction";
-export { extractSummaryAndMemories, buildCrossThreadDigest } from "./summary-extraction";
+export {
+	extractSummaryAndMemories,
+	buildCrossThreadDigest,
+	renderCrossThreadSummaries,
+	shouldInjectCrossThreadSummaries,
+} from "./summary-extraction";
 
 // Export file-thread tracker
 export {
@@ -128,6 +149,8 @@ export {
 // Export task resolution
 export {
 	seedHeartbeat,
+	seedConsolidation,
+	DEFAULT_CONSOLIDATION_INTERVAL_MS,
 	computeNextRunAt,
 	canRunHere,
 	isDependencySatisfied,
@@ -140,7 +163,9 @@ export { seedBundledSkills } from "./seed-skills";
 export {
 	parseFrontmatter,
 	importSkillFromFiles,
-	MAX_ACTIVE_SKILLS,
+	deleteSkill,
+	type DeleteSkillOptions,
+	type DeleteSkillResult,
 	MAX_SKILL_BODY_LINES,
 	MAX_FILE_SIZE_BYTES,
 	MAX_DESCRIPTION_LENGTH,

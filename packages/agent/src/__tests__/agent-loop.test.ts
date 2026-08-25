@@ -6,17 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
+import type { BackendConfig, ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { EventMap } from "@bound/shared";
 import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import { z } from "zod";
 import {
-	AgentLoop,
 	ERROR_SIGNATURE_NUDGE_AT,
 	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
 	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
+	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
+	MainAgentLoop,
 } from "../agent-loop";
+import { zodToToolParams } from "../tools/tool-schema";
+import type { RegisteredTool } from "../types";
 import { VALID_TRANSITIONS } from "../types";
 
 // Mock LLM Backend that returns configurable responses
@@ -151,7 +155,7 @@ function createMockRouter(backend: LLMBackend): ModelRouter {
 	return new ModelRouter(backends, "claude-opus");
 }
 
-describe("AgentLoop", () => {
+describe("MainAgentLoop", () => {
 	let tmpDir: string;
 	let dbPath: string;
 	let db: Database;
@@ -182,7 +186,7 @@ describe("AgentLoop", () => {
 			// transient 5xx retry `continue`, while the prior state is still
 			// LLM_CALL. Without the self-loop the transition validator logs an
 			// "Invalid state transition" warning on every retry attempt — three
-			// times per exhausted server fault (observed live 2026-06-08,
+			// times per exhausted server fault (observed live against
 			// bedrock-mantle response.failed). The retry is legitimate; the
 			// table must model it.
 			expect(VALID_TRANSITIONS.LLM_CALL).toContain("LLM_CALL");
@@ -253,7 +257,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -276,7 +280,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -321,7 +325,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -346,10 +350,15 @@ describe("AgentLoop", () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setTextResponse("All good.");
 
-		const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createMockRouter(mockBackend), {
-			threadId,
-			userId: "test-user",
-		});
+		const agentLoop = new MainAgentLoop(
+			makeCtx(),
+			createMockSandbox(),
+			createMockRouter(mockBackend),
+			{
+				threadId,
+				userId: "test-user",
+			},
+		);
 
 		await agentLoop.run();
 
@@ -360,7 +369,7 @@ describe("AgentLoop", () => {
 	});
 
 	it("should fire onActivity for heartbeat chunks (regression: Bedrock stall)", async () => {
-		// Regression: thread b6a3ddba (2026-04-20/21) — Bedrock extended-thinking
+		// Regression, observed live — Bedrock extended-thinking
 		// warmup emitted heartbeat chunks with no text for >5min. The outer
 		// inactivity timer in message-handler.ts ticks only on onActivity, so a
 		// long warmup aborted mid-session. Fix: heartbeat chunks must reset the
@@ -399,7 +408,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			onActivity: () => {
@@ -433,7 +442,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -498,7 +507,7 @@ describe("AgentLoop", () => {
 			exitCode: 0,
 		}));
 
-		const agentLoop = new AgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -533,7 +542,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -601,7 +610,7 @@ describe("AgentLoop", () => {
 			exitCode: 0,
 		}));
 
-		const agentLoop = new AgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(makeCtx(), mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -637,7 +646,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -665,7 +674,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -684,7 +693,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -716,7 +725,7 @@ describe("AgentLoop", () => {
 		const noExecSandbox = {};
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, noExecSandbox, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, noExecSandbox, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -760,7 +769,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			abortSignal: controller.signal,
@@ -785,7 +794,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -848,7 +857,7 @@ describe("AgentLoop", () => {
 		}));
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -885,7 +894,7 @@ describe("AgentLoop", () => {
 		};
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -936,7 +945,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -948,27 +957,16 @@ describe("AgentLoop", () => {
 		expect(mockBash.calls[0]).toBe("cat file.txt");
 	});
 
-	it("should trigger silence timeout when LLM stalls without yielding chunks (R-W6)", async () => {
-		// Create a custom LLM backend that can trigger timeout
+	it("rejects a pending backend on an injected silence timeout and aborts its signal (R-W6)", async () => {
+		let observedAbort = false;
 		const stallBackend: LLMBackend = {
-			async *chat() {
-				yield { type: "text" as const, content: "Starting..." };
-				// Simulate stalling by waiting much longer than the 120s timeout
-				// In real usage, this would trigger the timeout. For the test, we verify
-				// the timeout mechanism is in place by checking the withSilenceTimeout wrapper
-				// exists and would reject after 120s.
-				await new Promise((resolve) => setTimeout(resolve, 130000));
-				// This line should never be reached in real timeout scenario
-				yield {
-					type: "done" as const,
-					usage: {
-						input_tokens: 5,
-						output_tokens: 3,
-						cache_write_tokens: null,
-						cache_read_tokens: null,
-						estimated: false,
-					},
-				};
+			async *chat(params) {
+				await new Promise<void>((resolve) => {
+					params.signal?.addEventListener("abort", () => {
+						observedAbort = true;
+						resolve();
+					});
+				});
 			},
 			capabilities() {
 				return {
@@ -982,66 +980,21 @@ describe("AgentLoop", () => {
 			},
 		};
 
-		const mockBash = createMockSandbox();
-		const ctx = makeCtx();
-
-		const _agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(stallBackend), {
-			threadId,
-			userId: "test-user",
-		});
-
-		// Note: This test would normally take 120+ seconds to run.
-		// For practical testing, we verify that:
-		// 1. The withSilenceTimeout wrapper exists in agent-loop.ts (line 105)
-		// 2. It correctly rejects with a timeout error after 120s
-		// 3. The error is caught and persisted as an alert
-
-		// Since running the full timeout is impractical in tests, we verify the error
-		// handling path by checking the code structure. In a real scenario, this would
-		// trigger after 120s of silence.
-
-		// For this test, we'll use a short timeout to verify the mechanism works
-		// by having the test runner timeout first, which proves the silence timeout
-		// would eventually fire.
-
-		// Instead, let's verify the mechanism exists by checking a fast-fail scenario
-		const fastBackend: LLMBackend = {
-			// biome-ignore lint/correctness/useYield: generator throws before yield
-			async *chat() {
-				// Immediately throw an error to simulate what happens after timeout
-				throw new Error("LLM silence timeout: no chunk received for 60000ms");
+		const agentLoop = new MainAgentLoop(
+			makeCtx(),
+			createMockSandbox(),
+			createMockRouter(stallBackend),
+			{
+				threadId,
+				userId: "test-user",
+				silenceTimeoutMs: 20,
 			},
-			capabilities() {
-				return {
-					streaming: true,
-					tool_use: true,
-					system_prompt: true,
-					prompt_caching: false,
-					vision: false,
-					max_context: 8000,
-				};
-			},
-		};
+		);
 
-		const agentLoop2 = new AgentLoop(ctx, mockBash, createMockRouter(fastBackend), {
-			threadId,
-			userId: "test-user",
-		});
+		const result = await agentLoop.run();
 
-		const result = await agentLoop2.run();
-
-		// Should have an error about silence timeout
-		expect(result.error).toBeDefined();
-		expect(result.error).toContain("silence timeout");
-		expect(result.error).toContain("60000ms");
-
-		// Verify the error was persisted as an alert
-		const alerts = db
-			.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'alert'")
-			.all(threadId) as Array<{ role: string; content: string }>;
-
-		expect(alerts.length).toBeGreaterThan(0);
-		expect(alerts[0].content).toContain("silence timeout");
+		expect(result.error).toContain("LLM silence timeout: no chunk received for 20ms");
+		expect(observedAbort).toBe(true);
 	});
 
 	it("should not timeout when LLM yields chunks regularly", async () => {
@@ -1069,7 +1022,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1161,7 +1114,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(capturingBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(capturingBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1200,7 +1153,7 @@ describe("AgentLoop", () => {
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1259,7 +1212,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1324,7 +1277,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1387,7 +1340,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1435,7 +1388,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1501,7 +1454,7 @@ describe("AgentLoop", () => {
 			},
 		} as unknown as AppContext;
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1525,7 +1478,7 @@ describe("AgentLoop", () => {
 		const ctx = makeCtx();
 
 		// AgentLoopConfig with NO modelId — forces resolution via ModelRouter default
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			// modelId intentionally omitted — simulates a scheduler task with no model_hint
@@ -1554,7 +1507,7 @@ describe("AgentLoop", () => {
 		const ctx = makeCtx();
 
 		// AgentLoopConfig with NO modelId — simulates scheduler/discord/mcp threads
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			// modelId intentionally omitted
@@ -1585,11 +1538,23 @@ describe("AgentLoop", () => {
 	it("records cache-path observability fields on context_debug", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setTextResponse("First response");
+		// The default MockLLMBackend.capabilities().max_context (8000) exactly
+		// equals DEFAULT_OUTPUT_TOKEN_RESERVE, which would zero out
+		// computeBaseTruncationTarget. Override with a roomier window so the
+		// assertion on truncationTargetTokens has something meaningful to check.
+		mockBackend.capabilities = () => ({
+			streaming: true,
+			tool_use: true,
+			system_prompt: true,
+			prompt_caching: false,
+			vision: false,
+			max_context: 200000,
+		});
 
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -1606,7 +1571,7 @@ describe("AgentLoop", () => {
 		const debug = JSON.parse(turn?.context_debug ?? "{}") as {
 			cachePath?: string;
 			cachePathReason?: string;
-			effectiveTruncationRatio?: number;
+			truncationTargetTokens?: number;
 			measuredInflation?: number | null;
 			warmCompactionTokensSaved?: number;
 		};
@@ -1619,15 +1584,16 @@ describe("AgentLoop", () => {
 		expect(debug.cachePath).toBe("cold");
 		expect(debug.cachePathReason).toBe("no-stored-state");
 
-		// Adaptive truncation ratio must surface even on cold-start threads
-		// (where measuredInflation is null and the resolver returns the base
-		// 0.85). On a thread where the EMA HAS collapsed to 0.4, the recorded
-		// 0.4 is the only signal that explains why warm-path budget bails fire
-		// 200k tokens earlier than the contextWindow would suggest.
-		expect(debug.effectiveTruncationRatio).toBeCloseTo(0.85, 5);
+		// The adaptive truncation target (contextWindow - maxOutputTokens,
+		// divided by the EMA) must surface even on cold-start threads (where
+		// measuredInflation is null and the resolver returns the unadjusted
+		// base target). On a thread where the EMA HAS collapsed, the recorded
+		// target is the only signal that explains why warm-path budget bails
+		// fire earlier than the raw contextWindow would suggest.
+		expect(debug.truncationTargetTokens).toBeGreaterThan(0);
 		// Cold-start threads have insufficient samples for the EMA. Recording
 		// `null` distinguishes "estimator is accurate" from "we don't know yet"
-		// — both surfaces would otherwise look identical at the base ratio.
+		// — both surfaces would otherwise look identical at the base target.
 		expect(debug.measuredInflation).toBeNull();
 
 		// warmCompactionTokensSaved is undefined on cold turns (it's only
@@ -1644,7 +1610,7 @@ describe("AgentLoop", () => {
 		const ctx = makeCtx();
 
 		// Router only knows "claude-opus" but we request "nonexistent-model"
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 			modelId: "nonexistent-model",
@@ -1688,7 +1654,7 @@ describe("AgentLoop", () => {
 		const tiers = new Map([["phi3", 1]]);
 		const router = new ModelRouter(backends, "phi3", undefined, tiers);
 
-		const agentLoop = new AgentLoop(ctx, mockBash, router, {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
 			threadId,
 			userId: "test-user",
 			modelId: "glm",
@@ -1734,7 +1700,7 @@ describe("AgentLoop", () => {
 		const tiers = new Map([["opus", 5]]);
 		const router = new ModelRouter(backends, "opus", undefined, tiers);
 
-		const agentLoop = new AgentLoop(ctx, mockBash, router, {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
 			threadId,
 			userId: "test-user",
 			modelId: "glm",
@@ -1788,7 +1754,7 @@ describe("AgentLoop", () => {
 		const router = new ModelRouter(backends, "deepseek", undefined, tiers);
 
 		const ctx = makeCtx();
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
 			threadId,
 			userId: "test-user",
 			// No modelId / modelTier — empty hint, resolves to default "deepseek".
@@ -1816,7 +1782,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1837,7 +1803,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1864,7 +1830,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1893,7 +1859,7 @@ describe("AgentLoop", () => {
 			};
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -1966,7 +1932,7 @@ describe("AgentLoop", () => {
 			}
 		};
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -2054,7 +2020,7 @@ describe("AgentLoop", () => {
 			}
 		};
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -2128,7 +2094,7 @@ describe("AgentLoop", () => {
 			}
 		};
 
-		const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 			threadId,
 			userId: "test-user",
 		});
@@ -2147,7 +2113,7 @@ describe("AgentLoop", () => {
 		const backend = new CaptureParamsBackend();
 		const router = new ModelRouter(new Map([["test-model", backend]]), "test-model");
 
-		const agentLoop = new AgentLoop(ctx, createMockSandbox(), router, {
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
 			threadId: localThreadId,
 			userId: "test-user",
 			modelId: "test-model",
@@ -2165,6 +2131,62 @@ describe("AgentLoop", () => {
 		expect(developerMsg?.content).toContain(localThreadId);
 		// system_suffix should no longer be passed
 		expect(params.system_suffix).toBeUndefined();
+	});
+
+	it("forces think on the actual local backend request after ten think-free tool calls", async () => {
+		const localThreadId = randomUUID();
+		const ctx = makeCtx();
+		const backend = new CaptureParamsBackend();
+		const backendId = "tool-mode-model";
+		const router = new ModelRouter(
+			new Map([[backendId, backend]]),
+			backendId,
+			undefined,
+			undefined,
+			new Map([
+				[
+					backendId,
+					{
+						id: backendId,
+						provider: "bedrock-mantle",
+						provider_mode: "openai_responses",
+						model: "openai.gpt-5.6-sol",
+						thinking: { type: "tool" },
+					} as BackendConfig,
+				],
+			]),
+		);
+
+		for (let i = 0; i < 10; i++) {
+			const createdAt = new Date(Date.now() - (10 - i) * 1000).toISOString();
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					randomUUID(),
+					localThreadId,
+					"tool_call",
+					JSON.stringify([{ type: "tool_use", id: `call_${i}`, name: "query", input: {} }]),
+					backendId,
+					null,
+					createdAt,
+					createdAt,
+					"local",
+					0,
+				],
+			);
+		}
+
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
+			threadId: localThreadId,
+			userId: "test-user",
+			modelId: backendId,
+		});
+
+		await agentLoop.run();
+
+		expect(backend.capturedParams).toHaveLength(1);
+		expect(backend.capturedParams[0].tool_choice).toEqual({ type: "tool", toolName: "think" });
+		expect(backend.capturedParams[0].tools?.map((tool) => tool.function.name)).toContain("think");
 	});
 
 	describe("context_debug freshness per turn", () => {
@@ -2214,7 +2236,7 @@ describe("AgentLoop", () => {
 			}));
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2275,7 +2297,7 @@ describe("AgentLoop", () => {
 			// non-cached scalar; the agent loop must add cache reads + writes
 			// back here to recover the true wire size for inflation purposes.
 			//
-			// Pre-2026-05-26 this test pinned the OLD broken contract — back
+			// This test previously pinned the OLD broken contract — back
 			// when the bridge accidentally read the AI SDK's summed scalar
 			// and the agent loop avoided adding cache fields back. The bridge
 			// is fixed; this contract reverses to "DO sum them back."
@@ -2296,7 +2318,7 @@ describe("AgentLoop", () => {
 			});
 
 			const ctx = makeCtx();
-			const agentLoop = new AgentLoop(
+			const agentLoop = new MainAgentLoop(
 				ctx,
 				createMockSandbox(() => ({ stdout: "", stderr: "", exitCode: 0 })),
 				createMockRouter(mockBackend),
@@ -2367,7 +2389,7 @@ describe("AgentLoop", () => {
 			// but aborts before relay stream timeout (which would take 120s)
 			setTimeout(() => controller.abort(), 10);
 
-			const agentLoop = new AgentLoop(makeCtx(), createMockSandbox(), createEmptyRouter(), {
+			const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), createEmptyRouter(), {
 				threadId,
 				userId: "test-user",
 				abortSignal: controller.signal,
@@ -2395,7 +2417,7 @@ describe("AgentLoop", () => {
 				infos.push(msg);
 			};
 
-			const agentLoop = new AgentLoop(ctx, createMockSandbox(), createEmptyRouter(), {
+			const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createEmptyRouter(), {
 				threadId,
 				userId: "test-user",
 				abortSignal: controller.signal,
@@ -2420,7 +2442,7 @@ describe("AgentLoop", () => {
 
 			// shouldYield returns true after the first LLM call (before tool execution)
 			let llmCallCount = 0;
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => {
@@ -2480,7 +2502,7 @@ describe("AgentLoop", () => {
 				}
 			};
 
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => chunksSeen >= 2, // yield after 2 text chunks
@@ -2500,7 +2522,7 @@ describe("AgentLoop", () => {
 
 			const sandbox = createMockSandbox();
 
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => false,
@@ -2518,7 +2540,7 @@ describe("AgentLoop", () => {
 
 			const sandbox = createMockSandbox();
 
-			const loop = new AgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
+			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
 				shouldYield: () => false,
@@ -2541,7 +2563,7 @@ describe("AgentLoop", () => {
 			const ctx = makeCtx();
 			// ctx has hostName: "test-host" and siteId: "test-site-id"
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2566,8 +2588,8 @@ describe("AgentLoop", () => {
 			const mockBackend = new MockLLMBackend();
 			// Push more identical, well-formed (non-truncated) tool_use turns than
 			// the threshold. Each turn issues the byte-identical bash call; the loop
-			// executes it, re-prompts, and pulls the next identical response. This is
-			// the 2026-04-24 synthesis spin reproduced: 20+ identical delta-check
+			// executes it, re-prompts, and pulls the next identical response. This
+			// reproduces an observed synthesis spin: 20+ identical delta-check
 			// queries that all PARSED CLEANLY — the truncation breaker cannot see
 			// them. Without the duplicate breaker the loop runs every pushed turn.
 			const overshoot = MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS + 3;
@@ -2596,7 +2618,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2663,7 +2685,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2683,8 +2705,8 @@ describe("AgentLoop", () => {
 	describe("error-result circuit breaker", () => {
 		it("aborts when consecutive turns return the byte-identical error despite varying args", async () => {
 			const mockBackend = new MockLLMBackend();
-			// Reproduces the 2026-06-12 connector-name-contamination spin (thread
-			// 53c7635e): the model emitted ~26 tool calls under a CONSTANT tool name
+			// Reproduces an observed connector-name-contamination spin: the model
+			// emitted ~26 tool calls under a CONSTANT tool name
 			// with DIFFERENT args each turn. The args differ, so the byte-identical
 			// CALL-signature breaker (MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS) keeps
 			// resetting and never fires. But every call returns the byte-identical
@@ -2718,7 +2740,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2748,6 +2770,106 @@ describe("AgentLoop", () => {
 				.all(threadId) as Array<{ content: string }>;
 			expect(nudges.length).toBe(1);
 			expect(ERROR_SIGNATURE_NUDGE_AT).toBeLessThan(MAX_CONSECUTIVE_ERROR_TOOL_CALLS);
+		});
+
+		it("aborts cross-tool routing-error loops earlier than the generic error breaker", async () => {
+			const mockBackend = new MockLLMBackend();
+			// Reproduces an observed connector-vs-skill spin: the model calls
+			// `connector` with `action: "activate"` (a `skill` action) over and over.
+			// suggestCorrectTool names `skill` from turn 1, but the model ignores it.
+			// The routing-error fuse must abort at MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS
+			// instead of letting the loop run to the generic 12-turn breaker.
+			const overshoot = MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS + 3;
+			for (let i = 0; i < overshoot; i++) {
+				mockBackend.pushResponse(async function* () {
+					yield { type: "tool_use_start" as const, id: `rerr-${i}`, name: "connector" };
+					yield {
+						type: "tool_use_args" as const,
+						id: `rerr-${i}`,
+						partial_json: JSON.stringify({ action: "activate" }),
+					};
+					yield { type: "tool_use_end" as const, id: `rerr-${i}` };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 15,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+					};
+				});
+			}
+
+			const toolRegistry = new Map<string, RegisteredTool>([
+				[
+					"connector",
+					{
+						kind: "builtin",
+						toolDefinition: {
+							type: "function",
+							function: {
+								name: "connector",
+								description: "Platform connector dispatcher",
+								parameters: zodToToolParams(
+									z.object({
+										action: z.enum(["list", "channels", "attach", "detach"]),
+									}),
+								),
+							},
+						},
+						execute: async () =>
+							`Error: invalid parameters for "connector": action: Invalid option.`,
+					},
+				],
+				[
+					"skill",
+					{
+						kind: "builtin",
+						toolDefinition: {
+							type: "function",
+							function: {
+								name: "skill",
+								description: "Skill manager",
+								parameters: zodToToolParams(
+									z.object({
+										action: z.enum(["activate", "deactivate"]),
+									}),
+								),
+							},
+						},
+						execute: async () => "ok",
+					},
+				],
+			]);
+
+			const mockBash = createMockSandbox();
+			const ctx = makeCtx();
+
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+				toolRegistry,
+			});
+
+			await agentLoop.run();
+
+			// The routing-error fuse short-circuits at its threshold, well before
+			// the generic 12-turn error breaker.
+			expect(mockBackend.getCallCount()).toBe(MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS);
+			expect(MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS).toBeLessThan(
+				MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
+			);
+
+			const aborts = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%cross-tool routing%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(aborts.length).toBe(1);
+			expect(aborts[0].content).toContain("Agent loop aborted");
+			expect(aborts[0].content).toContain("skill");
 		});
 
 		it("does NOT abort when the error differs each turn (progress through distinct failures)", async () => {
@@ -2795,7 +2917,7 @@ describe("AgentLoop", () => {
 			const mockBash = createMockSandbox();
 			const ctx = makeCtx();
 
-			const agentLoop = new AgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
 				threadId,
 				userId: "test-user",
 			});
@@ -2809,6 +2931,263 @@ describe("AgentLoop", () => {
 				)
 				.all(threadId) as Array<{ content: string }>;
 			expect(aborts.length).toBe(0);
+		});
+
+		describe("thinking persistence on final response", () => {
+			it("persists thinking blocks as ContentBlock[] JSON in RESPONSE_PERSIST", async () => {
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "Let me reason about this." };
+					yield { type: "text" as const, content: "The answer is 42." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 20,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				await agentLoop.run();
+
+				const msgs = db
+					.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ role: string; content: string }>;
+
+				expect(msgs.length).toBe(1);
+				const blocks = JSON.parse(msgs[0].content);
+				expect(Array.isArray(blocks)).toBe(true);
+				expect(blocks.length).toBe(2);
+				expect(blocks[0].type).toBe("thinking");
+				expect(blocks[0].thinking).toBe("Let me reason about this.");
+				expect(blocks[1].type).toBe("text");
+				expect(blocks[1].text).toBe("The answer is 42.");
+			});
+
+			it("does NOT silently persist a thinking-only turn — notifies and retries", async () => {
+				// A turn that emits only thinking and then stops (no text, no tool
+				// call) is degenerate: the model was cut off mid-reasoning (dropped
+				// stream or output-budget truncation). The loop must NOT silently
+				// persist it as a final response (the old behavior, which let dropped
+				// streams masquerade as completed turns). Instead it injects a
+				// developer notification and retries; here the retry produces a real
+				// answer.
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "Deep in thought..." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 20,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: "The answer is 42." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 10,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				const result = await agentLoop.run();
+
+				// The degenerate turn was retried, not accepted as final.
+				expect(mockBackend.getCallCount()).toBe(2);
+				expect(result.error).toBeUndefined();
+
+				// A developer notification was persisted for the model to read.
+				const devMsgs = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'developer'")
+					.all(threadId) as Array<{ content: string }>;
+				expect(devMsgs.some((m) => m.content.includes("no answer or tool call"))).toBe(true);
+
+				// The final assistant message is the retry's real answer — no
+				// thinking-only sentinel persisted. A text-only response (no thinking)
+				// persists as a plain string, not a JSON content-block array.
+				const assistantMsgs = db
+					.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ content: string }>;
+				expect(assistantMsgs.length).toBe(1);
+				expect(assistantMsgs[0].content).toBe("The answer is 42.");
+			});
+		});
+
+		describe("output token limit during thinking", () => {
+			it("notifies and retries when finishReason is 'length' during thinking", async () => {
+				const mockBackend = new MockLLMBackend();
+				// First call: thinking only, hit length limit
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "I need to think about..." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 16384,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "length" as const,
+					};
+				});
+				// Second call: thinking + text, succeeds
+				mockBackend.pushResponse(async function* () {
+					yield { type: "thinking" as const, content: "Now I have enough budget to finish." };
+					yield { type: "text" as const, content: "Here is the answer." };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 10,
+							output_tokens: 100,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "stop" as const,
+					};
+				});
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				const result = await agentLoop.run();
+
+				// Should have called the backend twice (retry + success)
+				expect(mockBackend.getCallCount()).toBe(2);
+				expect(result.error).toBeUndefined();
+
+				// Final persisted message should have thinking + text from the retry
+				const msgs = db
+					.query("SELECT role, content FROM messages WHERE thread_id = ? AND role = 'assistant'")
+					.all(threadId) as Array<{ role: string; content: string }>;
+
+				expect(msgs.length).toBe(1);
+				const blocks = JSON.parse(msgs[0].content);
+				expect(blocks[0].type).toBe("thinking");
+				expect(blocks[0].thinking).toBe("Now I have enough budget to finish.");
+				expect(blocks[1].type).toBe("text");
+				expect(blocks[1].text).toBe("Here is the answer.");
+			});
+
+			it("does not retry indefinitely — gives up after MAX_DEGENERATE_RETRIES", async () => {
+				const mockBackend = new MockLLMBackend();
+				// All calls hit length limit
+				for (let i = 0; i < 5; i++) {
+					mockBackend.pushResponse(async function* () {
+						yield { type: "thinking" as const, content: `Attempt ${i}` };
+						yield {
+							type: "done" as const,
+							usage: {
+								input_tokens: 10,
+								output_tokens: 16384,
+								cache_write_tokens: null,
+								cache_read_tokens: null,
+								estimated: false,
+							},
+							finish_reason: "length" as const,
+						};
+					});
+				}
+
+				const mockBash = createMockSandbox();
+				const ctx = makeCtx();
+
+				const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+					threadId,
+					userId: "test-user",
+				});
+
+				await agentLoop.run();
+
+				// Should retry MAX_DEGENERATE_RETRIES times, then exit
+				// 1 initial + 2 retries = 3 total calls
+				expect(mockBackend.getCallCount()).toBe(3);
+			});
+
+			it("records finishReason 'length' into context_debug when a final response is truncated", async () => {
+				// The silent case: text already streamed, then the output-token
+				// ceiling is hit. The thinking-retry guard does NOT fire (it
+				// requires no text), so the truncated response persists — this
+				// is what reaches the user as "streaming interrupted". The finish
+				// reason must be queryable from turns.context_debug afterward.
+				const mockBackend = new MockLLMBackend();
+				mockBackend.pushResponse(async function* () {
+					yield { type: "text" as const, content: "A long partial answer that got cut off" };
+					yield {
+						type: "done" as const,
+						usage: {
+							input_tokens: 17000,
+							output_tokens: 4096,
+							cache_write_tokens: null,
+							cache_read_tokens: null,
+							estimated: false,
+						},
+						finish_reason: "length" as const,
+					};
+				});
+
+				const agentLoop = new MainAgentLoop(
+					makeCtx(),
+					createMockSandbox(),
+					createMockRouter(mockBackend),
+					{
+						threadId,
+						userId: "test-user",
+					},
+				);
+
+				await agentLoop.run();
+
+				// No retry: a single backend call, response persisted as-is.
+				expect(mockBackend.getCallCount()).toBe(1);
+
+				const turn = db
+					.query(
+						"SELECT context_debug FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+					)
+					.get(threadId) as { context_debug: string | null };
+				expect(turn?.context_debug).toBeTruthy();
+				const debug = JSON.parse(turn.context_debug as string);
+				expect(debug.finishReason).toBe("length");
+			});
 		});
 	});
 });

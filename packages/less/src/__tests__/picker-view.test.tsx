@@ -179,3 +179,31 @@ describe("PickerView thread labels", () => {
 		expect(titleLineCount).toBe(1);
 	});
 });
+
+describe("PickerView model order", () => {
+	it("renders model IDs in ACP's descending lexical order", async () => {
+		const mockClient = {
+			listThreads: vi.fn(),
+			listModels: vi.fn().mockResolvedValue({
+				models: [
+					{ id: "claude-opus", host: "local", provider: "x", via: "local", status: "local" },
+					{ id: "gpt-5.6", host: "local", provider: "x", via: "local", status: "local" },
+					{ id: "fable", host: "local", provider: "x", via: "local", status: "local" },
+				],
+				default: "claude-opus",
+			}),
+		} as unknown as BoundClient;
+		const { lastFrame } = render(
+			React.createElement(PickerView, {
+				mode: "model",
+				client: mockClient,
+				onSelect: vi.fn(),
+				onCancel: vi.fn(),
+			}),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const frame = lastFrame() ?? "";
+		expect(frame.indexOf("gpt-5.6")).toBeLessThan(frame.indexOf("fable"));
+		expect(frame.indexOf("fable")).toBeLessThan(frame.indexOf("claude-opus"));
+	});
+});

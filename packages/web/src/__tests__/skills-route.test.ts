@@ -42,16 +42,15 @@ describe("Skills Route", () => {
 
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skill1Id,
 					"active-skill",
 					"An active skill",
-					"active",
 					"skills/active-skill",
 					"hash1",
 					null,
@@ -61,8 +60,6 @@ describe("Skills Route", () => {
 					null,
 					1,
 					null,
-					null,
-					null,
 					new Date().toISOString(),
 					0,
 				],
@@ -70,16 +67,15 @@ describe("Skills Route", () => {
 
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skill2Id,
 					"retired-skill",
 					"A retired skill",
-					"retired",
 					"skills/retired-skill",
 					"hash2",
 					null,
@@ -88,8 +84,6 @@ describe("Skills Route", () => {
 					null,
 					null,
 					0,
-					null,
-					"web",
 					null,
 					new Date().toISOString(),
 					0,
@@ -104,77 +98,6 @@ describe("Skills Route", () => {
 			expect(data.length).toBe(2);
 			expect(data.map((s) => s.name).sort()).toEqual(["active-skill", "retired-skill"]);
 		});
-
-		it("AC2.2: Filters by status=active", async () => {
-			const app = createSkillsRoutes(db);
-
-			// Insert two skills: one active, one retired
-			const skill1Id = randomUUID();
-			const skill2Id = randomUUID();
-
-			db.run(
-				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
-					allowed_tools, compatibility, metadata_json, activated_at,
-					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					skill1Id,
-					"active-skill",
-					"An active skill",
-					"active",
-					"skills/active-skill",
-					"hash1",
-					null,
-					null,
-					null,
-					new Date().toISOString(),
-					null,
-					1,
-					null,
-					null,
-					null,
-					new Date().toISOString(),
-					0,
-				],
-			);
-
-			db.run(
-				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
-					allowed_tools, compatibility, metadata_json, activated_at,
-					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					skill2Id,
-					"retired-skill",
-					"A retired skill",
-					"retired",
-					"skills/retired-skill",
-					"hash2",
-					null,
-					null,
-					null,
-					null,
-					null,
-					0,
-					null,
-					"web",
-					null,
-					new Date().toISOString(),
-					0,
-				],
-			);
-
-			const res = await app.request("/?status=active", { method: "GET" });
-			expect(res.status).toBe(200);
-
-			const data = (await res.json()) as Skill[];
-			expect(data.length).toBe(1);
-			expect(data[0].name).toBe("active-skill");
-		});
 	});
 
 	describe("GET /:id - Get skill detail", () => {
@@ -186,16 +109,15 @@ describe("Skills Route", () => {
 			// Insert skill
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					"test-skill",
 					"A test skill",
-					"active",
 					"skills/test-skill",
 					"hash123",
 					null,
@@ -204,8 +126,6 @@ describe("Skills Route", () => {
 					new Date().toISOString(),
 					null,
 					1,
-					null,
-					null,
 					null,
 					new Date().toISOString(),
 					0,
@@ -476,16 +396,15 @@ This is from a zip.`;
 		function insertTestSkill(skillId: string, name: string, skillRoot: string): void {
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
 					name,
 					"Original description",
-					"active",
 					skillRoot,
 					"originalhash",
 					"tool1",
@@ -494,8 +413,6 @@ This is from a zip.`;
 					new Date().toISOString(),
 					null,
 					1,
-					null,
-					null,
 					null,
 					new Date().toISOString(),
 					0,
@@ -630,8 +547,8 @@ This is from a zip.`;
 		});
 	});
 
-	describe("POST /:id/retire - Retire skill", () => {
-		it("AC2.7: Retires an active skill", async () => {
+	describe("DELETE /:id - Delete skill", () => {
+		it("AC2.7: Soft-deletes a skill (any status) and its files, returns 204", async () => {
 			const app = createSkillsRoutes(db);
 
 			const skillId = randomUUID();
@@ -639,17 +556,16 @@ This is from a zip.`;
 			// Insert active skill
 			db.run(
 				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
+					id, name, description, skill_root, content_hash,
 					allowed_tools, compatibility, metadata_json, activated_at,
 					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					modified_at, deleted
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					skillId,
-					"to-retire",
-					"A skill to retire",
-					"active",
-					"skills/to-retire",
+					"to-delete",
+					"A skill to delete",
+					"/home/user/skills/to-delete",
 					"hash123",
 					null,
 					null,
@@ -658,119 +574,46 @@ This is from a zip.`;
 					null,
 					1,
 					null,
-					null,
-					null,
+					new Date().toISOString(),
+					0,
+				],
+			);
+			const skillMdPath = "/home/user/skills/to-delete/SKILL.md";
+			db.run(
+				`INSERT INTO files (id, path, content, is_binary, size_bytes, created_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					skillMdPath,
+					skillMdPath,
+					"body",
+					0,
+					4,
+					new Date().toISOString(),
 					new Date().toISOString(),
 					0,
 				],
 			);
 
-			const res = await app.request(`/${skillId}/retire`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ reason: "No longer needed" }),
-			});
+			const res = await app.request(`/${skillId}`, { method: "DELETE" });
 
-			expect(res.status).toBe(200);
+			expect(res.status).toBe(204);
 
-			const data = (await res.json()) as { skill: Skill };
-			expect(data.skill.status).toBe("retired");
-			expect(data.skill.retired_by).toBe("web");
-			expect(data.skill.retired_reason).toBe("No longer needed");
+			const skill = db.query("SELECT deleted FROM skills WHERE id = ?").get(skillId) as {
+				deleted: number;
+			};
+			expect(skill.deleted).toBe(1);
+
+			const file = db.query("SELECT deleted FROM files WHERE id = ?").get(skillMdPath) as {
+				deleted: number;
+			};
+			expect(file.deleted).toBe(1);
 		});
 
 		it("AC2.9: Returns 404 for non-existent skill", async () => {
 			const app = createSkillsRoutes(db);
 			const fakeId = randomUUID();
 
-			const res = await app.request(`/${fakeId}/retire`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			});
-
-			expect(res.status).toBe(404);
-
-			const data = (await res.json()) as { error: string };
-			expect(data.error).toBe("Skill not found");
-		});
-	});
-
-	describe("POST /:id/activate - Activate skill", () => {
-		it("AC2.8: Re-activates a retired skill", async () => {
-			const app = createSkillsRoutes(db);
-
-			const skillId = randomUUID();
-
-			// Insert retired skill
-			db.run(
-				`INSERT INTO skills (
-					id, name, description, status, skill_root, content_hash,
-					allowed_tools, compatibility, metadata_json, activated_at,
-					created_by_thread, activation_count, last_activated_at,
-					retired_by, retired_reason, modified_at, deleted
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					skillId,
-					"to-activate",
-					"A skill to activate",
-					"retired",
-					"/home/user/skills/to-activate",
-					"hash123",
-					null,
-					null,
-					null,
-					null,
-					null,
-					0,
-					null,
-					"web",
-					"testing",
-					new Date().toISOString(),
-					0,
-				],
-			);
-
-			// Insert skill files
-			const skillMdContent = `---
-name: to-activate
-description: A skill to activate
----
-# Test`;
-
-			const fileId1 = randomUUID();
-			db.run(
-				`INSERT INTO files (id, path, size_bytes, content, created_at, modified_at, deleted)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				[
-					fileId1,
-					"/home/user/skills/to-activate/SKILL.md",
-					skillMdContent.length,
-					skillMdContent,
-					new Date().toISOString(),
-					new Date().toISOString(),
-					0,
-				],
-			);
-
-			const res = await app.request(`/${skillId}/activate`, {
-				method: "POST",
-			});
-
-			expect(res.status).toBe(200);
-
-			const data = (await res.json()) as { skill: Skill };
-			expect(data.skill.status).toBe("active");
-			expect(data.skill.activation_count).toBeGreaterThan(0);
-		});
-
-		it("AC2.10: Returns 404 for non-existent skill", async () => {
-			const app = createSkillsRoutes(db);
-			const fakeId = randomUUID();
-
-			const res = await app.request(`/${fakeId}/activate`, {
-				method: "POST",
-			});
+			const res = await app.request(`/${fakeId}`, { method: "DELETE" });
 
 			expect(res.status).toBe(404);
 

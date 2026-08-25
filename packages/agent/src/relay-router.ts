@@ -18,8 +18,12 @@ export interface EligibleHost {
 		vision?: boolean;
 		max_context?: number;
 	};
+	/** Per-response output-token ceiling from the matching HostModelEntry. */
+	maxOutputTokens?: number;
 	/** Tier preference (lower = preferred). Present for verified hosts only. */
 	tier?: number;
+	/** Bound-side reasoning transport advertised by the serving host. */
+	thinkingMode?: "tool";
 	/**
 	 * Whether this host entry was parsed from legacy string format (no metadata).
 	 * Unverified hosts are used as fallback when no verified match exists.
@@ -179,7 +183,9 @@ export function findEligibleHostsByModel(
 					online_at: row.online_at,
 					modified_at: row.modified_at,
 					capabilities: hostEntry.capabilities,
+					maxOutputTokens: hostEntry.max_output_tokens,
 					tier: hostEntry.tier,
+					thinkingMode: hostEntry.thinking_mode,
 					unverified: false,
 				};
 
@@ -291,7 +297,9 @@ export function findAnyRemoteModel(
 						: null;
 			if (!modelId) continue;
 
-			const tier = entry && typeof entry === "object" ? ((entry as HostModelEntry).tier ?? 99) : 99;
+			const hostEntry = entry && typeof entry === "object" ? (entry as HostModelEntry) : undefined;
+			const tier = hostEntry?.tier ?? 99;
+			const capabilities = hostEntry?.capabilities;
 
 			candidates.push({
 				site_id: row.site_id,
@@ -300,6 +308,9 @@ export function findAnyRemoteModel(
 				online_at: row.online_at,
 				modified_at: row.modified_at,
 				tier,
+				capabilities,
+				maxOutputTokens: hostEntry?.max_output_tokens,
+				thinkingMode: hostEntry?.thinking_mode,
 				modelId,
 			});
 		}
@@ -333,6 +344,9 @@ export function findAnyRemoteModel(
 				online_at: best.online_at,
 				modified_at: best.modified_at,
 				tier: best.tier,
+				capabilities: best.capabilities,
+				maxOutputTokens: best.maxOutputTokens,
+				thinkingMode: best.thinkingMode,
 			},
 		],
 		modelId: best.modelId,

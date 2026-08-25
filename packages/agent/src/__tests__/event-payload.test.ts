@@ -6,11 +6,10 @@ import type { Task } from "@bound/shared";
 import { buildEventWakeupContent } from "../event-payload";
 
 /**
- * Reproduces the bug observed on 2026-05-18: webhook fires for thread
- * d0372be6 → task wakes up with developer="[Task wakeup] Scheduled event
- * task X triggered." and tool_result body="Execute scheduled task." —
- * the relay_inbox envelope written by webhook-handler.ts never reaches
- * the agent context.
+ * Reproduces an observed bug: webhook fires for a thread and the task
+ * wakes up with developer="[Task wakeup] Scheduled event task X triggered."
+ * and tool_result body="Execute scheduled task." — the relay_inbox envelope
+ * written by webhook-handler.ts never reaches the agent context.
  */
 describe("buildEventWakeupContent", () => {
 	let db: Database;
@@ -66,7 +65,7 @@ describe("buildEventWakeupContent", () => {
 		threadId: string,
 		body: string,
 		receivedAt: string,
-		kind: "webhook_intake" | "intake" = "webhook_intake",
+		kind: "webhook_intake" | "intake" | "connector_intake" = "webhook_intake",
 	): string {
 		const id = randomUUID();
 		insertInbox(db, {
@@ -286,6 +285,67 @@ describe("buildEventWakeupContent", () => {
 		// intake row stays processed=0 for the relay-processor to handle on
 		// its own dispatch path.
 		expect(result.processedIds.length).toBe(1);
+	});
+
+	test("folds a connector_intake row into the wakeup (Discord push events)", () => {
+		// Connector push events (Discord) land as a connector_intake relay row,
+		// mirroring the webhook_intake path. Without folding, the connector
+		// event task woke with only its bare static payload ({handle_id,
+		// server_name}) and the triggering message sat in a separate developer
+		// message the model had to correlate — losing attention to any stale
+		// imperatives already in thread history.
+		const threadId = randomUUID();
+		const batch = JSON.stringify([
+			{
+				author: { id: "128", username: "karashiiro" },
+				channel_id: "550910482194890787",
+				content: "testing receive",
+				message_id: "1524579562728591382",
+			},
+		]);
+		const inboxId = insertEnvelope(threadId, batch, "2026-07-09T00:54:55Z", "connector_intake");
+
+		const task = makeTask({
+			thread_id: threadId,
+			trigger_spec: "connector:event:9380eb6c",
+			// The bare static payload that used to be all the model saw.
+			payload: JSON.stringify({ handle_id: "9380eb6c", server_name: "discord" }),
+		});
+		const result = buildEventWakeupContent(db, task);
+
+		// The triggering message is now in the wakeup itself.
+		expect(result.content).toContain("testing receive");
+		expect(result.content).toContain("connector:event:9380eb6c");
+		expect(result.content).toContain("karashiiro");
+		expect(result.processedIds).toEqual([inboxId]);
+	});
+
+	test("folds webhook_intake and connector_intake together, ignoring stray intake rows", () => {
+		const threadId = randomUUID();
+		insertEnvelope(threadId, "platform-mcp-payload", "2026-07-09T00:00:00Z", "intake");
+		const connectorId = insertEnvelope(
+			threadId,
+			"connector-body",
+			"2026-07-09T00:01:00Z",
+			"connector_intake",
+		);
+		const webhookId = insertEnvelope(
+			threadId,
+			"webhook-body",
+			"2026-07-09T00:02:00Z",
+			"webhook_intake",
+		);
+
+		const task = makeTask({ thread_id: threadId, trigger_spec: "connector:event:h1" });
+		const result = buildEventWakeupContent(db, task);
+
+		expect(result.content).toContain("connector-body");
+		expect(result.content).toContain("webhook-body");
+		expect(result.content).not.toContain("platform-mcp-payload");
+		expect(result.content.indexOf("connector-body")).toBeLessThan(
+			result.content.indexOf("webhook-body"),
+		);
+		expect(result.processedIds).toEqual([connectorId, webhookId]);
 	});
 
 	test("inlines a JSON request body so the envelope isn't double-escaped (#177)", () => {

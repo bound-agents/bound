@@ -17,7 +17,7 @@ import {
 	buildAnthropicSystemMessage,
 	hasAnthropicMessageCacheControl,
 	shouldEnableAnthropicSystemCacheControl,
-} from "../anthropic-driver";
+} from "../drivers/anthropic";
 
 describe("buildAnthropicReasoningOptions", () => {
 	it("returns undefined when neither thinking nor effort is set", () => {
@@ -97,9 +97,7 @@ describe("buildAnthropicSystemMessage", () => {
 
 describe("hasAnthropicMessageCacheControl", () => {
 	it("is false when no message carries an anthropic cacheControl", () => {
-		expect(
-			hasAnthropicMessageCacheControl([{ role: "user", content: "hi" }]),
-		).toBe(false);
+		expect(hasAnthropicMessageCacheControl([{ role: "user", content: "hi" }])).toBe(false);
 	});
 
 	it("is true when a message carries providerOptions.anthropic.cacheControl", () => {
@@ -129,9 +127,9 @@ describe("hasAnthropicMessageCacheControl", () => {
 
 describe("shouldEnableAnthropicSystemCacheControl", () => {
 	it("enables when cache_ttl is set, regardless of message markers", () => {
-		expect(
-			shouldEnableAnthropicSystemCacheControl({ cacheTtl: "5m", bridgeMessages: [] }),
-		).toBe(true);
+		expect(shouldEnableAnthropicSystemCacheControl({ cacheTtl: "5m", bridgeMessages: [] })).toBe(
+			true,
+		);
 	});
 
 	it("falls back to message-level marker presence when cache_ttl is unset", () => {

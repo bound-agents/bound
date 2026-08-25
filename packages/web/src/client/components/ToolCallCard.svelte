@@ -1,9 +1,12 @@
 <script lang="ts">
 import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
 import { untrack } from "svelte";
+import { extractAuxInvokeRefs } from "../lib/aux-invoke-cards";
 import { renderMarkdown } from "../lib/markdown";
 import { mermaid } from "../lib/mermaid";
 import { extractScheduledTaskRefs } from "../lib/scheduled-task-cards";
+import { type ToolUseBlock, parseToolCallContent } from "../lib/tool-call-content";
+import AuxInvokeCard from "./AuxInvokeCard.svelte";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 import TaskCard from "./TaskCard.svelte";
 
@@ -23,43 +26,11 @@ import TaskCard from "./TaskCard.svelte";
 //     tool_use rows, so the thought that preceded each tool stays
 //     attached to the tool.
 
-interface ToolUseBlock {
-	type: "tool_use";
-	id: string;
-	name: string;
-	input: unknown;
-}
-
-interface ThinkingContentBlock {
-	type: "thinking";
-	thinking: string;
-	signature?: string;
-	redacted_data?: string;
-}
-
-interface TextContentBlock {
-	type: "text";
-	text: string;
-}
-
-type Block =
-	| ThinkingContentBlock
-	| TextContentBlock
-	| ToolUseBlock
-	| { type: string; [k: string]: unknown };
-
-interface ParsedMessage {
-	thinkingText: string;
-	redactedThinking: boolean;
-	inlineText: string;
-	toolUses: ToolUseBlock[];
-	raw: string | null;
-}
-
 interface ToolResultMsg {
 	content: string;
 	exit_code?: number | null;
 	tool_name?: string | null;
+	metadata?: string | Record<string, unknown> | null;
 }
 
 interface ToolMessage {
@@ -77,35 +48,7 @@ interface Props {
 
 const { messages, resultsByToolUseId = {}, lineColor = "var(--rule-soft)" }: Props = $props();
 
-function parseBlocks(raw: string): ParsedMessage {
-	try {
-		const blocks = JSON.parse(raw) as Block[];
-		if (!Array.isArray(blocks)) {
-			return { thinkingText: "", redactedThinking: false, inlineText: "", toolUses: [], raw };
-		}
-		let thinkingText = "";
-		let redactedThinking = false;
-		let inlineText = "";
-		const toolUses: ToolUseBlock[] = [];
-		for (const block of blocks) {
-			if (block.type === "thinking") {
-				const tb = block as ThinkingContentBlock;
-				if (tb.thinking) thinkingText += tb.thinking;
-				if (tb.redacted_data) redactedThinking = true;
-			} else if (block.type === "text") {
-				const text = (block as TextContentBlock).text;
-				if (text) inlineText += (inlineText ? "\n\n" : "") + text;
-			} else if (block.type === "tool_use") {
-				toolUses.push(block as ToolUseBlock);
-			}
-		}
-		return { thinkingText, redactedThinking, inlineText, toolUses, raw: null };
-	} catch {
-		return { thinkingText: "", redactedThinking: false, inlineText: "", toolUses: [], raw };
-	}
-}
-
-const parsedMessages = $derived(messages.map((m) => parseBlocks(m.content)));
+const parsedMessages = $derived(messages.map((m) => parseToolCallContent(m.content)));
 const firstParsed = $derived(parsedMessages[0]);
 // Use the first non-null model_id in the group rather than messages[0].
 // When a turn starts with a system-injected synthetic tool_call (typically
@@ -118,6 +61,7 @@ const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null)
 const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
 const totalCount = $derived(allToolUses.length);
 const scheduledTaskRefs = $derived(extractScheduledTaskRefs(allToolUses, resultsByToolUseId));
+const auxInvokeRefs = $derived(extractAuxInvokeRefs(allToolUses, resultsByToolUseId));
 
 const summaryNames = $derived.by(() => {
 	const names = allToolUses.map((t) => t.name);
@@ -234,6 +178,19 @@ function previewInput(input: unknown): string {
 		<div class="scheduled-tasks">
 			{#each scheduledTaskRefs as ref (ref.toolUseId)}
 				<TaskCard taskId={ref.taskId} {lineColor} />
+			{/each}
+		</div>
+	{/if}
+
+	{#if auxInvokeRefs.length > 0}
+		<div class="aux-invokes">
+			{#each auxInvokeRefs as ref (ref.toolUseId)}
+				<AuxInvokeCard
+					agentName={ref.agentName}
+					threadId={ref.threadId}
+					status={ref.status}
+					{lineColor}
+				/>
 			{/each}
 		</div>
 	{/if}

@@ -7,14 +7,12 @@ import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
 import SkillCreateModal from "../components/SkillCreateModal.svelte";
 import SkillEditModal from "../components/SkillEditModal.svelte";
-import StatusChip from "../components/StatusChip.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
 import { mermaid } from "../lib/mermaid";
 
 let skills: Skill[] = $state([]);
 let loading = $state(true);
-let statusFilter = $state<"all" | "active" | "retired">("all");
 let expandedId = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 let showCreateModal = $state(false);
@@ -28,16 +26,10 @@ let renderedContent = $state<Record<string, string>>({});
 let contentLoading = $state<string | null>(null);
 
 let actionInProgress = $state<string | null>(null);
-let retireReason = $state<Record<string, string>>({});
-let showRetireInput = $state<Record<string, boolean>>({});
-
-const filteredSkills = $derived(
-	statusFilter === "all" ? skills : skills.filter((s) => s.status === statusFilter),
-);
+let showDeleteConfirm = $state<Record<string, boolean>>({});
 
 const columns = [
 	{ key: "name", label: "Name", width: "200px", sortable: true },
-	{ key: "status", label: "Status", width: "100px", sortable: true },
 	{ key: "description", label: "Description", width: "1fr" },
 	{ key: "last_activated_at", label: "Last Activated", width: "180px", sortable: true },
 ];
@@ -66,30 +58,18 @@ async function loadSkillDetail(id: string): Promise<void> {
 	contentLoading = null;
 }
 
-async function retireSkill(id: string): Promise<void> {
-	actionInProgress = `${id}:retire`;
+async function deleteSkill(id: string): Promise<void> {
+	actionInProgress = `${id}:delete`;
 	try {
-		await client.retireSkill(id, retireReason[id] || undefined);
-		retireReason = { ...retireReason, [id]: "" };
-		showRetireInput = { ...showRetireInput, [id]: false };
-		await loadSkills();
-	} catch (error) {
-		console.error("Failed to retire skill:", error);
-	}
-	actionInProgress = null;
-}
-
-async function activateSkill(id: string): Promise<void> {
-	actionInProgress = `${id}:activate`;
-	try {
-		await client.activateSkill(id);
-		// Clear cached detail so it reloads with fresh data
+		await client.deleteSkill(id);
+		showDeleteConfirm = { ...showDeleteConfirm, [id]: false };
+		if (expandedId === id) expandedId = null;
 		const newDetail = { ...skillDetail };
 		delete newDetail[id];
 		skillDetail = newDetail;
 		await loadSkills();
 	} catch (error) {
-		console.error("Failed to activate skill:", error);
+		console.error("Failed to delete skill:", error);
 	}
 	actionInProgress = null;
 }
@@ -117,12 +97,6 @@ function onEditSaved(): void {
 		renderedContent = newRendered;
 	}
 	loadSkills();
-}
-
-function getRowAccent(row: Record<string, unknown>): string | null {
-	if (row.status === "active") return "var(--ok)";
-	if (row.status === "retired") return "var(--text-dim)";
-	return null;
 }
 
 function formatBytes(bytes: number): string {
@@ -165,41 +139,16 @@ $effect.pre(() => {
 				<p>Loading skills…</p>
 			</div>
 		{:else}
-			<div class="filter-bar">
-				<button
-					class="filter-btn"
-					class:active={statusFilter === "all"}
-					onclick={() => (statusFilter = "all")}
-				>
-					All
-				</button>
-				<button
-					class="filter-btn"
-					class:active={statusFilter === "active"}
-					onclick={() => (statusFilter = "active")}
-				>
-					Active
-				</button>
-				<button
-					class="filter-btn"
-					class:active={statusFilter === "retired"}
-					onclick={() => (statusFilter = "retired")}
-				>
-					Retired
-				</button>
-			</div>
-
-			{#if filteredSkills.length === 0}
+			{#if skills.length === 0}
 				<div class="state">
 					<p>No skills found.</p>
 				</div>
 			{:else}
 				<DataTable
 					{columns}
-					rows={filteredSkills}
+					rows={skills}
 					expandable={true}
 					sortable={true}
-					rowAccent={getRowAccent}
 					onRowClick={(row) => {
 						const id = String(row.id ?? "");
 						if (expandedId === id) {
@@ -241,8 +190,6 @@ $effect.pre(() => {
 	{@const isLoading = contentLoading === (skill.id as string)}
 	<div class="skill-detail">
 		<div class="skill-meta">
-			<dt>Status</dt>
-			<dd><StatusChip status={skill.status} /></dd>
 			<dt>Tools</dt>
 			<dd>{skill.allowed_tools || "—"}</dd>
 			<dt>Compatibility</dt>
@@ -282,39 +229,32 @@ $effect.pre(() => {
 			>
 				Edit
 			</Btn>
-			{#if skill.status === "active"}
-				{#if showRetireInput[skill.id as string]}
-					<input
-						type="text"
-						bind:value={retireReason[skill.id as string]}
-						placeholder="Reason (optional)"
-					/>
-					<Btn
-						size="sm"
-						variant="danger"
-						disabled={actionInProgress === `${skill.id}:retire`}
-						onclick={() => retireSkill(skill.id as string)}
-					>
-						Confirm Retire
-					</Btn>
-				{:else}
-					<Btn
-						size="sm"
-						onclick={() => {
-							showRetireInput = { ...showRetireInput, [skill.id as string]: true };
-						}}
-					>
-						Retire
-					</Btn>
-				{/if}
-			{:else if skill.status === "retired"}
+			{#if showDeleteConfirm[skill.id as string]}
 				<Btn
 					size="sm"
-					variant="accent"
-					disabled={actionInProgress === `${skill.id}:activate`}
-					onclick={() => activateSkill(skill.id as string)}
+					variant="danger"
+					disabled={actionInProgress === `${skill.id}:delete`}
+					onclick={() => deleteSkill(skill.id as string)}
 				>
-					Re-activate
+					Confirm Delete
+				</Btn>
+				<Btn
+					size="sm"
+					onclick={() => {
+						showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: false };
+					}}
+				>
+					Cancel
+				</Btn>
+			{:else}
+				<Btn
+					size="sm"
+					variant="danger"
+					onclick={() => {
+						showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: true };
+					}}
+				>
+					Delete
 				</Btn>
 			{/if}
 		</div>
@@ -326,37 +266,6 @@ $effect.pre(() => {
 		padding: 40px 16px;
 		text-align: center;
 		color: var(--text-dim);
-	}
-
-	.filter-bar {
-		display: flex;
-		gap: 8px;
-		margin-bottom: 16px;
-		padding-bottom: 12px;
-		border-bottom: 1px solid var(--rule-soft);
-	}
-
-	.filter-btn {
-		padding: 6px 12px;
-		background: var(--paper);
-		border: 1px solid var(--rule-soft);
-		color: var(--ink-2);
-		font-family: var(--font-display);
-		font-size: 12px;
-		font-weight: 500;
-		cursor: pointer;
-		border-radius: 0;
-		transition: background 0.2s, border-color 0.2s;
-	}
-
-	.filter-btn:hover {
-		background: var(--paper-2);
-	}
-
-	.filter-btn.active {
-		background: var(--accent);
-		color: #fff;
-		border-color: var(--accent);
 	}
 
 	.skill-detail {

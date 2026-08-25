@@ -1,10 +1,11 @@
 import { escapeXmlAttr } from "@bound/shared";
 import {
 	BUDGET_PRESSURE_SUBSYSTEM_CAP,
-	DELTA_MARKER,
 	LIVE_STATE_FOOTER,
+	RELEVANT_MEMORY_FOOTER,
 	RELEVANT_MEMORY_HEADER,
 	STALE_CHILD_GLOSS_MAX,
+	WORKING_KNOWLEDGE_UPDATES_FOOTER,
 	WORKING_KNOWLEDGE_UPDATES_HEADER,
 	relativeTimeAt,
 	truncateGloss,
@@ -37,7 +38,7 @@ export function composeVolatileVarying(inputs: VolatileVaryingInputs): string[] 
 }
 
 /**
- * Render the `## Working Knowledge — updates` block. Mirrors
+ * Render the `<working-knowledge-updates>` block. Mirrors
  * `renderWorkingKnowledge`'s `varyingLines` channel byte-for-byte.
  *
  * Empty when no pinned/summary deltas exist AND no stale children
@@ -55,16 +56,15 @@ function renderWorkingKnowledgeUpdates(updates: WorkingKnowledgeUpdatesView): st
 	if (!hasAnyMarker) return out;
 
 	out.push(WORKING_KNOWLEDGE_UPDATES_HEADER);
-	out.push("");
 
 	// R-VC11(b): pinned delta keyed reference (body lives in stable).
 	for (const key of updates.pinnedDeltaKeys) {
-		out.push(`- ${key} ${DELTA_MARKER}`);
+		out.push(`<memory key="${escapeXmlAttr(key)}" tier="pinned" changed="true"/>`);
 	}
 
 	// R-VC11(a): summary delta keyed reference.
 	for (const key of updates.summaryDeltaKeys) {
-		out.push(`- ${key} ${DELTA_MARKER}`);
+		out.push(`<memory key="${escapeXmlAttr(key)}" tier="summary" changed="true"/>`);
 	}
 
 	// R-VC10/R-VC11(c): stale children referenced under their parent.
@@ -73,21 +73,23 @@ function renderWorkingKnowledgeUpdates(updates: WorkingKnowledgeUpdatesView): st
 	for (const summary of updates.summariesWithStaleChildren) {
 		for (const child of summary.staleChildren) {
 			const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
-			const staleMarker = `[stale child of ${summary.summaryKey}]`;
-			const childDelta = child.isDelta ? ` ${DELTA_MARKER}` : "";
-			out.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+			out.push(
+				`<memory key="${escapeXmlAttr(child.key)}" parent="${escapeXmlAttr(summary.summaryKey)}" stale="true" changed="${child.isDelta}">${escapeXmlAttr(childGloss)}</memory>`,
+			);
 		}
 	}
+
+	out.push(WORKING_KNOWLEDGE_UPDATES_FOOTER);
 
 	return out;
 }
 
 /**
- * Render the R-VC27 `## Relevant memory — matched to this turn` block. Empty
- * when the input array is empty (the production code path elides the header in
- * that case). Entries arrive PRE-SELECTED (dedup against the full-body stable
- * prefix + BOUND_VC27_K cap happen upstream in `selectRelevantMemory`); this
- * renderer only title-only formats them.
+ * Render the R-VC27 `<relevant-memory>` block. Empty when the input array is
+ * empty (the production code path elides the element in that case). Entries
+ * arrive PRE-SELECTED (dedup against the full-body stable prefix +
+ * BOUND_VC27_K cap happen upstream in `selectRelevantMemory`); this renderer
+ * only title-only formats them.
  */
 function renderRecentMemoryBlock(
 	entries: ReadonlyArray<RecentMemoryEntryView>,
@@ -98,16 +100,16 @@ function renderRecentMemoryBlock(
 	const out: string[] = [];
 	out.push("");
 	out.push(RELEVANT_MEMORY_HEADER);
-	out.push("");
 	for (const entry of entries) {
 		out.push(formatRecentMemoryLine(entry, nowMs));
 	}
+	out.push(RELEVANT_MEMORY_FOOTER);
 	return out;
 }
 
 /**
- * Title-only line mirroring `formatRelevantMemoryTitleLine` in
- * `summary-extraction.ts`: `- {key} [{tier}] ({relTime})`. Renders the entry's
+ * Title-only element mirroring `formatRelevantMemoryTitleLine` in
+ * `summary-extraction.ts`: `<memory key tier age/>`. Renders the entry's
  * actual tier (`forgotten` if soft-deleted), NOT its retrieval-stage tag. Must
  * stay byte-equivalent or the parity regression test fails — uses the
  * `nowMs`-injected relative-time variant; production uses wall-clock
@@ -115,7 +117,7 @@ function renderRecentMemoryBlock(
  */
 function formatRecentMemoryLine(entry: RecentMemoryEntryView, nowMs: number): string {
 	const tierTag = entry.deleted ? "forgotten" : entry.tier;
-	return `- ${entry.key} [${tierTag}] (${relativeTimeAt(entry.modifiedAt, nowMs)})`;
+	return `<memory key="${escapeXmlAttr(entry.key)}" tier="${escapeXmlAttr(tierTag)}" age="${escapeXmlAttr(relativeTimeAt(entry.modifiedAt, nowMs))}"/>`;
 }
 
 /**
@@ -165,7 +167,7 @@ function renderLiveStateBlock(
 
 function renderCrossThreadLine(e: CrossThreadEntryView): string {
 	return (
-		`<thread title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
+		`<thread id="${escapeXmlAttr(e.threadId)}" title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
 		` updated="${escapeXmlAttr(e.lastUpdatedAt)}" local="false"/>`
 	);
 }
@@ -189,5 +191,5 @@ function renderFileLine(f: FileEntryView): string {
 }
 
 function renderAdvisoryLine(a: AdvisoryEntryView, nowMs: number): string {
-	return `<advisory title="${escapeXmlAttr(a.title)}" applied="${escapeXmlAttr(relativeTimeAt(a.appliedAt, nowMs))}"/>`;
+	return `<advisory id="${escapeXmlAttr(a.advisoryId)}" title="${escapeXmlAttr(a.title)}" applied="${escapeXmlAttr(relativeTimeAt(a.appliedAt, nowMs))}"/>`;
 }

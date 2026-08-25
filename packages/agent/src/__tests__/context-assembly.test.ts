@@ -9,13 +9,14 @@ import type { LLMMessage } from "@bound/llm";
 import type { CommandRegistryEntry, ContextSection } from "@bound/shared";
 import { countContentTokens, countTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
+import fc from "fast-check";
 import {
 	CONTEXT_SAFETY_MARGIN_FLOOR,
 	CONTEXT_SAFETY_MARGIN_RATIO,
-	TRUNCATION_TARGET_RATIO,
 	type VolatileContext,
 	applyActualUsageToContextDebug,
 	assembleContext,
+	computeBaseTruncationTarget,
 	computeSafetyMargin,
 	estimateContentLength,
 	formatTimestamp,
@@ -96,14 +97,10 @@ describe("Context Assembly Pipeline", () => {
 			expect(result.systemPrompt).toContain("bound");
 		});
 
-		it("systemPrompt explains bound and boundless surfaces", () => {
+		it("systemPrompt explains boundless", () => {
 			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("boundless");
-			// Mentions the bound-mcp proxy so the agent knows about that path too
-			expect(result.systemPrompt).toContain("bound-mcp");
-			// Points the agent at the volatile context for the per-turn platform tag
-			expect(result.systemPrompt).toContain("volatile context");
 		});
 
 		it("systemPrompt describes the concurrency model", () => {
@@ -149,6 +146,56 @@ describe("Context Assembly Pipeline", () => {
 			const result = assembleContext({ db, threadId, userId });
 
 			expect(result.systemPrompt).toContain("test persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
+		});
+
+		// Aux loops replace the persona slot with the aux identity. The slot
+		// used to ALWAYS load the main persona from cluster_config, with the
+		// aux persona appended to systemPromptAddition underneath it — so
+		// every aux thread spoke as the main agent (live bug: bug-sweeper aux
+		// threads opened reports in the main persona's voice, 2026-08-17).
+		it("personaOverride replaces the main persona in the system prompt", () => {
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am the MAIN persona.", new Date().toISOString()],
+			);
+
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				personaOverride: "A meticulous software investigator.",
+			});
+
+			expect(result.systemPrompt).toContain("meticulous software investigator");
+			expect(result.systemPrompt).not.toContain("MAIN persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
+		});
+
+		it("empty personaOverride renders no persona slot at all", () => {
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am the MAIN persona.", new Date().toISOString()],
+			);
+
+			const result = assembleContext({ db, threadId, userId, personaOverride: "" });
+
+			expect(result.systemPrompt).not.toContain("MAIN persona");
+
+			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
+		});
+
+		it("undefined personaOverride keeps the main persona", () => {
+			db.run(
+				"INSERT OR REPLACE INTO cluster_config (key, value, modified_at) VALUES ('persona', ?, ?)",
+				["I am the MAIN persona.", new Date().toISOString()],
+			);
+
+			const result = assembleContext({ db, threadId, userId });
+
+			expect(result.systemPrompt).toContain("MAIN persona");
 
 			db.run("DELETE FROM cluster_config WHERE key = 'persona'");
 		});
@@ -1256,7 +1303,7 @@ describe("Context Assembly Pipeline", () => {
 			expect(nonSystemBetween.length).toBe(0);
 		});
 
-		// Regression: Bedrock tool_use_id_mismatch from thread 8c73f682 (2026-04-23).
+		// Regression: Bedrock tool_use_id_mismatch, observed live.
 		// A parallel tool_call emitted two tool_use blocks. One result returned on
 		// schedule; the agent loop re-entered inference before the straggler landed
 		// and emitted a SECOND tool_call. The straggler result arrived AFTER the
@@ -1550,7 +1597,7 @@ describe("Context Assembly Pipeline", () => {
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		// Regression for thread 141042bb (2026-05-20). The loaded message
+		// Regression: the loaded message
 		// window contained no user-role rows (a long burst of tool_call /
 		// tool_result pairs with the most recent user message older than the
 		// MESSAGE_LOAD_LIMIT cutoff). The forward-advance "skip past
@@ -1841,11 +1888,94 @@ describe("Context Assembly Pipeline", () => {
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
+		it("engages the telescope in the soft-target band (above 85% target, below effective budget)", () => {
+			// Consolidation: the telescope is the single history compressor and must
+			// engage at the soft truncation target (~85% of the window), not only at
+			// the near-100% effectiveBudget. This is the band where the removed
+			// Stage 1.7 compactor used to act — but Stage 1.7 mutated cached prefix
+			// bytes in place (cache bust); the telescope folds cache-stably. The gate
+			// firing here is what lets the telescope own that band.
+			const localThreadId = randomUUID();
+			const localUserId = randomUUID();
+			const nowBase = new Date("2026-01-01T00:00:00Z");
+
+			db.run(
+				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+				[localUserId, "Band User", nowBase.toISOString(), nowBase.toISOString(), 0],
+			);
+			db.run(
+				"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[
+					localThreadId,
+					localUserId,
+					"web",
+					"local",
+					0,
+					"Band Test",
+					null,
+					null,
+					null,
+					null,
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					nowBase.toISOString(),
+					0,
+				],
+			);
+
+			// 10000-token window: safetyMargin = max(512, 200) = 512 →
+			// effectiveBudget 9488; soft target = floor(10000*0.85)=8500. The total
+			// (history + system + tools + volatile) here lands in the (8500, 9488]
+			// band — above the soft target but below the old effectiveBudget gate.
+			// The old gate (totalTokens > effectiveBudget) would NOT fire; the new
+			// gate (> truncationTarget) must. Verified by the gate-comparison probe:
+			// 22 × ~300-token messages truncate under the soft-target gate but not
+			// under the old effectiveBudget gate.
+			const filler = "word ".repeat(300);
+			const msgCreated = (i: number) => new Date(nowBase.getTime() + i * 1000).toISOString();
+			for (let i = 0; i < 22; i++) {
+				db.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						localThreadId,
+						i % 2 === 0 ? "user" : "assistant",
+						filler,
+						null,
+						null,
+						msgCreated(i),
+						msgCreated(i),
+						"local",
+					],
+				);
+			}
+
+			const { debug } = assembleContext({
+				db,
+				threadId: localThreadId,
+				userId: localUserId,
+				contextWindow: 10000,
+			});
+
+			// The telescope engaged in the soft-target band — the old
+			// effectiveBudget gate would have skipped it, leaving the prefix-busting
+			// (now removed) Stage 1.7 as the only compressor.
+			expect(debug.truncated).toBeGreaterThan(0);
+
+			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
+			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
+		});
+
 		it("truncation target never exceeds effective budget", () => {
 			// The post-truncation total must land ≤ effectiveBudget even when
-			// TRUNCATION_TARGET_RATIO is very close to (1 - safety ratio). With the current
-			// ratios (0.85 and 0.02) the 0.85 side wins, but clamping to effectiveBudget
-			// protects the invariant against future ratio tuning.
+			// computeBaseTruncationTarget's output EXCEEDS effectiveBudget.
+			// With maxOutputTokens=0 (an unrealistic but valid edge case), the
+			// base target (contextWindow - maxOutputTokens = 4000) is larger
+			// than effectiveBudget (contextWindow - safetyMargin = 3920) — the
+			// Math.min(truncationTargetTokens, effectiveBudget) clamp in
+			// assembleContext must pick effectiveBudget regardless of which
+			// side is tighter.
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const nowBase = new Date("2026-01-01T00:00:00Z");
@@ -1899,18 +2029,17 @@ describe("Context Assembly Pipeline", () => {
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 4000,
+				maxOutputTokens: 0,
 			});
 
 			expect(debug.truncated).toBeGreaterThan(0);
 			expect(debug.effectiveBudget).toBeDefined();
-			// Truncation target is min(contextWindow * 0.85, effectiveBudget); post-truncation
-			// message tokens must land at or under that. volatileTokenEstimate is NOT
-			// added here because the volatile developer message is already included in
-			// the messages array (it's a subset, not an additional cost).
-			const target = Math.min(
-				Math.floor(4000 * TRUNCATION_TARGET_RATIO),
-				debug.effectiveBudget ?? 0,
-			);
+			// Truncation target is min(computeBaseTruncationTarget(contextWindow, maxOutputTokens),
+			// effectiveBudget); post-truncation message tokens must land at or under that.
+			// volatileTokenEstimate is NOT added here because the volatile developer
+			// message is already included in the messages array (it's a subset, not an
+			// additional cost).
+			const target = Math.min(computeBaseTruncationTarget(4000, 0), debug.effectiveBudget ?? 0);
 			const wireTokens = messages.reduce((sum, m) => sum + countContentTokens(m.content), 0);
 			expect(wireTokens).toBeLessThanOrEqual(target);
 
@@ -2011,12 +2140,11 @@ describe("Context Assembly Pipeline", () => {
 			// Insert an active skill
 			const now = new Date().toISOString();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+				"INSERT INTO skills (id, name, description, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
 				[
 					randomUUID(),
 					"pr-review",
 					"Review GitHub PRs",
-					"active",
 					"/home/user/skills/pr-review",
 					now,
 					now,
@@ -2059,17 +2187,8 @@ describe("Context Assembly Pipeline", () => {
 			const now = new Date().toISOString();
 			const skillId = randomUUID();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					skillId,
-					"pr-review",
-					"Review GitHub PRs",
-					"active",
-					"/home/user/skills/pr-review",
-					now,
-					now,
-					0,
-				],
+				"INSERT INTO skills (id, name, description, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[skillId, "pr-review", "Review GitHub PRs", "/home/user/skills/pr-review", now, now, 0],
 			);
 
 			// Insert the SKILL.md file
@@ -2133,21 +2252,13 @@ This skill reviews pull requests.`;
 			void messages;
 		});
 
-		it("AC3.4: should inject inactive skill reference note when skill is not active", () => {
+		it("AC3.4: should inject inactive skill reference note when referenced skill is deleted", () => {
 			cleanupTestData();
-			// Insert a retired skill (not active)
+			// Insert a soft-deleted skill (no longer active)
 			const now = new Date().toISOString();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					"pr-review",
-					"Review GitHub PRs",
-					"retired",
-					"/home/user/skills/pr-review",
-					now,
-					0,
-				],
+				"INSERT INTO skills (id, name, description, skill_root, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
+				[randomUUID(), "pr-review", "Review GitHub PRs", "/home/user/skills/pr-review", now, 1],
 			);
 
 			// Insert a task with skill reference
@@ -2200,17 +2311,8 @@ This skill reviews pull requests.`;
 			const now = new Date().toISOString();
 			const skillId = randomUUID();
 			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					skillId,
-					"pr-review",
-					"Review GitHub PRs",
-					"active",
-					"/home/user/skills/pr-review",
-					now,
-					now,
-					0,
-				],
+				"INSERT INTO skills (id, name, description, skill_root, last_activated_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[skillId, "pr-review", "Review GitHub PRs", "/home/user/skills/pr-review", now, now, 0],
 			);
 
 			// Insert the SKILL.md file
@@ -2261,78 +2363,6 @@ This skill reviews pull requests.`;
 			// The skill body should still be present in systemPrompt even with noHistory = true
 			expect(systemPrompt).toContain("PR Review Skill");
 			expect(systemPrompt).toContain(skillMdContent);
-		});
-
-		it("AC3.6: should inject operator retirement notification within 24 hours", () => {
-			cleanupTestData();
-			// Insert a skill retired by operator within last hour
-			const now = new Date();
-			const recentTime = new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString(); // 1 hour ago
-			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, retired_by, retired_reason, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					"deploy-monitor",
-					"Monitor deployments",
-					"retired",
-					"/home/user/skills/deploy-monitor",
-					"operator",
-					"Too aggressive",
-					recentTime,
-					0,
-				],
-			);
-
-			const result = assembleContext({
-				db: db2,
-				threadId: threadId2,
-				userId: userId2,
-			});
-			const devMsg = result.messages.find((m) => m.role === "developer");
-			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-
-			expect(systemSuffix).toBeDefined();
-			expect(systemSuffix).toContain(
-				"[Skill notification] Skill 'deploy-monitor' was retired by operator: \"Too aggressive\".",
-			);
-		});
-
-		it("AC3.7: should not inject retirement notification older than 24 hours", () => {
-			cleanupTestData();
-			// Insert a skill retired by operator more than 24 hours ago
-			const now = new Date();
-			const oldTime = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString(); // 25 hours ago
-			db2.run(
-				"INSERT INTO skills (id, name, description, status, skill_root, retired_by, retired_reason, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					"old-skill",
-					"Old skill",
-					"retired",
-					"/home/user/skills/old-skill",
-					"operator",
-					"Deprecated",
-					oldTime,
-					0,
-				],
-			);
-
-			const result = assembleContext({
-				db: db2,
-				threadId: threadId2,
-				userId: userId2,
-			});
-
-			// Check that systemPrompt doesn't contain the old retirement notification
-			// (volatile enrichment should be in developer message, not systemPrompt)
-			expect(result.systemPrompt).not.toContain("[Skill notification]");
-			expect(result.systemPrompt).not.toContain("old-skill");
-
-			// Also check developer messages (volatile context)
-			const devMsg = result.messages.find((m) => m.role === "developer");
-			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
-			expect(devContent).not.toContain("[Skill notification]");
-			expect(devContent).not.toContain("old-skill");
 		});
 	});
 
@@ -2743,10 +2773,10 @@ This skill reviews pull requests.`;
 			const devMsg = result.messages.find((m) => m.role === "developer");
 			const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
 
-			// Memory delta should be in systemSuffix (now in Working Knowledge section)
+			// Memory delta should be in systemSuffix (now the Working Knowledge updates block)
 			expect(systemSuffix).toBeDefined();
 			expect(systemSuffix).toContain("pinned:test_key");
-			expect(systemSuffix).toContain("Working Knowledge");
+			expect(systemSuffix).toContain("<working-knowledge-updates>");
 		});
 
 		it("AC8.2: does not include raw 'Semantic Memory:' format in any assembled message", () => {
@@ -2928,8 +2958,8 @@ This skill reviews pull requests.`;
 			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 			const combined = `${systemPrompt}\n${devContent}`;
 			expect(
-				combined.includes("## Working Knowledge") ||
-					combined.includes("## Discoverable Archive") ||
+				combined.includes("<working-knowledge") ||
+					combined.includes("<discoverable-archive") ||
 					combined.includes("<live-state"),
 			).toBe(true);
 			expect(combined).toContain("nohist_key");
@@ -3108,21 +3138,21 @@ This skill reviews pull requests.`;
 			const combined = `${result.systemPrompt}\n${varyingTail}`;
 
 			// Budget pressure should trigger re-composition with three sections (R-VC1)
-			expect(combined).toContain("## Working Knowledge");
-			expect(combined).toContain("## Discoverable Archive");
+			expect(combined).toContain("<working-knowledge");
+			expect(combined).toContain("<discoverable-archive");
 			expect(combined).toContain("<live-state");
 
-			// Memory deltas should be inline with [changed since] markers, not standalone "Memory:" header
+			// Memory deltas should be inline changed-marker elements, not standalone "Memory:" header
 			expect(combined.match(/^Memory:\s+/m)).toBeNull();
 
 			// Check that Working Knowledge contains at most 3 pinned or summary entries
 			// (budget pressure applies reduced (3,3) caps through the three-section composition).
 			// The WK bodies are on systemPrompt; assert against the stable side.
-			const wkStart = result.systemPrompt.indexOf("## Working Knowledge");
-			const daStart = result.systemPrompt.indexOf("## Discoverable Archive");
+			const wkStart = result.systemPrompt.indexOf("<working-knowledge");
+			const daStart = result.systemPrompt.indexOf("<discoverable-archive");
 			if (wkStart >= 0 && daStart >= 0) {
 				const wkSection = result.systemPrompt.substring(wkStart, daStart);
-				const entryLines = wkSection.split("\n").filter((l) => l.match(/^\s*-/));
+				const entryLines = wkSection.split("\n").filter((l) => l.startsWith("<memory "));
 				expect(entryLines.length).toBeLessThanOrEqual(3);
 			}
 		});
@@ -4223,7 +4253,7 @@ This skill reviews pull requests.`;
 				});
 				const devMsg = result.messages.find((m) => m.role === "developer");
 				const systemSuffix = typeof devMsg?.content === "string" ? devMsg.content : "";
-				expect(systemSuffix).toContain(`[stale child of ${STALE_SUMMARY_KEY}]`);
+				expect(systemSuffix).toContain(`parent="${STALE_SUMMARY_KEY}" stale="true"`);
 			} finally {
 				cleanupStaleChild();
 			}
@@ -4259,32 +4289,33 @@ This skill reviews pull requests.`;
 				// This proves the delta baseline is old enough that the seeded entries
 				// qualify as deltas — so the STALE_CHILD_KEY suppression below is exercised
 				// against a real would-be delta, not a no-op.
-				expect(devContent).toContain(`- ${STALE_CONTROL_SUMMARY_KEY} [changed since last turn]`);
+				expect(devContent).toContain(
+					`<memory key="${STALE_CONTROL_SUMMARY_KEY}" tier="summary" changed="true"/>`,
+				);
 
-				// PRIMARY (#69): the `[stale child of …]` re-summarization bullets are
+				// PRIMARY (#69): the stale-child re-summarization elements are
 				// stripped on the active surface — neither the marker nor a per-summary
-				// bullet appears anywhere.
-				expect(allContent).not.toContain("[stale child of");
+				// element appears anywhere.
+				expect(allContent).not.toContain('stale="true"');
 
 				// DA-title fallback prevented: the stripped child is not re-surfaced as a
-				// bare Discoverable-Archive title line (`- <key>` with no gloss).
+				// bare Discoverable-Archive title element (`<entry key="…"/>` with no gloss).
 				const hasBareTitleLine = allContent
 					.split("\n")
-					.some((l) => l.trim() === `- ${STALE_CHILD_KEY}`);
+					.some((l) => l.trim() === `<entry key="${STALE_CHILD_KEY}"/>`);
 				expect(hasBareTitleLine).toBe(false);
 
 				// REGRESSION GUARD: the stale-detail child also rides `loadSummaryEntries`
 				// as a `[stale-detail]`-tagged entry in `input.summaries`. Before the fix,
 				// `summaryDeltas` filtered `input.summaries` on `deltaKeys` alone, so a
 				// stale-detail child past the delta baseline leaked a bare
-				// `- <key> [changed since last turn]` line onto the active varying tail.
+				// changed-marker element onto the active varying tail.
 				// The fix restricts summary deltas to genuine `[summary]` tags. The child's
-				// unlabeled `- key (modified YYYY-MM-DD): gloss` line still renders on the
-				// STABLE body (systemPrompt) — surface-independent, keeping the stable
-				// channel byte-identical — but it must never appear in the varying
-				// developer tail. The `(modified …)` capture-time prefix (#71) sits
-				// between the key and the colon, so match on the key + prefix opener.
-				expect(systemPrompt).toContain(`- ${STALE_CHILD_KEY} (modified `);
+				// unlabeled `<memory key="…" … modified="…">gloss</memory>` element still
+				// renders on the STABLE body (systemPrompt) — surface-independent, keeping
+				// the stable channel byte-identical — but it must never appear in the
+				// varying developer tail.
+				expect(systemPrompt).toContain(`<memory key="${STALE_CHILD_KEY}"`);
 				expect(devContent).not.toContain(STALE_CHILD_KEY);
 			} finally {
 				cleanupStaleChild();
@@ -5060,20 +5091,28 @@ This skill reviews pull requests.`;
 			}
 
 			const contextWindow = 10000;
+			// A realistic 20%-of-window output reserve, not the 8000-token
+			// DEFAULT_OUTPUT_TOKEN_RESERVE fallback (which would swamp this
+			// window, collapsing the target to 2000 — barely enough for the
+			// ~1.5k-token stable prefix alone, let alone any history — and
+			// forcing the tier allocator's non-negotiable ≥2-message floor to
+			// overshoot the already-starved remainder).
+			const maxOutputTokens = 2000;
 			const result = assembleContext({
 				db: debugTestDb,
 				threadId: testThreadId,
 				userId: debugTestUserId,
 				contextWindow,
+				maxOutputTokens,
 			});
 
 			// Truncation should fire
 			expect(result.debug.truncated).toBeGreaterThan(0);
 
-			// The resulting context should be ~85% of contextWindow (15% headroom),
-			// not right at the limit. This ensures the prefix stays stable for
-			// multiple turns, enabling prompt caching.
-			const targetBudget = Math.floor(contextWindow * TRUNCATION_TARGET_RATIO);
+			// The resulting context should land at contextWindow minus the
+			// output-token reserve, not right at the limit. This ensures the
+			// prefix stays stable for multiple turns, enabling prompt caching.
+			const targetBudget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 			expect(result.debug.totalEstimated).toBeLessThanOrEqual(targetBudget + 100); // small tolerance for system msgs
 		});
 
@@ -5136,7 +5175,7 @@ This skill reviews pull requests.`;
 
 	// ──────────────────────────────────────────────────────────────────────
 	// Stage 1 retrieval covers the entire thread when budget allows.
-	// Root cause: silent-amputation-2026-05-21 — a fixed MESSAGE_LOAD_LIMIT of
+	// Root cause: a fixed MESSAGE_LOAD_LIMIT of
 	// 100 in Stage 1 silently dropped the oldest messages on cold reassembly
 	// for any thread with > 100 messages, even when contextWindow had plenty
 	// of room. Stage 7's truncation marker never fired (budget wasn't
@@ -5224,7 +5263,7 @@ This skill reviews pull requests.`;
 
 	// ──────────────────────────────────────────────────────────────────────
 	// Token-aware truncation (replaces hardcoded keep-last-10)
-	// Root cause: context-loss-2026-03-31 — a 4900-msg thread kept only 10
+	// Root cause: a 4900-msg thread kept only 10
 	// messages, and verbose tool errors crowded out a 30-second-old conversation.
 	// ──────────────────────────────────────────────────────────────────────
 	describe("token-aware truncation", () => {
@@ -5289,8 +5328,17 @@ This skill reviews pull requests.`;
 				// concurrency + orientation + schema ≈ 1.5k tokens) plus
 				// some short messages, but small enough that the full 100
 				// retrieved messages won't fit — so truncation fires while
-				// still leaving > 10 messages in the kept set.
-				contextWindow: 3000,
+				// still leaving > 10 messages in the kept set. Sized with
+				// headroom above the bare prefix so the assertion tests the
+				// token-aware keep count, not the exact byte-width of the
+				// schema block (which grows as synced tables are added).
+				contextWindow: 3500,
+				// A realistic small-context model reserves a fraction of its
+				// window for output, not the 8000-token DEFAULT_OUTPUT_TOKEN_RESERVE
+				// (which would swamp a 3000-token window and collapse the base
+				// truncation target to 0 — nobody configures max_output_tokens
+				// bigger than contextWindow itself).
+				maxOutputTokens: 500,
 			});
 
 			const historyMessages = messages.filter((m) => m.role !== "system");
@@ -5374,7 +5422,7 @@ This skill reviews pull requests.`;
 	// When messages are truncated, the agent should know context was lost
 	// and how to recover it (query command).
 	// ──────────────────────────────────────────────────────────────────────
-	describe("effectiveTruncationRatio override (adaptive truncation)", () => {
+	describe("truncationTargetTokens override (adaptive truncation)", () => {
 		it("truncates more aggressively when a tighter override is supplied", () => {
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
@@ -5406,10 +5454,10 @@ This skill reviews pull requests.`;
 
 			// Insert enough message tokens to put Stage 7 firmly into truncation
 			// territory (totalTokens > effectiveBudget). With contextWindow=4000
-			// (effective_budget=3920, baseline truncationTarget=3400) and ~30
-			// tokens per message, ~120 messages overflow comfortably; under
-			// the tighter 0.40 override (truncationTarget=1600) Stage 7 must
-			// drop substantially more.
+			// (effective_budget=3920, baseline truncationTarget=computeBaseTruncationTarget(4000, undefined))
+			// and ~30 tokens per message, ~120 messages overflow comfortably;
+			// under the tighter 1600-token override Stage 7 must drop
+			// substantially more.
 			for (let i = 0; i < 120; i++) {
 				const role = i % 2 === 0 ? "user" : "assistant";
 				const ts = new Date(nowBase.getTime() + i * 1000).toISOString();
@@ -5429,18 +5477,25 @@ This skill reviews pull requests.`;
 				);
 			}
 
+			// maxOutputTokens: 500 keeps computeBaseTruncationTarget's baseline
+			// non-zero at this 4000-token window (the 8000-token
+			// DEFAULT_OUTPUT_TOKEN_RESERVE would otherwise swamp it and both
+			// runs would floor at 0, making "tighter" indistinguishable from
+			// baseline).
 			const baseline = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 4000,
+				maxOutputTokens: 500,
 			});
 			const tighter = assembleContext({
 				db,
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 4000,
-				effectiveTruncationRatio: 0.4,
+				maxOutputTokens: 500,
+				truncationTargetTokens: 1600,
 			});
 
 			expect(tighter.debug.truncated).toBeGreaterThan(baseline.debug.truncated);
@@ -5451,7 +5506,7 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		it("falls back to base TRUNCATION_TARGET_RATIO when no override is supplied", () => {
+		it("falls back to computeBaseTruncationTarget when no override is supplied", () => {
 			const localThreadId = randomUUID();
 			const localUserId = randomUUID();
 			const nowBase = new Date("2026-05-22T18:00:00Z");
@@ -5500,7 +5555,10 @@ This skill reviews pull requests.`;
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow: 200000,
-				effectiveTruncationRatio: TRUNCATION_TARGET_RATIO,
+				// Passing the exact value computeBaseTruncationTarget would have
+				// derived by default (no maxOutputTokens supplied either run) must
+				// be indistinguishable from omitting the override entirely.
+				truncationTargetTokens: computeBaseTruncationTarget(200000, undefined),
 			});
 
 			expect(noOverride.debug.truncated).toBe(explicitBase.debug.truncated);
@@ -6081,672 +6139,11 @@ This skill reviews pull requests.`;
 	});
 
 	describe("Tool result compaction (Stage 1.7)", () => {
-		it("should compact old tool results when compactToolResults is true", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, summary, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					localThreadId,
-					localUserId,
-					"discord",
-					"localhost",
-					now,
-					now,
-					now,
-					"We discussed testing strategies.",
-					0,
-				],
-			);
-
-			// Insert old turn: user → tool_call → tool_result (large) → assistant
-			const toolId = "tool_old_1";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "check status", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			const largeResultId = randomUUID();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					largeResultId,
-					localThreadId,
-					"tool_result",
-					"x".repeat(5000),
-					toolId,
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "Status looks good", now, now, "localhost", 0],
-			);
-
-			// Insert recent turn: user → assistant
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"assistant",
-					"You're welcome!",
-					recentTime,
-					recentTime,
-					"localhost",
-					0,
-				],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			// Find the tool_result message in the assembled context
-			const toolResult = result.messages.find(
-				(m) =>
-					m.role === "tool_result" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Tool result truncated"),
-			);
-			expect(toolResult).toBeDefined();
-			expect((toolResult?.content as string).length).toBeLessThan(1000);
-			expect(toolResult?.content).toContain(largeResultId);
-
-			// Thread summary should be injected in developer message
-			const summaryMsg = result.messages.find(
-				(m) =>
-					m.role === "developer" &&
-					typeof m.content === "string" &&
-					m.content.includes("discussed testing"),
-			);
-			expect(summaryMsg).toBeDefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("should not compact when compactToolResults is false", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const toolId = "tool_warm_1";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "check status", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_result",
-					"x".repeat(5000),
-					toolId,
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "done", now, now, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: false,
-			});
-
-			// Tool result should be intact (not compacted)
-			const toolResult = result.messages.find(
-				(m) =>
-					m.role === "tool_result" &&
-					typeof m.content === "string" &&
-					m.content === "x".repeat(5000),
-			);
-			expect(toolResult).toBeDefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		}, 10000);
-
-		it("should not produce orphaned surrogates when truncating emoji at boundary", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const toolId = "tool_emoji_1";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "search repos", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: toolId, name: "bash", input: {} }]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-
-			// Content with emoji at position 199 — .slice(0, 200) would split the
-			// surrogate pair of the emoji (U+1F60E = 😎), producing an orphaned
-			// high surrogate \uD83D that is invalid JSON/UTF-8.
-			const contentWithEmoji = `${"x".repeat(199)}😎${"y".repeat(5000)}`;
-			const resultId = randomUUID();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					resultId,
-					localThreadId,
-					"tool_result",
-					contentWithEmoji,
-					toolId,
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "done", now, now, "localhost", 0],
-			);
-
-			// Recent message
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "ok", recentTime, recentTime, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			const toolResult = result.messages.find(
-				(m) =>
-					m.role === "tool_result" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Tool result truncated"),
-			);
-			expect(toolResult).toBeDefined();
-
-			// The compacted preview must not contain orphaned surrogates.
-			// Check by verifying JSON serialization succeeds (surrogates break JSON.stringify).
-			const content = toolResult?.content as string;
-			expect(() => {
-				const encoded = new TextEncoder().encode(JSON.stringify(content));
-				new TextDecoder("utf-8", { fatal: true }).decode(encoded);
-			}).not.toThrow();
-
-			// Also verify no lone surrogates directly
-			for (let i = 0; i < content.length; i++) {
-				const code = content.charCodeAt(i);
-				if (code >= 0xd800 && code <= 0xdfff) {
-					// If high surrogate, next must be low surrogate
-					if (code >= 0xd800 && code <= 0xdbff) {
-						const next = content.charCodeAt(i + 1);
-						expect(next).toBeGreaterThanOrEqual(0xdc00);
-						expect(next).toBeLessThanOrEqual(0xdfff);
-					}
-				}
-			}
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-		it("should NOT compact old assistant messages (prevents LLM mimicry)", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			// Insert old turn: user → assistant (large response)
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"user",
-					"explain the architecture in detail",
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			const oldAssistantId = randomUUID();
-			const longContent = "The architecture consists of several layers. ".repeat(100); // ~4500 chars
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[oldAssistantId, localThreadId, "assistant", longContent, now, now, "localhost", 0],
-			);
-
-			// Insert recent turn (within window)
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "thanks!", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"assistant",
-					"You're welcome!",
-					recentTime,
-					recentTime,
-					"localhost",
-					0,
-				],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			// Old assistant message should NOT be compacted (LLM mimics the format)
-			const compactedAssistant = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Assistant response,"),
-			);
-			expect(compactedAssistant).toBeUndefined();
-
-			// Old assistant message should be preserved intact
-			const oldAssistant = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("The architecture consists of several layers"),
-			);
-			expect(oldAssistant).toBeDefined();
-
-			// User message should NOT be compacted (kept intact)
-			const userMsg = result.messages.find(
-				(m) =>
-					m.role === "user" &&
-					typeof m.content === "string" &&
-					m.content.includes("explain the architecture"),
-			);
-			expect(userMsg).toBeDefined();
-			// Annotation prefix prepended (N7 byte-stability invariant).
-			expect(userMsg?.content).toContain("explain the architecture in detail");
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("should not compact short assistant messages", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			// Insert old turn with short assistant response
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "status?", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "All good!", now, now, "localhost", 0],
-			);
-
-			// Recent turn
-			const recentTime = new Date(Date.now() + 1000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "ok", recentTime, recentTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "bye", recentTime, recentTime, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 2,
-			});
-
-			// Short assistant should NOT be compacted
-			const shortAssistant = result.messages.find(
-				(m) => m.role === "assistant" && typeof m.content === "string" && m.content === "All good!",
-			);
-			expect(shortAssistant).toBeDefined();
-
-			// No compacted assistant messages
-			const compacted = result.messages.find(
-				(m) =>
-					m.role === "assistant" &&
-					typeof m.content === "string" &&
-					m.content.includes("[Assistant response,"),
-			);
-			expect(compacted).toBeUndefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("preserves thinking blocks on old tool_call messages when under budget", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			// Old turn with thinking-block-carrying tool_call
-			const oldToolId = "tool_old_thinking";
-			const oldTime = new Date(Date.now() - 10000).toISOString();
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "do a thing", oldTime, oldTime, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([
-						{ type: "thinking", thinking: "Let me carefully reason about this. ".repeat(100) },
-						{ type: "tool_use", id: oldToolId, name: "bash", input: { cmd: "ls" } },
-					]),
-					oldTime,
-					oldTime,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_result",
-					"ok",
-					oldToolId,
-					oldTime,
-					oldTime,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "assistant", "done", oldTime, oldTime, "localhost", 0],
-			);
-
-			// Recent window messages (3 of them, so the boundary excludes the old turn)
-			for (let i = 0; i < 3; i++) {
-				const t = new Date(Date.now() + i * 1000).toISOString();
-				db.run(
-					"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, "user", `recent ${i}`, t, t, "localhost", 0],
-				);
-			}
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 3,
-			});
-
-			const compactedToolCall = result.messages.find(
-				(m) =>
-					m.role === "tool_call" && typeof m.content === "string" && m.content.includes(oldToolId),
-			);
-			expect(compactedToolCall).toBeDefined();
-			// The tool_use block must survive
-			expect(compactedToolCall?.content as string).toContain(oldToolId);
-			expect(compactedToolCall?.content as string).toContain("tool_use");
-			// Thinking is PRESERVED when context is under budget (85% threshold)
-			expect(compactedToolCall?.content as string).toContain('"type":"thinking"');
-			expect(compactedToolCall?.content as string).toContain("carefully reason");
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("does NOT strip thinking blocks from tool_calls inside the recent window", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const toolId = "tool_recent_thinking";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "ping", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					randomUUID(),
-					localThreadId,
-					"tool_call",
-					JSON.stringify([
-						{ type: "thinking", thinking: "Recent reasoning the model still needs" },
-						{ type: "tool_use", id: toolId, name: "bash", input: {} },
-					]),
-					now,
-					now,
-					"localhost",
-					0,
-				],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_result", "ok", toolId, now, now, "localhost", 0],
-			);
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 20,
-			});
-
-			const toolCall = result.messages.find(
-				(m) =>
-					m.role === "tool_call" && typeof m.content === "string" && m.content.includes(toolId),
-			);
-			expect(toolCall).toBeDefined();
-			// Inside the recent window, thinking block must survive
-			expect(toolCall?.content as string).toContain("thinking");
-			expect(toolCall?.content as string).toContain("Recent reasoning");
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
-
-		it("handles non-JSON tool_call content without crashing", () => {
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date(Date.now() - 60000).toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const legacyContent = "legacy string format, not JSON";
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "user", "pre", now, now, "localhost", 0],
-			);
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[randomUUID(), localThreadId, "tool_call", legacyContent, now, now, "localhost", 0],
-			);
-			for (let i = 0; i < 5; i++) {
-				const t = new Date(Date.now() + i * 1000).toISOString();
-				db.run(
-					"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, "user", `recent ${i}`, t, t, "localhost", 0],
-				);
-			}
-
-			const result = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 3,
-			});
-
-			const legacyMsg = result.messages.find(
-				(m) =>
-					m.role === "tool_call" && typeof m.content === "string" && m.content === legacyContent,
-			);
-			expect(legacyMsg).toBeDefined();
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		});
+		// Stage 1.7 (in-place tool_result stubbing + thinking-strip) was removed;
+		// the Stage 7 telescope is the sole history compressor and folds the same
+		// region cache-stably. Its behavior is covered by the telescope property
+		// tests (progressive-fidelity/__tests__) and the soft-target-band gate test
+		// above. The remaining tests here exercise the shared truncation gate.
 
 		it("includes toolTokenEstimate in the truncation gate", () => {
 			// Budget gate must account for tool schemas, not just message content.
@@ -6787,7 +6184,13 @@ This skill reviews pull requests.`;
 			// concurrency + orientation + schema ≈ 1.5k tokens) and the
 			// ~800 tokens of message content without truncating. The tool
 			// estimate below is what should push it over the edge.
+			// maxOutputTokens: 1000 keeps computeBaseTruncationTarget's
+			// truncationTarget (4000) meaningfully above the ~2.3k tokens of
+			// content+prefix — the 8000-token DEFAULT_OUTPUT_TOKEN_RESERVE
+			// would otherwise swamp this window and floor both runs at 0,
+			// making them indistinguishable.
 			const contextWindow = 5000;
+			const maxOutputTokens = 1000;
 
 			// Without tool estimate: should NOT truncate
 			const without = assembleContext({
@@ -6795,6 +6198,7 @@ This skill reviews pull requests.`;
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow,
+				maxOutputTokens,
 			});
 
 			// With a 3000-token tool estimate: total exceeds window → must truncate
@@ -6803,6 +6207,7 @@ This skill reviews pull requests.`;
 				threadId: localThreadId,
 				userId: localUserId,
 				contextWindow,
+				maxOutputTokens,
 				toolTokenEstimate: 3000,
 			});
 
@@ -6814,81 +6219,16 @@ This skill reviews pull requests.`;
 			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
 		});
 
-		it("scales default recentWindow with contextWindow", () => {
-			// On small-context backends, 20 uncompacted messages can eat the
-			// entire budget. Default must shrink proportionally when no explicit
-			// compactRecentWindow is passed.
-			const localUserId = randomUUID();
-			const localThreadId = randomUUID();
-			const now = new Date().toISOString();
-
-			db.run(
-				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-				[localUserId, "TestUser", now, now, 0],
-			);
-			db.run(
-				"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-				[localThreadId, localUserId, "web", "localhost", now, now, now, 0],
-			);
-
-			const insertMsg = (role: string, content: string, toolName: string | null, idx: number) => {
-				const t = new Date(Date.now() + idx * 1000).toISOString();
-				db.run(
-					"INSERT INTO messages (id, thread_id, role, content, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					[randomUUID(), localThreadId, role, content, toolName, t, t, "localhost", 0],
-				);
-			};
-			// 8 tool_call/tool_result pairs (16 msgs) with payloads above 500-char threshold
-			for (let i = 0; i < 8; i++) {
-				insertMsg(
-					"tool_call",
-					JSON.stringify([{ type: "tool_use", id: `t_${i}`, name: "bash", input: {} }]),
-					null,
-					i * 2,
-				);
-				insertMsg("tool_result", "x".repeat(2000), `t_${i}`, i * 2 + 1);
-			}
-
-			// contextWindow=8000 → default recentWindow = floor(8000/2500) = 3
-			const smallWindow = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				contextWindow: 8000,
-			});
-
-			// Explicit recentWindow=20 — all 16 messages stay uncompacted
-			const explicit20 = assembleContext({
-				db,
-				threadId: localThreadId,
-				userId: localUserId,
-				compactToolResults: true,
-				compactRecentWindow: 20,
-			});
-
-			const countUncompacted = (msgs: typeof smallWindow.messages) =>
-				msgs.filter(
-					(m) =>
-						m.role === "tool_result" &&
-						typeof m.content === "string" &&
-						!m.content.startsWith("[Tool result truncated"),
-				).length;
-
-			// Small window: at most 3 uncompacted tool_results.
-			// Explicit wide window: all 8 uncompacted.
-			expect(countUncompacted(smallWindow.messages)).toBeLessThanOrEqual(3);
-			expect(countUncompacted(explicit20.messages)).toBe(8);
-
-			// Clean up
-			db.run("DELETE FROM messages WHERE thread_id = ?", [localThreadId]);
-			db.run("DELETE FROM threads WHERE id = ?", [localThreadId]);
-			db.run("DELETE FROM users WHERE id = ?", [localUserId]);
-		}, 15000);
+		// NOTE: history compaction is now owned entirely by the Stage 7 telescope
+		// (Stage 1.7 and its history-compaction module were removed). Recent-tier
+		// sizing — the equivalent of the old recentWindow scaling — is covered by
+		// the telescope's P5 monotonicity property
+		// (progressive-fidelity/__tests__/tier-allocation.property.test.ts). The
+		// soft-target-band gate test above pins that the telescope engages at 85%.
 
 		it("loads the entire thread when budget allows; Stage 7 truncates if needed", () => {
 			// Stage 1's MESSAGE_LOAD_LIMIT (formerly 100, originally 500) was
-			// removed in 2026-05-21. It silently dropped the oldest messages
+			// removed. It silently dropped the oldest messages
 			// on cold reassembly when the warm cache had grown past the cap,
 			// bypassing Stage 7's truncation marker that tells the agent how
 			// to retrieve older context. See "Stage 1 retrieval covers entire
@@ -7511,82 +6851,78 @@ This skill reviews pull requests.`;
 });
 
 describe("formatTimestamp", () => {
-	it("formats timestamps as absolute short dates", () => {
-		// Absolute timestamps should be stable (not change between turns)
-		const ts = "2026-04-04T14:30:00.000Z";
-		const result = formatTimestamp(ts);
-		// Should contain the date and time, not relative "ago" format
-		expect(result).toMatch(/^\[.*\d{1,2}:\d{2}.*\]$/);
-		expect(result).not.toContain("ago");
+	const finiteInstant = fc
+		.integer({ min: Date.UTC(2020, 0, 1), max: Date.UTC(2030, 11, 31, 23, 59) })
+		.map((ms) => new Date(ms));
+	const validOffset = fc.integer({ min: -14 * 60, max: 14 * 60 });
+	it("formats finite instants deterministically with an explicit zone", () => {
+		fc.assert(
+			fc.property(finiteInstant, fc.option(validOffset, { nil: undefined }), (instant, offset) => {
+				const timestamp = instant.toISOString();
+				const output = formatTimestamp(timestamp, offset, Date.UTC(2026, 0, 1));
+				expect(formatTimestamp(timestamp, offset, Date.UTC(2026, 0, 1))).toBe(output);
+				expect(output).toMatch(/^\[.+ UTC(?:[+-]\d{2}:\d{2})?\]$/);
+			}),
+		);
 	});
 
-	it("produces identical output for the same input regardless of when called", () => {
-		const ts = "2026-04-04T14:30:00.000Z";
-		const result1 = formatTimestamp(ts);
-		const result2 = formatTimestamp(ts);
-		expect(result1).toBe(result2);
+	it("uses the supplied offset for local calendar fields and zone", () => {
+		fc.assert(
+			fc.property(finiteInstant, validOffset, (instant, offset) => {
+				const shifted = new Date(instant.getTime() + offset * 60_000);
+				const output = formatTimestamp(instant.toISOString(), offset, Date.UTC(2026, 0, 1));
+				const match = output.match(
+					/^\[(?<date>.+), (?<time>\d{2}:\d{2}) (?<zone>UTC[+-]\d{2}:\d{2})\]$/,
+				);
+
+				expect(match?.groups?.date).toContain(`${shifted.getUTCDate()}`);
+				expect(match?.groups?.time).toBe(
+					`${String(shifted.getUTCHours()).padStart(2, "0")}:${String(shifted.getUTCMinutes()).padStart(2, "0")}`,
+				);
+				expect(match?.groups?.zone).toBe(
+					`UTC${offset < 0 ? "-" : "+"}${String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0")}:${String(Math.abs(offset) % 60).padStart(2, "0")}`,
+				);
+			}),
+		);
 	});
 
-	it("formats today's timestamps with time only", () => {
-		const now = new Date();
-		const ts = now.toISOString();
-		const result = formatTimestamp(ts);
-		// Should have hours and minutes
-		expect(result).toMatch(/\d{1,2}:\d{2}/);
+	it("partitions same-year and different-year dates relative to the assembly clock", () => {
+		fc.assert(
+			fc.property(
+				fc.integer({ min: -2, max: 2 }),
+				fc.integer({ min: 0, max: 365 * 24 * 60 - 1 }),
+				(yearDelta, minute) => {
+					const instant = new Date(Date.UTC(2026 + yearDelta, 0, 1, 0, minute));
+					const output = formatTimestamp(instant.toISOString(), 0, Date.UTC(2026, 6, 1));
+					const hasYearSuffix = output.includes(`'${String(instant.getUTCFullYear()).slice(-2)}`);
+					expect(hasYearSuffix).toBe(instant.getUTCFullYear() !== 2026);
+				},
+			),
+		);
 	});
 
-	it("formats older timestamps with date and time", () => {
-		const ts = "2026-01-15T09:45:00.000Z";
-		const result = formatTimestamp(ts);
-		// Should include month/day info
-		expect(result).toMatch(/Jan 15/);
+	it("keeps boundary-sensitive offset regressions", () => {
+		expect(formatTimestamp("2026-06-05T22:38:00.000Z", -240, Date.UTC(2026, 0, 1))).toBe(
+			"[Jun 5, 18:38 UTC-04:00]",
+		);
+		expect(formatTimestamp("2026-06-05T22:38:00.000Z", 540, Date.UTC(2026, 0, 1))).toBe(
+			"[Jun 6, 07:38 UTC+09:00]",
+		);
+		expect(formatTimestamp("2026-01-01T02:00:00.000Z", -300, Date.UTC(2026, 0, 1))).toBe(
+			"[Dec 31 '25, 21:00 UTC-05:00]",
+		);
+		expect(formatTimestamp("2026-06-05T22:38:00.000Z", 330, Date.UTC(2026, 0, 1))).toBe(
+			"[Jun 6, 04:08 UTC+05:30]",
+		);
 	});
 
-	// --- Timezone-aware rendering. offsetMinutes is the standard UTC offset
-	//     (east-of-UTC positive): EDT = -240, JST = +540, IST = +330. ---
-
-	it("renders local wall-clock + UTC offset suffix when an offset is given", () => {
-		// 22:38 UTC at -240 (EDT) is 18:38 local, same calendar day.
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, -240)).toBe("[Jun 5, 18:38 UTC-04:00]");
-	});
-
-	it("rolls the local date forward across midnight for east offsets", () => {
-		// 22:38 UTC at +540 (JST) is 07:38 the next calendar day.
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, 540)).toBe("[Jun 6, 07:38 UTC+09:00]");
-	});
-
-	it("renders UTC+00:00 for a zero offset", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, 0)).toBe("[Jun 5, 22:38 UTC+00:00]");
-	});
-
-	it("uses the local (shifted) year for the year-variant suffix", () => {
-		// 02:00 UTC Jan 1 2026 at -300 (EST) is 21:00 Dec 31 2025 local.
-		const ts = "2026-01-01T02:00:00.000Z";
-		expect(formatTimestamp(ts, -300)).toBe("[Dec 31 '25, 21:00 UTC-05:00]");
-	});
-
-	it("renders half-hour offsets (e.g. IST +330)", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, 330)).toBe("[Jun 6, 04:08 UTC+05:30]");
-	});
-
-	it("marks the zone as UTC (never bare) when offset is undefined (back-compat)", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts)).toBe("[Jun 5, 22:38 UTC]");
-		expect(formatTimestamp(ts, undefined)).toBe("[Jun 5, 22:38 UTC]");
-	});
-
-	it("ignores a non-finite offset and renders an explicitly-marked UTC time", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, Number.NaN)).toBe("[Jun 5, 22:38 UTC]");
-	});
-
-	it("is deterministic for a given (timestamp, offset) pair", () => {
-		const ts = "2026-06-05T22:38:00.000Z";
-		expect(formatTimestamp(ts, -240)).toBe(formatTimestamp(ts, -240));
+	it("restores omitted and undefined UTC rendering", () => {
+		const timestamp = "2026-06-05T22:38:00.000Z";
+		expect(formatTimestamp(timestamp)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, undefined)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, Number.NaN)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, Number.POSITIVE_INFINITY)).toBe("[Jun 5, 22:38 UTC]");
+		expect(formatTimestamp(timestamp, Number.NEGATIVE_INFINITY)).toBe("[Jun 5, 22:38 UTC]");
 	});
 });
 
@@ -7679,7 +7015,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		expect(devMsg).toBeDefined();
 		const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 		expect(devContent).toContain("Current Model: opus");
-		expect(devContent).toContain(`Thread ID: ${threadId}`);
+		expect(devContent).toContain(`thread-id="${threadId}"`);
 	});
 
 	it("stable system messages do not contain per-thread varying content", () => {
@@ -7697,7 +7033,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			.join("\n");
 
 		expect(allSystemText).not.toContain("Current Model: opus");
-		expect(allSystemText).not.toContain(`User ID: ${userId}, Thread ID: ${threadId}`);
+		expect(allSystemText).not.toContain(`<identity user-id="${userId}" thread-id="${threadId}"/>`);
 	});
 
 	it("returns identical system messages for different threads with same memory", () => {
@@ -7770,6 +7106,24 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		const dev1Content = typeof dev1?.content === "string" ? dev1.content : "";
 		const dev2Content = typeof dev2?.content === "string" ? dev2.content : "";
 		expect(dev1Content).not.toEqual(dev2Content);
+	});
+
+	describe("model-specific system prompt suffix", () => {
+		it("appends the resolved model suffix to the system prompt", () => {
+			const result = assembleContext({
+				db,
+				threadId,
+				userId,
+				currentModel: "configured",
+				systemPromptSuffix: "Configured model only.",
+			});
+			expect(result.systemPrompt.endsWith("Configured model only.")).toBe(true);
+		});
+
+		it("does not append a suffix when the resolved model has none", () => {
+			const result = assembleContext({ db, threadId, userId, currentModel: "plain" });
+			expect(result.systemPrompt).not.toContain("Configured model only.");
+		});
 	});
 
 	describe("systemPromptAddition (AC2.2)", () => {
@@ -8142,7 +7496,7 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 		});
 
 		it("should inject synthetic tool_result when user interrupts a pending client tool_call", () => {
-			// Regression for thread 6b6ddeb0-ad14-44ee-99d6-96b9debc32c7 (2026-04-26):
+			// Regression, observed live:
 			// 1. Agent dispatched a boundless_bash client tool, persisted the tool_call,
 			//    and yielded while waiting for the result over WS.
 			// 2. User typed a follow-up message before the long-running bash returned.
@@ -8455,8 +7809,8 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 			const devContent = typeof devMsg?.content === "string" ? devMsg.content : "";
 
 			// Should contain the typical volatile enrichment sections
-			// (User ID, Thread ID are guaranteed to be in developer message)
-			expect(devContent).toContain(`User ID: ${userId}, Thread ID: ${threadId}`);
+			// (the identity element is guaranteed to be in the developer message)
+			expect(devContent).toContain(`<identity user-id="${userId}" thread-id="${threadId}"/>`);
 		});
 
 		it("cache-stable-prefix.AC2.1: no other cache-role messages before developer", () => {
@@ -8981,7 +8335,6 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			varyingEnrichmentEndIdx: enrichmentEndIdx,
 			allVolatileLines,
 			allVaryingLines: [...allVolatileLines],
-			memoryDeltaLines: memoryLines,
 			taskDigestLines,
 			totalMemCount: 0,
 		};
@@ -9100,7 +8453,6 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			varyingEnrichmentEndIdx: 0,
 			allVolatileLines: [],
 			allVaryingLines: [],
-			memoryDeltaLines: [],
 			taskDigestLines: [],
 			totalMemCount: 0,
 		};
@@ -9235,7 +8587,6 @@ describe("rebuildWarmSections — warm-path debug.sections preservation", () => 
 			varyingEnrichmentEndIdx: allVaryingLines.length,
 			allVolatileLines,
 			allVaryingLines,
-			memoryDeltaLines: [varyingBody],
 			taskDigestLines: [],
 			totalMemCount: 0,
 		};

@@ -55,6 +55,7 @@ let { value, onchange, placeholder, icon, fullWidth = false }: Props = $props();
 		background: transparent;
 		flex: 1;
 		min-width: 0;
+		width: 100%;
 		font-family: var(--font-display);
 		font-size: 13px;
 		color: var(--ink);

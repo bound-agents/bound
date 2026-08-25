@@ -1,11 +1,32 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { getSiteId, insertRow, softDelete, updateRow } from "@bound/core";
-import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { findWebhookResponseById } from "@bound/core";
+import {
+	findClusterConfigKeyByKeyIncludingDeleted,
+	findClusterConfigValueByKey,
+	findWebhookDeletedFlagById,
+	findWebhookIdById,
+	findWebhookIdByName,
+	findWebhookIdsById,
+	findWebhookNameById,
+	findWebhookTaskIdById,
+	getSiteId,
+	getWebhookWithTaskById,
+	insertRow,
+	listHostSyncTargets,
+	listWebhooksWithTask,
+	softDelete,
+	updateRow,
+} from "@bound/core";
+import {
+	BOUND_NAMESPACE,
+	WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+	deterministicUUID,
+} from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 import { Hono } from "hono";
-import { type ClusterHostRow, buildWebhookUrls } from "../webhook-urls";
+import { buildWebhookUrls } from "../webhook-urls";
 
 export interface WebhooksRoutesConfig {
 	/** Sync server bind host (process.env.BIND_HOST). */
@@ -33,20 +54,6 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 	// `no_history` is stored as INTEGER (0/1) on the task row; we coerce to a
 	// boolean here so the JSON shape matches what callers expect ergonomically
 	// (and what UpdateWebhookOptions accepts on PATCH).
-	const WEBHOOK_SELECT = `SELECT
-			w.id,
-			w.name,
-			w.signature_format,
-			w.description,
-			w.task_id,
-			w.thread_id,
-			w.created_at,
-			w.modified_at,
-			t.system_prompt_addition AS prompt,
-			t.model_hint AS model_hint,
-			CASE WHEN t.no_history = 1 THEN 1 ELSE 0 END AS no_history
-		FROM webhooks w
-		LEFT JOIN tasks t ON t.id = w.task_id AND t.deleted = 0`;
 
 	// Coerce raw row → response shape: integer no_history becomes boolean.
 	function shapeWebhook(
@@ -60,9 +67,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 	// GET / — List webhooks (AC5.2)
 	app.get("/", (c) => {
 		try {
-			const rows = db
-				.prepare(`${WEBHOOK_SELECT} WHERE w.deleted = 0 ORDER BY w.created_at DESC`)
-				.all() as Array<Record<string, unknown>>;
+			const rows = listWebhooksWithTask(db) as unknown as Array<Record<string, unknown>>;
 
 			return c.json(rows.map((r) => shapeWebhook(r)));
 		} catch (error) {
@@ -77,14 +82,61 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 		}
 	});
 
+	// GET /unauthenticated-switch — Read the cluster-wide unauthenticated-webhook
+	// kill switch (#195). Registered BEFORE `/:id` so the literal path is not
+	// captured as a webhook id. Absent row reads as disabled (the default).
+	app.get("/unauthenticated-switch", (c) => {
+		try {
+			const row = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+			return c.json({ allow_unauthenticated: row?.value === "true" });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to read switch", details: message }, 500);
+		}
+	});
+
+	// PUT /unauthenticated-switch — Flip the switch. Body: { allow_unauthenticated:
+	// boolean }. Upserts the cluster_config row (un-tombstoning a prior value).
+	// Disabling immediately stops delivery to existing "none" webhooks (the
+	// handler re-checks live) as well as blocking new "none" creates.
+	app.put("/unauthenticated-switch", async (c) => {
+		try {
+			const body = (await c.req.json()) as Record<string, unknown>;
+			if (typeof body.allow_unauthenticated !== "boolean") {
+				return c.json({ error: "allow_unauthenticated must be a boolean" }, 400);
+			}
+			const siteId = resolveSiteId();
+			const value = body.allow_unauthenticated ? "true" : "false";
+			const now = new Date().toISOString();
+			if (findClusterConfigKeyByKeyIncludingDeleted(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY)) {
+				updateRow(
+					db,
+					"cluster_config",
+					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+					{ value, deleted: 0 },
+					siteId,
+				);
+			} else {
+				insertRow(
+					db,
+					"cluster_config",
+					{ key: WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, value, modified_at: now, deleted: 0 },
+					siteId,
+				);
+			}
+			return c.json({ allow_unauthenticated: body.allow_unauthenticated });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to update switch", details: message }, 500);
+		}
+	});
+
 	// GET /:id — Get single webhook (AC5.6)
 	app.get("/:id", (c) => {
 		try {
 			const id = c.req.param("id");
 
-			const webhook = db
-				.prepare(`${WEBHOOK_SELECT} WHERE w.id = ? AND w.deleted = 0`)
-				.get(id) as Record<string, unknown> | null;
+			const webhook = getWebhookWithTaskById(db, id) as Record<string, unknown> | null;
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -109,9 +161,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const id = c.req.param("id");
 
 			// Look up by id to get the webhook's name (delivery URLs use name).
-			const webhook = db
-				.prepare("SELECT name FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { name: string } | null;
+			const webhook = findWebhookNameById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -119,9 +169,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 
 			// Non-deleted hosts. Rows with null/empty sync_url are filtered
 			// inside the helper.
-			const clusterHosts = db
-				.prepare("SELECT site_id, host_name, sync_url FROM hosts WHERE deleted = 0")
-				.all() as ClusterHostRow[];
+			const clusterHosts = listHostSyncTargets(db);
 
 			const urls = buildWebhookUrls({
 				name: webhook.name,
@@ -180,10 +228,28 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				);
 			}
 
+			// "none" (unauthenticated) webhooks are gated behind an explicit,
+			// operator-controlled cluster_config switch (#195), default off. This
+			// runs before the duplicate-name check so a rejected create doesn't
+			// leak whether the name is taken.
+			if (format === "none") {
+				const allowUnauthenticated = findClusterConfigValueByKey(
+					db,
+					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
+				);
+				if (allowUnauthenticated?.value !== "true") {
+					return c.json(
+						{
+							error:
+								"Unauthenticated webhooks (signature_format: 'none') are disabled. Enable them cluster-wide first (POST /api/webhooks/unauthenticated-switch or `boundctl webhook allow-unauthenticated`).",
+						},
+						403,
+					);
+				}
+			}
+
 			// Check for existing non-deleted webhook
-			const existing = db
-				.prepare("SELECT id FROM webhooks WHERE name = ? AND deleted = 0")
-				.get(name) as { id: string } | null;
+			const existing = findWebhookIdByName(db, name);
 
 			if (existing) {
 				return c.json({ error: `Webhook '${name}' already exists` }, 400);
@@ -267,9 +333,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			// with deleted=1 — insert would fail on the PK. Restore it in
 			// place via updateRow so the deterministic-id property holds.
 			const webhookId = deterministicUUID(BOUND_NAMESPACE, `webhook:${name}`);
-			const priorRow = db.prepare("SELECT deleted FROM webhooks WHERE id = ?").get(webhookId) as {
-				deleted: number;
-			} | null;
+			const priorRow = findWebhookDeletedFlagById(db, webhookId);
 
 			if (priorRow) {
 				// Existing row must be soft-deleted at this point — the active
@@ -314,9 +378,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			// Return full webhook object INCLUDING secret. Re-SELECT through
 			// WEBHOOK_SELECT so the response shape (prompt, model_hint, etc.)
 			// matches GET/PATCH and the client can avoid a follow-up fetch.
-			const fresh = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(webhookId) as
-				| Record<string, unknown>
-				| undefined;
+			const fresh = findWebhookResponseById(db, webhookId);
 			const shaped = shapeWebhook(fresh) ?? {};
 			return c.json({ ...shaped, secret }, 201);
 		} catch (error) {
@@ -339,9 +401,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const siteId = resolveSiteId();
 
 			// Look up webhook by id
-			const webhook = db
-				.prepare("SELECT id, task_id, thread_id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { id: string; task_id: string; thread_id: string } | null;
+			const webhook = findWebhookIdsById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -436,10 +496,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			}
 
 			// Fetch and return updated webhook (without secret, with prompt)
-			const updated = db.prepare(`${WEBHOOK_SELECT} WHERE w.id = ?`).get(id) as Record<
-				string,
-				unknown
-			>;
+			const updated = findWebhookResponseById(db, id);
 
 			return c.json(shapeWebhook(updated));
 		} catch (error) {
@@ -461,9 +518,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const siteId = resolveSiteId();
 
 			// Look up webhook
-			const webhook = db
-				.prepare("SELECT task_id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { task_id: string } | null;
+			const webhook = findWebhookTaskIdById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);
@@ -495,9 +550,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const siteId = resolveSiteId();
 
 			// Look up webhook
-			const webhook = db
-				.prepare("SELECT id FROM webhooks WHERE id = ? AND deleted = 0")
-				.get(id) as { id: string } | null;
+			const webhook = findWebhookIdById(db, id);
 
 			if (!webhook) {
 				return c.json({ error: "Webhook not found" }, 404);

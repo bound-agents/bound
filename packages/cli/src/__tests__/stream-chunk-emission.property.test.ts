@@ -18,11 +18,11 @@
  *      immediately), no stream:chunk events are emitted.
  */
 
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { AgentLoopResult } from "@bound/agent";
 import type { AgentLoopConfig } from "@bound/agent";
-import type { AgentLoop } from "@bound/agent";
+import type { MainAgentLoop } from "@bound/agent";
 import type { WsStreamChunk } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import fc from "fast-check";
@@ -68,7 +68,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 
 				eventBus.on("stream:chunk", (data) => emitted.push(data));
 
-				const factory = (config: AgentLoopConfig): AgentLoop =>
+				const factory = (config: AgentLoopConfig): MainAgentLoop =>
 					({
 						run: async (): Promise<AgentLoopResult> => {
 							for (const chunk of chunks) {
@@ -76,7 +76,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 							}
 							return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 						},
-					}) as AgentLoop;
+					}) as MainAgentLoop;
 
 				await runLocalAgentLoop({
 					eventBus,
@@ -103,7 +103,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 
 				eventBus.on("stream:chunk", (data) => emitted.push(data));
 
-				const factory = (config: AgentLoopConfig): AgentLoop =>
+				const factory = (config: AgentLoopConfig): MainAgentLoop =>
 					({
 						run: async (): Promise<AgentLoopResult> => {
 							for (const chunk of chunks) {
@@ -111,7 +111,7 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 							}
 							return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 						},
-					}) as AgentLoop;
+					}) as MainAgentLoop;
 
 				await runLocalAgentLoop({
 					eventBus,
@@ -128,49 +128,133 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 		);
 	});
 
-	it("E3: timeout reset — stream chunks within each window prevent abort", async () => {
-		// Generate a series of delays that are each LESS than the timeout,
-		// but whose total exceeds it. The stream chunks should reset the
-		// timer each time so the loop completes.
+	it("E3: timeout reset — every pre-deadline chunk keeps the loop alive", async () => {
 		const TIMEOUT_MS = 80;
+		const originalSetTimeout = globalThis.setTimeout;
+		const originalClearTimeout = globalThis.clearTimeout;
+		let now = 0;
+		let nextId = 0;
+		const timers = new Map<number, { deadline: number; callback: () => void }>();
 
-		await fc.assert(
-			fc.asyncProperty(
-				fc.array(fc.integer({ min: 10, max: TIMEOUT_MS - 20 }), { minLength: 2, maxLength: 5 }),
-				async (delays) => {
-					const eventBus = new TypedEventEmitter();
-					const threadId = randomUUID();
-					const capturedSignals: AbortSignal[] = [];
+		const advanceTo = (target: number): void => {
+			while (true) {
+				const next = [...timers.entries()]
+					.filter(([, timer]) => timer.deadline <= target)
+					.sort(([, a], [, b]) => a.deadline - b.deadline)[0];
+				if (!next) break;
+				const [id, timer] = next;
+				timers.delete(id);
+				now = timer.deadline;
+				timer.callback();
+			}
+			now = target;
+		};
 
-					const factory = (config: AgentLoopConfig): AgentLoop => {
-						if (config.abortSignal) capturedSignals.push(config.abortSignal);
-						return {
-							run: async (): Promise<AgentLoopResult> => {
-								for (const delay of delays) {
-									await new Promise((r) => setTimeout(r, delay));
-									config.onStreamChunk?.({ type: "text", content: "tick" });
-								}
-								return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
-							},
-						} as AgentLoop;
-					};
+		globalThis.setTimeout = ((callback: () => void, delay = 0) => {
+			const id = ++nextId;
+			timers.set(id, { deadline: now + Number(delay), callback });
+			return id as unknown as ReturnType<typeof setTimeout>;
+		}) as typeof setTimeout;
+		globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+			timers.delete(id as unknown as number);
+		}) as typeof clearTimeout;
 
-					await runLocalAgentLoop({
-						eventBus,
-						threadId,
-						userId: "u1",
-						modelId: "mock",
-						activeLoopAbortControllers: controllers,
-						agentLoopFactory: factory as any,
-						timeoutMs: TIMEOUT_MS,
-					});
+		try {
+			await fc.assert(
+				fc.asyncProperty(
+					fc.array(fc.integer({ min: 1, max: TIMEOUT_MS - 1 }), { minLength: 2, maxLength: 5 }),
+					async (delays) => {
+						timers.clear();
+						now = 0;
+						const eventBus = new TypedEventEmitter();
+						const threadId = randomUUID();
+						const capturedSignals: AbortSignal[] = [];
 
-					// Signal should NOT have been aborted
-					return capturedSignals[0]?.aborted === false;
-				},
-			),
-			{ numRuns: 20 },
-		);
+						const factory = (config: AgentLoopConfig): MainAgentLoop => {
+							if (config.abortSignal) capturedSignals.push(config.abortSignal);
+							return {
+								run: async (): Promise<AgentLoopResult> => {
+									for (const delay of delays) {
+										advanceTo(now + delay);
+										config.onStreamChunk?.({ type: "text", content: "tick" });
+									}
+									return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+								},
+							} as MainAgentLoop;
+						};
+
+						await runLocalAgentLoop({
+							eventBus,
+							threadId,
+							userId: "u1",
+							modelId: "mock",
+							activeLoopAbortControllers: controllers,
+							agentLoopFactory: factory as any,
+							timeoutMs: TIMEOUT_MS,
+						});
+
+						return capturedSignals[0]?.aborted === false;
+					},
+				),
+				{ numRuns: 20 },
+			);
+		} finally {
+			globalThis.setTimeout = originalSetTimeout;
+			globalThis.clearTimeout = originalClearTimeout;
+		}
+	});
+
+	it("E3b: timeout boundary — a chunk after the deadline does not undo the abort", async () => {
+		const TIMEOUT_MS = 80;
+		const originalSetTimeout = globalThis.setTimeout;
+		const originalClearTimeout = globalThis.clearTimeout;
+		let now = 0;
+		let nextId = 0;
+		const timers = new Map<number, { deadline: number; callback: () => void }>();
+		const advanceTo = (target: number): void => {
+			const due = [...timers.entries()].filter(([, timer]) => timer.deadline <= target);
+			for (const [id, timer] of due) {
+				timers.delete(id);
+				now = timer.deadline;
+				timer.callback();
+			}
+			now = target;
+		};
+		globalThis.setTimeout = ((callback: () => void, delay = 0) => {
+			const id = ++nextId;
+			timers.set(id, { deadline: now + Number(delay), callback });
+			return id as unknown as ReturnType<typeof setTimeout>;
+		}) as typeof setTimeout;
+		globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+			timers.delete(id as unknown as number);
+		}) as typeof clearTimeout;
+
+		try {
+			const eventBus = new TypedEventEmitter();
+			const capturedSignals: AbortSignal[] = [];
+			await runLocalAgentLoop({
+				eventBus,
+				threadId: randomUUID(),
+				userId: "u1",
+				modelId: "mock",
+				activeLoopAbortControllers: controllers,
+				timeoutMs: TIMEOUT_MS,
+				agentLoopFactory: ((config: AgentLoopConfig) => {
+					if (config.abortSignal) capturedSignals.push(config.abortSignal);
+					return {
+						run: async (): Promise<AgentLoopResult> => {
+							advanceTo(TIMEOUT_MS + 1);
+							config.onStreamChunk?.({ type: "text", content: "late" });
+							return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+						},
+					} as MainAgentLoop;
+				}) as any,
+			});
+			expect(capturedSignals[0]?.aborted).toBe(true);
+		} finally {
+			globalThis.setTimeout = originalSetTimeout;
+			globalThis.clearTimeout = originalClearTimeout;
+		}
 	});
 
 	it("E4: no spurious emissions — immediate-return loop emits zero events", async () => {
@@ -182,12 +266,12 @@ describe("runLocalAgentLoop stream:chunk emission — property tests", () => {
 
 				eventBus.on("stream:chunk", (data) => emitted.push(data));
 
-				const factory = (_config: AgentLoopConfig): AgentLoop =>
+				const factory = (_config: AgentLoopConfig): MainAgentLoop =>
 					({
 						run: async (): Promise<AgentLoopResult> => {
 							return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 };
 						},
-					}) as AgentLoop;
+					}) as MainAgentLoop;
 
 				await runLocalAgentLoop({
 					eventBus,

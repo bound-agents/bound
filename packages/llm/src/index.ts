@@ -1,5 +1,8 @@
 export type {
 	LLMBackend,
+	BackendReadiness,
+	ModelDescriptor,
+	ModelRegistrar,
 	ChatParams,
 	LLMMessage,
 	ContentBlock,
@@ -18,15 +21,27 @@ export type {
 
 export { LLMError } from "./types";
 
-export { AnthropicDriver } from "./anthropic-driver";
+export { AnthropicDriver } from "./drivers/anthropic";
 
-export { BedrockDriver } from "./bedrock-driver";
+export { BedrockDriver } from "./drivers/bedrock";
 
-export { BedrockMantleDriver } from "./bedrock-mantle-driver";
+export { BedrockMantleDriver } from "./drivers/bedrock-mantle";
 
-export { OpenAICompatibleDriver } from "./openai-compatible-driver";
+export { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 
-export { OpenCodeGoDriver } from "./opencode-go-driver";
+export { OpenCodeGoDriver } from "./drivers/opencode-go";
+
+export { UmansDriver, type UmansAccount } from "./drivers/umans";
+
+export {
+	fetchUmansModelMetadata,
+	fetchUmansUsage,
+	deriveUmansTiers,
+	UMANS_ANTHROPIC_BASE,
+	UMANS_OPENAI_BASE,
+	type UmansModelMeta,
+	type UmansUsage,
+} from "./umans-metadata";
 
 export {
 	createModelRouter,
@@ -36,22 +51,18 @@ export {
 	type PoolEntry,
 } from "./model-router";
 
-export { withRetry, type RetryConfig } from "./retry";
 export {
 	markAwsCredentialCacheStale,
 	consumeAwsCredentialCacheBust,
 	resolveAwsCredentials,
-} from "./aws-credential-cache";
+} from "./drivers/aws-credential-cache";
+
 export {
-	parseStreamLines,
-	extractTextFromBlocks,
-	SSE_DATA_PREFIX,
-	SSE_DONE_SENTINEL,
-} from "./stream-utils";
-
-export { wrapFetchError, checkHttpError } from "./error-utils";
-
-export { sniffImageMediaType, correctMediaType } from "./image-utils";
+	sniffImageMediaType,
+	correctMediaType,
+	PROVIDER_IMAGE_BASE64_MAX_BYTES,
+	PROVIDER_IMAGE_RAW_MAX_BYTES,
+} from "./image-utils";
 
 export { installAiSdkWarningHook, uninstallAiSdkWarningHook } from "./ai-sdk-warning-hook";
 

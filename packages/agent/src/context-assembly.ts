@@ -1,4 +1,20 @@
 import type { Database } from "bun:sqlite";
+import {
+	type CrossThreadSummaryRow,
+	countActiveMemory,
+	findActiveSkillIdAndRootByName,
+	findActiveTaskPayloadById,
+	findClusterConfigValueByKey,
+	findFileContentByPathActive,
+	findTaskClaimedAtById,
+	findThreadSummaryById,
+	findThreadSummaryStateById,
+	listActiveSkillNameDescriptions,
+	listCrossThreadSummaries,
+	listLiveMessageProjectionByThreadNewestFirst,
+	listLiveMessageProjectionByThreadSince,
+	listMemoryDeltaKeysSince,
+} from "@bound/core";
 import type { BackendCapabilities, ContentBlock, LLMMessage } from "@bound/llm";
 import type {
 	CommandRegistryEntry,
@@ -9,14 +25,10 @@ import type {
 	RelevantMemoryDebugEntry,
 } from "@bound/shared";
 import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
-import { trace } from "@opentelemetry/api";
-import { annotateMessages } from "./annotation";
+import { context, trace } from "@opentelemetry/api";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop-utils";
+import { annotateMessagesWithTokens } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
-import {
-	compactToolResultsBeforeBoundary,
-	computeCompactionBoundary,
-	stripThinkingBeforeBoundary,
-} from "./history-compaction";
 import { loadNotificationInputs, renderNotifications } from "./notifications";
 import {
 	ANCIENT_RATIO,
@@ -37,6 +49,7 @@ import { renderClusterModels } from "./stable-prefix/compose";
 import type { ClusterModelView } from "./stable-prefix/types";
 import {
 	type LiveStateTaskEntry,
+	RELEVANT_MEMORY_FOOTER,
 	RELEVANT_MEMORY_HEADER,
 	type StageEntry,
 	type TieredEnrichment,
@@ -55,12 +68,14 @@ import {
 	loadFileModificationsForLiveState,
 	loadPinnedEntries,
 	loadSummaryEntries,
+	renderCrossThreadSummaries,
 	renderDiscoverableArchive,
 	renderLiveState,
 	renderWorkingKnowledge,
 	resolveVc15Tunables,
 	resolveVc27Cap,
 	selectRelevantMemory,
+	shouldInjectCrossThreadSummaries,
 	toRelevantMemoryDebug,
 	wrapVolatileContext,
 } from "./summary-extraction.js";
@@ -69,7 +84,7 @@ import { sanitizeToolPairs } from "./tool-pair-sanitize";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD } from "./tool-result-offload";
 import { collectThreadPinnedSkills } from "./tools/skill-utils";
 import { buildVaryingPrefix } from "./varying-prefix";
-import { computeRecentWindow } from "./warm-compaction";
+import { isYardClientBookkeepingRow } from "./yard-client-rows";
 
 /** Lazily get the tracer to ensure tests can register their provider first */
 function getTracer() {
@@ -77,12 +92,58 @@ function getTracer() {
 }
 
 /**
- * The cold path targets this fraction of contextWindow, leaving headroom for warm-path growth.
- * At 200k contextWindow, this leaves ~30k tokens (15%) for warm-path turns before triggering
- * high-water mark reassembly. With 10-15% underestimation by tiktoken, this also protects
- * against exceeding the model's true context limit.
+ * Time a synchronous sub-step under its own child span. Assembly is fully
+ * synchronous, so this just brackets `fn` with start/end and makes the span the
+ * active parent for anything `fn` starts. The child nests under whatever span is
+ * active (the agent loop's `agent-loop.assemble-context`), so the Jaeger
+ * waterfall attributes cold-rebuild wall-clock to the exact sub-helper. Added to
+ * localize the production cold-assembly latency that isolated profiling could not
+ * reproduce; keep these around the DB/tiktoken-heavy helpers.
  */
-export const TRUNCATION_TARGET_RATIO = 0.85;
+function withChildSpan<T>(
+	name: string,
+	fn: () => T,
+	attributes?: Record<string, string | number | boolean>,
+): T {
+	const span = getTracer().startSpan(name, attributes ? { attributes } : undefined);
+	try {
+		return context.with(trace.setSpan(context.active(), span), fn);
+	} finally {
+		span.end();
+	}
+}
+
+/**
+ * Fallback output-token reserve when the target backend has no configured cap.
+ * This is the same value `clampMaxOutputTokens` sends on the wire when neither
+ * side advertises a budget; assembly and dispatch must never disagree about
+ * how much of the context window generation owns.
+ */
+export const DEFAULT_OUTPUT_TOKEN_RESERVE = DEFAULT_MAX_OUTPUT_TOKENS;
+
+/**
+ * The cold path targets `contextWindow - maxOutputTokens` tokens of history —
+ * the exact amount of room the upcoming model call needs to reserve for its own
+ * response, rather than an arbitrary headroom fraction. Replaces the old
+ * ratio-based `TRUNCATION_TARGET_RATIO` (a fixed 0.85 of contextWindow): a
+ * fixed ratio doesn't know how large the model's actual output
+ * budget is, so it either wastes headroom (small max_tokens, big context) or
+ * under-reserves it (large max_tokens relative to context). Subtracting the
+ * real reserve guarantees space for generation regardless of context-window
+ * size.
+ *
+ * The per-thread inflation EMA still divides this base target down (see
+ * `resolveAdaptiveTruncationTarget` in inflation-ratio.ts) — tiktoken's
+ * cl100k_base under-counts thinking-heavy threads by 1.5-2x, so the effective
+ * budget the agent loop resolves and passes in as `effectiveTruncationBudget` is
+ * tighter than this raw subtraction on threads with measured inflation.
+ */
+export function computeBaseTruncationTarget(
+	contextWindow: number,
+	maxOutputTokens: number | undefined,
+): number {
+	return Math.max(0, contextWindow - (maxOutputTokens ?? DEFAULT_OUTPUT_TOKEN_RESERVE));
+}
 
 /**
  * Safety margin between the estimated token count and the backend's true context window.
@@ -97,8 +158,9 @@ export const TRUNCATION_TARGET_RATIO = 0.85;
  * the backend sees the payload. The ratio is conservative (2%) with a floor (512 tokens) so
  * small contexts still get meaningful headroom.
  *
- * Note: TRUNCATION_TARGET_RATIO (0.85) is a separate concept — it controls how aggressively
- * truncation cuts once it fires. The safety margin controls WHEN truncation fires.
+ * Note: `computeBaseTruncationTarget` (contextWindow - maxOutputTokens) is a separate
+ * concept — it controls how aggressively truncation cuts once it fires. The safety
+ * margin controls WHEN truncation fires.
  */
 export const CONTEXT_SAFETY_MARGIN_RATIO = 0.02;
 export const CONTEXT_SAFETY_MARGIN_FLOOR = 512;
@@ -108,6 +170,51 @@ export function computeSafetyMargin(contextWindow: number): number {
 		CONTEXT_SAFETY_MARGIN_FLOOR,
 		Math.floor(contextWindow * CONTEXT_SAFETY_MARGIN_RATIO),
 	);
+}
+
+/**
+ * The ONLY source of "now" permitted inside `assembleContext`. Every wall-clock
+ * read in the assembly tree — `buildVolatileContext`'s relative-time anchor, the
+ * `formatInstant` year branch, the `bumpRenderedDetailEntries` debounce, and the
+ * Live State subsystems — draws its instant from this clock, so the produced
+ * `{messages, systemPrompt}` is a pure function of `(DB state, AssemblyContext)`
+ * (R-UD4 / AC.3). This extends the R-VC25 stable-prefix purity invariant to the
+ * *varying* Live State half: the producer assembles the whole context and ships
+ * it (segments), and no consumer ever re-renders Live State, so the producer's
+ * render must itself be deterministic given a fixed clock.
+ *
+ * Production callers pass `realTimeClock()` (delegates to `Date.now()`); tests
+ * pass `frozenClock(ms)` so two runs at different real times agree byte-for-byte.
+ */
+export interface AssemblyClock {
+	/** Milliseconds since the Unix epoch. The single ambient-time read. */
+	nowMs(): number;
+}
+
+/** A clock backed by the real wall clock. The production default. */
+export function realTimeClock(): AssemblyClock {
+	return { nowMs: () => Date.now() };
+}
+
+/** A clock frozen at a fixed instant. Used by determinism tests and any caller
+ * that needs two assemblies to agree byte-for-byte. */
+export function frozenClock(ms: number): AssemblyClock {
+	return { nowMs: () => ms };
+}
+
+/**
+ * The explicit assembly environment threaded into `assembleContext`. Bundles the
+ * three signals that make assembly a pure function of `(DB, AssemblyContext)`:
+ * the clock (sole "now"), the target backend capabilities (drives content-block
+ * substitution), and host identity (rendered into orientation). Capabilities and
+ * host are carried as individual `ContextParams` fields for backward compat; this
+ * type documents that together with `clock` they constitute the assembly context.
+ * See docs/design/specs/2026-06-29-unified-delegation.md §2.
+ */
+export interface AssemblyContext {
+	clock: AssemblyClock;
+	capabilities?: BackendCapabilities;
+	host?: { hostName?: string; siteId?: string; topologyRole?: "hub" | "spoke" };
 }
 
 export interface ContextParams {
@@ -145,14 +252,20 @@ export interface ContextParams {
 	targetCapabilities?: BackendCapabilities;
 	/** Estimated token count for tool definitions (counted by caller since tools are at ChatParams level) */
 	toolTokenEstimate?: number;
-	/** When true, replaces old tool_result content (outside the recent window) with DB
-	 *  retrieval pointers and injects the thread summary. Reduces context size while
-	 *  keeping the compacted prefix deterministic and cache-friendly. */
-	compactToolResults?: boolean;
-	/** Number of recent messages to keep intact during compaction. Defaults to 20. */
-	compactRecentWindow?: number;
+	/** Model-resolved text appended to the stable system prompt. */
+	systemPromptSuffix?: string;
 	/** Optional system prompt addition from client connection. Appended to system suffix. */
 	systemPromptAddition?: string;
+	/**
+	 * Replaces the persona slot in the stable system prompt. The slot
+	 * otherwise loads the MAIN persona from cluster_config — which meant
+	 * every aux agent spoke as the main agent, with its own persona merely
+	 * appended after the full main identity (live bug: aux bug-sweeper
+	 * threads opened reports in the main persona's voice). An aux loop
+	 * passes its identity's persona here; empty string renders no persona
+	 * slot; undefined keeps the main persona.
+	 */
+	personaOverride?: string;
 	/**
 	 * Server-level instructions authored by the connector this thread is bound
 	 * to, resolved via PlatformMcpRegistry.getInstructionsForThread(). Surfaced
@@ -163,15 +276,39 @@ export interface ContextParams {
 	/** MCP commands to display in orientation block. Passed explicitly from AppContext. */
 	commandRegistry?: readonly CommandRegistryEntry[];
 	/**
-	 * Override for the truncation/headroom ratio applied to contextWindow.
-	 * Defaults to TRUNCATION_TARGET_RATIO (0.85) when omitted. The agent loop
-	 * supplies a per-thread adaptive value derived from the historical
-	 * tiktoken-vs-actual inflation ratio so threads with thinking-heavy
-	 * content (cl100k_base under-counts by 2x+) don't blow the configured
-	 * context window. Honored at both Stage 1.7 thinking-strip threshold
-	 * and Stage 7 truncation target.
+	 * Precomputed truncation target (tokens) for the Stage 7 telescope gate and
+	 * the soft history budget derived from it. This is the amount of
+	 * context-window room reserved for system + tools + history — i.e.
+	 * `contextWindow` MINUS the room the upcoming model call needs to reserve
+	 * for its own output.
+	 *
+	 * Defaults to `computeBaseTruncationTarget(contextWindow, maxOutputTokens)`
+	 * when omitted — the raw physical constraint with no per-thread inflation
+	 * adjustment. The agent loop supplies a per-thread adaptive value instead:
+	 * the same base target further divided by the measured tiktoken-vs-actual
+	 * inflation EMA (`resolveAdaptiveTruncationTarget`), so threads with
+	 * thinking-heavy content (cl100k_base under-counts by 2x+) don't blow the
+	 * configured context window.
 	 */
-	effectiveTruncationRatio?: number;
+	truncationTargetTokens?: number;
+	/**
+	 * Output-token budget reserved for the upcoming model call. Used ONLY to
+	 * derive the default `truncationTargetTokens` when the caller omits it —
+	 * once `truncationTargetTokens` is supplied directly (the agent loop's
+	 * production path), this field has no further effect. See
+	 * `computeBaseTruncationTarget`.
+	 */
+	maxOutputTokens?: number;
+	/**
+	 * Scaling factor (≤ 1) applied to the PHYSICAL `recentHardCeiling`
+	 * (derived from `effectiveBudget`, i.e. `contextWindow - safetyMargin`) so
+	 * it is expressed in the same tiktoken-estimate units as
+	 * `truncationTargetTokens` when the latter has been tightened by
+	 * per-thread inflation. Equals `1 / measuredInflationEMA` clamped to ≤ 1;
+	 * defaults to 1 (no tightening) when the caller has no inflation
+	 * measurement or the estimator over-counts (inflation < 1).
+	 */
+	recentHardCeilingDeflator?: number;
 	/**
 	 * Per-process cache for the rendered R-VC25 stable volatile subsection.
 	 * When supplied, the cold-path stable bytes pushed onto `systemParts`
@@ -186,6 +323,16 @@ export interface ContextParams {
 	 * instance per process.
 	 */
 	stableSubsectionCache?: StableSubsectionCache;
+	/**
+	 * The sole source of "now" for this assembly (R-UD4 / AC.3). When supplied,
+	 * EVERY wall-clock read in the assembly tree draws from it, so the produced
+	 * `{messages, systemPrompt}` is a pure function of `(DB, clock)`. Defaults to
+	 * `realTimeClock()` when omitted, preserving current production behavior.
+	 * Determinism tests pass `frozenClock(ms)`; the single-delegation producer
+	 * passes `realTimeClock()` so its assembled output is reproducible from the
+	 * same `(DB, clock)` on any host.
+	 */
+	clock?: AssemblyClock;
 }
 
 export interface ContextAssemblyResult {
@@ -213,11 +360,13 @@ export interface VolatileContext {
 	 * window).
 	 */
 	stableContent: string;
+	/** True when Scenario A added a frozen sibling-summary seed to stableContent. */
+	hasStableCrossThreadSummarySeed: boolean;
 	/**
 	 * Varying lines: per-thread / per-turn content. Working Knowledge update
 	 * markers, Live State (cross-thread digest, task digest, file
-	 * modifications, applied advisories), retired-skill notifications,
-	 * advisory feedback notifications, inactive-skill references, the
+	 * modifications, applied advisories), advisory feedback
+	 * notifications, inactive-skill references, the
 	 * User/Thread ID line, relay/platform/model context, and any
 	 * systemPromptAddition. Emitted as a developer message AFTER history;
 	 * uncached.
@@ -246,9 +395,7 @@ export interface VolatileContext {
 	allVolatileLines: string[];
 	/** Snapshot of varying-only volatile lines (mirror of `varyingContent`). */
 	allVaryingLines: string[];
-	/** Memory delta lines for tier-aware shedding */
-	memoryDeltaLines: string[];
-	/** Task digest lines for tier-aware shedding */
+	/** Task digest lines for budget accounting (see `taskDigestLinesSnapshot`) */
 	taskDigestLines: string[];
 	/** Tiered enrichment structure for shedding */
 	tiers?: TieredEnrichment;
@@ -286,6 +433,10 @@ interface VolatileSectionInputs {
 	detailEntries: ReturnType<typeof loadDetailEntries>;
 	staleChildrenMap: ReturnType<typeof buildStaleChildrenMap>;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
+	/** Scenario A: frozen sibling-summary seed placed on the stable channel. */
+	stableCrossThreadSummaries: CrossThreadSummaryRow[];
+	/** Scenario B: sibling-summary delta placed on the varying developer tail. */
+	varyingCrossThreadSummaries: CrossThreadSummaryRow[];
 	digest: ReturnType<typeof buildCrossThreadDigest>;
 	advisories: ReturnType<typeof loadAppliedAdvisoriesForLiveState>;
 	taskDigestEntries: LiveStateTaskEntry[];
@@ -293,6 +444,33 @@ interface VolatileSectionInputs {
 	tiers: TieredEnrichment;
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
 	deltaKeys: Set<string>;
+}
+
+/**
+ * Scenario A starts an un-compacted thread with a frozen sibling-summary seed
+ * on the stable channel. Scenario B is a freshness delta after idle time, so
+ * it remains on the varying tail.
+ */
+function splitCrossThreadSummaryPlacement(
+	threadState: ReturnType<typeof findThreadSummaryStateById>,
+	nowMs: number,
+	siblingSummaries: CrossThreadSummaryRow[],
+): Pick<VolatileSectionInputs, "stableCrossThreadSummaries" | "varyingCrossThreadSummaries"> {
+	if (
+		!threadState ||
+		!shouldInjectCrossThreadSummaries({
+			threadSummaryThrough: threadState.summary_through,
+			threadLastMessageAt: threadState.last_message_at ?? new Date(nowMs).toISOString(),
+			nowMs,
+			siblingSummaries,
+		})
+	) {
+		return { stableCrossThreadSummaries: [], varyingCrossThreadSummaries: [] };
+	}
+
+	return threadState.summary_through === null
+		? { stableCrossThreadSummaries: siblingSummaries, varyingCrossThreadSummaries: [] }
+		: { stableCrossThreadSummaries: [], varyingCrossThreadSummaries: siblingSummaries };
 }
 
 /**
@@ -332,37 +510,54 @@ function loadVolatileSectionInputs(args: {
 		hostName,
 	} = args;
 
-	const pinned = loadPinnedEntries(db);
-	const summaries = loadSummaryEntries(db, pinned.exclusionSet);
-	const detailEntries = loadDetailEntries(db);
-	const staleChildrenMap = buildStaleChildrenMap(db, summaries.entries);
-	const parentSummaryMap = buildParentSummaryMap(
-		db,
-		detailEntries.entries.map((e) => e.key),
+	const { pinned, summaries, detailEntries, staleChildrenMap, parentSummaryMap } = withChildSpan(
+		"context.helper.load-memory-entries",
+		() => {
+			const p = loadPinnedEntries(db);
+			const s = loadSummaryEntries(db, p.exclusionSet);
+			const d = loadDetailEntries(db);
+			return {
+				pinned: p,
+				summaries: s,
+				detailEntries: d,
+				staleChildrenMap: buildStaleChildrenMap(db, s.entries),
+				parentSummaryMap: buildParentSummaryMap(
+					db,
+					d.entries.map((e) => e.key),
+				),
+			};
+		},
 	);
-	const digest = buildCrossThreadDigest(db, userId, threadId);
+	const digest = withChildSpan("context.helper.build-cross-thread-digest", () =>
+		buildCrossThreadDigest(db, userId, threadId),
+	);
+
+	// #178: Scenario A seeds a new thread's stable prefix; Scenario B injects
+	// a freshness delta after inactivity on the varying developer tail.
+	const threadState = findThreadSummaryStateById(db, threadId);
+	const recencyCutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+	const allSiblingSummaries = listCrossThreadSummaries(db, userId, threadId, recencyCutoff);
+	const { stableCrossThreadSummaries, varyingCrossThreadSummaries } =
+		splitCrossThreadSummaryPlacement(threadState, nowMs, allSiblingSummaries);
 	const advisories = loadAppliedAdvisoriesForLiveState(db, nowMs);
 	const fileEntries = loadFileModificationsForLiveState(db, threadId, siteId, hostName);
 
-	const { taskDigestEntries, taskDigestLines, tiers } = buildVolatileEnrichment(
-		db,
-		baseline,
-		maxMemory,
-		maxTasks,
-		undefined,
-		undefined,
-		undefined,
-		maxPinned,
+	const { taskDigestEntries, taskDigestLines, tiers } = withChildSpan(
+		"context.helper.build-volatile-enrichment",
+		() =>
+			buildVolatileEnrichment(
+				db,
+				baseline,
+				maxMemory,
+				maxTasks,
+				undefined,
+				undefined,
+				undefined,
+				maxPinned,
+			),
 	);
 
-	const allDeltaKeys = db
-		.prepare(
-			`SELECT DISTINCT key FROM semantic_memory
-			 WHERE modified_at > ?
-			   AND deleted = 0
-			   AND key NOT LIKE '_internal.%'`,
-		)
-		.all(baseline) as Array<{ key: string }>;
+	const allDeltaKeys = listMemoryDeltaKeysSince(db, baseline);
 	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
 
 	return {
@@ -371,6 +566,8 @@ function loadVolatileSectionInputs(args: {
 		detailEntries,
 		staleChildrenMap,
 		parentSummaryMap,
+		stableCrossThreadSummaries,
+		varyingCrossThreadSummaries,
 		digest,
 		advisories,
 		taskDigestEntries,
@@ -381,6 +578,14 @@ function loadVolatileSectionInputs(args: {
 	};
 }
 
+/**
+ * Hashes the exact set of inputs that are allowed to influence the stable
+ * volatile subsection's bytes (R-VC25). Compared cold-assembly to
+ * cold-assembly: an unchanged fingerprint with changed output bytes means a
+ * renderer leaked an unlisted input; a changed fingerprint with no covering
+ * change-log row means a collector leaked one. See the R-VC25 drift
+ * detector in `validation/run-stable-prefix-drift-validation.ts`.
+ */
 function computeStablePrefixInputFingerprint(args: {
 	pinned: ReadonlyArray<StageEntry>;
 	summaries: ReadonlyArray<StageEntry>;
@@ -390,6 +595,7 @@ function computeStablePrefixInputFingerprint(args: {
 	budgetPressure: boolean;
 	activeSkills: ReadonlyArray<{ name: string; description: string }>;
 	clusterModels: ReadonlyArray<ClusterModelView>;
+	stableCrossThreadSummaries: CrossThreadSummaryRow[];
 }): string {
 	// Route every fingerprint computation through the same pure
 	// projector (`projectStableVolatileInputs` in `stable-prefix/`).
@@ -397,7 +603,7 @@ function computeStablePrefixInputFingerprint(args: {
 	// inline and silently diverged — the drift detector's "leak in
 	// compose" classification would then false-positive when paths
 	// disagreed.
-	return hashStableVolatileInputs(
+	const baseFingerprint = hashStableVolatileInputs(
 		projectStableVolatileInputs({
 			pinned: args.pinned,
 			summaries: args.summaries,
@@ -409,6 +615,11 @@ function computeStablePrefixInputFingerprint(args: {
 			tunables: resolveVc15Tunables(),
 			clusterModels: args.clusterModels,
 		}),
+	);
+
+	if (args.stableCrossThreadSummaries.length === 0) return baseFingerprint;
+	return hashSystemPromptString(
+		`${baseFingerprint}\n${renderCrossThreadSummaries(args.stableCrossThreadSummaries).lines.join("\n")}`,
 	);
 }
 
@@ -457,6 +668,10 @@ interface ComposeVolatileSectionsParams {
 	includeStaleChildren: boolean;
 	parentSummaryMap: ReturnType<typeof buildParentSummaryMap>;
 	deltaKeys: Set<string>;
+	/** Scenario A's frozen new-thread seed, rendered before history. */
+	stableCrossThreadSummaries: CrossThreadSummaryRow[];
+	/** Scenario B's idle-thread delta, rendered in the developer tail. */
+	varyingCrossThreadSummaries: CrossThreadSummaryRow[];
 	digest: ReturnType<typeof buildCrossThreadDigest>;
 	taskDigestEntries: LiveStateTaskEntry[];
 	fileEntries: ReturnType<typeof loadFileModificationsForLiveState>;
@@ -576,10 +791,19 @@ function composeVolatileSections(params: ComposeVolatileSectionsParams): {
 	if (params.recencyEntries.length > 0) {
 		varyingLines.push("");
 		varyingLines.push(RELEVANT_MEMORY_HEADER);
-		varyingLines.push("");
 		for (const entry of params.recencyEntries) {
 			varyingLines.push(formatRelevantMemoryTitleLine(entry));
 		}
+		varyingLines.push(RELEVANT_MEMORY_FOOTER);
+	}
+
+	if (params.stableCrossThreadSummaries.length > 0) {
+		stableLines.push("");
+		stableLines.push(...renderCrossThreadSummaries(params.stableCrossThreadSummaries).lines);
+	}
+
+	if (params.varyingCrossThreadSummaries.length > 0) {
+		varyingLines.push(...renderCrossThreadSummaries(params.varyingCrossThreadSummaries).lines);
 	}
 
 	const ls = renderLiveState({
@@ -721,54 +945,81 @@ export function buildVolatileContext(params: {
 	);
 
 	// Compute delta-key set from R-MV1 baseline + delta query
-	const allDeltaKeys = params.db
-		.prepare(
-			`SELECT DISTINCT key FROM semantic_memory
-			 WHERE modified_at > ?
-			   AND deleted = 0
-			   AND key NOT LIKE '_internal.%'`,
-		)
-		.all(enrichmentBaseline) as Array<{ key: string }>;
+	const allDeltaKeys = listMemoryDeltaKeysSince(params.db, enrichmentBaseline);
 	const deltaKeys = new Set(allDeltaKeys.map((r) => r.key));
 
 	// Load inputs for renderers
-	const pinned = loadPinnedEntries(params.db);
-	const summaries = loadSummaryEntries(params.db, pinned.exclusionSet);
-	const detailEntries = loadDetailEntries(params.db);
+	const { pinned, summaries, detailEntries } = withChildSpan(
+		"context.helper.load-memory-entries",
+		() => {
+			const p = loadPinnedEntries(params.db);
+			return {
+				pinned: p,
+				summaries: loadSummaryEntries(params.db, p.exclusionSet),
+				detailEntries: loadDetailEntries(params.db),
+			};
+		},
+	);
 
 	// Bump last_accessed_at for detail entries that are about to
 	// be rendered into Discoverable Archive. The DA sort key and
 	// per-entry `(last accessed Nd ago)` fragment depend on this
 	// column; without a render-time bump the agent reads its own
-	// actively-used memory as "26d ago" and concludes everything is
-	// stale (live evidence: thread d0372be6). Debounced to one bump
-	// per entry per hour. Direct SQL write (not via the outbox) —
-	// see bumpRenderedDetailEntries for the documented exception
-	// to invariant #1.
-	bumpRenderedDetailEntries(params.db, detailEntries.entries, nowMs);
-
-	const staleChildrenMap = buildStaleChildrenMap(params.db, summaries.entries);
-	const parentSummaryMap = buildParentSummaryMap(
-		params.db,
-		detailEntries.entries.map((e) => e.key),
+	// actively-used memory as stale (observed: an entry rendered on
+	// every cold assembly for weeks still showed "26d ago" because
+	// nothing on the read path advanced the column). Debounced to
+	// one bump per entry per hour. Direct SQL write (not via the
+	// outbox) — see bumpRenderedDetailEntries for the documented
+	// exception to invariant #1.
+	withChildSpan(
+		"context.helper.bump-rendered-detail-entries",
+		() => bumpRenderedDetailEntries(params.db, detailEntries.entries, nowMs),
+		{ entry_count: detailEntries.entries.length },
 	);
-	const digest = buildCrossThreadDigest(params.db, params.userId, params.threadId);
+
+	const { staleChildrenMap, parentSummaryMap } = withChildSpan(
+		"context.helper.build-summary-maps",
+		() => ({
+			staleChildrenMap: buildStaleChildrenMap(params.db, summaries.entries),
+			parentSummaryMap: buildParentSummaryMap(
+				params.db,
+				detailEntries.entries.map((e) => e.key),
+			),
+		}),
+	);
+	const digest = withChildSpan("context.helper.build-cross-thread-digest", () =>
+		buildCrossThreadDigest(params.db, params.userId, params.threadId),
+	);
+
+	// #178: Scenario A gets a frozen stable seed; Scenario B gets a varying
+	// freshness delta after inactivity.
+	const coldThreadState = findThreadSummaryStateById(params.db, params.threadId);
+	const coldRecencyCutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+	const coldAllSiblingSummaries = listCrossThreadSummaries(
+		params.db,
+		params.userId,
+		params.threadId,
+		coldRecencyCutoff,
+	);
+	const { stableCrossThreadSummaries, varyingCrossThreadSummaries } =
+		splitCrossThreadSummaryPlacement(coldThreadState, nowMs, coldAllSiblingSummaries);
 	const advisories = loadAppliedAdvisoriesForLiveState(params.db, nowMs);
 
 	// Compute task and file entries
 	const {
 		taskDigestEntries,
 		taskDigestLines,
-		memoryDeltaLines,
 		tiers: enrichmentTiers,
-	} = buildVolatileEnrichment(
-		params.db,
-		enrichmentBaseline,
-		undefined,
-		undefined,
-		params.userMessageText,
-		params.threadSummary,
-		params.assistantMessageText,
+	} = withChildSpan("context.helper.build-volatile-enrichment", () =>
+		buildVolatileEnrichment(
+			params.db,
+			enrichmentBaseline,
+			undefined,
+			undefined,
+			params.userMessageText,
+			params.threadSummary,
+			params.assistantMessageText,
+		),
 	);
 	const fileEntries = loadFileModificationsForLiveState(
 		params.db,
@@ -778,11 +1029,7 @@ export function buildVolatileContext(params: {
 	);
 
 	// Query total memory count for VolatileContext return
-	const totalMemCount = (
-		params.db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
-			c: number;
-		}
-	).c;
+	const totalMemCount = countActiveMemory(params.db);
 
 	// Render the three sections using the shared composer.
 	// Stable side: WK bodies + DA titles. Varying side: WK update markers +
@@ -792,11 +1039,13 @@ export function buildVolatileContext(params: {
 	// Hoisted so the R-VC27 selection can ride onto the returned VolatileContext
 	// (and from there onto ContextDebugInfo.relevantMemory, #179) without
 	// re-running the keyword+graph pipeline at the debug-construction site.
-	const relevantMemorySelection = selectRelevantMemory(
-		flattenRecencyEntries(enrichmentTiers),
-		pinned.entries,
-		summaries.entries,
-		resolveVc27Cap(),
+	const relevantMemorySelection = withChildSpan("context.helper.select-relevant-memory", () =>
+		selectRelevantMemory(
+			flattenRecencyEntries(enrichmentTiers),
+			pinned.entries,
+			summaries.entries,
+			resolveVc27Cap(),
+		),
 	);
 	const { stableLines: enrichmentStableLines, varyingLines: enrichmentVaryingLines } =
 		composeVolatileSections({
@@ -809,6 +1058,8 @@ export function buildVolatileContext(params: {
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap,
 			deltaKeys,
+			stableCrossThreadSummaries,
+			varyingCrossThreadSummaries,
 			digest,
 			taskDigestEntries,
 			fileEntries,
@@ -840,11 +1091,7 @@ export function buildVolatileContext(params: {
 	// has (empty skill index produces no lines).
 	let activeSkills: Array<{ name: string; description: string }> = [];
 	try {
-		activeSkills = params.db
-			.query(
-				"SELECT name, description FROM skills WHERE status = 'active' AND deleted = 0 ORDER BY last_activated_at DESC",
-			)
-			.all() as Array<{ name: string; description: string }>;
+		activeSkills = listActiveSkillNameDescriptions(params.db);
 
 		if (activeSkills.length > 0) {
 			const skillIndexLines = renderSkillIndex(activeSkills).split("\n");
@@ -956,11 +1203,13 @@ export function buildVolatileContext(params: {
 		budgetPressure: false,
 		activeSkills,
 		clusterModels: loadClusterModels(params.db, params.siteId),
+		stableCrossThreadSummaries,
 	});
 
 	return {
 		content,
 		stableContent,
+		hasStableCrossThreadSummarySeed: stableCrossThreadSummaries.length > 0,
 		varyingContent,
 		tokenEstimate,
 		stableTokenEstimate,
@@ -971,7 +1220,6 @@ export function buildVolatileContext(params: {
 		varyingEnrichmentEndIdx,
 		allVolatileLines,
 		allVaryingLines,
-		memoryDeltaLines,
 		taskDigestLines,
 		tiers: enrichmentTiers,
 		crossThreadSources,
@@ -1015,9 +1263,7 @@ export function estimateContentLength(content: string | ContentBlock[]): number 
  * configDir-keyed cache.
  */
 function loadPersona(db: Database): string | null {
-	const row = db
-		.query("SELECT value FROM cluster_config WHERE key = ?")
-		.get(PERSONA_CLUSTER_CONFIG_KEY) as { value: string } | null;
+	const row = findClusterConfigValueByKey(db, PERSONA_CLUSTER_CONFIG_KEY);
 	return row?.value ?? null;
 }
 
@@ -1049,8 +1295,12 @@ function formatUtcOffset(offsetMinutes: number): string {
  * and a `UTC±HH:MM` suffix is appended so the local time is unambiguous:
  *   "[Jun 5, 18:38 UTC-04:00]". The year-variant check uses the shifted (local) year.
  */
-export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): string {
-	return `[${formatInstant(isoTimestamp, offsetMinutes)}]`;
+export function formatTimestamp(
+	isoTimestamp: string,
+	offsetMinutes?: number,
+	nowMsRef?: number,
+): string {
+	return `[${formatInstant(isoTimestamp, offsetMinutes, nowMsRef)}]`;
 }
 
 /**
@@ -1063,8 +1313,21 @@ export function formatTimestamp(isoTimestamp: string, offsetMinutes?: number): s
  * Without an offset, components are read in UTC: same-year "Apr 4, 14:30 UTC",
  * different year "Jan 15 '25, 09:45 UTC". With `offsetMinutes` the instant is
  * shifted into the sender's local wall-clock and a `UTC±HH:MM` suffix appended.
+ *
+ * The "same year?" comparison is the function's ONLY wall-clock dependency. Pass
+ * `nowMsRef` (the AssemblyClock instant) to make it deterministic across hosts —
+ * two hosts in different calendar years rendering the same `created_at` would
+ * otherwise disagree (`Dec 31, 23:59 UTC` vs `Dec 31 '25, 23:59 UTC`), breaking
+ * the cross-host byte-equivalence the single-delegation path needs (R-UD4 /
+ * AC.3). When omitted, falls back to `Date.now()` (legacy callers, e.g. CLI
+ * formatting) — the value never crosses a relay so that residual impurity is
+ * harmless there.
  */
-export function formatInstant(isoTimestamp: string, offsetMinutes?: number): string {
+export function formatInstant(
+	isoTimestamp: string,
+	offsetMinutes?: number,
+	nowMsRef?: number,
+): string {
 	const utc = new Date(isoTimestamp);
 	const hasOffset = typeof offsetMinutes === "number" && Number.isFinite(offsetMinutes);
 	// Shift to the sender's local wall-clock, then read UTC components off the
@@ -1082,7 +1345,7 @@ export function formatInstant(isoTimestamp: string, offsetMinutes?: number): str
 	// sender-local time.
 	const suffix = hasOffset ? ` ${formatUtcOffset(offsetMinutes as number)}` : " UTC";
 
-	const currentYear = new Date().getUTCFullYear();
+	const currentYear = new Date(nowMsRef ?? Date.now()).getUTCFullYear();
 	if (d.getUTCFullYear() !== currentYear) {
 		const yearShort = String(d.getUTCFullYear()).slice(-2);
 		return `${month} ${day} '${yearShort}, ${hours}:${minutes}${suffix}`;
@@ -1109,13 +1372,20 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 		userId,
 		noHistory = false,
 		currentModel,
-		contextWindow = 8000,
+		contextWindow = 200_000,
 		hostName,
 		siteId,
 		relayInfo,
 		targetCapabilities,
-		effectiveTruncationRatio = TRUNCATION_TARGET_RATIO,
+		truncationTargetTokens = computeBaseTruncationTarget(contextWindow, params.maxOutputTokens),
+		recentHardCeilingDeflator = 1,
 	} = params;
+
+	// The sole source of "now" for this assembly (R-UD4 / AC.3). Resolved ONCE
+	// here and threaded into every wall-clock-dependent subtree (annotation year
+	// branch, volatile context, Live State, last_accessed_at debounce). Defaults
+	// to the real clock for production callers that have not been threaded yet.
+	const assemblyNowMs = (params.clock ?? realTimeClock()).nowMs();
 
 	const sections: ContextSection[] = [];
 	let budgetPressure = false;
@@ -1156,26 +1426,25 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	const MESSAGE_LOAD_HARD_CEILING = 100_000;
 	const messages: Message[] = [];
 	if (!noHistory) {
-		const query = db.query(
-			"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at DESC, rowid DESC LIMIT ?",
+		const rows = listLiveMessageProjectionByThreadNewestFirst(
+			db,
+			threadId,
+			MESSAGE_LOAD_HARD_CEILING,
 		);
-		const rows = query.all(threadId, MESSAGE_LOAD_HARD_CEILING) as Message[];
 		rows.reverse();
-		messages.push(...rows);
+		// Yard client-dispatch bookkeeping rows (tool_name `yard-client-<uuid>`)
+		// have no declaring tool_call and their content already rides inside the
+		// aggregate yard tool_result — see yard-client-rows.ts for the incident
+		// this prevents (duplicate tool_result ids on the wire).
+		messages.push(...rows.filter((row) => !isYardClientBookkeepingRow(row)));
 	} else if (params.taskId) {
 		// noHistory tasks still need the current run's injected messages (wakeup +
 		// synthetic tool_call/tool_result). Load messages created at or after the
 		// task's claimed_at timestamp to capture exactly this run's setup.
-		const task = db.query("SELECT claimed_at FROM tasks WHERE id = ?").get(params.taskId) as {
-			claimed_at: string | null;
-		} | null;
+		const task = findTaskClaimedAtById(db, params.taskId);
 		if (task?.claimed_at) {
-			const rows = db
-				.query(
-					"SELECT id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin FROM messages WHERE thread_id = ? AND deleted = 0 AND created_at >= ? ORDER BY created_at ASC, rowid ASC",
-				)
-				.all(threadId, task.claimed_at) as Message[];
-			messages.push(...rows);
+			const rows = listLiveMessageProjectionByThreadSince(db, threadId, task.claimed_at);
+			messages.push(...rows.filter((row) => !isYardClientBookkeepingRow(row)));
 		}
 	}
 	stage1Span.setAttribute("message_count", messages.length);
@@ -1195,72 +1464,11 @@ Original output was too large for the context window. If you need the full conte
 	}
 	stage1_5Span.end();
 
-	// Stage 1.7: HISTORY_COMPACTION
-	// Replace old message content (outside the recent window) with DB retrieval
-	// pointers. The agent can re-fetch full content via "query" if needed. Compaction
-	// is deterministic (same message → same replacement), so the compacted prefix is
-	// cache-friendly: assembleContext runs once per loop invocation, and the compacted
-	// messages produce identical content across turns. This reduces context size
-	// dramatically (e.g., 190k → 40k) while preserving conversational structure.
-	// User messages and tool_call messages are kept intact; assistant and tool_result
-	// messages are replaced with compact stubs.
-	// Also injects the thread summary as a context anchor for compacted history.
-	// The recent window preserves the last N messages intact (no tool_result
-	// compaction, no thinking-block stripping). It's the agent's working memory
-	// for the current turn.
-	//
-	// A fixed default of 20 is too large for small-context backends: on a 49K
-	// window with dense tool-using threads, 20 uncompacted messages can easily
-	// consume 15-20K tokens (tool_result payloads are often multi-KB each).
-	// That leaves too little budget for system prompt + tools + compacted
-	// history + enrichment.
-	//
-	// Scale with contextWindow: allot roughly one message per 2.5K tokens of
-	// window, clamped to [4, 20]. So 49K → 19, 32K → 12, 16K → 6, 200K → 20
-	// (still capped at the historical default — larger windows don't need
-	// more recent working memory, they just tolerate it).
-	const stage1_7Span = getTracer().startSpan("context.stage-1.7-history-compaction");
-	if (params.compactToolResults && messages.length > 0) {
-		const recentWindow = params.compactRecentWindow ?? computeRecentWindow(contextWindow);
-
-		// Anchor the compaction boundary to the index of the LAST user
-		// message — see `history-compaction/index.ts` for the cache-
-		// stability rationale. The boundary stays put across LLM round-
-		// trips within a single user request so the prefix bytes don't
-		// mutate underneath the provider's cache.
-		const compactionBoundary = computeCompactionBoundary(messages, recentWindow);
-
-		const thread = db.query("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
-			summary: string | null;
-		} | null;
-		if (thread?.summary) {
-			messages.unshift({
-				id: "__compaction_summary__",
-				thread_id: threadId,
-				role: "developer",
-				content: `[Conversation context — ${compactionBoundary} earlier messages are compacted below as stubs. Use "query SELECT content FROM messages WHERE id='...'" to retrieve any specific message.]\n\n${thread.summary}`,
-				model_id: null,
-				tool_name: null,
-				created_at: messages[0]?.created_at ?? new Date().toISOString(),
-				modified_at: new Date().toISOString(),
-				host_origin: params.hostName ?? "localhost",
-				deleted: 0,
-			} as Message);
-		}
-
-		// The boundary shifts by 1 if we prepended the summary message
-		// (it was computed against the pre-prepend indices).
-		const adjustedBoundary = thread?.summary ? compactionBoundary + 1 : compactionBoundary;
-
-		// Compaction primitives — see `history-compaction/`:
-		//   - tool_result: stub if content > COLD_COMPACTION_THRESHOLD
-		//   - tool_call thinking: budget-driven strip when over threshold
-		//   - assistant / user: untouched
-		compactToolResultsBeforeBoundary(messages, adjustedBoundary);
-		const thinkingThreshold = Math.floor(contextWindow * effectiveTruncationRatio);
-		stripThinkingBeforeBoundary(messages, adjustedBoundary, thinkingThreshold);
-	}
-	stage1_7Span.end();
+	// History compaction is handled exclusively by the Stage 7 telescope
+	// (tieredHistoryTruncation), which folds old tool cycles cache-stably and
+	// fires at the soft target. The legacy Stage 1.7 in-place stubbing was
+	// removed: it mutated cached prefix bytes (busting the provider cache) and
+	// duplicated the telescope's middle-tier fold on the same message region.
 
 	// Stage 2: PURGE_SUBSTITUTION
 	// Replace purge-targeted messages with summary developer stubs.
@@ -1330,17 +1538,54 @@ Original output was too large for the context window. If you need the full conte
 	// annotation. See `annotation/` for the full contract;
 	// property-tested at annotation/__tests__/annotate.property.test.ts.
 	const stage5Span = getTracer().startSpan("context.stage-5-annotation");
-	const annotated = annotateMessages({ messages: sanitized });
+	// Annotation also returns an aligned per-message token count (computed once,
+	// keyed by each row's stable identity) so Stage 6/7 reuse it instead of
+	// re-tokenizing the full history 2-3x per cold rebuild — the fix for the
+	// ~100s cold-assembly CPU peg on large threads.
+	const { messages: annotated, perMessageTokens: annotatedTokens } = withChildSpan(
+		"context.helper.annotate-with-tokens",
+		() =>
+			annotateMessagesWithTokens({
+				messages: sanitized,
+				nowMs: assemblyNowMs,
+			}),
+		{ message_count: sanitized.length },
+	);
 	stage5Span.end();
 
 	// Stage 5b: CONTENT_SUBSTITUTION
 	// Replace image/document blocks in assembled messages when the target backend lacks vision support.
 	// This modifies the LLMMessage[] only — the persisted messages.content is never changed.
 	const stage5bSpan = getTracer().startSpan("context.stage-5b-content-substitution");
+	// `substituteUnsupportedBlocks` returns the SAME object reference when it
+	// makes no change (the common case), and a new object only when it actually
+	// rewrites content (image→text, file_ref→base64 hydration). Recount ONLY the
+	// rewritten messages so the token array stays exact without re-encoding the
+	// untouched history.
+	const finalTokens = annotatedTokens.slice();
 	const finalAnnotated = targetCapabilities
-		? annotated.map((msg) => substituteUnsupportedBlocks({ msg, targetCapabilities, db }))
+		? annotated.map((msg, i) => {
+				const substituted = substituteUnsupportedBlocks({ msg, targetCapabilities, db });
+				if (substituted !== msg) finalTokens[i] = countContentTokens(substituted.content);
+				return substituted;
+			})
 		: annotated;
 	stage5bSpan.end();
+
+	// Identity map from each annotated history message to its precomputed token
+	// count. Downstream stages (history sizing, budget gate, tier allocation) look
+	// up this map instead of re-tokenizing — collapsing the 2-3 full-history
+	// tiktoken passes per cold rebuild to zero. Messages NOT in the map (small
+	// injected developer/volatile tail messages built later) fall back to a live
+	// count via `tokensForMessage`, which is cheap for those short strings.
+	const historyTokenByMessage = new WeakMap<LLMMessage, number>();
+	for (let i = 0; i < finalAnnotated.length; i++) {
+		historyTokenByMessage.set(finalAnnotated[i], finalTokens[i]);
+	}
+	const tokensForMessage = (msg: LLMMessage): number => {
+		const cached = historyTokenByMessage.get(msg);
+		return cached !== undefined ? cached : countContentTokens(msg.content);
+	};
 
 	// Stage 6: ASSEMBLY
 	const stage6Span = getTracer().startSpan("context.stage-6-assembly");
@@ -1352,7 +1597,12 @@ Original output was too large for the context window. If you need the full conte
 	// tested for byte-stability — see `system-parts/__tests__/static-parts.property.test.ts`.
 	const systemParts: string[] = buildStaticSystemParts({
 		db,
-		persona: loadPersona(db),
+		// An aux loop replaces the persona slot with its own identity; the
+		// main persona must NOT ride underneath it (aux threads spoke as the
+		// main agent — see ContextParams.personaOverride). Empty string means
+		// "no persona slot at all".
+		persona:
+			params.personaOverride !== undefined ? params.personaOverride || null : loadPersona(db),
 		commandRegistry: params.commandRegistry ?? [],
 		hostName,
 		siteId,
@@ -1377,9 +1627,7 @@ Original output was too large for the context window. If you need the full conte
 	// Must be outside the !noHistory guard so it works when noHistory = true
 	if (params.taskId) {
 		try {
-			const taskRow = db
-				.query("SELECT payload FROM tasks WHERE id = ? AND deleted = 0")
-				.get(params.taskId) as { payload: string | null } | null;
+			const taskRow = findActiveTaskPayloadById(db, params.taskId);
 
 			if (taskRow?.payload) {
 				let taskPayload: unknown;
@@ -1397,21 +1645,13 @@ Original output was too large for the context window. If you need the full conte
 				) {
 					const skillName = (taskPayload as Record<string, unknown>).skill as string;
 
-					const skillRow = db
-						.query(
-							"SELECT id, skill_root FROM skills WHERE name = ? AND status = 'active' AND deleted = 0",
-						)
-						.get(skillName) as { id: string; skill_root: string | null } | null;
+					const skillRow = findActiveSkillIdAndRootByName(db, skillName);
 
 					if (skillRow) {
 						const skillMdPath = skillRow.skill_root
 							? `${skillRow.skill_root}/SKILL.md`
 							: `skills/${skillName}/SKILL.md`;
-						const skillMdRow = db
-							.query("SELECT content FROM files WHERE path = ? AND deleted = 0")
-							.get(skillMdPath) as {
-							content: string;
-						} | null;
+						const skillMdRow = findFileContentByPathActive(db, skillMdPath);
 
 						if (skillMdRow?.content) {
 							systemParts.push(skillMdRow.content);
@@ -1484,7 +1724,7 @@ Original output was too large for the context window. If you need the full conte
 	let toolResultTokens = 0;
 
 	for (const msg of finalAnnotated) {
-		const tokens = countContentTokens(msg.content);
+		const tokens = tokensForMessage(msg);
 		if (msg.role === "user") userTokens += tokens;
 		else if (msg.role === "assistant" || msg.role === "tool_call") assistantTokens += tokens;
 		else if (msg.role === "tool_result") toolResultTokens += tokens;
@@ -1533,9 +1773,7 @@ Original output was too large for the context window. If you need the full conte
 		// tool-loop / keyword-barren-user turns (R-VC30).
 		const assistantMessageText = extractAssistantSeedText(messages);
 		// Query thread summary for broader keyword seeding
-		const threadRow = db.prepare("SELECT summary FROM threads WHERE id = ?").get(threadId) as {
-			summary: string | null;
-		} | null;
+		const threadRow = findThreadSummaryById(db, threadId);
 		const threadSummary = threadRow?.summary ?? undefined;
 
 		const volatileCtx = buildVolatileContext({
@@ -1554,29 +1792,28 @@ Original output was too large for the context window. If you need the full conte
 			assistantMessageText,
 			inactiveSkillRef,
 			taskType: params.taskType,
+			nowMs: assemblyNowMs,
 		});
 
 		// STABLE PREFIX: fold WK bodies + DA titles + skill index into systemParts.
 		// Sits behind the system-level cache breakpoint, so steady-state runs reuse
 		// the prefix across turns and across threads.
 		//
-		// When `stableSubsectionCache` is supplied (production path), pull the
-		// rendered bytes from the per-thread memoization layer instead of using
-		// the fresh `volatileCtx.stableContent`. This insulates the on-wire bytes
-		// from within-TTL `last_accessed_at` bumps and other collect-side
-		// mutations the change_log doesn't track — the K1 invariant of
-		// `stable-prefix/cache.ts`. Tests omit the cache and fall back to the
-		// freshly-rendered content (preserving existing test semantics).
-		const stableContentForWire = params.stableSubsectionCache
-			? params.stableSubsectionCache
-					.get({
-						db,
-						threadId,
-						budgetPressure: false,
-						siteId,
-					})
-					.join("\n")
-			: volatileCtx.stableContent;
+		// The per-thread stable cache intentionally covers only the thread-agnostic
+		// R-VC24 subsection. Scenario A's sibling-summary seed is a distinct,
+		// frozen per-thread snapshot, so send the freshly rendered stable content
+		// when present rather than dropping it behind the cache seam.
+		const stableContentForWire =
+			params.stableSubsectionCache && !volatileCtx.hasStableCrossThreadSummarySeed
+				? params.stableSubsectionCache
+						.get({
+							db,
+							threadId,
+							budgetPressure: false,
+							siteId,
+						})
+						.join("\n")
+				: volatileCtx.stableContent;
 		if (stableContentForWire.length > 0) {
 			// `<volatile-context half="stable">` envelope (ask #3). Applied here,
 			// at the channel boundary, NOT inside the cached subsection: the inner
@@ -1587,9 +1824,10 @@ Original output was too large for the context window. If you need the full conte
 			systemParts.push(wrappedStable);
 			sections[volatilePrefixSectionIndex] = {
 				name: "volatile-prefix",
-				tokens: params.stableSubsectionCache
-					? countTokens(wrappedStable)
-					: volatileCtx.stableTokenEstimate,
+				tokens:
+					params.stableSubsectionCache && !volatileCtx.hasStableCrossThreadSummarySeed
+						? countTokens(wrappedStable)
+						: volatileCtx.stableTokenEstimate,
 			};
 		}
 		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
@@ -1642,7 +1880,7 @@ Original output was too large for the context window. If you need the full conte
 	// Stage 5.5 (noHistory path): Inject enrichment
 	if (noHistory) {
 		enrichmentBaseline = computeBaseline(db, threadId, params.taskId, true);
-		const nowMs = Date.now();
+		const nowMs = assemblyNowMs;
 
 		const inputs = loadVolatileSectionInputs({
 			db,
@@ -1660,11 +1898,13 @@ Original output was too large for the context window. If you need the full conte
 
 		// R-VC27 selection for the no-history path (#179): hoisted so it can
 		// ride onto ContextDebugInfo.relevantMemory at the return sites below.
-		const nhRelevantMemory = selectRelevantMemory(
-			flattenRecencyEntries(inputs.tiers),
-			inputs.pinned.entries,
-			inputs.summaries.entries,
-			resolveVc27Cap(),
+		const nhRelevantMemory = withChildSpan("context.helper.select-relevant-memory", () =>
+			selectRelevantMemory(
+				flattenRecencyEntries(inputs.tiers),
+				inputs.pinned.entries,
+				inputs.summaries.entries,
+				resolveVc27Cap(),
+			),
 		);
 		relevantMemoryDebug = toRelevantMemoryDebug(nhRelevantMemory);
 
@@ -1682,6 +1922,8 @@ Original output was too large for the context window. If you need the full conte
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
+			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
+			varyingCrossThreadSummaries: inputs.varyingCrossThreadSummaries,
 			digest: inputs.digest,
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
@@ -1707,16 +1949,13 @@ Original output was too large for the context window. If you need the full conte
 			budgetPressure: false,
 			activeSkills: [],
 			clusterModels: loadClusterModels(db, siteId),
+			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
 		});
 
 		const varyingTailLines: string[] = [];
 
 		if (renderedEnrichmentLines.length > 0) {
-			totalMemCount = (
-				db.prepare("SELECT COUNT(*) AS c FROM semantic_memory WHERE deleted = 0").get() as {
-					c: number;
-				}
-			).c;
+			totalMemCount = countActiveMemory(db);
 
 			if (nhStable.length > 0) {
 				systemParts.push(nhStable.join("\n"));
@@ -1736,8 +1975,7 @@ Original output was too large for the context window. If you need the full conte
 
 		// --- VARYING: heartbeat-only resolved-advisory operator-acks (#70).
 		// The maintenance surface keeps advisory-hygiene tracking; active
-		// conversations strip these (see buildVolatileContext). Skill-retirement
-		// notes stay active-only and are not loaded here. Computed independent of
+		// conversations strip these (see buildVolatileContext). Computed independent of
 		// enrichment presence so a heartbeat with no memory enrichment still
 		// surfaces its acks. These lines sit after the enrichment window
 		// [start, end), so they do not perturb any indices (and the
@@ -1747,7 +1985,6 @@ Original output was too large for the context window. If you need the full conte
 				...loadNotificationInputs({
 					db,
 					siteId,
-					includeRetiredSkills: false,
 					includeResolvedAdvisories: true,
 					nowMs,
 				}),
@@ -1794,6 +2031,7 @@ Original output was too large for the context window. If you need the full conte
 	// + skill index). Folding these into the `system` provider param keeps
 	// them inside the system-level cache breakpoint, so steady-state turns
 	// reuse the prefix across turns AND across threads (cron-task cache reuse).
+	if (params.systemPromptSuffix) systemParts.push(params.systemPromptSuffix);
 	const systemPrompt = systemParts.join("\n\n");
 
 	// Stage 7: BUDGET_VALIDATION
@@ -1812,7 +2050,7 @@ Original output was too large for the context window. If you need the full conte
 		// At this point, enrichmentBaseline is guaranteed to be non-undefined (caller checks it).
 		// biome-ignore lint/style/noNonNullAssertion: Caller checked the condition above
 		const baseline = enrichmentBaseline!;
-		const nowMs = Date.now();
+		const nowMs = assemblyNowMs;
 
 		const inputs = loadVolatileSectionInputs({
 			db,
@@ -1829,11 +2067,13 @@ Original output was too large for the context window. If you need the full conte
 		// Even under pressure the agent needs to see fresh memory
 		// activity, so don't drop the section entirely — just trim.
 		// R-VC27: dedup against the full-body stable prefix first, then cap.
-		const recencyBP = selectRelevantMemory(
-			flattenRecencyEntries(inputs.tiers),
-			inputs.pinned.entries,
-			inputs.summaries.entries,
-			3,
+		const recencyBP = withChildSpan("context.helper.select-relevant-memory", () =>
+			selectRelevantMemory(
+				flattenRecencyEntries(inputs.tiers),
+				inputs.pinned.entries,
+				inputs.summaries.entries,
+				3,
+			),
 		);
 		const { stableLines: bpStable, varyingLines: bpVarying } = composeVolatileSections({
 			db,
@@ -1845,6 +2085,8 @@ Original output was too large for the context window. If you need the full conte
 			includeStaleChildren: params.taskType === "heartbeat",
 			parentSummaryMap: inputs.parentSummaryMap,
 			deltaKeys: inputs.deltaKeys,
+			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
+			varyingCrossThreadSummaries: inputs.varyingCrossThreadSummaries,
 			digest: inputs.digest,
 			taskDigestEntries: inputs.taskDigestEntries,
 			fileEntries: inputs.fileEntries,
@@ -1927,7 +2169,7 @@ Original output was too large for the context window. If you need the full conte
 	) {
 		const systemTokens = assembled
 			.filter((m) => m.role === "system")
-			.reduce((sum, m) => sum + countContentTokens(m.content), 0);
+			.reduce((sum, m) => sum + tokensForMessage(m), 0);
 		const suffixTokens = suffixContent ? countTokens(suffixContent) : 0;
 		const nonHistoryTokens = systemTokens + suffixTokens + toolTokens;
 		const headroom = contextWindow - nonHistoryTokens;
@@ -1958,11 +2200,17 @@ Original output was too large for the context window. If you need the full conte
 	// `assembled` but still counts against the context window on the
 	// backend. Including it here keeps the budget gate honest regardless of
 	// stable-prefix size.
-	const stablePrefixTokensForBudget = countTokens(systemPrompt);
+	const stablePrefixTokensForBudget = withChildSpan(
+		"context.helper.tokenize-system-prompt",
+		() => countTokens(systemPrompt),
+		{ system_prompt_chars: systemPrompt.length },
+	);
 	const totalTokens =
-		assembled.reduce((sum, msg) => {
-			return sum + countContentTokens(msg.content);
-		}, 0) +
+		withChildSpan(
+			"context.helper.sum-history-tokens",
+			() => assembled.reduce((sum, msg) => sum + tokensForMessage(msg), 0),
+			{ message_count: assembled.length },
+		) +
 		stablePrefixTokensForBudget +
 		toolTokensForBudget;
 
@@ -1973,31 +2221,42 @@ Original output was too large for the context window. If you need the full conte
 	const safetyMargin = computeSafetyMargin(contextWindow);
 	const effectiveBudget = Math.max(0, contextWindow - safetyMargin);
 
-	if (totalTokens > effectiveBudget) {
+	// Gate on the SOFT target (truncationTarget — contextWindow minus the
+	// model's output reserve), not effectiveBudget (~100% of contextWindow).
+	// The telescope is the sole history compressor now — the legacy in-place
+	// Stage 1.7 stubbing was removed — so it must engage across the whole
+	// band between the soft target and effectiveBudget. In that band the old
+	// code leaned on Stage 1.7 to shrink tool_results, but that mutated
+	// cached prefix bytes and busted the provider cache every other
+	// inner-loop turn. The telescope folds the same region cache-stably
+	// (RECENT anchored to the latest user message, MIDDLE a byte-stable
+	// digest), so firing at the soft target shrinks context without
+	// thrashing the cache. truncationTarget is defined just inside this
+	// block; hoist it above the gate so the condition can reference it.
+	const truncationTarget = Math.min(truncationTargetTokens, effectiveBudget);
+	if (totalTokens > truncationTarget) {
 		// Truncate history from front — token-aware backward fill.
 		// Instead of keeping a hardcoded last-N messages, we fill from the end
 		// until we hit the remaining token budget. This ensures recent conversations
 		// survive even when bulky tool exchanges sit between them.
 		//
-		// CACHE-FRIENDLY HEADROOM: target effectiveTruncationRatio of contextWindow
-		// (default 0.85) so that truncation fires infrequently. Each truncation
-		// shifts the message prefix, breaking Bedrock/Anthropic's automatic prefix
-		// caching. By leaving ~15% headroom, the prefix stays stable for ~10-20
-		// turns between truncations, enabling 90%+ cache hit rates on long threads.
+		// CACHE-FRIENDLY HEADROOM: target `contextWindow - maxOutputTokens`
+		// tokens of history+system+tools so the model's own response always
+		// has the room it needs, rather	an arbitrary fixed fraction. Each
+		// truncation shifts the message prefix, breaking Bedrock/Anthropic's
+		// automatic prefix caching, so leaving genuine output-reserve headroom
+		// (rather than none) keeps the prefix stable for many turns between
+		// truncations, enabling 90%+ cache hit rates on long threads.
 		// Additionally, tiktoken cl100k_base underestimates Claude's actual token
 		// count — typically by 10-15%, but for thinking-heavy threads we've measured
-		// 2x+ inflation. The agent loop supplies a per-thread adaptive ratio
-		// (tightened by the historical actual/estimated mean) so the post-truncation
-		// payload genuinely fits the configured window even when the estimator runs
+		// 2x+ inflation. The agent loop supplies a per-thread adaptive target
+		// (tightened by the historical actual/estimated mean via
+		// `resolveAdaptiveTruncationTarget`) so the post-truncation payload
+		// genuinely fits the configured window even when the estimator runs
 		// far below reality.
 		//
-		// The truncation target is clamped to effectiveBudget so that even if the
-		// supplied ratio is unusually permissive, the post-truncation payload still
-		// respects the safety margin.
-		const truncationTarget = Math.min(
-			Math.floor(contextWindow * effectiveTruncationRatio),
-			effectiveBudget,
-		);
+		// (truncationTarget is hoisted above the gate so the condition can
+		// reference it; the clamp-to-effectiveBudget rationale lives there.)
 
 		// The volatile varying tail (trailing developer message pushed by
 		// Stage 6 / Stage 5.5) must SURVIVE truncation: it carries Live State,
@@ -2021,16 +2280,17 @@ Original output was too large for the context window. If you need the full conte
 		const historyMessages = bodyMessages.filter((m) => m.role !== "system");
 
 		if (historyMessages.length > 0) {
-			const systemMsgTokens = systemMessages.reduce(
-				(sum, m) => sum + countContentTokens(m.content),
-				0,
-			);
+			const systemMsgTokens = systemMessages.reduce((sum, m) => sum + tokensForMessage(m), 0);
 			// The stable system prompt (environment + concurrency + persona +
 			// orientation + schema + skill) is returned separately from
 			// `assembled` but still consumes window budget for the LLM call.
 			// Fold its token cost into the truncation calculation so the 15%
 			// headroom invariant holds regardless of stable-prefix size.
-			const stablePrefixTokens = countTokens(systemPrompt);
+			// Reuse the already-computed count — `systemPrompt` is a large string
+			// (schema + persona + volatile-prefix, ~20k tokens on active threads)
+			// rebuilt fresh each turn, so re-encoding it here is a redundant
+			// multi-hundred-ms tiktoken pass on the cold path.
+			const stablePrefixTokens = stablePrefixTokensForBudget;
 			const toolTokens = params.toolTokenEstimate ?? 0;
 			// The volatile tail is detached above (re-appended post-truncation), so
 			// it no longer competes inside `historyMessages` — subtract its fixed
@@ -2060,20 +2320,18 @@ Original output was too large for the context window. If you need the full conte
 			// thinking-heavy threads. If the ceiling were the raw tiktoken
 			// `effectiveBudget`, a recent tier "fitting" the ceiling in estimator
 			// units could occupy far more real tokens and breach the window. The
-			// agent loop already measures this as an EMA and folds it into
-			// `effectiveTruncationRatio = TRUNCATION_TARGET_RATIO / inflationEMA`,
-			// so `effectiveTruncationRatio / TRUNCATION_TARGET_RATIO == 1 /
-			// inflationEMA`. Scaling the physical budget by that factor expresses
-			// the ceiling in the SAME estimator units the tier function compares
+			// agent loop already measures this as an EMA and passes the resulting
+			// factor down as `recentHardCeilingDeflator` (`1 / inflationEMA`,
+			// clamped to ≤ 1 so an over-counting estimator never loosens the
+			// ceiling). Scaling the physical budget by that factor expresses the
+			// ceiling in the SAME estimator units the tier function compares
 			// against, so "recent fits the ceiling (estimated)" implies "recent
-			// fits the window (real)". The factor is clamped to ≤ 1 so an
-			// estimator that over-counts (inflation < 1) never loosens the ceiling.
-			const inflationDeflator = Math.min(1, effectiveTruncationRatio / TRUNCATION_TARGET_RATIO);
+			// fits the window (real)".
 			const physicalHistoryHeadroom =
 				effectiveBudget - systemMsgTokens - stablePrefixTokens - toolTokens - volatileTailTokens;
 			const recentHardCeiling = Math.max(
 				0,
-				Math.floor(physicalHistoryHeadroom * inflationDeflator),
+				Math.floor(physicalHistoryHeadroom * recentHardCeilingDeflator),
 			);
 
 			// Progressive fidelity: three-tier truncation replaces the binary cliff.
@@ -2081,17 +2339,21 @@ Original output was too large for the context window. If you need the full conte
 			// recency preservation, monotonicity, determinism, graceful degradation,
 			// and chronological ordering — see
 			// `progressive-fidelity/__tests__/tier-allocation.property.test.ts`.
-			const threadRow = params.db
-				.prepare("SELECT summary FROM threads WHERE id = ?")
-				.get(params.threadId) as { summary: string | null } | null;
+			const threadRow = findThreadSummaryById(params.db, params.threadId);
 
-			const tieredResult = tieredHistoryTruncation({
-				historyMessages,
-				historyBudget,
-				threadId: params.threadId,
-				threadSummary: threadRow?.summary ?? undefined,
-				recentHardCeiling,
-			});
+			const tieredResult = withChildSpan(
+				"context.helper.tiered-history-truncation",
+				() =>
+					tieredHistoryTruncation({
+						historyMessages,
+						historyTokenCounts: historyMessages.map(tokensForMessage),
+						historyBudget,
+						threadId: params.threadId,
+						threadSummary: threadRow?.summary ?? undefined,
+						recentHardCeiling,
+					}),
+				{ history_message_count: historyMessages.length },
+			);
 
 			const remaining = tieredResult.recentMessages;
 			truncatedCount = tieredResult.ancientDropped + tieredResult.middleFolded;
@@ -2124,7 +2386,7 @@ Original output was too large for the context window. If you need the full conte
 				let postTruncAssistantTokens = 0;
 				let postTruncToolResultTokens = 0;
 				for (const msg of remaining) {
-					const tokens = countContentTokens(msg.content);
+					const tokens = tokensForMessage(msg);
 					if (msg.role === "user") postTruncUserTokens += tokens;
 					else if (msg.role === "assistant" || msg.role === "tool_call")
 						postTruncAssistantTokens += tokens;

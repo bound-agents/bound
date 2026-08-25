@@ -11,8 +11,6 @@ import { insertRow, updateRow } from "./change-log.js";
  * `relay_target`, and `relay_latency_ms` — a thread can bounce between
  * hosts mid-run, so any host may be asked to render the full context
  * history for a thread.
- *
- * Related: bound_issue:turns-table:observability-gap (2026-04-26).
  */
 export interface TurnRecord {
 	thread_id?: string;
@@ -117,6 +115,17 @@ export function applyMetricsSchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_turns_thread
 		ON turns(thread_id, created_at DESC)
 	`);
+
+	// Performance index for turns by created_at. The scheduler's daily-budget
+	// check (shouldSkipDueToBudget) sums cost_usd over a single calendar day and
+	// runs per autonomous task on scheduler ticks. idx_turns_thread leads with
+	// thread_id, so a created_at-only range cannot use it — this index lets the
+	// sargable `created_at >= ? AND created_at < ?` bound SEARCH instead of SCAN
+	// the whole (growing) table.
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_turns_created_at
+		ON turns(created_at)
+	`);
 }
 
 function migrateTurnsIntToText(
@@ -193,6 +202,7 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		relay_target: null,
 		relay_latency_ms: null,
 		context_debug: null,
+		deleted: 0,
 	};
 
 	if (siteId) {

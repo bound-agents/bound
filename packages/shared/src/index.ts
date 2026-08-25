@@ -16,6 +16,9 @@ export * from "./errors.js";
 // Config schemas
 export * from "./config-schemas.js";
 
+// Duration parsing for operator-authored config (ISO 8601 via Temporal)
+export * from "./durations.js";
+
 // Token counting
 export * from "./tokens.js";
 
@@ -24,6 +27,9 @@ export * from "./strings.js";
 
 // Content search core (shared by host + sandbox search tools)
 export * from "./search.js";
+
+// Hashline read/edit format (issue #16): per-line content-hash anchors
+export * from "./hashline.js";
 export * from "./offload.js";
 
 // Hybrid Logical Clocks
@@ -50,3 +56,4 @@ export * from "./site-id-span-processor.js";
 export * from "./trace-collector.js";
 export * from "./trace-exporter-context.js";
 export * from "./trace-reexport.js";
+export * from "./read-structure.js";

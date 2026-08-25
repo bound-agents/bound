@@ -19,11 +19,12 @@
  * cachePoint position was stable (msg index 14, byte ~80k both turns) but
  * the prefix bytes leading up to it differed → message-level cache miss.
  *
- * Boundary-aware throttle. The compaction boundary is the index of the
- * latest user message (history-compaction/compact.ts:32). Within an inner-
- * loop tool round (no new user message), the boundary is FROZEN — no new
- * messages are getting compacted, so the summary doesn't need to absorb
- * anything new. Skip regeneration in that regime. When a new user message
+ * Boundary-aware throttle. The boundary is the index of the latest user
+ * message (the same semantic anchor the Stage 7 telescope's recent tier and
+ * the cache-point placer use). Within an inner-loop tool round (no new user
+ * message), the boundary is FROZEN — no new messages are folding out of the
+ * recent window, so the summary doesn't need to absorb anything new. Skip
+ * regeneration in that regime. When a new user message
  * arrives, the boundary advances and previously-uncompacted assistant +
  * tool_result messages from the prior turn move below the boundary; the
  * summary then needs to absorb them.
@@ -50,7 +51,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applySchema, createDatabase, findThreadSummaryStateById } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 
@@ -148,7 +149,7 @@ function insertMessage(
 }
 
 function getSummary(threadId: string): { summary: string | null; summary_through: string | null } {
-	return db.prepare("SELECT summary, summary_through FROM threads WHERE id = ?").get(threadId) as {
+	return findThreadSummaryStateById(db, threadId) as {
 		summary: string | null;
 		summary_through: string | null;
 	};
@@ -240,5 +241,23 @@ describe("Summary regeneration throttle — boundary-aware byte stability", () =
 		// (Asserting summary_through advanced is unreliable — successive
 		// calls can land in the same millisecond on fast machines.)
 		expect(after2.summary).not.toBe(after1.summary);
+	});
+});
+
+describe("event-task summary throttle (#204)", () => {
+	it("regenerates after a developer wakeup but not assistant-only churn", async () => {
+		const threadId = `event-${Date.now()}`;
+		insertThread(threadId);
+		insertMessage(threadId, "developer", "event one");
+		const mock = new NondeterministicMockLLM();
+		const { extractSummaryAndMemories } = await import("../summary-extraction");
+		expect((await extractSummaryAndMemories(db, threadId, mock, "test-site-id")).ok).toBe(true);
+		const summaryAfterFirst = getSummary(threadId).summary;
+		insertMessage(threadId, "assistant", "churn");
+		await extractSummaryAndMemories(db, threadId, mock, "test-site-id");
+		expect(getSummary(threadId).summary).toBe(summaryAfterFirst);
+		insertMessage(threadId, "developer", "event two", new Date(Date.now() + 5_000).toISOString());
+		await extractSummaryAndMemories(db, threadId, mock, "test-site-id");
+		expect(getSummary(threadId).summary).not.toBe(summaryAfterFirst);
 	});
 });

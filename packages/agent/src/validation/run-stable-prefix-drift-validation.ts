@@ -20,7 +20,7 @@
  *
  *   - **Collect drift** (`collect:`): different input fingerprint,
  *     no `change_log` row covering `semantic_memory | skills |
- *     files | advisories | overlay_index` between the two cold
+ *     files | advisories` between the two cold
  *     rebuilds. Either the input collector is reading something
  *     that doesn't go through the outbox (a documented narrow
  *     exception, e.g., `last_accessed_at` bumps) and that something
@@ -265,7 +265,7 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  *     but does not move the fingerprint, so it never triggers a
  *     finding.
  *
- *   - `advisories`, `files`, `overlay_index`: NOT consulted by the
+ *   - `advisories`, `files`: NOT consulted by the
  *     stable-side renderer. Listed here only so future additions
  *     to the stable-side input set don't silently fail to update
  *     this list — the JSDoc on `StableVolatileInputs` makes the
@@ -273,6 +273,7 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  */
 const STABLE_SIDE_TABLES = ["semantic_memory", "skills", "hosts"] as const;
 
+/** True if any change_log row for a {@link STABLE_SIDE_TABLES} table lands in `(fromIso, toIso]` — the "did the stable prefix's own inputs actually change" check the drift detector uses to rule out a benign, expected fingerprint shift. */
 function changeLogTouchedStableSources(db: Database, fromIso: string, toIso: string): boolean {
 	const placeholders = STABLE_SIDE_TABLES.map(() => "?").join(",");
 	// `change_log.timestamp` is the wall-clock anchor (HLC encodes

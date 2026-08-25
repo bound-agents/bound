@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,14 +24,14 @@ describe("bound init", () => {
 		await cleanupTmpDir(tempDir);
 	});
 
-	it("creates allowlist.json and model_backends.json with --ollama preset", async () => {
+	it("creates allowlist.json and model_backends.js with an export default config for the --ollama preset", async () => {
 		await runInit({
 			ollama: true,
 			configDir: tempDir,
 		});
 
 		const allowlistPath = join(tempDir, "allowlist.json");
-		const modelBackendsPath = join(tempDir, "model_backends.json");
+		const modelBackendsPath = join(tempDir, "model_backends.js");
 
 		// Verify files exist
 		expect(readFileSync(allowlistPath, "utf-8")).toBeTruthy();
@@ -39,7 +39,12 @@ describe("bound init", () => {
 
 		// Verify content
 		const allowlist = JSON.parse(readFileSync(allowlistPath, "utf-8"));
-		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
+		const modelBackendsSource = readFileSync(modelBackendsPath, "utf-8");
+		const modelBackends = JSON.parse(
+			modelBackendsSource.replace(/^export default /, "").replace(/;\n?$/, ""),
+		);
+		expect(modelBackendsSource).toStartWith("export default ");
+		expect(existsSync(join(tempDir, "model_backends.json"))).toBe(false);
 
 		// Check allowlist structure
 		expect(allowlist).toHaveProperty("default_web_user");
@@ -127,20 +132,6 @@ describe("bound init", () => {
 		expect(Array.isArray(mcp.servers)).toBe(true);
 	});
 
-	it("creates overlay.json template with --with-overlay", async () => {
-		await runInit({
-			ollama: true,
-			withOverlay: true,
-			configDir: tempDir,
-		});
-
-		const overlayPath = join(tempDir, "overlay.json");
-		const overlayContent = readFileSync(overlayPath, "utf-8");
-		const overlay = JSON.parse(overlayContent);
-
-		expect(overlay).toHaveProperty("mounts");
-	});
-
 	it("uses custom name with --name flag", async () => {
 		await runInit({
 			ollama: true,
@@ -163,8 +154,12 @@ describe("bound init", () => {
 			configDir: tempDir,
 		});
 
-		const modelBackendsPath = join(tempDir, "model_backends.json");
-		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
+		const modelBackendsPath = join(tempDir, "model_backends.js");
+		const modelBackends = JSON.parse(
+			readFileSync(modelBackendsPath, "utf-8")
+				.replace(/^export default /, "")
+				.replace(/;\n?$/, ""),
+		);
 
 		expect(modelBackends.backends[0].provider).toBe("opencode-go");
 		expect(modelBackends.backends[0].model).toBe("glm-5.1");
@@ -180,8 +175,12 @@ describe("bound init", () => {
 			configDir: tempDir,
 		});
 
-		const modelBackendsPath = join(tempDir, "model_backends.json");
-		const modelBackends = JSON.parse(readFileSync(modelBackendsPath, "utf-8"));
+		const modelBackendsPath = join(tempDir, "model_backends.js");
+		const modelBackends = JSON.parse(
+			readFileSync(modelBackendsPath, "utf-8")
+				.replace(/^export default /, "")
+				.replace(/;\n?$/, ""),
+		);
 
 		expect(modelBackends.backends[0].provider).toBe("anthropic");
 		expect(modelBackends.backends[0].model).toBe("claude-sonnet-4-5");
@@ -189,5 +188,35 @@ describe("bound init", () => {
 		// Direct Anthropic uses the SDK default endpoint — no base_url is written.
 		expect(modelBackends.backends[0].base_url).toBeUndefined();
 		expect(modelBackends.default).toBe("anthropic");
+		process.env.ANTHROPIC_API_KEY = undefined;
+	});
+
+	it("creates a config-light umans preset with --umans (AC.15)", async () => {
+		process.env.UMANS_API_KEY = "sk-umans-test";
+
+		await runInit({
+			umans: true,
+			configDir: tempDir,
+		});
+
+		const modelBackendsPath = join(tempDir, "model_backends.js");
+		const modelBackends = JSON.parse(
+			readFileSync(modelBackendsPath, "utf-8")
+				.replace(/^export default /, "")
+				.replace(/;\n?$/, ""),
+		);
+
+		const b = modelBackends.backends[0];
+		expect(b.provider).toBe("umans");
+		expect(b.id).toBe("umans");
+		expect(b.api_key).toBe("sk-umans-test");
+		expect(modelBackends.default).toBe("umans");
+		// Config-light: NO model/tier/context_window/base_url/pricing.
+		expect(b.model).toBeUndefined();
+		expect(b.tier).toBeUndefined();
+		expect(b.context_window).toBeUndefined();
+		expect(b.base_url).toBeUndefined();
+		expect(b.price_per_m_input).toBeUndefined();
+		process.env.UMANS_API_KEY = undefined;
 	});
 });

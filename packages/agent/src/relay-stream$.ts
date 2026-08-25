@@ -35,6 +35,7 @@ import {
 	timeout,
 } from "rxjs";
 import type { Observable } from "rxjs";
+import { splitInferenceRequest } from "./inference-request-parts";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
 
@@ -43,11 +44,23 @@ export interface RelayStreamDeps {
 	eventBus: TypedEventEmitter;
 	siteId: string;
 	logger: Logger;
+	maxPayloadBytes?: number;
 }
 
 export interface RelayStreamOptions {
 	pollIntervalMs?: number;
+	/**
+	 * Per-chunk inactivity timeout: max gap allowed *between* chunks once the
+	 * stream is live. Heartbeats emitted by the source during extended thinking
+	 * count as chunks and reset this, so it stays generous.
+	 */
 	perHostTimeoutMs?: number;
+	/**
+	 * First-token timeout: max wait for the first real model chunk from a target.
+	 * Source heartbeats reset the inactivity timeout but do not satisfy this
+	 * deadline, so a live backend that makes no progress fails over promptly.
+	 */
+	firstTokenTimeoutMs?: number;
 	scheduler?: SchedulerLike;
 }
 
@@ -63,9 +76,13 @@ interface ScanOutput {
 	firstChunkReceived: boolean;
 	hostStartTime: number;
 	chunksToEmit: StreamChunk[];
+	activity: boolean;
 	done: boolean;
 	error: string | null;
 }
+
+const RELAY_ACTIVITY = Symbol("relay-activity");
+type RelayEmission = StreamChunk | typeof RELAY_ACTIVITY;
 
 function createStreamReducer(
 	deps: RelayStreamDeps,
@@ -80,6 +97,7 @@ function createStreamReducer(
 			...state,
 			buffer: new Map(state.buffer),
 			chunksToEmit: [],
+			activity: false,
 		};
 
 		const inboxEntries = readInboxByStreamId(deps.db, streamId);
@@ -101,7 +119,7 @@ function createStreamReducer(
 			markProcessed(deps.db, [traceDataEntry.id]);
 			if (spanResult.ok) {
 				const spans = spanResult.value as SerializedSpan[];
-				reExportSpans(spans, getTraceExporter());
+				reExportSpans(spans, getTraceExporter(), deps.logger);
 			}
 			// trace_data is fire-and-forget; continue processing other entries
 		}
@@ -115,6 +133,22 @@ function createStreamReducer(
 			if (!chunkResult.ok) continue;
 			const chunkPayload = chunkResult.value as StreamChunkPayload;
 			if (typeof chunkPayload.seq !== "number" || !Array.isArray(chunkPayload.chunks)) continue;
+			// An empty stream_chunk is a source heartbeat. Receiving a valid,
+			// sequenced payload proves the target is alive even before its backend
+			// emits the first model token, so it satisfies the first-activity timeout.
+			next.activity = true;
+			if (!next.firstChunkReceived) {
+				next.firstChunkReceived = true;
+				const firstChunkLatencyMs = Date.now() - next.hostStartTime;
+				if (relayMetadataRef) {
+					relayMetadataRef.hostName = host.host_name;
+					relayMetadataRef.firstChunkLatencyMs = firstChunkLatencyMs;
+				}
+				deps.logger.info("RELAY_STREAM: first chunk", {
+					host: host.host_name,
+					latencyMs: firstChunkLatencyMs,
+				});
+			}
 			if (!next.buffer.has(chunkPayload.seq)) {
 				next.buffer.set(chunkPayload.seq, chunkPayload);
 			}
@@ -190,6 +224,7 @@ export function createRelayStream$(
 ): Observable<StreamChunk> {
 	const pollIntervalMs = options?.pollIntervalMs ?? POLL_INTERVAL_MS;
 	const perHostTimeoutMs = options?.perHostTimeoutMs ?? 300_000;
+	const firstTokenTimeoutMs = options?.firstTokenTimeoutMs ?? 60_000;
 	const timeoutOccurred = { value: false };
 
 	return from(eligibleHosts).pipe(
@@ -197,18 +232,43 @@ export function createRelayStream$(
 			const streamId = randomUUID();
 			const serializedPayload = JSON.stringify(payload);
 			const traceContext = injectTraceContext();
-			const outboxEntry = createRelayOutboxEntry(
-				host.site_id,
-				deps.siteId,
-				"inference",
-				serializedPayload,
-				perHostTimeoutMs,
-				undefined,
-				undefined,
-				streamId,
-				traceContext ? JSON.stringify(traceContext) : undefined,
-			);
-			writeOutbox(deps.db, outboxEntry);
+			const maxPayloadBytes = deps.maxPayloadBytes ?? 2 * 1024 * 1024;
+			const serializedBytes = new TextEncoder().encode(serializedPayload).byteLength;
+			const requestId = randomUUID();
+			const requestParts =
+				serializedBytes <= maxPayloadBytes
+					? null
+					: splitInferenceRequest(serializedPayload, requestId, maxPayloadBytes);
+			const outboxEntries = requestParts
+				? requestParts.map((part) =>
+						createRelayOutboxEntry(
+							host.site_id,
+							deps.siteId,
+							"inference_part",
+							JSON.stringify(part),
+							perHostTimeoutMs,
+							requestId,
+							`inference-part:${requestId}:${part.index}`,
+							streamId,
+							traceContext ? JSON.stringify(traceContext) : undefined,
+						),
+					)
+				: [
+						createRelayOutboxEntry(
+							host.site_id,
+							deps.siteId,
+							"inference",
+							serializedPayload,
+							perHostTimeoutMs,
+							undefined,
+							undefined,
+							streamId,
+							traceContext ? JSON.stringify(traceContext) : undefined,
+						),
+					];
+			for (const entry of outboxEntries) writeOutbox(deps.db, entry, maxPayloadBytes);
+			const outboxEntry = outboxEntries[0];
+			const logicalRequestId = requestParts ? requestId : outboxEntry.id;
 
 			deps.logger.info("RELAY_STREAM: connecting", {
 				host: host.host_name,
@@ -228,6 +288,7 @@ export function createRelayStream$(
 				firstChunkReceived: false,
 				hostStartTime,
 				chunksToEmit: [],
+				activity: false,
 				done: false,
 				error: null,
 			};
@@ -237,18 +298,32 @@ export function createRelayStream$(
 				filter((event) => (event as Record<string, unknown>).stream_id === streamId),
 			);
 
-			return merge(pollInterval$, inboxEvents$).pipe(
+			const relayEmissions$ = merge(pollInterval$, inboxEvents$).pipe(
 				scan(createStreamReducer(deps, streamId, host, relayMetadataRef), initialState),
 				takeWhile((s) => !s.done && !s.error, true),
 				tap((s) => {
 					if (s.done) hostSucceeded = true;
 				}),
-				mergeMap((s) => {
+				mergeMap((s): Observable<RelayEmission> => {
 					const err = s.error;
 					if (err) return throwError(() => new Error(err));
-					return from(s.chunksToEmit);
+					const emissions: RelayEmission[] = s.activity
+						? [RELAY_ACTIVITY, ...s.chunksToEmit]
+						: [...s.chunksToEmit];
+					return from(emissions);
 				}),
-				timeout({ first: perHostTimeoutMs, each: perHostTimeoutMs }),
+				// Per-chunk inactivity clock: heartbeats (RELAY_ACTIVITY) reset this,
+				// so a live backend mid-thinking is never falsely failed over.
+				timeout({ each: perHostTimeoutMs }),
+			);
+
+			return relayEmissions$.pipe(
+				// Strip heartbeats BEFORE the first-token deadline: liveness must not
+				// satisfy progress. The deadline arms at host subscribe and is cleared
+				// by the first real model chunk; on expiry the TimeoutError below
+				// fails this host over to the next eligible one (#223).
+				filter((value): value is StreamChunk => value !== RELAY_ACTIVITY),
+				timeout({ first: firstTokenTimeoutMs }),
 				takeUntil(aborted$),
 				catchError((err) => {
 					if (err instanceof TimeoutError) {
@@ -269,7 +344,7 @@ export function createRelayStream$(
 							"cancel",
 							JSON.stringify({}),
 							30_000,
-							outboxEntry.id,
+							logicalRequestId,
 							undefined,
 							undefined,
 							traceContext ? JSON.stringify(traceContext) : undefined,

@@ -5,7 +5,7 @@
  *   1. Environment paragraph (constant)
  *   2. Concurrency paragraph (constant)
  *   3. Persona body (from the synced `cluster_config['persona']` row)
- *   4. Orientation block (commandRegistry + host identity)
+ *   4. Orientation block (commandRegistry + host identity + host capabilities)
  *   5. `## Database Schema` block (live `PRAGMA table_info` snapshot)
  *
  * The skill body injection that follows in production code is NOT

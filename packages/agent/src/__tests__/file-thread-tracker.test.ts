@@ -9,7 +9,7 @@ import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { getLastThreadForFile, trackFilePath } from "../file-thread-tracker";
 
 function createMockRouter(backend: LLMBackend): ModelRouter {
@@ -66,25 +66,33 @@ describe("File-Thread Tracker (R-E20)", () => {
 			expect(getLastThreadForFile(db, filePath)).toBe(thread2);
 		});
 
-		it("does not track ephemeral paths (skip /tmp, /dev, tool-results, cache)", () => {
+		it("does not track ephemeral paths", () => {
 			const threadId = randomUUID();
-
 			const ephemeralPaths = [
 				"/tmp/scratch.txt",
-				"/tmp/trial-prompts/trial_A.txt",
-				"/dev/null",
-				"/dev/stdin",
-				"/home/user/.tool-results/tooluse_abc123.txt",
-				"/home/user/.tool-results/call_xyz.txt",
-				"/home/user/.cache/bound/agent-cache.json",
-				"/home/user/.cache/bash_history",
-				"/Users/karashiiro/.cache/something.json",
 				"/private/tmp/foo.md",
+				"/dev/null",
+				"/home/user/.tool-results/call.txt",
+				"/home/user/.cache/bound/agent-cache.json",
 			];
 
-			for (const fp of ephemeralPaths) {
-				trackFilePath(db, fp, threadId, "test-site-id");
-				expect(getLastThreadForFile(db, fp)).toBeNull();
+			for (const filePath of ephemeralPaths) {
+				trackFilePath(db, filePath, threadId, "test-site-id");
+				expect(getLastThreadForFile(db, filePath)).toBeNull();
+			}
+		});
+
+		it("tracks durable repo and config paths", () => {
+			const threadId = randomUUID();
+			const durablePaths = [
+				"/Users/karashiiro/Documents/GitHub/bound/packages/core/src/schema.ts",
+				"/home/user/bound/config/platforms.json",
+				"/workspace/src/foo.ts",
+			];
+
+			for (const filePath of durablePaths) {
+				trackFilePath(db, filePath, threadId, "test-site-id");
+				expect(getLastThreadForFile(db, filePath)).toBe(threadId);
 			}
 		});
 
@@ -118,21 +126,6 @@ describe("File-Thread Tracker (R-E20)", () => {
 			trackFilePath(db, posix, threadId, "test-site-id");
 			// no normalization applied; the leading slash is load-bearing on POSIX
 			expect(getLastThreadForFile(db, posix)).toBe(threadId);
-		});
-
-		it("still tracks durable repo and config paths", () => {
-			const threadId = randomUUID();
-
-			const durablePaths = [
-				"/Users/karashiiro/Documents/GitHub/bound/packages/core/src/schema.ts",
-				"/home/user/bound/config/platforms.json",
-				"/workspace/src/foo.ts",
-			];
-
-			for (const fp of durablePaths) {
-				trackFilePath(db, fp, threadId, "test-site-id");
-				expect(getLastThreadForFile(db, fp)).toBe(threadId);
-			}
 		});
 	});
 
@@ -184,10 +177,15 @@ describe("File-Thread Tracker (R-E20)", () => {
 				siteId: "test-site-id",
 			} as unknown as AppContext;
 
-			const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
-				threadId,
-				userId: "test-user",
-			});
+			const agentLoop = new MainAgentLoop(
+				ctx,
+				mockSandbox,
+				createMockRouter(new MockLLMBackend()),
+				{
+					threadId,
+					userId: "test-user",
+				},
+			);
 
 			const result = await agentLoop.run();
 			expect(result.filesChanged).toBe(2);
@@ -242,10 +240,15 @@ describe("File-Thread Tracker (R-E20)", () => {
 				siteId: "test-site-id",
 			} as unknown as AppContext;
 
-			const agentLoop = new AgentLoop(ctx, mockSandbox, createMockRouter(new MockLLMBackend()), {
-				threadId,
-				userId: "test-user",
-			});
+			const agentLoop = new MainAgentLoop(
+				ctx,
+				mockSandbox,
+				createMockRouter(new MockLLMBackend()),
+				{
+					threadId,
+					userId: "test-user",
+				},
+			);
 
 			await agentLoop.run();
 

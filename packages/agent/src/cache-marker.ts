@@ -174,8 +174,9 @@ export function maybePlaceCacheMarker(
  * one prior user turn's worth of content — a natural cache-invalidation
  * cadence aligned with the user's interaction pattern.
  *
- * Same semantic boundary used by `computeCompactionBoundary` in
- * `history-compaction/` and the boundary-aware summary throttle (0ce38fb0).
+ * Same semantic boundary used by the Stage 7 telescope's recent-tier anchor
+ * (`progressive-fidelity/tier-allocation.ts`) and the boundary-aware summary
+ * throttle (0ce38fb0).
  * Anchoring on it unifies the architecture: summary regen, cachePoint
  * advance, and compaction events all happen at the same instant — the
  * arrival of a new user message.
@@ -292,9 +293,10 @@ export function computeStableCacheMarkerPlacement(
 	// at that index so the cachePoint attaches to messages[index - 1]
 	// (the prior turn's last message — semantically immutable history).
 	//
-	// This mirrors `computeCompactionBoundary` from `history-compaction/`
-	// — same semantic boundary (latest-user-msg-index) the summary
-	// throttle uses (0ce38fb0). The two systems advance in lockstep, so
+	// This mirrors the Stage 7 telescope's recent-tier anchor
+	// (`progressive-fidelity/tier-allocation.ts`) — same semantic boundary
+	// (latest-user-msg-index) the summary throttle uses (0ce38fb0). The two
+	// systems advance in lockstep, so
 	// summary regen and cachePoint advance happen at the same instant.
 	let insertAt = -1;
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -366,14 +368,13 @@ export function computeStableCacheMarkerPlacement(
 	// is silently dropped — no cachePoint reaches the wire.
 	//
 	// Live regressions:
-	//   - thread `91a31a43-...` 2026-05-26: autonomous task with one user
-	//     and only `[user_1, dev_tail]` in messages. Latest-user at idx 0,
-	//     fallback placed BEFORE user_1 → bridge dropped → cw=0.
-	//   - thread `3a833552-...` 2026-05-26: autonomous task WITH a Stage
-	//     1.7-prepended `developer` compaction summary at index 0 +
-	//     thread.summary. Strict semantic-anchor placed marker BEFORE
-	//     user_1 (at idx 1), but nothing non-developer preceded → bridge
-	//     dropped → cw=0 across all 33 turns.
+	//   - Autonomous task with one user and only `[user_1, dev_tail]` in
+	//     messages. Latest-user at idx 0, fallback placed BEFORE user_1 →
+	//     bridge dropped → cw=0.
+	//   - Autonomous task WITH a Stage 1.7-prepended `developer` compaction
+	//     summary at index 0 + thread.summary. Strict semantic-anchor
+	//     placed marker BEFORE user_1 (at idx 1), but nothing non-developer
+	//     preceded → bridge dropped → cw=0 across all 33 turns.
 	//
 	// Recovery rule. When the strict semantic-anchor target has 0
 	// non-developer preceding messages, the marker would be silently
@@ -584,12 +585,12 @@ export function buildCacheMarkers(args: {
  * Why a PAIR, not a single rolling marker. A single rolling marker moves to
  * the tip every iteration, so iteration K has NO cachePoint at iteration
  * K-1's write position. Bedrock's exact-byte-position cache then has to bridge
- * P_{K-1} → P_K via its ~20-block auto-lookback. Live data (heavy coding
- * thread 60db514d, May 29-31) shows that lookback does NOT bridge for these
- * threads: a single large `tool_result` (file / bash blob) blows past the
- * window, the prior write is orphaned, `cr` stays pinned at the fixed floor
- * (~58,745) while `cw` re-writes the whole grown prefix (66-95k). Write-once-
- * read-never → cache-write/read ratio ~1.12 (paying for writes consumed once).
+ * P_{K-1} → P_K via its ~20-block auto-lookback. Measured on a heavy coding
+ * thread in production: that lookback does NOT bridge for these threads — a
+ * single large `tool_result` (file / bash blob) blows past the window, the
+ * prior write is orphaned, `cr` stays pinned at the fixed floor (~58,745)
+ * while `cw` re-writes the whole grown prefix (66-95k). Write-once-read-never
+ * → cache-write/read ratio ~1.12 (paying for writes consumed once).
  *
  * Keeping iteration K-1's marker in place gives iteration K an EXPLICIT
  * breakpoint at exactly K-1's write position. The preceding bytes are

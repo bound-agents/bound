@@ -105,7 +105,11 @@ async function pollUntil(
 
 const payloadFixture = {
 	model: "test-model",
-	messages: [{ role: "user" as const, content: "hello" }],
+	segments: [{ role: "user" as const, content: "hello" }].map((m) => ({
+		kind: "inline" as const,
+		message: m,
+	})),
+	nowMs: 0,
 };
 
 describe("createRelayStream$", () => {
@@ -348,7 +352,7 @@ describe("createRelayStream$", () => {
 			] as any,
 			aborted$,
 			undefined,
-			{ perHostTimeoutMs: 200, pollIntervalMs: 50 },
+			{ perHostTimeoutMs: 1000, pollIntervalMs: 50 },
 		);
 
 		const subscribed = new Promise<void>((resolve) => {
@@ -364,12 +368,11 @@ describe("createRelayStream$", () => {
 		// Get first outbox entry (spoke-1)
 		const firstStreamId = getStreamIdFromOutbox(db);
 
-		// First host times out after 200ms; the stream then switches to spoke-2
-		// and writes a second 'inference' outbox entry (plus a cancel for the
-		// first host). Poll for that second inference entry rather than sleeping a
-		// fixed 300ms: on a loaded CI runner (observed on macos-latest) the
-		// timeout's downstream cascade can land after a fixed wait, which raced
-		// the cnt===2 assertion below and made this test flaky.
+		// The first host times out; the stream then switches to spoke-2 and
+		// writes a second 'inference' outbox entry (plus a cancel for the first
+		// host). Poll for that second inference entry instead of sleeping. Keep
+		// the timeout comfortably above the polling/SQLite work: this test covers
+		// failover semantics, not a 200ms scheduling deadline on loaded CI.
 		await pollUntil(
 			() =>
 				(
@@ -505,6 +508,71 @@ describe("createRelayStream$", () => {
 		expect(error?.message).toContain("Model not found");
 	});
 
+	it("fails over when heartbeats arrive but no model content reaches the first-token deadline", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const hosts = [
+			eligibleHostFixture("spoke-1", "spoke-1.local"),
+			eligibleHostFixture("spoke-2", "spoke-2.local"),
+		] as any;
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			hosts,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 500, firstTokenTimeoutMs: 80, pollIntervalMs: 10 },
+		);
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const firstStreamId = getStreamIdFromOutbox(db);
+		let heartbeatSeq = 0;
+		const heartbeatTimer = setInterval(() => {
+			insertRelayInboxEntry(db, {
+				id: `heartbeat-${heartbeatSeq}`,
+				sourceSiteId: "spoke-1",
+				kind: "stream_chunk",
+				streamId: firstStreamId,
+				payload: JSON.stringify({ seq: heartbeatSeq++, chunks: [] }),
+			});
+			eventBus.emit("relay:inbox", { stream_id: firstStreamId, kind: "stream_chunk" as const });
+		}, 20);
+		await pollUntil(
+			() =>
+				(
+					db
+						.prepare("SELECT COUNT(*) AS count FROM relay_outbox WHERE kind = 'inference'")
+						.get() as {
+						count: number;
+					}
+				).count === 2,
+			{ timeoutMs: 500, intervalMs: 10 },
+		);
+		clearInterval(heartbeatTimer);
+		const secondStreamId = getStreamIdFromOutbox(db);
+		insertRelayInboxEntry(db, {
+			id: "real-0",
+			sourceSiteId: "spoke-2",
+			kind: "stream_chunk",
+			streamId: secondStreamId,
+			payload: JSON.stringify({ seq: 0, chunks: [{ type: "text_delta", text: "fallback" }] }),
+		});
+		insertRelayInboxEntry(db, {
+			id: "end-1",
+			sourceSiteId: "spoke-2",
+			kind: "stream_end",
+			streamId: secondStreamId,
+			payload: JSON.stringify({ seq: 1, chunks: [] }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: secondStreamId, kind: "stream_chunk" as const });
+		await done;
+		expect(chunks).toEqual([{ type: "text_delta", text: "fallback" }]);
+	});
+
 	it("AC1.4: Only first host is tried when it succeeds immediately", async () => {
 		({ db, tmpDir } = createTestDb());
 		const eventBus = new TypedEventEmitter();
@@ -562,5 +630,45 @@ describe("createRelayStream$", () => {
 			.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
 			.get() as { cnt: number };
 		expect(outbox.cnt).toBe(1);
+	});
+
+	it("splits an oversized inference request into relay-safe parts", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+		const maxPayloadBytes = 512;
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger, maxPayloadBytes },
+			{
+				...payloadFixture,
+				segments: [
+					{ kind: "inline" as const, message: { role: "user", content: "電".repeat(4000) } },
+				],
+			} as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 100, firstTokenTimeoutMs: 100, pollIntervalMs: 20 },
+		);
+		await lastValueFrom(stream$, { defaultValue: undefined }).catch(() => undefined);
+		const rows = db
+			.prepare(
+				"SELECT kind, ref_id, stream_id, payload FROM relay_outbox WHERE kind = 'inference_part'",
+			)
+			.all() as Array<{ kind: string; ref_id: string; stream_id: string; payload: string }>;
+		expect(rows.length).toBeGreaterThan(1);
+		expect(new Set(rows.map((row) => row.ref_id)).size).toBe(1);
+		expect(new Set(rows.map((row) => row.stream_id)).size).toBe(1);
+		for (const row of rows) {
+			expect(new TextEncoder().encode(row.payload).byteLength).toBeLessThanOrEqual(maxPayloadBytes);
+		}
+		expect(
+			(
+				db.prepare("SELECT COUNT(*) AS count FROM relay_outbox WHERE kind = 'inference'").get() as {
+					count: number;
+				}
+			).count,
+		).toBe(0);
 	});
 });

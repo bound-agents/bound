@@ -10,13 +10,17 @@ All writes to synced tables MUST use `insertRow()`, `updateRow()`, or `softDelet
 
 ```
 users, threads, messages, semantic_memory, tasks, files, hosts,
-overlay_index, cluster_config, advisories, skills, memory_edges,
+cluster_config, advisories, skills, memory_edges,
 connector_handles, webhooks, turns, client_sessions
 ```
 
 The source-of-truth type is `SyncedTableName` in `packages/shared/src/types.ts`. Writes bypassing the outbox never generate a `change_log` entry, so other hosts never learn about them.
 
-Two narrow, documented exceptions to this rule, plus the exhaustive audit disposition table the CI gate cross-checks against, are in the [appendix](#section-a-documented-narrow-exceptions-to-invariant-1-outbox-pattern) at the end of this document.
+**Reads** are centralized separately: synced-table `SELECT`s live in the repository layer (`packages/core/src/repositories/`, exported from `@bound/core`), not inlined across feature code. A second CI gate (`scripts/validate-read-centralization.ts`) ratchets the count of inline `db.query(...)` / `db.prepare(...)` reads down against a checked-in baseline. Reads of non-synced tables (`change_log`, `sync_state`, `host_meta`, the relay/dispatch queues, `sqlite_master`, PRAGMAs, FTS5 virtual tables) and arbitrary/dynamic SQL (the `query` tool, `restore`) stay raw and are excluded from that gate.
+
+**The single sanctioned bypass.** A write that intentionally skips the changelog (a per-host hint, local-only instrumentation, a crash-recovery reset, or a one-time startup migration — none of which carry a cross-host correctness invariant) MUST route through `dangerouslyExecuteRawWrite(db, { sql, params, reason })` from `@bound/core`. This is the only call the outbox CI gate permits as a bypass; the deliberately-alarming name and the mandatory `reason` keep every bypass greppable and self-documenting. The former per-line `// outbox-exempt` annotation + audit-table mechanism was replaced by this chokepoint. (`// outbox-routed` still marks raw writes that DO sync via an explicit `createChangeLogEntry` in the same transaction — scheduler CAS transitions, cluster_config CLI commands.)
+
+The narrow set of changelog-exempt writes is documented in the [appendix](#section-a-documented-narrow-exceptions-to-invariant-1-outbox-pattern) at the end of this document.
 
 ### 2. Soft deletes only
 
@@ -74,9 +78,9 @@ Every schema in `configSchemaMap` in `packages/shared/src/config-schemas.ts` use
 
 Response kinds (`stream_chunk`, `stream_end`, `result`, `error`, `status_forward`) targeting the hub itself must be inserted into `relay_inbox`, NOT sent through `executeImmediate()`. The executor only handles request kinds.
 
-### 15. Platform intake affinity
+### 15. Platform intake affinity (optimization, not a requirement)
 
-`intake` relay with a `platform` field must route to the host with that platform connector, not the host with the best model. Without this, the agent lacks platform tools (e.g., `discord_send_message`).
+`intake` relay with a `platform` field is routed to the host with that platform connector so the loop runs where the platform tools live. Under the single delegation path (invariant #22) this is an **optimization, not a correctness requirement**: the selected host runs the whole loop LOCALLY (it producer-assembles from its own authoritative state and relays only inference / tool calls outward) — there is no whole-loop `process` delegation. When the chosen host is remote, the same `intake` entry is forwarded to it and it re-selects itself and runs locally. A loop that lands without the platform connector can still reach the tool via the cross-host platform relay (`platform_request`), so affinity saves a round-trip rather than gating correctness. See `docs/design/specs/2026-06-29-unified-delegation.md`.
 
 ### 16. Extended-thinking routing
 
@@ -86,9 +90,9 @@ Response kinds (`stream_chunk`, `stream_end`, `result`, `error`, `status_forward
 
 `toRouterConfig()` in `packages/cli/src/commands/start/inference.ts` is the single place that translates snake_case `ModelBackendsConfig` into the camelCase `BackendConfig` consumed by `createModelRouter`. Any new per-backend field (e.g., `thinking`, `effort`, `max_output_tokens`, `cache_ttl`) MUST be copied here or it silently never reaches the router. `ModelResolution.local` must also carry the field, and both agent-loop and relay-processor must propagate it. For `cache_ttl` specifically, `relay-processor.executeInference` deliberately reads from the local backend (`modelRouter.getCacheTtl(payload.model)`) rather than the payload, so spokes apply their own TTL preference rather than honoring a hub-set TTL for a model the spoke does not support. The same hand-off direction applies to **per-turn cost**: `relay-processor.executeInference` computes `cost_usd` from `appCtx.config.modelBackends.backends` (the hub's authoritative pricing) and stamps it onto the final `done` `StreamChunk`; the spoke's agent-loop happy-path `recordTurn` prefers `parsed.costUsdFromHub` over its own `calculateTurnCost(...)` so hub-only spokes (empty `backends: []`) don't write `cost_usd = 0` for every delegated turn. The local `calculateTurnCost` call remains as the fallback for non-delegated inference and for backward-compat with hubs on pre-fix code.
 
-### 18. Forwarded message_id must reference a real messages row
+### 18. Forwarded message_id must reference a real messages row (RETIRED)
 
-`ProcessPayload.message_id` must reference a real `messages` row. When `handleThread()` (spoke side) delegates to a remote host, the `message_id` it forwards via `ProcessPayload` must exist in the `messages` table on the delegating host so the receiving host's `executeProcess()` can resolve it. User-message entries are safe because `enqueueMessage(db, messageId, threadId)` stores the real `messages.id` as `dispatch_queue.message_id`. **Notifications are the trap**: `enqueueNotification()` generates a synthetic UUID — the injected system message gets a fresh UUID in a separate `insertRow()` call. Historically the spoke forwarded the dispatch-queue id, the hub's lookup returned null, and the notification was silently dropped. Use `resolveDelegationMessageId()` in `packages/cli/src/commands/start/server.ts` — it injects notifications AND returns the id to forward. The receiving side no longer hard-rejects on missing rows (it warns and proceeds on thread state alone), but the spoke is still the source of truth and should always forward a real id.
+**Retired 2026-06-29 — superseded by the single delegation path (invariant #22).** `ProcessPayload` and whole-loop `process` delegation no longer exist, so there is no cross-host `message_id` to forward to a receiving host's `executeProcess()`. The loop always runs locally on the trigger host and relays only inference (as segments) and tool calls; nothing re-resolves a forwarded `message_id` on a remote host. `resolveDelegationMessageId()` survives only as the notification-injection helper (it injects the developer-role wakeup message and returns its id for local dispatch-queue bookkeeping), not as a cross-host forwarding contract. The historical hazard (forwarding a synthetic dispatch-queue id that the remote lookup couldn't resolve) is structurally gone because there is no remote lookup.
 
 ### 19. The system role is forbidden in the messages table
 
@@ -98,9 +102,21 @@ Response kinds (`stream_chunk`, `stream_end`, `result`, `error`, `status_forward
 
 Synced tables must NOT declare `REFERENCES` / `FOREIGN KEY` constraints. `PRAGMA foreign_keys = ON` is set, but no synced table uses FK clauses. This is intentional: changelog replay, snapshot seeding, and backfill all insert rows in non-deterministic order — a message may arrive before its parent thread, a memory edge before its source node. FK constraints would cause intermittent hard failures during sync that depend on network timing. Referential integrity is enforced by the application write path (outbox helpers), not by the database engine during replay.
 
-### 21. Client-session affinity wins over model-based delegation
+### 21. Client tools relay to the session host (affinity is an optimization)
 
-A `notify` / `introspect` wakeup can fire on any host (webhook ingestion and PR-watch tasks run hub-side; the dispatch fires `handleThread` wherever the notify was enqueued). But a thread with a live boundless / `BoundClient` WS session can only execute `client`-kind tools (`boundless_*`) on the host holding that connection — client tool calls defer over that host's local event bus and are unreachable cross-host. So the delegation decision in `packages/cli/src/commands/start/server.ts` consults the `client_sessions` table (synced, LWW) BEFORE model-based `getDelegationTarget()`: (1) a live session on another host → delegate there; (2) a live session on this host → run locally and suppress model delegation (otherwise an opus-backed boundless loop gets pulled to the hub and stripped of its client tools — issue #91); (3) no live session → fall back to model-based delegation. `getClientSessionDelegationTarget()` answers cases 1+3 (returns the remote `EligibleHost` or null), `hasLocalClientSession()` disambiguates case 2. Sessions are recorded on `thread:subscribe`, soft-deleted on `thread:unsubscribe` and on WS close, and a staleness window (`CLIENT_SESSION_HOST_STALE_MS`) guards against a host that died without a clean close. `client_sessions` must stay in `SYNCED_TABLE_NAMES` / `SNAPSHOT_TABLE_ORDER` so peers learn session locations. The same staleness join is exposed for introspection (issue #96): `isClientSessionLive()` (host-agnostic "any live session anywhere") and `getClientSessions()` (per-(thread,host) rows tagged live/stale) live alongside the routing helpers in `delegation.ts`. The `hostinfo` tool renders a **Client Sessions** section from `getClientSessions()`, and `notify` / `introspect` append a shared non-fatal warning (`clientSessionWakeupWarning()`) when the target is a `CLIENT_TOOL_INTERFACES` thread (`boundless`) with no live session — the wakeup still enqueues and delivers on reconnect, but the woken loop can't run client tools meanwhile.
+A `notify` / `introspect` wakeup can fire on any host. A thread with a live boundless / `BoundClient` WS session executes `client`-kind tools (`boundless_*`) on the host holding that connection — but under the single delegation path (invariant #22) the loop is NOT forced onto that host. When a loop running elsewhere defers a client tool and finds no local WS connection, it resolves the session host from the synced `client_sessions` table (`resolveClientSessionHost()` in `delegation.ts`) and **relays** a `client_tool` request there; the session host enqueues into its local WS dispatch, awaits the client's result, and relays a `client_result` back (the producer waits on `relay_inbox`, retriable on timeout / session drop). So client-session affinity is now an **optimization** (run where the connection is, save a round-trip), never a must-run-here requirement. The whole-loop delegation that this invariant previously mandated (`getClientSessionDelegationTarget` / `hasLocalClientSession`) is deleted. `enqueueToolResult` is idempotent on `(thread_id, call_id)` so a re-driven `client_result` is a no-op (no double-execution). `client_sessions` must stay in `SYNCED_TABLE_NAMES` / `SNAPSHOT_TABLE_ORDER` so any host can resolve session locations. The introspection helpers survive: `isClientSessionLive()` (any live session anywhere) and `getClientSessions()` (per-(thread,host) rows tagged live/stale) power the `hostinfo` **Client Sessions** section and the shared `clientSessionWakeupWarning()` non-fatal notice. See `docs/design/specs/2026-06-29-unified-delegation.md`.
+
+### 22. One delegation path — consumer never re-assembles
+
+There is exactly ONE delegation mechanism: the **producer** (the host that received the trigger and owns authoritative state) assembles context locally and ships it; no consumer ever re-assembles context from its own (possibly un-synced) replica. The old `process` relay kind, `runDelegatedLoop`/`executeProcess`, the ≥50% tool-affinity `getDelegationTarget`, and the delegate-vs-local branch in `handleThread` are all removed; the loop always runs locally and relays only **inference** and **tool calls**. Inference context travels as `segments: ContextSegment[]` (`packages/agent/src/delegation-segments.ts`): the producer emits at most one `range` segment over the confirmed-synced history prefix plus `inline` segments for the tail (`segmentAssembledMessages`), and the consumer rebuilds history byte-for-byte by re-running the same Stage-1 projection finder + annotator (`resolveSegments`). The consumer has no access to `assembleContext`, so consumer re-assembly is structurally unrepresentable — this is what makes the original `history:0` bug class (a host re-assembling from a replica that wasn't there yet) impossible by construction. The old `messages` / `messages_file_ref` (>2MB files-table offload) payload is gone; `scripts/validate-no-files-relay-offload.ts` (in `bun check`) gates the offload shut.
+
+### 23. Relay history is one range-pointer over confirmed-synced rows
+
+A delegation range segment may cover a message row only if that row's latest `change_log` HLC is ≤ the consumer's **confirmed-sync watermark**, and `getConfirmedSyncWatermark(db, peer)` (the `sync_state.last_confirmed` cursor, exported from `@bound/sync`) is the SOLE authority for that decision — never `last_sent` (optimistic) or `last_received` (inbound). `last_confirmed` advances ONLY on a changelog/snapshot ack from the peer, never on the optimistic send-side write. Because history is an append-only prefix there is at most one range per delegated turn; everything newer than the watermark (including edits to old rows) ships inline. Cold start (peer never acked) ⇒ watermark `HLC_ZERO` ⇒ all segments inline, the safe degenerate case. This guarantees every row a range points at is already present on the consumer — a pointed-at missing row is a hard error that cannot happen by construction.
+
+### 24. Assembly is pure over (DB, AssemblyContext)
+
+`assembleContext()` output is a pure function of its declared inputs `(DB state, AssemblyContext)`; "now" enters only via `AssemblyContext.clock` (`AssemblyClock`; `realTimeClock()` / `frozenClock(ms)`). This extends the R-VC25 stable-prefix purity invariant from the stable subsection to the WHOLE assembly, including the varying Live State half and the `formatInstant` year branch — no wall-clock or environment read may influence byte output. The producer captures one `nowMs` and ships it on the inference relay payload, so the consumer's range re-annotation in `resolveSegments` reproduces the producer's bytes exactly. Two hosts handed the same `(DB, AssemblyContext)` agree byte-for-byte — the cross-host guarantee the single-delegation path depends on. Guarded by the determinism property test (`packages/agent/src/__tests__/assembly-determinism.property.test.ts`).
 
 ---
 
@@ -132,47 +148,25 @@ hosts ignore. Do not extend this list without writing down the same justificatio
   makes this safe: each booting host only resets its own claims. Peer hosts handle
   peer-claimed stale rows via R-LR2's host-liveness eviction (Phase 4).
 
-The PR review gate (R-LR6) blocks new `// outbox-exempt` annotations on synced-table writes
-unless the new exemption is added to this list with the same justification format, OR the
-write is on a non-synced table (category c below), OR the annotation is `// outbox-routed`
-(asserting an explicit `createChangeLogEntry` follow-up in the same transaction).
+New changelog-exempt writes MUST route through `dangerouslyExecuteRawWrite` (see invariant #1)
+and SHOULD be added to the table below. The chokepoint's mandatory `reason` argument carries the
+per-call justification; this table is the human-readable index of where the bypasses live.
 
-### Audit Disposition Table for `outbox-exempt` Annotations
+### Changelog-exempt writes (routed through `dangerouslyExecuteRawWrite`)
 
-This table is an exhaustive snapshot of every `outbox-exempt` annotation in the repo as of
-2026-05-26 (RFC `2026-05-26-task-lifecycle-resilience.md` close). Categories per R-LR12:
-- **(a) justified-and-documented exception** — listed in the section above
-- **(b) fixed by this RFC** — annotation removed or rewritten by R-LR1, R-LR3, R-LR5, or R-LR11
-- **(c) non-synced table** — write target is NOT in `SyncedTableName`
-- **(d) known-deferred** — synced-table write not fixed by this RFC; recorded with TODO link
-- **(e) comment-only** — text mentioning "outbox-exempt" that's not an active annotation
+Every intentional outbox bypass now funnels through the single `dangerouslyExecuteRawWrite`
+chokepoint, which the CI gate at `scripts/validate-outbox-invariant.ts` recognizes as the sole
+sanctioned escape (the former per-line `// outbox-exempt` annotation + audit-table cross-check was
+retired). Each call below skips the changelog because the write is a per-host signal with no
+cross-host correctness invariant.
 
-The CI gate at `scripts/validate-outbox-invariant.ts` cross-checks new annotations against
-this table.
+| Call site | Write target | Why changelog-exempt |
+|-----------|-------------|----------------------|
+| `packages/agent/src/summary-extraction.ts` (`bumpRenderedDetailEntries`) | semantic_memory.last_accessed_at | Per-host relevance hint; routing through `updateRow` would advance `modified_at` and cascade into stale-child detection (see Section A). |
+| `packages/cli/src/commands/start/bootstrap.ts` (`STALE_TASK_RESET_SQL` execution) | tasks (status, lease_id, claimed_by, claimed_at) | Per-host crash recovery scoped to `claimed_by = ?siteId` (see Section A). |
+| `packages/core/src/relay-metrics.ts` (`recordTurnRelayMetrics`, no-siteId branch) | turns.relay_target, turns.relay_latency_ms | Local-only instrumentation columns on a synced table; per-host relay metrics are not synced. |
+| `packages/agent/src/task-resolution.ts` (heartbeat migration) | tasks.no_history | One-time, idempotent, self-converging startup migration of a per-host semantic flag. |
 
-| File:Line | Write target | Category | Disposition |
-|-----------|-------------|----------|-------------|
-| packages/agent/src/summary-extraction.ts:1915 | semantic_memory.last_accessed_at | (a) justified | Per-host relevance hint; see Section A above. |
-| packages/agent/src/scheduler.ts:549 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed timer-driven heartbeat refresh through outbox. |
-| packages/agent/src/scheduler.ts:1226 (REMOVED) | tasks.heartbeat_at | (b) fixed | R-LR1 routed activity-driven heartbeat refresh through outbox. |
-| packages/agent/src/scheduler.ts:311 (REMOVED) | tasks.next_run_at, tasks.status | (b) fixed | R-LR11 routed rescheduleHeartbeat through outbox. |
-| packages/agent/src/scheduler.ts:915 (REWRITTEN) | tasks (status, claimed_by, claimed_at) | (b) fixed | R-LR5 rewrote to outbox-routed annotation; explicit createChangeLogEntry follows. |
-| packages/agent/src/scheduler.ts:1005 (REWRITTEN) | tasks (status, lease_id, heartbeat_at) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/agent/src/scheduler.ts:1343 (REWRITTEN) | tasks (running → failed, model-validation) | (b) fixed | R-LR5 rewrote to outbox-routed annotation; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1517 (REWRITTEN) | tasks (running → failed, soft-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1673 (REWRITTEN) | tasks (running → failed, hard-error) | (b) fixed | R-LR5 rewrote; R-LR3 added lease CAS guard. |
-| packages/agent/src/scheduler.ts:1796 (REWRITTEN) | tasks (post-eviction reclaim) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:62 | tasks (status, lease_id, claimed_by, claimed_at) | (a) justified | Per-host crash recovery scoped to claimed_by = ?siteId; see Section A above. |
-| packages/cli/src/commands/start/bootstrap.ts:368 (REWRITTEN) | hosts (registration) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/cli/src/commands/start/bootstrap.ts:391 (REWRITTEN) | hosts (INSERT) | (b) fixed | R-LR5 rewrote to outbox-routed annotation. |
-| packages/platforms/src/leader-election.ts:73 (REWRITTEN) | cluster_config (leader election) | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/drain.ts:42, 46, 83, 87, 101 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/set-hub.ts:125, 129 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/config-reload.ts:69, 73 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/cli/src/commands/stop-resume.ts:33, 37, 66 (REWRITTEN) | cluster_config | (b) fixed | R-LR5 rewrote. |
-| packages/core/src/relay-metrics.ts:48 | turns.relay_target, turns.relay_latency_ms | (d) known-deferred | Synced-table write not fixed by this RFC. `turns` is synced; these columns are local-only instrumentation. TODO: follow-up RFC to either route through outbox or formalize as a Section A exception. |
-| packages/sandbox/src/overlay-scanner.ts:128, 149, 170 | overlay_index (INSERT, UPDATE, soft-delete) | (d) known-deferred | `overlay_index` IS synced. Annotation says "outbox not provided (backward compat)". TODO: follow-up RFC to convert these to `insertRow`/`updateRow`/`softDelete`. |
-| packages/agent/src/task-resolution.ts:428 | tasks.no_history | (d) known-deferred | Active legacy migration that runs on startup. TODO: follow-up RFC to route through outbox or formalize as a Section A exception. |
-| packages/agent/scripts/agent-harness/driver.ts:51 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/scripts/agent-harness/driver.ts:225 | (none — comment-only) | (e) comment-only | Reference / educational note. |
-| packages/agent/src/validation/run-stable-prefix-drift-validation.ts:244 | (none — comment-only) | (e) comment-only | Reference to `bumpRenderedDetailEntries` exception. |
+Scheduler CAS task transitions, host registration, and cluster_config CLI commands are NOT in this
+table: they DO sync, via raw SQL paired with an explicit `createChangeLogEntry` in the same
+transaction, marked `// outbox-routed`.

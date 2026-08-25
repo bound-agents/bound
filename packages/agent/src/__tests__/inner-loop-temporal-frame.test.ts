@@ -3,7 +3,7 @@
  *
  * Live evidence from threads 25687e6c-ff06-4e91-ae3f-7db91f112d9c (sonnet,
  * 11 inner-loop turns in one run) and d0372be6-bd60-452d-958b-249042c884a1
- * (kimi/opus webhook task) shows that within a single AgentLoop.run()
+ * (kimi/opus webhook task) shows that within a single MainAgentLoop.run()
  * invocation, every recorded turn writes the same totalEstimated value to
  * context_debug while actualTotalTokens climbs turn-over-turn. The cold-
  * assembly snapshot of section sizes is captured once and never refreshed
@@ -38,7 +38,7 @@ import type { ChatParams, LLMBackend, LLMMessage, StreamChunk } from "@bound/llm
 import { ModelRouter } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { AgentLoop } from "../agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 
 let globalTmpDir: string;
 let globalDb: Database;
@@ -73,6 +73,11 @@ class MockLLMBackend implements LLMBackend {
 	private postHooks: Array<(() => void) | null> = [];
 	private capturedMessages: ChatParams["messages"][] = [];
 	private callCount = 0;
+
+	// Per-instance context window so a test can force Stage 7 truncation with a
+	// modest amount of seeded history. Defaults to the large production-shape
+	// window so existing tests are unaffected.
+	constructor(private readonly maxContext = 200000) {}
 
 	pushResponse(gen: () => AsyncGenerator<StreamChunk>) {
 		this.responses.push(gen);
@@ -128,7 +133,7 @@ class MockLLMBackend implements LLMBackend {
 			system_prompt: true,
 			prompt_caching: true,
 			vision: false,
-			max_context: 200000,
+			max_context: this.maxContext,
 		};
 	}
 }
@@ -320,7 +325,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -412,7 +417,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -530,7 +535,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -574,7 +579,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 	it("warm path injects ONLY varyingContent into the developer tail (no stable-subsection duplication)", async () => {
 		// Live evidence captured via the agent-harness production-shape
-		// fixture (2026-05-26): warm-path inferences carried a 226,238-
+		// fixture: warm-path inferences carried a 226,238-
 		// byte trailing user message containing the FULL Working Knowledge
 		// + Discoverable Archive + skill index XML — exactly the content
 		// already in the cached system prompt. The cold path correctly
@@ -660,7 +665,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop1 = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop1 = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -699,7 +704,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const callsBefore = mockBackend.getCapturedMessages().length;
-		const loop2 = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop2 = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -708,9 +713,14 @@ describe("inner-loop temporal-frame coherence", () => {
 		const allCalls = mockBackend.getCapturedMessages();
 		expect(allCalls.length).toBeGreaterThan(callsBefore);
 
-		// First call after the second run — the warm path's first inference.
-		const warmCall = allCalls[callsBefore];
-		const developers = warmCall.filter((m) => m.role === "developer");
+		// First inference-shaped call after the second run. Summary extraction is
+		// fire-and-forget and shares this mock, so it may interleave a summary call
+		// before the warm-path inference.
+		const warmCall = allCalls
+			.slice(callsBefore)
+			.find((messages) => messages.some((message) => message.role === "developer"));
+		expect(warmCall).toBeDefined();
+		const developers = warmCall?.filter((m) => m.role === "developer") ?? [];
 		expect(developers.length).toBeGreaterThan(0);
 		// Combine all developer contents — varying content is what we expect
 		// to find here. Stable subsection content (pinned marker, Working
@@ -723,45 +733,75 @@ describe("inner-loop temporal-frame coherence", () => {
 		// Sanity: at least the User/Thread ID line (varying) is present.
 		expect(allDevText).toContain(globalThreadId);
 
-		// Load-bearing: the Working Knowledge header (a stable-subsection
+		// Load-bearing: the Working Knowledge opening tag (a stable-subsection
 		// literal) must NOT appear in the developer tail. If it does, we're
 		// duplicating ~Nk bytes that the system-prompt cache anchor
-		// already covers. (The header literal lives in summary-extraction.)
-		expect(allDevText).not.toContain("## Working Knowledge — operational and durable");
+		// already covers. (The tag literal lives in summary-extraction.)
+		expect(allDevText).not.toContain("<working-knowledge sources=");
 		// And specifically the seeded pinned-memory marker — its presence
 		// in the dev tail means the stable subsection got duplicated.
 		expect(allDevText).not.toContain("pinned-marker-content-WARM-PATH-DEV-TAIL");
 	});
 
-	it("preserves the Stage 1.7 compaction-summary developer when refreshing the volatile-tail (load-bearing)", async () => {
+	it("preserves a HEAD developer (telescope digest/marker) when refreshing the volatile-tail (load-bearing)", async () => {
 		// Live regression observed via the agent-harness on
-		// `production-shape` fixture (2026-05-26): between two consecutive
+		// `production-shape` fixture: between two consecutive
 		// inner-loop iterations of the same outer-turn, cumulative cache
 		// dropped by 22,363 tokens (cr 80,952 → 58,589) because the wire
 		// body's first user message changed by 232k bytes.
 		//
 		// Root cause: `refreshVolatileTailForNextTurn` calls
 		// `llmMessages.findIndex((m) => m.role === "developer")`, which
-		// returns the FIRST developer. When `assembleContext` Stage 1.7
-		// prepended a compaction-summary developer at the head of
-		// llmMessages (because `thread.summary` is set), that's the one
-		// that gets overwritten — silently destroying the byte-stable
-		// summary content and leaving the actual TAIL volatile-tail
-		// stale.
+		// returns the FIRST developer. When a HEAD developer exists (the
+		// Stage 7 telescope prepends its ancient-marker / middle-digest at
+		// the head when truncation fires; historically Stage 1.7's
+		// compaction summary did the same), that's the one that gets
+		// overwritten — silently destroying the byte-stable head content and
+		// leaving the actual TAIL volatile-tail stale.
 		//
-		// The contract: `refreshVolatileTailForNextTurn` MUST replace
-		// the LAST developer (the volatile-tail), not the first. The
-		// HEAD compaction summary stays untouched so its byte-stable
-		// content keeps Bedrock's cache prefix matching turn-over-turn.
-		const summaryMarker = `STAGE-1.7-MARKER-${randomUUID()}`;
+		// The contract: `refreshVolatileTailForNextTurn` MUST replace the
+		// LAST developer (the volatile-tail), not the first. The HEAD
+		// telescope developer stays untouched so its byte-stable content
+		// keeps the provider's cache prefix matching turn-over-turn.
+		//
+		// A thread summary is set so the telescope's ancient marker carries
+		// it; the marker is the byte-stable HEAD developer this test pins.
+		const summaryMarker = `TELESCOPE-HEAD-MARKER-${randomUUID()}`;
 		seedThreadWithUserMessage(globalThreadId, "Run two bash commands", {
-			summary: `harness compaction summary body containing ${summaryMarker}`,
+			summary: `telescope ancient-marker summary body containing ${summaryMarker}`,
 		});
+
+		// Seed enough prior history that Stage 7 truncation fires (telescope
+		// engages) and emits a HEAD ancient/middle developer marker carrying
+		// the summary. Without truncation there is no head developer to guard.
+		{
+			const filler = "word ".repeat(400);
+			const base = new Date("2026-01-02T00:00:00Z").getTime();
+			for (let i = 0; i < 30; i++) {
+				globalDb.run(
+					"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					[
+						randomUUID(),
+						globalThreadId,
+						i % 2 === 0 ? "user" : "assistant",
+						filler,
+						null,
+						null,
+						new Date(base + i * 1000).toISOString(),
+						new Date(base + i * 1000).toISOString(),
+						"local",
+						0,
+					],
+				);
+			}
+		}
 
 		const advisoryTitle = `volatile-tail-mutation-${randomUUID()}`;
 		const advisoryId = randomUUID();
 
-		const mockBackend = new MockLLMBackend();
+		// Small context window so the ~12k tokens of seeded history above force
+		// Stage 7 truncation, making the telescope emit its HEAD ancient marker.
+		const mockBackend = new MockLLMBackend(6000);
 		// Inner loop turn 1: tool_use bash. Insert applied advisory
 		// after chunks consumed; refresh fires at the top of turn 2.
 		mockBackend.pushResponseWithPostHook(
@@ -822,7 +862,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});
@@ -842,8 +882,8 @@ describe("inner-loop temporal-frame coherence", () => {
 		const call1Devs = findAllDeveloperContents(calls[0]);
 		const call2Devs = findAllDeveloperContents(calls[1]);
 
-		// Sanity: call 1 carries TWO developers — the Stage 1.7 head
-		// summary AND the tail volatile-tail.
+		// Sanity: call 1 carries TWO developers — the telescope HEAD ancient
+		// marker (carrying the summary) AND the tail volatile-tail.
 		expect(call1Devs.length).toBeGreaterThanOrEqual(2);
 		expect(call1Devs.some((c) => c.includes(summaryMarker))).toBe(true);
 
@@ -853,7 +893,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 		// Load-bearing: the head summary marker must still be in call 2's
 		// developer messages. Without the fix, the refresh helper
-		// overwrites the head summary with the volatile-tail content,
+		// overwrites the head marker with the volatile-tail content,
 		// dropping the marker.
 		expect(call2Devs.some((c) => c.includes(summaryMarker))).toBe(true);
 
@@ -861,7 +901,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		// developer messages (so we know the refresh ran).
 		expect(call2Devs.some((c) => c.includes(advisoryTitle))).toBe(true);
 
-		// Stronger property: the head summary developer's content is
+		// Stronger property: the head telescope-marker developer's content is
 		// byte-equal between call 1 and call 2 — refresh must touch only
 		// the tail.
 		const call1Head = call1Devs.find((c) => c.includes(summaryMarker));
@@ -871,7 +911,7 @@ describe("inner-loop temporal-frame coherence", () => {
 
 	it("places a rolling cachePoint on each inner-loop iteration after the first", async () => {
 		// Live regression observed via the agent-harness on
-		// `production-shape` fixture (2026-05-26, /tmp/h8/turn-{2..6}.json):
+		// `production-shape` fixture:
 		// across a 5-iter cold-path inner loop, the wire body's only
 		// message-level cachePoint stayed at user_1 (the semantic anchor).
 		// Each iteration's appended `tool_call + tool_result` content lived
@@ -956,7 +996,7 @@ describe("inner-loop temporal-frame coherence", () => {
 		});
 
 		const ctx = makeCtx();
-		const loop = new AgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+		const loop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
 			threadId: globalThreadId,
 			userId: globalUserId,
 		});

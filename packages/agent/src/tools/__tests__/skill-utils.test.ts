@@ -18,8 +18,8 @@ describe("importSkillFromFiles", () => {
 		db.close();
 	});
 
-	describe("web-skills-tab.AC1.1: Valid SKILL.md creates active skill", () => {
-		it("should create a skill with status active when given valid SKILL.md", async () => {
+	describe("web-skills-tab.AC1.1: Valid SKILL.md creates a skill", () => {
+		it("should create a live skill when given valid SKILL.md", async () => {
 			const files: SkillFileEntry[] = [
 				{
 					path: "SKILL.md",
@@ -40,12 +40,11 @@ This is a valid skill.`,
 			if (!result.ok) throw new Error("Expected ok: true");
 
 			const skill = db
-				.prepare("SELECT id, name, status, description FROM skills WHERE id = ? AND deleted = 0")
+				.prepare("SELECT id, name, description FROM skills WHERE id = ? AND deleted = 0")
 				.get(result.skillId) as any;
 
 			expect(skill).toBeDefined();
 			expect(skill.name).toBe("valid-skill");
-			expect(skill.status).toBe("active");
 			expect(skill.description).toBe("A valid test skill");
 		});
 	});
@@ -171,91 +170,12 @@ Content`,
 		});
 	});
 
-	describe("web-skills-tab.AC1.5: Exceeding active skill cap returns error", () => {
-		it("should return error when creating 21st active skill", async () => {
-			// Insert 20 active skills
-			for (let i = 0; i < 20; i++) {
-				const skillId = deterministicUUID(BOUND_NAMESPACE, `skill-${i}`);
-				insertRow(
-					db,
-					"skills",
-					{
-						id: skillId,
-						name: `skill-${i}`,
-						description: `Skill ${i}`,
-						status: "active",
-						skill_root: `skills/skill-${i}`,
-						content_hash: null,
-						allowed_tools: null,
-						compatibility: null,
-						metadata_json: null,
-						activated_at: new Date().toISOString(),
-						created_by_thread: null,
-						activation_count: 1,
-						last_activated_at: new Date().toISOString(),
-						retired_by: null,
-						retired_reason: null,
-						modified_at: new Date().toISOString(),
-						deleted: 0,
-					},
-					siteId,
-				);
-			}
-
-			// Try to create 21st skill with a new name
-			const files: SkillFileEntry[] = [
-				{
-					path: "SKILL.md",
-					content: `---
-name: skill-21
-description: 21st skill
----
-
-Content`,
-				},
-			];
-
-			const result = await importSkillFromFiles(db, siteId, files, {});
-
-			expect(result.ok).toBe(false);
-			if (result.ok) throw new Error("Expected ok: false");
-			expect(result.error).toMatch(/cap.*20|skill cap|limit/i);
-		});
-
-		it("should allow re-importing a retired skill even when at cap", async () => {
-			const skillName = "retired-skill";
+	describe("re-importing an existing skill updates it in place", () => {
+		it("should allow re-importing an existing skill", async () => {
+			const skillName = "existing-skill";
 			const skillId = deterministicUUID(BOUND_NAMESPACE, skillName);
 
-			// Insert 20 active skills
-			for (let i = 0; i < 19; i++) {
-				const id = deterministicUUID(BOUND_NAMESPACE, `skill-${i}`);
-				insertRow(
-					db,
-					"skills",
-					{
-						id,
-						name: `skill-${i}`,
-						description: `Skill ${i}`,
-						status: "active",
-						skill_root: `skills/skill-${i}`,
-						content_hash: null,
-						allowed_tools: null,
-						compatibility: null,
-						metadata_json: null,
-						activated_at: new Date().toISOString(),
-						created_by_thread: null,
-						activation_count: 1,
-						last_activated_at: new Date().toISOString(),
-						retired_by: null,
-						retired_reason: null,
-						modified_at: new Date().toISOString(),
-						deleted: 0,
-					},
-					siteId,
-				);
-			}
-
-			// Insert a retired skill
+			// Insert an existing live skill
 			insertRow(
 				db,
 				"skills",
@@ -263,7 +183,6 @@ Content`,
 					id: skillId,
 					name: skillName,
 					description: "Old description",
-					status: "retired",
 					skill_root: `skills/${skillName}`,
 					content_hash: "old-hash",
 					allowed_tools: null,
@@ -273,8 +192,6 @@ Content`,
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: new Date().toISOString(),
-					retired_by: "user-id",
-					retired_reason: "No longer needed",
 					modified_at: new Date().toISOString(),
 					deleted: 0,
 				},
@@ -301,13 +218,13 @@ Updated content`,
 		});
 	});
 
-	describe("web-skills-tab.AC1.6: Re-importing retired skill reactivates it", () => {
-		it("should update retired skill to active and increment activation_count", async () => {
+	describe("web-skills-tab.AC1.6: Re-importing a soft-deleted skill reactivates it", () => {
+		it("should reactivate a soft-deleted skill and increment activation_count", async () => {
 			const skillName = "reactivate-skill";
 			const skillId = deterministicUUID(BOUND_NAMESPACE, skillName);
 			const oldHash = "old-content-hash";
 
-			// Insert a retired skill
+			// Insert a soft-deleted skill
 			insertRow(
 				db,
 				"skills",
@@ -315,7 +232,6 @@ Updated content`,
 					id: skillId,
 					name: skillName,
 					description: "Old description",
-					status: "retired",
 					skill_root: `skills/${skillName}`,
 					content_hash: oldHash,
 					allowed_tools: null,
@@ -325,10 +241,8 @@ Updated content`,
 					created_by_thread: null,
 					activation_count: 1,
 					last_activated_at: new Date(Date.now() - 86400000).toISOString(),
-					retired_by: "user-id",
-					retired_reason: "Temporarily disabled",
 					modified_at: new Date().toISOString(),
-					deleted: 0,
+					deleted: 1,
 				},
 				siteId,
 			);
@@ -358,12 +272,9 @@ This skill has been reactivated with new content.`,
 				.prepare("SELECT * FROM skills WHERE id = ? AND deleted = 0")
 				.get(skillId) as any;
 
-			expect(skill.status).toBe("active");
 			expect(skill.activation_count).toBe(2);
 			expect(skill.content_hash).not.toBe(oldHash);
 			expect(skill.description).toBe("New description");
-			expect(skill.retired_by).toBeNull();
-			expect(skill.retired_reason).toBeNull();
 		});
 	});
 

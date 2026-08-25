@@ -2,6 +2,8 @@
 import type { MemoryGraphNode, MemoryGraphResponse, ThreadListEntry } from "@bound/client";
 import { onMount } from "svelte";
 import { client } from "../lib/bound";
+import { renderMarkdown } from "../lib/markdown";
+import { mermaid } from "../lib/mermaid";
 import { getLineCssVar } from "../lib/metro-lines";
 
 interface Props {
@@ -176,6 +178,25 @@ const placedById = $derived(new Map(placed.map((p) => [p.id, p] as const)));
 const placedByKey = $derived(new Map(placed.map((p) => [p.key, p] as const)));
 
 const selectedNode = $derived(selectedNodeId ? (placedById.get(selectedNodeId) ?? null) : null);
+
+// Render the selected memory's value as markdown, mirroring how prose is
+// rendered everywhere else in the UI (MessageBubble / ReasoningBlock).
+let renderedValue = $state("");
+$effect(() => {
+	const value = selectedNode?.value;
+	if (!value) {
+		renderedValue = "";
+		return;
+	}
+	renderMarkdown(value)
+		.then((html) => {
+			renderedValue = html;
+		})
+		.catch((err: unknown) => {
+			console.error("[markdown] renderMarkdown failed:", err);
+			renderedValue = "";
+		});
+});
 
 const neighbors = $derived.by(() => {
 	if (!selectedNode || !graph) return [] as Array<PlacedNode & { _relation: string }>;
@@ -565,7 +586,11 @@ const hoveredCount = $derived(
 
 				<div>
 					<div class="detail-key mono">{selectedNode.key}</div>
-					<h3 class="detail-value">{selectedNode.value}</h3>
+					{#if renderedValue}
+						<div class="detail-value md-content" use:mermaid={renderedValue}>{@html renderedValue}</div>
+					{:else}
+						<div class="detail-value">{selectedNode.value}</div>
+					{/if}
 				</div>
 
 				<div class="stats-grid">
@@ -754,6 +779,20 @@ const hoveredCount = $derived(
 
 	.canvas.with-panel {
 		grid-template-columns: 1fr 300px;
+	}
+
+	/* Phone: a 300px detail panel beside the graph leaves almost nothing for the
+	   canvas at ~390px. Stack the panel below the graph instead. */
+	@media (max-width: 640px) {
+		.canvas.with-panel {
+			grid-template-columns: 1fr;
+			grid-template-rows: 1fr auto;
+		}
+		.detail-panel {
+			border-left: none;
+			border-top: 1px solid var(--rule-soft);
+			max-height: 45%;
+		}
 	}
 
 	.svg-wrap {

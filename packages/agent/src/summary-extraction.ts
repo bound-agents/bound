@@ -1,6 +1,34 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { getPkColumn, insertRow, updateRow } from "@bound/core";
+import {
+	countLiveAssistantMessagesByThread,
+	countLiveMessagesByThread,
+	countMemoryByKeyPrefix,
+	dangerouslyExecuteRawWrite,
+	findLatestLiveUserMessageCreatedAtByThread,
+	findMemoryIdByKeyIncludingDeleted,
+	findTaskRunTimestampsById,
+	findThreadCreatedAtById,
+	findThreadSummaryStateById,
+	getPkColumn,
+	getThreadUserDisplayName,
+	insertRow,
+	listAppliedAdvisoriesResolvedSince,
+	listDetailMemoryAccessOrder,
+	listFileModificationNotices,
+	listMemorySourceInfoByKeys,
+	listMessageRoleContentByThreadSince,
+	listPinnedMemoryWithSource,
+	listRecencyMemoryWithSource,
+	listRecentTaskRunsWithHost,
+	listRecentThreadsWithMessages,
+	listSummarizesParentsByChildKeys,
+	listSummaryChildrenForStaleness,
+	listSummaryChildrenWithSource,
+	listSummaryMemoryWithSource,
+	updateRow,
+} from "@bound/core";
+import type { CrossThreadSummaryRow } from "@bound/core";
 import type { ContentBlock, LLMBackend } from "@bound/llm";
 import type {
 	CrossThreadSource,
@@ -167,9 +195,7 @@ export async function extractSummaryAndMemories(
 ): Promise<Result<ExtractionResult, Error>> {
 	try {
 		// Get thread state — read existing summary for rolling synthesis
-		const thread = db
-			.prepare("SELECT summary, summary_through FROM threads WHERE id = ?")
-			.get(threadId) as { summary: string | null; summary_through: string | null } | undefined;
+		const thread = findThreadSummaryStateById(db, threadId);
 
 		if (!thread) {
 			return {
@@ -181,11 +207,7 @@ export async function extractSummaryAndMemories(
 		const summaryThrough = thread.summary_through || "1970-01-01T00:00:00Z";
 
 		// Get messages after summary_through with role for delta formatting
-		const messages = db
-			.prepare(
-				"SELECT role, content FROM messages WHERE thread_id = ? AND created_at > ? ORDER BY created_at",
-			)
-			.all(threadId, summaryThrough) as Array<{ role: string; content: string }>;
+		const messages = listMessageRoleContentByThreadSince(db, threadId, summaryThrough);
 
 		if (messages.length === 0) {
 			return {
@@ -194,33 +216,14 @@ export async function extractSummaryAndMemories(
 			};
 		}
 
-		// Boundary-aware throttle. Skip regeneration when the compaction
-		// boundary (the index of the latest user message — see
-		// `history-compaction/compact.ts`) has NOT advanced past the
-		// current `summary_through`. In that regime nothing new has been
-		// compacted into stubs since the last summary, so the summary
-		// doesn't need to absorb anything new — and regenerating would
-		// only produce slightly different LLM output, mutating the bytes
-		// at the head of the wire request and breaking Bedrock's prefix
-		// cache match for the message-level cachePoint.
-		//
-		// Triggering condition: regen is needed when there exists a
-		// `role: "user"` message strictly after `summary_through`. That's
-		// equivalent to "a new user message has arrived since the last
-		// summary, so the boundary now sits at a position that includes
-		// previously-uncompacted assistant + tool_result content from
-		// the prior turn — those messages are about to be absorbed."
-		//
-		// Live evidence (thread `7339231f-…`, 2026-05-25): two cold-path
-		// assemblies 22 seconds apart sent different msg[0] bytes
-		// because the summary regenerated mid-turn — the second turn was
-		// an inner-loop tool round with no new user message. The
-		// message-level cachePoint's prefix-match missed even though the
-		// bucket-aligned placer held its byte-position stable.
+		// Boundary-aware throttle. A new user message advances an ordinary
+		// conversation; a developer wakeup advances an event-task thread, whose
+		// inputs are persisted as developer messages plus tool results. Assistant
+		// and tool-only churn must not regenerate the summary mid-turn.
 		const previousSummary = thread.summary;
 		if (previousSummary) {
-			const hasNewUserMessage = messages.some((m) => m.role === "user");
-			if (!hasNewUserMessage) {
+			const hasNewInputBoundary = messages.some((m) => m.role === "user" || m.role === "developer");
+			if (!hasNewInputBoundary) {
 				return {
 					ok: true,
 					value: { summaryGenerated: false, memoriesExtracted: 0 },
@@ -237,11 +240,7 @@ export async function extractSummaryAndMemories(
 		// Resolve the user's display name so the summary references them by name
 		// instead of "you" (which is meaningless in cross-thread digests or when
 		// a different agent instance reads the summary).
-		const threadMeta = db
-			.prepare(
-				"SELECT u.display_name FROM threads t JOIN users u ON t.user_id = u.id WHERE t.id = ?",
-			)
-			.get(threadId) as { display_name: string } | null;
+		const threadMeta = getThreadUserDisplayName(db, threadId);
 		const userName = threadMeta?.display_name;
 		const userClause = userName ? ` The user in this conversation is named ${userName}.` : "";
 
@@ -316,10 +315,8 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		// Extract key facts as memories by asking the LLM for a bullet-point list.
 		// Skip if seed facts already exist — regenerating them wastes LLM calls and
 		// produces ~1260 redundant updateRow operations per day across active threads.
-		const existingFacts = db
-			.prepare("SELECT COUNT(*) as count FROM semantic_memory WHERE key LIKE ? AND deleted = 0")
-			.get(`thread_${threadId}_fact_%`) as { count: number };
-		if (existingFacts.count > 0) {
+		const existingFactsCount = countMemoryByKeyPrefix(db, `thread_${threadId}_fact_%`);
+		if (existingFactsCount > 0) {
 			return {
 				ok: true,
 				value: { summaryGenerated: summary.length > 0, memoriesExtracted: 0 },
@@ -330,20 +327,13 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 		// `role='assistant'` message, the summarizer LLM is reasoning
 		// from prompt + tool_results alone and produces plausible but
 		// fabricated first-person reasoning attributions ("I recognized
-		// this as ...", "I resolved that ..."). Live evidence: the
-		// 2026-04-26 model trial battery, where 5 threads with EOF
-		// after the initial tool_result surfaced "I recognized this
-		// as a model characterization trial" facts even though the
-		// model never reasoned about anything — inference errored
-		// before producing any real assistant turn. Skip extraction
-		// rather than persist confabulation as memory.
-		const assistantTurnCount = (
-			db
-				.prepare(
-					"SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0",
-				)
-				.get(threadId) as { count: number }
-		).count;
+		// this as ...", "I resolved that ..."). Live evidence: a batch of
+		// model-characterization trial threads that errored out after the
+		// initial tool_result (before any real assistant turn) still
+		// surfaced "I recognized this as a model characterization trial"
+		// facts, even though the model never reasoned about anything.
+		// Skip extraction rather than persist confabulation as memory.
+		const assistantTurnCount = countLiveAssistantMessagesByThread(db, threadId);
 		if (assistantTurnCount === 0) {
 			return {
 				ok: true,
@@ -383,9 +373,7 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 			const memId = randomUUID();
 			const key = `thread_${threadId}_fact_${i}`;
 			// Check for existing entry (including soft-deleted) to avoid UNIQUE violations
-			const existing = db.prepare("SELECT id FROM semantic_memory WHERE key = ?").get(key) as
-				| { id: string }
-				| undefined;
+			const existing = findMemoryIdByKeyIncludingDeleted(db, key);
 			if (existing) {
 				updateRow(
 					db,
@@ -427,6 +415,7 @@ Keep the summary under 500 tokens. Focus on information that helps continue the 
 }
 
 export interface CrossThreadDigestEntry {
+	threadId: string;
 	title: string;
 	messageCount: number;
 	lastUpdatedAt: string; // ISO-8601 from threads table
@@ -456,18 +445,7 @@ export function buildCrossThreadDigest(
 ): CrossThreadDigestResult {
 	try {
 		// Get recent threads for user, including the summary field for continuity
-		const hasMessages = "AND EXISTS (SELECT 1 FROM messages WHERE messages.thread_id = threads.id)";
-		const sql = excludeThreadId
-			? `SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND id != ? AND deleted = 0 ${hasMessages} ORDER BY last_message_at DESC LIMIT 5`
-			: `SELECT id, title, color, last_message_at, summary FROM threads WHERE user_id = ? AND deleted = 0 ${hasMessages} ORDER BY last_message_at DESC LIMIT 5`;
-		const params = excludeThreadId ? [userId, excludeThreadId] : [userId];
-		const threads = db.prepare(sql).all(...params) as Array<{
-			id: string;
-			title: string | null;
-			color: number;
-			last_message_at: string;
-			summary: string | null;
-		}>;
+		const threads = listRecentThreadsWithMessages(db, userId, excludeThreadId);
 
 		if (threads.length === 0) {
 			return { text: "No recent activity.", sources: [], entries: [] };
@@ -490,19 +468,16 @@ export function buildCrossThreadDigest(
 
 		for (const thread of threads) {
 			const title = thread.title || "(untitled)";
-			const messageCount = db
-				.prepare("SELECT COUNT(*) as count FROM messages WHERE thread_id = ? AND deleted = 0")
-				.get(thread.id) as { count: number };
+			const messageCount = countLiveMessagesByThread(db, thread.id);
 
-			lines.push(
-				`- ${title}: ${messageCount.count} messages (last updated ${thread.last_message_at})`,
-			);
+			lines.push(`- ${title}: ${messageCount} messages (last updated ${thread.last_message_at})`);
 
 			// Populate structured entry for Live State
 			const sessions = sessionsByThread.get(thread.id);
 			entries.push({
+				threadId: thread.id,
 				title,
-				messageCount: messageCount.count,
+				messageCount,
 				lastUpdatedAt: thread.last_message_at,
 				...(sessions && sessions.length > 0 ? { sessions } : {}),
 			});
@@ -516,7 +491,7 @@ export function buildCrossThreadDigest(
 					threadId: thread.id,
 					title,
 					color: thread.color,
-					messageCount: messageCount.count,
+					messageCount,
 					lastMessageAt: thread.last_message_at,
 				});
 			}
@@ -528,25 +503,85 @@ export function buildCrossThreadDigest(
 	}
 }
 
+export const CROSS_THREAD_SUMMARIES_HEADER =
+	"## Cross-thread context — recent activity from other threads";
+
 /**
- * Resolve a memory entry's `source` field into a human-readable
- * label. Pure in inputs alone — no DB, no clock. Exposed so the
- * varying-tail module can render `formatMemoryEntry`-equivalent
- * output without re-deriving the labelling logic.
+ * Renders sibling thread summaries as a varying-side block for cross-thread
+ * injection (#178). Unlike `buildCrossThreadDigest` (metadata-only: title,
+ * message count, last-updated), this function renders the actual summary
+ * *content* so the agent has direct awareness of what happened in other
+ * threads — closing the gap left by keyword-driven retrieval, which misses
+ * contextually important changes that don't share keywords with the current
+ * turn.
+ *
+ * Used by both Scenario A (new thread seed, injected into the stable prefix
+ * as a frozen snapshot) and Scenario B (re-injection after inactivity with
+ * sibling summary delta, injected on the varying side as a one-shot
+ * developer block). The input rows are pre-sorted by `last_message_at DESC`
+ * from `listCrossThreadSummaries`.
+ *
+ * Pure in inputs alone — no DB, no clock.
  */
-export function resolveSource(
-	taskName: string | null,
-	threadId: string | null,
-	threadTitle: string | null,
-	source: string | null,
-): string {
-	if (taskName !== null) return `task "${taskName}"`;
-	if (threadId !== null) {
-		// source matched a non-deleted thread (may or may not have a title)
-		return `thread "${threadTitle ?? threadId.slice(0, 8)}"`;
+export function renderCrossThreadSummaries(rows: CrossThreadSummaryRow[]): RenderedSection {
+	if (rows.length === 0) return { lines: [] };
+
+	const lines: string[] = [CROSS_THREAD_SUMMARIES_HEADER, ""];
+
+	for (const row of rows) {
+		const title = row.title || "(untitled)";
+		lines.push(`### ${title}`);
+		lines.push(row.summary);
+		lines.push("");
 	}
-	if (source === null) return "unknown";
-	return source.slice(0, 8);
+
+	return { lines };
+}
+
+/** Idle threshold for Scenario B: 1 hour in milliseconds. Tunable. */
+export const CROSS_THREAD_INJECTION_IDLE_MS = 60 * 60 * 1000;
+
+/**
+ * Decides whether cross-thread summary injection should fire for this turn
+ * (#178). Pure in inputs alone — no DB, no clock beyond `nowMs`.
+ *
+ * Two scenarios share one decision function:
+ *
+ * **Scenario A** — new thread seed: fires when the thread has never been
+ * compacted (`threadSummaryThrough === null`) and sibling summaries exist.
+ * The injection goes into the stable prefix as a frozen snapshot.
+ *
+ * **Scenario B** — re-injection after inactivity: fires when BOTH conditions
+ * hold:
+ * 1. The thread has been idle past the threshold (`nowMs -
+ *    Date.parse(threadLastMessageAt) > CROSS_THREAD_INJECTION_IDLE_MS`).
+ * 2. At least one sibling thread's `summary_through` advanced past this
+ *    thread's `last_message_at` (content delta exists).
+ *
+ * The trigger is a pure function of existing DB columns — no new persistent
+ * state. When the user's message lands, `last_message_at` advances to now and
+ * the trigger goes quiet until the next idle + delta.
+ */
+export function shouldInjectCrossThreadSummaries(args: {
+	threadSummaryThrough: string | null;
+	threadLastMessageAt: string;
+	nowMs: number;
+	siblingSummaries: CrossThreadSummaryRow[];
+}): boolean {
+	const { threadSummaryThrough, threadLastMessageAt, nowMs, siblingSummaries } = args;
+
+	if (siblingSummaries.length === 0) return false;
+
+	// Scenario A: new thread, never compacted.
+	if (threadSummaryThrough === null) return true;
+
+	// Scenario B: re-injection after inactivity with sibling content delta.
+	const idleMs = nowMs - Date.parse(threadLastMessageAt);
+	if (idleMs <= CROSS_THREAD_INJECTION_IDLE_MS) return false;
+
+	return siblingSummaries.some(
+		(row) => Date.parse(row.summary_through) > Date.parse(threadLastMessageAt),
+	);
 }
 
 /**
@@ -572,27 +607,6 @@ function relativeTime(isoString: string): string {
 }
 
 /**
- * Parameterized staleness-tag generator. Same `nowMs` plumbing
- * rationale as `relativeTimeAt`.
- */
-export function stalenessTagAt(isoString: string, nowMs: number): string {
-	const diffMs = nowMs - new Date(isoString).getTime();
-	const diffDays = diffMs / (1000 * 60 * 60 * 24);
-	if (diffDays > 7) return " ⚠️ may be outdated (>7d old)";
-	if (diffDays > 1) return " (may have changed)";
-	return "";
-}
-
-/** Staleness caveat for memory entries older than 24h. */
-function stalenessTag(isoString: string): string {
-	const diffMs = Date.now() - new Date(isoString).getTime();
-	const diffDays = diffMs / (1000 * 60 * 60 * 24);
-	if (diffDays > 7) return " ⚠️ may be outdated (>7d old)";
-	if (diffDays > 1) return " (may have changed)";
-	return "";
-}
-
-/**
  * Computes the baseline timestamp (ISO string) for delta queries.
  * Implements the R-MV4 fallback chain:
  *   noHistory=false → MAX(last user-role message OR thread.created_at, NOW - 24h)
@@ -610,11 +624,10 @@ function stalenessTag(isoString: string): string {
  *     `last_message_at` continuously. The recency baseline therefore
  *     advanced past every memorize that landed *between* wakeups,
  *     structurally excluding those entries from L3 recency rendering.
- *     Live evidence: thread d0372be6 with 558 wakeups had recent
- *     `bound:issue:*` and `_outcome:*` memorizes that never surfaced
- *     in volatile context, leading the agent to repeatedly report
- *     "Working knowledge is months stale" while in fact the entries
- *     were 0.9–1.9 days old.
+ *     Observed in production on a long-lived autonomous thread (558
+ *     wakeups): recent memorizes never surfaced in volatile context,
+ *     and the agent repeatedly reported "Working knowledge is months
+ *     stale" while the entries were in fact 0.9–1.9 days old.
  *
  *  2. **User threads where the agent persists assistant messages
  *     between user turns.** Each agent turn that persists an
@@ -644,28 +657,20 @@ export function computeBaseline(
 
 	if (noHistory) {
 		if (taskId) {
-			const row = db
-				.prepare("SELECT last_run_at, created_at FROM tasks WHERE id = ?")
-				.get(taskId) as { last_run_at: string | null; created_at: string } | null;
+			const row = findTaskRunTimestampsById(db, taskId);
 			if (row === null) return EPOCH;
 			return row.last_run_at ?? row.created_at;
 		}
 		return EPOCH;
 	}
 
-	const threadRow = db.prepare("SELECT created_at FROM threads WHERE id = ?").get(threadId) as {
-		created_at: string;
-	} | null;
+	const threadRow = findThreadCreatedAtById(db, threadId);
 	if (threadRow === null) return EPOCH;
 
 	// Anchor to the most-recent user-role message; fall back to
 	// thread.created_at when the thread has never had a user turn
 	// (autonomous webhook/scheduler threads).
-	const userRow = db
-		.prepare(
-			"SELECT created_at FROM messages WHERE thread_id = ? AND role = 'user' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
-		)
-		.get(threadId) as { created_at: string } | null;
+	const userRow = findLatestLiveUserMessageCreatedAtByThread(db, threadId);
 	const anchor = userRow?.created_at ?? threadRow.created_at;
 
 	// MAX(anchor, floor): pick the LATER of the two so dormant threads
@@ -676,7 +681,6 @@ export function computeBaseline(
 }
 
 export interface VolatileEnrichment {
-	memoryDeltaLines: string[];
 	taskDigestLines: string[];
 	taskDigestEntries: LiveStateTaskEntry[]; // Structured task entries for Live State renderer
 	tiers: TieredEnrichment; // L0→L1→L2→L3 tiered entries (now required after Task 2 rewrite)
@@ -823,16 +827,7 @@ export function buildParentSummaryMap(
 	const result = new Map<string, string>();
 	const keys = Array.from(detailKeys);
 	if (keys.length === 0) return result;
-	const placeholders = keys.map(() => "?").join(",");
-	const rows = db
-		.prepare(
-			`SELECT e.target_key AS child, e.source_key AS parent
-			 FROM memory_edges e
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.target_key IN (${placeholders})`,
-		)
-		.all(...keys) as Array<{ child: string; parent: string }>;
+	const rows = listSummarizesParentsByChildKeys(db, keys);
 	for (const r of rows) {
 		// If multiple summaries claim the same child, the first-seen wins. The spec is
 		// silent on multi-parent semantics; the data model conventionally has one summary
@@ -853,24 +848,10 @@ export function buildStaleChildrenMap(
 	const result = new Map<string, StageEntry[]>();
 	if (summaries.length === 0) return result;
 	const summaryKeyToModifiedAt = new Map(summaries.map((s) => [s.key, s.modifiedAt ?? ""]));
-	const placeholders = summaries.map(() => "?").join(",");
-	const rows = db
-		.prepare(
-			`SELECT e.source_key AS parent, e.target_key AS child_key,
-					m.value AS child_value, m.modified_at AS child_modified_at, m.tier AS tier
-			 FROM memory_edges e
-			 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-			 WHERE e.relation = 'summarizes'
-			   AND e.deleted = 0
-			   AND e.source_key IN (${placeholders})`,
-		)
-		.all(...summaries.map((s) => s.key)) as Array<{
-		parent: string;
-		child_key: string;
-		child_value: string;
-		child_modified_at: string;
-		tier: string;
-	}>;
+	const rows = listSummaryChildrenForStaleness(
+		db,
+		summaries.map((s) => s.key),
+	);
 	for (const r of rows) {
 		const parentModifiedAt = summaryKeyToModifiedAt.get(r.parent) ?? "";
 		// R-HM7 staleness: child.modified_at > summary.modified_at.
@@ -889,9 +870,9 @@ export function buildStaleChildrenMap(
 	return result;
 }
 
-export const DISCOVERABLE_HEADER = "## Discoverable Archive — title-only; bodies via memory search";
-export const DISCOVERABLE_FOOTER =
-	"Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.";
+export const DISCOVERABLE_HEADER =
+	'<discoverable-archive sources="Title-only catalog (detail entries + older summary overflow). Bodies are accessed via memory search or query against semantic_memory.">';
+export const DISCOVERABLE_FOOTER = "</discoverable-archive>";
 
 /**
  * Render a Discoverable-Archive entry line. Pure in `(entry,
@@ -916,12 +897,16 @@ export function formatStableDetailLine(
 }
 
 /**
- * R-VC27 section header for the turn-relevant cross-tier retrieval block.
+ * R-VC27 section element for the turn-relevant cross-tier retrieval block.
  * The keyword+graph pipeline runs WITHOUT the old `tier='default'` clamp, so
  * pinned/summary/detail entries that match the conversation now surface here
  * (title-only). Rendered into the varying tail by `composeVolatileSections`.
  */
-export const RELEVANT_MEMORY_HEADER = "## Relevant memory — matched to this turn";
+export const RELEVANT_MEMORY_HEADER =
+	'<relevant-memory note="Matched to this turn; bodies via memory search.">';
+
+/** Closing tag paired with RELEVANT_MEMORY_HEADER. */
+export const RELEVANT_MEMORY_FOOTER = "</relevant-memory>";
 
 /** R-VC27 default cap on the relevant-memory block (`BOUND_VC27_K`). */
 export const RELEVANT_MEMORY_DEFAULT_K = 15;
@@ -981,16 +966,16 @@ export function selectRelevantMemory(
 }
 
 /**
- * R-VC27 title-only line: `- {key} [{tier}] ({relTime})`. Renders the entry's
+ * R-VC27 title-only element: `<memory key tier age/>`. Renders the entry's
  * actual tier (pinned/summary/default/detail) — what tells the agent where the
  * body lives — not its retrieval-stage tag. Soft-deleted entries render as
- * `[forgotten]`. Uses wall-clock `relativeTime`; the varying-tail mirror uses
- * the `nowMs`-injected variant, and the parity test mocks the clock so the two
- * agree byte-for-byte.
+ * `tier="forgotten"`. Uses wall-clock `relativeTime`; the varying-tail mirror
+ * uses the `nowMs`-injected variant, and the parity test mocks the clock so
+ * the two agree byte-for-byte.
  */
 export function formatRelevantMemoryTitleLine(entry: StageEntry): string {
 	const tierTag = entry.deleted ? "forgotten" : entry.tier;
-	return `- ${entry.key} [${tierTag}] (${relativeTime(entry.modifiedAt)})`;
+	return `<memory key="${escapeXmlAttr(entry.key)}" tier="${escapeXmlAttr(tierTag)}" age="${escapeXmlAttr(relativeTime(entry.modifiedAt))}"/>`;
 }
 
 /**
@@ -1015,9 +1000,7 @@ export function toRelevantMemoryDebug(
 export function renderDiscoverableArchive(
 	input: DiscoverableArchiveInput,
 ): DiscoverableArchiveOutput {
-	const lines: string[] = [];
-	lines.push(DISCOVERABLE_HEADER);
-	lines.push("");
+	const lines: string[] = [DISCOVERABLE_HEADER];
 
 	// §5.2 step 2 — drop entries also rendered as stale children in Working Knowledge.
 	const visible = input.entries.filter((e) => !input.staleChildKeysInWorkingKnowledge.has(e.key));
@@ -1038,14 +1021,14 @@ export function renderDiscoverableArchive(
 		const clusters = groupByCluster(visible, input.parentSummaryByKey);
 		const sorted = sortClusters(clusters);
 		for (const cluster of sorted) {
-			lines.push(`### ${cluster.name} (${cluster.entries.length} entries)`);
+			lines.push(
+				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${cluster.entries.length}">`,
+			);
 			for (const entry of sortDetailEntriesForRender(cluster.entries)) {
 				lines.push(formatDetailLine(entry, input.budgetPressure));
 			}
-			lines.push(""); // blank line between clusters for readability
+			lines.push("</cluster>");
 		}
-		// Drop trailing blank if any cluster was rendered.
-		if (lines[lines.length - 1] === "") lines.pop();
 	} else {
 		// Tier 3: heading-only compression with M most-recent per cluster.
 		// SELECTION stays by recency (cluster.entries arrive last_accessed_at DESC,
@@ -1057,12 +1040,12 @@ export function renderDiscoverableArchive(
 			const totalCount = cluster.entries.length;
 			const tail = cluster.entries.slice(0, input.tunables.m);
 			lines.push(
-				`### ${cluster.name} (${totalCount} entries, showing ${input.tunables.m} most recent)`,
+				`<cluster name="${escapeXmlAttr(cluster.name)}" count="${totalCount}" showing="${input.tunables.m}">`,
 			);
 			for (const entry of sortDetailEntriesForRender(tail)) {
 				lines.push(formatDetailLine(entry, input.budgetPressure));
 			}
-			lines.push("");
+			lines.push("</cluster>");
 			if (
 				cluster.name === UNCATEGORIZED_CLUSTER_NAME &&
 				totalCount > VC15_UNCATEGORIZED_BACKLOG_THRESHOLD
@@ -1070,7 +1053,6 @@ export function renderDiscoverableArchive(
 				synthesisBacklogCount = totalCount;
 			}
 		}
-		if (lines[lines.length - 1] === "") lines.pop();
 	}
 
 	// R-VC29: demoted summary-overflow titles render here, inside the Archive,
@@ -1078,7 +1060,6 @@ export function renderDiscoverableArchive(
 	// Working Knowledge. Absent/empty ⇒ no sub-block, byte-identical to pre-R-VC29.
 	appendOlderSummariesSubBlock(lines, input.demotedSummaries);
 
-	lines.push("");
 	lines.push(DISCOVERABLE_FOOTER);
 	return { section: { lines }, synthesisBacklogCount };
 }
@@ -1095,11 +1076,11 @@ export function appendOlderSummariesSubBlock(
 	demotedSummaries: ReadonlyArray<{ key: string }> | undefined,
 ): void {
 	if (!demotedSummaries || demotedSummaries.length === 0) return;
-	lines.push("");
 	lines.push(WORKING_KNOWLEDGE_DEMOTED_HEADER);
 	for (const summary of demotedSummaries) {
-		lines.push(`- ${summary.key}`);
+		lines.push(`<entry key="${escapeXmlAttr(summary.key)}"/>`);
 	}
+	lines.push("</older-summaries>");
 }
 
 interface Cluster {
@@ -1151,11 +1132,11 @@ function formatDetailLine(entry: DetailEntry, _budgetPressure: boolean): string 
 	// continuously-bumped column (bumpRenderedDetailEntries, debounced 1h/entry);
 	// rendering any function of it — date OR sort order — leaks wall-clock into
 	// the cached stable prefix bytes and busts the provider cache on every bump
-	// fracture for no information change. The line is now a pure function of the
+	// fracture for no information change. The element is a pure function of the
 	// entry key, so the Discoverable Archive bytes are invariant to bumps. The
 	// `budgetPressure` parameter is retained for call-site compatibility but no
 	// longer changes output (the date suffix it used to drop is gone for all).
-	return `- ${entry.key}`;
+	return `<entry key="${escapeXmlAttr(entry.key)}"/>`;
 }
 
 /**
@@ -1201,51 +1182,6 @@ function relativeTimeFragment(iso: string | null, nowMs: number): string {
 	if (months < 12) return `${months}mo ago`;
 	const years = Math.floor(months / 12);
 	return `${years}y ago`;
-}
-
-/**
- * Formats a single StageEntry for display in memory delta output.
- * Handles tier-aware formatting: L0 is minimal, L1 includes tier tag,
- * L2/L3 include source attribution and relative time.
- *
- * Exported for use in budget pressure shedding (memory-shedding.ts).
- */
-export function formatMemoryEntry(entry: StageEntry): string {
-	const valueDisplay =
-		entry.value.length > 200 ? `${safeSlice(entry.value, 0, 200)}...` : entry.value;
-	const stale = stalenessTag(entry.modifiedAt);
-
-	// Handle soft-deleted entries specially (rendered as [forgotten])
-	if (entry.deleted) {
-		const sourceLabel = resolveSource(
-			entry.taskName ?? null,
-			entry.threadId ?? null,
-			entry.threadTitle ?? null,
-			entry.source,
-		);
-		const relTime = relativeTime(entry.modifiedAt);
-		return `- ${entry.key}: [forgotten] (${relTime}, via ${sourceLabel})`;
-	}
-
-	// Different formatting for each tier
-	if (entry.tag === "[pinned]") {
-		// L0: pinned entries - minimal format
-		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-	}
-	if (entry.tag === "[summary]" || entry.tag === "[stale-detail]") {
-		// L1: summary and stale-detail entries
-		return `- ${entry.key}: ${valueDisplay} ${entry.tag}`;
-	}
-	// L2 and L3 entries include source and relative time
-	// Resolve source using taskName/threadId/threadTitle if available, else use source id
-	const sourceLabel = resolveSource(
-		entry.taskName ?? null,
-		entry.threadId ?? null,
-		entry.threadTitle ?? null,
-		entry.source,
-	);
-	const relTime = relativeTime(entry.modifiedAt);
-	return `- ${entry.key}: ${valueDisplay} (${relTime}, via ${sourceLabel}) ${entry.tag}${stale}`;
 }
 
 /**
@@ -1387,86 +1323,8 @@ export function buildVolatileEnrichment(
 		L3: l3.entries,
 	};
 
-	// Format memoryDeltaLines in L0→L1→L2→L3 order
-	const memoryDeltaLines: string[] = [];
-
-	// Inject L0 entries (pinned)
-	for (const entry of l0.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Inject L1 entries (summary + stale-detail)
-	for (const entry of l1.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Inject L2 entries (graph-seeded)
-	for (const entry of l2.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Inject L3 entries (recency)
-	for (const entry of l3.entries) {
-		memoryDeltaLines.push(formatMemoryEntry(entry));
-	}
-
-	// Detect overflow: if L2+L3 was capped by maxMemory, check if more entries exist
-	const totalL23Entries = l2.entries.length + l3.entries.length;
-	if (totalL23Entries >= maxMemory) {
-		// More entries may exist beyond maxMemory cap — add overflow indicator
-		// Query to check if there are more default entries after L0+L1+L2+L3
-		const allExcluded = new Set<string>([
-			...l0.entries.map((e) => e.key),
-			...l1.entries.map((e) => e.key),
-			...l2.entries.map((e) => e.key),
-			...l3.entries.map((e) => e.key),
-		]);
-
-		const countMore = db
-			.prepare(
-				`SELECT COUNT(*) AS cnt FROM semantic_memory m
-				 WHERE m.deleted = 0
-				   AND m.modified_at > ?
-				   AND m.key NOT LIKE '_internal.%'
-				   AND (
-				     m.tier NOT IN ('detail', 'pinned', 'summary')
-				     OR (m.tier = 'detail' AND NOT EXISTS (
-				       SELECT 1 FROM memory_edges e
-				       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-				     ))
-				   )`,
-			)
-			.get(baseline) as { cnt: number };
-
-		if (countMore.cnt > allExcluded.size) {
-			const moreCount = countMore.cnt - allExcluded.size;
-			memoryDeltaLines.push(`... and ${moreCount} more (query semantic_memory for full list)`);
-		}
-	}
-
 	// Task digest query — fetch maxTasks+1 to detect overflow
-	const taskRows = db
-		.prepare(
-			`SELECT t.id, t.type, t.trigger_spec, t.last_run_at, t.run_count, t.consecutive_failures, t.claimed_by,
-			        h.host_name
-			 FROM   tasks t
-			 LEFT JOIN hosts h ON t.claimed_by = h.site_id AND h.deleted = 0
-			 WHERE  t.last_run_at > ?
-			   AND  t.last_run_at IS NOT NULL
-			   AND  t.deleted = 0
-			 ORDER  BY t.last_run_at DESC
-			 LIMIT  ?`,
-		)
-		.all(baseline, maxTasks + 1) as Array<{
-		id: string;
-		type: string;
-		trigger_spec: string;
-		last_run_at: string;
-		run_count: number;
-		consecutive_failures: number;
-		claimed_by: string | null;
-		host_name: string | null;
-	}>;
+	const taskRows = listRecentTaskRunsWithHost(db, baseline, maxTasks + 1);
 
 	const hasMoreTasks = taskRows.length > maxTasks;
 	const visibleTaskRows = hasMoreTasks ? taskRows.slice(0, maxTasks) : taskRows;
@@ -1491,7 +1349,6 @@ export function buildVolatileEnrichment(
 	}
 
 	return {
-		memoryDeltaLines,
 		taskDigestLines,
 		taskDigestEntries,
 		tiers,
@@ -1509,29 +1366,7 @@ export function buildVolatileEnrichment(
  * auto-pin.
  */
 export function loadPinnedEntries(db: Database): StageResult {
-	const rows = db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
-			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.deleted = 0
-			   AND m.tier = 'pinned'
-			 ORDER BY m.key ASC`,
-		)
-		.all() as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-		tier: string;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-	}>;
+	const rows = listPinnedMemoryWithSource(db);
 
 	const entries: StageEntry[] = rows.map((r) => ({
 		key: r.key,
@@ -1557,28 +1392,7 @@ export function loadPinnedEntries(db: Database): StageResult {
  */
 export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): StageResult {
 	// Load all summary entries not already in exclusion set
-	const summaries = db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
-			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.tier = 'summary' AND m.deleted = 0
-			 ORDER BY m.modified_at DESC, m.key ASC`,
-		)
-		.all() as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-		tier: string;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-	}>;
+	const summaries = listSummaryMemoryWithSource(db);
 
 	const entries: StageEntry[] = [];
 	const newExclusion = new Set(excludeKeys);
@@ -1600,29 +1414,7 @@ export function loadSummaryEntries(db: Database, excludeKeys: Set<string>): Stag
 		newExclusion.add(summary.key);
 
 		// Find all children via outgoing summarizes edges
-		const children = db
-			.prepare(
-				`SELECT m.key, m.value, m.source, m.modified_at, m.tier,
-				        t_src.trigger_spec AS task_name,
-				        th_src.id          AS thread_id,
-				        th_src.title       AS thread_title
-				 FROM memory_edges e
-				 JOIN semantic_memory m ON m.key = e.target_key AND m.deleted = 0
-				 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-				 WHERE e.source_key = ? AND e.relation = 'summarizes' AND e.deleted = 0
-				 ORDER BY m.key ASC`,
-			)
-			.all(summary.key) as Array<{
-			key: string;
-			value: string;
-			source: string | null;
-			modified_at: string;
-			tier: string;
-			task_name: string | null;
-			thread_id: string | null;
-			thread_title: string | null;
-		}>;
+		const children = listSummaryChildrenWithSource(db, summary.key);
 
 		for (const child of children) {
 			// ALL children go into exclusion set — stale or not
@@ -1682,24 +1474,7 @@ export function loadGraphEntries(
 
 	if (graphResults.length > 0) {
 		const keys = graphResults.map((r) => r.key);
-		const placeholders = keys.map(() => "?").join(",");
-		const sourceInfoRows = db
-			.prepare(
-				`SELECT m.key,
-				        t_src.trigger_spec AS task_name,
-				        th_src.id          AS thread_id,
-				        th_src.title       AS thread_title
-				 FROM semantic_memory m
-				 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-				 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-				 WHERE m.key IN (${placeholders})`,
-			)
-			.all(...keys) as Array<{
-			key: string;
-			task_name: string | null;
-			thread_id: string | null;
-			thread_title: string | null;
-		}>;
+		const sourceInfoRows = listMemorySourceInfoByKeys(db, keys);
 
 		for (const row of sourceInfoRows) {
 			sourceInfoMap.set(row.key, {
@@ -1760,38 +1535,7 @@ export function loadRecencyEntries(
 	// Query recent entries, excluding pinned/summary/detail tiers
 	// (same filter as L2 — orphaned details also pass through)
 	// Include deleted entries (deleted=1) so they can be rendered with [forgotten] tag
-	const rows = db
-		.prepare(
-			`SELECT m.key, m.value, m.source, m.modified_at, m.tier, m.deleted,
-			        t_src.trigger_spec AS task_name,
-			        th_src.id          AS thread_id,
-			        th_src.title       AS thread_title
-			 FROM semantic_memory m
-			 LEFT JOIN tasks   t_src  ON m.source = t_src.id AND t_src.deleted = 0
-			 LEFT JOIN threads th_src ON m.source = th_src.id AND th_src.deleted = 0
-			 WHERE m.modified_at > ?
-			   AND m.key NOT LIKE '_internal.%'
-			   AND (
-			     m.tier NOT IN ('detail', 'pinned', 'summary')
-			     OR (m.tier = 'detail' AND NOT EXISTS (
-			       SELECT 1 FROM memory_edges e
-			       WHERE e.target_key = m.key AND e.relation = 'summarizes' AND e.deleted = 0
-			     ))
-			   )
-			 ORDER BY m.modified_at DESC
-			 LIMIT ?`,
-		)
-		.all(baseline, maxSlots + excludeKeys.size) as Array<{
-		key: string;
-		value: string;
-		source: string | null;
-		modified_at: string;
-		tier: string;
-		deleted: number;
-		task_name: string | null;
-		thread_id: string | null;
-		thread_title: string | null;
-	}>;
+	const rows = listRecencyMemoryWithSource(db, baseline, maxSlots + excludeKeys.size);
 
 	const entries: StageEntry[] = [];
 	const newExclusion = new Set(excludeKeys);
@@ -1829,11 +1573,7 @@ export function loadRecencyEntries(
  * Verifies R-MV5 (delta reads must not update last_accessed_at) by being a pure SELECT.
  */
 export function loadDetailEntries(db: Database): DetailRetrievalResult {
-	const rows = db
-		.prepare(
-			"SELECT id, key, last_accessed_at FROM semantic_memory WHERE tier = 'detail' AND deleted = 0 ORDER BY last_accessed_at DESC",
-		)
-		.all() as Array<{ id: string; key: string; last_accessed_at: string | null }>;
+	const rows = listDetailMemoryAccessOrder(db);
 
 	return {
 		entries: rows.map((r) => ({
@@ -1861,11 +1601,9 @@ const RENDER_BUMP_DEBOUNCE_MS = 60 * 60 * 1000;
  * this fires from the render pipeline, not the agent's deliberate
  * read tools. Without it, Discoverable Archive sorts and displays
  * rendered detail entries by their last WRITE time rather than their
- * actual usage. Live evidence: thread d0372be6's
- * `curiosity:smolagents-codeact-paradigm:2026-04-28` entry was
- * rendered on every cold assembly for weeks but still showed
- * `(last accessed 26d ago)` because nothing on the read path
- * advanced the column.
+ * actual usage. Observed in production: an entry rendered on every
+ * cold assembly for weeks still showed `(last accessed 26d ago)`
+ * because nothing on the read path advanced the column.
  *
  * **Documented exception to the change-log outbox invariant
  * (CONTRIBUTING.md #1).** This helper writes `last_accessed_at`
@@ -1909,26 +1647,31 @@ export function bumpRenderedDetailEntries(
 	const nowIso = new Date(nowMs).toISOString();
 	const cutoff = new Date(nowMs - debounceMs).toISOString();
 	const pk = getPkColumn("semantic_memory");
-	// Compile the prepared statement ONCE outside the loop. SQLite
-	// re-binds parameters cheaply but compilation per-iteration would
-	// turn a ~200-row bump into ~200× the work it needs to do.
-	const sql = `UPDATE semantic_memory SET last_accessed_at = ? WHERE ${pk} = ? AND deleted = 0`; // outbox-exempt: per-host relevance hint, see JSDoc on bumpRenderedDetailEntries
-	const stmt = db.prepare(sql);
+	// Constant SQL string per call: bun:sqlite caches the compiled statement by
+	// SQL text internally, so routing each bump through the chokepoint does not
+	// re-compile per iteration — the prepare-once perf intent is preserved while
+	// keeping every outbox bypass funneled through the single sanctioned seam.
+	const sql = `UPDATE semantic_memory SET last_accessed_at = ? WHERE ${pk} = ? AND deleted = 0`;
 	for (const entry of entries) {
 		if (entry.last_accessed_at !== null && entry.last_accessed_at >= cutoff) {
 			continue;
 		}
 		try {
-			stmt.run(nowIso, entry.id);
+			dangerouslyExecuteRawWrite(db, {
+				sql,
+				params: [nowIso, entry.id],
+				reason:
+					"per-host relevance hint (semantic_memory.last_accessed_at); routing through the outbox would advance modified_at and cascade into stale-child detection — see JSDoc on bumpRenderedDetailEntries",
+			});
 		} catch {
 			// Non-fatal — bumping is a relevance hint, not a correctness gate.
 		}
 	}
 }
 
-export const WORKING_KNOWLEDGE_HEADER = "## Working Knowledge — operational and durable";
-export const WORKING_KNOWLEDGE_FOOTER =
-	"Bodies of summary entries are accessed via memory search using terms from the entry key.";
+export const WORKING_KNOWLEDGE_HEADER =
+	'<working-knowledge sources="Bodies of summary entries are accessed via memory search using terms from the entry key.">';
+export const WORKING_KNOWLEDGE_FOOTER = "</working-knowledge>";
 export const SUMMARY_GLOSS_MAX = 200;
 
 /**
@@ -1954,8 +1697,7 @@ export const WORKING_KNOWLEDGE_SUMMARY_CAP = 50;
  * the agent can tell full-gloss bodies (above) from query-for-body titles
  * (below).
  */
-export const WORKING_KNOWLEDGE_DEMOTED_HEADER =
-	"### Older summaries (titles only — search the key for the body)";
+export const WORKING_KNOWLEDGE_DEMOTED_HEADER = "<older-summaries>";
 
 /**
  * Split a recency-ordered summary list into the `kept` prefix (rendered at full
@@ -1986,11 +1728,9 @@ export function truncateGlossForSummary(value: string): string {
 	return truncateGloss(value, SUMMARY_GLOSS_MAX);
 }
 export const STALE_CHILD_GLOSS_MAX = 200;
-export const DELTA_MARKER = "[changed since last turn]";
 
 /**
  * Truncates a string to maximum length and appends "..." if truncated.
- * Matches the existing convention in formatMemoryEntry (line 577).
  */
 export function truncateGloss(s: string, max: number): string {
 	if (s.length <= max) return s;
@@ -2023,7 +1763,10 @@ export function formatCalendarDate(iso: string | null | undefined): string {
  * the agent can visually pair updates with the stable bodies above without
  * re-parsing the section title.
  */
-export const WORKING_KNOWLEDGE_UPDATES_HEADER = "## Working Knowledge — updates";
+export const WORKING_KNOWLEDGE_UPDATES_HEADER = "<working-knowledge-updates>";
+
+/** Closing tag paired with WORKING_KNOWLEDGE_UPDATES_HEADER. */
+export const WORKING_KNOWLEDGE_UPDATES_FOOTER = "</working-knowledge-updates>";
 
 /**
  * Renders the Working Knowledge section from pinned and summary entries.
@@ -2055,37 +1798,34 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 	stableLines: string[];
 	varyingLines: string[];
 } {
-	const stableLines: string[] = [];
-	stableLines.push(WORKING_KNOWLEDGE_HEADER);
-	stableLines.push("");
+	const stableLines: string[] = [WORKING_KNOWLEDGE_HEADER];
 
-	// R-VC3: pinned bodies in full text, no inline markers. The `(modified
-	// YYYY-MM-DD)` capture-time prefix (#71) rides the stable channel because
-	// its source column advances only on a real body rewrite — the same event
-	// that already busts the prefix cache — so it carries provenance without
-	// adding cache churn.
+	// R-VC3: pinned bodies in full text, no inline markers. The `modified`
+	// capture-date attribute (#71) rides the stable channel because its source
+	// column advances only on a real body rewrite — the same event that already
+	// busts the prefix cache — so it carries provenance without adding cache
+	// churn.
 	for (const entry of input.pinned) {
 		stableLines.push(
-			`- ${entry.key} (modified ${formatCalendarDate(entry.modifiedAt)}): ${entry.value}`,
+			`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" modified="${formatCalendarDate(entry.modifiedAt)}">${escapeXmlAttr(entry.value)}</memory>`,
 		);
 	}
 
 	// R-VC3: summary bodies with 200-char gloss, no inline markers. Capped at
 	// WORKING_KNOWLEDGE_SUMMARY_CAP most-recent (input.summaries arrives
 	// recency-ordered from loadSummaryEntries); the overflow is demoted to
-	// title-only lines. R-VC29: those demoted titles render in the Discoverable
-	// Archive (under `### Older summaries`), NOT here — Working Knowledge keeps
+	// title-only entries. R-VC29: those demoted titles render in the Discoverable
+	// Archive (under `<older-summaries>`), NOT here — Working Knowledge keeps
 	// only full-fidelity content (pinned + glossed summaries). The caller passes
 	// `capWorkingKnowledgeSummaries(summaries).demoted` to renderDiscoverableArchive.
 	const { kept: keptSummaries } = capWorkingKnowledgeSummaries(input.summaries);
 	for (const summary of keptSummaries) {
 		const gloss = truncateGloss(summary.value, SUMMARY_GLOSS_MAX);
 		stableLines.push(
-			`- ${summary.key} (modified ${formatCalendarDate(summary.modifiedAt)}): ${gloss}`,
+			`<memory key="${escapeXmlAttr(summary.key)}" tier="summary" modified="${formatCalendarDate(summary.modifiedAt)}">${escapeXmlAttr(gloss)}</memory>`,
 		);
 	}
 
-	stableLines.push("");
 	stableLines.push(WORKING_KNOWLEDGE_FOOTER);
 
 	const varyingLines: string[] = [];
@@ -2117,30 +1857,35 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
 
 	if (pinnedDeltas.length > 0 || summaryDeltas.length > 0 || hasStaleChildren) {
 		varyingLines.push(WORKING_KNOWLEDGE_UPDATES_HEADER);
-		varyingLines.push("");
 
 		// R-VC11(b): pinned delta — keyed reference (body lives in stable).
 		for (const entry of pinnedDeltas) {
-			varyingLines.push(`- ${entry.key} ${DELTA_MARKER}`);
+			varyingLines.push(`<memory key="${escapeXmlAttr(entry.key)}" tier="pinned" changed="true"/>`);
 		}
 
 		// R-VC11(a): summary delta — keyed reference (body lives in stable).
 		for (const summary of summaryDeltas) {
-			varyingLines.push(`- ${summary.key} ${DELTA_MARKER}`);
+			varyingLines.push(
+				`<memory key="${escapeXmlAttr(summary.key)}" tier="summary" changed="true"/>`,
+			);
 		}
 
 		// R-VC10/R-VC11(c): stale children referenced under their parent. The
 		// child gloss travels with the marker because the staleness signal is
-		// what makes it relevant — it would not appear otherwise.
+		// what makes it relevant — it would not appear otherwise. When the child
+		// is also a delta, both signals ride the same element (`stale` +
+		// `changed` attributes), preserving the R-VC11(c) composition.
 		for (const summary of input.summaries) {
 			const staleChildren = input.staleChildrenBySummary.get(summary.key) ?? [];
 			for (const child of staleChildren) {
 				const childGloss = truncateGloss(child.value, STALE_CHILD_GLOSS_MAX);
-				const staleMarker = `[stale child of ${summary.key}]`;
-				const childDelta = input.deltaKeys.has(child.key) ? ` ${DELTA_MARKER}` : "";
-				varyingLines.push(`  - ${child.key}: ${childGloss} ${staleMarker}${childDelta}`);
+				varyingLines.push(
+					`<memory key="${escapeXmlAttr(child.key)}" parent="${escapeXmlAttr(summary.key)}" stale="true" changed="${input.deltaKeys.has(child.key)}">${escapeXmlAttr(childGloss)}</memory>`,
+				);
 			}
 		}
+
+		varyingLines.push(WORKING_KNOWLEDGE_UPDATES_FOOTER);
 	}
 
 	return { stableLines, varyingLines };
@@ -2151,6 +1896,7 @@ export function renderWorkingKnowledge(input: WorkingKnowledgeInput): {
  * Advisories where status = 'applied' within the prior 24 hours.
  */
 export interface LiveStateAdvisory {
+	advisoryId: string;
 	title: string;
 	/** ISO-8601 timestamp of the apply-status transition. */
 	appliedAt: string;
@@ -2172,12 +1918,8 @@ export function loadAppliedAdvisoriesForLiveState(
 	nowMs: number,
 ): LiveStateAdvisory[] {
 	const cutoff = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
-	const rows = db
-		.prepare(
-			"SELECT title, resolved_at FROM advisories WHERE status = 'applied' AND deleted = 0 AND resolved_at IS NOT NULL AND resolved_at >= ? ORDER BY resolved_at DESC",
-		)
-		.all(cutoff) as Array<{ title: string; resolved_at: string }>;
-	return rows.map((r) => ({ title: r.title, appliedAt: r.resolved_at }));
+	const rows = listAppliedAdvisoriesResolvedSince(db, cutoff);
+	return rows.map((r) => ({ advisoryId: r.id, title: r.title, appliedAt: r.resolved_at }));
 }
 
 /**
@@ -2208,26 +1950,12 @@ export function loadFileModificationsForLiveState(
 		// agree and undefined never reaches the binder.
 		const localSite = localSiteId ?? "";
 		const localHost = localHostName ?? "";
-		const rows = db
-			.query(
-				`SELECT sm.key AS key, sm.value AS thread_id, t.title AS thread_title,
-				        t.host_origin AS host_origin, h.host_name AS host_name
-				 FROM semantic_memory sm
-				 LEFT JOIN threads t ON t.id = sm.value
-				 LEFT JOIN hosts h ON h.site_id = t.host_origin AND h.deleted = 0
-				 WHERE sm.key LIKE '_internal.file_thread.%' AND sm.deleted = 0
-				   AND sm.value != ?
-				 ORDER BY (CASE WHEN t.host_origin IN (?, ?) THEN 0 ELSE 1 END) ASC,
-				          sm.modified_at DESC
-				 LIMIT ?`,
-			)
-			.all(currentThreadId, localSite, localHost, FILE_NOTIF_CAP) as Array<{
-			key: string;
-			thread_id: string;
-			thread_title: string | null;
-			host_origin: string | null;
-			host_name: string | null;
-		}>;
+		const rows = listFileModificationNotices(db, {
+			currentThreadId,
+			localSite,
+			localHost,
+			limit: FILE_NOTIF_CAP,
+		});
 
 		return rows.map((r): LiveStateFileEntry => {
 			const rawPath = r.key.replace("_internal.file_thread.", "");
@@ -2374,7 +2102,7 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 		const sessions = e.sessions ?? [];
 		const threadLocal = host !== undefined && sessions.some((s) => s.live && s.hostName === host);
 		const open =
-			`<thread title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
+			`<thread id="${escapeXmlAttr(e.threadId)}" title="${escapeXmlAttr(e.title)}" messages="${e.messageCount}"` +
 			` updated="${escapeXmlAttr(e.lastUpdatedAt)}" local="${threadLocal}"`;
 		if (sessions.length === 0) {
 			lines.push(`${open}/>`);
@@ -2382,10 +2110,7 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 		}
 		lines.push(`${open}>`);
 		for (const s of sessions) {
-			lines.push(
-				`<session host="${escapeXmlAttr(s.hostName)}" live="${s.live}"` +
-					` local="${host !== undefined && s.hostName === host}"/>`,
-			);
+			lines.push(`<session host="${escapeXmlAttr(s.hostName)}" live="${s.live}"/>`);
 		}
 		lines.push("</thread>");
 	}
@@ -2413,8 +2138,8 @@ export function renderLiveState(input: LiveStateInput): RenderedSection {
 	// §5.3 step 4 — applied advisories (R-VC12).
 	for (const a of cap(input.advisories) as LiveStateAdvisory[]) {
 		lines.push(
-			`<advisory title="${escapeXmlAttr(a.title)}"` +
-				` applied="${escapeXmlAttr(relativeTimeFragment(a.appliedAt, input.nowMs))}"/>`,
+			`<advisory id="${escapeXmlAttr(a.advisoryId)}" title="${escapeXmlAttr(a.title)}` +
+				`" applied="${escapeXmlAttr(relativeTimeFragment(a.appliedAt, input.nowMs))}"/>`,
 		);
 	}
 

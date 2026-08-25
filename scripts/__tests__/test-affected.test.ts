@@ -4,6 +4,7 @@ import {
 	type WorkspaceGraph,
 	buildWorkspaceGraph,
 	determineAffectedPackages,
+	hasTestFiles,
 	isGlobalFile,
 	packageDirForFile,
 	pkgDirFromGlobMatch,
@@ -185,19 +186,32 @@ describe("test-affected: buildWorkspaceGraph (against the real repo)", () => {
 	const root = resolve(import.meta.dir, "..", "..");
 	const graph = buildWorkspaceGraph(root);
 
-	it("discovers all 12 workspace packages", () => {
-		expect(graph.deps.size).toBe(12);
+	it("discovers all 13 workspace packages", () => {
+		expect(graph.deps.size).toBe(13);
 		expect(graph.nameToDir.get("@bound/agent")).toBe("packages/agent");
 	});
 
-	it("a change to @bound/shared fans out to the entire workspace", () => {
+	it("a change to @bound/shared fans out to every package that depends on it", () => {
 		const affected = determineAffectedPackages(["packages/shared/src/index.ts"], graph);
-		// shared is depended on (transitively) by every other package
-		expect(affected.size).toBe(graph.deps.size);
+		// shared is depended on (transitively) by every package except docs
+		expect(affected.size).toBe(graph.deps.size - 1);
 	});
 
 	it("a leaf-consumer change (cli) affects only cli", () => {
 		const affected = determineAffectedPackages(["packages/cli/src/main.ts"], graph);
 		expect([...affected]).toEqual(["packages/cli"]);
+	});
+});
+
+describe("test-affected: hasTestFiles", () => {
+	const root = resolve(import.meta.dir, "..", "..");
+
+	it("returns true for a package with test files", () => {
+		expect(hasTestFiles("packages/agent", root)).toBe(true);
+		expect(hasTestFiles("packages/core", root)).toBe(true);
+	});
+
+	it("returns false for a package without test files", () => {
+		expect(hasTestFiles("packages/docs", root)).toBe(false);
 	});
 });

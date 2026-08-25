@@ -33,7 +33,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 20 tables + FTS5", () => {
+	it("applies schema successfully creating all 21 tables + FTS5", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -53,7 +53,6 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("tasks");
 		expect(tableNames).toContain("files");
 		expect(tableNames).toContain("hosts");
-		expect(tableNames).toContain("overlay_index");
 		expect(tableNames).toContain("cluster_config");
 		expect(tableNames).toContain("advisories");
 		expect(tableNames).toContain("skills");
@@ -71,9 +70,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 22 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 28
+		// 23 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 29
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(23); // 22 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(24); // 23 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -90,8 +89,27 @@ describe("Database Schema", () => {
 
 		expect(indexNames).toContain("idx_threads_user");
 		expect(indexNames).toContain("idx_messages_thread");
+		expect(indexNames).toContain("idx_messages_live_thread_created");
+		expect(indexNames).toContain("idx_relay_inbox_ref_unprocessed_received");
+
+		const messagePlan = db
+			.query(
+				"EXPLAIN QUERY PLAN SELECT * FROM messages WHERE thread_id = ? AND deleted = 0 ORDER BY created_at ASC",
+			)
+			.all("thread-1") as Array<{ detail: string }>;
+		expect(messagePlan.map((row) => row.detail).join(" ")).toContain(
+			"idx_messages_live_thread_created",
+		);
+
+		const relayPlan = db
+			.query(
+				"EXPLAIN QUERY PLAN SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ? ORDER BY received_at ASC",
+			)
+			.all("thread-1", "webhook_intake") as Array<{ detail: string }>;
+		expect(relayPlan.map((row) => row.detail).join(" ")).toContain(
+			"idx_relay_inbox_ref_unprocessed_received",
+		);
 		expect(indexNames).toContain("idx_memory_key");
-		expect(indexNames).toContain("idx_overlay_site_path");
 		expect(indexNames).toContain("idx_files_path");
 		expect(indexNames).toContain("idx_skills_name");
 		expect(indexNames).toContain("idx_edges_triple");
@@ -106,7 +124,7 @@ describe("Database Schema", () => {
 	});
 
 	it("idx_memory_detail_recency exists and supports R-VC4 SELECT predicate", () => {
-		const db = createDatabase(dbPath);
+		const db = createDatabase(":memory:");
 		applySchema(db);
 
 		// Verify the index exists
@@ -235,8 +253,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 28 tables (22 base + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(28);
+		// Still exactly 29 tables (23 base + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(29);
 
 		db.close();
 	});
@@ -394,7 +412,7 @@ describe("Database Schema", () => {
 		expect(columnNames).toContain("id");
 		expect(columnNames).toContain("name");
 		expect(columnNames).toContain("description");
-		expect(columnNames).toContain("status");
+		expect(columnNames).not.toContain("status");
 		expect(columnNames).toContain("skill_root");
 		expect(columnNames).toContain("content_hash");
 		expect(columnNames).toContain("allowed_tools");
@@ -404,8 +422,8 @@ describe("Database Schema", () => {
 		expect(columnNames).toContain("created_by_thread");
 		expect(columnNames).toContain("activation_count");
 		expect(columnNames).toContain("last_activated_at");
-		expect(columnNames).toContain("retired_by");
-		expect(columnNames).toContain("retired_reason");
+		expect(columnNames).not.toContain("retired_by");
+		expect(columnNames).not.toContain("retired_reason");
 		expect(columnNames).toContain("modified_at");
 		expect(columnNames).toContain("deleted");
 
@@ -418,16 +436,16 @@ describe("Database Schema", () => {
 		const now = new Date().toISOString();
 
 		db.run(
-			`INSERT INTO skills (id, name, description, status, skill_root, activation_count, modified_at, deleted)
-			 VALUES ('id-1', 'pr-review', 'Review PRs', 'active', '/home/user/skills/pr-review', 0, ?, 0)`,
+			`INSERT INTO skills (id, name, description, skill_root, activation_count, modified_at, deleted)
+			 VALUES ('id-1', 'pr-review', 'Review PRs', '/home/user/skills/pr-review', 0, ?, 0)`,
 			[now],
 		);
 
 		// Inserting a second active skill with the same name must fail
 		expect(() => {
 			db.run(
-				`INSERT INTO skills (id, name, description, status, skill_root, activation_count, modified_at, deleted)
-				 VALUES ('id-2', 'pr-review', 'Duplicate', 'active', '/home/user/skills/pr-review', 0, ?, 0)`,
+				`INSERT INTO skills (id, name, description, skill_root, activation_count, modified_at, deleted)
+				 VALUES ('id-2', 'pr-review', 'Duplicate', '/home/user/skills/pr-review', 0, ?, 0)`,
 				[now],
 			);
 		}).toThrow();
@@ -449,7 +467,6 @@ describe("Database Schema", () => {
 				id: skillId,
 				name: "test-skill",
 				description: "A test skill",
-				status: "active",
 				skill_root: "/home/user/skills/test-skill",
 				content_hash: null,
 				allowed_tools: null,
@@ -459,8 +476,6 @@ describe("Database Schema", () => {
 				created_by_thread: null,
 				activation_count: 0,
 				last_activated_at: null,
-				retired_by: null,
-				retired_reason: null,
 				modified_at: now,
 				deleted: 0,
 			},
@@ -595,6 +610,52 @@ describe("platform-connectors Phase 1 migrations", () => {
 			interface: string;
 		};
 		expect(row.interface).toBe("telegram");
+		db.close();
+	});
+
+	it("drops skills.status / retired_by / retired_reason from an existing DB", () => {
+		const db = createDatabase(":memory:");
+		// Apply the OLD skills schema (with the status / retired_* columns) and
+		// seed a live skill row, then run the full schema to trigger the drop.
+		db.run(`
+			CREATE TABLE IF NOT EXISTS skills (
+				id                TEXT PRIMARY KEY,
+				name              TEXT NOT NULL,
+				description       TEXT NOT NULL,
+				status            TEXT NOT NULL,
+				skill_root        TEXT NOT NULL,
+				content_hash      TEXT,
+				allowed_tools     TEXT,
+				compatibility     TEXT,
+				metadata_json     TEXT,
+				activated_at      TEXT,
+				created_by_thread TEXT,
+				activation_count  INTEGER DEFAULT 0,
+				last_activated_at TEXT,
+				retired_by        TEXT,
+				retired_reason    TEXT,
+				modified_at       TEXT NOT NULL,
+				deleted           INTEGER DEFAULT 0
+			) STRICT
+		`);
+		db.run(
+			`INSERT INTO skills (id, name, description, status, skill_root, activation_count, modified_at, deleted)
+			 VALUES ('s1', 'pr-review', 'Review PRs', 'active', '/home/user/skills/pr-review', 0, '2026-01-01', 0)`,
+		);
+		applySchema(db);
+
+		const cols = db.query("PRAGMA table_info(skills)").all() as Array<{ name: string }>;
+		const names = cols.map((c) => c.name);
+		expect(names).not.toContain("status");
+		expect(names).not.toContain("retired_by");
+		expect(names).not.toContain("retired_reason");
+		// The row and its non-dropped data survive the migration.
+		const row = db.query("SELECT name, skill_root FROM skills WHERE id = 's1'").get() as {
+			name: string;
+			skill_root: string;
+		} | null;
+		expect(row?.name).toBe("pr-review");
+		expect(row?.skill_root).toBe("/home/user/skills/pr-review");
 		db.close();
 	});
 

@@ -50,7 +50,7 @@
 
 import { describe, it } from "bun:test";
 import fc from "fast-check";
-import { ANTHROPIC_ENVELOPE, toModelMessages } from "../ai-sdk-bridge";
+import { ANTHROPIC_ENVELOPE, toModelMessages } from "../bridge";
 import type { LLMMessage } from "../types";
 
 const safeText = fc.string({ minLength: 0, maxLength: 50 }).filter((s) => !/[\n\r]/.test(s));
@@ -221,7 +221,7 @@ describe("toModelMessages — property tests", () => {
 	});
 
 	it("B-regression: cachePoint survives AI SDK's tool-message combining (load-bearing)", () => {
-		// Live regression on thread `b4541575-...` 2026-05-26: 50+ cold
+		// Live regression: an autonomous task with parallel tool calls had 50+ cold
 		// turns with cw=0 and the message-level cachePoint never reaching
 		// the wire. Root cause: the AI SDK's `convertToLanguageModelPrompt`
 		// (ai@6.0.168 dist/index.mjs:1342-1354) combines consecutive

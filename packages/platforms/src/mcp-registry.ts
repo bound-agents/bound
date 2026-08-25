@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
+import { insertInbox, insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
-import type { Logger, TypedEventEmitter } from "@bound/shared";
+import { type Logger, type TypedEventEmitter, injectTraceContext } from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -14,6 +14,7 @@ import {
 	getConnectorHandle,
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
+import { isSubscriptionRejected } from "./subscription-errors.js";
 
 export interface PlatformServerEntry {
 	name: string;
@@ -35,6 +36,8 @@ export interface PlatformMcpRegistryDeps {
 	eventBus: TypedEventEmitter;
 	logger: Logger;
 	hubSiteId?: string;
+	/** Test-only override for the initial poll delay. Production uses two seconds. */
+	pollIntervalSeconds?: number;
 }
 
 /**
@@ -92,6 +95,47 @@ export interface McpEvent {
 	cursor: string;
 }
 
+/**
+ * Parses a handle's `event_args` JSON into a filter object. Malformed or
+ * non-object args degrade to `{}` (match-everything), logged once — a handle
+ * with unreadable args should keep delivering rather than go silently dark,
+ * matching the pre-filter behavior for that handle.
+ */
+function parseEventArgs(
+	eventArgs: string,
+	logger: Logger,
+	handleId: string,
+): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(eventArgs);
+		if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+	} catch {
+		// fall through
+	}
+	logger.warn(`Handle ${handleId}: event_args is not a JSON object; treating as unfiltered`);
+	return {};
+}
+
+/**
+ * True when every key in the subscription's filter equals the corresponding
+ * field in the event's data. Same semantics as the connector-side filter
+ * (discord-server.ts emitEvent): an empty filter matches everything; a filter
+ * key absent from the event data fails closed.
+ */
+function eventMatchesParams(
+	params: Record<string, unknown>,
+	data: Record<string, unknown>,
+): boolean {
+	for (const [key, value] of Object.entries(params)) {
+		if (data[key] !== value) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /** Active subscription state for push mode */
 interface ActiveSubscription {
 	handleId: string;
@@ -102,6 +146,16 @@ interface ActiveSubscription {
 	 * can route events without relying on a closure over a single handle.
 	 */
 	eventName: string;
+	/**
+	 * The subscription's event filter (parsed `connector_handles.event_args`,
+	 * e.g. `{ channel_id: "..." }`). The notification handler must match these
+	 * against `event.data` — routing on (serverName, eventName) alone fans one
+	 * event out to EVERY same-named subscription: with a DM handle and a guild
+	 * handle both on message.received, one Discord message woke both event
+	 * threads and both responded. Same match semantics as the connector-side
+	 * filter in discord-server.ts emitEvent.
+	 */
+	params: Record<string, unknown>;
 	taskId: string;
 	threadId: string;
 	buffer: McpEvent[];
@@ -157,9 +211,11 @@ export class PlatformMcpRegistry {
 	private remoteTools = new Map<string, Map<string, PlatformRegisteredTool>>(); // serverName → toolName → PlatformRegisteredTool
 	private remotePlatformRequest: RemotePlatformRequest | null = null;
 	private deps: PlatformMcpRegistryDeps;
+	private readonly pollIntervalSeconds: number;
 
 	constructor(deps: PlatformMcpRegistryDeps) {
 		this.deps = deps;
+		this.pollIntervalSeconds = deps.pollIntervalSeconds ?? 2;
 	}
 
 	/**
@@ -260,13 +316,22 @@ export class PlatformMcpRegistry {
 		client.setNotificationHandler(eventsEventNotificationSchema, (notification) => {
 			const event = notification.params as unknown as McpEvent;
 			// Route to every active subscription on this server whose
-			// event_name matches. We look up by `sub.eventName` (set in
-			// activateSubscription) rather than closing over a single
-			// handle, so a server with multiple concurrent push
-			// subscriptions (e.g. message.received + interaction.received)
-			// dispatches each event to exactly the right buffer.
+			// event_name matches AND whose event_args filter matches the
+			// event's data. The server already filters per-subscription and
+			// tags its notification with a subscriptionId, but the registry
+			// discards that tag (startStreamSubscription ignores the
+			// events/stream response), so routing on (serverName, eventName)
+			// alone fanned one event out to EVERY same-named subscription:
+			// with a DM handle and a guild handle both on message.received,
+			// one Discord message woke both event threads and both replied.
+			// Applying the same params match here (eventMatchesParams, the
+			// connector-side semantics) keeps each event on its own line.
 			for (const sub of this.activeSubscriptions.values()) {
-				if (sub.serverName === name && sub.eventName === event.name) {
+				if (
+					sub.serverName === name &&
+					sub.eventName === event.name &&
+					eventMatchesParams(sub.params, event.data)
+				) {
 					sub.buffer.push(event);
 					if (!sub.flushTimer) {
 						sub.flushTimer = setTimeout(() => {
@@ -382,7 +447,13 @@ export class PlatformMcpRegistry {
 
 		for (const serverName of remoteServerNames) {
 			try {
-				const result = (await remotePlatformRequest(serverName, "tools/list", {})) as {
+				// On-demand discovery with ONE retry (§7): a single transient relay
+				// failure (e.g. the owning host mid-reconnect) should not blank out a
+				// platform's tools for a whole refresh cycle, because the single
+				// delegation path means a loop on any host may need this definition
+				// before assembly. One immediate retry covers the common transient;
+				// a persistent failure still drops the server (see catch).
+				let result: {
 					tools?: Array<{
 						name: string;
 						description?: string;
@@ -390,6 +461,14 @@ export class PlatformMcpRegistry {
 						annotations?: PlatformRegisteredTool["annotations"];
 					}>;
 				};
+				try {
+					result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
+				} catch (firstErr) {
+					this.deps.logger.warn(
+						`Remote tools/list for platform '${serverName}' failed; retrying once: ${firstErr}`,
+					);
+					result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
+				}
 				const tools = result?.tools ?? [];
 				const serverTools = new Map<string, PlatformRegisteredTool>();
 				for (const tool of tools) {
@@ -492,60 +571,108 @@ export class PlatformMcpRegistry {
 			}
 		}
 
-		// 3. Format batch content (opaque to bound — format determined by MCP server)
-		const batchContent = JSON.stringify(newEvents.map((e) => e.data));
-
-		// 4. Persist as developer-role message in the event task's thread (AC1.2)
+		// 3. Persist per EVENT, not per batch. Batch-level rows keyed on the
+		// FIRST event's id made INSERT OR IGNORE a batch-shaped guillotine:
+		// after a crash between persistence and the cursor update, reconnect
+		// replays the overlap as one batch [e1, e2] — the batch key collides
+		// with e1's already-persisted row, the whole insert is ignored, and
+		// the cursor then advances past e2, losing it permanently. Per-event
+		// rows with per-event keys make replay dedupe exact: e1 is ignored,
+		// e2 survives. The batch boundary was only ever an artifact of the
+		// 2s flush timer — it carries no semantics worth preserving.
 		const now = new Date().toISOString();
-		const messageId = randomUUID();
-		insertRow(
-			this.deps.db,
-			"messages",
-			{
-				id: messageId,
-				thread_id: subscription.threadId,
-				role: "developer",
-				content: batchContent,
-				model_id: null,
-				tool_name: null,
-				created_at: now,
-				modified_at: now,
-				host_origin: this.deps.siteId,
-				deleted: 0,
-				exit_code: null,
-				metadata: null,
-			},
-			this.deps.siteId,
-		);
+		const traceContext = injectTraceContext();
+		const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
+
+		// 4. Route each event so the woken task's wakeup carries it — exactly
+		// ONE delivery vehicle per branch. Delivering the same event as BOTH a
+		// developer-role message and a folded wakeup tool_result doubles it in
+		// thread history (confusing and bloaty); each branch persists the
+		// content exactly once, in the form its own wakeup path consumes.
+		if (this.deps.hubSiteId && this.deps.hubSiteId !== this.deps.siteId) {
+			// Multi-host mode (a spoke is leader): the hub's relay-processor
+			// claims a developer-role message via runLocalThreadLoop
+			// (enqueueMessage → claimPending), so the developer message is the
+			// delivery vehicle and the intake outbox references it by id. This
+			// path never goes through buildEventWakeupContent, so no
+			// connector_intake row is written here. The outbox insert runs
+			// FIRST and gates the message insert: writeOutbox is INSERT OR
+			// IGNORE on the per-event idempotency key, so a crash-replayed
+			// event is dropped here before it can duplicate the message.
+			for (const event of newEvents) {
+				const messageId = randomUUID();
+				const inserted = writeOutbox(this.deps.db, {
+					id: randomUUID(),
+					source_site_id: this.deps.siteId,
+					target_site_id: this.deps.hubSiteId,
+					kind: "intake",
+					ref_id: null,
+					idempotency_key: `intake:${subscription.serverName}:${event.eventId}`,
+					stream_id: null,
+					payload: JSON.stringify({
+						platform: subscription.serverName,
+						platform_event_id: event.eventId,
+						thread_id: subscription.threadId,
+						message_id: messageId,
+						content: JSON.stringify([event.data]),
+						attachments: [],
+					}),
+					created_at: now,
+					expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+					trace_context: serializedTraceContext,
+				});
+				if (!inserted) continue;
+				insertRow(
+					this.deps.db,
+					"messages",
+					{
+						id: messageId,
+						thread_id: subscription.threadId,
+						role: "developer",
+						content: JSON.stringify([event.data]),
+						model_id: null,
+						tool_name: null,
+						created_at: now,
+						modified_at: now,
+						host_origin: this.deps.siteId,
+						deleted: 0,
+						exit_code: null,
+						metadata: null,
+					},
+					this.deps.siteId,
+				);
+			}
+		} else {
+			// Leader-local mode (this host is the platform leader): the scheduler
+			// wakes the task here via connector:event and synthesizes its wakeup
+			// through buildEventWakeupContent, which folds these passive
+			// connector_intake rows into the wakeup tool_result — the single
+			// place the events land in thread history, mirroring the
+			// webhook_intake path (packages/web/src/server/webhook-handler.ts).
+			// relay_inbox is local-only (invariant #3); this host is where the
+			// wakeup is built, so the rows are readable there. The folded
+			// tool_result is a synced messages row, so cross-host history is
+			// preserved without a separate developer message.
+			for (const event of newEvents) {
+				insertInbox(this.deps.db, {
+					id: randomUUID(),
+					source_site_id: this.deps.siteId,
+					kind: "connector_intake" as const,
+					ref_id: subscription.threadId,
+					idempotency_key: `connector_intake:${subscription.handleId}:${event.eventId}`,
+					stream_id: null,
+					payload: JSON.stringify([event.data]),
+					expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+					received_at: now,
+					processed: 0,
+					trace_context: serializedTraceContext,
+				});
+			}
+		}
 
 		// 5. Update cursor on connector handle (AC5.5)
 		const lastCursor = newEvents[newEvents.length - 1]?.cursor;
 		updateConnectorHandleCursor(this.deps.db, this.deps.siteId, subscription.handleId, lastCursor);
-
-		// 5.5. Write relay intake entry for multi-host routing (AC7.1, AC7.2)
-		if (this.deps.hubSiteId && this.deps.hubSiteId !== this.deps.siteId) {
-			// Multi-host mode: write intake for hub routing
-			writeOutbox(this.deps.db, {
-				id: randomUUID(),
-				source_site_id: this.deps.siteId,
-				target_site_id: this.deps.hubSiteId,
-				kind: "intake",
-				ref_id: null,
-				idempotency_key: `intake:${subscription.serverName}:${newEvents[0].eventId}`,
-				stream_id: null,
-				payload: JSON.stringify({
-					platform: subscription.serverName,
-					platform_event_id: newEvents[0].eventId,
-					thread_id: subscription.threadId,
-					message_id: messageId,
-					content: batchContent,
-					attachments: [],
-				}),
-				created_at: now,
-				expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-				trace_context: null,
-			});
-		}
 
 		// 6. Fire event trigger to wake the SPECIFIC task (AFTER commit per invariant #6)
 		// Use per-handle trigger key so only the target task wakes (not all event tasks)
@@ -622,6 +749,15 @@ export class PlatformMcpRegistry {
 					.passthrough(),
 			);
 		} catch (err) {
+			// A permanent subscription rejection (e.g. the connector refuses a
+			// channel the bot can't view) must propagate so the caller can roll
+			// the handle back — leaving it would recreate the very dead-handle
+			// state the rejection exists to prevent. Transient stream failures
+			// are logged and swallowed as before; they retry on the next
+			// reconnect and must not tear down a legitimate handle.
+			if (isSubscriptionRejected(err)) {
+				throw err;
+			}
 			this.deps.logger.error(
 				`Failed to subscribe to stream for handle ${subscription.handleId}: ${err}`,
 			);
@@ -642,7 +778,8 @@ export class PlatformMcpRegistry {
 	/**
 	 * Stops a subscription and cleans up timers.
 	 */
-	private stopSubscription(handleId: string): void {
+	/** @internal Used by tests and lifecycle operations. */
+	stopSubscription(handleId: string): void {
 		const subscription = this.activeSubscriptions.get(handleId);
 		if (!subscription) return;
 
@@ -685,6 +822,7 @@ export class PlatformMcpRegistry {
 			handleId: handle.id,
 			serverName: handle.server_name,
 			eventName: handle.event_name,
+			params: parseEventArgs(handle.event_args, this.deps.logger, handle.id),
 			taskId: handle.task_id,
 			threadId: task.thread_id,
 			buffer: [],
@@ -695,10 +833,19 @@ export class PlatformMcpRegistry {
 		this.activeSubscriptions.set(handle.id, subscription);
 
 		if (handle.delivery_mode === "push") {
-			await this.startStreamSubscription(subscription, handle);
+			try {
+				await this.startStreamSubscription(subscription, handle);
+			} catch (err) {
+				// A permanent subscription rejection means this handle will never
+				// deliver. Undo the in-memory registration and rethrow so the
+				// caller (attach, or the handle_synced listener) can roll the
+				// persisted handle/task back. Transient failures never reach here
+				// — startStreamSubscription swallows those.
+				this.activeSubscriptions.delete(handle.id);
+				throw err;
+			}
 		} else {
-			// Poll mode: start with 2s interval
-			this.startPollTimer(subscription, 2);
+			this.startPollTimer(subscription, this.pollIntervalSeconds);
 		}
 	}
 
@@ -712,7 +859,19 @@ export class PlatformMcpRegistry {
 		this.deps.logger.info(`Reconnecting ${handles.length} connector handles`);
 		for (const handle of handles) {
 			if (!handle.task_id) continue; // orphan handle, skip
-			await this.activateSubscription(handle);
+			try {
+				await this.activateSubscription(handle);
+			} catch (err) {
+				// A permanent rejection here (e.g. the bot's View Channel
+				// permission was revoked while we were down) must not abort the
+				// whole reconnect, and — unlike attach — must not roll the handle
+				// back: reconnect is not the subscription-creation moment, and the
+				// permission may be restored before the next failover. Log and
+				// carry on; the operator can detach if it's genuinely dead.
+				this.deps.logger.warn(
+					`Skipping handle ${handle.id} during reconnect: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
 		}
 	}
 
@@ -768,6 +927,11 @@ export class PlatformMcpRegistry {
 	 * Returns platform tools for a specific server (used for per-thread scoping).
 	 * Returns empty map if server not found.
 	 */
+	/** @internal Used by tests to verify timer cleanup. */
+	hasPollTimer(handleId: string): boolean {
+		return this.pollTimers.has(handleId);
+	}
+
 	getToolsForServer(serverName: string): Map<string, PlatformRegisteredTool> {
 		return this.platformTools.get(serverName) ?? new Map();
 	}
@@ -827,8 +991,26 @@ export class PlatformMcpRegistry {
 		const serverName = this.resolveBoundServerName(threadId);
 		if (!serverName) return new Map(); // AC3.3: no event task / handle → no platform tools
 
-		// AC3.1: return only this server's tools
-		return this.getToolsForServer(serverName);
+		// AC3.1: return only this server's tools — local OR remote. A spoke reaches
+		// a connector only as a remote (the leader runs the live subscription), so
+		// its tools live in remoteTools, not platformTools. getToolsForServer alone
+		// reads only local, which would hand an event-bound thread whose loop runs
+		// here an EMPTY scoped set — silently dropping every write tool
+		// (discord_send_message, etc.) and forcing a fall-through to the read-only
+		// set. Remote platform tools relay their tools/call through makeRemoteTool,
+		// so they are fully invocable from any host (R-UD12: any host serves any
+		// tool via relay). Local entries win on name collision, mirroring
+		// getReadOnlyPlatformTools / getAllPlatformTools.
+		const merged = new Map<string, PlatformRegisteredTool>();
+		const remote = this.remoteTools.get(serverName);
+		if (remote) {
+			for (const [toolName, tool] of remote) merged.set(toolName, tool);
+		}
+		const local = this.platformTools.get(serverName);
+		if (local) {
+			for (const [toolName, tool] of local) merged.set(toolName, tool);
+		}
+		return merged;
 	}
 
 	/**

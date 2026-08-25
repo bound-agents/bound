@@ -10,11 +10,10 @@
  * which excludes any memorize that landed *between* wakeups — exactly
  * the entries the L3 recency surface is supposed to expose.
  *
- * Live evidence: thread d0372be6-bd60-452d-958b-249042c884a1 (interface
- * = "webhook") has hundreds of developer-role `[Task wakeup]` messages.
- * On 2026-05-24 at 23:10:26Z the agent had just memorized
+ * Live evidence: a webhook-interface thread has hundreds of developer-role
+ * `[Task wakeup]` messages. At one such wakeup the agent had just memorized
  * `bound:issue:51`, `_outcome:bound-release-v0.0.162-…`, and several
- * peers around 04:57-04:59Z (all `tier='default'`, all 18 hours before
+ * peers a few hours earlier (all `tier='default'`, all well before
  * the wakeup). The agent's own report on that wakeup: "Working knowledge
  * is **months stale** — none of my recent bound_issue or outcome
  * entries." The entries existed; the L3 baseline excluded all of them.

@@ -12,6 +12,32 @@ export interface TableDiff {
 	matching: number;
 }
 
+/**
+ * SQL predicate (without the `WHERE` keyword) selecting only the rows of a
+ * synced table that may participate in cross-host sync, or `null` when every
+ * row is syncable.
+ *
+ * Single source of truth for invariant #19: `role='system'` messages are
+ * forbidden in the `messages` table and rejected by the reducer, so they must
+ * never enter the backfill diff. This predicate MUST be applied identically on
+ * both sides of the diff — the *advertising* side (`streamConsistencyPages`,
+ * which enumerates a peer's rows) and the *comparing* side (the
+ * `getBackfillable*` helpers). Filtering one side but not the other makes the
+ * unsyncable rows perpetually appear as `remoteOnly`, so every backfill cycle
+ * re-pulls the same rows without ever converging (a hot, self-perpetuating
+ * full-table scan). Route both sides through this function so they cannot drift.
+ */
+export function syncableRowPredicate(table: SyncedTableName): string | null {
+	if (table === "messages") return "role != 'system'";
+	return null;
+}
+
+/** Compose `syncableRowPredicate` into a ` WHERE ...` fragment (empty when null). */
+export function syncableWhereClause(table: SyncedTableName): string {
+	const predicate = syncableRowPredicate(table);
+	return predicate ? ` WHERE ${predicate}` : "";
+}
+
 export function getLocalPksSorted(db: Database, table: SyncedTableName): string[] {
 	const pkCol = getPkColumn(table);
 	const rows = db
@@ -22,11 +48,9 @@ export function getLocalPksSorted(db: Database, table: SyncedTableName): string[
 
 export function getBackfillablePksSorted(db: Database, table: SyncedTableName): string[] {
 	const pkCol = getPkColumn(table);
-	let query = `SELECT ${pkCol} AS pk FROM ${table} ORDER BY ${pkCol} ASC`;
-	if (table === "messages") {
-		query = `SELECT ${pkCol} AS pk FROM ${table} WHERE role != 'system' ORDER BY ${pkCol} ASC`;
-	}
-	const rows = db.query(query).all() as Array<{ pk: string }>;
+	const rows = db
+		.query(`SELECT ${pkCol} AS pk FROM ${table}${syncableWhereClause(table)} ORDER BY ${pkCol} ASC`)
+		.all() as Array<{ pk: string }>;
 	return rows.map((r) => r.pk);
 }
 
@@ -103,7 +127,6 @@ export function compareAllTables(
 		"tasks",
 		"files",
 		"hosts",
-		"overlay_index",
 		"cluster_config",
 		"advisories",
 		"skills",
@@ -207,10 +230,7 @@ export function getBackfillableEntriesSorted(
 	table: SyncedTableName,
 ): ConsistencyEntry[] {
 	const pkCol = getPkColumn(table);
-	let query = `SELECT * FROM ${table} ORDER BY ${pkCol} ASC`;
-	if (table === "messages") {
-		query = `SELECT * FROM ${table} WHERE role != 'system' ORDER BY ${pkCol} ASC`;
-	}
+	const query = `SELECT * FROM ${table}${syncableWhereClause(table)} ORDER BY ${pkCol} ASC`;
 	const rows = db.query(query).all() as Array<Record<string, unknown>>;
 	return rows.map((row) => ({
 		pk: String(row[pkCol]),
