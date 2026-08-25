@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "@bound/shared";
+import { checkDbCommand } from "./db-guard";
 import { spawnLowbox } from "./lowbox-runtime";
 import { formatProvenance } from "./provenance";
 import {
@@ -286,6 +287,11 @@ export async function bashToolWithStreaming(
 		return result;
 	}
 
+	// System-DB guard (#207): warn (never block — shell command shapes are too
+	// varied to pattern-block) when the command line reaches for the SQLite CLI
+	// or names the bound database file.
+	const dbNote = checkDbCommand(command);
+
 	const timeoutMs = timeout ?? DEFAULT_TIMEOUT_MS;
 
 	try {
@@ -438,7 +444,8 @@ export async function bashToolWithStreaming(
 
 			// Assemble the full result, then offload to a local file if it's too
 			// large for the context window (mirrors the agent VFS offload path).
-			const formattedOutput = `${sandboxNote ? `${sandboxNote}\n` : ""}Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
+			const notes = [dbNote, sandboxNote].filter(Boolean).join("\n");
+			const formattedOutput = `${notes ? `${notes}\n` : ""}Exit code: ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
 			const offloaded = offloadIfOversized(formattedOutput, shell.toolName);
 
 			const result: ToolResult = {

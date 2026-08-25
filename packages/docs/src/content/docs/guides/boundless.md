@@ -51,6 +51,13 @@ The client registers these tools against the working directory:
 
 Anchored reads let the agent address exact lines without reproducing their full text.
 
+The file tools guard the Bound system database (#207): `boundless_write`, `boundless_edit`,
+and a satellite-target `boundless_copy` refuse paths that look like the system database
+(`bound.db` and its WAL/SHM siblings, or SQLite files under a `data/` directory) — direct
+writes bypass soft-deletion and sync triggers. Reads of those paths succeed but carry a note
+pointing at the `query` tool, and `boundless_bash` warns without blocking when a command
+invokes the SQLite CLI or names the database file.
+
 :::danger[Filesystem access]
 Read access follows the operating-system permissions of the `boundless` process. Writes are
 confined to the working directory and temporary directories allowed by the platform sandbox:

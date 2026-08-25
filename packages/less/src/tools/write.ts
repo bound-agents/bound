@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { contextFileStaleNote, isContextFile } from "./context-files";
+import { checkDbWrite } from "./db-guard";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -64,6 +65,17 @@ async function writeToolImpl(
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
+
+	// System-DB guard (#207): direct writes to the bound database bypass the
+	// change-log outbox and soft-deletion semantics. Block regardless of the
+	// sandbox state — this is a correctness guard, not a confinement one.
+	const dbDenied = checkDbWrite("boundless_write", file_path, cwd);
+	if (dbDenied) {
+		return {
+			content: [provenance, { type: "text", text: dbDenied }],
+			isError: true,
+		};
+	}
 
 	// In-process write guard: when the sandbox is enabled, confine writes to the
 	// same writable set the kernel guard enforces for the shell. This tool calls
