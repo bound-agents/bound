@@ -1,4 +1,5 @@
 import type { YardExecutionEvent, YardExecutionNode } from "@bound/shared";
+import { parseLeadingJsonValue } from "./yard-result";
 
 export type YardNodePhase = "unknown" | "started" | "completed" | "failed" | "settled";
 
@@ -209,11 +210,7 @@ type ToolUse = { id?: unknown; name?: unknown; input?: unknown };
 type YardResult = { trace_id?: unknown; result?: unknown };
 
 function parseJson(value: string): unknown {
-	try {
-		return JSON.parse(value);
-	} catch {
-		return undefined;
-	}
+	return parseLeadingJsonValue(value)?.value;
 }
 
 /**
@@ -407,7 +404,8 @@ export function reconstructCompletedYardExecutions(
 			if (block?.name !== "yard" || typeof block.id !== "string") continue;
 			const resultMessage = results.get(block.id);
 			if (!resultMessage) continue;
-			const result = parseJson(resultMessage.content) as YardResult | undefined;
+			const parsedResult = parseLeadingJsonValue(resultMessage.content);
+			const result = parsedResult?.value as YardResult | undefined;
 			const traceId = typeof result?.trace_id === "string" ? result.trace_id : block.id;
 			const input = block.input as { program?: unknown } | undefined;
 			const programPreview = typeof input?.program === "string" ? input.program : undefined;
@@ -416,8 +414,11 @@ export function reconstructCompletedYardExecutions(
 				runId: traceId,
 				phase: "completed",
 				programPreview,
-				resultPreview:
-					result?.result === undefined ? resultMessage.content : JSON.stringify(result.result),
+				resultPreview: parsedResult?.tail
+					? resultMessage.content
+					: result?.result === undefined
+						? resultMessage.content
+						: JSON.stringify(result.result),
 				toolCallId: block.id,
 				startedAt: message.created_at,
 				finishedAt: resultMessage.created_at,

@@ -98,6 +98,7 @@ const miniMapNodeColor = (node: Node) => {
 			<details>
 				<summary><span class="result-title"><span class="disclosure-caret" aria-hidden="true">▸</span>Result</span><span class="result-hint">{result.hint}</span></summary>
 				<YardCodeBlock code={result.display} lang="json" />
+				{#if result.tail}<p class="result-tail">{result.tail}</p>{/if}
 			</details>
 		</footer>
 	{/if}
@@ -128,6 +129,7 @@ const miniMapNodeColor = (node: Node) => {
 	details[open] .disclosure-caret { transform: rotate(90deg); }
 	summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 	.result-hint { overflow: hidden; font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+	.result-tail { margin: 0; padding: 8px 12px; border-top: 1px solid var(--rule-soft); color: var(--ink-2); font: 10px var(--font-mono); }
 	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 	:global(.yard-execution-panel .svelte-flow__node) { border: 0; border-radius: 6px; background: transparent; box-shadow: none; }
 	:global(.yard-execution-panel .svelte-flow__edge-path) { stroke: var(--idle); stroke-width: 1.4; }

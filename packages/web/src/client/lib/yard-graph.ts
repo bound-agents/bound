@@ -154,7 +154,13 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 			kind: "result",
 			phase,
 			summary: formatted?.hint,
-			detail: formatted ? { result: formatted.display, hint: formatted.hint } : undefined,
+			detail: formatted
+				? {
+						result: formatted.display,
+						hint: formatted.hint,
+						...(formatted.tail ? { metadata: formatted.tail } : {}),
+					}
+				: undefined,
 		},
 		class: `yard-node yard-node-result yard-node-${phase}`,
 	});

@@ -377,6 +377,35 @@ describe("persisted Yard message reconstruction", () => {
 			);
 		}
 	});
+	it("keeps duration-suffixed persisted Yard results intact for graph formatting", async () => {
+		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
+		const program = "function* main() { return { ok: true }; }";
+		const raw = `${JSON.stringify({
+			result: { listing: "first\nsecond", status: "ok" },
+			trace_id: "trace-suffixed",
+			usage: { input_tokens: 1 },
+		})}\n\n[duration: 900.005s]`;
+		const [tree] = reconstructCompletedYardExecutions([
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "suffixed", name: "yard", input: { program } },
+				]),
+			},
+			{ role: "tool_result", tool_name: "suffixed", content: raw },
+		]);
+
+		if (!tree) throw new Error("missing reconstructed tree");
+		expect(tree).toMatchObject({ traceId: "trace-suffixed", resultPreview: raw });
+		const resultNode = yardTreeToFlow(tree).nodes.find((node) => node.data.kind === "result");
+		expect(resultNode?.data).toMatchObject({
+			summary: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
+			detail: {
+				result: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
+				metadata: "[duration: 900.005s]",
+			},
+		});
+	});
 });
 
 describe("message/live reconciliation", () => {
