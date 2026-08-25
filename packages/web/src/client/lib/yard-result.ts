@@ -2,6 +2,8 @@ export interface FormattedYardValue {
 	display: string;
 	hint: string;
 	isJson: boolean;
+	/** The source was a JavaScript object literal with dynamic expressions. */
+	isJavaScript?: boolean;
 	tail?: string;
 }
 
@@ -151,7 +153,7 @@ function unwrapPersistedYardValue(value: unknown, tail?: string): ParsedJsonValu
 	return { value: current, ...(currentTail ? { tail: currentTail } : {}) };
 }
 
-function parseObjectLiteral(raw: string): ParsedJsonValue | undefined {
+function extractObjectLiteral(raw: string): { source: string; tail?: string } | undefined {
 	const start = raw.search(/\S/);
 	if (start === -1 || raw[start] !== "{") return undefined;
 
@@ -173,26 +175,94 @@ function parseObjectLiteral(raw: string): ParsedJsonValue | undefined {
 		if (character === "{") depth++;
 		else if (character === "}" && --depth === 0) {
 			const source = raw.slice(start, index + 1);
-			// Static topology extraction owns these literals. Quote its bare keys so
-			// presentation remains JSON without evaluating program source.
-			const json = source.replace(/([,{]\s*)([$A-Z_a-z][$\w]*)(\s*:)/g, '$1"$2"$3');
-			try {
-				const value = JSON.parse(json);
-				const tail = raw.slice(index + 1).trim();
-				return { value, ...(tail ? { tail } : {}) };
-			} catch {
-				return undefined;
-			}
+			const tail = raw.slice(index + 1).trim();
+			return { source, ...(tail ? { tail } : {}) };
 		}
 	}
 	return undefined;
+}
+
+function parseObjectLiteral(raw: string): ParsedJsonValue | undefined {
+	const literal = extractObjectLiteral(raw);
+	if (!literal) return undefined;
+	// Static topology extraction owns these literals. Quote its bare keys so
+	// presentation remains JSON without evaluating program source.
+	const json = literal.source.replace(/([,{]\s*)([$A-Z_a-z][$\w]*)(\s*:)/g, '$1"$2"$3');
+	try {
+		return { value: JSON.parse(json), ...(literal.tail ? { tail: literal.tail } : {}) };
+	} catch {
+		return undefined;
+	}
+}
+
+/** Counts `key: value` fields without evaluating dynamic JavaScript expressions. */
+function countTopLevelObjectKeys(source: string): number | undefined {
+	const fields: string[] = [];
+	let fieldStart = 1;
+	let depth = 0;
+	let quote = "";
+	let escaped = false;
+	for (let index = 1; index < source.length - 1; index++) {
+		const character = source[index];
+		if (quote) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === quote) quote = "";
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "`") {
+			quote = character;
+			continue;
+		}
+		if (character === "{" || character === "[" || character === "(") depth++;
+		else if (character === "}" || character === "]" || character === ")") depth--;
+		else if (character === "," && depth === 0) {
+			fields.push(source.slice(fieldStart, index));
+			fieldStart = index + 1;
+		}
+	}
+	const finalField = source.slice(fieldStart, -1);
+	if (finalField.trim()) fields.push(finalField);
+	return fields.every((field) => {
+		let nested = 0;
+		let inQuote = "";
+		let isEscaped = false;
+		for (const character of field) {
+			if (inQuote) {
+				if (isEscaped) isEscaped = false;
+				else if (character === "\\") isEscaped = true;
+				else if (character === inQuote) inQuote = "";
+				continue;
+			}
+			if (character === '"' || character === "'" || character === "`") inQuote = character;
+			else if (character === "{" || character === "[" || character === "(") nested++;
+			else if (character === "}" || character === "]" || character === ")") nested--;
+			else if (character === ":" && nested === 0) return true;
+		}
+		return false;
+	})
+		? fields.length
+		: undefined;
 }
 
 /** Formats any Yard presentation value consistently without changing persistence data. */
 export function formatYardValue(raw: string): FormattedYardValue {
 	const bytes = new TextEncoder().encode(raw).byteLength;
 	const parsed = parseLeadingJsonValue(raw) ?? parseObjectLiteral(raw);
-	if (!parsed) return { display: raw, hint: `string · ${sizeHint(bytes)}`, isJson: false };
+	if (!parsed) {
+		const literal = extractObjectLiteral(raw);
+		const keyCount = literal && countTopLevelObjectKeys(literal.source);
+		if (literal && keyCount !== undefined) {
+			return {
+				display: literal.source,
+				hint: `object · ${keyCount} ${keyCount === 1 ? "key" : "keys"} · ${sizeHint(bytes)}`,
+				isJson: false,
+				isJavaScript: true,
+				...(literal.tail ? { tail: literal.tail } : {}),
+			};
+		}
+		return { display: raw, hint: `string · ${sizeHint(bytes)}`, isJson: false };
+	}
 
 	const { value, tail } = unwrapPersistedYardValue(parsed.value, parsed.tail);
 	const sanitized = sanitizeYardResult(value);
@@ -215,7 +285,12 @@ export function formatYardInspectorValue(
 	return {
 		...formatted,
 		display: key === "program" ? raw : formatted.display,
-		lang: key === "program" ? "javascript" : formatted.isJson ? "json" : "text",
+		lang:
+			key === "program" || formatted.isJavaScript
+				? "javascript"
+				: formatted.isJson
+					? "json"
+					: "text",
 	};
 }
 

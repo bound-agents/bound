@@ -116,6 +116,41 @@ describe("formatYardValue", () => {
 		});
 	});
 
+	it("keeps dynamic JavaScript object arguments classified and highlighted as objects", () => {
+		const raw = '{ command: "x", cwd: input.cwd }';
+		expect(formatYardInspectorValue(raw, "args")).toEqual({
+			display: raw,
+			hint: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
+			isJson: false,
+			isJavaScript: true,
+			lang: "javascript",
+		});
+	});
+
+	it("preserves JSON pretty-printing for fully literal object arguments", () => {
+		expect(formatYardInspectorValue('{ a: 1, b: "s" }', "args")).toEqual({
+			display: '{\n  "a": 1,\n  "b": "s"\n}',
+			hint: "object · 2 keys · 16 B",
+			isJson: true,
+			lang: "json",
+		});
+	});
+
+	it("counts only top-level keys in dynamic JavaScript object arguments", () => {
+		const raw = "{ x: { y: foo.bar } }";
+		expect(formatYardInspectorValue(raw, "args")).toMatchObject({
+			hint: `object · 1 key · ${new TextEncoder().encode(raw).byteLength} B`,
+			lang: "javascript",
+		});
+	});
+
+	it("keeps genuine plain strings classified as strings", () => {
+		expect(formatYardInspectorValue("not an object", "args")).toMatchObject({
+			hint: "string · 13 B",
+			lang: "text",
+		});
+	});
+
 	it("keeps plain text prompt values unquoted", () => {
 		expect(formatYardValue("Explain the current repository state.")).toEqual({
 			display: "Explain the current repository state.",
