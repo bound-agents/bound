@@ -9,7 +9,7 @@ export interface YardNodeDetail {
 	args?: string;
 	prompt?: string;
 	instructions?: string;
-	schema?: boolean;
+	schema?: string;
 	result?: string;
 	hint?: string;
 }
@@ -25,6 +25,8 @@ export interface YardNodeState {
 	startedAt?: string;
 	finishedAt?: string;
 	detail?: YardNodeDetail;
+	/** Runtime event id bound to this stable topology node. */
+	runtimeId?: string;
 }
 
 export interface YardTreeSnapshot {
@@ -82,6 +84,20 @@ function isRootEvent(event: YardExecutionEvent): boolean {
 	return event.node.kind === "run" && event.node_id === event.run_id && event.parent_id === null;
 }
 
+function effectMatches(node: YardNodeState, event: YardExecutionEvent): boolean {
+	return (
+		node.node.kind === event.node.kind &&
+		(node.node.kind !== "tool" ||
+			event.node.kind !== "tool" ||
+			node.node.name === event.node.name ||
+			node.node.name === `aux: ${event.node.name}`) &&
+		(node.node.kind !== "inference" ||
+			event.node.kind !== "inference" ||
+			node.node.model === event.node.model ||
+			node.node.model === "infer (dynamic)")
+	);
+}
+
 function fold(
 	tree: YardTreeSnapshot | undefined,
 	event: YardExecutionEvent,
@@ -92,34 +108,32 @@ function fold(
 			? extractYardProgramTopology(event.program_preview, event.run_id)
 			: (tree?.nodes ?? []);
 	const nodes = new Map<string, YardNodeState>(sourceTree.map((node) => [node.id, node]));
-	const matched = [...nodes.values()].find(
-		(node) =>
-			node.phase === "unknown" &&
-			node.node.kind === event.node.kind &&
-			(node.node.kind !== "tool" ||
-				event.node.kind !== "tool" ||
-				node.node.name === event.node.name ||
-				node.node.name === `aux: ${event.node.name}`) &&
-			(node.node.kind !== "inference" ||
-				event.node.kind !== "inference" ||
-				node.node.model === event.node.model),
-	);
+	const ordered = [...nodes.values()].sort((a, b) => a.startSeq - b.startSeq);
+	const existingByRuntimeId = ordered.find((node) => node.runtimeId === event.node_id);
+	const matched =
+		existingByRuntimeId ??
+		ordered.find((node) => node.phase === "unknown" && effectMatches(node, event));
 	const targetId = matched?.id ?? event.node_id;
 	const existing = nodes.get(targetId);
+	const mappedParent = ordered.find((node) => node.runtimeId === event.parent_id)?.id;
+	const rootId = ordered.find((node) => node.node.kind === "run" && node.parentId === null)?.id;
+	const parentId = matched ? matched.parentId : (mappedParent ?? rootId ?? event.parent_id);
 	if (!existing || event.seq > existing.seq) {
 		nodes.set(targetId, {
 			id: targetId,
-			parentId: matched?.parentId ?? event.parent_id,
-			node: event.node,
+			parentId,
+			node: existing?.node ?? event.node,
 			phase: event.phase,
 			seq: event.seq,
 			startSeq: existing?.startSeq ?? event.seq,
 			summary: event.summary ?? existing?.summary,
 			startedAt: existing?.startedAt ?? event.started_at,
 			finishedAt: event.finished_at ?? existing?.finishedAt,
+			detail: existing?.detail,
+			runtimeId: event.node_id,
 		});
 	} else if (event.seq < existing.seq) {
-		nodes.set(event.node_id, { ...existing, startSeq: Math.min(existing.startSeq, event.seq) });
+		nodes.set(targetId, { ...existing, startSeq: Math.min(existing.startSeq, event.seq) });
 	}
 	return {
 		traceId: event.trace_id,
@@ -135,7 +149,6 @@ function fold(
 		nodes: snapshotNodes(nodes),
 	};
 }
-
 /** Folds the lifecycle stream into root execution trees, buffering out-of-order leaves by trace. */
 export function reduceYardExecution(
 	state: YardExecutionState,
@@ -236,71 +249,124 @@ export function extractYardProgramTopology(
 		kind: string;
 		start: number;
 		end: number;
-		literal?: string;
+		args: string[];
 		id: string;
 		node: YardExecutionNode;
 		detail?: YardNodeDetail;
 	};
-	const closeParen = (open: number): number => {
-		let depth = 0;
-		let quote = "";
-		for (let i = open; i < program.length; i++) {
-			const char = program[i] ?? "";
-			if (quote) {
-				if (char === quote && (program[i - 1] ?? "") !== "\\") quote = "";
+	const skipString = (source: string, index: number): number => {
+		const quote = source[index];
+		for (let i = index + 1; i < source.length; i++) {
+			if (source[i] === "\\") {
+				i++;
 				continue;
 			}
-			if (char === '"' || char === "'" || char === "`") {
-				quote = char;
+			if (quote === "`" && source[i] === "$" && source[i + 1] === "{") {
+				i = balanced(source, i + 1, "{", "}");
 				continue;
 			}
-			if (char === "(") depth++;
-			if (char === ")" && --depth === 0) return i;
+			if (source[i] === quote) return i;
 		}
-		return program.length;
+		return source.length - 1;
 	};
-	const closeObject = (source: string): number => {
-		let depth = 0;
-		let quote = "";
-		for (let i = 0; i < source.length; i++) {
-			const char = source[i] ?? "";
-			if (quote) {
-				if (char === quote && (source[i - 1] ?? "") !== "\\") quote = "";
-				continue;
-			}
-			if (char === '"' || char === "'" || char === "`") {
-				quote = char;
-				continue;
-			}
-			if (char === "{") depth++;
-			if (char === "}" && --depth === 0) return i;
+	const skipComment = (source: string, index: number): number => {
+		if (source[index + 1] === "/") {
+			const end = source.indexOf("\n", index + 2);
+			return end < 0 ? source.length - 1 : end;
 		}
-		return source.length;
+		if (source[index + 1] === "*") {
+			const end = source.indexOf("*/", index + 2);
+			return end < 0 ? source.length - 1 : end + 1;
+		}
+		return index;
+	};
+	const balanced = (source: string, open: number, opening: string, closing: string): number => {
+		let depth = 0;
+		for (let i = open; i < source.length; i++) {
+			const char = source[i];
+			if (char === '"' || char === "'" || char === "`") {
+				i = skipString(source, i);
+				continue;
+			}
+			if (char === "/" && (source[i + 1] === "/" || source[i + 1] === "*")) {
+				i = skipComment(source, i);
+				continue;
+			}
+			if (char === opening) depth++;
+			else if (char === closing && --depth === 0) return i;
+		}
+		return source.length - 1;
+	};
+	const splitTopLevel = (source: string): string[] => {
+		const values: string[] = [];
+		let start = 0;
+		const pairs: Record<string, string> = { "(": ")", "{": "}", "[": "]" };
+		for (let i = 0; i < source.length; i++) {
+			const char = source[i];
+			if (char === '"' || char === "'" || char === "`") {
+				i = skipString(source, i);
+				continue;
+			}
+			if (char === "/" && (source[i + 1] === "/" || source[i + 1] === "*")) {
+				i = skipComment(source, i);
+				continue;
+			}
+			if (pairs[char]) {
+				i = balanced(source, i, char, pairs[char]);
+				continue;
+			}
+			if (char === ",") {
+				values.push(source.slice(start, i).trim());
+				start = i + 1;
+			}
+		}
+		values.push(source.slice(start).trim());
+		return values;
+	};
+	const stringValue = (value: string | undefined): string | undefined => {
+		if (!value || !['"', "'", "`"].includes(value[0] ?? "")) return undefined;
+		const end = skipString(value, 0);
+		return end === value.length - 1 ? value.slice(1, -1) : undefined;
+	};
+	const property = (object: string, name: string): string | undefined => {
+		const body = object.trim();
+		if (!body.startsWith("{") || !body.endsWith("}")) return undefined;
+		for (const entry of splitTopLevel(body.slice(1, -1))) {
+			const colon = entry.indexOf(":");
+			if (colon >= 0 && entry.slice(0, colon).trim() === name) return entry.slice(colon + 1).trim();
+		}
+		return undefined;
 	};
 	const calls: Call[] = [];
 	let sequence = 0;
-	for (const match of program.matchAll(/\b(tool|infer|aux|all|sequence|yard)\s*\(/g)) {
+	for (let i = 0; i < program.length; i++) {
+		const char = program[i];
+		if (char === '"' || char === "'" || char === "`") {
+			i = skipString(program, i);
+			continue;
+		}
+		if (char === "/" && (program[i + 1] === "/" || program[i + 1] === "*")) {
+			i = skipComment(program, i);
+			continue;
+		}
+		const match = program.slice(i).match(/^(tool|infer|aux|all|sequence|yard)\s*\(/);
+		if (!match || (i > 0 && /[\w$]/.test(program[i - 1] ?? ""))) continue;
 		const kind = match[1] ?? "";
-		const start = match.index ?? 0;
-		const open = start + match[0].length - 1;
-		const body = program.slice(open + 1, closeParen(open));
-		const literal = body.match(/^\s*["'`]([^"'`]*)["'`]/)?.[1];
-		const rest = body
-			.slice((body.match(/^\s*["'`][^"'`]*["'`]/)?.[0] ?? "").length)
-			.replace(/^\s*,\s*/, "");
-		const quotedSecond = rest.match(/^["'`]([^"'`]*)["'`]/)?.[1];
+		const open = i + match[0].length - 1;
+		const end = balanced(program, open, "(", ")");
+		const args = splitTopLevel(program.slice(open + 1, end));
+		const literal = stringValue(args[0]);
+		const options = args[1];
 		const detail =
 			kind === "tool"
-				? {
-						args: rest.startsWith("{") ? rest.slice(0, closeObject(rest) + 1) : "dynamic",
-					}
+				? { args: options?.trim().startsWith("{") ? options : "dynamic" }
 				: kind === "infer"
 					? {
-							prompt: rest.match(/prompt\s*:\s*["'`]([^"'`]*)["'`]/)?.[1] ?? "dynamic",
-							schema: /\bschema\s*:/.test(rest),
+							prompt: stringValue(property(options ?? "", "prompt")) ?? "dynamic",
+							schema: property(options ?? "", "schema") ?? "dynamic",
 						}
 					: kind === "aux"
-						? { instructions: quotedSecond ?? "dynamic" }
+						? { instructions: stringValue(args[1]) ?? "dynamic" }
 						: undefined;
 		const node =
 			kind === "tool"
@@ -312,15 +378,8 @@ export function extractYardProgramTopology(
 						: kind === "yard"
 							? ({ kind: "run", depth: 1 } as const)
 							: ({ kind: "tool", name: kind } as const);
-		calls.push({
-			kind,
-			start,
-			end: closeParen(open),
-			literal,
-			id: `${runId}:static:${++sequence}`,
-			node,
-			detail,
-		});
+		calls.push({ kind, start: i, end, args, id: `${runId}:static:${++sequence}`, node, detail });
+		i = open;
 	}
 	const nodes = [
 		root,
@@ -357,36 +416,6 @@ export function extractYardProgramTopology(
 		});
 	return nodes;
 }
-/** Best-effort overlay: lifecycle is ephemeral decoration of stable source topology. */
-export function overlayYardLifecycle(
-	tree: YardTreeSnapshot,
-	events: YardExecutionEvent[],
-): YardTreeSnapshot {
-	const nodes = tree.nodes.map((node) => ({ ...node }));
-	for (const event of events.sort((a, b) => a.seq - b.seq)) {
-		const candidate = nodes.find(
-			(node) =>
-				(node.phase === "unknown" || node.phase === "settled") &&
-				node.node.kind === event.node.kind &&
-				(node.node.kind !== "tool" ||
-					event.node.kind !== "tool" ||
-					node.node.name === event.node.name ||
-					node.node.name === `aux: ${event.node.name}`) &&
-				(node.node.kind !== "inference" ||
-					event.node.kind !== "inference" ||
-					node.node.model === event.node.model),
-		);
-		if (candidate)
-			Object.assign(candidate, {
-				phase: event.phase,
-				summary: event.summary,
-				startedAt: event.started_at,
-				finishedAt: event.finished_at,
-			});
-	}
-	return { ...tree, nodes };
-}
-
 /** Rebuilds completed topology solely from the durable Yard tool-call program. */
 export function reconstructCompletedYardExecutions(
 	messages: YardMessageLike[],
