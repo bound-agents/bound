@@ -425,6 +425,14 @@ describe("lexically safe Yard topology extraction", () => {
 	});
 });
 
+function assertFlowIntegrity(tree: import("../yard-execution").YardTreeSnapshot) {
+	const flow = yardTreeToFlow(tree);
+	const ids = new Set(flow.nodes.map((node) => node.id));
+	expect(flow.edges.every((edge) => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
+	expect(flow.edges.filter((edge) => edge.target === `${tree.runId}:result`)).toHaveLength(1);
+	expect(new Set(flow.nodes.map((node) => node.id)).size).toBe(flow.nodes.length);
+}
+
 describe("static Yard topology lifecycle matching", () => {
 	it("decorates static nodes without creating orphans throughout a live sequence", () => {
 		const program = `function* main(input) {
@@ -487,6 +495,7 @@ describe("static Yard topology lifecycle matching", () => {
 			if (!tree) throw new Error("missing tree");
 			if (count === 0) count = tree.nodes.length;
 			expect(tree.nodes).toHaveLength(count);
+			assertFlowIntegrity(tree);
 			const ids = new Set(tree.nodes.map((node) => node.id));
 			expect(tree.nodes.filter((node) => node.parentId === null).map((node) => node.id)).toEqual([
 				"runtime-root:root",
@@ -495,5 +504,106 @@ describe("static Yard topology lifecycle matching", () => {
 				true,
 			);
 		}
+	});
+	it("binds repeated identical aux effects in source order without runtime duplicates", () => {
+		const program = `function* main() { yield all([aux("reviewer", "one"), aux("reviewer", "two")]); }`;
+		let state = reduceYardExecution(
+			EMPTY_YARD_STATE,
+			event({ program_preview: program, node_id: "root", run_id: "root" }),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 2,
+				node_id: "runtime-all",
+				parent_id: "root",
+				node: { kind: "tool", name: "all" },
+			}),
+		);
+		for (const [seq, node_id] of [
+			[3, "first"],
+			[4, "second"],
+		] as const) {
+			state = reduceYardExecution(
+				state,
+				event({
+					seq,
+					node_id,
+					parent_id: "runtime-all",
+					node: { kind: "tool", name: "aux: reviewer" },
+				}),
+			);
+			const snapshot = state.live.get("trace-1");
+			if (!snapshot) throw new Error("missing tree");
+			assertFlowIntegrity(snapshot);
+		}
+		const nodes =
+			state.live.get("trace-1")?.nodes.filter((node) => node.node.name === "aux: reviewer") ?? [];
+		expect(nodes.map((node) => node.runtimeId)).toEqual(["first", "second"]);
+	});
+
+	it("scopes equivalent effects to their mapped parent container and preserves unmatched runtime subtrees", () => {
+		const program = `function* main() { yield sequence([all([aux("reviewer", "one")]), all([aux("reviewer", "two")])]); }`;
+		let state = reduceYardExecution(
+			EMPTY_YARD_STATE,
+			event({ program_preview: program, node_id: "root", run_id: "root" }),
+		);
+		const snapshot = state.live.get("trace-1");
+		if (!snapshot) throw new Error("missing tree");
+		const all = snapshot.nodes.filter((node) => node.construct === "all");
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 2,
+				node_id: "runtime-sequence",
+				parent_id: "root",
+				node: { kind: "tool", name: "sequence" },
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 3,
+				node_id: "runtime-all-1",
+				parent_id: "runtime-sequence",
+				node: { kind: "tool", name: "all" },
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 4,
+				node_id: "runtime-all-2",
+				parent_id: "runtime-sequence",
+				node: { kind: "tool", name: "all" },
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 5,
+				node_id: "runtime-review-2",
+				parent_id: "runtime-all-2",
+				node: { kind: "tool", name: "aux: reviewer" },
+			}),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 6,
+				node_id: "dynamic-child",
+				parent_id: "runtime-review-2",
+				node: { kind: "tool", name: "unparsed" },
+			}),
+		);
+		const updated = state.live.get("trace-1");
+		if (!updated) throw new Error("missing tree");
+		assertFlowIntegrity(updated);
+		expect(updated.nodes.find((node) => node.runtimeId === "runtime-review-2")?.parentId).toBe(
+			all[1]?.id,
+		);
+		expect(updated.nodes.find((node) => node.id === "dynamic-child")?.parentId).toBe(
+			updated.nodes.find((node) => node.runtimeId === "runtime-review-2")?.id,
+		);
 	});
 });

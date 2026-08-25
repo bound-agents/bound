@@ -292,3 +292,23 @@ describe("live Yard topology contracts", () => {
 		}
 	});
 });
+
+describe("container geometry contracts", () => {
+	it("keeps empty and singleton containers visible, parented, and connected", () => {
+		for (const program of [
+			"function* main() { yield all([]); }",
+			'function* main() { yield sequence([tool("only", {})]); }',
+		]) {
+			const flow = yardTreeToFlow(tree(program));
+			const group = flow.nodes.find((node) => node.type === "yardGroup");
+			if (!group) throw new Error("missing container");
+			expect(group.width).toBeGreaterThan(184);
+			expect(group.height).toBeGreaterThan(68);
+			expect(
+				flow.edges.some((edge) => edge.source === group.id && edge.target === "trace:result"),
+			).toBe(true);
+			const children = flow.nodes.filter((node) => node.parentId === group.id);
+			expect(children.every((node) => node.extent === "parent")).toBe(true);
+		}
+	});
+});

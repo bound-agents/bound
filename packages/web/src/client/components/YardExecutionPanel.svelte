@@ -54,6 +54,12 @@ const progressStatus = $derived(
 	`Yard execution${tree.phase === "started" ? "" : ` ${tree.phase}`}: ${counts.settled} of ${counts.total} nodes settled; ${counts.running} running; ${counts.failed} failed`,
 );
 $effect(() => {
+	if (selectedId && !flow.nodes.some((node) => node.id === selectedId)) {
+		selectedId = null;
+		triggerId = null;
+	}
+});
+$effect(() => {
 	const timer = setTimeout(() => {
 		announcedStatus = progressStatus;
 	}, 200);
