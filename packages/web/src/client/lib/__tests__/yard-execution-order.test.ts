@@ -402,3 +402,69 @@ describe("372d30ce Yard layout regression", () => {
 		expect(sequence.width).toBe(184 * 2 + 34 + 32 * 2);
 	});
 });
+
+describe("control-flow and lexical static topology", () => {
+	const labels = (program: string) =>
+		extractYardProgramTopology(program, "control").map((entry) =>
+			entry.node.kind === "tool" ? entry.node.name : entry.node.kind,
+		);
+
+	it("represents if/else yields as one conditional region", () => {
+		const nodes = extractYardProgramTopology(
+			`function* main() { if (ok) { yield tool("a", {}); } else { yield tool("b", {}); } }`,
+			"control",
+		);
+		expect(
+			nodes.filter(
+				(node) => node.node.kind === "tool" && node.node.name === "Conditional (dynamic)",
+			),
+		).toHaveLength(1);
+		expect(
+			nodes
+				.filter((node) => node.node.kind === "tool" && ["a", "b"].includes(node.node.name))
+				.every((node) => node.parentId !== "control:root"),
+		).toBe(true);
+	});
+
+	it("represents loop and try yields as dynamic regions", () => {
+		expect(labels(`function* main() { for (const x of xs) { yield tool("a", {}); } }`)).toContain(
+			"Loop (dynamic)",
+		);
+		expect(
+			labels(`function* main() { try { yield tool("a", {}); } catch { yield tool("b", {}); } }`),
+		).toContain("Try (dynamic)");
+	});
+
+	it("ignores yield-shaped text in comments and strings", () => {
+		const nodes = extractYardProgramTopology(
+			`function* main() { // yield tool("bad", {})\n const note = "yield tool('also bad', {})"; yield tool("good", {}); }`,
+			"control",
+		);
+		expect(nodes.map((node) => node.node)).toEqual(
+			expect.arrayContaining([{ kind: "tool", name: "good" }]),
+		);
+		expect(nodes.map((node) => node.node)).not.toEqual(
+			expect.arrayContaining([{ kind: "tool", name: "bad" }]),
+		);
+	});
+
+	it("resolves a lexical shadowing binding at its use site", () => {
+		expect(
+			labels(`function* main() { const t = tool("a", {}); { const t = tool("b", {}); yield t; } }`),
+		).toContain("b");
+	});
+
+	it("keeps unresolved yields distinct and unwraps parenthesized effects", () => {
+		const unresolved = extractYardProgramTopology(
+			"function* main() { yield first; yield second; }",
+			"control",
+		);
+		expect(
+			unresolved.filter(
+				(node) => node.node.kind === "tool" && node.node.name === "Dynamic effect region",
+			),
+		).toHaveLength(2);
+		expect(new Set(unresolved.map((node) => node.id)).size).toBe(unresolved.length);
+		expect(labels(`function* main() { yield (tool("wrapped", {})); }`)).toContain("wrapped");
+	});
+});

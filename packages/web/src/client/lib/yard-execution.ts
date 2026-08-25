@@ -420,10 +420,58 @@ export function extractYardProgramTopology(
 		});
 		i = open;
 	}
+	// Preserve offsets while hiding comments, strings, templates, and regex literals from
+	// the lightweight discovery passes below. Calls are scanned separately above.
+	const lexical = (() => {
+		const chars = program.split("");
+		const hide = (from: number, to: number) => {
+			for (let i = from; i <= to; i++) if (chars[i] !== "\n") chars[i] = " ";
+		};
+		for (let i = 0; i < program.length; i++) {
+			if (['"', "'", "`"].includes(program[i] ?? "")) {
+				const end = skipString(program, i);
+				hide(i, end);
+				i = end;
+				continue;
+			}
+			if (program[i] === "/" && (program[i + 1] === "/" || program[i + 1] === "*")) {
+				const end = skipComment(program, i);
+				hide(i, end);
+				i = end;
+				continue;
+			}
+			if (program[i] === "/") {
+				const before = program.slice(0, i).trimEnd().at(-1);
+				if (!before || "=(:,[!{;".includes(before)) {
+					let end = i + 1;
+					for (; end < program.length; end++) {
+						if (program[end] === "\\") {
+							end++;
+							continue;
+						}
+						if (program[end] === "/") break;
+					}
+					hide(i, end);
+					i = end;
+				}
+			}
+		}
+		return chars.join("");
+	})();
 	const containers = new Set(["all", "sequence"]);
-	const assignmentSources = new Map<string, { source: string; start: number }>();
+	const assignmentSources = new Map<
+		string,
+		Array<{ source: string; start: number; scopeStart: number; scopeEnd: number }>
+	>();
 	const assignmentPattern = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/g;
-	for (const match of program.matchAll(assignmentPattern)) {
+	const scopeFor = (position: number) => {
+		const opening = lexical.lastIndexOf("{", position);
+		return {
+			scopeStart: opening,
+			scopeEnd: opening < 0 ? lexical.length : balanced(lexical, opening, "{", "}"),
+		};
+	};
+	for (const match of lexical.matchAll(assignmentPattern)) {
 		const name = match[1];
 		if (!name || match.index === undefined) continue;
 		const start = match.index + match[0].length;
@@ -437,7 +485,10 @@ export function extractYardProgramTopology(
 							if (program[cursor] === ";" || program[cursor] === "\n") break;
 						return cursor;
 					})();
-		assignmentSources.set(name, { source: program.slice(start, end), start });
+		const scope = scopeFor(match.index);
+		const bindings = assignmentSources.get(name) ?? [];
+		bindings.push({ source: program.slice(start, end), start, ...scope });
+		assignmentSources.set(name, bindings);
 	}
 	const callAt = (position: number) => calls.find((call) => call.start === position);
 	const firstPosition = (source: string, base: number) => {
@@ -481,31 +532,101 @@ export function extractYardProgramTopology(
 		const argumentBase = container.open + 1;
 		let members = callsInArray(argument, argumentBase);
 		if (!members && /^[A-Za-z_$][\w$]*$/.test(argument.trim())) {
-			const assigned = assignmentSources.get(argument.trim());
+			const assigned = assignmentSources
+				.get(argument.trim())
+				?.filter(
+					(binding) =>
+						binding.start < container.start &&
+						binding.scopeStart <= container.start &&
+						binding.scopeEnd >= container.start,
+				)
+				.at(-1);
 			if (assigned) members = callsInArray(assigned.source, assigned.start);
 		}
 		adopted.set(container.id, members ?? [dynamicCall(container)]);
 	}
 	const resolvedYield = (expression: string, base: number): Call | undefined => {
-		const position = firstPosition(expression, base);
+		let value = expression.trim();
+		let valueBase = base + expression.indexOf(value);
+		while (value.startsWith("(") && value.endsWith(")")) {
+			value = value.slice(1, -1).trim();
+			valueBase = base + expression.indexOf(value);
+		}
+		const position = firstPosition(value, valueBase);
 		const direct = callAt(position);
 		if (direct) return direct;
-		if (!/^[A-Za-z_$][\w$]*$/.test(expression.trim())) return undefined;
-		const assigned = assignmentSources.get(expression.trim());
+		if (!/^[A-Za-z_$][\w$]*$/.test(value)) return undefined;
+		const assigned = assignmentSources
+			.get(value)
+			?.filter(
+				(binding) => binding.start < base && binding.scopeStart <= base && binding.scopeEnd >= base,
+			)
+			.at(-1);
 		return assigned ? callAt(firstPosition(assigned.source, assigned.start)) : undefined;
 	};
 	const yielded: Call[] = [];
-	const yieldPattern = /\byield\b/g;
-	for (const match of program.matchAll(yieldPattern)) {
+	const yieldRegions = new Map<string, Call>();
+	const controlFor = (position: number): { key: string; label: string } | undefined => {
+		const before = lexical.slice(0, position);
+		const controls: Array<[RegExp, string]> = [
+			[/\b(if|else)\b/g, "Conditional"],
+			[/\b(for|while)\b/g, "Loop"],
+			[/\b(try|catch|finally)\b/g, "Try"],
+		];
+		for (const [pattern, label] of controls) {
+			const matches = [...before.matchAll(pattern)];
+			const last = matches.at(-1);
+			if (last?.index !== undefined) {
+				const open = lexical.indexOf("{", last.index);
+				const close = open < 0 ? -1 : balanced(lexical, open, "{", "}");
+				if (open >= 0 && close >= position) {
+					const key =
+						label === "Conditional"
+							? `${label}:${before.lastIndexOf("if", last.index)}`
+							: `${label}:${last.index}`;
+					return { key, label };
+				}
+			}
+		}
+		return undefined;
+	};
+	for (const match of lexical.matchAll(/\byield\b/g)) {
 		if (match.index === undefined) continue;
 		let start = match.index + match[0].length;
-		while (/\s/.test(program[start] ?? "")) start++;
+		while (/\s/.test(lexical[start] ?? "")) start++;
 		let end = start;
-		for (; end < program.length; end++) {
-			if (program[end] === ";" || program[end] === "\n") break;
+		for (; end < lexical.length; end++) if (lexical[end] === ";" || lexical[end] === "\n") break;
+		const resolved = resolvedYield(program.slice(start, end), start) ?? {
+			kind: "dynamic",
+			start,
+			open: start,
+			end,
+			args: [],
+			id: `${runId}:dynamic:${match.index}`,
+			node: { kind: "tool", name: "Dynamic effect region" } as const,
+		};
+		const control = controlFor(match.index);
+		if (!control) {
+			yielded.push(resolved);
+			continue;
 		}
-		const resolved = resolvedYield(program.slice(start, end), start);
-		if (resolved) yielded.push(resolved);
+		let region = yieldRegions.get(control.key);
+		if (!region) {
+			region = {
+				kind: "dynamic",
+				start: match.index,
+				open: match.index,
+				end: match.index,
+				args: [],
+				id: `${runId}:region:${control.key}`,
+				node: { kind: "tool", name: `${control.label} (dynamic)` },
+			};
+			yieldRegions.set(control.key, region);
+			yielded.push(region);
+		}
+		const members = adopted.get(region.id) ?? [];
+		members.push(resolved);
+		adopted.set(region.id, members);
 	}
 	const included = new Map<string, Call>();
 	const include = (call: Call) => {
@@ -553,7 +674,7 @@ export function extractYardProgramTopology(
 			};
 		}),
 	];
-	if (selected.length === 0 && /\byield\b/.test(program))
+	if (selected.length === 0 && /\byield\b/.test(lexical))
 		nodes.push({
 			id: `${runId}:dynamic`,
 			parentId: root.id,
