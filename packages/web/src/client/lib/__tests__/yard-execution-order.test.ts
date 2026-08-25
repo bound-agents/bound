@@ -366,3 +366,39 @@ describe("variable-composed Yard topology", () => {
 		]);
 	});
 });
+
+const trace372d30ce = `function* main(input) {
+  const log = yield tool("boundless_bash", {});
+  const scoping = yield all([aux("reviewer", "review"), aux("scout", "survey")], { concurrency: 2, errors: "settled" });
+  const plan = yield sequence([tool("boundless_bash", {}), infer(input.planner_model, { prompt: "plan", schema: {} })]);
+  return { commits: log, plan: plan[1] };
+}`;
+
+function assertRenderedReducerParity(snapshot: YardTreeSnapshot) {
+	const flow = yardTreeToFlow(snapshot);
+	const rendered = flow.nodes.filter((node) => node.data.kind !== "result");
+	expect(rendered).toHaveLength(snapshot.nodes.length);
+	expect(new Set(rendered.map((node) => node.id))).toEqual(
+		new Set(snapshot.nodes.map((node) => node.id)),
+	);
+}
+
+describe("372d30ce Yard layout regression", () => {
+	it("keeps both duplicate-name tools and every reducer node in the rendered flow", () => {
+		const snapshot = tree(trace372d30ce, "completed");
+		const flow = yardTreeToFlow(snapshot);
+		const sequence = flow.nodes.find((node) => node.data.construct === "sequence");
+		if (!sequence) throw new Error("missing sequence");
+		expect(
+			flow.nodes.filter((node) => node.parentId === sequence.id).map((node) => node.data.label),
+		).toEqual(["boundless_bash", "infer (dynamic)"]);
+		assertRenderedReducerParity(snapshot);
+	});
+
+	it("sizes a two-child sequence from child widths, one gap, and horizontal padding", () => {
+		const flow = yardTreeToFlow(tree(trace372d30ce));
+		const sequence = flow.nodes.find((node) => node.data.construct === "sequence");
+		if (!sequence) throw new Error("missing sequence");
+		expect(sequence.width).toBe(184 * 2 + 34 + 32 * 2);
+	});
+});

@@ -431,6 +431,11 @@ function assertFlowIntegrity(
 ) {
 	const flow = yardTreeToFlow(tree);
 	const ids = new Set(flow.nodes.map((node) => node.id));
+	const rendered = flow.nodes.filter((node) => node.data.kind !== "result");
+	expect(rendered).toHaveLength(tree.nodes.length);
+	expect(new Set(rendered.map((node) => node.id))).toEqual(
+		new Set(tree.nodes.map((node) => node.id)),
+	);
 	expect(flow.edges.every((edge) => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
 	expect(flow.edges.filter((edge) => edge.target === `${tree.runId}:result`)).toHaveLength(1);
 	expect(new Set(flow.nodes.map((node) => node.id)).size).toBe(flow.nodes.length);
