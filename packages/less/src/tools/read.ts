@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { formatWithHashes } from "@bound/shared";
+import { checkDbRead } from "./db-guard";
 import { formatProvenance } from "./provenance";
 import type { ToolHandler, ToolResult } from "./types";
 
@@ -78,6 +79,10 @@ async function readToolImpl(
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
 
+	// System-DB guard (#207): reading the raw SQLite file works but races the
+	// WAL and returns bytes, not rows — advise toward `query` without blocking.
+	const dbNote = checkDbRead(file_path, cwd);
+
 	try {
 		const buffer = readFileSync(resolvedPath);
 
@@ -104,15 +109,13 @@ async function readToolImpl(
 				return result;
 			}
 
-			const result: ToolResult = {
-				content: [
-					provenance,
-					{
-						type: "text",
-						text: `Binary file: ${file_path} (${buffer.length} bytes)`,
-					},
-				],
-			};
+			const binaryBlocks: ToolResult["content"] = [provenance];
+			if (dbNote) binaryBlocks.push({ type: "text", text: dbNote });
+			binaryBlocks.push({
+				type: "text",
+				text: `Binary file: ${file_path} (${buffer.length} bytes)`,
+			});
+			const result: ToolResult = { content: binaryBlocks };
 			return result;
 		}
 
@@ -123,15 +126,11 @@ async function readToolImpl(
 		// addresses lines by these anchors instead of reproducing file text.
 		const hashedContent = formatWithHashes(content, offset ?? 1, limit);
 
-		const result: ToolResult = {
-			content: [
-				provenance,
-				{
-					type: "text",
-					text: hashedContent,
-				},
-			],
-		};
+		const blocks: ToolResult["content"] = [provenance];
+		if (dbNote) blocks.push({ type: "text", text: dbNote });
+		blocks.push({ type: "text", text: hashedContent });
+
+		const result: ToolResult = { content: blocks };
 		return result;
 	} catch (err) {
 		const error = err as NodeJS.ErrnoException;

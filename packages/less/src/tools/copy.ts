@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { checkDbRead, checkDbWrite } from "./db-guard";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -208,6 +209,18 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 	const sourcePath: string = args.source_path;
 	const targetPath: string = args.target_path;
 
+	// System-DB guard (#207): a satellite-target copy onto the bound database
+	// is a direct write that bypasses soft-deletion and sync triggers — block.
+	// A satellite-source copy OF the database is a read; advise toward `query`
+	// below without blocking.
+	if (target === "satellite") {
+		const dbDenied = checkDbWrite("boundless_copy", targetPath, cwd);
+		if (dbDenied) {
+			return errorResult(provenance, dbDenied);
+		}
+	}
+	const dbNote = source === "satellite" ? checkDbRead(sourcePath, cwd) : null;
+
 	const readResult = await readSource(source, sourcePath, cwd, deps.boundUrl);
 	if ("error" in readResult) {
 		return errorResult(provenance, `Error: ${readResult.error}`);
@@ -230,15 +243,13 @@ async function copyToolImpl(deps: CopyToolDeps, args: CopyArgs, cwd: string): Pr
 		return errorResult(provenance, `Error: ${writeResult.error}`);
 	}
 
-	return {
-		content: [
-			provenance,
-			{
-				type: "text",
-				text: `Copied ${writeResult.bytesWritten} bytes from ${source}:${sourcePath} to ${target}:${targetPath}`,
-			},
-		],
-	};
+	const blocks: ToolResult["content"] = [provenance];
+	if (dbNote) blocks.push({ type: "text", text: dbNote });
+	blocks.push({
+		type: "text",
+		text: `Copied ${writeResult.bytesWritten} bytes from ${source}:${sourcePath} to ${target}:${targetPath}`,
+	});
+	return { content: blocks };
 }
 
 /** Default-bound handler used by tests — production code routes through createCopyTool. */
