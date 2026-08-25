@@ -312,3 +312,57 @@ describe("container geometry contracts", () => {
 		}
 	});
 });
+
+describe("variable-composed Yard topology", () => {
+	const variableComposed = `function* main(input) {
+		const jobs = [
+			aux("scout", "instruction A"),
+			aux("scout", "instruction B"),
+			aux("scout", "instruction C"),
+		];
+		return yield all(jobs, { concurrency: 3, errors: "settled" });
+	}`;
+
+	it("adopts a resolved effect array into its yielded all container without stray chain steps", () => {
+		const snapshot = tree(variableComposed);
+		const flow = yardTreeToFlow(snapshot);
+		const all = flow.nodes.find((node) => node.data.construct === "all");
+		if (!all) throw new Error("missing all container");
+		const children = flow.nodes.filter((node) => node.parentId === all.id);
+		const topLevel = flow.nodes
+			.filter((node) => !node.parentId)
+			.sort((a, b) => a.position.x - b.position.x)
+			.map((node) => node.data.label);
+
+		expect(topLevel).toEqual(["Yard run", "All", "Result"]);
+		expect(children.map((node) => node.data.label)).toEqual([
+			"aux: scout",
+			"aux: scout",
+			"aux: scout",
+		]);
+		expect(all.data.parallelCount).toBe(3);
+		expect(flow.edges.filter((edge) => edge.target === "trace:result")).toHaveLength(1);
+	});
+
+	it("renders a dynamic placeholder when a yielded all argument is not statically resolvable", () => {
+		const flow = yardTreeToFlow(
+			tree("function* main() { return yield all(parts.map(([name, i]) => aux(name, i))); }"),
+		);
+		const all = flow.nodes.find((node) => node.data.construct === "all");
+		if (!all) throw new Error("missing all container");
+		const children = flow.nodes.filter((node) => node.parentId === all.id);
+
+		expect(children).toHaveLength(1);
+		expect(children[0]?.data.label).toBe("dynamic ×?");
+		expect(all.data.parallelCount).toBe(1);
+	});
+
+	it("resolves a trivially assigned effect yielded by identifier", () => {
+		const flow = yardTreeToFlow(tree(`function* main() { const t = tool("x", {}); yield t; }`));
+		expect(flow.nodes.filter((node) => !node.parentId).map((node) => node.data.label)).toEqual([
+			"Yard run",
+			"x",
+			"Result",
+		]);
+	});
+});

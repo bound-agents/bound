@@ -278,6 +278,7 @@ export function extractYardProgramTopology(
 		kind: string;
 		start: number;
 		end: number;
+		open: number;
 		args: string[];
 		id: string;
 		node: YardExecutionNode;
@@ -407,43 +408,140 @@ export function extractYardProgramTopology(
 						: kind === "yard"
 							? ({ kind: "run", depth: 1 } as const)
 							: ({ kind: "tool", name: kind } as const);
-		calls.push({ kind, start: i, end, args, id: `${runId}:static:${++sequence}`, node, detail });
+		calls.push({
+			kind,
+			start: i,
+			open,
+			end,
+			args,
+			id: `${runId}:static:${++sequence}`,
+			node,
+			detail,
+		});
 		i = open;
 	}
 	const containers = new Set(["all", "sequence"]);
-	const parentFor = (call: Call) =>
-		calls
-			.filter(
-				(candidate) =>
-					(containers.has(candidate.kind) || candidate.kind === "yard") &&
-					candidate.start < call.start &&
-					candidate.end >= call.end,
-			)
-			.sort((a, b) => a.end - b.end)[0];
-	const directChildren = (parent: Call | undefined) =>
-		calls.filter((candidate) => parentFor(candidate)?.id === parent?.id);
-	const topLevel = calls.filter((call) => !parentFor(call));
-	const executionParents = new Map<string, string | null>();
-	const chain = (members: Call[], preceding: string | null) => {
-		let previous = preceding;
-		for (const member of members) {
-			executionParents.set(member.id, previous);
-			previous = member.id;
-		}
+	const assignmentSources = new Map<string, { source: string; start: number }>();
+	const assignmentPattern = /\bconst\s+([A-Za-z_$][\w$]*)\s*=/g;
+	for (const match of program.matchAll(assignmentPattern)) {
+		const name = match[1];
+		if (!name || match.index === undefined) continue;
+		const start = match.index + match[0].length;
+		const valueStart = start + (program.slice(start).search(/\S/) || 0);
+		const end =
+			program[valueStart] === "["
+				? balanced(program, valueStart, "[", "]") + 1
+				: (() => {
+						let cursor = valueStart;
+						for (; cursor < program.length; cursor++)
+							if (program[cursor] === ";" || program[cursor] === "\n") break;
+						return cursor;
+					})();
+		assignmentSources.set(name, { source: program.slice(start, end), start });
+	}
+	const callAt = (position: number) => calls.find((call) => call.start === position);
+	const firstPosition = (source: string, base: number) => {
+		const offset = source.search(/\S/);
+		return offset < 0 ? -1 : base + offset;
 	};
-	chain(topLevel, root.id);
+	const callsInArray = (source: string, base: number): Call[] | undefined => {
+		const trimmed = source.trim();
+		if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return undefined;
+		const opening = source.indexOf("[");
+		const closing = source.lastIndexOf("]");
+		const body = source.slice(opening + 1, closing);
+		if (/\.map\s*\(|\.flatMap\s*\(|\.filter\s*\(|\.reduce\s*\(|\.\.\./.test(body)) return undefined;
+		const start = base + opening;
+		const end = base + closing;
+		const candidates = calls.filter(
+			(call) =>
+				call.start > start &&
+				call.end < end &&
+				["tool", "infer", "aux", "all", "sequence", "yard"].includes(call.kind),
+		);
+		return candidates.filter(
+			(call) =>
+				!candidates.some(
+					(other) => other !== call && other.start < call.start && other.end >= call.end,
+				),
+		);
+	};
+	const dynamicCall = (parent: Call): Call => ({
+		kind: "dynamic",
+		start: parent.end,
+		open: parent.end,
+		end: parent.end,
+		args: [],
+		id: `${parent.id}:dynamic`,
+		node: { kind: "tool", name: "Dynamic effect region" },
+	});
+	const adopted = new Map<string, Call[]>();
 	for (const container of calls.filter((call) => containers.has(call.kind))) {
-		const members = directChildren(container);
-		if (container.kind === "sequence") chain(members, null);
-		else for (const member of members) executionParents.set(member.id, null);
+		const argument = container.args[0] ?? "";
+		const argumentBase = container.open + 1;
+		let members = callsInArray(argument, argumentBase);
+		if (!members && /^[A-Za-z_$][\w$]*$/.test(argument.trim())) {
+			const assigned = assignmentSources.get(argument.trim());
+			if (assigned) members = callsInArray(assigned.source, assigned.start);
+		}
+		adopted.set(container.id, members ?? [dynamicCall(container)]);
+	}
+	const resolvedYield = (expression: string, base: number): Call | undefined => {
+		const position = firstPosition(expression, base);
+		const direct = callAt(position);
+		if (direct) return direct;
+		if (!/^[A-Za-z_$][\w$]*$/.test(expression.trim())) return undefined;
+		const assigned = assignmentSources.get(expression.trim());
+		return assigned ? callAt(firstPosition(assigned.source, assigned.start)) : undefined;
+	};
+	const yielded: Call[] = [];
+	const yieldPattern = /\byield\b/g;
+	for (const match of program.matchAll(yieldPattern)) {
+		if (match.index === undefined) continue;
+		let start = match.index + match[0].length;
+		while (/\s/.test(program[start] ?? "")) start++;
+		let end = start;
+		for (; end < program.length; end++) {
+			if (program[end] === ";" || program[end] === "\n") break;
+		}
+		const resolved = resolvedYield(program.slice(start, end), start);
+		if (resolved) yielded.push(resolved);
+	}
+	const included = new Map<string, Call>();
+	const include = (call: Call) => {
+		if (included.has(call.id)) return;
+		included.set(call.id, call);
+		for (const child of adopted.get(call.id) ?? []) include(child);
+	};
+	for (const call of yielded) include(call);
+	const selected = [...included.values()];
+	const parentFor = (call: Call) =>
+		[...adopted.entries()]
+			.map(([id, members]) => ({ id, members }))
+			.find(({ members }) => members.some((member) => member.id === call.id))?.id;
+	const executionParents = new Map<string, string | null>();
+	let previous = root.id;
+	for (const call of yielded) {
+		executionParents.set(call.id, previous);
+		previous = call.id;
+	}
+	for (const container of selected.filter((call) => containers.has(call.kind))) {
+		const members = adopted.get(container.id) ?? [];
+		if (container.kind === "sequence") {
+			let prior: string | null = null;
+			for (const member of members) {
+				executionParents.set(member.id, prior);
+				prior = member.id;
+			}
+		} else for (const member of members) executionParents.set(member.id, null);
 	}
 	const nodes = [
 		root,
-		...calls.map((call, index) => {
-			const parent = parentFor(call);
+		...selected.map((call, index) => {
+			const parentId = parentFor(call) ?? root.id;
 			return {
 				id: call.id,
-				parentId: parent?.id ?? root.id,
+				parentId,
 				node: call.node,
 				detail: call.detail,
 				construct: containers.has(call.kind) ? (call.kind as "all" | "sequence") : undefined,
@@ -455,7 +553,7 @@ export function extractYardProgramTopology(
 			};
 		}),
 	];
-	if (calls.length === 0 && /\byield\b/.test(program))
+	if (selected.length === 0 && /\byield\b/.test(program))
 		nodes.push({
 			id: `${runId}:dynamic`,
 			parentId: root.id,
