@@ -215,7 +215,8 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 	const lastWidth = (last ? size.get(last.id) : undefined)?.width ?? WIDTH;
 	const treePhase: YardFlowPhase =
 		tree.phase === "completed" ? "completed" : tree.phase === "failed" ? "failed" : "started";
-	const formatted = tree.resultPreview ? formatYardResult(tree.resultPreview) : undefined;
+	const formatted =
+		tree.resultPreview !== undefined ? formatYardResult(tree.resultPreview) : undefined;
 	nodes.push({
 		id: resultId,
 		type: "yard",

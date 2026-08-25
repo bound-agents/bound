@@ -9,6 +9,7 @@ import {
 	SvelteFlow,
 } from "@xyflow/svelte";
 import "@xyflow/svelte/dist/style.css";
+import { tick } from "svelte";
 import { type YardTreeSnapshot, yardProgress } from "../lib/yard-execution";
 import { yardTreeToFlow } from "../lib/yard-graph";
 import { formatYardInspectorValue, formatYardValue } from "../lib/yard-result";
@@ -33,15 +34,49 @@ const statusText = $derived(
 );
 const showMiniMap = $derived(flow.nodes.length > 8);
 let selectedId = $state<string | null>(null);
-let trigger = $state<HTMLElement | null>(null);
+let triggerId = $state<string | null>(null);
+let panel = $state<HTMLElement | null>(null);
+let announcedStatus = $state("");
+const inspectorId = (nodeId: string) => `yard-inspector-${tree.traceId}-${nodeId}`;
+const nodeTriggerId = (nodeId: string) => `yard-node-${tree.traceId}-${nodeId}`;
+const nodes = $derived(
+	flow.nodes.map((node) => ({
+		...node,
+		data: {
+			...node.data,
+			selected: node.id === selectedId,
+			inspectorId: inspectorId(node.id),
+			triggerId: nodeTriggerId(node.id),
+		},
+	})),
+);
+const progressStatus = $derived(
+	`Yard execution${tree.phase === "started" ? "" : ` ${tree.phase}`}: ${counts.settled} of ${counts.total} nodes settled; ${counts.running} running; ${counts.failed} failed`,
+);
+$effect(() => {
+	const timer = setTimeout(() => {
+		announcedStatus = progressStatus;
+	}, 200);
+	return () => clearTimeout(timer);
+});
+$effect(() => {
+	if (!selected) return;
+	const id = inspectorId(selected.id);
+	tick().then(() => {
+		const element = document.getElementById(id);
+		if (element && panel?.contains(element) && selectedId === selected.id) element.focus();
+	});
+});
 const selected = $derived(flow.nodes.find((node) => node.id === selectedId) ?? null);
 function closeInspector() {
 	selectedId = null;
-	trigger?.focus();
+	const element = triggerId ? document.getElementById(triggerId) : null;
+	if (element instanceof HTMLElement && panel?.contains(element)) element.focus();
+	triggerId = null;
 }
 function selectNode(event: { node: { id: string }; event?: Event }) {
-	trigger = event.event?.currentTarget instanceof HTMLElement ? event.event.currentTarget : null;
-	selectedId = event.node.id;
+	triggerId = nodeTriggerId(event.node.id);
+	selectedId = selectedId === event.node.id ? null : event.node.id;
 }
 const miniMapNodeColor = (node: Node) => {
 	switch ((node.data as { kind?: string }).kind) {
@@ -61,8 +96,7 @@ const miniMapNodeColor = (node: Node) => {
 };
 </script>
 
-<svelte:window onkeydown={(event) => event.key === "Escape" && selectedId && closeInspector()} />
-<section class="yard-execution-panel {tree.phase}" aria-labelledby={`yard-title-${tree.traceId}`} data-trace-id={tree.traceId}>
+<section bind:this={panel} class="yard-execution-panel {tree.phase}" onkeydown={(event) => event.key === "Escape" && selectedId && closeInspector()} aria-labelledby={`yard-title-${tree.traceId}`} data-trace-id={tree.traceId}>
 	<header>
 		<div class="title-group">
 			<span class="eyebrow" id={`yard-title-${tree.traceId}`}>{heading}</span>
@@ -70,21 +104,22 @@ const miniMapNodeColor = (node: Node) => {
 		</div>
 		<span class="phase-chip" aria-label={`Execution status: ${statusText}`}><span aria-hidden="true"></span>{statusText}</span>
 	</header>
-	<div class="progress" aria-live="polite" aria-atomic="true">
+	<div class="progress">
 		<span>{counts.settled}/{counts.total} nodes settled</span>
 		{#if counts.running}<span>{counts.running} running</span>{/if}
 		{#if counts.failed}<span class="failure-count">{counts.failed} failed</span>{/if}
 	</div>
+	<p class="sr-only" aria-live="polite" aria-atomic="true">{announcedStatus}</p>
 	<div class="flow-wrap">
-		<SvelteFlow id={`yard-${tree.traceId}`} nodeTypes={nodeTypes} nodes={flow.nodes as Node[]} edges={flow.edges as Edge[]} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={true} onnodeclick={selectNode} onpaneclick={() => selectedId && closeInspector()}>
+		<SvelteFlow id={`yard-${tree.traceId}`} nodeTypes={nodeTypes} nodes={nodes as Node[]} edges={flow.edges as Edge[]} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} elementsSelectable={true} onnodeclick={selectNode} onpaneclick={() => selectedId && closeInspector()}>
 			<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
 			<Controls showInteractive={false} />
 			{#if showMiniMap}<MiniMap pannable zoomable nodeColor={miniMapNodeColor} aria-label="Yard graph overview" />{/if}
 		</SvelteFlow>
 	</div>
 	{#if selected}
-		<aside class="yard-inspector" role="dialog" aria-label={`${selected.data.label} details`} tabindex="-1">
-			<div class="inspector-heading"><strong>{selected.data.label}</strong><button onclick={closeInspector} aria-label="Close details">×</button></div>
+		<aside id={inspectorId(selected.id)} class="yard-inspector" aria-labelledby={`${inspectorId(selected.id)}-heading`} tabindex="-1">
+			<div class="inspector-heading"><strong id={`${inspectorId(selected.id)}-heading`}>{selected.data.label}</strong><button onclick={closeInspector} aria-label="Close details">×</button></div>
 			<p>{selected.data.kind} · {selected.data.phase}</p>
 			{#if selected.data.detail}
 				{#each Object.entries(selected.data.detail) as [key, value]}
@@ -98,9 +133,6 @@ const miniMapNodeColor = (node: Node) => {
 			{:else if selected.data.summary}<p>{selected.data.summary}</p>{:else}<p>This region is dynamic or has no additional static detail.</p>{/if}
 		</aside>
 	{/if}
-	<ul class="sr-only" aria-label="Yard execution nodes">
-		{#each flow.nodes as node}<li>{node.data.label}: {node.data.phase}{node.data.summary ? ` — ${node.data.summary}` : ""}</li>{/each}
-	</ul>
 	{#if result}
 		<footer>
 			<details>

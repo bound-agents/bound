@@ -98,4 +98,19 @@ describe("Yard execution-order topology", () => {
 			children.length,
 		);
 	});
+
+	describe("result detail preservation", () => {
+		for (const [name, resultPreview, expected] of [
+			["an empty string", "", ""],
+			["serialized zero", "0", "0"],
+			["serialized false", "false", "false"],
+			["serialized null", "null", "null"],
+		] as const) {
+			it(`keeps ${name} in the Result node detail`, () => {
+				const flow = yardTreeToFlow({ ...tree(tonight, "completed"), resultPreview });
+				const result = flow.nodes.find((node) => node.data.kind === "result");
+				expect(result?.data.detail).toMatchObject({ result: expected });
+			});
+		}
+	});
 });
