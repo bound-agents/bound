@@ -63,6 +63,18 @@ function unwrapYardResultEnvelope(value: unknown): unknown {
 	return value.result;
 }
 
+function unwrapTextContentBlocks(value: unknown): unknown {
+	if (
+		!Array.isArray(value) ||
+		value.length === 0 ||
+		!value.every(
+			(block) => isRecord(block) && block.type === "text" && typeof block.text === "string",
+		)
+	)
+		return value;
+	return value.map((block) => (block as { text: string }).text).join("\n");
+}
+
 function parseNestedJsonString(value: unknown): unknown {
 	if (typeof value !== "string") return value;
 	try {
@@ -72,12 +84,22 @@ function parseNestedJsonString(value: unknown): unknown {
 	}
 }
 
+/** Resolves persistence wrappers before classifying and rendering one presentation value. */
+function unwrapPersistedYardResult(value: unknown): unknown {
+	let current = value;
+	for (let i = 0; i < 4; i++) {
+		const next = parseNestedJsonString(unwrapYardResultEnvelope(unwrapTextContentBlocks(current)));
+		if (next === current) return current;
+		current = next;
+	}
+	return current;
+}
+
 /** Formats raw persisted result content for disclosure without changing the persisted value. */
 export function formatYardResult(raw: string): FormattedYardResult {
 	const bytes = new TextEncoder().encode(raw).byteLength;
 	try {
-		const parsed = JSON.parse(raw);
-		const value = parseNestedJsonString(unwrapYardResultEnvelope(parsed));
+		const value = unwrapPersistedYardResult(JSON.parse(raw));
 		const sanitized = sanitizeYardResult(value);
 		return {
 			display: JSON.stringify(sanitized, null, 2),

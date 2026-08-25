@@ -52,10 +52,24 @@ describe("formatYardResult", () => {
 		});
 	});
 
-	it("renders a JSON value encoded inside a result string as JSON", () => {
-		expect(formatYardResult('"{\\"done\\":true}"')).toEqual({
-			display: '{\n  "done": true\n}',
-			hint: "object · 1 key · 17 B",
+	it("unwraps a persisted tool-result envelope and pretty-prints the same JSON value it classifies", () => {
+		const raw = JSON.stringify({ result: { listing: "first\nsecond", status: "ok" } });
+
+		expect(formatYardResult(raw)).toEqual({
+			display: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
+			hint: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
+			isJson: true,
+		});
+	});
+
+	it("unwraps text blocks before parsing the contained persisted result", () => {
+		const raw = JSON.stringify([
+			{ type: "text", text: '{"result":{"listing":"first\\nsecond","status":"ok"}}' },
+		]);
+
+		expect(formatYardResult(raw)).toMatchObject({
+			display: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
+			hint: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
 			isJson: true,
 		});
 	});

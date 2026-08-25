@@ -262,6 +262,24 @@ export function extractYardProgramTopology(
 		}
 		return program.length;
 	};
+	const closeObject = (source: string): number => {
+		let depth = 0;
+		let quote = "";
+		for (let i = 0; i < source.length; i++) {
+			const char = source[i] ?? "";
+			if (quote) {
+				if (char === quote && (source[i - 1] ?? "") !== "\\") quote = "";
+				continue;
+			}
+			if (char === '"' || char === "'" || char === "`") {
+				quote = char;
+				continue;
+			}
+			if (char === "{") depth++;
+			if (char === "}" && --depth === 0) return i;
+		}
+		return source.length;
+	};
 	const calls: Call[] = [];
 	let sequence = 0;
 	for (const match of program.matchAll(/\b(tool|infer|aux|all|sequence|yard)\s*\(/g)) {
@@ -274,21 +292,18 @@ export function extractYardProgramTopology(
 			.slice((body.match(/^\s*["'`][^"'`]*["'`]/)?.[0] ?? "").length)
 			.replace(/^\s*,\s*/, "");
 		const quotedSecond = rest.match(/^["'`]([^"'`]*)["'`]/)?.[1];
-		const bounded = (value: string | undefined) => value?.slice(0, 200);
 		const detail =
 			kind === "tool"
 				? {
-						args: rest.startsWith("{")
-							? bounded(rest.slice(0, rest.indexOf("}") + 1 || rest.length))
-							: "dynamic",
+						args: rest.startsWith("{") ? rest.slice(0, closeObject(rest) + 1) : "dynamic",
 					}
 				: kind === "infer"
 					? {
-							prompt: bounded(rest.match(/prompt\s*:\s*["'`]([^"'`]*)["'`]/)?.[1]) ?? "dynamic",
+							prompt: rest.match(/prompt\s*:\s*["'`]([^"'`]*)["'`]/)?.[1] ?? "dynamic",
 							schema: /\bschema\s*:/.test(rest),
 						}
 					: kind === "aux"
-						? { instructions: bounded(quotedSecond) ?? "dynamic" }
+						? { instructions: quotedSecond ?? "dynamic" }
 						: undefined;
 		const node =
 			kind === "tool"
