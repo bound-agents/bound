@@ -10,6 +10,10 @@ export interface YardFlowData {
 	summary?: string;
 	detail?: Record<string, unknown>;
 	construct?: "all" | "sequence";
+	/** One-based source order for a child of a sequence container. */
+	ordinal?: number;
+	/** Number of simultaneously-dispatched children in an all container. */
+	parallelCount?: number;
 }
 export interface YardFlowNode {
 	id: string;
@@ -31,6 +35,7 @@ export interface YardFlowEdge {
 	animated?: boolean;
 	markerEnd: { type: "arrowclosed" };
 	class?: string;
+	zIndex?: number;
 }
 const WIDTH = 184;
 const HEIGHT = 68;
@@ -84,6 +89,7 @@ function edge(source: string, target: string, phase: YardFlowPhase): YardFlowEdg
 		animated: phase === "started",
 		markerEnd: { type: "arrowclosed" },
 		class: `yard-edge yard-edge-${phase}`,
+		zIndex: 1,
 	};
 }
 /** Maps program-order topology to a deterministic left-to-right SvelteFlow subflow graph. */
@@ -195,6 +201,15 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 						? { program: tree.programPreview }
 						: undefined),
 				construct: node.construct,
+				...(node.parentId && byId.get(node.parentId)?.construct === "sequence"
+					? {
+							ordinal:
+								(children.get(node.parentId)?.findIndex((child) => child.id === node.id) ?? -1) + 1,
+						}
+					: {}),
+				...(node.construct === "all"
+					? { parallelCount: (children.get(node.id) ?? []).length }
+					: {}),
 			},
 			...(node.parentId && byId.get(node.parentId)?.construct
 				? { parentId: node.parentId, extent: "parent" as const }

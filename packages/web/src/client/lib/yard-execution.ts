@@ -88,7 +88,7 @@ function isRootEvent(event: YardExecutionEvent): boolean {
 	return event.node.kind === "run" && event.node_id === event.run_id && event.parent_id === null;
 }
 
-function effectMatches(node: YardNodeState, event: YardExecutionEvent): boolean {
+function effectMatches(node: YardNodeState, event: Pick<YardExecutionEvent, "node">): boolean {
 	return (
 		node.node.kind === event.node.kind &&
 		(node.node.kind !== "tool" ||
@@ -488,6 +488,52 @@ export function reconstructCompletedYardExecutions(
 	return completed;
 }
 
+/**
+ * Replaces an incomplete live replay with program-derived stable ids, carrying the
+ * lifecycle state over by effect identity. This makes an arriving persisted program
+ * improve a live card without making nodes jump to new runtime ids.
+ */
+function enrichLiveTopology(tree: YardTreeSnapshot, program: string): YardTreeSnapshot {
+	const staticNodes = extractYardProgramTopology(program, tree.runId);
+	const nodes = new Map(staticNodes.map((node) => [node.id, node]));
+	const runtimeToStatic = new Map<string, string>();
+	for (const runtime of tree.nodes) {
+		const target =
+			(runtime.node.kind === "run" && runtime.parentId === null
+				? staticNodes.find((node) => node.node.kind === "run" && node.parentId === null)
+				: staticNodes.find(
+						(node) => node.phase === "unknown" && effectMatches(node, { node: runtime.node }),
+					)) ?? undefined;
+		if (!target) continue;
+		runtimeToStatic.set(runtime.id, target.id);
+		nodes.set(target.id, {
+			...target,
+			phase: runtime.phase,
+			seq: runtime.seq,
+			startSeq: target.startSeq,
+			summary: runtime.summary ?? target.summary,
+			startedAt: runtime.startedAt,
+			finishedAt: runtime.finishedAt,
+			runtimeId: runtime.runtimeId,
+		});
+	}
+	// Preserve dynamic runtime regions the tolerant extractor cannot prove statically.
+	for (const runtime of tree.nodes) {
+		if (runtimeToStatic.has(runtime.id)) continue;
+		nodes.set(runtime.id, {
+			...runtime,
+			parentId: runtime.parentId
+				? (runtimeToStatic.get(runtime.parentId) ?? `${tree.runId}:root`)
+				: null,
+		});
+	}
+	return {
+		...tree,
+		programPreview: program,
+		nodes: snapshotNodes(nodes),
+	};
+}
+
 /** Message-derived terminal topology supersedes transient trace state for that run. */
 export function reconcileYardExecutions(
 	state: YardExecutionState,
@@ -520,15 +566,7 @@ export function reconcileYardExecutions(
 		}
 		const program = tree.toolCallId ? programsByCallId.get(tree.toolCallId) : undefined;
 		if (!program || tree.programPreview === program) continue;
-		live.set(traceId, {
-			...tree,
-			programPreview: program,
-			nodes: tree.nodes.map((node) =>
-				node.node.kind === "run" && node.parentId === null
-					? { ...node, detail: { ...node.detail, program } }
-					: node,
-			),
-		});
+		live.set(traceId, enrichLiveTopology(tree, program));
 		changed = true;
 	}
 	if (reconstructed.length === 0 && !changed) return state;
