@@ -53,7 +53,9 @@ const labelFor = (node: YardTreeSnapshot["nodes"][number]) =>
 				? "Yard run"
 				: `Nested Yard (${node.node.depth})`
 			: node.node.kind === "tool"
-				? node.node.name
+				? /dynamic effect region/i.test(node.node.name)
+					? "dynamic ×?"
+					: node.node.name
 				: node.node.model;
 const kindFor = (node: YardTreeSnapshot["nodes"][number]): YardFlowKind =>
 	node.construct

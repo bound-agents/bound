@@ -721,3 +721,52 @@ describe("static Yard topology lifecycle matching", () => {
 		);
 	});
 });
+
+describe("variable-composed static topology lifecycle matching", () => {
+	it("binds replayed aux runtime events to children adopted from a yielded all variable", () => {
+		const program = `function* main() {
+			const jobs = [aux("scout", "A"), aux("scout", "B"), aux("scout", "C")];
+			return yield all(jobs, { concurrency: 3, errors: "settled" });
+		}`;
+		let state = reduceYardExecution(
+			EMPTY_YARD_STATE,
+			event({ program_preview: program, node_id: "root", run_id: "root" }),
+		);
+		state = reduceYardExecution(
+			state,
+			event({
+				seq: 2,
+				node_id: "runtime-all",
+				parent_id: "root",
+				node: { kind: "tool", name: "all" },
+			}),
+		);
+		for (const [seq, node_id] of [
+			[3, "runtime-scout-1"],
+			[4, "runtime-scout-2"],
+			[5, "runtime-scout-3"],
+		] as const) {
+			state = reduceYardExecution(
+				state,
+				event({
+					seq,
+					node_id,
+					parent_id: "runtime-all",
+					node: { kind: "tool", name: "aux:scout" },
+				}),
+			);
+		}
+		const snapshot = state.live.get("trace-1");
+		if (!snapshot) throw new Error("missing tree");
+		const all = snapshot.nodes.find((node) => node.construct === "all");
+		if (!all) throw new Error("missing all");
+		const scouts = snapshot.nodes.filter((node) => node.parentId === all.id);
+
+		expect(scouts.map((node) => node.runtimeId)).toEqual([
+			"runtime-scout-1",
+			"runtime-scout-2",
+			"runtime-scout-3",
+		]);
+		assertFlowIntegrity(snapshot, true);
+	});
+});
