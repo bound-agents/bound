@@ -9,6 +9,9 @@ const yard = $derived(
 		construct?: "all" | "sequence";
 		phase: "unknown" | "started" | "completed" | "failed" | "settled";
 		summary?: string;
+		selected?: boolean;
+		inspectorId?: string;
+		triggerId?: string;
 	},
 );
 const kindIcon = $derived(
@@ -32,13 +35,13 @@ const statusText = $derived(
 
 {#if yard.kind === "group"}
 	<Handle type="target" position={Position.Left} aria-label="Input" />
-	<div class="yard-flow-group {yard.phase}" aria-label={`${yard.label}, ${statusText}`}>
+	<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-group {yard.phase}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
 		<span>{yard.label}</span><small>{statusText}</small>
-	</div>
+	</button>
 	<Handle type="source" position={Position.Right} aria-label="Output" />
 {:else}
 <Handle type="target" position={Position.Left} aria-label="Input" />
-<button class="yard-flow-node {yard.kind} {yard.phase}" aria-label={`${yard.label}, ${statusText}. Open details`} aria-expanded="false">
+<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-node {yard.kind} {yard.phase}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
 	<span class="rail" aria-hidden="true"></span>
 	<div class="node-row node-head">
 		<span class="kind-icon" aria-hidden="true">{kindIcon}</span>
@@ -51,7 +54,7 @@ const statusText = $derived(
 {/if}
 
 <style>
-	.yard-flow-group { --state: var(--idle); box-sizing: border-box; display: flex; align-items: flex-start; justify-content: space-between; width: 100%; height: 100%; padding: 7px 9px; border: 1px dashed color-mix(in srgb, var(--state) 60%, var(--line-4)); border-radius: 8px; background: color-mix(in srgb, var(--line-4) 10%, transparent); color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; pointer-events: none; }
+	.yard-flow-group { --state: var(--idle); box-sizing: border-box; display: flex; align-items: flex-start; justify-content: space-between; width: 100%; height: 100%; padding: 7px 9px; border: 1px dashed color-mix(in srgb, var(--state) 60%, var(--line-4)); border-radius: 8px; background: color-mix(in srgb, var(--line-4) 10%, transparent); color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase;  }
 	.yard-flow-group small { color: var(--state); font-size: 9px; }
 	.yard-flow-node {
 		--kind: var(--idle);
