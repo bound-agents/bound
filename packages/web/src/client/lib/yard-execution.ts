@@ -29,6 +29,8 @@ export interface YardNodeState {
 	construct?: "all" | "sequence";
 	/** Previous effect in the source-level execution chain. */
 	executionParentId?: string | null;
+	/** Canonical effect identity, kept separate from the display-oriented node label. */
+	effectKey?: string;
 	/** Runtime event id bound to this stable topology node. */
 	runtimeId?: string;
 }
@@ -88,19 +90,29 @@ function isRootEvent(event: YardExecutionEvent): boolean {
 	return event.node.kind === "run" && event.node_id === event.run_id && event.parent_id === null;
 }
 
-function effectMatches(node: YardNodeState, event: Pick<YardExecutionEvent, "node">): boolean {
+function effectKeyFor(node: YardExecutionNode): string {
+	switch (node.kind) {
+		case "tool": {
+			const aux = node.name.match(/^aux:\s*(.+)$/);
+			return aux ? `aux:${aux[1]}` : `tool:${node.name}`;
+		}
+		case "inference":
+			return `inference:${node.model}`;
+		case "run":
+			return `run:${node.depth}`;
+	}
+}
+
+/** Matches canonical identities, never presentation labels such as `aux: reviewer`. */
+export function effectMatches(
+	node: YardNodeState,
+	event: Pick<YardExecutionEvent, "node">,
+): boolean {
+	const staticKey = node.effectKey ?? effectKeyFor(node.node);
+	const runtimeKey = effectKeyFor(event.node);
 	return (
-		(node.construct === "all" || node.construct === "sequence"
-			? event.node.kind === "tool" && event.node.name === node.construct
-			: node.node.kind === event.node.kind) &&
-		(node.node.kind !== "tool" ||
-			event.node.kind !== "tool" ||
-			node.node.name === event.node.name ||
-			node.node.name === `aux: ${event.node.name}`) &&
-		(node.node.kind !== "inference" ||
-			event.node.kind !== "inference" ||
-			node.node.model === event.node.model ||
-			node.node.model === "infer (dynamic)")
+		(staticKey === runtimeKey || staticKey === "inference:infer (dynamic)") &&
+		(node.construct === undefined || runtimeKey === `tool:${node.construct}`)
 	);
 }
 
@@ -143,6 +155,7 @@ function fold(
 			finishedAt: event.finished_at ?? existing?.finishedAt,
 			detail: existing?.detail,
 			construct: existing?.construct,
+			effectKey: existing?.effectKey,
 			executionParentId: existing?.executionParentId,
 			runtimeId: event.node_id,
 		});
@@ -258,6 +271,7 @@ export function extractYardProgramTopology(
 		startSeq: 0,
 		executionParentId: null,
 		detail: program ? { program } : undefined,
+		effectKey: effectKeyFor({ kind: "run", depth: 0 }),
 	};
 	if (!program) return [root];
 	type Call = {
@@ -436,6 +450,7 @@ export function extractYardProgramTopology(
 				phase: "unknown" as const,
 				seq: index + 1,
 				startSeq: index + 1,
+				effectKey: effectKeyFor(call.node),
 				executionParentId: executionParents.get(call.id) ?? null,
 			};
 		}),
@@ -448,6 +463,7 @@ export function extractYardProgramTopology(
 			phase: "unknown",
 			seq: 1,
 			startSeq: 1,
+			effectKey: effectKeyFor({ kind: "tool", name: "Dynamic effect region" }),
 			executionParentId: root.id,
 		});
 	return nodes;

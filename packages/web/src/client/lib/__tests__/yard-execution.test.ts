@@ -425,12 +425,22 @@ describe("lexically safe Yard topology extraction", () => {
 	});
 });
 
-function assertFlowIntegrity(tree: import("../yard-execution").YardTreeSnapshot) {
+function assertFlowIntegrity(
+	tree: import("../yard-execution").YardTreeSnapshot,
+	staticOnly = false,
+) {
 	const flow = yardTreeToFlow(tree);
 	const ids = new Set(flow.nodes.map((node) => node.id));
 	expect(flow.edges.every((edge) => ids.has(edge.source) && ids.has(edge.target))).toBe(true);
 	expect(flow.edges.filter((edge) => edge.target === `${tree.runId}:result`)).toHaveLength(1);
 	expect(new Set(flow.nodes.map((node) => node.id)).size).toBe(flow.nodes.length);
+	if (staticOnly) {
+		const staticIds = new Set(
+			extractYardProgramTopology(tree.programPreview, tree.runId).map((node) => node.id),
+		);
+		staticIds.add(`${tree.runId}:result`);
+		expect(flow.nodes.every((node) => staticIds.has(node.id))).toBe(true);
+	}
 }
 
 describe("static Yard topology lifecycle matching", () => {
@@ -505,6 +515,110 @@ describe("static Yard topology lifecycle matching", () => {
 			);
 		}
 	});
+	it("normalizes aux names for static lifecycle matching without conflating identities", async () => {
+		const { effectMatches } = await import("../yard-execution");
+		const staticNodes = extractYardProgramTopology(
+			`function* main() { yield all([aux("reviewer", "review"), aux("scout", "survey")]); }`,
+			"keys",
+		);
+		const reviewer = staticNodes.find(
+			(node) => node.node.kind === "tool" && node.node.name === "aux: reviewer",
+		);
+		const scout = staticNodes.find(
+			(node) => node.node.kind === "tool" && node.node.name === "aux: scout",
+		);
+		if (!reviewer || !scout) throw new Error("missing static aux nodes");
+		const runtime = { node: { kind: "tool" as const, name: "aux:reviewer" } };
+		expect(effectMatches(reviewer, runtime)).toBe(true);
+		expect(effectMatches(scout, runtime)).toBe(false);
+	});
+
+	it("replays the live aux trace against the static skeleton without runtime duplicates", () => {
+		const program = `function* main(input) {
+		yield tool("boundless_bash", { command: "git status" });
+		yield all([aux("reviewer", "review first"), aux("reviewer", "review second")]);
+		return yield sequence([tool("boundless_read", { file_path: "x" }), infer(input.model, { prompt: "summarize" })]);
+	}`;
+		const events = [
+			event({ program_preview: program, node_id: "root-live", run_id: "root-live" }),
+			event({
+				seq: 2,
+				node_id: "runtime-tool",
+				parent_id: "root-live",
+				node: { kind: "tool", name: "boundless_bash" },
+			}),
+			event({
+				seq: 3,
+				phase: "completed",
+				node_id: "runtime-tool",
+				parent_id: "root-live",
+				node: { kind: "tool", name: "boundless_bash" },
+			}),
+			event({
+				seq: 4,
+				node_id: "runtime-all",
+				parent_id: "root-live",
+				node: { kind: "tool", name: "all" },
+			}),
+			event({
+				seq: 5,
+				node_id: "runtime-reviewer-1",
+				parent_id: "runtime-all",
+				node: { kind: "tool", name: "aux:reviewer" },
+			}),
+			event({
+				seq: 6,
+				node_id: "runtime-reviewer-2",
+				parent_id: "runtime-all",
+				node: { kind: "tool", name: "aux:reviewer" },
+			}),
+			event({
+				seq: 7,
+				phase: "completed",
+				node_id: "runtime-reviewer-1",
+				parent_id: "runtime-all",
+				node: { kind: "tool", name: "aux:reviewer" },
+			}),
+			event({
+				seq: 8,
+				node_id: "runtime-sequence",
+				parent_id: "root-live",
+				node: { kind: "tool", name: "sequence" },
+			}),
+			event({
+				seq: 9,
+				node_id: "runtime-infer",
+				parent_id: "runtime-sequence",
+				node: { kind: "inference", model: "gpt-5.6-sol" },
+			}),
+		];
+		let state = EMPTY_YARD_STATE;
+		let count = 0;
+		for (const next of events) {
+			state = reduceYardExecution(state, next);
+			const snapshot = state.live.get("trace-1");
+			if (!snapshot) throw new Error("missing live tree");
+			if (!count) count = snapshot.nodes.length;
+			expect(snapshot.nodes).toHaveLength(count);
+			assertFlowIntegrity(snapshot, true);
+		}
+		const snapshot = state.live.get("trace-1");
+		if (!snapshot) throw new Error("missing final tree");
+		const reviewers = snapshot.nodes.filter((node) => node.effectKey === "aux:reviewer");
+		expect(reviewers.map((node) => node.runtimeId)).toEqual([
+			"runtime-reviewer-1",
+			"runtime-reviewer-2",
+		]);
+		const flow = yardTreeToFlow(snapshot);
+		const chain = ["Yard run", "boundless_bash", "All", "Sequence", "Result"];
+		expect(
+			flow.nodes
+				.filter((node) => chain.includes(node.data.label) && !node.parentId)
+				.sort((a, b) => a.position.x - b.position.x)
+				.map((node) => node.data.label),
+		).toEqual(chain);
+	});
+
 	it("binds repeated identical aux effects in source order without runtime duplicates", () => {
 		const program = `function* main() { yield all([aux("reviewer", "one"), aux("reviewer", "two")]); }`;
 		let state = reduceYardExecution(
