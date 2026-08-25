@@ -586,6 +586,16 @@ export class BoundClient {
 	}
 
 	/**
+	 * Whole-life spend for one thread, from `GET /api/threads/:id/cost`.
+	 * Summed over the synced `turns` table locally on the spoke, so the number
+	 * is cluster-wide truth without a hub round-trip (#236).
+	 */
+	async getThreadCost(threadId: string): Promise<number> {
+		const data = await this.fetchJson<{ cost_usd: number }>(`/api/threads/${threadId}/cost`);
+		return data.cost_usd;
+	}
+
+	/**
 	 * Cluster-wide token/cost totals for a time range, from `GET /api/metrics`.
 	 * The spoke's web server aggregates the synced `turns` table locally, so
 	 * this answers for the whole cluster without a hub round-trip. Returns just

@@ -121,11 +121,14 @@ describe("useSessionHud cost refresh during Yard runs", () => {
 				fetches++;
 				return Promise.resolve({ cost_usd: fetches * 0.5 });
 			},
+			getThreadCost() {
+				return Promise.resolve(0.25);
+			},
 		} as unknown as BoundClient;
 
 		function Harness() {
 			const hud = useSessionHud(client, "thread-1", 0);
-			return React.createElement(Text, null, `cost:${hud.sessionCostUsd ?? "none"}`);
+			return React.createElement(Text, null, `cost:${hud.threadCostUsd ?? "none"}`);
 		}
 
 		const { lastFrame } = render(React.createElement(Harness));

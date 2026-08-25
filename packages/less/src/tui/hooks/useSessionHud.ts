@@ -3,12 +3,13 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * Session HUD state: live context-window pressure for the current thread plus
- * cluster-wide spend. Everything here is served by the spoke itself — the
- * context gauge rides the `context:debug` WS event the agent loop emits after
- * every turn (with `actualTotalTokens` already applied, so the number is the
- * provider-billed truth, not the local estimate), and the cost figures come
- * from `GET /api/metrics`, which aggregates the synced `turns` table locally.
- * No hub round-trip anywhere.
+ * spend. Everything here is served by the spoke itself — the context gauge
+ * rides the `context:debug` WS event the agent loop emits after every turn
+ * (with `actualTotalTokens` already applied, so the number is the
+ * provider-billed truth, not the local estimate), the today figure comes from
+ * `GET /api/metrics`, and the thread figure from `GET /api/threads/:id/cost`
+ * (#236) — both aggregate the synced `turns` table locally. No hub round-trip
+ * anywhere.
  */
 export interface SessionHudState {
 	/** Provider-reported tokens occupying the context window after the last turn. */
@@ -19,8 +20,8 @@ export interface SessionHudState {
 	contextPct: number | null;
 	/** Cluster-wide spend since local midnight (USD). */
 	todayCostUsd: number | null;
-	/** Cluster-wide spend since this TUI session started (USD). */
-	sessionCostUsd: number | null;
+	/** Whole-life spend of the current thread (USD), from all its turns (#236). */
+	threadCostUsd: number | null;
 	/**
 	 * Background (deferred, #76) tool calls in flight on this thread. Server-
 	 * recomputed on every change and seeded on subscribe, so this is state rather
@@ -35,7 +36,7 @@ const EMPTY: SessionHudState = {
 	contextWindow: null,
 	contextPct: null,
 	todayCostUsd: null,
-	sessionCostUsd: null,
+	threadCostUsd: null,
 	backgroundCount: 0,
 };
 
@@ -67,9 +68,6 @@ export function useSessionHud(
 		backgroundCount:
 			typeof client?.getBackgroundCount === "function" ? client.getBackgroundCount(threadId) : 0,
 	}));
-	// Session start is fixed at first mount — switching threads mid-session
-	// keeps the same "since you sat down" window.
-	const sessionStartRef = useRef(new Date());
 	const lastFetchRef = useRef(0);
 
 	// The thread we're gauging switches with /attach; keep the ref fresh so
@@ -81,7 +79,13 @@ export function useSessionHud(
 		threadIdRef.current = threadId;
 		const nextCount =
 			typeof client?.getBackgroundCount === "function" ? client.getBackgroundCount(threadId) : 0;
-		setState((s) => (s.backgroundCount === nextCount ? s : { ...s, backgroundCount: nextCount }));
+		// The cost figure belongs to the departed thread — blank it rather than
+		// show the wrong thread's spend until the next refresh lands.
+		setState((s) =>
+			s.backgroundCount === nextCount && s.threadCostUsd === null
+				? s
+				: { ...s, backgroundCount: nextCount, threadCostUsd: null },
+		);
 	}
 
 	useEffect(() => {
@@ -94,26 +98,29 @@ export function useSessionHud(
 		let disposed = false;
 
 		const refreshCost = (force = false) => {
-			// Older servers / partial test mocks may not carry getMetricsTotals.
+			// Older servers / partial test mocks may not carry these methods.
 			// The HUD is decoration — degrade to no cost segment rather than
 			// throwing inside a mount effect and unmounting the whole view (the
 			// .catch below only covers ASYNC rejections, not a synchronous
 			// TypeError from calling a missing method).
-			if (typeof client.getMetricsTotals !== "function") return;
+			if (
+				typeof client.getMetricsTotals !== "function" ||
+				typeof client.getThreadCost !== "function"
+			)
+				return;
 			const now = Date.now();
 			if (!force && now - lastFetchRef.current < costRefreshMinIntervalMs) return;
 			lastFetchRef.current = now;
-			const nowDate = new Date();
 			void Promise.all([
-				client.getMetricsTotals(localMidnight(), nowDate),
-				client.getMetricsTotals(sessionStartRef.current, nowDate),
+				client.getMetricsTotals(localMidnight(), new Date()),
+				client.getThreadCost(threadIdRef.current),
 			])
-				.then(([today, session]: [MetricsTokenTotals, MetricsTokenTotals]) => {
+				.then(([today, threadCost]: [MetricsTokenTotals, number]) => {
 					if (disposed) return;
 					setState((s) => ({
 						...s,
 						todayCostUsd: today.cost_usd,
-						sessionCostUsd: session.cost_usd,
+						threadCostUsd: threadCost,
 					}));
 				})
 				.catch(() => {
