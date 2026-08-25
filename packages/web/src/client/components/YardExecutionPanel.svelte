@@ -12,6 +12,7 @@ import "@xyflow/svelte/dist/style.css";
 import { type YardTreeSnapshot, yardProgress } from "../lib/yard-execution";
 import { yardTreeToFlow } from "../lib/yard-graph";
 import { formatYardResult } from "../lib/yard-result";
+import YardCodeBlock from "./YardCodeBlock.svelte";
 import YardFlowNode from "./YardFlowNode.svelte";
 
 const { tree }: { tree: YardTreeSnapshot } = $props();
@@ -79,7 +80,14 @@ const miniMapNodeColor = (node: Node) => {
 		<aside class="yard-inspector" role="dialog" aria-label={`${selected.data.label} details`} tabindex="-1">
 			<div class="inspector-heading"><strong>{selected.data.label}</strong><button onclick={closeInspector} aria-label="Close details">×</button></div>
 			<p>{selected.data.kind} · {selected.data.phase}</p>
-			{#if selected.data.detail}<pre>{JSON.stringify(selected.data.detail, null, 2)}</pre>{:else if selected.data.summary}<p>{selected.data.summary}</p>{:else}<p>This region is dynamic or has no additional static detail.</p>{/if}
+			{#if selected.data.detail}
+				{#each Object.entries(selected.data.detail) as [key, value]}
+					<div class="detail-field">
+						<strong>{key}</strong>
+						<YardCodeBlock code={typeof value === "string" ? value : JSON.stringify(value, null, 2)} lang={key === "program" ? "javascript" : "json"} />
+					</div>
+				{/each}
+			{:else if selected.data.summary}<p>{selected.data.summary}</p>{:else}<p>This region is dynamic or has no additional static detail.</p>{/if}
 		</aside>
 	{/if}
 	<ul class="sr-only" aria-label="Yard execution nodes">
@@ -89,7 +97,7 @@ const miniMapNodeColor = (node: Node) => {
 		<footer>
 			<details>
 				<summary><span class="result-title"><span class="disclosure-caret" aria-hidden="true">▸</span>Result</span><span class="result-hint">{result.hint}</span></summary>
-				<pre>{result.display}</pre>
+				<YardCodeBlock code={result.display} lang="json" />
 			</details>
 		</footer>
 	{/if}
@@ -111,7 +119,7 @@ const miniMapNodeColor = (node: Node) => {
 	.flow-wrap { height: clamp(240px, 38vw, 440px); width: 100%; }
 	footer { padding: 0; border-top: 1px solid var(--rule-soft); }
 	.yard-inspector { margin: 0; padding: 10px 12px; border-top: 1px solid var(--rule-soft); background: var(--paper-2); color: var(--ink-2); font: 11px/1.4 var(--font-mono); }
-	.inspector-heading { display: flex; justify-content: space-between; color: var(--ink); } .inspector-heading button { border: 1px solid var(--rule-soft); background: var(--paper); color: var(--ink); cursor: pointer; } .yard-inspector p { margin: 4px 0; } .yard-inspector pre { max-height: 160px; margin: 6px 0 0; overflow: auto; white-space: pre-wrap; }
+	.inspector-heading { display: flex; justify-content: space-between; color: var(--ink); } .inspector-heading button { border: 1px solid var(--rule-soft); background: var(--paper); color: var(--ink); cursor: pointer; } .yard-inspector p { margin: 4px 0; } .detail-field { margin-top: 10px; } .detail-field > strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 10px; text-transform: uppercase; }
 	details { min-width: 0; }
 	summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .07em; list-style: none; text-transform: uppercase; }
 	summary::-webkit-details-marker { display: none; }
@@ -120,7 +128,6 @@ const miniMapNodeColor = (node: Node) => {
 	details[open] .disclosure-caret { transform: rotate(90deg); }
 	summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 	.result-hint { overflow: hidden; font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
-	pre { max-height: min(420px, 50vh); margin: 0; padding: 0 12px 12px; overflow: auto; color: var(--ink-2); font: 11px/1.45 var(--font-mono); overflow-wrap: anywhere; white-space: pre-wrap; }
 	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 	:global(.yard-execution-panel .svelte-flow__node) { border: 0; border-radius: 6px; background: transparent; box-shadow: none; }
 	:global(.yard-execution-panel .svelte-flow__edge-path) { stroke: var(--idle); stroke-width: 1.4; }

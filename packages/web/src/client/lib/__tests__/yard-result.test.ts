@@ -31,17 +31,36 @@ describe("sanitizeYardResult", () => {
 });
 
 describe("formatYardResult", () => {
-	it("pretty-prints sanitized JSON with an informative type and size hint", () => {
+	it("unwraps a Yard result envelope before sanitizing, displaying, and classifying its return value", () => {
 		const formatted = formatYardResult('{"result":{"nested":[1,2],"redacted_data":"secret"}}');
 
 		expect(formatted).toEqual({
-			display: '{\n  "result": {\n    "nested": [\n      1,\n      2\n    ]\n  }\n}',
-			hint: "JSON object · 52 B",
+			display: '{\n  "nested": [\n    1,\n    2\n  ]\n}',
+			hint: "object · 1 key · 52 B",
 			isJson: true,
 		});
 	});
 
-	it("keeps malformed and non-JSON result text readable", () => {
+	it("reports object keys, array items, and raw byte size", () => {
+		expect(formatYardResult('{"alpha":1,"beta":2}')).toMatchObject({
+			hint: "object · 2 keys · 20 B",
+			isJson: true,
+		});
+		expect(formatYardResult('["a","b","c"]')).toMatchObject({
+			hint: "array · 3 items · 13 B",
+			isJson: true,
+		});
+	});
+
+	it("renders a JSON value encoded inside a result string as JSON", () => {
+		expect(formatYardResult('"{\\"done\\":true}"')).toEqual({
+			display: '{\n  "done": true\n}',
+			hint: "object · 1 key · 17 B",
+			isJson: true,
+		});
+	});
+
+	it("keeps genuinely unparseable result text readable", () => {
 		expect(formatYardResult("not valid {json")).toEqual({
 			display: "not valid {json",
 			hint: "plain text · 15 B",
