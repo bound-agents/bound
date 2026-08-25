@@ -17,7 +17,7 @@ import YardFlowNode from "./YardFlowNode.svelte";
 
 const { tree }: { tree: YardTreeSnapshot } = $props();
 const flow = $derived(yardTreeToFlow(tree));
-const nodeTypes = { yard: YardFlowNode };
+const nodeTypes = { yard: YardFlowNode, yardGroup: YardFlowNode };
 const heading = $derived(tree.phase === "started" ? "Yard execution" : `Yard ${tree.phase}`);
 const counts = $derived(yardProgress(tree));
 const result = $derived.by(() => {
@@ -53,6 +53,8 @@ const miniMapNodeColor = (node: Node) => {
 			return "var(--line-9)";
 		case "aux":
 			return "var(--line-7)";
+		case "group":
+			return "var(--line-4)";
 		default:
 			return "var(--idle)";
 	}

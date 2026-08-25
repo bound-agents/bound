@@ -25,6 +25,10 @@ export interface YardNodeState {
 	startedAt?: string;
 	finishedAt?: string;
 	detail?: YardNodeDetail;
+	/** Static container construct; lifecycle events bind only to leaf effects. */
+	construct?: "all" | "sequence";
+	/** Previous effect in the source-level execution chain. */
+	executionParentId?: string | null;
 	/** Runtime event id bound to this stable topology node. */
 	runtimeId?: string;
 }
@@ -242,6 +246,7 @@ export function extractYardProgramTopology(
 		phase: "unknown",
 		seq: 0,
 		startSeq: 0,
+		executionParentId: null,
 		detail: program ? { program } : undefined,
 	};
 	if (!program) return [root];
@@ -381,27 +386,47 @@ export function extractYardProgramTopology(
 		calls.push({ kind, start: i, end, args, id: `${runId}:static:${++sequence}`, node, detail });
 		i = open;
 	}
+	const containers = new Set(["all", "sequence"]);
+	const parentFor = (call: Call) =>
+		calls
+			.filter(
+				(candidate) =>
+					(containers.has(candidate.kind) || candidate.kind === "yard") &&
+					candidate.start < call.start &&
+					candidate.end >= call.end,
+			)
+			.sort((a, b) => a.end - b.end)[0];
+	const directChildren = (parent: Call | undefined) =>
+		calls.filter((candidate) => parentFor(candidate)?.id === parent?.id);
+	const topLevel = calls.filter((call) => !parentFor(call));
+	const executionParents = new Map<string, string | null>();
+	const chain = (members: Call[], preceding: string | null) => {
+		let previous = preceding;
+		for (const member of members) {
+			executionParents.set(member.id, previous);
+			previous = member.id;
+		}
+	};
+	chain(topLevel, root.id);
+	for (const container of calls.filter((call) => containers.has(call.kind))) {
+		const members = directChildren(container);
+		if (container.kind === "sequence") chain(members, null);
+		else for (const member of members) executionParents.set(member.id, null);
+	}
 	const nodes = [
 		root,
 		...calls.map((call, index) => {
-			const parent = calls
-				.filter(
-					(candidate) =>
-						(candidate.kind === "all" ||
-							candidate.kind === "sequence" ||
-							candidate.kind === "yard") &&
-						candidate.start < call.start &&
-						candidate.end >= call.end,
-				)
-				.sort((a, b) => a.end - b.end)[0];
+			const parent = parentFor(call);
 			return {
 				id: call.id,
 				parentId: parent?.id ?? root.id,
 				node: call.node,
 				detail: call.detail,
+				construct: containers.has(call.kind) ? (call.kind as "all" | "sequence") : undefined,
 				phase: "unknown" as const,
 				seq: index + 1,
 				startSeq: index + 1,
+				executionParentId: executionParents.get(call.id) ?? null,
 			};
 		}),
 	];
@@ -413,6 +438,7 @@ export function extractYardProgramTopology(
 			phase: "unknown",
 			seq: 1,
 			startSeq: 1,
+			executionParentId: root.id,
 		});
 	return nodes;
 }

@@ -118,7 +118,7 @@ for background work.
 
 A running `yard` call appears as a magenta-striped card below the transcript. It replaces the ordinary tool request and result rows for the whole invocation.
 
-The card shows the input and a live execution graph. Tool, auxiliary-agent, and inference effects branch from their parent; nested `yard()` runs form subtrees, and concurrent effects appear as siblings. State colors show whether an effect is running, done, or failed. A wide fan-out collapses into one row, with failed members retaining an indexed failure detail.
+The card shows the input and a live execution graph. The graph follows generator execution order from left to right: each yielded effect leads to the next. `all([...])` and `sequence([...])` render as labeled containers; `all` keeps its children parallel while `sequence` links its children in order. Nested `yard()` runs remain subtrees. State colors show whether an effect is running, done, or failed. A wide fan-out collapses into one row, with failed members retaining an indexed failure detail.
 
 While the run is live, the card includes a short syntax-highlighted program preview. Previews and graph height are bounded to the viewport. The processing indicator tracks the full invocation, including effect progress and elapsed time, and session cost refreshes as lifecycle events arrive.
 
