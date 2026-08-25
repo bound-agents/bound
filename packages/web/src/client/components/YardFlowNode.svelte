@@ -37,13 +37,13 @@ const statusText = $derived(
 
 {#if yard.kind === "group"}
 	<Handle type="target" position={Position.Left} aria-label="Input" />
-	<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-group {yard.phase}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
+	<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-group {yard.phase} {yard.selected ? "selected" : ""}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
 		<span class="group-label">{yard.label}{#if yard.parallelCount !== undefined}<em>parallel ×{yard.parallelCount}</em>{/if}</span><small>{statusText}</small>
 	</button>
 	<Handle type="source" position={Position.Right} aria-label="Output" />
 {:else}
 <Handle type="target" position={Position.Left} aria-label="Input" />
-<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-node {yard.kind} {yard.phase}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
+<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-node {yard.kind} {yard.phase} {yard.selected ? "selected" : ""}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
 	<span class="rail" aria-hidden="true"></span>
 	<div class="node-row node-head">
 		<span class="kind-icon" aria-hidden="true">{kindIcon}</span>
@@ -95,10 +95,14 @@ const statusText = $derived(
 	.unknown { --kind: var(--idle); }
 	.result { --kind: var(--line-2); border-style: double; background: color-mix(in srgb, var(--paper) 86%, var(--line-2)); }
 	.yard-flow-node:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+	/* Selection follows the inspector state, rather than SvelteFlow's transient hover state. */
+	.yard-flow-node.selected, .yard-flow-group.selected { outline: 2px solid var(--kind); outline-offset: 2px; box-shadow: 0 4px 0 color-mix(in srgb, var(--kind) 30%, transparent), 2px 3px 0 color-mix(in srgb, var(--ink) 14%, transparent); transform: scale(1.015); z-index: 2; }
+	.yard-flow-node.selected::after, .yard-flow-group.selected::after { position: absolute; top: -5px; right: -5px; width: 8px; height: 8px; border: 2px solid var(--paper); border-radius: 50%; background: var(--kind); content: ""; }
+	.yard-flow-group.selected { border-style: solid; }
 	.started { --state: var(--warn); }
 	.completed { --state: var(--ok); }
 	.settled { --state: var(--idle); }
 	.failed { --state: var(--err); }
 	:global(.svelte-flow__handle) { width: 7px; height: 7px; border: 1px solid var(--paper); background: var(--kind); }
-	@media (prefers-reduced-motion: reduce) { :global(.svelte-flow__handle) { transition: none; } }
+	@media (prefers-reduced-motion: reduce) { .yard-flow-node.selected, .yard-flow-group.selected { transform: none; } :global(.svelte-flow__handle) { transition: none; } }
 </style>
