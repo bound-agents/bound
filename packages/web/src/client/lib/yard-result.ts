@@ -47,20 +47,41 @@ function sizeHint(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function jsonType(value: unknown): string {
-	if (Array.isArray(value)) return "array";
-	if (value === null) return "null";
-	return typeof value === "object" ? "object" : typeof value;
+export function classifyYardResult(value: unknown, bytes: number): string {
+	if (Array.isArray(value)) {
+		return `array · ${value.length} ${value.length === 1 ? "item" : "items"} · ${sizeHint(bytes)}`;
+	}
+	if (isRecord(value)) {
+		const keyCount = Object.keys(value).length;
+		return `object · ${keyCount} ${keyCount === 1 ? "key" : "keys"} · ${sizeHint(bytes)}`;
+	}
+	return `${value === null ? "null" : typeof value} · ${sizeHint(bytes)}`;
+}
+
+function unwrapYardResultEnvelope(value: unknown): unknown {
+	if (!isRecord(value) || Object.keys(value).length !== 1 || !("result" in value)) return value;
+	return value.result;
+}
+
+function parseNestedJsonString(value: unknown): unknown {
+	if (typeof value !== "string") return value;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value;
+	}
 }
 
 /** Formats raw persisted result content for disclosure without changing the persisted value. */
 export function formatYardResult(raw: string): FormattedYardResult {
 	const bytes = new TextEncoder().encode(raw).byteLength;
 	try {
-		const value = JSON.parse(raw);
+		const parsed = JSON.parse(raw);
+		const value = parseNestedJsonString(unwrapYardResultEnvelope(parsed));
+		const sanitized = sanitizeYardResult(value);
 		return {
-			display: JSON.stringify(sanitizeYardResult(value), null, 2),
-			hint: `JSON ${jsonType(value)} · ${sizeHint(bytes)}`,
+			display: JSON.stringify(sanitized, null, 2),
+			hint: classifyYardResult(sanitized, bytes),
 			isJson: true,
 		};
 	} catch {

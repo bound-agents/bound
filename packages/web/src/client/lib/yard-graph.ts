@@ -123,7 +123,11 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 			kind: kindFor(node),
 			phase: node.phase,
 			summary: node.summary,
-			detail: node.detail,
+			detail:
+				node.detail ??
+				(node.node.kind === "run" && tree.programPreview
+					? { program: tree.programPreview }
+					: undefined),
 		},
 		class: `yard-node yard-node-${kindFor(node)} yard-node-${node.phase}`,
 	}));
