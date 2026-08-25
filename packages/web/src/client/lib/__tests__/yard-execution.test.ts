@@ -394,6 +394,14 @@ describe("yardTreeToFlow visual metadata and compact tree layout", () => {
 					seq: 3,
 					startSeq: 3,
 				},
+				{
+					id: "aux",
+					parentId: "root",
+					node: { kind: "tool", name: "aux: scout" } as const,
+					phase: "completed" as const,
+					seq: 4,
+					startSeq: 4,
+				},
 			],
 		};
 		const flow = yardTreeToFlow(tree);
@@ -402,9 +410,10 @@ describe("yardTreeToFlow visual metadata and compact tree layout", () => {
 		expect(byId.get("root")?.data).toMatchObject({ kind: "run", phase: "started" });
 		expect(byId.get("tool")?.data).toMatchObject({ kind: "tool", phase: "completed" });
 		expect(byId.get("infer")?.data).toMatchObject({ kind: "inference", phase: "failed" });
-		const toolY = byId.get("tool")?.position.y ?? Number.NaN;
-		const inferY = byId.get("infer")?.position.y ?? Number.NaN;
-		expect(byId.get("root")?.position.y).toBe((toolY + inferY) / 2);
+		expect(byId.get("aux")?.data).toMatchObject({ kind: "aux", phase: "completed" });
+		const firstChildY = byId.get("tool")?.position.y ?? Number.NaN;
+		const lastChildY = byId.get("aux")?.position.y ?? Number.NaN;
+		expect(byId.get("root")?.position.y).toBe((firstChildY + lastChildY) / 2);
 		expect(flow.edges).toEqual([
 			expect.objectContaining({
 				source: "root",
@@ -416,6 +425,12 @@ describe("yardTreeToFlow visual metadata and compact tree layout", () => {
 				source: "root",
 				target: "infer",
 				phase: "failed",
+				type: "smoothstep",
+			}),
+			expect.objectContaining({
+				source: "root",
+				target: "aux",
+				phase: "completed",
 				type: "smoothstep",
 			}),
 		]);
