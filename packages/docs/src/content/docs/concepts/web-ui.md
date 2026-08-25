@@ -130,4 +130,4 @@ operation](/bound/concepts/sync/) explains cluster-wide state visibility.
 
 ### Yard execution graphs
 
-Yard cards derive their topology from the persisted program source, then overlay live lifecycle state when the trace is still available. Each graph finishes at a **Result** terminus: every leaf converges there, making the return path explicit. Select a graph node to open its fixed inspector strip below the canvas. It presents literal source details only (dynamic calls remain marked dynamic) and sanitized result previews; Escape or a canvas click closes it.
+Yard cards derive their topology from the persisted program source, then overlay live lifecycle state when the trace is still available. Each graph follows the program's yield order and finishes at a **Result** terminus. `all([...])` and `sequence([...])` are nested containers: all members stay parallel, sequence members show their internal order. Select a graph node to open its fixed inspector strip below the canvas. It presents literal source details only (dynamic calls remain marked dynamic) and sanitized result previews; Escape or a canvas click closes it.

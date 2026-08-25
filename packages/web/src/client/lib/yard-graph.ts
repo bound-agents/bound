@@ -1,20 +1,25 @@
-import type { YardTreeSnapshot } from "./yard-execution";
+import type { YardNodePhase, YardTreeSnapshot } from "./yard-execution";
 import { formatYardResult } from "./yard-result";
 
-export type YardFlowKind = "run" | "tool" | "inference" | "aux" | "unknown" | "result";
-export type YardFlowPhase = "unknown" | "started" | "completed" | "failed" | "settled";
+export type YardFlowKind = "run" | "tool" | "inference" | "aux" | "unknown" | "result" | "group";
+export type YardFlowPhase = YardNodePhase;
 export interface YardFlowData {
 	label: string;
 	kind: YardFlowKind;
 	phase: YardFlowPhase;
 	summary?: string;
 	detail?: Record<string, unknown>;
+	construct?: "all" | "sequence";
 }
 export interface YardFlowNode {
 	id: string;
-	type: "yard";
+	type: "yard" | "yardGroup";
 	position: { x: number; y: number };
 	data: YardFlowData;
+	parentId?: string;
+	extent?: "parent";
+	width?: number;
+	height?: number;
 	class?: string;
 }
 export interface YardFlowEdge {
@@ -27,18 +32,47 @@ export interface YardFlowEdge {
 	markerEnd: { type: "arrowclosed" };
 	class?: string;
 }
-const COLUMN_WIDTH = 238;
-const ROW_HEIGHT = 112;
-const ROOT_GAP = 2;
-function labelFor(node: YardTreeSnapshot["nodes"][number]) {
-	if (node.node.kind === "run")
-		return node.node.depth === 0 ? "Yard run" : `Nested Yard (${node.node.depth})`;
-	return node.node.kind === "tool" ? node.node.name : node.node.model;
-}
-function kindFor(node: YardTreeSnapshot["nodes"][number]): YardFlowKind {
-	if (node.node.kind !== "tool") return node.node.kind;
-	if (/dynamic effect region/i.test(node.node.name)) return "unknown";
-	return node.node.name.startsWith("aux:") ? "aux" : "tool";
+const WIDTH = 184;
+const HEIGHT = 68;
+const GAP = 34;
+const COLUMN = 238;
+const PADDING = 32;
+const LABEL = 24;
+const labelFor = (node: YardTreeSnapshot["nodes"][number]) =>
+	node.construct
+		? node.construct === "all"
+			? "All"
+			: "Sequence"
+		: node.node.kind === "run"
+			? node.node.depth === 0
+				? "Yard run"
+				: `Nested Yard (${node.node.depth})`
+			: node.node.kind === "tool"
+				? node.node.name
+				: node.node.model;
+const kindFor = (node: YardTreeSnapshot["nodes"][number]): YardFlowKind =>
+	node.construct
+		? "group"
+		: node.node.kind !== "tool"
+			? node.node.kind
+			: /dynamic effect region/i.test(node.node.name)
+				? "unknown"
+				: node.node.name.startsWith("aux:")
+					? "aux"
+					: "tool";
+function aggregate(
+	node: YardTreeSnapshot["nodes"][number],
+	nodes: YardTreeSnapshot["nodes"],
+): YardFlowPhase {
+	if (!node.construct) return node.phase;
+	const children = nodes
+		.filter((child) => child.parentId === node.id)
+		.map((child) => aggregate(child, nodes));
+	if (children.includes("failed")) return "failed";
+	if (children.includes("started")) return "started";
+	if (children.length && children.every((phase) => ["completed", "settled"].includes(phase)))
+		return children.includes("completed") ? "completed" : "settled";
+	return node.phase;
 }
 function edge(source: string, target: string, phase: YardFlowPhase): YardFlowEdge {
 	return {
@@ -52,7 +86,7 @@ function edge(source: string, target: string, phase: YardFlowPhase): YardFlowEdg
 		class: `yard-edge yard-edge-${phase}`,
 	};
 }
-/** Maps a lifecycle snapshot to a stable, compact, cycle-safe SvelteFlow graph. */
+/** Maps program-order topology to a deterministic left-to-right SvelteFlow subflow graph. */
 export function yardTreeToFlow(tree: YardTreeSnapshot): {
 	nodes: YardFlowNode[];
 	edges: YardFlowEdge[];
@@ -60,99 +94,139 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 	const ordered = [...tree.nodes].sort(
 		(a, b) => a.startSeq - b.startSeq || a.id.localeCompare(b.id),
 	);
-	const byId = new Map(ordered.map((n) => [n.id, n]));
-	const parents = new Map<string, string>();
-	for (const node of ordered) {
-		if (!node.parentId || !byId.has(node.parentId)) continue;
-		const seen = new Set([node.id]);
-		let p: string | null = node.parentId;
-		let cyclic = false;
-		while (p) {
-			if (seen.has(p)) {
-				cyclic = true;
-				break;
-			}
-			seen.add(p);
-			p = byId.get(p)?.parentId ?? null;
+	const byId = new Map(ordered.map((node) => [node.id, node]));
+	const phase = new Map(ordered.map((node) => [node.id, aggregate(node, ordered)]));
+	const children = new Map<string, typeof ordered>();
+	for (const node of ordered)
+		if (node.parentId && byId.has(node.parentId))
+			children.set(node.parentId, [...(children.get(node.parentId) ?? []), node]);
+	for (const group of children.values())
+		group.sort((a, b) => a.startSeq - b.startSeq || a.id.localeCompare(b.id));
+	const size = new Map<string, { width: number; height: number }>();
+	const local = new Map<string, { x: number; y: number }>();
+	const measure = (node: (typeof ordered)[number]): { width: number; height: number } => {
+		const cached = size.get(node.id);
+		if (cached) return cached;
+		const kids = children.get(node.id) ?? [];
+		if (!node.construct || !kids.length) {
+			const value = { width: WIDTH, height: HEIGHT };
+			size.set(node.id, value);
+			return value;
 		}
-		if (!cyclic) parents.set(node.id, node.parentId);
-	}
-	const children = new Map<string, string[]>();
-	for (const [id, p] of parents) {
-		const a = children.get(p) ?? [];
-		a.push(id);
-		children.set(p, a);
-	}
-	for (const a of children.values())
-		a.sort(
-			(a, b) => (byId.get(a)?.startSeq ?? 0) - (byId.get(b)?.startSeq ?? 0) || a.localeCompare(b),
-		);
-	const roots = ordered.filter((n) => !parents.has(n.id)).map((n) => n.id);
-	const depth = new Map<string, number>();
-	const rows = new Map<string, number>();
-	let next = 0;
-	const visit = (id: string, level: number): number => {
-		const existingRow = rows.get(id);
-		if (existingRow !== undefined) return existingRow;
-		depth.set(id, level);
-		const kids = children.get(id) ?? [];
-		if (!kids.length) {
-			const row = next++;
-			rows.set(id, row);
-			return row;
+		const childSizes = kids.map(measure);
+		let width = WIDTH;
+		let height = HEIGHT;
+		if (node.construct === "all") {
+			width = Math.max(WIDTH, ...childSizes.map((s) => s.width)) + PADDING * 2;
+			height =
+				LABEL +
+				PADDING * 2 +
+				childSizes.reduce((n, s) => n + s.height, 0) +
+				GAP * Math.max(0, kids.length - 1);
+			let y = LABEL + PADDING;
+			kids.forEach((kid, i) => {
+				const kidSize = childSizes[i] ?? { width: WIDTH, height: HEIGHT };
+				if (i) y += GAP;
+				local.set(kid.id, { x: (width - kidSize.width) / 2, y });
+				y += kidSize.height;
+			});
+		} else {
+			width =
+				LABEL +
+				PADDING * 2 +
+				childSizes.reduce((n, s) => n + s.width, 0) +
+				GAP * Math.max(0, kids.length - 1);
+			height = Math.max(HEIGHT, ...childSizes.map((s) => s.height)) + LABEL + PADDING * 2;
+			let x = PADDING;
+			kids.forEach((kid, i) => {
+				const kidSize = childSizes[i] ?? { width: WIDTH, height: HEIGHT };
+				local.set(kid.id, {
+					x,
+					y: LABEL + PADDING + (height - LABEL - PADDING * 2 - kidSize.height) / 2,
+				});
+				x += kidSize.width + GAP;
+			});
 		}
-		const r = kids.map((k) => visit(k, level + 1));
-		const row = ((r[0] ?? 0) + (r.at(-1) ?? 0)) / 2;
-		rows.set(id, row);
-		return row;
+		const value = { width, height };
+		size.set(node.id, value);
+		return value;
 	};
-	roots.forEach((r, i) => {
-		if (i) next += ROOT_GAP;
-		visit(r, 0);
+	for (const node of ordered) measure(node);
+	const top =
+		ordered.filter((node) => node.node.kind === "run" && node.parentId === null)[0] ?? ordered[0];
+	// Top-level yields are the only nodes that advance the outer execution chain.
+	const execution = ordered.filter(
+		(node) => node.id === top?.id || (node.parentId === top?.id && node.executionParentId !== null),
+	);
+	if (execution.length <= 1 && top)
+		execution.push(...ordered.filter((node) => node.parentId === top.id));
+	const absolute = new Map<string, { x: number; y: number }>();
+	let x = 0;
+	for (const node of execution) {
+		const s = size.get(node.id) ?? { width: WIDTH, height: HEIGHT };
+		absolute.set(node.id, { x, y: 0 });
+		x += s.width + COLUMN;
+	}
+	const place = (node: (typeof ordered)[number], parent?: (typeof ordered)[number]) => {
+		if (parent) {
+			const origin = absolute.get(parent.id) ?? { x: 0, y: 0 };
+			const point = local.get(node.id) ?? { x: 0, y: 0 };
+			absolute.set(node.id, { x: origin.x + point.x, y: origin.y + point.y });
+		}
+		if (node.construct) for (const child of children.get(node.id) ?? []) place(child, node);
+	};
+	for (const node of execution) place(node);
+	for (const node of ordered) if (!absolute.has(node.id)) absolute.set(node.id, { x: 0, y: 0 });
+	const nodes: YardFlowNode[] = ordered.map((node) => {
+		const p = absolute.get(node.id) ?? { x: 0, y: 0 };
+		const isGroup = Boolean(node.construct);
+		return {
+			id: node.id,
+			type: isGroup ? "yardGroup" : "yard",
+			position: p,
+			data: {
+				label: labelFor(node),
+				kind: kindFor(node),
+				phase: phase.get(node.id) ?? "unknown",
+				summary: node.summary,
+				detail:
+					node.detail ??
+					(node.node.kind === "run" && tree.programPreview
+						? { program: tree.programPreview }
+						: undefined),
+				construct: node.construct,
+			},
+			...(node.parentId && byId.get(node.parentId)?.construct
+				? { parentId: node.parentId, extent: "parent" as const }
+				: {}),
+			...(isGroup ? size.get(node.id) : {}),
+			class: `yard-node yard-node-${kindFor(node)} yard-node-${phase.get(node.id) ?? "unknown"}`,
+		};
 	});
-	for (const node of ordered) visit(node.id, 0);
-	const nodes = ordered.map((node) => ({
-		id: node.id,
-		type: "yard" as const,
-		position: {
-			x: (depth.get(node.id) ?? 0) * COLUMN_WIDTH,
-			y: (rows.get(node.id) ?? 0) * ROW_HEIGHT,
-		},
-		data: {
-			label: labelFor(node),
-			kind: kindFor(node),
-			phase: node.phase,
-			summary: node.summary,
-			detail:
-				node.detail ??
-				(node.node.kind === "run" && tree.programPreview
-					? { program: tree.programPreview }
-					: undefined),
-		},
-		class: `yard-node yard-node-${kindFor(node)} yard-node-${node.phase}`,
-	}));
-	const edges = ordered.flatMap((n) => {
-		const p = parents.get(n.id);
-		return p ? [edge(p, n.id, n.phase)] : [];
-	});
-	const leafIds = ordered.filter((n) => !children.get(n.id)?.length).map((n) => n.id);
+	const edges: YardFlowEdge[] = [];
+	for (const node of ordered) {
+		const parent = node.executionParentId;
+		if (parent && byId.has(parent))
+			edges.push(edge(parent, node.id, phase.get(node.id) ?? "unknown"));
+	}
 	const resultId = `${tree.runId}:result`;
-	const maxDepth = Math.max(0, ...ordered.map((n) => depth.get(n.id) ?? 0));
-	const leafRows = leafIds.map((id) => rows.get(id) ?? 0);
-	const phase: YardFlowPhase =
+	const last = execution.at(-1) ?? top;
+	const lastPoint = (last ? absolute.get(last.id) : undefined) ?? { x: 0, y: 0 };
+	const lastWidth = (last ? size.get(last.id) : undefined)?.width ?? WIDTH;
+	const treePhase: YardFlowPhase =
 		tree.phase === "completed" ? "completed" : tree.phase === "failed" ? "failed" : "started";
 	const formatted = tree.resultPreview ? formatYardResult(tree.resultPreview) : undefined;
 	nodes.push({
 		id: resultId,
 		type: "yard",
 		position: {
-			x: (maxDepth + 1) * COLUMN_WIDTH,
-			y: ((Math.min(...leafRows) + Math.max(...leafRows)) / 2) * ROW_HEIGHT,
+			x: lastPoint.x + (last ? lastWidth + COLUMN : WIDTH),
+			y: lastPoint.y,
 		},
 		data: {
 			label: "Result",
 			kind: "result",
-			phase,
+			phase: treePhase,
 			summary: formatted?.hint,
 			detail: formatted
 				? {
@@ -162,8 +236,8 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 					}
 				: undefined,
 		},
-		class: `yard-node yard-node-result yard-node-${phase}`,
+		class: `yard-node yard-node-result yard-node-${treePhase}`,
 	});
-	for (const leaf of leafIds) edges.push(edge(leaf, resultId, phase));
+	if (last) edges.push(edge(last.id, resultId, treePhase));
 	return { nodes, edges };
 }

@@ -5,13 +5,16 @@ const { data }: NodeProps = $props();
 const yard = $derived(
 	data as {
 		label: string;
-		kind: "run" | "tool" | "inference" | "aux" | "unknown" | "result";
+		kind: "run" | "tool" | "inference" | "aux" | "unknown" | "result" | "group";
+		construct?: "all" | "sequence";
 		phase: "unknown" | "started" | "completed" | "failed" | "settled";
 		summary?: string;
 	},
 );
 const kindIcon = $derived(
-	{ run: "◆", tool: "⚙", inference: "✦", aux: "⇄", unknown: "?", result: "⊣" }[yard.kind],
+	{ run: "◆", tool: "⚙", inference: "✦", aux: "⇄", unknown: "?", result: "⊣", group: "▧" }[
+		yard.kind
+	],
 );
 const statusIcon = $derived(
 	{ unknown: "○", started: "◌", completed: "✓", failed: "!", settled: "•" }[yard.phase],
@@ -27,6 +30,13 @@ const statusText = $derived(
 );
 </script>
 
+{#if yard.kind === "group"}
+	<Handle type="target" position={Position.Left} aria-label="Input" />
+	<div class="yard-flow-group {yard.phase}" aria-label={`${yard.label}, ${statusText}`}>
+		<span>{yard.label}</span><small>{statusText}</small>
+	</div>
+	<Handle type="source" position={Position.Right} aria-label="Output" />
+{:else}
 <Handle type="target" position={Position.Left} aria-label="Input" />
 <button class="yard-flow-node {yard.kind} {yard.phase}" aria-label={`${yard.label}, ${statusText}. Open details`} aria-expanded="false">
 	<span class="rail" aria-hidden="true"></span>
@@ -38,8 +48,11 @@ const statusText = $derived(
 	{#if yard.summary}<p>{yard.summary}</p>{/if}
 </button>
 <Handle type="source" position={Position.Right} aria-label="Output" />
+{/if}
 
 <style>
+	.yard-flow-group { --state: var(--idle); box-sizing: border-box; display: flex; align-items: flex-start; justify-content: space-between; width: 100%; height: 100%; padding: 7px 9px; border: 1px dashed color-mix(in srgb, var(--state) 60%, var(--line-4)); border-radius: 8px; background: color-mix(in srgb, var(--line-4) 10%, transparent); color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; pointer-events: none; }
+	.yard-flow-group small { color: var(--state); font-size: 9px; }
 	.yard-flow-node {
 		--kind: var(--idle);
 		--state: var(--idle);
