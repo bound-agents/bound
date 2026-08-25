@@ -84,6 +84,11 @@ function scrollToBottom(smooth = true): void {
 	requestAnimationFrame(() => {
 		if (!scrollContainer) return;
 		scrollContainer.scrollTo({
+			// Read scrollHeight inside the frame (#241): content can grow
+			// between the call and the frame it lands in (streaming chunks,
+			// async markdown/mermaid, trailing yard/MCP panels relocating
+			// when their source row arrives), and a target captured at call
+			// time strands the viewport above the new bottom.
 			top: scrollContainer.scrollHeight,
 			behavior: smooth ? "smooth" : "instant",
 		});
@@ -95,7 +100,30 @@ function handleScroll(): void {
 }
 
 onMount(() => {
-	tick().then(() => scrollToBottom());
+	// Initial position: instant. There is nothing to animate to on load, and
+	// a smooth glide from the top is visible garbage on long threads.
+	tick().then(() => scrollToBottom(false));
+
+	// #241: async content growth changes scrollHeight WITHOUT a
+	// messages.length change — content-visibility rows realizing their real
+	// heights (#175), async markdown/mermaid, a trailing yard/MCP panel
+	// relocating when its source row arrives — so the count-based effect
+	// never re-fires and the viewport drifts up off the bottom. Re-pin the
+	// viewport whenever the scroller's box changes while the user is at the
+	// bottom: the same invariant the count effect enforces for appends,
+	// extended to growth the effect cannot see. Instant, not smooth — this
+	// is correction, not motion. `isAtBottom` is maintained by handleScroll,
+	// so a viewport that left the bottom (user scroll, or the scroll event
+	// a pinned re-layout naturally emits) is never yanked back down.
+	if (scrollContainer) {
+		const ro = new ResizeObserver(() => {
+			if (scrollContainer && isAtBottom) {
+				scrollContainer.scrollTop = scrollContainer.scrollHeight;
+			}
+		});
+		ro.observe(scrollContainer);
+		return () => ro.disconnect();
+	}
 });
 
 $effect(() => {
@@ -150,7 +178,7 @@ $effect(() => {
 
 // --- Scroll-to-message (context-panel turn click) ---
 // Mirrors the turn-range scroll above but keys off a specific message id and
-// deliberately does NOT set `turnRange`, so no rows are dimmed â just a jump.
+// deliberately does NOT set `turnRange`, so no rows are dimmed — just a jump.
 let prevScrollNonce = -1;
 $effect(() => {
 	const req = scrollRequest;
@@ -177,7 +205,7 @@ $effect(() => {
 	});
 });
 
-// Build a lookup from tool_use id â tool_result message so ToolCallCard can
+// Build a lookup from tool_use id → tool_result message so ToolCallCard can
 // surface the result inline beneath its originating tool_use row.
 interface ToolResultMsg {
 	content: string;
@@ -220,8 +248,8 @@ const anchoredYardTrees = $derived.by(() =>
 // Anchor each live MCP App panel beneath the display item carrying the tool_use
 // that spawned it (instance.callId === the persisted tool_use.id). `perItem`
 // keys panels by display-item key for inline render; `trailing` holds instances
-// with no matching item yet â in-flight calls whose tool_call message hasn't
-// streamed in â which fall to the end of the stream until their row arrives.
+// with no matching item yet — in-flight calls whose tool_call message hasn't
+// streamed in — which fall to the end of the stream until their row arrives.
 const anchoredInstances = $derived.by(
 	(): {
 		perItem: Map<string, McpAppInstance[]>;
@@ -255,7 +283,7 @@ function isItemInRange(item: DisplayItem): boolean {
 	return tsInRange(item.earliest, turnRange);
 }
 
-// Render time as HH:MM in the local timezone â matches the reference
+// Render time as HH:MM in the local timezone — matches the reference
 // signage aesthetic (tabular-numeric mono, 24-hour).
 function fmtTime(iso: string | undefined): string {
 	if (!iso) return "";
