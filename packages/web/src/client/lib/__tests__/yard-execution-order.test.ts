@@ -114,3 +114,181 @@ describe("Yard execution-order topology", () => {
 		}
 	});
 });
+
+describe("live Yard topology contracts", () => {
+	const liveProgram = `function* main(input) {
+		yield tool("read", {});
+		yield all([aux("code", "review"), aux("tests", "test")]);
+		return yield infer(input.model, { prompt: "summarize" });
+	}`;
+
+	it("renders the complete pending program graph from the root lifecycle preview before any effects run", async () => {
+		const { EMPTY_YARD_STATE, reduceYardExecution } = await import("../yard-execution");
+		const state = reduceYardExecution(EMPTY_YARD_STATE, {
+			thread_id: "thread",
+			trace_id: "trace-live",
+			run_id: "run-live",
+			node_id: "run-live",
+			parent_id: null,
+			seq: 1,
+			phase: "started",
+			node: { kind: "run", depth: 0 },
+			program_preview: liveProgram,
+		});
+		const tree = state.live.get("trace-live");
+		if (!tree) throw new Error("missing live tree");
+		const flow = yardTreeToFlow(tree);
+		const labels = flow.nodes.map((node) => node.data.label);
+
+		expect(labels).toEqual(
+			expect.arrayContaining([
+				"Yard run",
+				"read",
+				"All",
+				"aux: code",
+				"aux: tests",
+				"infer (dynamic)",
+				"Result",
+			]),
+		);
+		expect(
+			flow.nodes
+				.filter((node) => node.data.kind !== "run" && node.data.kind !== "result")
+				.every((node) => node.data.phase === "unknown"),
+		).toBe(true);
+		const id = (label: string) => flow.nodes.find((node) => node.data.label === label)?.id;
+		expect(
+			flow.edges.some((edge) => edge.source === id("Yard run") && edge.target === id("read")),
+		).toBe(true);
+		expect(
+			flow.edges.some((edge) => edge.source === id("All") && edge.target === id("infer (dynamic)")),
+		).toBe(true);
+		expect(
+			flow.edges.some(
+				(edge) =>
+					edge.target === "run-live:result" &&
+					flow.nodes.find((node) => node.id === edge.source)?.data.kind === "inference",
+			),
+		).toBe(true);
+
+		const afterTool = reduceYardExecution(state, {
+			thread_id: "thread",
+			trace_id: "trace-live",
+			run_id: "run-live",
+			node_id: "runtime-read",
+			parent_id: "run-live",
+			seq: 2,
+			phase: "started",
+			node: { kind: "tool", name: "read" },
+		});
+		const updated = afterTool.live.get("trace-live");
+		if (!updated) throw new Error("missing updated live tree");
+		const updatedFlow = yardTreeToFlow(updated);
+		expect(updatedFlow.nodes.map((node) => node.id)).toEqual(flow.nodes.map((node) => node.id));
+		expect(updatedFlow.nodes.find((node) => node.id === id("read"))?.data.phase).toBe("started");
+	});
+
+	it("upgrades an early runtime-only live card to the persisted program skeleton without losing lifecycle state", async () => {
+		const { EMPTY_YARD_STATE, reconcileYardExecutions, reduceYardExecution } = await import(
+			"../yard-execution"
+		);
+		const started = reduceYardExecution(EMPTY_YARD_STATE, {
+			thread_id: "thread",
+			trace_id: "trace-persisted",
+			run_id: "run-persisted",
+			node_id: "run-persisted",
+			parent_id: null,
+			seq: 1,
+			phase: "started",
+			node: { kind: "run", depth: 0 },
+			tool_call_id: "call-persisted",
+		});
+		const running = reduceYardExecution(started, {
+			thread_id: "thread",
+			trace_id: "trace-persisted",
+			run_id: "run-persisted",
+			node_id: "runtime-read",
+			parent_id: "run-persisted",
+			seq: 2,
+			phase: "started",
+			node: { kind: "tool", name: "read" },
+			tool_call_id: "call-persisted",
+		});
+		const reconciled = reconcileYardExecutions(running, [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "call-persisted", name: "yard", input: { program: liveProgram } },
+				]),
+			},
+		]);
+		const live = reconciled.live.get("trace-persisted");
+		if (!live) throw new Error("missing reconciled live tree");
+		const flow = yardTreeToFlow(live);
+		expect(flow.nodes.map((node) => node.data.label)).toEqual(
+			expect.arrayContaining(["Yard run", "read", "All", "Result"]),
+		);
+		expect(flow.nodes.find((node) => node.data.label === "read")?.data.phase).toBe("started");
+		expect(
+			flow.nodes.filter((node) => node.data.kind !== "result").map((node) => node.id),
+		).not.toContain("runtime-read");
+	});
+
+	it("labels sequence children with source order and all containers with parallel cardinality", () => {
+		const flow = yardTreeToFlow(
+			tree(`function* main() {
+			yield sequence([tool("first", {}), infer("model", { prompt: "next" }), tool("last", {})]);
+			yield all([aux("one", "one"), aux("two", "two")]);
+		}`),
+		);
+		const sequence = flow.nodes.find((node) => node.data.construct === "sequence");
+		const all = flow.nodes.find((node) => node.data.construct === "all");
+		if (!sequence || !all) throw new Error("missing containers");
+
+		expect(
+			flow.nodes.filter((node) => node.parentId === sequence.id).map((node) => node.data.ordinal),
+		).toEqual([1, 2, 3]);
+		expect(all.data.parallelCount).toBe(2);
+		expect(
+			flow.nodes
+				.filter((node) => node.parentId === all.id)
+				.every((node) => node.data.ordinal === undefined),
+		).toBe(true);
+	});
+
+	it("connects terminal all and sequence containers directly to Result", () => {
+		for (const [program, construct] of [
+			[
+				`function* main() { yield tool("one", {}); yield all([aux("a", "a"), aux("b", "b")]); return 1; }`,
+				"all",
+			],
+			[
+				`function* main() { yield sequence([tool("one", {}), infer("model", { prompt: "two" })]); return 1; }`,
+				"sequence",
+			],
+		] as const) {
+			const flow = yardTreeToFlow(tree(program));
+			const terminal = flow.nodes.find((node) => node.data.construct === construct);
+			expect(
+				flow.edges.some((edge) => edge.source === terminal?.id && edge.target === "trace:result"),
+			).toBe(true);
+		}
+	});
+
+	it("connects every top-level execution step once and converges each shape on Result", () => {
+		for (const program of [
+			`function* main() { yield tool("one", {}); yield all([aux("a", "a"), aux("b", "b")]); return 1; }`,
+			`function* main() { yield sequence([tool("one", {}), infer("model", { prompt: "two" })]); return 1; }`,
+			`function* main() { yield all([aux("a", "a")]); yield tool("after", {}); return 1; }`,
+		]) {
+			const flow = yardTreeToFlow(tree(program));
+			const result = "trace:result";
+			const top = flow.nodes.filter(
+				(node) => node.data.kind === "run" || (!node.parentId && node.data.kind !== "result"),
+			);
+			for (const node of top)
+				expect(flow.edges.filter((edge) => edge.source === node.id)).toHaveLength(1);
+			expect(flow.edges.filter((edge) => edge.target === result)).toHaveLength(1);
+		}
+	});
+});

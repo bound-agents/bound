@@ -7,6 +7,8 @@ const yard = $derived(
 		label: string;
 		kind: "run" | "tool" | "inference" | "aux" | "unknown" | "result" | "group";
 		construct?: "all" | "sequence";
+		ordinal?: number;
+		parallelCount?: number;
 		phase: "unknown" | "started" | "completed" | "failed" | "settled";
 		summary?: string;
 		selected?: boolean;
@@ -36,7 +38,7 @@ const statusText = $derived(
 {#if yard.kind === "group"}
 	<Handle type="target" position={Position.Left} aria-label="Input" />
 	<button id={yard.triggerId} data-yard-node-id={yard.triggerId} class="yard-flow-group {yard.phase}" aria-label={`${yard.label}, ${statusText}. ${yard.selected ? "Close" : "Open"} details`} aria-expanded={yard.selected ?? false} aria-controls={yard.selected ? yard.inspectorId : undefined}>
-		<span>{yard.label}</span><small>{statusText}</small>
+		<span class="group-label">{yard.label}{#if yard.parallelCount !== undefined}<em>parallel ×{yard.parallelCount}</em>{/if}</span><small>{statusText}</small>
 	</button>
 	<Handle type="source" position={Position.Right} aria-label="Output" />
 {:else}
@@ -45,7 +47,7 @@ const statusText = $derived(
 	<span class="rail" aria-hidden="true"></span>
 	<div class="node-row node-head">
 		<span class="kind-icon" aria-hidden="true">{kindIcon}</span>
-		<strong>{yard.label}</strong>
+		<strong>{#if yard.ordinal !== undefined}<em class="ordinal">{yard.ordinal}</em>{/if}{yard.label}</strong>
 	</div>
 	<div class="node-row status"><span class="status-icon" aria-hidden="true">{statusIcon}</span><span>{statusText}</span></div>
 	{#if yard.summary}<p>{yard.summary}</p>{/if}
@@ -55,7 +57,12 @@ const statusText = $derived(
 
 <style>
 	.yard-flow-group { --state: var(--idle); box-sizing: border-box; display: flex; align-items: flex-start; justify-content: space-between; width: 100%; height: 100%; padding: 7px 9px; border: 1px dashed color-mix(in srgb, var(--state) 60%, var(--line-4)); border-radius: 8px; background: color-mix(in srgb, var(--line-4) 10%, transparent); color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase;  }
+	.yard-flow-group { --kind: var(--line-4); }
 	.yard-flow-group small { color: var(--state); font-size: 9px; }
+	.group-label { display: inline-flex; align-items: center; gap: 6px; }
+	.group-label em, .ordinal { font-style: normal; }
+	.group-label em { padding: 1px 4px; border: 1px solid color-mix(in srgb, var(--kind) 60%, var(--line-4)); border-radius: 999px; background: color-mix(in srgb, var(--kind) 12%, transparent); color: var(--kind); font-size: 8px; letter-spacing: 0; text-transform: none; }
+	.ordinal { display: inline-grid; width: 14px; height: 14px; place-items: center; margin-right: 5px; border-radius: 50%; background: color-mix(in srgb, var(--line-4) 18%, transparent); color: var(--ink-2); font-size: 9px; vertical-align: 1px; }
 	.yard-flow-node {
 		--kind: var(--idle);
 		--state: var(--idle);
