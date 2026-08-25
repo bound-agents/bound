@@ -33,6 +33,22 @@ const statusText = $derived(
 	tree.phase === "started" ? "Running" : tree.phase === "failed" ? "Failed" : "Complete",
 );
 const showMiniMap = $derived(flow.nodes.length > 8);
+// Remount only when topology geometry changes so SvelteFlow's initial fitView observes
+// the settled layout; phase-only lifecycle updates preserve a reader's pan and zoom.
+const flowStructure = $derived(
+	flow.nodes
+		.map((node) =>
+			[
+				node.id,
+				node.parentId ?? "",
+				node.position.x,
+				node.position.y,
+				node.width ?? "",
+				node.height ?? "",
+			].join(":"),
+		)
+		.join("|"),
+);
 let selectedId = $state<string | null>(null);
 let triggerId = $state<string | null>(null);
 let panel = $state<HTMLElement | null>(null);
@@ -117,11 +133,13 @@ const miniMapNodeColor = (node: Node) => {
 	</div>
 	<p class="sr-only" aria-live="polite" aria-atomic="true">{announcedStatus}</p>
 	<div class="flow-wrap">
-		<SvelteFlow id={`yard-${tree.traceId}`} nodeTypes={nodeTypes} nodes={nodes as Node[]} edges={flow.edges as Edge[]} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} elementsSelectable={true} onnodeclick={selectNode} onpaneclick={() => selectedId && closeInspector()}>
-			<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
-			<Controls showInteractive={false} />
-			{#if showMiniMap}<MiniMap pannable zoomable nodeColor={miniMapNodeColor} aria-label="Yard graph overview" />{/if}
-		</SvelteFlow>
+		{#key flowStructure}
+			<SvelteFlow id={`yard-${tree.traceId}`} nodeTypes={nodeTypes} nodes={nodes as Node[]} edges={flow.edges as Edge[]} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} elementsSelectable={true} onnodeclick={selectNode} onpaneclick={() => selectedId && closeInspector()}>
+				<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+				<Controls showInteractive={false} />
+				{#if showMiniMap}<MiniMap pannable zoomable nodeColor={miniMapNodeColor} aria-label="Yard graph overview" />{/if}
+			</SvelteFlow>
+		{/key}
 	</div>
 	{#if selected}
 		<aside id={inspectorId(selected.id)} class="yard-inspector" aria-labelledby={`${inspectorId(selected.id)}-heading`} tabindex="-1">

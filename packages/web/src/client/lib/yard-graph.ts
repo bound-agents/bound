@@ -40,7 +40,7 @@ export interface YardFlowEdge {
 const WIDTH = 184;
 const HEIGHT = 68;
 const GAP = 34;
-const COLUMN = 238;
+const COLUMN = 96;
 const PADDING = 32;
 const LABEL = 24;
 const labelFor = (node: YardTreeSnapshot["nodes"][number]) =>
@@ -145,7 +145,6 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 			});
 		} else {
 			width =
-				LABEL +
 				PADDING * 2 +
 				childSizes.reduce((n, s) => n + s.width, 0) +
 				GAP * Math.max(0, kids.length - 1);
@@ -190,7 +189,10 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 	for (const node of execution) place(node);
 	for (const node of ordered) if (!absolute.has(node.id)) absolute.set(node.id, { x: 0, y: 0 });
 	const nodes: YardFlowNode[] = ordered.map((node) => {
-		const p = absolute.get(node.id) ?? { x: 0, y: 0 };
+		const p =
+			node.parentId && byId.get(node.parentId)?.construct
+				? (local.get(node.id) ?? { x: 0, y: 0 })
+				: (absolute.get(node.id) ?? { x: 0, y: 0 });
 		const isGroup = Boolean(node.construct);
 		return {
 			id: node.id,
