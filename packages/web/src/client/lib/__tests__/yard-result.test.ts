@@ -116,12 +116,19 @@ describe("formatYardValue", () => {
 		});
 	});
 
-	it("keeps dynamic JavaScript object arguments classified and highlighted as objects", () => {
-		const raw = '{ command: "x", cwd: input.cwd }';
-		expect(formatYardInspectorValue(raw, "args")).toEqual({
-			display: raw,
-			hint: `object · 2 keys · ${new TextEncoder().encode(raw).byteLength} B`,
-			isJson: false,
+	it("dedents dynamic JavaScript object arguments captured from nested call sites", () => {
+		const raw = `{\n\t\tcommand: "x",\n\t\tcwd: input.cwd,\n\t}`;
+		expect(formatYardInspectorValue(raw, "args")).toMatchObject({
+			display: `{\n  command: "x",\n  cwd: input.cwd,\n}`,
+			isJavaScript: true,
+			lang: "javascript",
+		});
+	});
+
+	it("normalizes mixed leading tabs and spaces in JavaScript source snippets", () => {
+		const raw = `{\n    command: "x",\n\t  cwd: input.cwd,\n\t}`;
+		expect(formatYardInspectorValue(raw, "args")).toMatchObject({
+			display: `{\n  command: "x",\n  cwd: input.cwd,\n}`,
 			isJavaScript: true,
 			lang: "javascript",
 		});
