@@ -114,8 +114,13 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 		const cached = size.get(node.id);
 		if (cached) return cached;
 		const kids = children.get(node.id) ?? [];
-		if (!node.construct || !kids.length) {
+		if (!node.construct) {
 			const value = { width: WIDTH, height: HEIGHT };
+			size.set(node.id, value);
+			return value;
+		}
+		if (!kids.length) {
+			const value = { width: WIDTH + PADDING * 2, height: HEIGHT + LABEL + PADDING * 2 };
 			size.set(node.id, value);
 			return value;
 		}

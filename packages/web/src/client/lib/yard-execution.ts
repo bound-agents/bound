@@ -90,7 +90,9 @@ function isRootEvent(event: YardExecutionEvent): boolean {
 
 function effectMatches(node: YardNodeState, event: Pick<YardExecutionEvent, "node">): boolean {
 	return (
-		node.node.kind === event.node.kind &&
+		(node.construct === "all" || node.construct === "sequence"
+			? event.node.kind === "tool" && event.node.name === node.construct
+			: node.node.kind === event.node.kind) &&
 		(node.node.kind !== "tool" ||
 			event.node.kind !== "tool" ||
 			node.node.name === event.node.name ||
@@ -114,15 +116,21 @@ function fold(
 	const nodes = new Map<string, YardNodeState>(sourceTree.map((node) => [node.id, node]));
 	const ordered = [...nodes.values()].sort((a, b) => a.startSeq - b.startSeq);
 	const existingByRuntimeId = ordered.find((node) => node.runtimeId === event.node_id);
+	// Runtime parent ids bind a child to the corresponding static region. When the
+	// source contains identical effects, a static node may only be claimed once.
+	const mappedParent = ordered.find((node) => node.runtimeId === event.parent_id)?.id;
+	const candidates =
+		mappedParent && nodes.get(mappedParent)?.construct
+			? ordered.filter((node) => node.parentId === mappedParent)
+			: ordered;
 	const matched =
-		existingByRuntimeId ??
-		ordered.find((node) => node.phase === "unknown" && effectMatches(node, event));
+		existingByRuntimeId ?? candidates.find((node) => !node.runtimeId && effectMatches(node, event));
 	const targetId = matched?.id ?? event.node_id;
 	const existing = nodes.get(targetId);
-	const mappedParent = ordered.find((node) => node.runtimeId === event.parent_id)?.id;
 	const rootId = ordered.find((node) => node.node.kind === "run" && node.parentId === null)?.id;
+	// Dynamic descendants remain attached to their known runtime/static parent.
 	const parentId = matched ? matched.parentId : (mappedParent ?? rootId ?? event.parent_id);
-	if (!existing || event.seq > existing.seq) {
+	if (!existing || event.seq > existing.seq || (matched && !existing.runtimeId)) {
 		nodes.set(targetId, {
 			id: targetId,
 			parentId,
@@ -134,6 +142,8 @@ function fold(
 			startedAt: existing?.startedAt ?? event.started_at,
 			finishedAt: event.finished_at ?? existing?.finishedAt,
 			detail: existing?.detail,
+			construct: existing?.construct,
+			executionParentId: existing?.executionParentId,
 			runtimeId: event.node_id,
 		});
 	} else if (event.seq < existing.seq) {
