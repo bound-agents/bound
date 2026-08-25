@@ -165,12 +165,11 @@ export function yardTreeToFlow(tree: YardTreeSnapshot): {
 	for (const node of ordered) measure(node);
 	const top =
 		ordered.filter((node) => node.node.kind === "run" && node.parentId === null)[0] ?? ordered[0];
-	// Top-level yields are the only nodes that advance the outer execution chain.
+	// Only source-derived top-level yields advance the outer execution chain. Runtime
+	// fallback nodes leave executionParentId undefined, which is deliberately excluded.
 	const execution = ordered.filter(
-		(node) => node.id === top?.id || (node.parentId === top?.id && node.executionParentId !== null),
+		(node) => node.id === top?.id || (node.parentId === top?.id && node.executionParentId != null),
 	);
-	if (execution.length <= 1 && top)
-		execution.push(...ordered.filter((node) => node.parentId === top.id));
 	const absolute = new Map<string, { x: number; y: number }>();
 	let x = 0;
 	for (const node of execution) {
