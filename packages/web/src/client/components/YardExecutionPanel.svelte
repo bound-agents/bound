@@ -11,7 +11,7 @@ import {
 import "@xyflow/svelte/dist/style.css";
 import { type YardTreeSnapshot, yardProgress } from "../lib/yard-execution";
 import { yardTreeToFlow } from "../lib/yard-graph";
-import { formatYardResult } from "../lib/yard-result";
+import { formatYardInspectorValue, formatYardValue } from "../lib/yard-result";
 import YardCodeBlock from "./YardCodeBlock.svelte";
 import YardFlowNode from "./YardFlowNode.svelte";
 
@@ -22,8 +22,12 @@ const heading = $derived(tree.phase === "started" ? "Yard execution" : `Yard ${t
 const counts = $derived(yardProgress(tree));
 const result = $derived.by(() => {
 	const raw = tree.resultPreview ?? tree.summary;
-	return raw ? formatYardResult(raw) : null;
+	return raw ? formatYardValue(raw) : null;
 });
+function formatDetail(key: string, value: unknown) {
+	const raw = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+	return formatYardInspectorValue(raw, key);
+}
 const statusText = $derived(
 	tree.phase === "started" ? "Running" : tree.phase === "failed" ? "Failed" : "Complete",
 );
@@ -82,9 +86,11 @@ const miniMapNodeColor = (node: Node) => {
 			<p>{selected.data.kind} · {selected.data.phase}</p>
 			{#if selected.data.detail}
 				{#each Object.entries(selected.data.detail) as [key, value]}
+					{@const formatted = formatDetail(key, value)}
 					<div class="detail-field">
-						<strong>{key}</strong>
-						<YardCodeBlock code={typeof value === "string" ? value : JSON.stringify(value, null, 2)} lang={key === "program" ? "javascript" : "json"} />
+						<div class="detail-heading"><strong>{key}</strong><span>{formatted.hint}</span></div>
+						<YardCodeBlock code={formatted.display} lang={formatted.lang} />
+						{#if formatted.tail}<p class="detail-tail">{formatted.tail}</p>{/if}
 					</div>
 				{/each}
 			{:else if selected.data.summary}<p>{selected.data.summary}</p>{:else}<p>This region is dynamic or has no additional static detail.</p>{/if}
@@ -97,7 +103,7 @@ const miniMapNodeColor = (node: Node) => {
 		<footer>
 			<details>
 				<summary><span class="result-title"><span class="disclosure-caret" aria-hidden="true">▸</span>Result</span><span class="result-hint">{result.hint}</span></summary>
-				<YardCodeBlock code={result.display} lang="json" />
+				<YardCodeBlock code={result.display} lang={result.isJson ? "json" : "text"} />
 				{#if result.tail}<p class="result-tail">{result.tail}</p>{/if}
 			</details>
 		</footer>
@@ -120,7 +126,7 @@ const miniMapNodeColor = (node: Node) => {
 	.flow-wrap { height: clamp(240px, 38vw, 440px); width: 100%; }
 	footer { padding: 0; border-top: 1px solid var(--rule-soft); }
 	.yard-inspector { margin: 0; padding: 10px 12px; border-top: 1px solid var(--rule-soft); background: var(--paper-2); color: var(--ink-2); font: 11px/1.4 var(--font-mono); }
-	.inspector-heading { display: flex; justify-content: space-between; color: var(--ink); } .inspector-heading button { border: 1px solid var(--rule-soft); background: var(--paper); color: var(--ink); cursor: pointer; } .yard-inspector p { margin: 4px 0; } .detail-field { margin-top: 10px; } .detail-field > strong { display: block; margin-bottom: 4px; color: var(--ink); font-size: 10px; text-transform: uppercase; }
+	.inspector-heading { display: flex; justify-content: space-between; color: var(--ink); } .inspector-heading button { border: 1px solid var(--rule-soft); background: var(--paper); color: var(--ink); cursor: pointer; } .yard-inspector p { margin: 4px 0; } .detail-field { margin-top: 10px; } .detail-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; color: var(--ink); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; } .detail-heading span { overflow: hidden; color: var(--ink-2); font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; text-transform: none; white-space: nowrap; } .detail-tail { margin: 0; padding: 8px 12px; border: 1px solid var(--rule-soft); border-top: 0; color: var(--ink-2); font: 10px var(--font-mono); }
 	details { min-width: 0; }
 	summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .07em; list-style: none; text-transform: uppercase; }
 	summary::-webkit-details-marker { display: none; }

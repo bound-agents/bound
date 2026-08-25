@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { formatYardResult, sanitizeYardResult } from "../yard-result";
+import {
+	formatYardInspectorValue,
+	formatYardResult,
+	formatYardValue,
+	sanitizeYardResult,
+} from "../yard-result";
 
 describe("sanitizeYardResult", () => {
 	it("recursively omits encrypted reasoning and signature fields without changing ordinary values", () => {
@@ -96,8 +101,41 @@ describe("formatYardResult", () => {
 	it("keeps genuinely unparseable result text readable", () => {
 		expect(formatYardResult("not valid {json")).toEqual({
 			display: "not valid {json",
-			hint: "plain text · 15 B",
+			hint: "string · 15 B",
 			isJson: false,
+		});
+	});
+});
+
+describe("formatYardValue", () => {
+	it("normalizes static extractor object-literal arguments into highlighted JSON metadata", () => {
+		expect(formatYardValue('{command: "pwd", cwd: "/workspace"}')).toEqual({
+			display: '{\n  "command": "pwd",\n  "cwd": "/workspace"\n}',
+			hint: "object · 2 keys · 35 B",
+			isJson: true,
+		});
+	});
+
+	it("keeps plain text prompt values unquoted", () => {
+		expect(formatYardValue("Explain the current repository state.")).toEqual({
+			display: "Explain the current repository state.",
+			hint: "string · 37 B",
+			isJson: false,
+		});
+	});
+
+	it("preserves the result formatting path as an alias", () => {
+		const raw = '{"answer":"kept"}';
+		expect(formatYardResult(raw)).toEqual(formatYardValue(raw));
+	});
+
+	it("keeps run programs as JavaScript source while retaining the shared value hint", () => {
+		const program = 'function* main() { yield tool("read", {}); }';
+		expect(formatYardInspectorValue(program, "program")).toEqual({
+			display: program,
+			hint: `string · ${new TextEncoder().encode(program).byteLength} B`,
+			isJson: false,
+			lang: "javascript",
 		});
 	});
 });

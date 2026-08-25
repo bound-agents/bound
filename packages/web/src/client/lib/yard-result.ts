@@ -1,9 +1,12 @@
-export interface FormattedYardResult {
+export interface FormattedYardValue {
 	display: string;
 	hint: string;
 	isJson: boolean;
 	tail?: string;
 }
+
+/** @deprecated Use FormattedYardValue; retained for result consumers. */
+export type FormattedYardResult = FormattedYardValue;
 
 function isSensitiveResultKey(key: string): boolean {
 	const normalized = key.toLowerCase();
@@ -129,7 +132,7 @@ export function parseLeadingJsonValue(raw: string): ParsedJsonValue | undefined 
 }
 
 /** Resolves persistence wrappers before classifying and rendering one presentation value. */
-function unwrapPersistedYardResult(value: unknown, tail?: string): ParsedJsonValue {
+function unwrapPersistedYardValue(value: unknown, tail?: string): ParsedJsonValue {
 	let current = value;
 	let currentTail = tail;
 	for (let i = 0; i < 4; i++) {
@@ -148,13 +151,50 @@ function unwrapPersistedYardResult(value: unknown, tail?: string): ParsedJsonVal
 	return { value: current, ...(currentTail ? { tail: currentTail } : {}) };
 }
 
-/** Formats raw persisted result content for disclosure without changing the persisted value. */
-export function formatYardResult(raw: string): FormattedYardResult {
-	const bytes = new TextEncoder().encode(raw).byteLength;
-	const parsed = parseLeadingJsonValue(raw);
-	if (!parsed) return { display: raw, hint: `plain text · ${sizeHint(bytes)}`, isJson: false };
+function parseObjectLiteral(raw: string): ParsedJsonValue | undefined {
+	const start = raw.search(/\S/);
+	if (start === -1 || raw[start] !== "{") return undefined;
 
-	const { value, tail } = unwrapPersistedYardResult(parsed.value, parsed.tail);
+	let depth = 0;
+	let quote = "";
+	let escaped = false;
+	for (let index = start; index < raw.length; index++) {
+		const character = raw[index];
+		if (quote) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === quote) quote = "";
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "`") {
+			quote = character;
+			continue;
+		}
+		if (character === "{") depth++;
+		else if (character === "}" && --depth === 0) {
+			const source = raw.slice(start, index + 1);
+			// Static topology extraction owns these literals. Quote its bare keys so
+			// presentation remains JSON without evaluating program source.
+			const json = source.replace(/([,{]\s*)([$A-Z_a-z][$\w]*)(\s*:)/g, '$1"$2"$3');
+			try {
+				const value = JSON.parse(json);
+				const tail = raw.slice(index + 1).trim();
+				return { value, ...(tail ? { tail } : {}) };
+			} catch {
+				return undefined;
+			}
+		}
+	}
+	return undefined;
+}
+
+/** Formats any Yard presentation value consistently without changing persistence data. */
+export function formatYardValue(raw: string): FormattedYardValue {
+	const bytes = new TextEncoder().encode(raw).byteLength;
+	const parsed = parseLeadingJsonValue(raw) ?? parseObjectLiteral(raw);
+	if (!parsed) return { display: raw, hint: `string · ${sizeHint(bytes)}`, isJson: false };
+
+	const { value, tail } = unwrapPersistedYardValue(parsed.value, parsed.tail);
 	const sanitized = sanitizeYardResult(value);
 	return {
 		display: JSON.stringify(sanitized, null, 2),
@@ -163,3 +203,21 @@ export function formatYardResult(raw: string): FormattedYardResult {
 		...(tail ? { tail } : {}),
 	};
 }
+
+export type YardValueLanguage = "javascript" | "json" | "text";
+
+/** Applies the shared formatter to inspector values, preserving source programs as JavaScript. */
+export function formatYardInspectorValue(
+	raw: string,
+	key: string,
+): FormattedYardValue & { lang: YardValueLanguage } {
+	const formatted = formatYardValue(raw);
+	return {
+		...formatted,
+		display: key === "program" ? raw : formatted.display,
+		lang: key === "program" ? "javascript" : formatted.isJson ? "json" : "text",
+	};
+}
+
+/** @deprecated Use formatYardValue; retained for result consumers. */
+export const formatYardResult = formatYardValue;
