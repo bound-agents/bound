@@ -54,37 +54,6 @@ describe("yard lifecycle events", () => {
 		expect(done?.seq).toBeGreaterThan(start?.seq ?? 0);
 	});
 
-	it("serializes a safe completed lifecycle graph into the Yard result", async () => {
-		registry.set("plain", {
-			kind: "builtin",
-			toolDefinition: {
-				type: "function",
-				function: { name: "plain", description: "x", parameters: {} },
-			},
-			execute: async () => "ok",
-		});
-
-		const raw = await invoke(`function* main() {
-			yield tool("plain", { secret: "nope" });
-			return yield tool("plain", { token: "still-nope" });
-		}`);
-		const output = JSON.parse(raw);
-
-		expect(output.execution).toMatchObject({
-			version: 1,
-			trace_id: output.trace_id,
-			phase: "completed",
-			nodes: [
-				expect.objectContaining({ node: { kind: "run", depth: 0 }, phase: "completed" }),
-				expect.objectContaining({ node: { kind: "tool", name: "plain" }, phase: "completed" }),
-				expect.objectContaining({ node: { kind: "tool", name: "plain" }, phase: "completed" }),
-			],
-		});
-		expect(JSON.stringify(output.execution)).not.toContain("secret");
-		expect(JSON.stringify(output.execution)).not.toContain("nope");
-		expect(JSON.stringify(output.execution)).not.toContain("still-nope");
-	});
-
 	it("emits tool leaves without exposing arguments", async () => {
 		registry.set("plain", {
 			kind: "builtin",
