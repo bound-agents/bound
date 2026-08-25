@@ -1,7 +1,10 @@
+/// <reference path="./lowbox-embedded.d.ts" />
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
+import { LOWBOX_EMBEDDED_HELPER, LOWBOX_HELPER_HASH } from "../_lowbox/embedded";
 import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy";
 import type { ResolvedShell } from "./shell";
 
@@ -26,23 +29,65 @@ export function lowboxHelperSourcePath(): string {
 	return join(import.meta.dir, "..", "native", "bound-lowbox.cpp");
 }
 
+let helperMaterialized = false;
+
+/**
+ * Write the embedded helper bytes (carried into the compiled boundless via
+ * `with { type: "file" }`, mirroring the mxc runtime) out to a stable
+ * per-content-hash path under `~/.bound/less/lowbox-runtime/` and return it.
+ * In a dev / source run the importer is null (non-Windows) or points at the
+ * on-disk staged file — either way the caller treats a non-existent result as
+ * "not bundled".
+ */
+export function materializeLowboxHelper(hash: string, embeddedPath: string): string {
+	const root = join(homedir(), ".bound", "less", "lowbox-runtime", hash);
+	const dest = join(root, "bound-lowbox.exe");
+	if (!existsSync(dest)) {
+		mkdirSync(root, { recursive: true });
+		writeFileSync(dest, readFileSync(embeddedPath));
+		try {
+			chmodSync(dest, 0o755);
+		} catch {
+			// Best effort; Windows ignores the mode anyway.
+		}
+	}
+	return dest;
+}
+
 interface ResolveLowboxHelperOptions {
 	platform?: NodeJS.Platform;
 	executablePath?: string;
 	helperPath?: string;
+	/** Consult the helper embedded in this binary (default true). Tests disable it. */
+	allowEmbedded?: boolean;
 }
 
 export function resolveLowboxHelperPath(options: ResolveLowboxHelperOptions = {}): string {
 	const platform = options.platform ?? process.platform;
 	if (platform !== "win32") throw new LowboxUnavailableError(`unsupported platform ${platform}`);
-	const helper =
+	const sibling = join(dirname(options.executablePath ?? process.execPath), "bound-lowbox.exe");
+	// Resolution order: explicit helperPath/executablePath sibling (tests,
+	// operator override of the exe location) → BOUND_LOWBOX_HELPER env (CI
+	// oracle contract) → sibling of the running exe (dist layout, dev beside
+	// boundless) → helper embedded in this binary and materialized under
+	// ~/.bound/less/lowbox-runtime/<hash>/ (standalone compiled boundless).
+	const candidates: string[] =
 		"helperPath" in options
-			? (options.helperPath ??
-				join(dirname(options.executablePath ?? process.execPath), "bound-lowbox.exe"))
-			: (process.env.BOUND_LOWBOX_HELPER ??
-				join(dirname(options.executablePath ?? process.execPath), "bound-lowbox.exe"));
-	if (!existsSync(helper)) throw new LowboxUnavailableError(`native helper not found at ${helper}`);
-	return helper;
+			? [options.helperPath ?? sibling]
+			: [process.env.BOUND_LOWBOX_HELPER, sibling].filter((v): v is string => Boolean(v));
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return candidate;
+	}
+	if ((options.allowEmbedded ?? true) && LOWBOX_EMBEDDED_HELPER) {
+		if (!helperMaterialized) {
+			helperMaterialized = true;
+			const materialized = materializeLowboxHelper(LOWBOX_HELPER_HASH, LOWBOX_EMBEDDED_HELPER.path);
+			if (existsSync(materialized)) return materialized;
+		}
+	}
+	throw new LowboxUnavailableError(
+		`native helper not found at ${sibling} and no embedded helper is bundled`,
+	);
 }
 
 export function buildLowboxArgs(

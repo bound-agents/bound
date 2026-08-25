@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	buildLowboxArgs,
 	lowboxHelperSourcePath,
+	materializeLowboxHelper,
 	parseLowboxFailure,
 	resolveLowboxHelperPath,
 	spawnLowbox,
@@ -1255,6 +1257,7 @@ describe("Windows lowbox helper materialization", () => {
 				platform: "win32",
 				executablePath: "Z:\\missing.exe",
 				helperPath: undefined,
+				allowEmbedded: false,
 			}),
 		).toThrow(/LOWBOX_HELPER_UNAVAILABLE/);
 	});
@@ -1263,5 +1266,28 @@ describe("Windows lowbox helper materialization", () => {
 		expect(() => resolveLowboxHelperPath({ platform: "darwin" })).toThrow(
 			/LOWBOX_HELPER_UNAVAILABLE/,
 		);
+	});
+
+	it("materializes the embedded helper under a content-hash dir and reuses it", () => {
+		const dir = mkdtempSync(join(tmpdir(), "lowbox-embedded-"));
+		// Unique hash per run — the materialization target lives in the real home
+		// dir, so a fixed hash would collide across runs.
+		const hash = `embedtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		const staged = join(dir, "staged.exe");
+		writeFileSync(staged, "MZ-fake-helper-bytes");
+
+		const materialized = materializeLowboxHelper(hash, staged);
+		expect(materialized).toContain(join("lowbox-runtime", hash));
+		expect(existsSync(materialized)).toBe(true);
+		expect(readFileSync(materialized, "utf8")).toBe("MZ-fake-helper-bytes");
+
+		// Second call is a no-op even if the staged bytes changed (content-hash
+		// directory names separate versions).
+		writeFileSync(staged, "MZ-different");
+		expect(readFileSync(materializeLowboxHelper(hash, staged), "utf8")).toBe(
+			"MZ-fake-helper-bytes",
+		);
+
+		rmSync(dir, { recursive: true, force: true });
 	});
 });
