@@ -75,7 +75,7 @@ export function StatusBar({
 	// shows nothing rather than a row of 0s pretending to be measurements.
 	const ctxPct = hud?.contextPct ?? null;
 	const showCtx = ctxPct != null && hud?.contextTokens != null;
-	const showCost = hud?.sessionCostUsd != null && hud?.todayCostUsd != null;
+	const showCost = hud?.threadCostUsd != null && hud?.todayCostUsd != null;
 	// Background work shows only while something is actually in flight. A steady
 	// "bg 0" would be noise on every idle thread, and unlike ctx/cost there is no
 	// "not yet measured" state worth distinguishing from "none running".
@@ -104,7 +104,7 @@ export function StatusBar({
 						{showCtx && showCost && sep}
 						{showCost && (
 							<Text dimColor>
-								{formatUsd(hud.sessionCostUsd ?? 0)} session · {formatUsd(hud.todayCostUsd ?? 0)}{" "}
+								{formatUsd(hud.threadCostUsd ?? 0)} thread · {formatUsd(hud.todayCostUsd ?? 0)}{" "}
 								today
 							</Text>
 						)}

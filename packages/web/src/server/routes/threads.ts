@@ -9,6 +9,7 @@ import {
 	insertRow,
 	listContextDebugTurnsByThread,
 	listThreadsDirectory,
+	sumTurnCostByThread,
 	updateRow,
 } from "@bound/core";
 
@@ -321,6 +322,39 @@ export function createThreadsRoutes(
 			return c.json(
 				{
 					error: "Failed to get thread status",
+					details: message,
+				},
+				500,
+			);
+		}
+	});
+
+	app.get("/:id/cost", (c) => {
+		try {
+			const { id } = c.req.param();
+
+			const thread = findLiveThreadById(db, id);
+
+			if (!thread) {
+				return c.json(
+					{
+						error: "Thread not found",
+					},
+					404,
+				);
+			}
+
+			// Whole-life spend for this thread from the synced `turns` table.
+			// SUM over zero rows is NULL — normalize to 0 so the client never
+			// has to distinguish "no turns yet" from "spent nothing".
+			const { total } = sumTurnCostByThread(db, id);
+
+			return c.json({ cost_usd: total ?? 0 });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json(
+				{
+					error: "Failed to get thread cost",
 					details: message,
 				},
 				500,

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { type HashlineEdit, applyHashlineEdits, formatWithHashes } from "@bound/shared";
 import { contextFileStaleNote, isContextFile } from "./context-files";
+import { checkDbWrite } from "./db-guard";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -68,6 +69,12 @@ async function editToolImpl(
 	}
 
 	const resolvedPath = isAbsolute(file_path) ? file_path : resolve(cwd, file_path);
+
+	// System-DB guard (#207): same correctness rule as boundless_write.
+	const dbDenied = checkDbWrite("boundless_edit", file_path, cwd);
+	if (dbDenied) {
+		return fail(dbDenied);
+	}
 
 	// In-process write guard: an edit reads then writes back to the same path, so
 	// when the sandbox is enabled, confine the target to the writable set up front
