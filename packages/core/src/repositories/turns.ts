@@ -171,6 +171,17 @@ export function findLatestTurnSpend(
 }
 
 /**
+ * Total spend for one thread across its whole life: sum of `cost_usd` over
+ * every non-deleted turn with this `thread_id`. Used by the threads route's
+ * per-thread cost endpoint (boundless statusline HUD, #236).
+ */
+export function sumTurnCostByThread(db: Database, threadId: string): { total: number | null } {
+	return db
+		.query("SELECT SUM(cost_usd) as total FROM turns WHERE thread_id = ? AND deleted = 0")
+		.get(threadId) as { total: number | null };
+}
+
+/**
  * Sum of `cost_usd` across all turns created on a given calendar day
  * (`date(created_at) = ?`). Used by the scheduler's daily-budget guard.
  */

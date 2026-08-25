@@ -107,7 +107,7 @@ An additional status row appears when measurements are available:
 | Segment | Meaning |
 | --- | --- |
 | `ctx 44% (87k/200k)` | Provider-reported context-window use after the last turn |
-| `$1.05 session / $12.34 today` | Cluster-wide live-session and daily spend |
+| `$1.05 thread / $12.34 today` | This thread's whole-life spend and cluster-wide daily spend |
 | `● 3 background` | Background tool calls in flight on this thread |
 
 Segments remain hidden until they have a value. See
@@ -120,7 +120,7 @@ A running `yard` call appears as a magenta-striped card below the transcript. It
 
 The card shows the input and a live execution graph. The graph follows generator execution order from left to right: each yielded effect leads to the next. `all([...])` and `sequence([...])` render as labeled containers; `all` keeps its children parallel while `sequence` links its children in order. Nested `yard()` runs remain subtrees. State colors show whether an effect is running, done, or failed. A wide fan-out collapses into one row, with failed members retaining an indexed failure detail.
 
-While the run is live, the card includes a short syntax-highlighted program preview. Previews and graph height are bounded to the viewport. The processing indicator tracks the full invocation, including effect progress and elapsed time, and session cost refreshes as lifecycle events arrive.
+While the run is live, the card includes a short syntax-highlighted program preview. Previews and graph height are bounded to the viewport. The processing indicator tracks the full invocation, including effect progress and elapsed time, and the thread cost refreshes as lifecycle events arrive.
 
 Client tools dispatched inside the run, such as `boundless_bash`, appear only as graph nodes. Tools dispatched by auxiliary-agent threads belong to their own thread and do not stream under this chat.
 

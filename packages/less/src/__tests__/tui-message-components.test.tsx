@@ -327,7 +327,7 @@ describe("Session HUD", () => {
 			contextWindow: 200_000,
 			contextPct: 0.435,
 			todayCostUsd: 12.34,
-			sessionCostUsd: 1.05,
+			threadCostUsd: 1.05,
 		};
 
 		it("renders the context gauge and spend when the hud carries data", async () => {
@@ -426,7 +426,7 @@ describe("Session HUD", () => {
 						contextWindow: null,
 						contextPct: null,
 						todayCostUsd: null,
-						sessionCostUsd: null,
+						threadCostUsd: null,
 						backgroundCount: 1,
 					}}
 				/>,
