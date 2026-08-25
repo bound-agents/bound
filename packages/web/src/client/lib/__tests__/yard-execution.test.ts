@@ -199,7 +199,9 @@ describe("yardTreeToFlow", () => {
 		const tree = state.live.get("trace-1");
 		if (!tree) throw new Error("missing tree");
 		const flow = yardTreeToFlow(tree);
-		expect(new Set(flow.nodes.map((node) => node.position.y)).size).toBe(flow.nodes.length);
+		expect(new Set(flow.nodes.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(
+			flow.nodes.length,
+		);
 		expect(flow.edges.map((edge) => edge.id)).toEqual([
 			"run-1:left",
 			"run-1:right",
@@ -354,5 +356,107 @@ describe("message/live reconciliation", () => {
 				]),
 			}),
 		]);
+	});
+});
+
+describe("yardTreeToFlow visual metadata and compact tree layout", () => {
+	it("keeps kind and phase metadata while centering parents over deterministic children", () => {
+		const tree = {
+			traceId: "trace-visual",
+			runId: "root",
+			phase: "started" as const,
+			nodes: [
+				{
+					id: "root",
+					parentId: null,
+					node: { kind: "run", depth: 0 } as const,
+					phase: "started" as const,
+					seq: 1,
+					startSeq: 1,
+				},
+				{
+					id: "tool",
+					parentId: "root",
+					node: { kind: "tool", name: "read" } as const,
+					phase: "completed" as const,
+					seq: 2,
+					startSeq: 2,
+				},
+				{
+					id: "infer",
+					parentId: "root",
+					node: { kind: "inference", model: "fable" } as const,
+					phase: "failed" as const,
+					seq: 3,
+					startSeq: 3,
+				},
+			],
+		};
+		const flow = yardTreeToFlow(tree);
+		const byId = new Map(flow.nodes.map((node) => [node.id, node]));
+
+		expect(byId.get("root")?.data).toMatchObject({ kind: "run", phase: "started" });
+		expect(byId.get("tool")?.data).toMatchObject({ kind: "tool", phase: "completed" });
+		expect(byId.get("infer")?.data).toMatchObject({ kind: "inference", phase: "failed" });
+		const toolY = byId.get("tool")?.position.y ?? Number.NaN;
+		const inferY = byId.get("infer")?.position.y ?? Number.NaN;
+		expect(byId.get("root")?.position.y).toBe((toolY + inferY) / 2);
+		expect(flow.edges).toEqual([
+			expect.objectContaining({
+				source: "root",
+				target: "tool",
+				phase: "completed",
+				type: "smoothstep",
+			}),
+			expect.objectContaining({
+				source: "root",
+				target: "infer",
+				phase: "failed",
+				type: "smoothstep",
+			}),
+		]);
+	});
+
+	it("orders equal-sequence nodes by id and leaves space between disconnected roots", () => {
+		const tree = {
+			traceId: "trace-roots",
+			runId: "first",
+			phase: "started" as const,
+			nodes: [
+				{
+					id: "second",
+					parentId: null,
+					node: { kind: "tool", name: "second" } as const,
+					phase: "unknown" as const,
+					seq: 1,
+					startSeq: 1,
+				},
+				{
+					id: "first",
+					parentId: null,
+					node: { kind: "run", depth: 0 } as const,
+					phase: "unknown" as const,
+					seq: 1,
+					startSeq: 1,
+				},
+				{
+					id: "first-child",
+					parentId: "first",
+					node: { kind: "tool", name: "child" } as const,
+					phase: "unknown" as const,
+					seq: 2,
+					startSeq: 2,
+				},
+			],
+		};
+		const flow = yardTreeToFlow(tree);
+		const first = flow.nodes.find((node) => node.id === "first");
+		const second = flow.nodes.find((node) => node.id === "second");
+
+		expect(flow.nodes.map((node) => node.id)).toEqual(["first", "second", "first-child"]);
+		expect((second?.position.y ?? Number.NaN) - (first?.position.y ?? Number.NaN)).toBeGreaterThan(
+			100,
+		);
+		expect(yardTreeToFlow(tree)).toEqual(flow);
 	});
 });
