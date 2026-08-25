@@ -30,7 +30,7 @@ const heading = $derived(tree.phase === "started" ? "Yard execution" : `Yard ${t
 	{#if tree.compact}
 		<div class="compact-result">
 			<strong>Completed execution</strong>
-			<span>Effect graph unavailable after reload.</span>
+			<span>Detailed lifecycle data is unavailable for this older result.</span>
 		</div>
 	{:else}
 		<div class="flow-wrap">

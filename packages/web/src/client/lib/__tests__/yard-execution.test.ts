@@ -245,6 +245,71 @@ describe("persisted Yard message reconstruction", () => {
 		]);
 	});
 
+	it("reconstructs the full completed effect graph persisted in a Yard result", async () => {
+		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
+		const completed = reconstructCompletedYardExecutions([
+			{
+				role: "tool_call",
+				content: JSON.stringify([{ type: "tool_use", id: "yard-call", name: "yard", input: {} }]),
+			},
+			{
+				role: "tool_result",
+				tool_name: "yard-call",
+				content: JSON.stringify({
+					trace_id: "trace-durable",
+					result: { shipped: true },
+					execution: {
+						version: 1,
+						trace_id: "trace-durable",
+						run_id: "run-root",
+						phase: "completed",
+						nodes: [
+							{
+								id: "run-root",
+								parent_id: null,
+								seq: 3,
+								phase: "completed",
+								node: { kind: "run", depth: 0 },
+							},
+							{
+								id: "tool-1",
+								parent_id: "run-root",
+								seq: 4,
+								phase: "completed",
+								node: { kind: "tool", name: "read" },
+							},
+							{
+								id: "infer-1",
+								parent_id: "tool-1",
+								seq: 5,
+								phase: "failed",
+								node: { kind: "inference", model: "fable" },
+								summary: "invalid schema",
+							},
+						],
+					},
+				}),
+			},
+		]);
+
+		const [tree] = completed;
+		if (!tree) throw new Error("missing reconstructed tree");
+		expect(tree).toMatchObject({
+			traceId: "trace-durable",
+			runId: "run-root",
+			compact: false,
+		});
+		expect(tree.nodes.map((node) => [node.id, node.parentId, node.phase])).toEqual([
+			["run-root", null, "completed"],
+			["tool-1", "run-root", "completed"],
+			["infer-1", "tool-1", "failed"],
+		]);
+		expect(yardTreeToFlow(tree).edges.map((edge) => edge.id)).toEqual([
+			"run-root:tool-1",
+			"tool-1:infer-1",
+		]);
+	});
+
 	it("uses the persisted Yard call ID when an ordinary result has no trace ID", async () => {
 		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
 		const completed = reconstructCompletedYardExecutions([

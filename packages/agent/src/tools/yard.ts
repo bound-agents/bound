@@ -55,6 +55,10 @@ interface YardRunScope {
 	sequence: { value: number };
 	/** Current run id; effects use it for client-side grouping. */
 	runId?: string;
+	/** Root run id, retained while nested calls temporarily use their own run id. */
+	rootRunId?: string;
+	/** Safe, normalized lifecycle state included in the root tool result. */
+	executionNodes: Map<string, SerializedYardNode>;
 	/** Outer yard tool call id, exposed on the root event for UI correlation. */
 	toolCallId?: string;
 	/**
@@ -94,18 +98,59 @@ function preview(value: unknown): string {
 	return `${text.slice(0, half)}\n… truncated ${text.length - half * 2} chars …\n${text.slice(-half)}`;
 }
 
+type SerializedYardNode = {
+	id: string;
+	parent_id: string | null;
+	seq: number;
+	start_seq: number;
+	phase: YardExecutionEvent["phase"];
+	node: YardExecutionNode;
+	started_at?: string;
+	finished_at?: string;
+	summary?: string;
+};
+
+function executionPayload(scope: YardRunScope, phase: "completed" | "failed") {
+	return {
+		version: 1,
+		trace_id: scope.traceId,
+		run_id: scope.rootRunId ?? scope.runId ?? scope.traceId,
+		phase,
+		nodes: [...scope.executionNodes.values()]
+			.sort((a, b) => a.start_seq - b.start_seq)
+			.map((node) => ({ ...node })),
+	};
+}
+
 function emitLifecycle(
 	ctx: ToolContext,
 	scope: YardRunScope,
 	event: Omit<YardExecutionEvent, "thread_id" | "trace_id" | "seq">,
 ): void {
+	const seq = ++scope.sequence.value;
+	const existing = scope.executionNodes.get(event.node_id);
+	if (!existing || seq >= existing.seq) {
+		scope.executionNodes.set(event.node_id, {
+			id: event.node_id,
+			parent_id: event.parent_id,
+			seq,
+			start_seq: existing?.start_seq ?? seq,
+			phase: event.phase,
+			node: event.node,
+			started_at: existing?.started_at ?? event.started_at,
+			finished_at: event.finished_at ?? existing?.finished_at,
+			// Effect errors can echo raw tool arguments. The durable graph is structural
+			// telemetry, so retain only run-level summaries (usage/status), never leaf text.
+			summary: event.node.kind === "run" ? (event.summary ?? existing?.summary) : undefined,
+		});
+	}
 	if (!ctx.threadId) return;
 	try {
 		ctx.eventBus.emit("yard:execution", {
 			...event,
 			thread_id: ctx.threadId,
 			trace_id: scope.traceId,
-			seq: ++scope.sequence.value,
+			seq,
 		});
 	} catch (error) {
 		ctx.logger.debug("[yard] lifecycle listener failed", {
@@ -745,6 +790,7 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 	// run's own identity.
 	const runId = randomUUID();
 	scope.runId = runId;
+	if (scope.depth === 0) scope.rootRunId = runId;
 	const parentId = yardNodeStorage.getStore() ?? null;
 	const runNode: YardExecutionNode = { kind: "run", depth: scope.depth };
 	emitLifecycle(ctx, scope, {
@@ -816,7 +862,12 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 						inferenceTokens: out.usage.inference_tokens,
 						elapsedMs: out.usage.elapsed_ms,
 					});
-					return JSON.stringify({ result: out.result, trace_id: scope.traceId, usage: out.usage });
+					return JSON.stringify({
+						result: out.result,
+						trace_id: scope.traceId,
+						usage: out.usage,
+						...(scope.depth === 0 ? { execution: executionPayload(scope, "completed") } : {}),
+					});
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					span.setAttribute("yard.status", "failed");
@@ -905,6 +956,7 @@ export function createYardTool(ctx: ToolContext): RegisteredTool {
 				traceId: randomUUID(),
 				concurrency: budget.concurrency,
 				sequence: { value: 0 },
+				executionNodes: new Map(),
 				toolCallId: callId,
 				abort,
 			};
