@@ -74,6 +74,25 @@ describe("formatYardResult", () => {
 		});
 	});
 
+	it("extracts a real persisted Yard JSON envelope before its duration marker", () => {
+		const result = { listing: "first\nsecond", status: "ok" };
+		const envelope = {
+			result,
+			trace_id: "trace-real",
+			usage: { input_tokens: 1, output_tokens: 2 },
+		};
+		const raw = `${JSON.stringify(envelope)}\n\n[duration: 900.005s]`;
+
+		for (const persisted of [raw, JSON.stringify([{ type: "text", text: raw }])]) {
+			expect(formatYardResult(persisted)).toEqual({
+				display: '{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
+				hint: `object · 2 keys · ${new TextEncoder().encode(persisted).byteLength} B`,
+				isJson: true,
+				tail: "[duration: 900.005s]",
+			});
+		}
+	});
+
 	it("keeps genuinely unparseable result text readable", () => {
 		expect(formatYardResult("not valid {json")).toEqual({
 			display: "not valid {json",

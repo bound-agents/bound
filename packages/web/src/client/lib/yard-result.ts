@@ -2,6 +2,7 @@ export interface FormattedYardResult {
 	display: string;
 	hint: string;
 	isJson: boolean;
+	tail?: string;
 }
 
 function isSensitiveResultKey(key: string): boolean {
@@ -59,7 +60,9 @@ export function classifyYardResult(value: unknown, bytes: number): string {
 }
 
 function unwrapYardResultEnvelope(value: unknown): unknown {
-	if (!isRecord(value) || Object.keys(value).length !== 1 || !("result" in value)) return value;
+	if (!isRecord(value) || !("result" in value)) return value;
+	const envelopeKeys = new Set(["result", "trace_id", "usage"]);
+	if (!Object.keys(value).every((key) => envelopeKeys.has(key))) return value;
 	return value.result;
 }
 
@@ -75,38 +78,88 @@ function unwrapTextContentBlocks(value: unknown): unknown {
 	return value.map((block) => (block as { text: string }).text).join("\n");
 }
 
-function parseNestedJsonString(value: unknown): unknown {
-	if (typeof value !== "string") return value;
+interface ParsedJsonValue {
+	value: unknown;
+	tail?: string;
+}
+
+/** Parses one complete JSON value at the beginning of text, retaining any presentation metadata after it. */
+export function parseLeadingJsonValue(raw: string): ParsedJsonValue | undefined {
 	try {
-		return JSON.parse(value);
+		return { value: JSON.parse(raw) };
 	} catch {
-		return value;
+		// Persisted tool output can append markers such as "[duration: 900.005s]" after JSON.
 	}
+
+	const start = raw.search(/\S/);
+	if (start === -1 || (raw[start] !== "{" && raw[start] !== "[")) return undefined;
+
+	const stack: string[] = [];
+	let inString = false;
+	let escaped = false;
+	for (let index = start; index < raw.length; index++) {
+		const character = raw[index];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === '"') inString = false;
+			continue;
+		}
+		if (character === '"') {
+			inString = true;
+			continue;
+		}
+		if (character === "{" || character === "[") stack.push(character);
+		else if (character === "}" || character === "]") {
+			const opening = stack.pop();
+			if ((character === "}" && opening !== "{") || (character === "]" && opening !== "["))
+				return undefined;
+			if (stack.length === 0) {
+				try {
+					const value = JSON.parse(raw.slice(start, index + 1));
+					const tail = raw.slice(index + 1).trim();
+					return { value, ...(tail ? { tail } : {}) };
+				} catch {
+					return undefined;
+				}
+			}
+		}
+	}
+	return undefined;
 }
 
 /** Resolves persistence wrappers before classifying and rendering one presentation value. */
-function unwrapPersistedYardResult(value: unknown): unknown {
+function unwrapPersistedYardResult(value: unknown, tail?: string): ParsedJsonValue {
 	let current = value;
+	let currentTail = tail;
 	for (let i = 0; i < 4; i++) {
-		const next = parseNestedJsonString(unwrapYardResultEnvelope(unwrapTextContentBlocks(current)));
-		if (next === current) return current;
-		current = next;
+		const unwrapped = unwrapYardResultEnvelope(unwrapTextContentBlocks(current));
+		if (typeof unwrapped !== "string") {
+			if (unwrapped === current)
+				return { value: current, ...(currentTail ? { tail: currentTail } : {}) };
+			current = unwrapped;
+			continue;
+		}
+		const parsed = parseLeadingJsonValue(unwrapped);
+		if (!parsed) return { value: unwrapped, ...(currentTail ? { tail: currentTail } : {}) };
+		current = parsed.value;
+		currentTail ??= parsed.tail;
 	}
-	return current;
+	return { value: current, ...(currentTail ? { tail: currentTail } : {}) };
 }
 
 /** Formats raw persisted result content for disclosure without changing the persisted value. */
 export function formatYardResult(raw: string): FormattedYardResult {
 	const bytes = new TextEncoder().encode(raw).byteLength;
-	try {
-		const value = unwrapPersistedYardResult(JSON.parse(raw));
-		const sanitized = sanitizeYardResult(value);
-		return {
-			display: JSON.stringify(sanitized, null, 2),
-			hint: classifyYardResult(sanitized, bytes),
-			isJson: true,
-		};
-	} catch {
-		return { display: raw, hint: `plain text · ${sizeHint(bytes)}`, isJson: false };
-	}
+	const parsed = parseLeadingJsonValue(raw);
+	if (!parsed) return { display: raw, hint: `plain text · ${sizeHint(bytes)}`, isJson: false };
+
+	const { value, tail } = unwrapPersistedYardResult(parsed.value, parsed.tail);
+	const sanitized = sanitizeYardResult(value);
+	return {
+		display: JSON.stringify(sanitized, null, 2),
+		hint: classifyYardResult(sanitized, bytes),
+		isJson: true,
+		...(tail ? { tail } : {}),
+	};
 }
