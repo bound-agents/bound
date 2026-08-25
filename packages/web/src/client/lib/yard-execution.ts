@@ -4,7 +4,7 @@ export interface YardNodeState {
 	id: string;
 	parentId: string | null;
 	node: YardExecutionNode;
-	phase: "started" | "completed" | "failed";
+	phase: "unknown" | "started" | "completed" | "failed";
 	seq: number;
 	startSeq: number;
 	summary?: string;
@@ -13,8 +13,6 @@ export interface YardNodeState {
 }
 
 export interface YardTreeSnapshot {
-	/** Older persisted results without an execution payload render as a compact final card. */
-	compact?: boolean;
 	traceId: string;
 	runId: string;
 	phase: "started" | "completed" | "failed";
@@ -56,12 +54,29 @@ function fold(
 	event: YardExecutionEvent,
 	root: boolean,
 ): YardTreeSnapshot {
-	const nodes = new Map<string, YardNodeState>((tree?.nodes ?? []).map((node) => [node.id, node]));
-	const existing = nodes.get(event.node_id);
+	const sourceTree =
+		root && !tree && event.program_preview
+			? extractYardProgramTopology(event.program_preview, event.run_id)
+			: (tree?.nodes ?? []);
+	const nodes = new Map<string, YardNodeState>(sourceTree.map((node) => [node.id, node]));
+	const matched = [...nodes.values()].find(
+		(node) =>
+			node.phase === "unknown" &&
+			node.node.kind === event.node.kind &&
+			(node.node.kind !== "tool" ||
+				event.node.kind !== "tool" ||
+				node.node.name === event.node.name ||
+				node.node.name === `aux: ${event.node.name}`) &&
+			(node.node.kind !== "inference" ||
+				event.node.kind !== "inference" ||
+				node.node.model === event.node.model),
+	);
+	const targetId = matched?.id ?? event.node_id;
+	const existing = nodes.get(targetId);
 	if (!existing || event.seq > existing.seq) {
-		nodes.set(event.node_id, {
-			id: event.node_id,
-			parentId: event.parent_id,
+		nodes.set(targetId, {
+			id: targetId,
+			parentId: matched?.parentId ?? event.parent_id,
 			node: event.node,
 			phase: event.phase,
 			seq: event.seq,
@@ -159,86 +174,7 @@ export interface YardMessageLike {
 }
 
 type ToolUse = { id?: unknown; name?: unknown; input?: unknown };
-
-type PersistedYardNode = {
-	id?: unknown;
-	parent_id?: unknown;
-	seq?: unknown;
-	start_seq?: unknown;
-	phase?: unknown;
-	node?: unknown;
-	started_at?: unknown;
-	finished_at?: unknown;
-	summary?: unknown;
-};
-
-type PersistedYardExecution = {
-	version?: unknown;
-	trace_id?: unknown;
-	run_id?: unknown;
-	phase?: unknown;
-	nodes?: unknown;
-};
-
-type YardResult = { trace_id?: unknown; result?: unknown; execution?: PersistedYardExecution };
-
-function isPhase(value: unknown): value is YardNodeState["phase"] {
-	return value === "started" || value === "completed" || value === "failed";
-}
-
-function isNode(value: unknown): value is YardExecutionNode {
-	if (!value || typeof value !== "object") return false;
-	const node = value as Record<string, unknown>;
-	return (
-		(node.kind === "run" && typeof node.depth === "number") ||
-		(node.kind === "tool" && typeof node.name === "string") ||
-		(node.kind === "inference" && typeof node.model === "string")
-	);
-}
-
-function decodeExecution(execution: PersistedYardExecution | undefined):
-	| {
-			traceId: string;
-			runId: string;
-			phase: YardTreeSnapshot["phase"];
-			nodes: YardNodeState[];
-	  }
-	| undefined {
-	if (!execution || execution.version !== 1 || typeof execution.trace_id !== "string")
-		return undefined;
-	if (execution.phase !== "completed" && execution.phase !== "failed") return undefined;
-	if (!Array.isArray(execution.nodes)) return undefined;
-	const nodes: YardNodeState[] = [];
-	for (const raw of execution.nodes as PersistedYardNode[]) {
-		if (
-			typeof raw.id !== "string" ||
-			(raw.parent_id !== null && typeof raw.parent_id !== "string") ||
-			typeof raw.seq !== "number" ||
-			(raw.start_seq !== undefined && typeof raw.start_seq !== "number") ||
-			!isPhase(raw.phase) ||
-			!isNode(raw.node)
-		)
-			continue;
-		nodes.push({
-			id: raw.id,
-			parentId: raw.parent_id,
-			node: raw.node,
-			phase: raw.phase,
-			seq: raw.seq,
-			startSeq: typeof raw.start_seq === "number" ? raw.start_seq : raw.seq,
-			summary: typeof raw.summary === "string" ? raw.summary : undefined,
-			startedAt: typeof raw.started_at === "string" ? raw.started_at : undefined,
-			finishedAt: typeof raw.finished_at === "string" ? raw.finished_at : undefined,
-		});
-	}
-	if (nodes.length === 0) return undefined;
-	return {
-		traceId: execution.trace_id,
-		runId: typeof execution.run_id === "string" ? execution.run_id : execution.trace_id,
-		phase: execution.phase,
-		nodes: nodes.sort((a, b) => a.startSeq - b.startSeq),
-	};
-}
+type YardResult = { trace_id?: unknown; result?: unknown };
 
 function parseJson(value: string): unknown {
 	try {
@@ -249,19 +185,148 @@ function parseJson(value: string): unknown {
 }
 
 /**
- * Rebuilds completed Yard cards from the durable tool-call/result transcript.
- * Newer results carry a safe normalized execution graph; older results retain
- * a compact final card rather than fabricating effect history.
+ * A deliberately non-evaluating, tolerant extractor for Yard's generator DSL.
+ * It recognizes literal effect constructors only; expressions it cannot prove are
+ * represented by an Unknown dynamic region rather than pretending they ran.
  */
+export function extractYardProgramTopology(
+	program: string | undefined,
+	runId: string,
+): YardNodeState[] {
+	const root: YardNodeState = {
+		id: `${runId}:root`,
+		parentId: null,
+		node: { kind: "run", depth: 0 },
+		phase: "unknown",
+		seq: 0,
+		startSeq: 0,
+	};
+	if (!program) return [root];
+	type Call = {
+		kind: string;
+		start: number;
+		end: number;
+		literal?: string;
+		id: string;
+		node: YardExecutionNode;
+	};
+	const closeParen = (open: number): number => {
+		let depth = 0;
+		let quote = "";
+		for (let i = open; i < program.length; i++) {
+			const char = program[i] ?? "";
+			if (quote) {
+				if (char === quote && (program[i - 1] ?? "") !== "\\") quote = "";
+				continue;
+			}
+			if (char === '"' || char === "'" || char === "`") {
+				quote = char;
+				continue;
+			}
+			if (char === "(") depth++;
+			if (char === ")" && --depth === 0) return i;
+		}
+		return program.length;
+	};
+	const calls: Call[] = [];
+	let sequence = 0;
+	for (const match of program.matchAll(/\b(tool|infer|aux|all|sequence|yard)\s*\(/g)) {
+		const kind = match[1] ?? "";
+		const start = match.index ?? 0;
+		const open = start + match[0].length - 1;
+		const body = program.slice(open + 1, closeParen(open));
+		const literal = body.match(/^\s*["'`]([^"'`]*)["'`]/)?.[1];
+		const node =
+			kind === "tool"
+				? ({ kind: "tool", name: literal ?? "tool (dynamic)" } as const)
+				: kind === "infer"
+					? ({ kind: "inference", model: literal ?? "infer (dynamic)" } as const)
+					: kind === "aux"
+						? ({ kind: "tool", name: literal ? `aux: ${literal}` : "aux (dynamic)" } as const)
+						: kind === "yard"
+							? ({ kind: "run", depth: 1 } as const)
+							: ({ kind: "tool", name: kind } as const);
+		calls.push({
+			kind,
+			start,
+			end: closeParen(open),
+			literal,
+			id: `${runId}:static:${++sequence}`,
+			node,
+		});
+	}
+	const nodes = [
+		root,
+		...calls.map((call, index) => {
+			const parent = calls
+				.filter(
+					(candidate) =>
+						(candidate.kind === "all" ||
+							candidate.kind === "sequence" ||
+							candidate.kind === "yard") &&
+						candidate.start < call.start &&
+						candidate.end >= call.end,
+				)
+				.sort((a, b) => a.end - b.end)[0];
+			return {
+				id: call.id,
+				parentId: parent?.id ?? root.id,
+				node: call.node,
+				phase: "unknown" as const,
+				seq: index + 1,
+				startSeq: index + 1,
+			};
+		}),
+	];
+	if (calls.length === 0 && /\byield\b/.test(program))
+		nodes.push({
+			id: `${runId}:dynamic`,
+			parentId: root.id,
+			node: { kind: "tool", name: "Dynamic effect region" },
+			phase: "unknown",
+			seq: 1,
+			startSeq: 1,
+		});
+	return nodes;
+}
+/** Best-effort overlay: lifecycle is ephemeral decoration of stable source topology. */
+export function overlayYardLifecycle(
+	tree: YardTreeSnapshot,
+	events: YardExecutionEvent[],
+): YardTreeSnapshot {
+	const nodes = tree.nodes.map((node) => ({ ...node }));
+	for (const event of events.sort((a, b) => a.seq - b.seq)) {
+		const candidate = nodes.find(
+			(node) =>
+				node.phase === "unknown" &&
+				node.node.kind === event.node.kind &&
+				(node.node.kind !== "tool" ||
+					event.node.kind !== "tool" ||
+					node.node.name === event.node.name ||
+					node.node.name === `aux: ${event.node.name}`) &&
+				(node.node.kind !== "inference" ||
+					event.node.kind !== "inference" ||
+					node.node.model === event.node.model),
+		);
+		if (candidate)
+			Object.assign(candidate, {
+				phase: event.phase,
+				summary: event.summary,
+				startedAt: event.started_at,
+				finishedAt: event.finished_at,
+			});
+	}
+	return { ...tree, nodes };
+}
+
+/** Rebuilds completed topology solely from the durable Yard tool-call program. */
 export function reconstructCompletedYardExecutions(
 	messages: YardMessageLike[],
 ): YardTreeSnapshot[] {
 	const results = new Map<string, YardMessageLike>();
-	for (const message of messages) {
+	for (const message of messages)
 		if (message.role === "tool_result" && message.tool_name)
 			results.set(message.tool_name, message);
-	}
-
 	const completed: YardTreeSnapshot[] = [];
 	for (const message of messages) {
 		if (message.role !== "tool_call") continue;
@@ -273,29 +338,26 @@ export function reconstructCompletedYardExecutions(
 			if (!resultMessage) continue;
 			const result = parseJson(resultMessage.content) as YardResult | undefined;
 			const traceId = typeof result?.trace_id === "string" ? result.trace_id : block.id;
-			const execution = decodeExecution(result?.execution);
 			const input = block.input as { program?: unknown } | undefined;
 			const programPreview = typeof input?.program === "string" ? input.program : undefined;
-			const resultPreview =
-				result?.result === undefined ? resultMessage.content : JSON.stringify(result.result);
 			completed.push({
-				traceId: execution?.traceId ?? traceId,
-				runId: execution?.runId ?? traceId,
-				phase: execution?.phase ?? "completed",
-				compact: execution === undefined,
+				traceId,
+				runId: traceId,
+				phase: "completed",
 				programPreview,
-				resultPreview,
+				resultPreview:
+					result?.result === undefined ? resultMessage.content : JSON.stringify(result.result),
 				toolCallId: block.id,
 				startedAt: message.created_at,
 				finishedAt: resultMessage.created_at,
-				nodes: execution?.nodes ?? [],
+				nodes: extractYardProgramTopology(programPreview, traceId),
 			});
 		}
 	}
 	return completed;
 }
 
-/** Message-derived terminal cards supersede transient trace state for that run. */
+/** Message-derived terminal topology supersedes transient trace state for that run. */
 export function reconcileYardExecutions(
 	state: YardExecutionState,
 	messages: YardMessageLike[],
@@ -305,14 +367,10 @@ export function reconcileYardExecutions(
 	const traceIds = new Set(reconstructed.map((tree) => tree.traceId));
 	const live = new Map(state.live);
 	for (const traceId of traceIds) live.delete(traceId);
-	const completed = [
-		...state.completed.filter((tree) => !traceIds.has(tree.traceId)),
-		...reconstructed,
-	];
 	return {
 		...state,
 		live,
-		completed,
+		completed: [...state.completed.filter((tree) => !traceIds.has(tree.traceId)), ...reconstructed],
 		seenTerminalRoots: new Set([...state.seenTerminalRoots, ...traceIds]),
 	};
 }

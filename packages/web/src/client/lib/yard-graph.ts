@@ -3,7 +3,7 @@ import type { YardTreeSnapshot } from "./yard-execution";
 export interface YardFlowNode {
 	id: string;
 	position: { x: number; y: number };
-	data: { label: string; phase: "started" | "completed" | "failed"; summary?: string };
+	data: { label: string; phase: "unknown" | "started" | "completed" | "failed"; summary?: string };
 	class?: string;
 }
 

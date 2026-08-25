@@ -111,7 +111,7 @@ describe("Yard execution reducer", () => {
 
 		expect(tree?.runId).toBe("run-1");
 		expect(tree?.inputPreview).toBe("root input");
-		expect(tree?.nodes.map((node) => node.id)).toEqual(["run-1", "run-2"]);
+		expect(tree?.nodes.map((node) => node.id)).toEqual(["run-1:root", "run-2"]);
 	});
 });
 
@@ -208,8 +208,41 @@ describe("yardTreeToFlow", () => {
 	});
 });
 
+describe("program topology lifecycle overlay", () => {
+	it("overlays a live tool phase onto its stable program node", async () => {
+		const { reconstructCompletedYardExecutions, overlayYardLifecycle } = await import(
+			"../yard-execution"
+		);
+		const [tree] = reconstructCompletedYardExecutions([
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{
+						type: "tool_use",
+						id: "call",
+						name: "yard",
+						input: { program: `function* main() { yield tool("read", {}); }` },
+					},
+				]),
+			},
+			{ role: "tool_result", tool_name: "call", content: JSON.stringify({ result: "done" }) },
+		]);
+		expect(
+			overlayYardLifecycle(tree, [
+				event({
+					node_id: "actual",
+					parent_id: "run-1",
+					node: { kind: "tool", name: "read" },
+					phase: "failed",
+					summary: "bad",
+				}),
+			]).nodes.find((node) => node.node.kind === "tool"),
+		).toMatchObject({ phase: "failed", summary: "bad" });
+	});
+});
+
 describe("persisted Yard message reconstruction", () => {
-	it("reconstructs a compact completed panel from an existing yard tool-call/result pair", async () => {
+	it("reconstructs a multi-node topology from a historical Yard program without an execution payload", async () => {
 		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
 		const completed = reconstructCompletedYardExecutions([
 			{
@@ -220,7 +253,11 @@ describe("persisted Yard message reconstruction", () => {
 						type: "tool_use",
 						id: "yard-call",
 						name: "yard",
-						input: { program: "function* main() { return 1; }" },
+						input: {
+							program: `function* main() {
+  yield sequence([tool("read", {}), all([infer("fable", { prompt: "x" }), aux("scout", "survey")])]);
+}`,
+						},
 					},
 				]),
 				created_at: "2026-08-24T20:00:00.000Z",
@@ -238,75 +275,14 @@ describe("persisted Yard message reconstruction", () => {
 				traceId: "trace-durable",
 				phase: "completed",
 				toolCallId: "yard-call",
-				compact: true,
-				programPreview: "function* main() { return 1; }",
+				nodes: expect.arrayContaining([
+					expect.objectContaining({ node: { kind: "run", depth: 0 } }),
+					expect.objectContaining({ node: { kind: "tool", name: "read" } }),
+					expect.objectContaining({ node: { kind: "inference", model: "fable" } }),
+				]),
+				programPreview: expect.stringContaining("sequence"),
 				resultPreview: JSON.stringify({ shipped: true }),
 			}),
-		]);
-	});
-
-	it("reconstructs the full completed effect graph persisted in a Yard result", async () => {
-		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
-		const completed = reconstructCompletedYardExecutions([
-			{
-				role: "tool_call",
-				content: JSON.stringify([{ type: "tool_use", id: "yard-call", name: "yard", input: {} }]),
-			},
-			{
-				role: "tool_result",
-				tool_name: "yard-call",
-				content: JSON.stringify({
-					trace_id: "trace-durable",
-					result: { shipped: true },
-					execution: {
-						version: 1,
-						trace_id: "trace-durable",
-						run_id: "run-root",
-						phase: "completed",
-						nodes: [
-							{
-								id: "run-root",
-								parent_id: null,
-								seq: 3,
-								phase: "completed",
-								node: { kind: "run", depth: 0 },
-							},
-							{
-								id: "tool-1",
-								parent_id: "run-root",
-								seq: 4,
-								phase: "completed",
-								node: { kind: "tool", name: "read" },
-							},
-							{
-								id: "infer-1",
-								parent_id: "tool-1",
-								seq: 5,
-								phase: "failed",
-								node: { kind: "inference", model: "fable" },
-								summary: "invalid schema",
-							},
-						],
-					},
-				}),
-			},
-		]);
-
-		const [tree] = completed;
-		if (!tree) throw new Error("missing reconstructed tree");
-		expect(tree).toMatchObject({
-			traceId: "trace-durable",
-			runId: "run-root",
-			compact: false,
-		});
-		expect(tree.nodes.map((node) => [node.id, node.parentId, node.phase])).toEqual([
-			["run-root", null, "completed"],
-			["tool-1", "run-root", "completed"],
-			["infer-1", "tool-1", "failed"],
-		]);
-		expect(yardTreeToFlow(tree).edges.map((edge) => edge.id)).toEqual([
-			"run-root:tool-1",
-			"tool-1:infer-1",
 		]);
 	});
 
@@ -337,7 +313,9 @@ describe("persisted Yard message reconstruction", () => {
 				runId: "call_a378",
 				toolCallId: "call_a378",
 				phase: "completed",
-				compact: true,
+				nodes: expect.arrayContaining([
+					expect.objectContaining({ node: { kind: "run", depth: 0 } }),
+				]),
 				resultPreview: JSON.stringify({ done: true }),
 			}),
 		]);
@@ -345,14 +323,19 @@ describe("persisted Yard message reconstruction", () => {
 });
 
 describe("message/live reconciliation", () => {
-	it("replaces a live replay graph with its compact durable completion", async () => {
+	it("replaces a live replay graph with its program-derived durable completion", async () => {
 		const { reconcileYardExecutions } = await import("../yard-execution");
 		const live = reduceYardExecution(EMPTY_YARD_STATE, event());
 		const state = reconcileYardExecutions(live, [
 			{
 				role: "tool_call",
 				content: JSON.stringify([
-					{ type: "tool_use", id: "call-1", name: "yard", input: { program: "yield tool()" } },
+					{
+						type: "tool_use",
+						id: "call-1",
+						name: "yard",
+						input: { program: `function* main() { yield tool("read", {}); }` },
+					},
 				]),
 			},
 			{
@@ -364,7 +347,12 @@ describe("message/live reconciliation", () => {
 
 		expect(state.live.size).toBe(0);
 		expect(state.completed).toEqual([
-			expect.objectContaining({ traceId: "trace-1", compact: true }),
+			expect.objectContaining({
+				traceId: "trace-1",
+				nodes: expect.arrayContaining([
+					expect.objectContaining({ node: { kind: "tool", name: "read" } }),
+				]),
+			}),
 		]);
 	});
 });
