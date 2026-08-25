@@ -12,7 +12,7 @@
 		"typecheck": "bun run --filter \"*\" --parallel typecheck",
 		"build": "bun run scripts/build.ts",
 		"prepare": "git config core.hooksPath .githooks",
-		"postinstall": "bun run scripts/build-sandbox-runtime.ts && bun run scripts/build-mxc-runtime.ts"
+		"postinstall": "bun run scripts/build-sandbox-runtime.ts && bun run scripts/build-mxc-runtime.ts && bun run scripts/build-lowbox-helper.ts --optional"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",

@@ -179,6 +179,9 @@ packages/sandbox/src/_runtime/
 # mxc sandbox binaries staged from @microsoft/mxc-sdk by scripts/build-mxc-runtime.ts
 packages/less/src/_mxc/
 
+# lowbox helper staged by scripts/build-lowbox-helper.ts for embedding into boundless
+packages/less/src/_lowbox/
+
 # pnpm artifacts (this repo uses bun; pnpm gets invoked accidentally for biome
 # and regenerates these — keep them out of the tree)
 pnpm-lock.yaml

@@ -12,7 +12,7 @@
 
 import { execFileSync, execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { BunPlugin } from "bun";
 import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
 
@@ -254,8 +254,10 @@ async function build() {
 		process.exit(1);
 	}
 
-	// Step 2b: Windows helper compilation runs after boundless so both artifacts
-	// are materialized in the same output directory. Non-Windows builds skip it.
+	// Step 2b: The Windows lowbox helper is built before the boundless compile
+	// (step 4b) so `packages/less/src/_lowbox/embedded.ts` exists and the helper
+	// is embedded into the binary; it also lands in dist/ beside boundless.exe.
+	// Non-Windows builds skip it.
 
 	// Step 2c: Stage mxc for the remaining macOS/Linux sandbox paths.
 	console.log("\n2c. Preparing mxc sandbox runtime...");
@@ -286,30 +288,14 @@ async function build() {
 		console.log("Use 'bun packages/cli/src/boundctl.ts' to run directly");
 	}
 
-	// Step 5: Compile boundless (terminal client)
-	console.log("\n5. Compiling boundless binary...");
-	let boundlessBuilt = false;
-	try {
-		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
-			stubNodePty: true,
-		});
-		boundlessBuilt = true;
-	} catch (e) {
-		console.error("boundless compilation failed:", e instanceof Error ? e.message : e);
-		console.log("Use 'bun packages/less/src/boundless.tsx' to run directly");
-	}
-
-	if (process.platform === "win32" && boundlessBuilt) {
-		console.log("\n5b. Building Windows lowbox helper beside boundless...");
+	// Step 4b: Build the Windows lowbox helper BEFORE boundless so the compile
+	// embeds it via packages/less/src/_lowbox/embedded.ts. Also materializes
+	// dist/bound-lowbox.exe beside the binary for the CI oracle.
+	if (process.platform === "win32") {
+		console.log("\n4b. Building Windows lowbox helper for embedding...");
 		const invocation = buildLowboxHelperCommand();
 		try {
-			execFileSync(invocation.command, invocation.args, {
-				stdio: "inherit",
-				env: {
-					...process.env,
-					BOUND_LOWBOX_STAGE_BESIDE: join(process.cwd(), "dist", "boundless.exe"),
-				},
-			});
+			execFileSync(invocation.command, invocation.args, { stdio: "inherit" });
 		} catch (error) {
 			console.error(
 				"Windows lowbox helper build failed:",
@@ -317,6 +303,17 @@ async function build() {
 			);
 			process.exit(1);
 		}
+	}
+
+	// Step 5: Compile boundless (terminal client)
+	console.log("\n5. Compiling boundless binary...");
+	try {
+		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
+			stubNodePty: true,
+		});
+	} catch (e) {
+		console.error("boundless compilation failed:", e instanceof Error ? e.message : e);
+		console.log("Use 'bun packages/less/src/boundless.tsx' to run directly");
 	}
 
 	// Summary
