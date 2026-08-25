@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { YardExecutionEvent } from "@bound/shared";
 import { anchorYardTrees } from "../yard-anchoring";
-import { EMPTY_YARD_STATE, reduceYardExecution, yardProgress } from "../yard-execution";
+import {
+	EMPTY_YARD_STATE,
+	extractYardProgramTopology,
+	reduceYardExecution,
+	yardProgress,
+} from "../yard-execution";
 import { yardTreeToFlow } from "../yard-graph";
 
 function event(overrides: Partial<YardExecutionEvent> = {}): YardExecutionEvent {
@@ -214,39 +219,6 @@ describe("yardTreeToFlow", () => {
 			"run-1:right",
 			"left:left-child",
 		]);
-	});
-});
-
-describe("program topology lifecycle overlay", () => {
-	it("overlays a live tool phase onto its stable program node", async () => {
-		const { reconstructCompletedYardExecutions, overlayYardLifecycle } = await import(
-			"../yard-execution"
-		);
-		const [tree] = reconstructCompletedYardExecutions([
-			{
-				role: "tool_call",
-				content: JSON.stringify([
-					{
-						type: "tool_use",
-						id: "call",
-						name: "yard",
-						input: { program: `function* main() { yield tool("read", {}); }` },
-					},
-				]),
-			},
-			{ role: "tool_result", tool_name: "call", content: JSON.stringify({ result: "done" }) },
-		]);
-		expect(
-			overlayYardLifecycle(tree, [
-				event({
-					node_id: "actual",
-					parent_id: "run-1",
-					node: { kind: "tool", name: "read" },
-					phase: "failed",
-					summary: "bad",
-				}),
-			]).nodes.find((node) => node.node.kind === "tool"),
-		).toMatchObject({ phase: "failed", summary: "bad" });
 	});
 });
 
@@ -677,9 +649,111 @@ describe("static Yard detail metadata", () => {
 			expect.objectContaining({ program: expect.stringContaining("function* main") }),
 			undefined,
 			expect.objectContaining({ args }),
-			expect.objectContaining({ prompt, schema: true }),
+			expect.objectContaining({ prompt, schema: "{}" }),
 			expect.objectContaining({ instructions }),
 			expect.objectContaining({ args: "dynamic" }),
 		]);
+	});
+});
+
+describe("lexically safe Yard topology extraction", () => {
+	it("keeps the full infer prompt and nested schema from the live review program", () => {
+		const program = `function* main(input) {
+	const reviews = yield all([
+		aux("code", \`Review \${input.cwd}: don't truncate nested \${{ a: [1, { b: true }] }}.\`),
+		aux("tests", "check tests"),
+	]);
+	return yield infer(input.planner_model, {
+		prompt: "Synthesize these three reviews of tonight's Yard panel work into a compact follow-up plan...",
+		input: { reviews, nested: { records: [{ name: "review" }] } },
+		schema: { type: "object", properties: { verdict: { type: "string" }, followups: { type: "array", items: { type: "string" } } }, required: ["verdict", "followups"] },
+	});
+}`;
+		const nodes = extractYardProgramTopology(program, "live-review");
+		const inference = nodes.find((node) => node.node.kind === "inference");
+		expect(inference).toMatchObject({
+			node: { kind: "inference", model: "infer (dynamic)" },
+			detail: {
+				prompt:
+					"Synthesize these three reviews of tonight's Yard panel work into a compact follow-up plan...",
+				schema: `{ type: "object", properties: { verdict: { type: "string" }, followups: { type: "array", items: { type: "string" } } }, required: ["verdict", "followups"] }`,
+			},
+		});
+		expect(nodes.find((node) => node.node.name === "aux: code")?.detail?.instructions).toContain(
+			"don't truncate",
+		);
+	});
+});
+
+describe("static Yard topology lifecycle matching", () => {
+	it("decorates static nodes without creating orphans throughout a live sequence", () => {
+		const program = `function* main(input) {
+	const listing = yield tool("boundless_bash", { command: "git log" });
+	const reviews = yield all([aux("code", "review code"), aux("tests", "review tests"), aux("docs", "review docs")]);
+	return yield infer(input.planner_model, { prompt: "Synthesize tonight's reviews", schema: { type: "object", properties: { verdict: { type: "string" } } } });
+}`;
+		const events = [
+			event({ program_preview: program, node_id: "runtime-root", run_id: "runtime-root" }),
+			event({
+				seq: 2,
+				node_id: "runtime-tool",
+				parent_id: "runtime-root",
+				node: { kind: "tool", name: "boundless_bash" },
+			}),
+			event({
+				seq: 3,
+				phase: "completed",
+				node_id: "runtime-tool",
+				parent_id: "runtime-root",
+				node: { kind: "tool", name: "boundless_bash" },
+			}),
+			event({
+				seq: 4,
+				node_id: "runtime-code",
+				parent_id: "runtime-root",
+				node: { kind: "tool", name: "aux: code" },
+			}),
+			event({
+				seq: 5,
+				node_id: "runtime-tests",
+				parent_id: "runtime-root",
+				node: { kind: "tool", name: "aux: tests" },
+			}),
+			event({
+				seq: 6,
+				node_id: "runtime-docs",
+				parent_id: "runtime-root",
+				node: { kind: "tool", name: "aux: docs" },
+			}),
+			event({
+				seq: 7,
+				node_id: "runtime-infer",
+				parent_id: "runtime-root",
+				node: { kind: "inference", model: "gpt-5.6-sol" },
+			}),
+			event({
+				seq: 8,
+				phase: "completed",
+				node_id: "runtime-root",
+				run_id: "runtime-root",
+			}),
+		];
+		let state = EMPTY_YARD_STATE;
+		let count = 0;
+		for (const next of events) {
+			state = reduceYardExecution(state, next);
+			const tree =
+				state.live.get("trace-1") ?? state.completed.find((tree) => tree.traceId === "trace-1");
+			if (!tree) throw new Error("missing tree");
+			if (count === 0) count = tree.nodes.length;
+			expect(tree.nodes).toHaveLength(count);
+			const ids = new Set(tree.nodes.map((node) => node.id));
+			expect(tree.nodes.filter((node) => node.parentId === null).map((node) => node.id)).toEqual([
+				"runtime-root:root",
+			]);
+			expect(tree.nodes.every((node) => node.parentId === null || ids.has(node.parentId))).toBe(
+				true,
+			);
+		}
 	});
 });
