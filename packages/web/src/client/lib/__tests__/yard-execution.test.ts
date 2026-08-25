@@ -299,6 +299,23 @@ describe("persisted Yard message reconstruction", () => {
 		expect(yardProgress(historical)).toEqual({ total: 6, settled: 6, failed: 0, running: 0 });
 	});
 
+	it("preserves a long persisted Yard program verbatim for the run inspector", async () => {
+		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
+		const program = `function* main() {\n${'  yield tool("read", {});\n'.repeat(200)}\n}`;
+		expect(program.length).toBeGreaterThan(4000);
+		const [tree] = reconstructCompletedYardExecutions([
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "long-call", name: "yard", input: { program } },
+				]),
+			},
+			{ role: "tool_result", tool_name: "long-call", content: JSON.stringify({ result: "done" }) },
+		]);
+		expect(tree?.programPreview).toBe(program);
+		expect(tree?.nodes.find((node) => node.node.kind === "run")?.detail?.program).toBe(program);
+	});
+
 	it("uses the persisted Yard call ID when an ordinary result has no trace ID", async () => {
 		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
 		const completed = reconstructCompletedYardExecutions([
@@ -336,6 +353,43 @@ describe("persisted Yard message reconstruction", () => {
 });
 
 describe("message/live reconciliation", () => {
+	it("uses a persisted call program over the bounded live lifecycle preview", async () => {
+		const { reconcileYardExecutions } = await import("../yard-execution");
+		const program = `function* main() {\n${'  yield tool("read", {});\n'.repeat(200)}\n}`;
+		const preview = `${program.slice(0, 4000)}…`;
+		const live = reduceYardExecution(
+			EMPTY_YARD_STATE,
+			event({ tool_call_id: "call-1", program_preview: preview }),
+		);
+		const state = reconcileYardExecutions(live, [
+			{
+				role: "tool_call",
+				content: JSON.stringify([
+					{ type: "tool_use", id: "call-1", name: "yard", input: { program } },
+				]),
+			},
+		]);
+		const tree = state.live.get("trace-1");
+		expect(tree?.programPreview).toBe(program);
+		expect(tree?.nodes.find((node) => node.node.kind === "run")?.detail?.program).toBe(program);
+	});
+
+	it("keeps the lifecycle preview when no persisted call program is available", async () => {
+		const { reconcileYardExecutions } = await import("../yard-execution");
+		const preview = "function* main() { /* lifecycle preview */ …";
+		const live = reduceYardExecution(
+			EMPTY_YARD_STATE,
+			event({ tool_call_id: "call-without-message", program_preview: preview }),
+		);
+		const state = reconcileYardExecutions(live, []);
+		const tree = state.live.get("trace-1");
+		expect(tree?.programPreview).toBe(preview);
+		if (!tree) throw new Error("missing live Yard execution");
+		expect(
+			yardTreeToFlow(tree).nodes.find((node) => node.data.kind === "run")?.data.detail?.program,
+		).toBe(preview);
+	});
+
 	it("replaces a live replay graph with its program-derived durable completion", async () => {
 		const { reconcileYardExecutions } = await import("../yard-execution");
 		const live = reduceYardExecution(EMPTY_YARD_STATE, event());
