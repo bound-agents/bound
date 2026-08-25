@@ -6,16 +6,22 @@ const yard = $derived(
 	data as {
 		label: string;
 		kind: "run" | "tool" | "inference" | "unknown";
-		phase: "unknown" | "started" | "completed" | "failed";
+		phase: "unknown" | "started" | "completed" | "failed" | "settled";
 		summary?: string;
 	},
 );
 const kindIcon = $derived({ run: "◇", tool: "⌘", inference: "✦", unknown: "?" }[yard.kind]);
 const statusIcon = $derived(
-	{ unknown: "○", started: "◌", completed: "✓", failed: "!" }[yard.phase],
+	{ unknown: "○", started: "◌", completed: "✓", failed: "!", settled: "•" }[yard.phase],
 );
 const statusText = $derived(
-	{ unknown: "Pending", started: "Running", completed: "Complete", failed: "Failed" }[yard.phase],
+	{
+		unknown: "Pending",
+		started: "Running",
+		completed: "Complete",
+		failed: "Failed",
+		settled: "Settled",
+	}[yard.phase],
 );
 </script>
 
@@ -58,6 +64,7 @@ const statusText = $derived(
 	.unknown { --state: var(--idle); }
 	.started { --state: var(--warn); }
 	.completed { --state: var(--ok); }
+	.settled { --state: var(--ink-2); }
 	.failed { --state: var(--err); }
 	:global(.svelte-flow__handle) { width: 7px; height: 7px; border: 1px solid var(--paper); background: var(--ink-2); }
 	@media (prefers-reduced-motion: reduce) { :global(.svelte-flow__handle) { transition: none; } }

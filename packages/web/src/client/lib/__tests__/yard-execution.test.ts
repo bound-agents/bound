@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { YardExecutionEvent } from "@bound/shared";
 import { anchorYardTrees } from "../yard-anchoring";
-import { EMPTY_YARD_STATE, reduceYardExecution } from "../yard-execution";
+import { EMPTY_YARD_STATE, reduceYardExecution, yardProgress } from "../yard-execution";
 import { yardTreeToFlow } from "../yard-graph";
 
 function event(overrides: Partial<YardExecutionEvent> = {}): YardExecutionEvent {
@@ -286,6 +286,10 @@ describe("persisted Yard message reconstruction", () => {
 				resultPreview: JSON.stringify({ shipped: true }),
 			}),
 		]);
+		const [historical] = completed;
+		if (!historical) throw new Error("missing reconstructed Yard execution");
+		expect(historical.nodes.every((node) => node.phase === "settled")).toBe(true);
+		expect(yardProgress(historical)).toEqual({ total: 6, settled: 6, failed: 0, running: 0 });
 	});
 
 	it("uses the persisted Yard call ID when an ordinary result has no trace ID", async () => {
