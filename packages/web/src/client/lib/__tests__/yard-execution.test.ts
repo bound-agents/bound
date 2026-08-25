@@ -150,11 +150,14 @@ describe("yardTreeToFlow", () => {
 		if (!tree) throw new Error("missing tree");
 
 		const flow = yardTreeToFlow(tree);
-		expect(flow.nodes.map((node) => [node.id, node.data.label, node.data.phase])).toEqual([
+		expect(
+			flow.nodes.slice(0, 2).map((node) => [node.id, node.data.label, node.data.phase]),
+		).toEqual([
 			["run-1", "Yard run", "started"],
 			["tool-1", "boundless_bash", "failed"],
 		]);
-		expect(flow.edges).toEqual([
+		expect(flow.nodes.at(-1)?.data.kind).toBe("result");
+		expect(flow.edges.slice(0, 1)).toEqual([
 			expect.objectContaining({ id: "run-1:tool-1", source: "run-1", target: "tool-1" }),
 		]);
 	});
@@ -199,10 +202,14 @@ describe("yardTreeToFlow", () => {
 		const tree = state.live.get("trace-1");
 		if (!tree) throw new Error("missing tree");
 		const flow = yardTreeToFlow(tree);
-		expect(new Set(flow.nodes.map((node) => `${node.position.x}:${node.position.y}`)).size).toBe(
-			flow.nodes.length,
-		);
-		expect(flow.edges.map((edge) => edge.id)).toEqual([
+		expect(
+			new Set(
+				flow.nodes
+					.filter((node) => node.data.kind !== "result")
+					.map((node) => `${node.position.x}:${node.position.y}`),
+			).size,
+		).toBe(flow.nodes.length - 1);
+		expect(flow.edges.slice(0, 3).map((edge) => edge.id)).toEqual([
 			"run-1:left",
 			"run-1:right",
 			"left:left-child",
@@ -414,7 +421,7 @@ describe("yardTreeToFlow visual metadata and compact tree layout", () => {
 		const firstChildY = byId.get("tool")?.position.y ?? Number.NaN;
 		const lastChildY = byId.get("aux")?.position.y ?? Number.NaN;
 		expect(byId.get("root")?.position.y).toBe((firstChildY + lastChildY) / 2);
-		expect(flow.edges).toEqual([
+		expect(flow.edges.slice(0, 3)).toEqual([
 			expect.objectContaining({
 				source: "root",
 				target: "tool",
@@ -472,10 +479,93 @@ describe("yardTreeToFlow visual metadata and compact tree layout", () => {
 		const first = flow.nodes.find((node) => node.id === "first");
 		const second = flow.nodes.find((node) => node.id === "second");
 
-		expect(flow.nodes.map((node) => node.id)).toEqual(["first", "second", "first-child"]);
+		expect(flow.nodes.slice(0, 3).map((node) => node.id)).toEqual([
+			"first",
+			"second",
+			"first-child",
+		]);
 		expect((second?.position.y ?? Number.NaN) - (first?.position.y ?? Number.NaN)).toBeGreaterThan(
 			100,
 		);
 		expect(yardTreeToFlow(tree)).toEqual(flow);
+	});
+});
+
+describe("Yard result convergence", () => {
+	it("adds a terminal result after only the true leaves, centered and phase-aligned", () => {
+		const tree = {
+			traceId: "trace-result",
+			runId: "root",
+			phase: "completed" as const,
+			resultPreview: '{"ok":true}',
+			nodes: [
+				{
+					id: "root",
+					parentId: null,
+					node: { kind: "run", depth: 0 } as const,
+					phase: "settled" as const,
+					seq: 1,
+					startSeq: 1,
+				},
+				{
+					id: "branch",
+					parentId: "root",
+					node: { kind: "tool", name: "read" } as const,
+					phase: "settled" as const,
+					seq: 2,
+					startSeq: 2,
+				},
+				{
+					id: "leaf",
+					parentId: "branch",
+					node: { kind: "tool", name: "write" } as const,
+					phase: "settled" as const,
+					seq: 3,
+					startSeq: 3,
+				},
+				{
+					id: "sibling",
+					parentId: "root",
+					node: { kind: "inference", model: "fable" } as const,
+					phase: "settled" as const,
+					seq: 4,
+					startSeq: 4,
+				},
+			],
+		};
+		const flow = yardTreeToFlow(tree);
+		const result = flow.nodes.find((node) => node.id === "root:result");
+		expect(result?.data).toMatchObject({ kind: "result", phase: "completed", label: "Result" });
+		expect(
+			flow.edges.filter((edge) => edge.target === "root:result").map((edge) => edge.source),
+		).toEqual(["leaf", "sibling"]);
+		expect(result?.position.x).toBeGreaterThan(
+			Math.max(
+				...flow.nodes.filter((node) => node.id !== "root:result").map((node) => node.position.x),
+			),
+		);
+		const leaf = flow.nodes.find((node) => node.id === "leaf");
+		const sibling = flow.nodes.find((node) => node.id === "sibling");
+		if (!leaf || !sibling) throw new Error("missing convergence leaves");
+		expect(result?.position.y).toBe((leaf.position.y + sibling.position.y) / 2);
+		expect(yardTreeToFlow(tree)).toEqual(flow);
+	});
+});
+
+describe("static Yard detail metadata", () => {
+	it("captures bounded literal details without inventing dynamic values", async () => {
+		const { extractYardProgramTopology } = await import("../yard-execution");
+		const nodes = extractYardProgramTopology(
+			`function* main() { yield all([tool("read", { path: "x" }), infer("fable", { prompt: "describe this" , schema: {} }), aux("scout", "inspect it")]); yield tool(name, args); }`,
+			"detail",
+		);
+		expect(nodes.map((node) => node.detail)).toEqual([
+			expect.objectContaining({ program: expect.stringContaining("function* main") }),
+			undefined,
+			expect.objectContaining({ args: '{ path: "x" }' }),
+			expect.objectContaining({ prompt: "describe this", schema: true }),
+			expect.objectContaining({ instructions: "inspect it" }),
+			expect.objectContaining({ args: "dynamic" }),
+		]);
 	});
 });
