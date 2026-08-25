@@ -27,6 +27,20 @@ const statusText = $derived(
 	tree.phase === "started" ? "Running" : tree.phase === "failed" ? "Failed" : "Complete",
 );
 const showMiniMap = $derived(flow.nodes.length > 8);
+const miniMapNodeColor = (node: Node) => {
+	switch ((node.data as { kind?: string }).kind) {
+		case "run":
+			return "var(--line-6)";
+		case "tool":
+			return "var(--line-3)";
+		case "inference":
+			return "var(--line-9)";
+		case "aux":
+			return "var(--line-7)";
+		default:
+			return "var(--idle)";
+	}
+};
 </script>
 
 <section class="yard-execution-panel {tree.phase}" aria-labelledby={`yard-title-${tree.traceId}`} data-trace-id={tree.traceId}>
@@ -46,7 +60,7 @@ const showMiniMap = $derived(flow.nodes.length > 8);
 		<SvelteFlow id={`yard-${tree.traceId}`} nodeTypes={nodeTypes} nodes={flow.nodes as Node[]} edges={flow.edges as Edge[]} fitView fitViewOptions={{ padding: 0.28 }} minZoom={0.2} maxZoom={1.5} nodesDraggable={false} nodesConnectable={false} elementsSelectable={false}>
 			<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
 			<Controls showInteractive={false} />
-			{#if showMiniMap}<MiniMap pannable zoomable aria-label="Yard graph overview" />{/if}
+			{#if showMiniMap}<MiniMap pannable zoomable nodeColor={miniMapNodeColor} aria-label="Yard graph overview" />{/if}
 		</SvelteFlow>
 	</div>
 	<ul class="sr-only" aria-label="Yard execution nodes">
@@ -55,7 +69,7 @@ const showMiniMap = $derived(flow.nodes.length > 8);
 	{#if result}
 		<footer>
 			<details>
-				<summary><span>Result</span><span class="result-hint">{result.hint}</span></summary>
+				<summary><span class="result-title"><span class="disclosure-caret" aria-hidden="true">▸</span>Result</span><span class="result-hint">{result.hint}</span></summary>
 				<pre>{result.display}</pre>
 			</details>
 		</footer>
@@ -71,14 +85,18 @@ const showMiniMap = $derived(flow.nodes.length > 8);
 	.title-group { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
 	.eyebrow { font-size: 11px; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
 	.trace { overflow: hidden; color: var(--ink-2); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-	.phase-chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--state) 55%, var(--rule-soft)); border-radius: 99px; color: var(--state); font: 700 10px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+	.phase-chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid color-mix(in srgb, var(--state) 55%, var(--rule-soft)); border-radius: 99px; background: color-mix(in srgb, var(--state) 10%, var(--paper)); color: var(--state); font: 700 10px var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
 	.phase-chip span { width: 6px; height: 6px; border-radius: 50%; background: var(--state); }
 	.progress { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 12px; border-bottom: 1px solid var(--rule-soft); color: var(--ink-2); font: 10px var(--font-mono); }
 	.failure-count { color: var(--err); }
 	.flow-wrap { height: clamp(240px, 38vw, 440px); width: 100%; }
 	footer { padding: 0; border-top: 1px solid var(--rule-soft); }
 	details { min-width: 0; }
-	summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .07em; text-transform: uppercase; }
+	summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; cursor: pointer; color: var(--ink-2); font: 700 10px var(--font-mono); letter-spacing: .07em; list-style: none; text-transform: uppercase; }
+	summary::-webkit-details-marker { display: none; }
+	.result-title { display: inline-flex; align-items: center; gap: 5px; }
+	.disclosure-caret { color: var(--state); font-size: 12px; line-height: 1; transition: transform 120ms ease; }
+	details[open] .disclosure-caret { transform: rotate(90deg); }
 	summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 	.result-hint { overflow: hidden; font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
 	pre { max-height: min(420px, 50vh); margin: 0; padding: 0 12px 12px; overflow: auto; color: var(--ink-2); font: 11px/1.45 var(--font-mono); overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -91,5 +109,5 @@ const showMiniMap = $derived(flow.nodes.length > 8);
 	:global(.yard-execution-panel .svelte-flow__controls), :global(.yard-execution-panel .svelte-flow__minimap) { border: 1px solid var(--rule-soft); border-radius: 4px; background: var(--paper); box-shadow: 1px 1px 0 color-mix(in srgb, var(--ink) 8%, transparent); }
 	:global(.yard-execution-panel .svelte-flow__controls-button) { border-color: var(--rule-soft); fill: var(--ink-2); }
 	@media (max-width: 640px) { .flow-wrap { height: clamp(220px, 70vw, 320px); } :global(.yard-execution-panel .svelte-flow__minimap) { display: none; } .trace { max-width: 86px; } }
-	@media (prefers-reduced-motion: reduce) { :global(.yard-execution-panel .svelte-flow__edge.animated path) { animation: none; } }
+	@media (prefers-reduced-motion: reduce) { .disclosure-caret { transition: none; } :global(.yard-execution-panel .svelte-flow__edge.animated path) { animation: none; } }
 </style>

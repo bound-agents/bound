@@ -1,6 +1,6 @@
 import type { YardTreeSnapshot } from "./yard-execution";
 
-export type YardFlowKind = "run" | "tool" | "inference" | "unknown";
+export type YardFlowKind = "run" | "tool" | "inference" | "aux" | "unknown";
 export type YardFlowPhase = "unknown" | "started" | "completed" | "failed" | "settled";
 
 export interface YardFlowNode {
@@ -43,8 +43,9 @@ function labelFor(node: YardTreeSnapshot["nodes"][number]): string {
 }
 
 function kindFor(node: YardTreeSnapshot["nodes"][number]): YardFlowKind {
-	if (node.node.kind === "tool" && /dynamic effect region/i.test(node.node.name)) return "unknown";
-	return node.node.kind;
+	if (node.node.kind !== "tool") return node.node.kind;
+	if (/dynamic effect region/i.test(node.node.name)) return "unknown";
+	return node.node.name.startsWith("aux:") ? "aux" : "tool";
 }
 
 /** Maps a lifecycle snapshot to a stable, compact, cycle-safe SvelteFlow graph. */
