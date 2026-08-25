@@ -245,6 +245,25 @@ function countTopLevelObjectKeys(source: string): number | undefined {
 		: undefined;
 }
 
+/** Removes call-site indentation from captured source without changing its relative structure. */
+function normalizeSourceIndentation(source: string): string {
+	const lines = source.split(/\r?\n/);
+	if (lines.length < 2) return source;
+
+	const normalized = lines.map((line) =>
+		line.replace(/^([ \t]*)/, (indent) => indent.replaceAll("\t", "  ")),
+	);
+	const indents = normalized
+		.slice(1)
+		.filter((line) => line.trim())
+		.map((line) => line.match(/^ */)?.[0].length ?? 0);
+	const commonIndent = indents.length === 0 ? 0 : Math.min(...indents);
+	if (commonIndent === 0) return normalized.join("\n");
+	return normalized
+		.map((line, index) => (index === 0 ? line : line.slice(Math.min(commonIndent, line.length))))
+		.join("\n");
+}
+
 /** Formats any Yard presentation value consistently without changing persistence data. */
 export function formatYardValue(raw: string): FormattedYardValue {
 	const bytes = new TextEncoder().encode(raw).byteLength;
@@ -254,7 +273,7 @@ export function formatYardValue(raw: string): FormattedYardValue {
 		const keyCount = literal && countTopLevelObjectKeys(literal.source);
 		if (literal && keyCount !== undefined) {
 			return {
-				display: literal.source,
+				display: normalizeSourceIndentation(literal.source),
 				hint: `object · ${keyCount} ${keyCount === 1 ? "key" : "keys"} · ${sizeHint(bytes)}`,
 				isJson: false,
 				isJavaScript: true,
@@ -284,7 +303,14 @@ export function formatYardInspectorValue(
 	const formatted = formatYardValue(raw);
 	return {
 		...formatted,
-		display: key === "program" ? raw : formatted.display,
+		display:
+			key === "program"
+				? normalizeSourceIndentation(raw)
+				: formatted.isJson
+					? formatted.display
+					: ["prompt", "schema", "instructions"].includes(key)
+						? normalizeSourceIndentation(formatted.display)
+						: formatted.display,
 		lang:
 			key === "program" || formatted.isJavaScript
 				? "javascript"
