@@ -1,7 +1,7 @@
 <script lang="ts">
 import { highlightCode } from "../lib/markdown";
 
-const { code, lang }: { code: string; lang: "javascript" | "json" } = $props();
+const { code, lang }: { code: string; lang: string } = $props();
 let highlighted = $state<string | null>(null);
 
 $effect(() => {
