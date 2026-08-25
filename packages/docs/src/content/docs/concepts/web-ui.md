@@ -17,9 +17,8 @@ interactive inline execution trees: nodes update from the lifecycle stream, show
 completed, or failed status, and can be panned or zoomed. The tree stays under its originating
 Yard call when that call is available; a tree that arrives first remains safely at the end of the
 conversation. Active trees reconnect from the server's in-memory replay buffer when available.
-Completed trees rebuild after reload from the normalized graph stored in the existing Yard
-tool-result message, so their full completed topology survives a server restart without a separate
-persistence layer. Older results retain a compact final card.
+Completed trees rebuild after reload from the persisted Yard tool-call program and its paired
+tool result. This preserves the completed topology without a separate persistence layer. Older results retain a compact final card.
 Threads opened from **System Map** appear here.
 
 **Related documentation:** [Agent system](/bound/concepts/agent-system/) explains how a
@@ -130,4 +129,6 @@ operation](/bound/concepts/sync/) explains cluster-wide state visibility.
 
 ### Yard execution graphs
 
-Yard cards derive their topology from the persisted program source, then overlay live lifecycle state when the trace is still available. Each graph follows the program's yield order and finishes at a **Result** terminus. `all([...])` and `sequence([...])` are nested containers: all members stay parallel, sequence members show their internal order. Select a graph node to open its fixed inspector strip below the canvas. It presents literal source details only (dynamic calls remain marked dynamic) and sanitized result previews; Escape or a canvas click closes it.
+Yard cards reconstruct their topology from the persisted program source and paired result, then overlay live lifecycle state while the trace is available. Straight-line `yield` expressions form the execution chain and finish at a **Result** terminus. `sequence([...])` children show source ordinals; `all([...])` children run in parallel and show a `×N` tag. Yields inside conditionals, loops, and `try` blocks render as dynamic regions rather than guaranteed steps.
+
+Nodes show **Pending**, **Running**, **Complete**, **Failed**, or **Settled**. **Settled** marks a terminal historical run; it does not establish that every effect succeeded. Select a node to open the inspector below the canvas. It shows literal source details and the same formatted values used for results. The selected node stays highlighted; Escape or a canvas click closes the inspector.
