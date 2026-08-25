@@ -350,6 +350,33 @@ describe("persisted Yard message reconstruction", () => {
 			}),
 		]);
 	});
+
+	it("passes real persisted result strings and ContentBlock result payloads to the result formatter", async () => {
+		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
+		const program = "function* main() { return { ok: true }; }";
+		const result = { listing: "first\nsecond", status: "ok" };
+		const calls = [
+			{ type: "tool_use", id: "direct", name: "yard", input: { program } },
+			{ type: "tool_use", id: "blocks", name: "yard", input: { program } },
+		];
+		const completed = reconstructCompletedYardExecutions([
+			{ role: "tool_call", content: JSON.stringify(calls) },
+			{ role: "tool_result", tool_name: "direct", content: JSON.stringify({ result }) },
+			{
+				role: "tool_result",
+				tool_name: "blocks",
+				content: JSON.stringify([{ type: "text", text: JSON.stringify({ result }) }]),
+			},
+		]);
+
+		for (const tree of completed) {
+			const resultNode = yardTreeToFlow(tree).nodes.find((node) => node.data.kind === "result");
+			expect(resultNode?.data.summary).toMatch(/^object · 2 keys · /);
+			expect(resultNode?.data.detail?.result).toBe(
+				'{\n  "listing": "first\\nsecond",\n  "status": "ok"\n}',
+			);
+		}
+	});
 });
 
 describe("message/live reconciliation", () => {
@@ -607,18 +634,22 @@ describe("Yard result convergence", () => {
 });
 
 describe("static Yard detail metadata", () => {
-	it("captures bounded literal details without inventing dynamic values", async () => {
+	it("keeps complete literal arguments, prompts, and instructions for scrollable inspectors", async () => {
 		const { extractYardProgramTopology } = await import("../yard-execution");
+		const args = `{ path: "${"a".repeat(260)}", nested: { answer: true } }`;
+		const prompt = "describe ".repeat(40);
+		const instructions = "inspect ".repeat(40);
 		const nodes = extractYardProgramTopology(
-			`function* main() { yield all([tool("read", { path: "x" }), infer("fable", { prompt: "describe this" , schema: {} }), aux("scout", "inspect it")]); yield tool(name, args); }`,
+			`function* main() { yield all([tool("read", ${args}), infer("fable", { prompt: "${prompt}", schema: {} }), aux("scout", "${instructions}")]); yield tool(name, args); }`,
 			"detail",
 		);
+
 		expect(nodes.map((node) => node.detail)).toEqual([
 			expect.objectContaining({ program: expect.stringContaining("function* main") }),
 			undefined,
-			expect.objectContaining({ args: '{ path: "x" }' }),
-			expect.objectContaining({ prompt: "describe this", schema: true }),
-			expect.objectContaining({ instructions: "inspect it" }),
+			expect.objectContaining({ args }),
+			expect.objectContaining({ prompt, schema: true }),
+			expect.objectContaining({ instructions }),
 			expect.objectContaining({ args: "dynamic" }),
 		]);
 	});
