@@ -9,10 +9,10 @@ import {
 	SvelteFlow,
 } from "@xyflow/svelte";
 import "@xyflow/svelte/dist/style.css";
+import { formatYardInspectorValue, formatYardValue } from "@bound/shared/yard-format";
 import { tick } from "svelte";
 import { type YardTreeSnapshot, yardProgress } from "../lib/yard-execution";
 import { yardTreeToFlow } from "../lib/yard-graph";
-import { formatYardInspectorValue, formatYardValue } from "../lib/yard-result";
 import YardCodeBlock from "./YardCodeBlock.svelte";
 import YardFlowNode from "./YardFlowNode.svelte";
 

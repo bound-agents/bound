@@ -1,5 +1,5 @@
+import { formatYardResult } from "@bound/shared/yard-format";
 import type { YardNodePhase, YardTreeSnapshot } from "./yard-execution";
-import { formatYardResult } from "./yard-result";
 
 export type YardFlowKind = "run" | "tool" | "inference" | "aux" | "unknown" | "result" | "group";
 export type YardFlowPhase = YardNodePhase;

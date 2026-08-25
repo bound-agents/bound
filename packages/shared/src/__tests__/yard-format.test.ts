@@ -4,7 +4,7 @@ import {
 	formatYardResult,
 	formatYardValue,
 	sanitizeYardResult,
-} from "../yard-result";
+} from "../yard-format";
 
 describe("sanitizeYardResult", () => {
 	it("recursively omits encrypted reasoning and signature fields without changing ordinary values", () => {

@@ -1,6 +1,5 @@
 import type { YardExecutionEvent, YardExecutionNode } from "@bound/shared";
-import { parseLeadingJsonValue } from "./yard-result";
-
+import { parseLeadingJsonValue } from "@bound/shared/yard-format";
 export type YardNodePhase = "unknown" | "started" | "completed" | "failed" | "settled";
 
 export interface YardNodeDetail {
