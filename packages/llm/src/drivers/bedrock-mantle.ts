@@ -46,12 +46,14 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { Logger } from "@bound/shared";
+import { context } from "@opentelemetry/api";
 import { streamText } from "ai";
 import { ANTHROPIC_ENVELOPE, PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
+	bindAsyncIterable,
 	mapProviderStream,
 	resolveProviderFetch,
 	withEmptyRetry,
@@ -237,7 +239,11 @@ export class BedrockMantleDriver implements LLMBackend {
 		}
 	}
 
-	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+	chat(params: ChatParams): AsyncIterable<StreamChunk> {
+		return bindAsyncIterable(context.active(), this.chatStream(params));
+	}
+
+	private async *chatStream(params: ChatParams): AsyncIterable<StreamChunk> {
 		// `||` not `??`: callers pass `model: ""` as a "use default" sentinel.
 		const modelId = params.model || this.model;
 		const tools = toToolSet(params.tools);

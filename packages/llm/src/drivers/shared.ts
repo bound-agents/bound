@@ -130,7 +130,7 @@ export const EMPTY_COMPLETION_MAX_RETRIES = 2;
  * Errors are not retried: `mapChunks` throws on error events, which propagates
  * out to the driver's existing `mapError` path.
  */
-export async function* withEmptyRetry(
+export function withEmptyRetry(
 	runAttempt: () => AsyncIterable<StreamChunk>,
 	opts: {
 		maxRetries: number;
@@ -142,118 +142,158 @@ export async function* withEmptyRetry(
 		modelId?: string;
 	},
 ): AsyncIterable<StreamChunk> {
-	for (let attempt = 0; ; attempt++) {
-		const startedAt = performance.now();
-		const provider = opts.providerName ?? "unknown";
-		const model = opts.modelId ?? "unknown";
-		const dimensions = { provider, model };
-		const tracer = trace.getTracer("bound.llm");
-		const requestSpan = tracer.startSpan("llm.provider.request", {
-			attributes: {
-				"llm.provider": provider,
-				"llm.model": model,
-				"llm.retry": attempt,
-			},
-		});
-		const requestContext = trace.setSpan(context.active(), requestSpan);
-		const isLastAttempt = attempt >= opts.maxRetries;
-		let sawContent = false;
-		let retrying = false;
-		let sawDone = false;
-		let recordedTtft = false;
-		let outcome = "incomplete";
-		let iterator: AsyncIterator<StreamChunk> | undefined;
-		try {
-			iterator = context.with(requestContext, () => runAttempt()[Symbol.asyncIterator]());
-			for (;;) {
-				const next = await context.with(requestContext, () => iterator?.next());
-				if (!next || next.done) break;
-				const chunk = next.value;
-				if (chunk.type === "done") {
-					sawDone = true;
-					const isEmpty = !sawContent && chunk.usage.output_tokens === 0;
-					if (isEmpty && !isLastAttempt && !opts.isAborted()) {
-						// Swallow this empty `done` and re-issue. Nothing substantive
-						// was yielded, so the consumer never sees the discarded turn.
-						requestSpan.addEvent("llm.retry", { "llm.retry.reason": "empty_completion" });
-						requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "empty completion" });
-						outcome = "retry";
-						recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
-						recordLlmDriverMetric("retry", 1, { ...dimensions, reason: "empty_completion" });
-						opts.onRetry?.(attempt + 1);
-						retrying = true;
-						break;
-					}
-					outcome = isEmpty ? "empty" : "success";
-					recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
-					requestSpan.setAttribute("llm.outcome", outcome);
-					for (const [type, value] of [
-						["input", chunk.usage.input_tokens],
-						["output", chunk.usage.output_tokens],
-						["cache_write", chunk.usage.cache_write_tokens],
-						["cache_read", chunk.usage.cache_read_tokens],
-					] as const) {
-						if (value !== null) recordLlmDriverMetric("tokens", value, { ...dimensions, type });
-					}
-					if (chunk.cost_usd !== undefined) {
-						recordLlmDriverMetric("cost", chunk.cost_usd, dimensions);
-					}
-					requestSpan.setStatus({ code: SpanStatusCode.OK });
-					yield chunk;
-					return;
-				}
-				if (
-					chunk.type === "text" ||
-					chunk.type === "thinking" ||
-					chunk.type === "tool_use_start" ||
-					chunk.type === "tool_use_args" ||
-					chunk.type === "tool_use_end"
-				) {
-					sawContent = true;
-					if (!recordedTtft) {
-						recordedTtft = true;
-						recordLlmDriverMetric(
-							"ttft",
-							Math.max(0, performance.now() - startedAt) / 1000,
-							dimensions,
-						);
-					}
-				}
-				yield chunk;
-			}
+	// `async function*` bodies do not execute until their first `next()`. The
+	// agent loop creates this stream under loop.turn, then its timeout wrapper
+	// advances it later. Preserve that initiating context so the physical request
+	// remains a child of the turn rather than becoming a new trace root.
+	const parentContext = context.active();
 
-			if (!retrying) {
-				if (!sawDone) {
-					outcome = opts.isAborted() ? "aborted" : "incomplete";
-					recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+	return bindAsyncIterable(
+		parentContext,
+		(async function* (): AsyncIterable<StreamChunk> {
+			for (let attempt = 0; ; attempt++) {
+				const startedAt = performance.now();
+				const provider = opts.providerName ?? "unknown";
+				const model = opts.modelId ?? "unknown";
+				const dimensions = { provider, model };
+				const tracer = trace.getTracer("bound.llm");
+				const requestSpan = tracer.startSpan("llm.provider.request", {
+					attributes: {
+						"llm.provider": provider,
+						"llm.model": model,
+						"llm.retry": attempt,
+					},
+				});
+				const requestContext = trace.setSpan(context.active(), requestSpan);
+				const isLastAttempt = attempt >= opts.maxRetries;
+				let sawContent = false;
+				let retrying = false;
+				let sawDone = false;
+				let recordedTtft = false;
+				let outcome = "incomplete";
+				let iterator: AsyncIterator<StreamChunk> | undefined;
+				try {
+					iterator = context.with(requestContext, () => runAttempt()[Symbol.asyncIterator]());
+					for (;;) {
+						const next = await context.with(requestContext, () => iterator?.next());
+						if (!next || next.done) break;
+						const chunk = next.value;
+						if (chunk.type === "done") {
+							sawDone = true;
+							const isEmpty = !sawContent && chunk.usage.output_tokens === 0;
+							if (isEmpty && !isLastAttempt && !opts.isAborted()) {
+								// Swallow this empty `done` and re-issue. Nothing substantive
+								// was yielded, so the consumer never sees the discarded turn.
+								requestSpan.addEvent("llm.retry", { "llm.retry.reason": "empty_completion" });
+								requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "empty completion" });
+								outcome = "retry";
+								recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+								recordLlmDriverMetric("retry", 1, { ...dimensions, reason: "empty_completion" });
+								opts.onRetry?.(attempt + 1);
+								retrying = true;
+								break;
+							}
+							outcome = isEmpty ? "empty" : "success";
+							recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+							requestSpan.setAttribute("llm.outcome", outcome);
+							for (const [type, value] of [
+								["input", chunk.usage.input_tokens],
+								["output", chunk.usage.output_tokens],
+								["cache_write", chunk.usage.cache_write_tokens],
+								["cache_read", chunk.usage.cache_read_tokens],
+							] as const) {
+								if (value !== null) recordLlmDriverMetric("tokens", value, { ...dimensions, type });
+							}
+							if (chunk.cost_usd !== undefined) {
+								recordLlmDriverMetric("cost", chunk.cost_usd, dimensions);
+							}
+							requestSpan.setStatus({ code: SpanStatusCode.OK });
+							yield chunk;
+							return;
+						}
+						if (
+							chunk.type === "text" ||
+							chunk.type === "thinking" ||
+							chunk.type === "tool_use_start" ||
+							chunk.type === "tool_use_args" ||
+							chunk.type === "tool_use_end"
+						) {
+							sawContent = true;
+							if (!recordedTtft) {
+								recordedTtft = true;
+								recordLlmDriverMetric(
+									"ttft",
+									Math.max(0, performance.now() - startedAt) / 1000,
+									dimensions,
+								);
+							}
+						}
+						yield chunk;
+					}
+
+					if (!retrying) {
+						if (!sawDone) {
+							outcome = opts.isAborted() ? "aborted" : "incomplete";
+							recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+							requestSpan.setAttribute("llm.outcome", outcome);
+							requestSpan.setStatus({
+								code: SpanStatusCode.ERROR,
+								message:
+									outcome === "aborted" ? "provider stream aborted" : "stream ended without done",
+							});
+						}
+						return;
+					}
+				} catch (error) {
+					requestSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+					outcome = "error";
 					requestSpan.setAttribute("llm.outcome", outcome);
 					requestSpan.setStatus({
 						code: SpanStatusCode.ERROR,
-						message:
-							outcome === "aborted" ? "provider stream aborted" : "stream ended without done",
+						message: error instanceof Error ? error.message : "provider stream failed",
 					});
+					recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+					throw error;
+				} finally {
+					if (retrying && iterator?.return) {
+						await context.with(requestContext, () => iterator?.return?.());
+					}
+					recordLlmDriverMetric("duration", Math.max(0, performance.now() - startedAt) / 1000, {
+						...dimensions,
+						outcome,
+					});
+					requestSpan.end();
 				}
-				return;
 			}
-		} catch (error) {
-			requestSpan.recordException(error instanceof Error ? error : new Error(String(error)));
-			outcome = "error";
-			requestSpan.setAttribute("llm.outcome", outcome);
-			requestSpan.setStatus({
-				code: SpanStatusCode.ERROR,
-				message: error instanceof Error ? error.message : "provider stream failed",
-			});
-			recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
-			throw error;
-		} finally {
-			if (retrying && iterator?.return) {
-				await context.with(requestContext, () => iterator?.return?.());
-			}
-			recordLlmDriverMetric("duration", Math.max(0, performance.now() - startedAt) / 1000, {
-				...dimensions,
-				outcome,
-			});
-			requestSpan.end();
-		}
-	}
+		})(),
+	);
+}
+
+/**
+ * Keeps an async generator's resumptions in the context active at stream
+ * creation. This is deliberately iterator-scoped: it restores that context
+ * only while advancing or closing this stream and does not alter its consumer.
+ */
+export function bindAsyncIterable<T>(
+	parentContext: ReturnType<typeof context.active>,
+	source: AsyncIterable<T>,
+): AsyncIterable<T> {
+	return {
+		[Symbol.asyncIterator](): AsyncIterator<T> {
+			const iterator = source[Symbol.asyncIterator]();
+			return {
+				next: (value?: unknown) => context.with(parentContext, () => iterator.next(value)),
+				return: async (value?: unknown): Promise<IteratorResult<T>> =>
+					context.with(parentContext, async () => {
+						if (iterator.return) return iterator.return(value);
+						return { done: true, value: value as T };
+					}),
+				throw: async (error?: unknown): Promise<IteratorResult<T>> =>
+					context.with(parentContext, async () => {
+						if (iterator.throw) return iterator.throw(error);
+						throw error;
+					}),
+			};
+		},
+	};
 }
