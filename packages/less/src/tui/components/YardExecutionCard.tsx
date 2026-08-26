@@ -336,7 +336,11 @@ export function YardExecutionCard({
 				) : (
 					<>
 						<Text dimColor>program</Text>
-						<HighlightedCodeBlock code={tree.programPreview} lang="js" />
+						<HighlightedCodeBlock
+							code={tree.programPreview}
+							lang="js"
+							width={Math.max(10, stripeWidth - 2)}
+						/>
 					</>
 				)
 			) : null}
@@ -351,7 +355,11 @@ export function YardExecutionCard({
 				) : (
 					<>
 						<Text dimColor>input · {formattedInput.hint}</Text>
-						<HighlightedCodeBlock code={formattedInput.display} lang={formatLang(formattedInput)} />
+						<HighlightedCodeBlock
+							code={formattedInput.display}
+							lang={formatLang(formattedInput)}
+							width={Math.max(10, stripeWidth - 2)}
+						/>
 					</>
 				)
 			) : null}
@@ -414,6 +422,7 @@ export function YardExecutionCard({
 						<HighlightedCodeBlock
 							code={formattedResult.display}
 							lang={formatLang(formattedResult)}
+							width={Math.max(10, stripeWidth - 2)}
 						/>
 						{formattedResult.tail ? <Text dimColor>{formattedResult.tail}</Text> : null}
 					</>

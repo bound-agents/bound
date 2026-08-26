@@ -4,13 +4,13 @@ import { Box, Text, useInput } from "ink";
 import type React from "react";
 import { useMemo, useState } from "react";
 import { SelectList } from "../components";
-import { HighlightedLine, langFromPath } from "../components/HighlightedCode";
+import { TokenSpan, highlightLineToRows, langFromPath } from "../components/HighlightedCode";
 import { summarizeToolArgs } from "../components/MessageBlock";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { extractFullText, parseBlocks } from "../util/message-text";
 import { tildifyPath } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
-import { expandTabs, wrapLinesAtWidth } from "../util/wrap";
+import { expandTabs } from "../util/wrap";
 import { type ToolResultMeta, buildToolResultMetaMap } from "./ChatView";
 
 /**
@@ -190,18 +190,22 @@ export function InspectorView({ messages, onClose }: InspectorViewProps): React.
 	// rows — otherwise one long logical line could hide pages of content
 	// behind a single scroll step.
 	const bodyWidth = Math.max(20, columns - 6);
-	const bodyLines = useMemo(() => {
+	// Tokenize each LOGICAL line once, then slice its token row into visual
+	// rows (#239) — highlighting a pre-wrapped fragment re-runs the grammar
+	// from a mid-line state and breaks colors at every wrap point.
+	// wrapTokenRow slices at the same codepoint width as wrapLineAtWidth, so
+	// scroll offsets stay in physical rows exactly as before.
+	const bodyRows = useMemo(() => {
 		if (!detail) return [];
-		const logical = stripTerminalControlSequences(detail.body)
+		return stripTerminalControlSequences(detail.body)
 			.split("\n")
-			.map((l) => expandTabs(l));
-		return wrapLinesAtWidth(logical, bodyWidth);
+			.flatMap((l) => highlightLineToRows(expandTabs(l), detail.lang, bodyWidth));
 	}, [detail, bodyWidth]);
 
 	// Chrome: border 2 + title 1 + detail header 1 + hydration note 1 +
 	// scroll indicators 2 + key hints 1 + slack 1.
 	const viewportRows = Math.max(4, rows - 9);
-	const maxScroll = Math.max(0, bodyLines.length - viewportRows);
+	const maxScroll = Math.max(0, bodyRows.length - viewportRows);
 
 	useInput(
 		(input, key) => {
@@ -228,8 +232,8 @@ export function InspectorView({ messages, onClose }: InspectorViewProps): React.
 		{ isActive: true },
 	);
 
-	const visible = bodyLines.slice(scroll, scroll + viewportRows);
-	const hiddenBelow = Math.max(0, bodyLines.length - scroll - visible.length);
+	const visible = bodyRows.slice(scroll, scroll + viewportRows);
+	const hiddenBelow = Math.max(0, bodyRows.length - scroll - visible.length);
 
 	return (
 		<Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
@@ -270,12 +274,8 @@ export function InspectorView({ messages, onClose }: InspectorViewProps): React.
 					{detail.hydrateError && <Text color="yellow">{detail.hydrateError}</Text>}
 					{scroll > 0 && <Text color="gray">↑ {scroll} more</Text>}
 					<Box flexDirection="column">
-						{visible.map((line, i) => (
-							<HighlightedLine
-								key={`ln-${scroll + i}`}
-								line={line.length === 0 ? " " : line}
-								lang={detail.lang}
-							/>
+						{visible.map((rowTokens, i) => (
+							<TokenSpan key={`ln-${scroll + i}`} tokens={rowTokens} />
 						))}
 					</Box>
 					{hiddenBelow > 0 && <Text color="gray">↓ {hiddenBelow} more</Text>}
