@@ -172,41 +172,46 @@ export function writeOutbox(
 }
 
 export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {
-	return withCoreSpan(
-		"relay_outbox.operation",
-		{
-			"relay.trigger": "reconnect-drain",
-			"relay.path": "outbox.read",
-			"relay.direction": "outbound",
-			"relay.kind": "batch",
-			"relay.carrier_state": trace.getActiveSpan() ? "active" : "absent",
-			"relay.entry_count": 0,
-			"relay.persistence.operation": "read",
-		},
-		(span) => {
-			let rows: RelayOutboxEntry[];
-			try {
-				rows = targetSiteId
-					? (db
-							.query(
-								"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
-							)
-							.all(targetSiteId) as RelayOutboxEntry[])
-					: (db
-							.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
-							.all() as RelayOutboxEntry[]);
-			} catch (error) {
-				span.setAttribute?.("relay.persistence.outcome", "failed");
-				throw error;
-			}
-			const outcome = rows.length > 0 ? "hit" : "miss";
-			recordRelayOutboxOperation("read", outcome);
-			span.setAttribute?.("relay.entry_count", boundedEntryCount(rows.length));
-			span.setAttribute?.("relay.persistence.outcome", outcome);
-			span.addEvent?.("relay_outbox.read", { entry_count: rows.length });
-			return rows;
-		},
-	);
+	const startedAt = performance.now();
+	const carrierState = trace.getActiveSpan() ? "active" : "absent";
+	const attributes = {
+		"relay.trigger": "connection-drain",
+		"relay.path": "outbox.read",
+		"relay.direction": "outbound",
+		"relay.kind": "batch",
+		"relay.carrier_state": carrierState,
+		"relay.entry_count": 0,
+		"relay.persistence.operation": "read",
+	};
+	let rows: RelayOutboxEntry[];
+	try {
+		rows = targetSiteId
+			? (db
+					.query(
+						"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
+					)
+					.all(targetSiteId) as RelayOutboxEntry[])
+			: (db
+					.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
+					.all() as RelayOutboxEntry[]);
+	} catch (error) {
+		recordRelayOutboxOperation("read", "failed", 1, performance.now() - startedAt);
+		return withCoreSpan("relay_outbox.operation", attributes, (span) => {
+			span.setAttribute?.("relay.persistence.outcome", "failed");
+			throw error;
+		});
+	}
+
+	const outcome = rows.length > 0 ? "hit" : "miss";
+	recordRelayOutboxOperation("read", outcome, 1, performance.now() - startedAt);
+	if (rows.length === 0 && carrierState === "absent") return rows;
+
+	return withCoreSpan("relay_outbox.operation", attributes, (span) => {
+		span.setAttribute?.("relay.entry_count", boundedEntryCount(rows.length));
+		span.setAttribute?.("relay.persistence.outcome", outcome);
+		span.addEvent?.("relay_outbox.read", { entry_count: rows.length });
+		return rows;
+	});
 }
 
 export function markDelivered(db: Database, ids: string[]): void {

@@ -112,7 +112,15 @@ export function recordChangeLogPostcommitEvent(outcome: "succeeded" | "failed"):
 
 export function recordRelayOutboxOperation(
 	operation: "read" | "write" | "ack" | "drain",
-	outcome: "hit" | "miss" | "inserted" | "duplicate" | "delivered" | "sent" | "backpressured",
+	outcome:
+		| "hit"
+		| "miss"
+		| "failed"
+		| "inserted"
+		| "duplicate"
+		| "delivered"
+		| "sent"
+		| "backpressured",
 	count = 1,
 	durationMs?: number,
 ): void {
