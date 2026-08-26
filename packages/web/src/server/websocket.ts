@@ -40,12 +40,17 @@ import type {
 	TypedEventEmitter,
 	WsStreamChunk,
 } from "@bound/shared";
-import { ROOT_CONTEXT, SpanStatusCode, trace } from "@opentelemetry/api";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 import { reapStaleClientSessions } from "./client-session-reaper";
 import { storeFile } from "./routes/files";
-import { startClientToolResultReceive, startSessionHostHandoff } from "./trace-topology";
+import {
+	recordClientToolResultReceive,
+	recordSessionHostHandoff,
+	startClientToolResultReceive,
+	startSessionHostHandoff,
+} from "./trace-topology";
 import { YardExecutionCache } from "./yard-execution-cache";
 
 // Zod schemas for all client→server message types
@@ -1012,6 +1017,8 @@ export function createWebSocketHandler(
 		}
 
 		let receiveSpan: ReturnType<typeof startClientToolResultReceive> | undefined;
+		let receiveFailed = msg.is_error === true;
+		const receiveStartedAt = performance.now();
 		try {
 			const now = new Date().toISOString();
 
@@ -1185,8 +1192,15 @@ export function createWebSocketHandler(
 				message,
 				thread_id: msg.thread_id,
 			});
-			receiveSpan?.setStatus({ code: SpanStatusCode.OK });
+			receiveSpan?.setStatus({ code: msg.is_error ? SpanStatusCode.ERROR : SpanStatusCode.OK });
 		} catch (error) {
+			receiveFailed = true;
+			if (!receiveSpan) {
+				receiveSpan = startClientToolResultReceive(trace.getTracer("bound.web"), undefined, {
+					isError: true,
+					hasTraceData: Boolean(msg.trace_data),
+				});
+			}
 			receiveSpan?.recordException(error instanceof Error ? error : new Error(String(error)));
 			receiveSpan?.setStatus({ code: SpanStatusCode.ERROR });
 			const errorMsg = error instanceof Error ? error.message : "Unknown error";
@@ -1198,6 +1212,15 @@ export function createWebSocketHandler(
 				}),
 			);
 		} finally {
+			const receiveDurationMs = performance.now() - receiveStartedAt;
+			if (!receiveSpan && receiveDurationMs >= 100) {
+				receiveSpan = startClientToolResultReceive(trace.getTracer("bound.web"), undefined, {
+					isError: false,
+					hasTraceData: Boolean(msg.trace_data),
+					durationMs: receiveDurationMs,
+				});
+			}
+			recordClientToolResultReceive(receiveDurationMs, receiveFailed ? "error" : "ok", receiveSpan);
 			receiveSpan?.end();
 		}
 	}
@@ -1251,19 +1274,29 @@ export function createWebSocketHandler(
 					...(data.traceContext ? { trace_context: JSON.stringify(data.traceContext) } : {}),
 				});
 				if (conn.ws.readyState === 1) {
-					const handoff = startSessionHostHandoff(
-						trace.getTracer("bound.web"),
-						carrierContext ?? ROOT_CONTEXT,
-					);
+					const handoffStartedAt = performance.now();
+					let handoff = startSessionHostHandoff(trace.getTracer("bound.web"), carrierContext);
+					let handoffFailed = false;
 					try {
 						conn.ws.send(toolCallMessage);
-						handoff.setStatus({ code: SpanStatusCode.OK });
+						handoff?.setStatus({ code: SpanStatusCode.OK });
 					} catch (error) {
-						handoff.recordException(error instanceof Error ? error : new Error(String(error)));
-						handoff.setStatus({ code: SpanStatusCode.ERROR });
+						handoffFailed = true;
+						if (!handoff)
+							handoff = startSessionHostHandoff(trace.getTracer("bound.web"), undefined, {
+								isError: true,
+							});
+						handoff?.recordException(error instanceof Error ? error : new Error(String(error)));
+						handoff?.setStatus({ code: SpanStatusCode.ERROR });
 						throw error;
 					} finally {
-						handoff.end();
+						const handoffDurationMs = performance.now() - handoffStartedAt;
+						if (!handoff && handoffDurationMs >= 100)
+							handoff = startSessionHostHandoff(trace.getTracer("bound.web"), undefined, {
+								durationMs: handoffDurationMs,
+							});
+						recordSessionHostHandoff(handoffDurationMs, handoffFailed ? "error" : "ok");
+						handoff?.end();
 					}
 				}
 				// Update dispatch_queue entry status to 'processing' and claimed_by to connectionId

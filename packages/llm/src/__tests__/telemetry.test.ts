@@ -6,7 +6,11 @@ import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { setLlmDriverMetricRecorderForTest, withEmptyRetry } from "../drivers/shared";
+import {
+	bindAsyncIterable,
+	setLlmDriverMetricRecorderForTest,
+	withEmptyRetry,
+} from "../drivers/shared";
 import type { StreamChunk } from "../types";
 
 function emptyDone(): StreamChunk {
@@ -145,6 +149,59 @@ describe("LLM driver metrics", () => {
 			.find((span) => span.name === "llm.provider.request");
 		expect(request).toBeDefined();
 		expect(activeSpanIds).toEqual([request?.spanContext().spanId, request?.spanContext().spanId]);
+	});
+
+	it("parents the physical request to the context that creates an asynchronously consumed stream", async () => {
+		const parent = trace.getTracer("test").startSpan("agent-loop.turn");
+		const parentContext = trace.setSpan(context.active(), parent);
+		const stream = context.with(parentContext, () =>
+			withEmptyRetry(
+				async function* (): AsyncIterable<StreamChunk> {
+					yield textChunk("first");
+					yield emptyDone();
+				},
+				{ maxRetries: 0, isAborted: () => false, providerName: "test-provider" },
+			),
+		);
+
+		for await (const _chunk of stream) {
+			// Consume after the originating agent-loop context has left scope.
+		}
+		parent.end();
+
+		const request = exporter
+			.getFinishedSpans()
+			.find((span) => span.name === "llm.provider.request");
+		expect(request?.parentSpanId).toBe(parent.spanContext().spanId);
+	});
+
+	it("keeps a provider request under the context that creates a deferred driver stream", async () => {
+		const parent = trace.getTracer("test").startSpan("agent-loop.turn");
+		const parentContext = trace.setSpan(context.active(), parent);
+		const stream = context.with(parentContext, () =>
+			bindAsyncIterable(
+				context.active(),
+				(async function* (): AsyncIterable<StreamChunk> {
+					yield* withEmptyRetry(
+						async function* (): AsyncIterable<StreamChunk> {
+							yield textChunk("first");
+							yield emptyDone();
+						},
+						{ maxRetries: 0, isAborted: () => false, providerName: "test-provider" },
+					);
+				})(),
+			),
+		);
+
+		for await (const _chunk of stream) {
+			// The timeout/relay consumer advances the stream after the creating scope exits.
+		}
+		parent.end();
+
+		const request = exporter
+			.getFinishedSpans()
+			.find((span) => span.name === "llm.provider.request");
+		expect(request?.parentSpanId).toBe(parent.spanContext().spanId);
 	});
 
 	it("records the same aborted outcome on the request span and metric", async () => {
