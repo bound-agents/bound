@@ -279,6 +279,7 @@ export class BedrockDriver implements LLMBackend {
 		// before the first content event, which would trip the relay silence
 		// timeout. This matches the legacy driver's messageStart behavior.
 		yield* runProviderStream({
+			modelId,
 			providerName: "bedrock",
 			signal: params.signal,
 			stream: () =>

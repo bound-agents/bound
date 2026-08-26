@@ -73,6 +73,7 @@ export function resolveProviderFetch(
 
 export interface ProviderStreamParams {
 	providerName: string;
+	modelId?: string;
 	stream: () => AsyncIterable<unknown>;
 	map?: Omit<MapChunksOptions, "providerName">;
 	/**
@@ -106,6 +107,7 @@ export async function* runProviderStream(params: ProviderStreamParams): AsyncIte
 		maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 		isAborted: () => params.signal?.aborted ?? false,
 		providerName: params.providerName,
+		modelId: params.modelId,
 	});
 }
 

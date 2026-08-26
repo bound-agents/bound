@@ -37,6 +37,7 @@ describe("driver stream utilities", () => {
 	it("runProviderStream emits the initial heartbeat before mapped stream chunks", async () => {
 		const chunks = await collect(
 			runProviderStream({
+				modelId: "test-model",
 				providerName: "test-provider",
 				stream: () => normalAiSdkStream(),
 				map: { estimateInputFromMessages: [{ role: "user", content: "hello" }] },
@@ -91,6 +92,7 @@ describe("driver stream utilities", () => {
 		let attempt = 0;
 		const chunks = await collect(
 			runProviderStream({
+				modelId: "test-model",
 				providerName: "test-provider",
 				stream: () => {
 					attempt++;
@@ -113,6 +115,7 @@ describe("driver stream utilities", () => {
 		let attempt = 0;
 		const chunks = await collect(
 			runProviderStream({
+				modelId: "test-model",
 				providerName: "test-provider",
 				stream: () => {
 					attempt++;
