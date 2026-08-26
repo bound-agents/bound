@@ -1270,13 +1270,15 @@ describe("Windows lowbox helper materialization", () => {
 
 	it("materializes the embedded helper under a content-hash dir and reuses it", () => {
 		const dir = mkdtempSync(join(tmpdir(), "lowbox-embedded-"));
-		// Unique hash per run — the materialization target lives in the real home
-		// dir, so a fixed hash would collide across runs.
-		const hash = `embedtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		// Materialize under a tmpdir base rather than the real home directory —
+		// the default base writes to ~/.bound, which is unwritable under the
+		// boundless sandbox and pollutes the developer's home dir on every run.
+		const base = join(dir, "lowbox-runtime");
+		const hash = "embedtest-hash";
 		const staged = join(dir, "staged.exe");
 		writeFileSync(staged, "MZ-fake-helper-bytes");
 
-		const materialized = materializeLowboxHelper(hash, staged);
+		const materialized = materializeLowboxHelper(hash, staged, base);
 		expect(materialized).toContain(join("lowbox-runtime", hash));
 		expect(existsSync(materialized)).toBe(true);
 		expect(readFileSync(materialized, "utf8")).toBe("MZ-fake-helper-bytes");
@@ -1284,7 +1286,7 @@ describe("Windows lowbox helper materialization", () => {
 		// Second call is a no-op even if the staged bytes changed (content-hash
 		// directory names separate versions).
 		writeFileSync(staged, "MZ-different");
-		expect(readFileSync(materializeLowboxHelper(hash, staged), "utf8")).toBe(
+		expect(readFileSync(materializeLowboxHelper(hash, staged, base), "utf8")).toBe(
 			"MZ-fake-helper-bytes",
 		);
 

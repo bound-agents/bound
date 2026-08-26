@@ -39,8 +39,12 @@ let helperMaterialized = false;
  * on-disk staged file — either way the caller treats a non-existent result as
  * "not bundled".
  */
-export function materializeLowboxHelper(hash: string, embeddedPath: string): string {
-	const root = join(homedir(), ".bound", "less", "lowbox-runtime", hash);
+export function materializeLowboxHelper(
+	hash: string,
+	embeddedPath: string,
+	baseDir: string = join(homedir(), ".bound", "less", "lowbox-runtime"),
+): string {
+	const root = join(baseDir, hash);
 	const dest = join(root, "bound-lowbox.exe");
 	if (!existsSync(dest)) {
 		mkdirSync(root, { recursive: true });
