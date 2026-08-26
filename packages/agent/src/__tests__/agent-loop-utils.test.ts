@@ -440,6 +440,35 @@ describe("insertThreadMessage", () => {
 		expect(row.model_id).toBe("claude-opus");
 	});
 
+	it("writes supplied metadata in the insert changelog entry", () => {
+		const id = insertThreadMessage(
+			db,
+			{
+				threadId,
+				role: "tool_result",
+				content: "background placeholder",
+				hostOrigin: hostName,
+				metadata: { aux_thread: "aux-123", background: true },
+			},
+			siteId,
+		);
+
+		const row = db
+			.query("SELECT metadata, created_at, modified_at FROM messages WHERE id = ?")
+			.get(id) as {
+			metadata: string;
+			created_at: string;
+			modified_at: string;
+		};
+		const change = db.query("SELECT row_data FROM change_log WHERE row_id = ?").get(id) as {
+			row_data: string;
+		};
+
+		expect(JSON.parse(row.metadata)).toEqual({ aux_thread: "aux-123", background: true });
+		expect(row.modified_at).toBe(row.created_at);
+		expect(JSON.parse(change.row_data).metadata).toBe(row.metadata);
+	});
+
 	it("sets tool_name when provided", () => {
 		const id = insertThreadMessage(
 			db,

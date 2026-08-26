@@ -13,7 +13,6 @@ import {
 	recordTurnRelayMetrics,
 	resolveRelayConfig,
 	updateRow,
-	writeMessageMetadata,
 	writeOutbox,
 } from "@bound/core";
 import type {
@@ -1473,6 +1472,12 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		frame.messages.push({ role: "tool_call", content: toolCallBlocks });
 
 		for (const { toolCall, result } of batch.results) {
+			// Include tool-provided metadata in the insert event. A follow-up metadata
+			// update can share the insert's millisecond modified_at and be dropped by a
+			// peer's LWW replay before its aux/background stamp has replicated.
+			const metadata: Record<string, unknown> = { ...result.metadata };
+			if (result.mcpApp) metadata.mcp_app = result.mcpApp;
+			if (result.deferred) metadata.background = true;
 			const toolResultMsgId = insertThreadMessage(
 				this.ctx.db,
 				{
@@ -1483,21 +1488,10 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					modelId: frame.resolution.modelId,
 					toolName: toolCall.id,
 					exitCode: result.exitCode,
+					metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
 				},
 				this.ctx.siteId,
 			);
-			// Stamp tool-provided metadata (e.g. aux_thread) plus the seam's own
-			// keys. The background marker keeps the in-flight count derivable from
-			// DB state (countBackgroundToolCallsByThread) rather than tallied by
-			// event arithmetic on a client, which drifts on any dropped frame.
-			// resolveDeferredToolResult clears ONLY the background key when the
-			// real result lands — sibling keys like aux_thread survive resolution.
-			const extraMetadata: Record<string, unknown> = { ...result.metadata };
-			if (result.mcpApp) extraMetadata.mcp_app = result.mcpApp;
-			if (result.deferred) extraMetadata.background = true;
-			if (Object.keys(extraMetadata).length > 0) {
-				writeMessageMetadata(this.ctx.db, toolResultMsgId, extraMetadata, this.ctx.siteId);
-			}
 			this.broadcastMessage(toolResultMsgId);
 			this.messagesCreated++;
 			frame.messages.push({
