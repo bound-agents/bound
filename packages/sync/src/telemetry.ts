@@ -1,12 +1,12 @@
 import { counter, histogram, upDownCounter } from "@bound/shared";
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
 
 interface CounterLike {
-	add(value: number, attributes?: Record<string, string | number>): void;
+	add(value: number, attributes?: Record<string, string | number | boolean>): void;
 }
 
 interface SpanLike {
-	addEvent(name: string, attributes?: Record<string, string | number>): void;
+	addEvent(name: string, attributes?: Record<string, string | number | boolean>): void;
 	recordException(error: Error): void;
 	setStatus(status: { code: SpanStatusCode; message?: string }): void;
 	end(): void;
@@ -45,8 +45,9 @@ export interface SyncTelemetry {
 	drainDuration: { record(value: number, attributes?: Record<string, string>): void };
 	activeConnections: CounterLike;
 	startSpan(
-		name: "ws.handshake" | "replication.drain",
-		attributes: Record<string, string>,
+		name: "ws.handshake" | "replication.drain" | "relay.operation",
+		attributes: Record<string, string | number | boolean>,
+		parentContext?: import("@opentelemetry/api").Context,
 	): SpanLike;
 	now?: () => number;
 }
@@ -57,7 +58,8 @@ let telemetry: SyncTelemetry = {
 	drainedEntries,
 	drainDuration,
 	activeConnections,
-	startSpan: (name, attributes) => tracer.startSpan(name, { attributes }),
+	startSpan: (name, attributes, parentContext) =>
+		tracer.startSpan(name, { attributes }, parentContext ?? context.active()),
 	now: () => performance.now(),
 };
 
@@ -134,5 +136,97 @@ export function startReplicationDrain(
 	return {
 		complete: (outcome, entryCount) => finish(outcome, entryCount),
 		fail: (error, entryCount = 0) => finish("failed", entryCount, error),
+	};
+}
+
+export type RelayOperationDirection = "send" | "receive" | "deliver";
+
+export interface RelayOperationSpan {
+	complete(outcome: "inserted" | "duplicate" | "sent" | "delivered" | "backpressured"): void;
+	fail(error: unknown): void;
+}
+
+const TRACEPARENT_PATTERN = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/;
+const TRACESTATE_KEY_PATTERN =
+	/^(?:[a-z0-9][_0-9a-z*/-]{0,255}|[a-z0-9][_0-9a-z*/-]{0,240}@[a-z0-9][_0-9a-z*/-]{0,13})$/;
+
+function validTracestate(value: string): boolean {
+	if (value.length === 0 || value.length > 512) return false;
+	const members = value.split(",");
+	if (members.length > 32) return false;
+	const seen = new Set<string>();
+	for (const member of members) {
+		const separator = member.indexOf("=");
+		if (separator <= 0) return false;
+		const key = member.slice(0, separator).trim();
+		const memberValue = member.slice(separator + 1).trim();
+		if (!TRACESTATE_KEY_PATTERN.test(key) || seen.has(key)) return false;
+		if (memberValue.length === 0 || memberValue.length > 256) return false;
+		for (const character of memberValue) {
+			const code = character.charCodeAt(0);
+			if (code < 0x20 || code > 0x7e || character === "," || character === "=") return false;
+		}
+		seen.add(key);
+	}
+	return true;
+}
+
+function validTraceCarrier(
+	value?: string | null,
+): { traceparent: string; tracestate?: string } | null {
+	if (!value || value.length > 2048) return null;
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		const record = parsed as Record<string, unknown>;
+		if (Object.keys(record).some((key) => key !== "traceparent" && key !== "tracestate"))
+			return null;
+		if (typeof record.traceparent !== "string") return null;
+		const match = TRACEPARENT_PATTERN.exec(record.traceparent);
+		if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return null;
+		if (record.tracestate !== undefined && typeof record.tracestate !== "string") return null;
+		if (typeof record.tracestate === "string" && !validTracestate(record.tracestate)) return null;
+		return {
+			traceparent: record.traceparent,
+			...(typeof record.tracestate === "string" ? { tracestate: record.tracestate } : {}),
+		};
+	} catch {
+		return null;
+	}
+}
+
+export function startRelayOperation(
+	direction: RelayOperationDirection,
+	options: { kind: string; payloadBytes: number; traceContext?: string | null },
+): RelayOperationSpan {
+	const carrier = validTraceCarrier(options.traceContext);
+	const parentContext = carrier ? propagation.extract(context.active(), carrier) : context.active();
+	const span = telemetry.startSpan(
+		"relay.operation",
+		{
+			direction,
+			kind: options.kind,
+			payload_bytes: options.payloadBytes,
+			trace_context_present: carrier !== null,
+		},
+		parentContext,
+	);
+	let ended = false;
+	return {
+		complete(outcome) {
+			if (ended) return;
+			ended = true;
+			span.addEvent("relay.operation.complete", { outcome });
+			span.setStatus({ code: SpanStatusCode.OK });
+			span.end();
+		},
+		fail(error) {
+			if (ended) return;
+			ended = true;
+			const failure = errorValue(error);
+			span.recordException(failure);
+			span.setStatus({ code: SpanStatusCode.ERROR, message: failure.message });
+			span.end();
+		},
 	};
 }

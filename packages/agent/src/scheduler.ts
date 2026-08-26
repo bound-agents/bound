@@ -1324,6 +1324,7 @@ export class Scheduler {
 		setImmediate(async () => {
 			const executionStartedAt = performance.now();
 			let schedulerOutcome = "hard_failed";
+			let rootSpan: import("@opentelemetry/api").Span | undefined;
 			// Cross-host lease verification: the phase1/phase3 CAS updates above
 			// (`pending → claimed → running`) are local-only on each replica's
 			// SQLite. In a multi-master cluster, two hosts polling concurrently
@@ -1812,7 +1813,7 @@ export class Scheduler {
 				}
 
 				const tracer = getTracer();
-				const rootSpan = tracer.startSpan("scheduler.execute-task", {
+				rootSpan = tracer.startSpan("scheduler.execute-task", {
 					attributes: {
 						"task.id": task.id,
 						"task.type": task.type,
@@ -1838,11 +1839,14 @@ export class Scheduler {
 						agentLoop.run(),
 					);
 				} catch (err) {
+					rootSpan.recordException(err instanceof Error ? err : new Error(String(err)));
+					rootSpan.addEvent("bound.scheduler.outcome", {
+						"scheduler.outcome": "hard_failed",
+					});
 					rootSpan.setStatus({
 						code: SpanStatusCode.ERROR,
 						message: err instanceof Error ? err.message : String(err),
 					});
-					rootSpan.end();
 					throw err;
 				} finally {
 					// Signal completion regardless of success/failure so the indicator
@@ -1929,8 +1933,9 @@ export class Scheduler {
 						const newConsecutiveFailures = txFn();
 						if (newConsecutiveFailures === -1) {
 							schedulerOutcome = "lease_lost";
-							// Lease CAS guard rejected the update; bail without advisory.
-							rootSpan.end();
+							rootSpan.addEvent("bound.scheduler.outcome", {
+								"scheduler.outcome": "lease_lost",
+							});
 							return;
 						}
 						if (newConsecutiveFailures === task.alert_threshold) {
@@ -2032,8 +2037,10 @@ export class Scheduler {
 					}
 				} else {
 					schedulerOutcome = "lease_lost";
+					rootSpan.addEvent("bound.scheduler.outcome", {
+						"scheduler.outcome": "lease_lost",
+					});
 				}
-				rootSpan.end();
 
 				// Fire-and-forget: generate a proper thread title (replaces the
 				// null placeholder set during thread creation).
@@ -2176,6 +2183,7 @@ export class Scheduler {
 					schedulerOutcome = "lease_lost";
 				}
 			} finally {
+				if (rootSpan) rootSpan.end();
 				const metricAttributes = { outcome: schedulerOutcome, type: task.type };
 				recordAgentOperationalMetric("scheduler", metricAttributes);
 				recordSchedulerExecutionDuration(performance.now() - executionStartedAt, metricAttributes);

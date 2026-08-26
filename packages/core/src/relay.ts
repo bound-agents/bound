@@ -37,6 +37,7 @@ export function writeOutbox(
 	if (!entry.source_site_id) {
 		throw new Error("writeOutbox: source_site_id is required for relay routing");
 	}
+	const payloadBytes = new TextEncoder().encode(entry.payload).byteLength;
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
 	// INSERT OR IGNORE: when the primary key `id` matches an existing row, OR
 	// when idempotency_key + target_site_id matches an existing row (via
@@ -44,6 +45,10 @@ export function writeOutbox(
 	// Entries with NULL idempotency_key are never deduplicated by idempotency
 	// (partial index excludes NULLs), but PK conflicts on `id` still ignore.
 	return withCoreSpan("relay_outbox.operation", (span) => {
+		span.setAttribute?.("kind", entry.kind);
+		span.setAttribute?.("direction", "outbound");
+		span.setAttribute?.("payload_bytes", payloadBytes);
+		span.setAttribute?.("trace_context_present", entry.trace_context != null);
 		const result = db.run(
 			`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered, trace_context)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
@@ -76,9 +81,12 @@ export function writeOutbox(
 		// crash-replayed event the outbox already carries).
 		if (result.changes === 0) {
 			recordRelayOutboxOperation("write", "duplicate");
+			span.setAttribute?.("outcome", "duplicate");
+			span.addEvent?.("relay_outbox.write", { outcome: "duplicate" });
 			return false;
 		}
 		recordRelayOutboxOperation("write", "inserted");
+		span.setAttribute?.("outcome", "inserted");
 
 		// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
 		const bus = eventBus ?? relayOutboxEventBus;
@@ -88,7 +96,7 @@ export function writeOutbox(
 				target_site_id: entry.target_site_id,
 			});
 		}
-		span.addEvent("relay_outbox.write", { outcome: "inserted" });
+		span.addEvent?.("relay_outbox.write", { outcome: "inserted" });
 		return true;
 	});
 }
@@ -105,7 +113,7 @@ export function readUndelivered(db: Database, targetSiteId?: string): RelayOutbo
 					.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
 					.all() as RelayOutboxEntry[]);
 		recordRelayOutboxOperation("read", rows.length > 0 ? "hit" : "miss");
-		span.addEvent("relay_outbox.read", { entry_count: rows.length });
+		span.addEvent?.("relay_outbox.read", { entry_count: rows.length });
 		return rows;
 	});
 }

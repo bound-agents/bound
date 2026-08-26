@@ -418,29 +418,42 @@ export class RelayProcessor {
 	private static readonly PASSIVE_KIND_SET = new Set<string>(RELAY_PASSIVE_KINDS);
 
 	private async processEntry(entry: RelayInboxEntry): Promise<void> {
+		// Response and passive rows are mailbox traffic, not active request work.
+		if (
+			RelayProcessor.RESPONSE_KIND_SET.has(entry.kind) ||
+			RelayProcessor.PASSIVE_KIND_SET.has(entry.kind)
+		) {
+			if (RelayProcessor.RESPONSE_KIND_SET.has(entry.kind)) markProcessed(this.db, [entry.id]);
+			return;
+		}
+
+		const parentContext = extractTraceContext(parseTraceCarrier(entry.trace_context));
+		const span = getTracer().startSpan(
+			"relay.request.receive",
+			{
+				attributes: {
+					"relay.kind": entry.kind,
+					"relay.request.id": entry.id,
+					"relay.source.site_id": entry.source_site_id,
+					...(entry.stream_id ? { "relay.stream.id": entry.stream_id } : {}),
+				},
+			},
+			parentContext,
+		);
 		try {
-			// Step 0a: Skip response kinds (result, error, stream_chunk, etc.)
-			// These are callbacks from prior requests — consumed by RELAY_WAIT
-			// polling in the agent loop, not re-processed here. Without this
-			// guard, "error" kind entries generate "Unknown request kind: error"
-			// errors which amplify into an infinite loop (see March 28 incident).
-			if (RelayProcessor.RESPONSE_KIND_SET.has(entry.kind)) {
-				markProcessed(this.db, [entry.id]);
-				return;
-			}
+			await context.with(trace.setSpan(parentContext, span), () =>
+				this.processActiveEntry(entry, span),
+			);
+		} finally {
+			span.end();
+		}
+	}
 
-			// Step 0b: Leave passive kinds entirely alone — they are durable
-			// mailbox rows owned by another consumer (currently the scheduler's
-			// event-task wakeup path, which drains `webhook_intake` rows after
-			// folding their envelopes into the agent context). markProcessed-ing
-			// these here would steal the row from its rightful consumer; the
-			// scheduler would then read processed=0 empty and silently fall back
-			// to "Execute scheduled task." on every wakeup. That was the failure
-			// mode that motivated this branch.
-			if (RelayProcessor.PASSIVE_KIND_SET.has(entry.kind)) {
-				return;
-			}
-
+	private async processActiveEntry(
+		entry: RelayInboxEntry,
+		receiveSpan: import("@opentelemetry/api").Span,
+	): Promise<void> {
+		try {
 			// Authorization keys on the authenticated delivering peer, not on
 			// entry.source_site_id (#50, R-SR1/R-SR2/R-SR7). The frame that produced
 			// this inbox row was decoded under a keyring peer's per-peer key at the
@@ -493,6 +506,7 @@ export class RelayProcessor {
 					markProcessed(this.db, [entry.id]);
 					return;
 				}
+				receiveSpan.addEvent("relay.handler.started");
 				response = await handler(entry);
 			} catch (executionError) {
 				// PayloadParseError: handler already wrote error response and marked
@@ -501,12 +515,22 @@ export class RelayProcessor {
 					return;
 				}
 				// Step 5b: Handle execution errors
+				receiveSpan.recordException(
+					executionError instanceof Error ? executionError : new Error(String(executionError)),
+				);
+				receiveSpan.setStatus({
+					code: SpanStatusCode.ERROR,
+					message:
+						executionError instanceof Error ? executionError.message : String(executionError),
+				});
+				receiveSpan.addEvent("relay.outcome", { "relay.outcome": "error" });
 				const errorResponse: ErrorPayload = {
 					error: String(executionError),
 					retriable: true,
 				};
 				response = JSON.stringify(errorResponse);
 				this.writeResponse(entry, "error", response);
+				receiveSpan.addEvent("relay.response.enqueued", { "relay.response.kind": "error" });
 				markProcessed(this.db, [entry.id]);
 				// Record relay cycle for error
 				const executionMs = Date.now() - executionStartTime;
@@ -533,6 +557,7 @@ export class RelayProcessor {
 			// Step 6: Write response (null means handler already wrote chunks)
 			if (response !== null) {
 				this.writeResponse(entry, "result", response);
+				receiveSpan.addEvent("relay.response.enqueued", { "relay.response.kind": "result" });
 			}
 
 			// Step 7: Cache result if idempotency key is set (AC5.1)
@@ -545,6 +570,8 @@ export class RelayProcessor {
 
 			// Step 8: Mark processed
 			markProcessed(this.db, [entry.id]);
+			receiveSpan.addEvent("relay.outcome", { "relay.outcome": "processed" });
+			receiveSpan.setStatus({ code: SpanStatusCode.OK });
 
 			// Step 9: Record relay cycle metrics
 			const executionMs = Date.now() - executionStartTime;
@@ -566,6 +593,11 @@ export class RelayProcessor {
 				});
 			}
 		} catch (error) {
+			receiveSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+			receiveSpan.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: error instanceof Error ? error.message : String(error),
+			});
 			this.logger.error("Error processing relay entry", { error, entryId: entry.id });
 			markProcessed(this.db, [entry.id]);
 		}
@@ -1929,18 +1961,29 @@ export class RelayProcessor {
 
 				await context.with(parentContext, async () => {
 					const span = tracer.startSpan("relay.hub-inference");
-					try {
-						await runInferenceWithTracing();
-						span.setStatus({ code: SpanStatusCode.OK });
-					} catch (inferenceErr) {
-						span.setStatus({
-							code: SpanStatusCode.ERROR,
-							message: inferenceErr instanceof Error ? inferenceErr.message : String(inferenceErr),
+					await context.with(trace.setSpan(context.active(), span), async () => {
+						const providerSpan = tracer.startSpan("llm.provider.request", {
+							attributes: { "llm.model": payload.model },
 						});
-						throw inferenceErr;
-					} finally {
-						span.end();
-					}
+						try {
+							await context.with(trace.setSpan(context.active(), providerSpan), () =>
+								runInferenceWithTracing(),
+							);
+							providerSpan.setStatus({ code: SpanStatusCode.OK });
+							span.setStatus({ code: SpanStatusCode.OK });
+						} catch (inferenceErr) {
+							const error =
+								inferenceErr instanceof Error ? inferenceErr : new Error(String(inferenceErr));
+							providerSpan.recordException(error);
+							providerSpan.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+							span.recordException(error);
+							span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+							throw inferenceErr;
+						} finally {
+							providerSpan.end();
+							span.end();
+						}
+					});
 				});
 
 				collectedSpans = await collector.flush();

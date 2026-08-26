@@ -106,7 +106,7 @@ export function withChangeLog<T>(
 		try {
 			committed = transaction() as typeof committed;
 			recordChangeLogTransaction("committed");
-			span.addEvent("changelog.committed", { table_name: committed.tableName });
+			span.addEvent?.("changelog.committed", { table_name: committed.tableName });
 		} catch (error) {
 			recordChangeLogTransaction("failed");
 			throw error;
@@ -122,7 +122,7 @@ export function withChangeLog<T>(
 				recordChangeLogPostcommitEvent("succeeded");
 			} catch (error) {
 				recordChangeLogPostcommitEvent("failed");
-				span.addEvent("changelog.postcommit_event_failed", {
+				span.addEvent?.("changelog.postcommit_event_failed", {
 					table_name: committed.tableName,
 				});
 				throw error;
