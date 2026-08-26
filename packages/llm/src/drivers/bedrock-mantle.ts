@@ -282,6 +282,7 @@ export class BedrockMantleDriver implements LLMBackend {
 			yield* withEmptyRetry(runAttempt, {
 				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 				isAborted: () => params.signal?.aborted ?? false,
+				providerName: PROVIDER_NAME,
 				onRetry: (attempt) =>
 					this.logger?.warn?.(
 						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
@@ -376,6 +377,7 @@ export class BedrockMantleDriver implements LLMBackend {
 		yield* withEmptyRetry(runAttempt, {
 			maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 			isAborted: () => params.signal?.aborted ?? false,
+			providerName: PROVIDER_NAME,
 			onRetry: (attempt) =>
 				this.logger?.warn?.(
 					`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,

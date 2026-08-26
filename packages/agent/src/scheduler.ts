@@ -20,6 +20,12 @@ import { buildConsolidationContext } from "./consolidation-context";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
 import {
+	recordAgentOperationalMetric,
+	recordSchedulerClaimDelay,
+	recordSchedulerExecutionDuration,
+	recordSchedulerQueueDelay,
+} from "./operational-metrics";
+import {
 	computeFiringKey,
 	computeNextRunAt,
 	deriveFiringArtifactId,
@@ -1193,6 +1199,11 @@ export class Scheduler {
 					this.ctx.logger.info("[scheduler] Task already claimed by another host", {
 						taskId: task.id,
 					});
+				} else if (task.next_run_at) {
+					recordSchedulerQueueDelay(
+						new Date(claimedAt).getTime() - new Date(task.next_run_at).getTime(),
+						{ type: task.type },
+					);
 				}
 			}
 		}
@@ -1792,6 +1803,12 @@ export class Scheduler {
 				}
 
 				const agentLoop = this.agentLoopFactory(loopConfig);
+				const executionStartedAt = performance.now();
+				if (task.claimed_at) {
+					recordSchedulerClaimDelay(Date.now() - new Date(task.claimed_at).getTime(), {
+						type: task.type,
+					});
+				}
 
 				const tracer = getTracer();
 				const rootSpan = tracer.startSpan("scheduler.execute-task", {
@@ -1819,15 +1836,14 @@ export class Scheduler {
 					result = await context.with(trace.setSpan(context.active(), rootSpan), () =>
 						agentLoop.run(),
 					);
-					rootSpan.setStatus({ code: SpanStatusCode.OK });
 				} catch (err) {
 					rootSpan.setStatus({
 						code: SpanStatusCode.ERROR,
 						message: err instanceof Error ? err.message : String(err),
 					});
+					rootSpan.end();
 					throw err;
 				} finally {
-					rootSpan.end();
 					// Signal completion regardless of success/failure so the indicator
 					// clears. Cross-host watchers (web on a different host than the one
 					// running the task) rely on the synced tasks.status='running' poll
@@ -1850,6 +1866,14 @@ export class Scheduler {
 					const completedAt = new Date().toISOString();
 
 					if (result.error) {
+						rootSpan.addEvent("bound.scheduler.outcome", { "scheduler.outcome": "soft_failed" });
+						rootSpan.setStatus({ code: SpanStatusCode.ERROR, message: result.error });
+						const metricAttributes = { outcome: "soft_failed", type: task.type };
+						recordAgentOperationalMetric("scheduler", metricAttributes);
+						recordSchedulerExecutionDuration(
+							performance.now() - executionStartedAt,
+							metricAttributes,
+						);
 						this.ctx.logger.warn("[scheduler] Task soft-failed", {
 							taskId: task.id,
 							triggerSpec: task.trigger_spec,
@@ -1908,7 +1932,8 @@ export class Scheduler {
 
 						const newConsecutiveFailures = txFn();
 						if (newConsecutiveFailures === -1) {
-							// Lease CAS guard rejected the update; bail without advisory
+							// Lease CAS guard rejected the update; bail without advisory.
+							rootSpan.end();
 							return;
 						}
 						if (newConsecutiveFailures === task.alert_threshold) {
@@ -1942,6 +1967,14 @@ export class Scheduler {
 						);
 						resetEventTask(this.ctx.db, task, this.ctx.logger, "soft error", this.ctx.siteId);
 					} else {
+						rootSpan.addEvent("bound.scheduler.outcome", { "scheduler.outcome": "completed" });
+						rootSpan.setStatus({ code: SpanStatusCode.OK });
+						const metricAttributes = { outcome: "completed", type: task.type };
+						recordAgentOperationalMetric("scheduler", metricAttributes);
+						recordSchedulerExecutionDuration(
+							performance.now() - executionStartedAt,
+							metricAttributes,
+						);
 						this.ctx.logger.info("[scheduler] Task completed", {
 							taskId: task.id,
 							triggerSpec: task.trigger_spec,
@@ -2005,6 +2038,7 @@ export class Scheduler {
 						resetEventTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
 					}
 				}
+				rootSpan.end();
 
 				// Fire-and-forget: generate a proper thread title (replaces the
 				// null placeholder set during thread creation).

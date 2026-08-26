@@ -1,4 +1,5 @@
 import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "@bound/llm";
+import { counter, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { getLlmStatusCode, isRateLimitStatus, isTransientLLMError } from "./error-classification";
 import type {
@@ -61,6 +62,47 @@ const DEFAULT_SILENCE_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TRANSIENT_RETRIES = 3;
 const DEFAULT_DEGENERATE_RETRY_MAX = 2;
 
+const loopRuns = counter("bound.loop.runs", {
+	description: "Agent loop runs by outcome",
+});
+const loopTurns = counter("bound.loop.turns", {
+	description: "Agent loop turns by outcome",
+});
+const loopRunDuration = histogram("bound.loop.run.duration", {
+	description: "Agent loop run duration",
+	unit: "s",
+});
+const loopTurnDuration = histogram("bound.loop.turn.duration", {
+	description: "Agent loop turn duration",
+	unit: "s",
+});
+const loopInFlight = upDownCounter("bound.loop.in_flight", {
+	description: "Agent loop runs currently in flight",
+});
+type LoopMetricName = "run" | "turn" | "run_duration" | "turn_duration" | "in_flight";
+type LoopMetricRecorder = (
+	name: LoopMetricName,
+	value: number,
+	attributes: Record<string, string>,
+) => void;
+let testLoopMetricRecorder: LoopMetricRecorder | undefined;
+
+export function setLoopMetricRecorderForTest(recorder?: LoopMetricRecorder): void {
+	testLoopMetricRecorder = recorder;
+}
+
+export function recordLoopOperationalMetric(
+	name: LoopMetricName,
+	attributes: Record<string, string>,
+	value = 1,
+): void {
+	testLoopMetricRecorder?.(name, value, attributes);
+	if (name === "run") loopRuns.add(value, attributes);
+	else if (name === "turn") loopTurns.add(value, attributes);
+	else if (name === "run_duration") loopRunDuration.record(value, attributes);
+	else if (name === "turn_duration") loopTurnDuration.record(value, attributes);
+	else loopInFlight.add(value, attributes);
+}
 /** Reason codes for a tripped loop-guard, surfaced to onLoopGuardTripped. */
 export type LoopGuardReason = "truncated" | "duplicate" | "identical-error" | "routing-error";
 
@@ -247,6 +289,8 @@ export class ModularAgentLoop {
 
 	async run(): Promise<AgentLoopResult> {
 		let result: AgentLoopResult | undefined;
+		const runStartedAt = performance.now();
+		recordLoopOperationalMetric("in_flight", {}, 1);
 		const tracer = trace.getTracer("bound.loop");
 		const loopSpan = tracer.startSpan("loop.run", {
 			attributes: {
@@ -341,7 +385,17 @@ export class ModularAgentLoop {
 				loopSpan.setStatus({ code: SpanStatusCode.ERROR, message });
 				result = this.result({ error: message, outcome: "after-run-failed" });
 			}
-			if (result) this.recordLoopOutcome(loopSpan, result);
+			const outcome = result?.outcome ?? "error";
+			if (result) {
+				this.recordLoopOutcome(loopSpan, result);
+				recordLoopOperationalMetric("run", { outcome });
+			}
+			recordLoopOperationalMetric(
+				"run_duration",
+				{ outcome },
+				Math.max(0, performance.now() - runStartedAt) / 1000,
+			);
+			recordLoopOperationalMetric("in_flight", {}, -1);
 			loopSpan.end();
 		}
 	}
@@ -428,6 +482,18 @@ export class ModularAgentLoop {
 			loopCtx,
 		);
 		const chunks: StreamChunk[] = [];
+		const turnStartedAt = performance.now();
+		let turnMetricRecorded = false;
+		const recordTurnMetric = (outcome: string): void => {
+			if (turnMetricRecorded) return;
+			turnMetricRecorded = true;
+			recordLoopOperationalMetric("turn", { outcome });
+			recordLoopOperationalMetric(
+				"turn_duration",
+				{ outcome },
+				Math.max(0, performance.now() - turnStartedAt) / 1000,
+			);
+		};
 		// Activate the turn span as the current context for the whole turn body so
 		// downstream spans (model call, tool dispatch) nest under loop.turn.
 		const turnCtx = trace.setSpan(loopCtx, turnSpan);
@@ -460,6 +526,8 @@ export class ModularAgentLoop {
 
 				if (parsed.toolCalls.length === 0) {
 					await this.handleFinalResponse(parsed, frame);
+					turnSpan.addEvent("bound.loop.turn.outcome", { "loop.turn.outcome": "completed" });
+					recordTurnMetric("completed");
 					turnSpan.setStatus({ code: SpanStatusCode.OK });
 					turnSpan.end();
 					return { action: "return", result: this.result({ outcome: "completed" }) };
@@ -470,11 +538,14 @@ export class ModularAgentLoop {
 				if (toolOutcome.action !== "continue") {
 					return toolOutcome;
 				}
+				turnSpan.addEvent("bound.loop.turn.outcome", { "loop.turn.outcome": "tools_dispatched" });
+				recordTurnMetric("tools_dispatched");
 				turnSpan.setStatus({ code: SpanStatusCode.OK });
 				turnSpan.end();
 				return { action: "continue" };
 			});
 		} catch (error) {
+			recordTurnMetric(this.aborted ? "aborted" : "error");
 			return {
 				action: "return",
 				result: await this.handleTurnError(error, frame, chunks, currentDebug, {
@@ -578,6 +649,9 @@ export class ModularAgentLoop {
 			contextDebug: currentDebug,
 		});
 		await this.persistAlert(`Loop error: ${message}`);
+		const outcome = this.aborted ? "aborted" : "error";
+		spans.turnSpan.addEvent("bound.loop.turn.outcome", { "loop.turn.outcome": outcome });
+		recordLoopOperationalMetric("turn", { outcome });
 		spans.turnSpan.setStatus({ code: SpanStatusCode.ERROR, message });
 		spans.turnSpan.end();
 		spans.loopSpan.setStatus({ code: SpanStatusCode.ERROR, message });

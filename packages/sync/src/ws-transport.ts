@@ -41,6 +41,7 @@ import {
 	replayEvents,
 	validateTableName,
 } from "./reducers.js";
+import { recordActiveConnection, startReplicationDrain } from "./telemetry.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -190,12 +191,14 @@ export class WsTransport {
 		symmetricKey: Uint8Array,
 		ping?: () => void,
 	): void {
+		const replacesExistingPeer = this.peerConnections.has(peerSiteId);
 		this.peerConnections.set(peerSiteId, {
 			peerSiteId,
 			sendFrame,
 			ping: ping ?? (() => {}),
 			symmetricKey,
 		});
+		if (!replacesExistingPeer) recordActiveConnection("server", 1);
 		this.config.logger?.debug("WsTransport peer added", { peerSiteId });
 	}
 
@@ -205,7 +208,8 @@ export class WsTransport {
 	 * (HLC_ZERO cursor would permanently block pruning).
 	 */
 	removePeer(peerSiteId: string): void {
-		this.peerConnections.delete(peerSiteId);
+		const removedPeer = this.peerConnections.delete(peerSiteId);
+		if (removedPeer) recordActiveConnection("server", -1);
 
 		const state = this.snapshotStates.get(peerSiteId);
 		const wasSeeding = !!state;
@@ -479,113 +483,139 @@ export class WsTransport {
 	 * - Sends drain_complete frame when done
 	 */
 	drainChangelog(peerSiteId: string): void {
-		const peer = this.peerConnections.get(peerSiteId);
-		if (!peer) {
-			this.config.logger?.debug("WsTransport drain skipped - peer not connected", {
-				peerSiteId,
-			});
-			return;
-		}
+		let __replicationDrain: ReturnType<typeof startReplicationDrain> | undefined;
+		let __replicationTerminal: ["completed" | "empty" | "backpressured" | "skipped", number] = [
+			"skipped",
+			0,
+		];
+		let __replicationError: unknown;
+		let __replicationFailed = false;
+		__replicationDrain = startReplicationDrain("changelog");
+		try {
+			const peer = this.peerConnections.get(peerSiteId);
+			if (!peer) {
+				this.config.logger?.debug("WsTransport drain skipped - peer not connected", {
+					peerSiteId,
+				});
+				__replicationTerminal = ["skipped", 0];
+				return;
+			}
 
-		// Skip changelog drain while snapshot seeding is in progress — the
-		// snapshot already covers all historical data, and the post-snapshot
-		// drain in handleSnapshotAck() handles catchup. Draining concurrently
-		// causes redundant data transfer and potential ordering issues.
-		if (this.snapshotStates.has(peerSiteId)) {
-			this.config.logger?.debug("WsTransport drain skipped - snapshot seeding active", {
-				peerSiteId,
-			});
-			return;
-		}
+			// Skip changelog drain while snapshot seeding is in progress — the
+			// snapshot already covers all historical data, and the post-snapshot
+			// drain in handleSnapshotAck() handles catchup. Draining concurrently
+			// causes redundant data transfer and potential ordering issues.
+			if (this.snapshotStates.has(peerSiteId)) {
+				this.config.logger?.debug("WsTransport drain skipped - snapshot seeding active", {
+					peerSiteId,
+				});
+				__replicationTerminal = ["skipped", 0];
+				return;
+			}
 
-		// Get last_sent cursor for this peer
-		const cursor = getPeerCursor(this.config.db, peerSiteId);
-		const lastSent = cursor?.last_sent ?? HLC_ZERO;
+			// Get last_sent cursor for this peer
+			const cursor = getPeerCursor(this.config.db, peerSiteId);
+			const lastSent = cursor?.last_sent ?? HLC_ZERO;
 
-		// Query missed entries with echo suppression
-		const allEntries = (
-			this.config.db
-				.query(
-					`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
+			// Query missed entries with echo suppression
+			const allEntries = (
+				this.config.db
+					.query(
+						`SELECT hlc, table_name, row_id, site_id, timestamp, row_data
 					FROM change_log
 					WHERE hlc > ? AND site_id != ?
 					ORDER BY hlc ASC`,
-				)
-				.all(lastSent, peerSiteId) as Array<{
-				hlc: string;
-				table_name: string;
-				row_id: string;
-				site_id: string;
-				timestamp: string;
-				row_data: string;
-			}>
-		).map(
-			(row): ChangeLogEntry => ({
-				hlc: row.hlc,
-				// biome-ignore lint/suspicious/noExplicitAny: table_name is string from DB query, ChangeLogEntry needs SyncedTableName
-				table_name: row.table_name as any,
-				row_id: row.row_id,
-				site_id: row.site_id,
-				timestamp: row.timestamp,
-				row_data: row.row_data,
-			}),
-		);
+					)
+					.all(lastSent, peerSiteId) as Array<{
+					hlc: string;
+					table_name: string;
+					row_id: string;
+					site_id: string;
+					timestamp: string;
+					row_data: string;
+				}>
+			).map(
+				(row): ChangeLogEntry => ({
+					hlc: row.hlc,
+					// biome-ignore lint/suspicious/noExplicitAny: table_name is string from DB query, ChangeLogEntry needs SyncedTableName
+					table_name: row.table_name as any,
+					row_id: row.row_id,
+					site_id: row.site_id,
+					timestamp: row.timestamp,
+					row_data: row.row_data,
+				}),
+			);
 
-		if (allEntries.length === 0) {
-			this.config.logger?.debug("WsTransport drain - no missed entries", {
-				peerSiteId,
-			});
-			return;
-		}
+			if (allEntries.length === 0) {
+				this.config.logger?.debug("WsTransport drain - no missed entries", {
+					peerSiteId,
+				});
+				__replicationTerminal = ["empty", 0];
+				return;
+			}
 
-		const batchSize = 100;
-		let backpressured = false;
+			const batchSize = 100;
+			let backpressured = false;
 
-		for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
-			const batch = allEntries.slice(i, i + batchSize);
+			for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
+				const batch = allEntries.slice(i, i + batchSize);
 
-			const wireEntries = batch.map((entry) => ({
-				hlc: entry.hlc,
-				table_name: entry.table_name,
-				row_id: entry.row_id,
-				site_id: entry.site_id,
-				timestamp: entry.timestamp,
-				row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
-			}));
+				const wireEntries = batch.map((entry) => ({
+					hlc: entry.hlc,
+					table_name: entry.table_name,
+					row_id: entry.row_id,
+					site_id: entry.site_id,
+					timestamp: entry.timestamp,
+					row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
+				}));
 
-			const frames = encodeChangelogFrames(wireEntries, peer.symmetricKey);
-			for (const frame of frames) {
-				if (!peer.sendFrame(frame)) {
-					this.config.logger?.warn("WsTransport drain backpressured", {
-						peerSiteId,
-						batchIndex: i / batchSize,
-						totalBatches: Math.ceil(allEntries.length / batchSize),
+				const frames = encodeChangelogFrames(wireEntries, peer.symmetricKey);
+				for (const frame of frames) {
+					if (!peer.sendFrame(frame)) {
+						this.config.logger?.warn("WsTransport drain backpressured", {
+							peerSiteId,
+							batchIndex: i / batchSize,
+							totalBatches: Math.ceil(allEntries.length / batchSize),
+						});
+						backpressured = true;
+						break;
+					}
+				}
+				if (!backpressured) {
+					const highestHlc = batch[batch.length - 1].hlc;
+					updatePeerCursor(this.config.db, peerSiteId, {
+						last_sent: highestHlc,
 					});
-					backpressured = true;
-					break;
 				}
 			}
+
+			// Send drain_complete frame
 			if (!backpressured) {
-				const highestHlc = batch[batch.length - 1].hlc;
-				updatePeerCursor(this.config.db, peerSiteId, {
-					last_sent: highestHlc,
+				__replicationTerminal = ["completed", allEntries.length];
+				const drainCompleteFrame = encodeFrame(
+					WsMessageType.DRAIN_COMPLETE,
+					{ success: true },
+					peer.symmetricKey,
+				);
+				peer.sendFrame(drainCompleteFrame);
+
+				this.config.logger?.debug("WsTransport drain completed", {
+					peerSiteId,
+					entryCount: allEntries.length,
 				});
+			} else {
+				__replicationTerminal = ["backpressured", allEntries.length];
 			}
-		}
-
-		// Send drain_complete frame
-		if (!backpressured) {
-			const drainCompleteFrame = encodeFrame(
-				WsMessageType.DRAIN_COMPLETE,
-				{ success: true },
-				peer.symmetricKey,
-			);
-			peer.sendFrame(drainCompleteFrame);
-
-			this.config.logger?.debug("WsTransport drain completed", {
-				peerSiteId,
-				entryCount: allEntries.length,
-			});
+		} catch (__drainError) {
+			__replicationFailed = true;
+			__replicationError = __drainError;
+			throw __drainError;
+		} finally {
+			if (__replicationFailed) {
+				__replicationDrain?.fail(__replicationError);
+			} else {
+				__replicationDrain?.complete(...__replicationTerminal);
+			}
 		}
 	}
 
@@ -971,62 +1001,87 @@ export class WsTransport {
 	 * Sends all entries with delivered = 0.
 	 */
 	drainRelayOutbox(peerSiteId: string): void {
-		const peer = this.peerConnections.get(peerSiteId);
-		if (!peer) {
-			this.config.logger?.debug("WsTransport relay drain skipped - peer not connected", {
-				peerSiteId,
-			});
-			return;
-		}
-
-		const allEntries = readUndelivered(this.config.db) as RelayOutboxEntry[];
-
-		if (allEntries.length === 0) {
-			this.config.logger?.debug("WsTransport relay drain - no missed entries", {
-				peerSiteId,
-			});
-			return;
-		}
-
-		// Batch entries in chunks of 100
-		const batchSize = 100;
-		let backpressured = false;
-
-		for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
-			const batch = allEntries.slice(i, i + batchSize);
-
-			const payload: RelaySendPayload = {
-				entries: batch.map((entry) => ({
-					id: entry.id,
-					target_site_id: entry.target_site_id,
-					kind: entry.kind,
-					ref_id: entry.ref_id,
-					idempotency_key: entry.idempotency_key,
-					stream_id: entry.stream_id,
-					expires_at: entry.expires_at,
-					payload: JSON.parse(entry.payload),
-					trace_context: entry.trace_context ?? null,
-				})),
-			};
-
-			const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
-			const sent = peer.sendFrame(frame);
-
-			if (!sent) {
-				this.config.logger?.warn("WsTransport relay drain backpressured", {
+		let __replicationDrain: ReturnType<typeof startReplicationDrain> | undefined;
+		let __replicationTerminal: ["completed" | "empty" | "backpressured" | "skipped", number] = [
+			"skipped",
+			0,
+		];
+		let __replicationError: unknown;
+		let __replicationFailed = false;
+		try {
+			const peer = this.peerConnections.get(peerSiteId);
+			if (!peer) {
+				this.config.logger?.debug("WsTransport relay drain skipped - peer not connected", {
 					peerSiteId,
-					batchIndex: i / batchSize,
-					totalBatches: Math.ceil(allEntries.length / batchSize),
 				});
-				backpressured = true;
+				__replicationTerminal = ["skipped", 0];
+				return;
 			}
-		}
 
-		if (!backpressured) {
-			this.config.logger?.debug("WsTransport relay drain completed", {
-				peerSiteId,
-				entryCount: allEntries.length,
-			});
+			__replicationDrain = startReplicationDrain("relay_outbox");
+			const allEntries = readUndelivered(this.config.db) as RelayOutboxEntry[];
+
+			if (allEntries.length === 0) {
+				this.config.logger?.debug("WsTransport relay drain - no missed entries", {
+					peerSiteId,
+				});
+				__replicationTerminal = ["empty", 0];
+				return;
+			}
+
+			// Batch entries in chunks of 100
+			const batchSize = 100;
+			let backpressured = false;
+
+			for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
+				const batch = allEntries.slice(i, i + batchSize);
+
+				const payload: RelaySendPayload = {
+					entries: batch.map((entry) => ({
+						id: entry.id,
+						target_site_id: entry.target_site_id,
+						kind: entry.kind,
+						ref_id: entry.ref_id,
+						idempotency_key: entry.idempotency_key,
+						stream_id: entry.stream_id,
+						expires_at: entry.expires_at,
+						payload: JSON.parse(entry.payload),
+						trace_context: entry.trace_context ?? null,
+					})),
+				};
+
+				const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
+				const sent = peer.sendFrame(frame);
+
+				if (!sent) {
+					this.config.logger?.warn("WsTransport relay drain backpressured", {
+						peerSiteId,
+						batchIndex: i / batchSize,
+						totalBatches: Math.ceil(allEntries.length / batchSize),
+					});
+					backpressured = true;
+				}
+			}
+
+			if (!backpressured) {
+				__replicationTerminal = ["completed", allEntries.length];
+				this.config.logger?.debug("WsTransport relay drain completed", {
+					peerSiteId,
+					entryCount: allEntries.length,
+				});
+			} else {
+				__replicationTerminal = ["backpressured", allEntries.length];
+			}
+		} catch (__drainError) {
+			__replicationFailed = true;
+			__replicationError = __drainError;
+			throw __drainError;
+		} finally {
+			if (__replicationFailed) {
+				__replicationDrain?.fail(__replicationError);
+			} else {
+				__replicationDrain?.complete(...__replicationTerminal);
+			}
 		}
 	}
 
@@ -1035,51 +1090,74 @@ export class WsTransport {
 	 * Sends relay_deliver frames for entries in hub's outbox targeting the spoke.
 	 */
 	drainRelayInbox(spokesSiteId: string): void {
-		const peer = this.peerConnections.get(spokesSiteId);
-		if (!peer) {
-			this.config.logger?.debug("WsTransport relay inbox drain skipped - peer not connected", {
+		let __replicationDrain: ReturnType<typeof startReplicationDrain> | undefined;
+		let __replicationTerminal: ["completed" | "empty" | "backpressured" | "skipped", number] = [
+			"skipped",
+			0,
+		];
+		let __replicationError: unknown;
+		let __replicationFailed = false;
+		try {
+			const peer = this.peerConnections.get(spokesSiteId);
+			if (!peer) {
+				this.config.logger?.debug("WsTransport relay inbox drain skipped - peer not connected", {
+					spokesSiteId,
+				});
+				__replicationTerminal = ["skipped", 0];
+				return;
+			}
+
+			__replicationDrain = startReplicationDrain("relay_inbox");
+			const allEntries = readUndelivered(this.config.db, spokesSiteId) as RelayOutboxEntry[];
+
+			if (allEntries.length === 0) {
+				__replicationTerminal = ["empty", 0];
+				return;
+			}
+
+			// Batch entries in chunks of 100
+			const batchSize = 100;
+
+			for (let i = 0; i < allEntries.length; i += batchSize) {
+				const batch = allEntries.slice(i, i + batchSize);
+
+				const inboxEntries: RelayInboxEntry[] = batch.map((entry) => ({
+					id: entry.id,
+					source_site_id: entry.source_site_id,
+					kind: entry.kind,
+					ref_id: entry.ref_id,
+					idempotency_key: entry.idempotency_key,
+					stream_id: entry.stream_id,
+					payload: entry.payload,
+					expires_at: entry.expires_at,
+					received_at: new Date().toISOString(),
+					processed: 0,
+					trace_context: entry.trace_context ?? null,
+				}));
+
+				this.sendRelayDeliver(spokesSiteId, inboxEntries);
+				markDelivered(
+					this.config.db,
+					batch.map((e) => e.id),
+				);
+			}
+
+			__replicationTerminal = ["completed", allEntries.length];
+			this.config.logger?.debug("WsTransport relay inbox drain completed", {
 				spokesSiteId,
+				entryCount: allEntries.length,
 			});
-			return;
+		} catch (__drainError) {
+			__replicationFailed = true;
+			__replicationError = __drainError;
+			throw __drainError;
+		} finally {
+			if (__replicationFailed) {
+				__replicationDrain?.fail(__replicationError);
+			} else {
+				__replicationDrain?.complete(...__replicationTerminal);
+			}
 		}
-
-		const allEntries = readUndelivered(this.config.db, spokesSiteId) as RelayOutboxEntry[];
-
-		if (allEntries.length === 0) {
-			return;
-		}
-
-		// Batch entries in chunks of 100
-		const batchSize = 100;
-
-		for (let i = 0; i < allEntries.length; i += batchSize) {
-			const batch = allEntries.slice(i, i + batchSize);
-
-			const inboxEntries: RelayInboxEntry[] = batch.map((entry) => ({
-				id: entry.id,
-				source_site_id: entry.source_site_id,
-				kind: entry.kind,
-				ref_id: entry.ref_id,
-				idempotency_key: entry.idempotency_key,
-				stream_id: entry.stream_id,
-				payload: entry.payload,
-				expires_at: entry.expires_at,
-				received_at: new Date().toISOString(),
-				processed: 0,
-				trace_context: entry.trace_context ?? null,
-			}));
-
-			this.sendRelayDeliver(spokesSiteId, inboxEntries);
-			markDelivered(
-				this.config.db,
-				batch.map((e) => e.id),
-			);
-		}
-
-		this.config.logger?.debug("WsTransport relay inbox drain completed", {
-			spokesSiteId,
-			entryCount: allEntries.length,
-		});
 	}
 
 	/**

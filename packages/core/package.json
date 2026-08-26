@@ -10,7 +10,8 @@
 		"@jitl/quickjs-singlefile-cjs-release-sync": "0.32.0",
 		"quickjs-emscripten-core": "0.32.0",
 		"tsyringe": "^4.8.0",
-		"reflect-metadata": "^0.2.0"
+		"reflect-metadata": "^0.2.0",
+		"@opentelemetry/api": "^1.9.0"
 	},
 	"devDependencies": {
 		"fast-check": "^4.8.0"

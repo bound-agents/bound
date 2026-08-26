@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox, listActiveRssFeeds, updateRow } from "@bound/core";
-import { RSS_SEEN_GUIDS_CAP, injectTraceContext } from "@bound/shared";
+import { RSS_SEEN_GUIDS_CAP, counter, histogram, injectTraceContext } from "@bound/shared";
 import type { RssFeed, TypedEventEmitter } from "@bound/shared";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 
 /**
  * Leader-gated RSS/Atom feed poller.
@@ -55,6 +56,14 @@ const FETCH_TIMEOUT_MS = 30_000;
  * polls now become eligible again in min(cadence, this window).
  */
 const FAILURE_RETRY_MS = 5 * 60_000;
+const rssPollCounter = counter("bound.platform.rss.polls", { description: "RSS poll outcomes" });
+const rssPollDuration = histogram("bound.platform.rss.poll.duration", {
+	description: "RSS poll duration",
+	unit: "ms",
+});
+const rssDeliveryCounter = counter("bound.platform.rss.deliveries", {
+	description: "RSS items accepted for delivery",
+});
 
 function decodeEntities(text: string): string {
 	return text
@@ -221,164 +230,194 @@ export class RssPoller {
 	}
 
 	private async pollFeed(feed: RssFeed, nowMs: number, intervalMs: number): Promise<void> {
-		const state = this.runtime.get(feed.id) ?? {
-			lastPolledMs: 0,
-			etag: null,
-			lastModified: null,
-		};
-		state.lastPolledMs = nowMs;
-		this.runtime.set(feed.id, state);
-
-		let body: string;
+		const span = trace.getTracer("bound.platforms").startSpan("rss.poll");
+		const startedAt = performance.now();
+		let outcome = "error";
 		try {
-			const headers: Record<string, string> = {
-				accept: "application/rss+xml, application/atom+xml, application/xml, text/xml",
-				"user-agent": "bound-rss-poller",
+			const state = this.runtime.get(feed.id) ?? {
+				lastPolledMs: 0,
+				etag: null,
+				lastModified: null,
 			};
-			if (state.etag) headers["if-none-match"] = state.etag;
-			if (state.lastModified) headers["if-modified-since"] = state.lastModified;
+			state.lastPolledMs = nowMs;
+			this.runtime.set(feed.id, state);
 
-			const fetchImpl = this.deps.fetchImpl ?? fetch;
-			const resp = await fetchImpl(feed.url, {
-				headers,
-				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-			});
+			let body: string;
+			try {
+				const headers: Record<string, string> = {
+					accept: "application/rss+xml, application/atom+xml, application/xml, text/xml",
+					"user-agent": "bound-rss-poller",
+				};
+				if (state.etag) headers["if-none-match"] = state.etag;
+				if (state.lastModified) headers["if-modified-since"] = state.lastModified;
 
-			if (resp.status === 304) return; // validators say nothing changed
-			if (!resp.ok) {
-				this.deps.logger?.warn("[rss-poller] Feed fetch failed", {
+				const fetchImpl = this.deps.fetchImpl ?? fetch;
+				const resp = await fetchImpl(feed.url, {
+					headers,
+					signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+				});
+
+				if (resp.status === 304) {
+					outcome = "not_modified";
+					span.setStatus({ code: SpanStatusCode.OK });
+					return;
+				} // validators say nothing changed
+				if (!resp.ok) {
+					this.deps.logger?.warn("[rss-poller] Feed fetch failed", {
+						feed: feed.name,
+						url: feed.url,
+						status: resp.status,
+					});
+					this.scheduleRetry(state, nowMs, intervalMs);
+					outcome = "http_error";
+					span.setStatus({ code: SpanStatusCode.ERROR });
+					return;
+				}
+
+				state.etag = resp.headers.get("etag");
+				state.lastModified = resp.headers.get("last-modified");
+				body = await resp.text();
+			} catch (error) {
+				// Transient network failure — retry sooner than a long cadence (see
+				// scheduleRetry). Observed in production: a 4h-cadence feed's first
+				// fetch hiccuped once and the feed sat dark for the full 4h.
+				this.deps.logger?.warn("[rss-poller] Feed fetch threw", {
 					feed: feed.name,
 					url: feed.url,
-					status: resp.status,
+					error: error instanceof Error ? error.message : String(error),
 				});
 				this.scheduleRetry(state, nowMs, intervalMs);
+				outcome = "network_error";
+				throw error;
+			}
+
+			const items = parseFeed(body);
+			if (items.length === 0) {
+				// A 2xx body that parses to zero items is usually a wrong URL or a
+				// challenge/HTML page, not a legitimately empty feed — and this path
+				// used to return in total silence (production: it ate the first 4h of
+				// the first real feed with nothing in the logs). Warn with enough of
+				// the body to diagnose, and while the feed has never seeded (null
+				// cursor) retry soon; an established feed stays on its cadence.
+				this.deps.logger?.warn("[rss-poller] Feed body parsed to zero items", {
+					feed: feed.name,
+					url: feed.url,
+					bytes: body.length,
+					head: body.slice(0, 160),
+				});
+				if (feed.seen_guids === null) {
+					this.scheduleRetry(state, nowMs, intervalMs);
+				}
+				outcome = "empty";
+				span.setStatus({ code: SpanStatusCode.OK });
 				return;
 			}
 
-			state.etag = resp.headers.get("etag");
-			state.lastModified = resp.headers.get("last-modified");
-			body = await resp.text();
-		} catch (error) {
-			// Transient network failure — retry sooner than a long cadence (see
-			// scheduleRetry). Observed in production: a 4h-cadence feed's first
-			// fetch hiccuped once and the feed sat dark for the full 4h.
-			this.deps.logger?.warn("[rss-poller] Feed fetch threw", {
-				feed: feed.name,
-				url: feed.url,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			this.scheduleRetry(state, nowMs, intervalMs);
-			return;
-		}
-
-		const items = parseFeed(body);
-		if (items.length === 0) {
-			// A 2xx body that parses to zero items is usually a wrong URL or a
-			// challenge/HTML page, not a legitimately empty feed — and this path
-			// used to return in total silence (production: it ate the first 4h of
-			// the first real feed with nothing in the logs). Warn with enough of
-			// the body to diagnose, and while the feed has never seeded (null
-			// cursor) retry soon; an established feed stays on its cadence.
-			this.deps.logger?.warn("[rss-poller] Feed body parsed to zero items", {
-				feed: feed.name,
-				url: feed.url,
-				bytes: body.length,
-				head: body.slice(0, 160),
-			});
-			if (feed.seen_guids === null) {
-				this.scheduleRetry(state, nowMs, intervalMs);
+			let seen: string[];
+			try {
+				const parsed: unknown = feed.seen_guids ? JSON.parse(feed.seen_guids) : [];
+				seen = Array.isArray(parsed)
+					? parsed.filter((g): g is string => typeof g === "string")
+					: [];
+			} catch {
+				seen = [];
 			}
-			return;
-		}
+			const seenSet = new Set(seen);
 
-		let seen: string[];
-		try {
-			const parsed: unknown = feed.seen_guids ? JSON.parse(feed.seen_guids) : [];
-			seen = Array.isArray(parsed) ? parsed.filter((g): g is string => typeof g === "string") : [];
-		} catch {
-			seen = [];
-		}
-		const seenSet = new Set(seen);
+			// First poll of a brand-new feed (no cursor yet): seed the cursor
+			// WITHOUT delivering. Dumping a feed's entire current contents as
+			// "new items" on creation is noise, not events — deliveries start
+			// with the first item that appears after the binding exists.
+			const isFirstPoll = feed.seen_guids === null;
 
-		// First poll of a brand-new feed (no cursor yet): seed the cursor
-		// WITHOUT delivering. Dumping a feed's entire current contents as
-		// "new items" on creation is noise, not events — deliveries start
-		// with the first item that appears after the binding exists.
-		const isFirstPoll = feed.seen_guids === null;
+			// Feed documents are newest-first; deliver oldest-first so the folded
+			// wakeup reads chronologically. Dedupe within the batch as well — a
+			// single document can list the same guid twice (e.g. Bluesky reposts
+			// re-list the original post's URI), which would otherwise store
+			// duplicate cursor entries and burn idempotency-key inserts.
+			const fresh: RssItem[] = [];
+			const batchSeen = new Set<string>();
+			for (const item of items.filter((i) => !seenSet.has(i.guid)).reverse()) {
+				if (batchSeen.has(item.guid)) continue;
+				batchSeen.add(item.guid);
+				fresh.push(item);
+			}
 
-		// Feed documents are newest-first; deliver oldest-first so the folded
-		// wakeup reads chronologically. Dedupe within the batch as well — a
-		// single document can list the same guid twice (e.g. Bluesky reposts
-		// re-list the original post's URI), which would otherwise store
-		// duplicate cursor entries and burn idempotency-key inserts.
-		const fresh: RssItem[] = [];
-		const batchSeen = new Set<string>();
-		for (const item of items.filter((i) => !seenSet.has(i.guid)).reverse()) {
-			if (batchSeen.has(item.guid)) continue;
-			batchSeen.add(item.guid);
-			fresh.push(item);
-		}
+			let delivered = 0;
+			const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
+			const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
+			if (!isFirstPoll) {
+				for (const item of fresh) {
+					const inserted = insertInbox(this.deps.db, {
+						id: randomUUID(),
+						source_site_id: this.deps.siteId,
+						kind: "rss_intake",
+						ref_id: feed.thread_id,
+						idempotency_key: `rss-${feed.name}-${item.guid}`.slice(0, 512),
+						stream_id: null,
+						payload: JSON.stringify({ feed: feed.name, url: feed.url, ...item }),
+						expires_at: new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString(),
+						received_at: new Date(nowMs).toISOString(),
+						processed: 0,
+						trace_context: serializedTraceContext,
+					});
+					if (inserted) {
+						delivered++;
+						rssDeliveryCounter.add(1);
+					}
+				}
+			}
 
-		let delivered = 0;
-		const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
-		const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
-		if (!isFirstPoll) {
-			for (const item of fresh) {
-				const inserted = insertInbox(this.deps.db, {
-					id: randomUUID(),
-					source_site_id: this.deps.siteId,
-					kind: "rss_intake",
-					ref_id: feed.thread_id,
-					idempotency_key: `rss-${feed.name}-${item.guid}`.slice(0, 512),
-					stream_id: null,
-					payload: JSON.stringify({ feed: feed.name, url: feed.url, ...item }),
-					expires_at: new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString(),
-					received_at: new Date(nowMs).toISOString(),
-					processed: 0,
-					trace_context: serializedTraceContext,
+			if (fresh.length > 0 || isFirstPoll) {
+				// Persist the advanced cursor (newest last, capped). Synced write —
+				// deliberately so, since the cursor must survive leader failover.
+				const advanced = [...seen, ...fresh.map((i) => i.guid)].slice(-RSS_SEEN_GUIDS_CAP);
+				updateRow(
+					this.deps.db,
+					"rss_feeds",
+					feed.id,
+					{ seen_guids: JSON.stringify(advanced) },
+					this.deps.siteId,
+				);
+			}
+
+			if (isFirstPoll) {
+				// Leave a visible trace of the seeding poll. Without this, a freshly
+				// created feed's entire setup phase is silent and "it doesn't seem to
+				// be working" is indistinguishable from "nothing new has been
+				// published since creation" (observed in production, 2026-07-15).
+				this.deps.logger?.info(
+					"[rss-poller] Seeded feed cursor (first poll delivers nothing by design)",
+					{ feed: feed.name, items: fresh.length },
+				);
+			}
+
+			outcome = "success";
+			span.setStatus({ code: SpanStatusCode.OK });
+
+			if (delivered > 0) {
+				this.deps.logger?.info("[rss-poller] Delivered new feed items", {
+					feed: feed.name,
+					items: delivered,
 				});
-				if (inserted) delivered++;
+				this.deps.eventBus?.emit("connector:event", {
+					trigger_key: `rss:${feed.name}`,
+					handle_id: feed.id,
+					task_id: feed.task_id,
+					batch_size: delivered,
+				});
 			}
-		}
-
-		if (fresh.length > 0 || isFirstPoll) {
-			// Persist the advanced cursor (newest last, capped). Synced write —
-			// deliberately so, since the cursor must survive leader failover.
-			const advanced = [...seen, ...fresh.map((i) => i.guid)].slice(-RSS_SEEN_GUIDS_CAP);
-			updateRow(
-				this.deps.db,
-				"rss_feeds",
-				feed.id,
-				{ seen_guids: JSON.stringify(advanced) },
-				this.deps.siteId,
-			);
-		}
-
-		if (isFirstPoll) {
-			// Leave a visible trace of the seeding poll. Without this, a freshly
-			// created feed's entire setup phase is silent and "it doesn't seem to
-			// be working" is indistinguishable from "nothing new has been
-			// published since creation" (observed in production, 2026-07-15).
-			this.deps.logger?.info(
-				"[rss-poller] Seeded feed cursor (first poll delivers nothing by design)",
-				{ feed: feed.name, items: fresh.length },
-			);
-		}
-
-		if (delivered > 0) {
-			this.deps.logger?.info("[rss-poller] Delivered new feed items", {
-				feed: feed.name,
-				items: delivered,
-			});
-			this.deps.eventBus?.emit("connector:event", {
-				trigger_key: `rss:${feed.name}`,
-				handle_id: feed.id,
-				task_id: feed.task_id,
-				batch_size: delivered,
-			});
+		} catch (error) {
+			const exception = error instanceof Error ? error : new Error(String(error));
+			span.recordException(exception);
+			span.setStatus({ code: SpanStatusCode.ERROR, message: exception.message });
+			if (outcome !== "network_error") throw error;
+		} finally {
+			rssPollCounter.add(1, { outcome });
+			rssPollDuration.record(performance.now() - startedAt, { outcome });
+			span.end();
 		}
 	}
-
 	/**
 	 * Back-date a failed poll's cadence stamp so the feed becomes eligible
 	 * again in min(cadence, FAILURE_RETRY_MS) instead of a full interval.

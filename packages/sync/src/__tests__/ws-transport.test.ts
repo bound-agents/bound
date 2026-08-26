@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
 import { getConfirmedSyncWatermark, getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
+import { setSyncTelemetry } from "../telemetry.js";
 import { MicrotaskCoalescer } from "../ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -123,11 +124,51 @@ describe("WsTransport", () => {
 	});
 
 	afterEach(() => {
+		setSyncTelemetry();
 		transport.stop();
 		db.close();
 	});
 
 	describe("addPeer/removePeer", () => {
+		it("records an attempted drain skipped before a peer exists", () => {
+			const drains: Array<{ value: number; attributes?: Record<string, string | number> }> = [];
+			setSyncTelemetry({
+				handshakes: { add() {} },
+				drains: { add: (value, attributes) => drains.push({ value, attributes }) },
+				drainedEntries: { add() {} },
+				drainDuration: { record() {} },
+				startSpan: () => ({ addEvent() {}, recordException() {}, setStatus() {}, end() {} }),
+			});
+
+			transport.drainChangelog("missing-peer");
+
+			expect(drains).toEqual([{ value: 1, attributes: { kind: "changelog", outcome: "skipped" } }]);
+		});
+
+		it("tracks active peer connections without double-counting replacements", () => {
+			const active: Array<{ value: number; attributes?: Record<string, string | number> }> = [];
+			setSyncTelemetry({
+				handshakes: { add() {} },
+				drains: { add() {} },
+				drainedEntries: { add() {} },
+				drainDuration: { record() {} },
+				activeConnections: { add: (value, attributes) => active.push({ value, attributes }) },
+				startSpan: () => ({ addEvent() {}, recordException() {}, setStatus() {}, end() {} }),
+			});
+			const sendFrame = (): boolean => true;
+			const key = new Uint8Array(32).fill(1);
+
+			transport.addPeer("peer-1", sendFrame, key);
+			transport.addPeer("peer-1", sendFrame, key);
+			transport.removePeer("peer-1");
+			transport.removePeer("peer-1");
+
+			expect(active).toEqual([
+				{ value: 1, attributes: { role: "server" } },
+				{ value: -1, attributes: { role: "server" } },
+			]);
+		});
+
 		it("adds and removes peer connections", () => {
 			const sendFrame = (): boolean => true;
 			const key = new Uint8Array(32).fill(1);
@@ -1304,6 +1345,7 @@ describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
 	});
 
 	afterEach(() => {
+		setSyncTelemetry();
 		transport.stop();
 		db.close();
 	});

@@ -115,7 +115,7 @@ describe("Scheduler root spans", () => {
 		expect(createdSpan?.attributes["task.trigger_spec"]).toContain("connector");
 	});
 
-	it("sets ERROR status on span when operation fails", () => {
+	it("keeps terminal scheduler outcomes on the span and marks soft failures as errors", () => {
 		const tracer = trace.getTracer("bound.scheduler");
 		const rootSpan = tracer.startSpan("scheduler.execute-task", {
 			attributes: {
@@ -124,23 +124,22 @@ describe("Scheduler root spans", () => {
 			},
 		});
 
-		const testError = new Error("Operation failed");
-		try {
-			throw testError;
-		} catch (err) {
-			rootSpan.setStatus({
-				code: SpanStatusCode.ERROR,
-				message: err instanceof Error ? err.message : String(err),
-			});
-		} finally {
-			rootSpan.end();
-		}
+		rootSpan.addEvent("bound.scheduler.outcome", { "scheduler.outcome": "soft_failed" });
+		rootSpan.setStatus({ code: SpanStatusCode.ERROR, message: "Operation failed" });
+		rootSpan.end();
 
-		const spans = exporter.getFinishedSpans();
-		const createdSpan = spans.find((s) => s.name === "scheduler.execute-task");
-
-		expect(createdSpan).toBeDefined();
-		expect(createdSpan?.status.code).toBe(SpanStatusCode.ERROR);
-		expect(createdSpan?.status.message).toBe("Operation failed");
+		const createdSpan = exporter
+			.getFinishedSpans()
+			.find((span) => span.name === "scheduler.execute-task");
+		expect(createdSpan?.events).toEqual([
+			expect.objectContaining({
+				name: "bound.scheduler.outcome",
+				attributes: { "scheduler.outcome": "soft_failed" },
+			}),
+		]);
+		expect(createdSpan?.status).toEqual({
+			code: SpanStatusCode.ERROR,
+			message: "Operation failed",
+		});
 	});
 });

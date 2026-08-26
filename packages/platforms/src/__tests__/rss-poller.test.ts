@@ -362,6 +362,24 @@ describe("RssPoller", () => {
 		expect(inboxRows().length).toBe(0); // seeding still delivers nothing
 	});
 
+	it("preserves accepted deliveries when a later cursor write throws", async () => {
+		seedFeed({ seen_guids: JSON.stringify([]) });
+		const originalRun = db.run.bind(db);
+		let inboxInserts = 0;
+		(db as unknown as { run: typeof db.run }).run = ((sql: string, ...args: unknown[]) => {
+			if (sql.includes("relay_inbox")) inboxInserts++;
+			if (sql.includes("UPDATE rss_feeds")) throw new Error("cursor write failed");
+			return originalRun(
+				sql,
+				...(args as Parameters<typeof db.run> extends [unknown, ...infer R] ? R : never),
+			);
+		}) as typeof db.run;
+
+		const poller = new RssPoller({ db, siteId, eventBus, fetchImpl: fetchReturning(RSS_DOC) });
+		await expect(poller.tick()).rejects.toThrow("cursor write failed");
+		expect(inboxInserts).toBe(2);
+	});
+
 	it("dedupes repeated guids within a single document", async () => {
 		// Bluesky-style: a repost re-lists the original post's URI in the same doc.
 		const doc = `<rss><channel>

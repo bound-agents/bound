@@ -11,7 +11,8 @@
 		"@noble/ciphers": "^1.2.1",
 		"@noble/curves": "^1.8.1",
 		"@noble/hashes": "^1.7.1",
-		"hono": "^4.0.0"
+		"hono": "^4.0.0",
+		"@opentelemetry/api": "^1.9.0"
 	},
 	"devDependencies": {
 		"@bound/agent": "workspace:*",

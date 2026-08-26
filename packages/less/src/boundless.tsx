@@ -23,11 +23,24 @@ import { acquireLock, releaseLock } from "./lockfile";
 import { AppLogger } from "./logging";
 import { McpServerManager } from "./mcp/manager";
 import { performAttach } from "./session/attach";
+import { configureLessTelemetryFromOpenTelemetry } from "./telemetry";
 import { buildToolSet } from "./tools/registry";
 import { resolveSandboxConfig } from "./tools/sandbox";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
 import { TerminalTitleController, formatThreadTitleForTerminal } from "./tui/util/terminal-title";
+
+export async function shutdownBeforeFatalExit(
+	shutdown: () => Promise<void> = shutdownTelemetry,
+	exit: (code: number) => void = process.exit,
+): Promise<void> {
+	try {
+		await shutdown();
+	} catch {
+		// Fatal shutdown must still terminate when the exporter itself fails.
+	}
+	exit(1);
+}
 
 export interface ParsedArgs {
 	attachArg: string | null;
@@ -144,6 +157,7 @@ async function main(): Promise<void> {
 		// every subsequent operation that creates a span (sendMessage, tool
 		// execution, etc.) gets exported to the configured OTLP endpoint.
 		initTelemetry("boundless");
+		configureLessTelemetryFromOpenTelemetry();
 
 		// Step 1: Parse arguments. Done before any stdout-touching work because
 		// in --acp mode stdout is the JSON-RPC channel and must stay pristine.
@@ -342,7 +356,7 @@ async function main(): Promise<void> {
 	} catch (error) {
 		terminalTitle.restore();
 		process.stderr.write(`Fatal error: ${(error as Error).message}\n`);
-		process.exit(1);
+		await shutdownBeforeFatalExit();
 	}
 }
 

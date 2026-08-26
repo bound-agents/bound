@@ -1,7 +1,13 @@
-import { context, trace } from "@opentelemetry/api";
+import { context, metrics, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
+import {
+	MeterProvider,
+	type MetricReader,
+	PeriodicExportingMetricReader,
+} from "@opentelemetry/sdk-metrics";
 import {
 	BasicTracerProvider,
 	BatchSpanProcessor,
@@ -10,89 +16,154 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import { SiteIdSpanProcessor } from "./site-id-span-processor";
+import { clearTelemetryInstrumentCaches } from "./telemetry-api";
 import { setTraceExporter } from "./trace-exporter-context";
 
+export { counter, histogram, meter, upDownCounter } from "./telemetry-api";
+
 let provider: BasicTracerProvider | null = null;
-let exporter: SpanExporter | null = null;
+let meterProvider: MeterProvider | null = null;
 let siteIdProcessor: SiteIdSpanProcessor | null = null;
+let contextManager: AsyncLocalStorageContextManager | null = null;
+let ownership = { trace: false, metrics: false, context: false };
+let shutdownPromise: Promise<void> | null = null;
+
+export interface TelemetryOptions {
+	enabled?: boolean;
+	traceExporter?: SpanExporter;
+	metricReader?: MetricReader;
+	resourceAttributes?: Record<string, string | number | boolean>;
+}
+
+function isEnabled(value: string | undefined): boolean {
+	return value === "true" || value === "1";
+}
+
+function signalEndpoint(signal: "traces" | "metrics"): string | undefined {
+	const specific =
+		signal === "traces"
+			? process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+			: process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
+	if (specific?.trim()) return specific.trim();
+	const base = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+	if (!base) return undefined;
+	return `${base.replace(/\/+$/, "")}/v1/${signal}`;
+}
 
 /**
- * Initialize OpenTelemetry tracing when OTEL_ENABLED is set.
- * Registers a BasicTracerProvider with BatchSpanProcessor exporting to OTLP HTTP.
- * When OTEL_ENABLED is not set, this is a no-op — the @opentelemetry/api returns
- * no-op spans by design, guaranteeing zero overhead.
+ * Initialize Bun-compatible manual OpenTelemetry tracing and metrics.
  *
- * Used by every binary that emits spans (bound, boundless, …) so each shows up
- * as its own service in Jaeger and the AsyncLocalStorage-based context manager
- * propagates parent spans across async boundaries.
- *
- * @param serviceName The service name to use for the trace resource
- * @param testExporter Optional exporter for testing (uses SimpleSpanProcessor instead of BatchSpanProcessor)
+ * The second argument accepts either the options API or the historical positional
+ * SpanExporter used by tests and embedders.
  */
-export function initTelemetry(serviceName: string, testExporter?: SpanExporter): void {
-	if (!process.env.OTEL_ENABLED) return;
-
-	const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "http://localhost:4318";
+export function initTelemetry(serviceName: string, options?: TelemetryOptions): void;
+export function initTelemetry(serviceName: string, traceExporter?: SpanExporter): void;
+export function initTelemetry(
+	serviceName: string,
+	options: TelemetryOptions | SpanExporter = {},
+): void {
+	if (provider || meterProvider || shutdownPromise) return;
+	const normalized: TelemetryOptions =
+		typeof (options as SpanExporter).export === "function"
+			? { traceExporter: options as SpanExporter }
+			: (options as TelemetryOptions);
+	const enabled = normalized.enabled ?? isEnabled(process.env.OTEL_ENABLED);
+	if (!enabled) return;
 
 	const resource = Resource.default().merge(
 		new Resource({
 			[ATTR_SERVICE_NAME]: serviceName,
+			...normalized.resourceAttributes,
 		}),
 	);
 
-	provider = new BasicTracerProvider({ resource });
+	const nextProvider = new BasicTracerProvider({ resource });
+	const nextSiteIdProcessor = new SiteIdSpanProcessor();
+	nextProvider.addSpanProcessor(nextSiteIdProcessor);
+	const nextExporter =
+		normalized.traceExporter ??
+		new OTLPTraceExporter(signalEndpoint("traces") ? { url: signalEndpoint("traces") } : undefined);
+	nextProvider.addSpanProcessor(
+		normalized.traceExporter
+			? new SimpleSpanProcessor(nextExporter)
+			: new BatchSpanProcessor(nextExporter),
+	);
 
-	// Stamp the executing site ID on every span (issue #152). The site ID is not
-	// known at this point — initTelemetry runs at Phase 0, before bootstrap derives
-	// it from the host keypair — so the processor starts empty and is populated via
-	// setTelemetrySiteId() once bootstrap completes.
-	siteIdProcessor = new SiteIdSpanProcessor();
-	provider.addSpanProcessor(siteIdProcessor);
-
-	if (testExporter) {
-		exporter = testExporter;
-		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
-	} else {
-		exporter = new OTLPTraceExporter({
-			url: `${endpoint}/v1/traces`,
+	const metricsEndpoint = signalEndpoint("metrics");
+	const metricReader =
+		normalized.metricReader ??
+		new PeriodicExportingMetricReader({
+			exporter: new OTLPMetricExporter(metricsEndpoint ? { url: metricsEndpoint } : undefined),
 		});
-		provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+	const nextMeterProvider = new MeterProvider({ resource, readers: [metricReader] });
+	const nextContextManager = new AsyncLocalStorageContextManager();
+
+	let ownsMetrics = false;
+	let ownsContext = false;
+	let ownsTrace = false;
+	try {
+		ownsMetrics = metrics.setGlobalMeterProvider(nextMeterProvider);
+		nextContextManager.enable();
+		ownsContext = context.setGlobalContextManager(nextContextManager);
+		ownsTrace = trace.setGlobalTracerProvider(nextProvider);
+	} catch (error) {
+		void Promise.allSettled([nextProvider.shutdown(), nextMeterProvider.shutdown()]);
+		nextContextManager.disable();
+		throw error;
 	}
 
-	// Register exporter globally for spoke-side re-export of hub traces.
-	setTraceExporter(exporter);
-
-	// Register an AsyncLocalStorage-based context manager so context.active()
-	// propagates parent spans across async boundaries.
-	const contextManager = new AsyncLocalStorageContextManager();
-	contextManager.enable();
-	context.setGlobalContextManager(contextManager);
-
-	provider.register();
+	provider = nextProvider;
+	meterProvider = nextMeterProvider;
+	siteIdProcessor = nextSiteIdProcessor;
+	contextManager = nextContextManager;
+	ownership = { trace: ownsTrace, metrics: ownsMetrics, context: ownsContext };
+	setTraceExporter(nextExporter);
 }
 
-/**
- * Set the executing site ID stamped onto every subsequently-started span as the
- * `bound.site_id` attribute (issue #152). Called after bootstrap derives the site
- * ID from the host keypair. No-op when telemetry was never initialized.
- */
 export function setTelemetrySiteId(siteId: string): void {
 	siteIdProcessor?.setSiteId(siteId);
 }
 
-/**
- * Flush pending spans and shut down the TracerProvider.
- * Returns immediately if telemetry was never initialized.
- */
-export async function shutdownTelemetry(): Promise<void> {
-	if (!provider) return;
-	await provider.forceFlush();
-	await provider.shutdown();
-	provider = null;
-	exporter = null;
-	siteIdProcessor = null;
+/** Flush and shut down both signal providers. Concurrent calls share one cleanup. */
+export function shutdownTelemetry(): Promise<void> {
+	if (shutdownPromise) return shutdownPromise;
+	const activeProvider = provider;
+	const activeMeterProvider = meterProvider;
+	const activeContextManager = contextManager;
+	if (!activeProvider && !activeMeterProvider) return Promise.resolve();
 
-	trace.disable();
-	context.disable();
-	setTraceExporter(null);
+	const activeOwnership = ownership;
+	shutdownPromise = (async () => {
+		const errors: unknown[] = [];
+		for (const operation of [
+			() => activeProvider?.forceFlush(),
+			() => activeMeterProvider?.forceFlush(),
+			() => activeProvider?.shutdown(),
+			() => activeMeterProvider?.shutdown(),
+		]) {
+			try {
+				await operation();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		try {
+			if (activeOwnership.trace) trace.disable();
+			if (activeOwnership.metrics) metrics.disable();
+			if (activeOwnership.context) context.disable();
+			activeContextManager?.disable();
+		} finally {
+			provider = null;
+			meterProvider = null;
+			siteIdProcessor = null;
+			contextManager = null;
+			ownership = { trace: false, metrics: false, context: false };
+			clearTelemetryInstrumentCaches();
+			setTraceExporter(null);
+			shutdownPromise = null;
+		}
+		if (errors.length === 1) throw errors[0];
+		if (errors.length > 1) throw new AggregateError(errors, "Telemetry shutdown failed");
+	})();
+	return shutdownPromise;
 }

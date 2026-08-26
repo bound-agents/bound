@@ -1,11 +1,19 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { findClusterConfigValueByKey, findWebhookByName, insertInbox } from "@bound/core";
-import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
+import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, counter, histogram } from "@bound/shared";
 import type { TypedEventEmitter, Webhook } from "@bound/shared";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { validateWebhookSignature } from "./webhook-hmac.js";
 
 export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
+const webhookDeliveryCounter = counter("bound.web.webhook.deliveries", {
+	description: "Webhook delivery outcomes by HTTP status class",
+});
+const webhookDeliveryDuration = histogram("bound.web.webhook.delivery.duration", {
+	description: "Webhook intake latency",
+	unit: "ms",
+});
 
 export interface WebhookHandlerDeps {
 	db: Database;
@@ -85,6 +93,37 @@ async function readRequestBodyLimited(request: Request): Promise<
  * and returns appropriate HTTP response.
  */
 export async function handleWebhookRequest(
+	request: Request,
+	name: string,
+	deps: WebhookHandlerDeps,
+): Promise<Response> {
+	const span = trace.getTracer("bound.web").startSpan("webhook.delivery", {
+		attributes: { "http.request.method": request.method },
+	});
+	const startedAt = performance.now();
+	try {
+		const response = await handleWebhookRequestInner(request, name, deps);
+		const outcome = response.status >= 200 && response.status < 300 ? "accepted" : "rejected";
+		webhookDeliveryCounter.add(1, {
+			outcome,
+			status_class: `${Math.floor(response.status / 100)}xx`,
+		});
+		span.setStatus({ code: response.ok ? SpanStatusCode.OK : SpanStatusCode.ERROR });
+		return response;
+	} catch (error) {
+		webhookDeliveryCounter.add(1, { outcome: "error", status_class: "5xx" });
+		span.setStatus({
+			code: SpanStatusCode.ERROR,
+			message: error instanceof Error ? error.message : String(error),
+		});
+		throw error;
+	} finally {
+		webhookDeliveryDuration.record(performance.now() - startedAt);
+		span.end();
+	}
+}
+
+async function handleWebhookRequestInner(
 	request: Request,
 	name: string,
 	deps: WebhookHandlerDeps,

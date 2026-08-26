@@ -8,6 +8,7 @@ import type {
 	Task,
 	Thread,
 } from "@bound/shared";
+import { counter, histogram } from "@bound/shared/telemetry-api";
 import { injectTraceContext } from "@bound/shared/trace-collector";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { z } from "zod";
@@ -82,6 +83,26 @@ type EventName = keyof BoundClientEvents;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
+const httpRequestCounter = counter("bound.client.http.requests", {
+	description: "Bound client HTTP requests by method and outcome",
+});
+const httpRequestDuration = histogram("bound.client.http.request.duration", {
+	description: "Bound client HTTP request duration",
+	unit: "ms",
+});
+const wsLifecycleCounter = counter("bound.client.websocket.lifecycle", {
+	description: "Bound client WebSocket lifecycle events",
+});
+const wsTerminalOutcomeCounter = counter("bound.client.websocket.terminal_outcomes", {
+	description: "Exclusive terminal outcome for each Bound client WebSocket attempt",
+});
+const wsReconnectCounter = counter("bound.client.websocket.reconnects", {
+	description: "Bound client WebSocket reconnect attempts",
+});
+const wsConnectionDuration = histogram("bound.client.websocket.connection.duration", {
+	description: "Bound client WebSocket connection lifetime",
+	unit: "ms",
+});
 
 export class BoundClient {
 	private readonly baseUrl: string;
@@ -96,6 +117,9 @@ export class BoundClient {
 	private shouldReconnect = false;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private reconnectAttempt = 0;
+	private wsOpenedAt: number | null = null;
+	private wsAttemptHadError = false;
+	private wsAttemptFinished = false;
 	/**
 	 * Application-level heartbeat. Rides the same JS timer path the client uses
 	 * for everything else, so it stops the instant the event loop wedges — the
@@ -149,22 +173,31 @@ export class BoundClient {
 	// ---- Internal helpers ----
 
 	private async fetchOk(path: string, options?: RequestInit): Promise<Response> {
-		let res: Response;
+		const startedAt = performance.now();
+		const attributes = { method: options?.method ?? "GET" };
+		let outcome = "error";
 		try {
-			res = await fetch(`${this.baseUrl}${path}`, options);
-		} catch (e) {
-			throw new BoundNotRunningError(this.baseUrl, { cause: e });
-		}
-		if (!res.ok) {
-			let body: ApiErrorBody | undefined;
-			try {
-				body = (await res.json()) as ApiErrorBody;
-			} catch {
-				// Response may not be JSON
+			const res = await fetch(`${this.baseUrl}${path}`, options);
+			outcome = res.ok ? "success" : "error";
+			httpRequestCounter.add(1, { ...attributes, outcome });
+			if (!res.ok) {
+				let body: ApiErrorBody | undefined;
+				try {
+					body = (await res.json()) as ApiErrorBody;
+				} catch {
+					/* Response may not be JSON */
+				}
+				throw new BoundApiError(body?.error ?? `HTTP ${res.status}`, res.status, body?.details);
 			}
-			throw new BoundApiError(body?.error ?? `HTTP ${res.status}`, res.status, body?.details);
+			return res;
+		} catch (e) {
+			if (!(e instanceof BoundApiError))
+				httpRequestCounter.add(1, { ...attributes, outcome: "error" });
+			if (e instanceof BoundApiError) throw e;
+			throw new BoundNotRunningError(this.baseUrl, { cause: e });
+		} finally {
+			httpRequestDuration.record(performance.now() - startedAt, { ...attributes, outcome });
 		}
-		return res;
 	}
 
 	private async fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
@@ -173,21 +206,7 @@ export class BoundClient {
 	}
 
 	private async fetchVoid(path: string, options?: RequestInit): Promise<void> {
-		let res: Response;
-		try {
-			res = await fetch(`${this.baseUrl}${path}`, options);
-		} catch (e) {
-			throw new BoundNotRunningError(this.baseUrl, { cause: e });
-		}
-		if (!res.ok) {
-			let body: ApiErrorBody | undefined;
-			try {
-				body = (await res.json()) as ApiErrorBody;
-			} catch {
-				// Response may not be JSON
-			}
-			throw new BoundApiError(body?.error ?? `HTTP ${res.status}`, res.status, body?.details);
-		}
+		await this.fetchOk(path, options);
 	}
 
 	private postJson(path: string, body?: unknown): Promise<Response> {
@@ -327,10 +346,14 @@ export class BoundClient {
 		}
 
 		this.setConnectionState("connecting");
+		this.wsAttemptHadError = false;
+		this.wsAttemptFinished = false;
 		const ws = new WebSocket(this.wsUrl);
 
 		ws.onopen = () => {
 			this.reconnectAttempt = 0;
+			this.wsOpenedAt = performance.now();
+			wsLifecycleCounter.add(1, { event: "opened" });
 			this.sendSessionConfigure();
 			this.resendSubscriptions();
 			this.setConnectionState("connected");
@@ -342,10 +365,18 @@ export class BoundClient {
 		};
 
 		ws.onerror = (event) => {
+			this.wsAttemptHadError = true;
 			this.emit("error", event);
 		};
 
 		ws.onclose = () => {
+			if (this.wsAttemptFinished) return;
+			this.wsAttemptFinished = true;
+			if (this.wsOpenedAt !== null) {
+				wsConnectionDuration.record(performance.now() - this.wsOpenedAt);
+				this.wsOpenedAt = null;
+			}
+			wsTerminalOutcomeCounter.add(1, { outcome: this.wsAttemptHadError ? "error" : "closed" });
 			this.ws = null;
 			// End any active tracing session — children have already been shipped per-call.
 			// Trailing `boundless.session` span is lost on unclean close (we can't send
@@ -492,6 +523,7 @@ export class BoundClient {
 		// Add jitter: 0.5x to 1.5x of computed delay
 		const jitteredDelay = delay * (0.5 + Math.random());
 		this.reconnectAttempt++;
+		wsReconnectCounter.add(1);
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.createConnection();

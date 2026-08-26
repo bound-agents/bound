@@ -2,11 +2,18 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { insertInbox, insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
-import { type Logger, type TypedEventEmitter, injectTraceContext } from "@bound/shared";
+import {
+	type Logger,
+	type TypedEventEmitter,
+	counter,
+	histogram,
+	injectTraceContext,
+} from "@bound/shared";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import {
 	type ConnectorHandleRecord,
@@ -15,6 +22,26 @@ import {
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
 import { isSubscriptionRejected } from "./subscription-errors.js";
+
+const mcpLifecycle = counter("bound.platform.mcp.lifecycle", {
+	description: "Platform MCP connection and subscription lifecycle outcomes",
+});
+const mcpIntake = counter("bound.platform.mcp.intake.events", {
+	description: "Platform MCP events accepted for delivery",
+});
+const mcpConnectDuration = histogram("bound.platform.mcp.connect.duration", {
+	description: "Platform MCP connection setup duration",
+	unit: "ms",
+});
+const mcpDeliveryDuration = histogram("bound.platform.mcp.delivery.duration", {
+	description: "Platform MCP event delivery batch duration",
+	unit: "ms",
+});
+const platformTracer = trace.getTracer("bound.platforms");
+
+function platformMetricName(name: string): string {
+	return name === "discord" || name === "discord-interaction" || name === "rss" ? name : "other";
+}
 
 export interface PlatformServerEntry {
 	name: string;
@@ -283,9 +310,35 @@ export class PlatformMcpRegistry {
 			{ capabilities: {} },
 		);
 
-		// Connect both sides — server connects to its transport, client connects to its transport
-		await server.connect(serverTransport);
-		await client.connect(clientTransport);
+		const startedAt = performance.now();
+		const span = platformTracer.startSpan("platform.mcp.connect", {
+			attributes: { "platform.name": platformMetricName(name) },
+		});
+		try {
+			// Connect both sides — server connects to its transport, client connects to its transport
+			await server.connect(serverTransport);
+			await client.connect(clientTransport);
+			mcpLifecycle.add(1, {
+				platform: platformMetricName(name),
+				operation: "connect",
+				outcome: "success",
+			});
+			span.setStatus({ code: SpanStatusCode.OK });
+		} catch (error) {
+			mcpLifecycle.add(1, {
+				platform: platformMetricName(name),
+				operation: "connect",
+				outcome: "error",
+			});
+			span.recordException(error instanceof Error ? error : new Error(String(error)));
+			span.setStatus({ code: SpanStatusCode.ERROR });
+			throw error;
+		} finally {
+			mcpConnectDuration.record(performance.now() - startedAt, {
+				platform: platformMetricName(name),
+			});
+			span.end();
+		}
 
 		const entry: PlatformServerEntry = {
 			name,
@@ -544,6 +597,8 @@ export class PlatformMcpRegistry {
 	 * @internal Used by tests; not part of public API.
 	 */
 	deliverBatch(subscription: ActiveSubscription, events: McpEvent[]): void {
+		const startedAt = performance.now();
+		const platform = platformMetricName(subscription.serverName);
 		// Get the stored cursor to filter events (AC6.4 - replay cursor filtering)
 		const handle = getConnectorHandle(this.deps.db, subscription.handleId);
 		const storedCursor = handle?.cursor;
@@ -557,7 +612,10 @@ export class PlatformMcpRegistry {
 
 		// 1. Deduplicate: skip events whose eventId is in deduplicationSet (AC1.3)
 		const newEvents = filteredEvents.filter((e) => !subscription.deduplicationSet.has(e.eventId));
-		if (newEvents.length === 0) return; // No-op if all duplicates
+		if (newEvents.length === 0) {
+			mcpLifecycle.add(1, { platform, operation: "delivery", outcome: "deduplicated" });
+			return;
+		}
 
 		// 2. Track eventIds for future dedup (prune set at 500 entries)
 		for (const e of newEvents) {
@@ -683,6 +741,12 @@ export class PlatformMcpRegistry {
 			handle_id: subscription.handleId,
 			batch_size: newEvents.length,
 		});
+		mcpIntake.add(newEvents.length, {
+			platform,
+			delivery_mode: subscription.flushTimer ? "push" : "poll",
+		});
+		mcpLifecycle.add(1, { platform, operation: "delivery", outcome: "success" });
+		mcpDeliveryDuration.record(performance.now() - startedAt, { platform, operation: "delivery" });
 		// The scheduler.onEvent(triggerKey, payload) matches against task.trigger_spec exactly
 	}
 
@@ -748,6 +812,11 @@ export class PlatformMcpRegistry {
 					.object({})
 					.passthrough(),
 			);
+			mcpLifecycle.add(1, {
+				platform: platformMetricName(subscription.serverName),
+				operation: "subscribe",
+				outcome: "success",
+			});
 		} catch (err) {
 			// A permanent subscription rejection (e.g. the connector refuses a
 			// channel the bot can't view) must propagate so the caller can roll
@@ -756,8 +825,18 @@ export class PlatformMcpRegistry {
 			// are logged and swallowed as before; they retry on the next
 			// reconnect and must not tear down a legitimate handle.
 			if (isSubscriptionRejected(err)) {
+				mcpLifecycle.add(1, {
+					platform: platformMetricName(subscription.serverName),
+					operation: "subscribe",
+					outcome: "rejected",
+				});
 				throw err;
 			}
+			mcpLifecycle.add(1, {
+				platform: platformMetricName(subscription.serverName),
+				operation: "subscribe",
+				outcome: "error",
+			});
 			this.deps.logger.error(
 				`Failed to subscribe to stream for handle ${subscription.handleId}: ${err}`,
 			);

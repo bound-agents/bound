@@ -1,4 +1,11 @@
-// Re-export the shared telemetry init/shutdown so existing internal imports
-// continue to work. The implementation lives in `@bound/shared/telemetry`
-// so other binaries (boundless) can use the same setup.
-export { initTelemetry, setTelemetrySiteId, shutdownTelemetry } from "@bound/shared";
+// Re-export the shared telemetry bootstrap and metric helpers so existing CLI
+// imports keep one process-wide provider implementation.
+export {
+	counter,
+	histogram,
+	initTelemetry,
+	meter,
+	setTelemetrySiteId,
+	shutdownTelemetry,
+	type TelemetryOptions,
+} from "@bound/shared";
