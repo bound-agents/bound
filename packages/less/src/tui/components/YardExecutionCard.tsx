@@ -1,3 +1,4 @@
+import { formatYardValue } from "@bound/shared/yard-format";
 import { Text } from "ink";
 import type React from "react";
 import type { YardTreeSnapshot } from "../hooks/useYardExecutions";
@@ -45,20 +46,6 @@ function clampLine(text: string): string {
 	const flat = text.replace(/\s*[\r\n]+\s*/g, " ").trim();
 	if (flat.length <= LINE_CLAMP) return flat;
 	return `${flat.slice(0, LINE_CLAMP - 1)}…`;
-}
-
-/**
- * Pretty-print a preview that parses as JSON; null when it doesn't (e.g.
- * yard.ts preview() middle-elided a long payload, breaking the syntax).
- * Callers fall back to the raw wrapped text — formatting is best-effort,
- * never a gate on showing the content.
- */
-function prettyJson(text: string): string | null {
-	try {
-		return JSON.stringify(JSON.parse(text), null, 2);
-	} catch {
-		return null;
-	}
 }
 
 /**
@@ -304,12 +291,20 @@ export function YardExecutionCard({
 	const preview = (text: string): string => (running ? clampLine(text) : text);
 	const previewWrap = running ? ("truncate-end" as const) : ("wrap" as const);
 	const treeMs = running ? null : durationMs(tree.startedAt, tree.finishedAt);
-	// Committed cards format JSON payloads and highlight the program source;
-	// live cards keep one-line clamps (dynamic-region height safety). Both
-	// fall back to raw wrapped text when a preview was middle-elided by
-	// yard.ts and no longer parses.
-	const prettyInput = !running && tree.inputPreview ? prettyJson(tree.inputPreview) : null;
-	const prettyResult = !running && tree.resultPreview ? prettyJson(tree.resultPreview) : null;
+	// Committed cards format payloads through the same formatter the web UI's
+	// YardExecutionPanel uses (formatYardValue, #243): persistence envelopes
+	// unwrap, sensitive reasoning fields sanitize away, object literals from
+	// topology extraction render as JavaScript, and everything else that
+	// parses renders as pretty JSON — so a Yard result reads identically in
+	// both surfaces. Live cards keep one-line clamps (dynamic-region height
+	// safety). A preview that yard.ts middle-elided no longer parses; the
+	// formatter classifies it as a plain string and the caller falls back to
+	// raw wrapped text — formatting is best-effort, never a gate on content.
+	const formattedInput = !running && tree.inputPreview ? formatYardValue(tree.inputPreview) : null;
+	const formattedResult =
+		!running && tree.resultPreview ? formatYardValue(tree.resultPreview) : null;
+	const formatLang = (f: { isJson: boolean; isJavaScript?: boolean }): string =>
+		f.isJavaScript ? "javascript" : f.isJson ? "json" : "text";
 	return (
 		<StripeBox color="magenta" width={stripeWidth}>
 			<Text>
@@ -341,20 +336,30 @@ export function YardExecutionCard({
 				) : (
 					<>
 						<Text dimColor>program</Text>
-						<HighlightedCodeBlock code={tree.programPreview} lang="js" />
+						<HighlightedCodeBlock
+							code={tree.programPreview}
+							lang="js"
+							width={Math.max(10, stripeWidth - 2)}
+						/>
 					</>
 				)
 			) : null}
 			{tree.inputPreview ? (
-				running || prettyInput === null ? (
+				running ||
+				formattedInput === null ||
+				(!formattedInput.isJson && !formattedInput.isJavaScript) ? (
 					<Text wrap={previewWrap}>
 						<Text dimColor>input · </Text>
 						{preview(tree.inputPreview)}
 					</Text>
 				) : (
 					<>
-						<Text dimColor>input</Text>
-						<HighlightedCodeBlock code={prettyInput} lang="json" />
+						<Text dimColor>input · {formattedInput.hint}</Text>
+						<HighlightedCodeBlock
+							code={formattedInput.display}
+							lang={formatLang(formattedInput)}
+							width={Math.max(10, stripeWidth - 2)}
+						/>
 					</>
 				)
 			) : null}
@@ -406,15 +411,20 @@ export function YardExecutionCard({
 				);
 			})}
 			{!running && tree.resultPreview ? (
-				prettyResult === null ? (
+				formattedResult === null || (!formattedResult.isJson && !formattedResult.isJavaScript) ? (
 					<Text wrap={previewWrap}>
 						<Text color="magenta">result · </Text>
 						{preview(tree.resultPreview)}
 					</Text>
 				) : (
 					<>
-						<Text color="magenta">result</Text>
-						<HighlightedCodeBlock code={prettyResult} lang="json" />
+						<Text color="magenta">result · {formattedResult.hint}</Text>
+						<HighlightedCodeBlock
+							code={formattedResult.display}
+							lang={formatLang(formattedResult)}
+							width={Math.max(10, stripeWidth - 2)}
+						/>
+						{formattedResult.tail ? <Text dimColor>{formattedResult.tail}</Text> : null}
 					</>
 				)
 			) : null}

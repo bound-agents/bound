@@ -9,6 +9,7 @@
 		".": "./src/index.ts",
 		"./test-utils": "./src/test-utils.ts",
 		"./strings": "./src/strings.ts",
+		"./yard-format": "./src/yard-format.ts",
 		"./trace-collector": "./src/trace-collector.ts"
 	},
 	"dependencies": {

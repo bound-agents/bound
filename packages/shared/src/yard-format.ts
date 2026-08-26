@@ -1,3 +1,11 @@
+/**
+ * Yard presentation-value formatting, shared by the web UI and the TUI
+ * (#243). Owns JSON/object-literal detection, persistence-envelope
+ * unwrapping, sensitive-field sanitization, and the classification hint —
+ * so a Yard result renders identically in YardExecutionPanel.svelte and
+ * boundless's YardExecutionCard. Pure module: no imports, no I/O.
+ */
+
 export interface FormattedYardValue {
 	display: string;
 	hint: string;
