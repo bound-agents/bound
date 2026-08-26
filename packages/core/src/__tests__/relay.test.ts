@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
+import { TraceFlags, context, trace } from "@opentelemetry/api";
 import { createDatabase } from "../database";
 import {
 	PayloadTooLargeError,
@@ -120,6 +121,90 @@ describe("Relay CRUD Helpers", () => {
 				"relay.persistence.outcome": "failed",
 			});
 			expect(spans[1]["relay.persistence.outcome"]).toBe("failed");
+		});
+
+		it("records empty outbox reads as metrics without exporting a span, while parented reads remain traced", () => {
+			const spans: Array<{ name: string; parentSpanId?: string }> = [];
+			const metrics: Array<{ value: number; attributes?: Record<string, string | number> }> = [];
+			const durations: Array<{ value: number; attributes?: Record<string, string> }> = [];
+			const parentSpanId = "b7ad6b7169203331";
+			const parent = trace.wrapSpanContext({
+				traceId: "0af7651916cd43dd8448eb211c80319c",
+				spanId: parentSpanId,
+				traceFlags: TraceFlags.SAMPLED,
+			});
+			let activeContext = context.active();
+			context.setGlobalContextManager({
+				active: () => activeContext,
+				with: (nextContext, fn, thisArg, ...args) => {
+					const previousContext = activeContext;
+					activeContext = nextContext;
+					try {
+						return fn.call(thisArg, ...args);
+					} finally {
+						activeContext = previousContext;
+					}
+				},
+				bind: (_context, target) => target,
+				enable() {
+					return this;
+				},
+				disable() {
+					return this;
+				},
+			});
+			setCoreTelemetry({
+				changeLogTransactions: { add() {} },
+				changeLogPostcommitEvents: { add() {} },
+				relayOutboxOperations: {
+					add: (value, attributes) => metrics.push({ value, attributes }),
+				},
+				relayOutboxOperationDuration: {
+					record: (value, attributes) => durations.push({ value, attributes }),
+				},
+				startSpan: (name) => {
+					spans.push({
+						name,
+						parentSpanId: trace.getSpan(context.active())?.spanContext().spanId,
+					});
+					return {
+						addEvent() {},
+						recordException() {},
+						setAttribute() {},
+						setStatus() {},
+						end() {},
+					};
+				},
+			});
+
+			try {
+				expect(readUndelivered(db)).toEqual([]);
+				expect(spans).toEqual([]);
+				expect(durations).toEqual([
+					expect.objectContaining({ attributes: { operation: "read", outcome: "miss" } }),
+				]);
+
+				const now = new Date().toISOString();
+				db.run(
+					`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+					["parented-read", "site-a", "site-b", "inference", "{}", now, now],
+				);
+				context.with(trace.setSpan(context.active(), parent), () => {
+					expect(readUndelivered(db)).toHaveLength(1);
+				});
+				expect(spans).toEqual([{ name: "relay_outbox.operation", parentSpanId }]);
+				expect(metrics).toEqual([
+					{ value: 1, attributes: { operation: "read", outcome: "miss" } },
+					{ value: 1, attributes: { operation: "read", outcome: "hit" } },
+				]);
+				expect(durations).toEqual([
+					expect.objectContaining({ attributes: { operation: "read", outcome: "miss" } }),
+					expect.objectContaining({ attributes: { operation: "read", outcome: "hit" } }),
+				]);
+			} finally {
+				context.disable();
+			}
 		});
 
 		it("writeOutbox inserts a valid entry and readUndelivered returns it", () => {
