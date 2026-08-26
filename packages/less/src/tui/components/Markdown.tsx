@@ -298,7 +298,11 @@ function renderBlock(el: MdElement, index: number, width?: number): React.ReactE
 							{lang}
 						</Text>
 					)}
-					<HighlightedCodeBlock code={code} lang={lang} />
+					<HighlightedCodeBlock
+						code={code}
+						lang={lang}
+						width={width && width > 0 ? Math.max(10, width - 3) : undefined}
+					/>
 				</Box>
 			);
 		}

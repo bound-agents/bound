@@ -12,7 +12,7 @@ import { tildifyPath, tildifyText } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";
 import { expandTabs, wrapLinesAtWidth } from "../util/wrap";
 import { GraphicsImage } from "./GraphicsImage";
-import { HighlightedLine, langFromPath } from "./HighlightedCode";
+import { HighlightedWrappedLine, langFromPath } from "./HighlightedCode";
 import { Markdown } from "./Markdown";
 
 // Keep a full terminal-sized excerpt for shell output. A five-row preview hid the
@@ -337,12 +337,17 @@ function HashlineEditsBody({
 	edits,
 	filePath,
 	cwd,
+	width,
 }: {
 	edits: HashlineEditArg[];
 	filePath?: string | null;
 	cwd?: string;
+	/** Content column budget INSIDE the paddingLeft={2} body box (#239). */
+	width?: number;
 }): React.ReactElement | null {
 	if (edits.length === 0) return null;
+	// Code budget per row: body width minus the 2-col diff gutter.
+	const codeWidth = width !== undefined ? Math.max(10, width - 2) : undefined;
 	const lang = langFromPath(filePath);
 	const diff = measureEditDiff(filePath, edits, cwd);
 	if (diff.measured) {
@@ -351,17 +356,20 @@ function HashlineEditsBody({
 		return (
 			<Box flexDirection="column" paddingLeft={2}>
 				{visible.map((line, idx) => (
-					// biome-ignore lint/suspicious/noArrayIndexKey: diff lines are immutable per render
-					<Text key={idx} dimColor={line.kind === "removed"}>
-						<Text color={line.kind === "added" ? "green" : "red"}>
-							{line.kind === "added" ? "+ " : "− "}
-						</Text>
-						<HighlightedLine
-							line={expandTabs(line.text)}
-							lang={lang}
-							dim={line.kind === "removed"}
-						/>
-					</Text>
+					<HighlightedWrappedLine
+						// biome-ignore lint/suspicious/noArrayIndexKey: diff lines are immutable per render
+						key={idx}
+						line={expandTabs(line.text)}
+						lang={lang}
+						width={codeWidth}
+						dim={line.kind === "removed"}
+						firstPrefix={
+							<Text color={line.kind === "added" ? "green" : "red"}>
+								{line.kind === "added" ? "+ " : "− "}
+							</Text>
+						}
+						contIndent="  "
+					/>
 				))}
 				{changed.length > visible.length && (
 					<Text dimColor>⋯ {changed.length - visible.length} more lines</Text>
@@ -406,10 +414,14 @@ function HashlineEditsBody({
 			}
 			budget--;
 			rows.push(
-				<Text key={`l${ei}-${li}`}>
-					<Text color="green">+ </Text>
-					<HighlightedLine line={contentLines[li]} lang={lang} />
-				</Text>,
+				<HighlightedWrappedLine
+					key={`l${ei}-${li}`}
+					line={contentLines[li]}
+					lang={lang}
+					width={codeWidth}
+					firstPrefix={<Text color="green">+ </Text>}
+					contIndent="  "
+				/>,
 			);
 		}
 	}
@@ -432,13 +444,17 @@ function HashlineEditsBody({
 function WritePreviewBody({
 	content,
 	filePath,
+	width,
 }: {
 	content: string;
 	filePath?: string | null;
+	/** Content column budget INSIDE the paddingLeft={2} body box (#239). */
+	width?: number;
 }): React.ReactElement | null {
 	if (content.length === 0) {
 		return null;
 	}
+	const codeWidth = width !== undefined ? Math.max(10, width - 2) : undefined;
 	const lines = expandTabs(content).split("\n");
 	const truncated = lines.length > WRITE_PREVIEW_MAX_LINES;
 	const display = truncated ? lines.slice(0, WRITE_PREVIEW_MAX_LINES) : lines;
@@ -446,11 +462,15 @@ function WritePreviewBody({
 	return (
 		<Box flexDirection="column" paddingLeft={2}>
 			{display.map((line, idx) => (
-				// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable per render
-				<Text key={idx}>
-					<Text color="green">+ </Text>
-					<HighlightedLine line={line} lang={lang} />
-				</Text>
+				<HighlightedWrappedLine
+					// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable per render
+					key={idx}
+					line={line}
+					lang={lang}
+					width={codeWidth}
+					firstPrefix={<Text color="green">+ </Text>}
+					contIndent="  "
+				/>
 			))}
 			{truncated && (
 				<Text dimColor>
@@ -471,10 +491,15 @@ function WritePreviewBody({
 function ToolCallRow({
 	block,
 	cwd,
+	width,
 }: {
 	block: { name: string; input: Record<string, unknown> };
 	cwd?: string;
+	/** Stripe content width; preview bodies subtract their own chrome (#239). */
+	width?: number;
 }): React.ReactElement {
+	// Bodies render inside a paddingLeft={2} box.
+	const bodyWidth = width !== undefined ? Math.max(10, width - 2) : undefined;
 	const isRemote = !block.name.startsWith("boundless_");
 	const name = displayToolName(block.name);
 	const filePath = typeof block.input.file_path === "string" ? block.input.file_path : null;
@@ -497,7 +522,7 @@ function ToolCallRow({
 					</Text>
 					<Text dimColor> {linkedPath}</Text>
 				</Text>
-				<HashlineEditsBody edits={edits} filePath={filePath} cwd={cwd} />
+				<HashlineEditsBody edits={edits} filePath={filePath} cwd={cwd} width={bodyWidth} />
 			</Box>
 		);
 	}
@@ -518,7 +543,7 @@ function ToolCallRow({
 						{linkedPath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
 					</Text>
 				</Text>
-				<WritePreviewBody content={content} filePath={filePath} />
+				<WritePreviewBody content={content} filePath={filePath} width={bodyWidth} />
 			</Box>
 		);
 	}
@@ -820,7 +845,7 @@ export function MessageBlock({
 					)}
 					{toolUseBlocks.map((block, idx) => (
 						// biome-ignore lint/suspicious/noArrayIndexKey: tool_use blocks are immutable per render
-						<ToolCallRow key={idx} block={block} cwd={cwd} />
+						<ToolCallRow key={idx} block={block} cwd={cwd} width={Math.max(10, stripeWidth - 2)} />
 					))}
 				</StripeBox>
 			);
@@ -1016,7 +1041,11 @@ export function MessageBlock({
 					    diff/preview rides here with the request row — without it the
 					    change content would never commit at all. */}
 					{showRequest && (
-						<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} cwd={cwd} />
+						<ToolCallRow
+							block={{ name: resolvedToolName, input: toolInput ?? {} }}
+							cwd={cwd}
+							width={Math.max(10, stripeWidth - 2)}
+						/>
 					)}
 					<Box paddingLeft={2}>
 						<Text wrap="wrap">
@@ -1154,13 +1183,26 @@ export function MessageBlock({
 				const match = line.match(lineNumPattern);
 				if (match) {
 					const [, lineNum, code] = match;
+					// #239: tokenize the WHOLE code portion and slice at the
+					// remaining width — handing a long line to Ink re-wrapped it
+					// mid-token and the continuation rows lost their colors.
+					// Continuations indent to the code column.
+					const prefixCols = 2 + lineNum.length + 1;
 					return (
-						<Text key={idx}>
-							{"  "}
-							<Text dimColor>{lineNum}</Text>
-							{"\t"}
-							<HighlightedLine line={code} lang={lang} />
-						</Text>
+						<HighlightedWrappedLine
+							key={idx}
+							line={expandTabs(code)}
+							lang={lang}
+							width={Math.max(10, bodyWrapWidth - prefixCols)}
+							firstPrefix={
+								<>
+									{"  "}
+									<Text dimColor>{lineNum}</Text>
+									{"\t"}
+								</>
+							}
+							contIndent={" ".repeat(prefixCols)}
+						/>
 					);
 				}
 			}
@@ -1179,7 +1221,11 @@ export function MessageBlock({
 				    own listing is suppressed because <Static> commits it before
 				    any result exists and can never reorder it afterward. */}
 				{showRequest && resolvedToolName && (
-					<ToolCallRow block={{ name: resolvedToolName, input: toolInput ?? {} }} cwd={cwd} />
+					<ToolCallRow
+						block={{ name: resolvedToolName, input: toolInput ?? {} }}
+						cwd={cwd}
+						width={Math.max(10, stripeWidth - 2)}
+					/>
 				)}
 				<Box flexDirection="column" paddingLeft={2}>
 					<Text>
