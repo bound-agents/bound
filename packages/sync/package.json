@@ -16,6 +16,7 @@
 	},
 	"devDependencies": {
 		"@bound/agent": "workspace:*",
+		"@opentelemetry/context-async-hooks": "^2.7.1",
 		"fast-check": "^4.8.0"
 	},
 	"scripts": {

@@ -211,7 +211,8 @@ export async function dispatchAwaitableClientTool(
 		args: deps.args,
 		timeout_ms: deps.timeoutMs,
 	};
-	const traceContext = context.with(context.active(), () => injectTraceContext());
+	const dispatchContext = context.active();
+	const traceContext = context.with(dispatchContext, () => injectTraceContext());
 	const outbox = createRelayOutboxEntry(
 		sessionHost.site_id,
 		deps.siteId,
@@ -223,6 +224,6 @@ export async function dispatchAwaitableClientTool(
 		undefined,
 		traceContext ? JSON.stringify(traceContext) : undefined,
 	);
-	writeOutbox(deps.db, outbox);
+	context.with(dispatchContext, () => writeOutbox(deps.db, outbox));
 	return waitForRemoteResult(deps, outbox.id);
 }

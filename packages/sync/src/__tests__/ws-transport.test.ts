@@ -1,6 +1,9 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
+import { TraceFlags, context, propagation, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { setCoreTelemetry } from "../../../core/src/telemetry.js";
 import { getConfirmedSyncWatermark, getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
 import { setSyncTelemetry } from "../telemetry.js";
 import { MicrotaskCoalescer } from "../ws-coalescer.js";
@@ -1345,9 +1348,147 @@ describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
 	});
 
 	afterEach(() => {
+		setCoreTelemetry();
 		setSyncTelemetry();
 		transport.stop();
 		db.close();
+	});
+
+	it("parents durable forwarding writeOutbox under the incoming relay operation", () => {
+		const incomingSpanId = "b7ad6b7169203331";
+		const relaySpanId = "62ff85595cf3dc29";
+		const relaySpan = trace.wrapSpanContext({
+			traceId: "0af7651916cd43dd8448eb211c80319c",
+			spanId: relaySpanId,
+			traceFlags: TraceFlags.SAMPLED,
+		});
+		let relayParentSpanId: string | undefined;
+		let outboxParentSpanId: string | undefined;
+		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+		const ambientContext = context.active();
+		const originalExtract = propagation.extract;
+		let extractedCarrier: unknown;
+		propagation.extract = ((_base, carrier) => {
+			extractedCarrier = carrier;
+			return trace.setSpan(
+				ambientContext,
+				trace.wrapSpanContext({
+					traceId: "0af7651916cd43dd8448eb211c80319c",
+					spanId: incomingSpanId,
+					traceFlags: TraceFlags.SAMPLED,
+				}),
+			);
+		}) as typeof propagation.extract;
+		setSyncTelemetry({
+			handshakes: { add() {} },
+			drains: { add() {} },
+			drainedEntries: { add() {} },
+			drainDuration: { record() {} },
+			activeConnections: { add() {} },
+			startSpan: (_name, _attributes, parentContext) => {
+				relayParentSpanId = trace.getSpan(parentContext ?? context.active())?.spanContext().spanId;
+				return relaySpan;
+			},
+		});
+		setCoreTelemetry({
+			changeLogTransactions: { add() {} },
+			changeLogPostcommitEvents: { add() {} },
+			relayOutboxOperations: { add() {} },
+			relayOutboxOperationDuration: { record() {} },
+			startSpan: () => {
+				outboxParentSpanId = trace.getSpan(context.active())?.spanContext().spanId;
+				return relaySpan;
+			},
+		});
+
+		try {
+			transport.handleRelaySend("spoke-a", {
+				entries: [
+					{
+						id: "trace-forward-1",
+						target_site_id: "offline-spoke-b",
+						kind: "inference",
+						ref_id: null,
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						payload: { tool: "test" },
+						trace_context: JSON.stringify({
+							traceparent: `00-0af7651916cd43dd8448eb211c80319c-${incomingSpanId}-01`,
+						}),
+					},
+				],
+			});
+
+			expect(extractedCarrier).toEqual({
+				traceparent: `00-0af7651916cd43dd8448eb211c80319c-${incomingSpanId}-01`,
+			});
+			expect(relayParentSpanId).toBe(incomingSpanId);
+			expect(outboxParentSpanId).toBe(relaySpanId);
+			expect(context.active()).toBe(ambientContext);
+		} finally {
+			propagation.extract = originalExtract;
+			context.disable();
+		}
+	});
+	it("routes durable forwarding through a lightweight relay span without spanContext", () => {
+		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+		const ambientContext = context.active();
+		setSyncTelemetry({
+			handshakes: { add() {} },
+			drains: { add() {} },
+			drainedEntries: { add() {} },
+			drainDuration: { record() {} },
+			activeConnections: { add() {} },
+			startSpan: () => ({
+				addEvent() {},
+				recordException() {},
+				setStatus() {},
+				end() {},
+			}),
+		});
+		setCoreTelemetry({
+			changeLogTransactions: { add() {} },
+			changeLogPostcommitEvents: { add() {} },
+			relayOutboxOperations: { add() {} },
+			relayOutboxOperationDuration: { record() {} },
+			startSpan: () => {
+				trace.getSpan(context.active())?.spanContext();
+				return trace.wrapSpanContext({
+					traceId: "0af7651916cd43dd8448eb211c80319c",
+					spanId: "62ff85595cf3dc29",
+					traceFlags: TraceFlags.SAMPLED,
+				});
+			},
+		});
+
+		try {
+			expect(() =>
+				transport.handleRelaySend("spoke-a", {
+					entries: [
+						{
+							id: "lightweight-span-forward-1",
+							target_site_id: "offline-spoke-b",
+							kind: "inference",
+							ref_id: null,
+							idempotency_key: null,
+							stream_id: null,
+							expires_at: new Date(Date.now() + 60_000).toISOString(),
+							payload: { tool: "test" },
+							trace_context: null,
+						},
+					],
+				}),
+			).not.toThrow();
+			expect(
+				db.query("SELECT id FROM relay_outbox WHERE id = ?").get("lightweight-span-forward-1"),
+			).toEqual({
+				id: "lightweight-span-forward-1",
+			});
+			expect(context.active()).toBe(ambientContext);
+		} finally {
+			context.disable();
+		}
 	});
 
 	it("does NOT recurse when writeOutbox fires for a hub-self entry to an offline async target (kind=error)", async () => {
