@@ -2190,6 +2190,104 @@ describe("Scheduler features", () => {
 			);
 		}
 
+		it("does not run a re-armed event task with no local inbox payload", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			insertEventTask(taskId);
+			db.run("UPDATE tasks SET thread_id = ?, payload = '', run_count = 1 WHERE id = ?", [
+				threadId,
+				taskId,
+			]);
+
+			let loopRuns = 0;
+			const factory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					loopRuns++;
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+			const scheduler = new Scheduler(makeCtx() as any, factory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db
+						.query("SELECT status, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as { status: string; next_run_at: string | null } | null;
+					return task?.status === "pending" && task.next_run_at === null;
+				},
+				{ timeoutMs: 5000, message: "empty re-armed event task did not reset to pending" },
+			);
+			stop();
+
+			expect(loopRuns).toBe(0);
+			expect(
+				db.query("SELECT COUNT(*) AS count FROM messages WHERE thread_id = ?").get(threadId) as {
+					count: number;
+				},
+			).toEqual({ count: 0 });
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+		});
+
+		it("runs a re-armed event task when it has a local inbox payload", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			insertEventTask(taskId);
+			db.run("UPDATE tasks SET thread_id = ?, payload = '' WHERE id = ?", [threadId, taskId]);
+			db.run(
+				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
+				 VALUES (?, ?, 'webhook_intake', ?, ?, ?, ?, ?, 0)`,
+				[
+					randomUUID(),
+					siteId,
+					threadId,
+					`webhook:${randomUUID()}`,
+					JSON.stringify({ body: '{"action":"opened"}' }),
+					new Date(Date.now() + 3600_000).toISOString(),
+					new Date().toISOString(),
+				],
+			);
+
+			let loopRuns = 0;
+			const factory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					loopRuns++;
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+			const scheduler = new Scheduler(makeCtx() as any, factory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const task = db.query("SELECT status, run_count FROM tasks WHERE id = ?").get(taskId) as {
+						status: string;
+						run_count: number;
+					} | null;
+					return task?.status === "pending" && task.run_count === 1;
+				},
+				{ timeoutMs: 5000, message: "event task with local inbox payload did not complete" },
+			);
+			stop();
+
+			expect(loopRuns).toBe(1);
+			expect(
+				(
+					db
+						.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+						.get(threadId) as {
+						content: string;
+					}
+				).content,
+			).toContain('<connector-events trigger="test:event" count="1">');
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+			db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
+			db.run("DELETE FROM threads WHERE id = ?", [threadId]);
+		});
+
 		it("resets event task to pending after soft failure", async () => {
 			const taskId = randomUUID();
 			insertEventTask(taskId);
