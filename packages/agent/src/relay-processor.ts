@@ -51,6 +51,7 @@ import {
 	hostModelsSchema,
 	inferenceRequestPartPayloadSchema,
 	inferenceRequestPayloadSchema,
+	injectTraceContext,
 	intakePayloadSchema,
 	notifyWakeupPayloadSchema,
 	parseJsonSafe,
@@ -118,6 +119,24 @@ function parseTraceCarrier(raw: string | null | undefined): Record<string, strin
 		// Unparseable carrier — no parent linkage.
 	}
 	return null;
+}
+
+/**
+ * Persist only the validated W3C headers needed to continue a causal relay
+ * path. Baggage is intentionally never copied into durable relay payloads.
+ */
+function serializeTraceCarrier(carrier: Record<string, string> | null): string | null {
+	const traceparent = carrier?.traceparent;
+	if (
+		!traceparent ||
+		!/^\d{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/i.test(traceparent) ||
+		/^\d{2}-(?:0{32})-(?:0{16})-[0-9a-f]{2}$/i.test(traceparent)
+	) {
+		return null;
+	}
+	const sanitized: Record<string, string> = { traceparent };
+	if (carrier?.tracestate) sanitized.tracestate = carrier.tracestate;
+	return JSON.stringify(sanitized);
 }
 
 /**
@@ -379,7 +398,7 @@ export class RelayProcessor {
 						expires_at: entry.expires_at,
 						received_at: now,
 						processed: 0,
-						trace_context: null,
+						trace_context: serializeTraceCarrier(parseTraceCarrier(entry.trace_context)),
 					});
 				}
 				// Response kinds are silently marked delivered — they are acknowledged by
@@ -782,7 +801,7 @@ export class RelayProcessor {
 				payload: entry.payload,
 				created_at: new Date().toISOString(),
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-				trace_context: null,
+				trace_context: serializeTraceCarrier(injectTraceContext()),
 			});
 		}
 
@@ -1059,7 +1078,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(resultPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-			trace_context: null,
+			trace_context: serializeTraceCarrier(injectTraceContext()),
 		});
 	}
 
@@ -1345,7 +1364,7 @@ export class RelayProcessor {
 			payload,
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-			trace_context: null,
+			trace_context: serializeTraceCarrier(injectTraceContext()),
 		});
 	}
 
@@ -1370,7 +1389,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(chunkPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
-			trace_context: null,
+			trace_context: serializeTraceCarrier(injectTraceContext()),
 		};
 		writeOutbox(this.db, outboxEntry);
 	}
@@ -2035,7 +2054,7 @@ export class RelayProcessor {
 						payload: JSON.stringify(collectedSpans),
 						created_at: now.toISOString(),
 						expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-						trace_context: null,
+						trace_context: serializeTraceCarrier(injectTraceContext()),
 					});
 				}
 			}

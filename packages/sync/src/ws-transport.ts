@@ -664,13 +664,15 @@ export class WsTransport {
 					payloadBytes: new TextEncoder().encode(entry.payload).byteLength,
 					traceContext: entry.trace_context,
 				});
-				try {
-					const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
-					operation.complete(peer.sendFrame(frame) ? "sent" : "backpressured");
-				} catch (error) {
-					operation.fail(error);
-					throw error;
-				}
+				operation.run(() => {
+					try {
+						const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
+						operation.complete(peer.sendFrame(frame) ? "sent" : "backpressured");
+					} catch (error) {
+						operation.fail(error);
+						throw error;
+					}
+				});
 				break; // Send to the first (only) hub connection
 			}
 		} else {
@@ -739,30 +741,49 @@ export class WsTransport {
 			traceContext: payload.entries.length === 1 ? payload.entries[0]?.trace_context : null,
 		});
 
-		try {
-			for (const entry of payload.entries) {
-				// Idempotency check on hub side — skip when source is self, because
-				// hub-originated entries are already in our own relay_outbox (we just
-				// wrote them). Without this guard the check always finds the entry we
-				// just inserted and silently skips routing.
-				if (entry.idempotency_key && sourceSiteId !== this.config.siteId) {
-					const existing = this.config.db
-						.query("SELECT id FROM relay_outbox WHERE idempotency_key = ? AND target_site_id = ?")
-						.get(entry.idempotency_key, entry.target_site_id) as { id: string } | null;
-					if (existing) {
-						deliveredIds.push(entry.id);
-						continue;
-					}
-				}
-
-				// Broadcast: fan-out to all connected spokes except the source
-				if (entry.target_site_id === "*") {
-					for (const [peerSiteId] of this.peerConnections) {
-						if (peerSiteId === sourceSiteId) {
+		operation.run(() => {
+			try {
+				for (const entry of payload.entries) {
+					// Idempotency check on hub side — skip when source is self, because
+					// hub-originated entries are already in our own relay_outbox (we just
+					// wrote them). Without this guard the check always finds the entry we
+					// just inserted and silently skips routing.
+					if (entry.idempotency_key && sourceSiteId !== this.config.siteId) {
+						const existing = this.config.db
+							.query("SELECT id FROM relay_outbox WHERE idempotency_key = ? AND target_site_id = ?")
+							.get(entry.idempotency_key, entry.target_site_id) as { id: string } | null;
+						if (existing) {
+							deliveredIds.push(entry.id);
 							continue;
 						}
+					}
 
-						const inboxEntry: RelayInboxEntry = {
+					// Broadcast: fan-out to all connected spokes except the source
+					if (entry.target_site_id === "*") {
+						for (const [peerSiteId] of this.peerConnections) {
+							if (peerSiteId === sourceSiteId) {
+								continue;
+							}
+
+							const inboxEntry: RelayInboxEntry = {
+								id: entry.id,
+								source_site_id: sourceSiteId,
+								kind: entry.kind as RelayKind,
+								ref_id: entry.ref_id,
+								idempotency_key: entry.idempotency_key,
+								stream_id: entry.stream_id,
+								payload: JSON.stringify(entry.payload),
+								expires_at: entry.expires_at,
+								received_at: new Date().toISOString(),
+								processed: 0,
+								trace_context: entry.trace_context ?? null,
+							};
+
+							this.sendRelayDeliver(peerSiteId, [inboxEntry]);
+						}
+
+						// Also insert into hub's own relay_inbox and emit event
+						const hubInboxEntry: RelayInboxEntry = {
 							id: entry.id,
 							source_site_id: sourceSiteId,
 							kind: entry.kind as RelayKind,
@@ -776,181 +797,164 @@ export class WsTransport {
 							trace_context: entry.trace_context ?? null,
 						};
 
-						this.sendRelayDeliver(peerSiteId, [inboxEntry]);
+						if (insertInbox(this.config.db, hubInboxEntry)) {
+							this.config.eventBus.emit("relay:inbox", {
+								ref_id: hubInboxEntry.ref_id || undefined,
+								stream_id: hubInboxEntry.stream_id || undefined,
+								kind: hubInboxEntry.kind,
+							});
+						}
+
+						deliveredIds.push(entry.id);
+						continue;
 					}
 
-					// Also insert into hub's own relay_inbox and emit event
-					const hubInboxEntry: RelayInboxEntry = {
-						id: entry.id,
-						source_site_id: sourceSiteId,
-						kind: entry.kind as RelayKind,
-						ref_id: entry.ref_id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id,
-						payload: JSON.stringify(entry.payload),
-						expires_at: entry.expires_at,
-						received_at: new Date().toISOString(),
-						processed: 0,
-						trace_context: entry.trace_context ?? null,
-					};
+					// Hub-local: insert into relay_inbox for RelayProcessor
+					if (entry.target_site_id === this.config.siteId) {
+						const inboxEntry: RelayInboxEntry = {
+							id: entry.id,
+							source_site_id: sourceSiteId,
+							kind: entry.kind as RelayKind,
+							ref_id: entry.ref_id ?? entry.id,
+							idempotency_key: entry.idempotency_key,
+							stream_id: entry.stream_id,
+							payload: JSON.stringify(entry.payload),
+							expires_at: entry.expires_at,
+							received_at: new Date().toISOString(),
+							processed: 0,
+							trace_context: entry.trace_context ?? null,
+						};
 
-					if (insertInbox(this.config.db, hubInboxEntry)) {
-						this.config.eventBus.emit("relay:inbox", {
-							ref_id: hubInboxEntry.ref_id || undefined,
-							stream_id: hubInboxEntry.stream_id || undefined,
-							kind: hubInboxEntry.kind,
+						const inserted = insertInbox(this.config.db, inboxEntry);
+
+						// Only emit relay:inbox event and track as delivered if this is a new entry
+						if (inserted) {
+							this.config.eventBus.emit("relay:inbox", {
+								ref_id: inboxEntry.ref_id || undefined,
+								stream_id: inboxEntry.stream_id || undefined,
+								kind: inboxEntry.kind,
+							});
+
+							deliveredIds.push(entry.id);
+						}
+
+						continue;
+					}
+
+					// Forward to another spoke.
+					// Sync-dispatch kinds (tool_call, platform_request, etc): the source is
+					// actively polling for a response. Forward immediately when connected, or
+					// fast-fail when offline — buffering would silently absorb the request and
+					// let the source time out (~15s).
+					// Response/async kinds (stream_chunk, stream_end, error): ALWAYS buffer to
+					// the hub's outbox first, then forward if connected. The buffered entry
+					// (delivered=0) is the durability guarantee — if the forward frame is lost
+					// on a flapping connection, the target's next reconnect drains and re-sends
+					// it. The spoke's idempotent relay_inbox insert makes duplicate delivery a
+					// no-op. Without buffering, a lost frame on a flapping link is unrecoverable:
+					// the hub already ACKed the source, and nothing was saved to re-send (#174).
+					const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
+					const targetPeer = this.peerConnections.get(entry.target_site_id);
+
+					if (kindMeta?.dispatch === "sync") {
+						if (targetPeer) {
+							const inboxEntry: RelayInboxEntry = {
+								id: entry.id,
+								source_site_id: sourceSiteId,
+								kind: entry.kind as RelayKind,
+								ref_id: entry.ref_id ?? entry.id,
+								idempotency_key: entry.idempotency_key,
+								stream_id: entry.stream_id,
+								payload: JSON.stringify(entry.payload),
+								expires_at: entry.expires_at,
+								received_at: new Date().toISOString(),
+								processed: 0,
+								trace_context: entry.trace_context ?? null,
+							};
+							this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
+						} else {
+							// Hub fast-fail: the request never left the hub, so the target tool
+							// DEFINITELY did not execute. Lets the agent loop retry safely even
+							// for non-idempotent tools.
+							const errorPayload: ErrorPayload = {
+								error: `Target host ${entry.target_site_id} is not currently connected`,
+								retriable: true,
+								definitely_not_executed: true,
+							};
+							const errorInboxEntry: RelayInboxEntry = {
+								id: randomUUID(),
+								// Synthetic source: the hub speaks on behalf of the target so the
+								// response shape matches "remote error from target". The source
+								// matches by ref_id, not source_site_id.
+								source_site_id: entry.target_site_id,
+								kind: "error",
+								ref_id: entry.id,
+								idempotency_key: null,
+								stream_id: entry.stream_id,
+								payload: JSON.stringify(errorPayload),
+								expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+								received_at: new Date().toISOString(),
+								processed: 0,
+								trace_context: null,
+							};
+							this.sendRelayDeliver(sourceSiteId, [errorInboxEntry]);
+							this.config.logger?.debug("WsTransport sync-dispatch fast-fail: target offline", {
+								kind: entry.kind,
+								target: entry.target_site_id,
+								source: sourceSiteId,
+							});
+						}
+					} else {
+						// Response/async kinds: buffer to hub's outbox for durability, then
+						// forward if connected. The entry stays delivered=0 until the target's
+						// next drainRelayInbox marks it (on reconnect) or the TTL pruner reaps
+						// it (on stable connections). This guarantees recovery for frames lost
+						// mid-flight on a flapping link (#174).
+						writeOutbox(this.config.db, {
+							id: entry.id,
+							source_site_id: sourceSiteId,
+							target_site_id: entry.target_site_id,
+							kind: entry.kind as RelayKind,
+							ref_id: entry.ref_id ?? entry.id,
+							idempotency_key: entry.idempotency_key,
+							stream_id: entry.stream_id,
+							payload: JSON.stringify(entry.payload),
+							created_at: new Date().toISOString(),
+							expires_at: entry.expires_at,
+							trace_context: entry.trace_context ?? null,
 						});
+
+						if (targetPeer) {
+							// Target connected: forward optimistically. The buffered entry
+							// (delivered=0) acts as a fallback if this frame is lost.
+							const inboxEntry: RelayInboxEntry = {
+								id: entry.id,
+								source_site_id: sourceSiteId,
+								kind: entry.kind as RelayKind,
+								ref_id: entry.ref_id ?? entry.id,
+								idempotency_key: entry.idempotency_key,
+								stream_id: entry.stream_id,
+								payload: JSON.stringify(entry.payload),
+								expires_at: entry.expires_at,
+								received_at: new Date().toISOString(),
+								processed: 0,
+								trace_context: entry.trace_context ?? null,
+							};
+							this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
+						}
 					}
 
 					deliveredIds.push(entry.id);
-					continue;
 				}
 
-				// Hub-local: insert into relay_inbox for RelayProcessor
-				if (entry.target_site_id === this.config.siteId) {
-					const inboxEntry: RelayInboxEntry = {
-						id: entry.id,
-						source_site_id: sourceSiteId,
-						kind: entry.kind as RelayKind,
-						ref_id: entry.ref_id ?? entry.id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id,
-						payload: JSON.stringify(entry.payload),
-						expires_at: entry.expires_at,
-						received_at: new Date().toISOString(),
-						processed: 0,
-						trace_context: entry.trace_context ?? null,
-					};
-
-					const inserted = insertInbox(this.config.db, inboxEntry);
-
-					// Only emit relay:inbox event and track as delivered if this is a new entry
-					if (inserted) {
-						this.config.eventBus.emit("relay:inbox", {
-							ref_id: inboxEntry.ref_id || undefined,
-							stream_id: inboxEntry.stream_id || undefined,
-							kind: inboxEntry.kind,
-						});
-
-						deliveredIds.push(entry.id);
-					}
-
-					continue;
-				}
-
-				// Forward to another spoke.
-				// Sync-dispatch kinds (tool_call, platform_request, etc): the source is
-				// actively polling for a response. Forward immediately when connected, or
-				// fast-fail when offline — buffering would silently absorb the request and
-				// let the source time out (~15s).
-				// Response/async kinds (stream_chunk, stream_end, error): ALWAYS buffer to
-				// the hub's outbox first, then forward if connected. The buffered entry
-				// (delivered=0) is the durability guarantee — if the forward frame is lost
-				// on a flapping connection, the target's next reconnect drains and re-sends
-				// it. The spoke's idempotent relay_inbox insert makes duplicate delivery a
-				// no-op. Without buffering, a lost frame on a flapping link is unrecoverable:
-				// the hub already ACKed the source, and nothing was saved to re-send (#174).
-				const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
-				const targetPeer = this.peerConnections.get(entry.target_site_id);
-
-				if (kindMeta?.dispatch === "sync") {
-					if (targetPeer) {
-						const inboxEntry: RelayInboxEntry = {
-							id: entry.id,
-							source_site_id: sourceSiteId,
-							kind: entry.kind as RelayKind,
-							ref_id: entry.ref_id ?? entry.id,
-							idempotency_key: entry.idempotency_key,
-							stream_id: entry.stream_id,
-							payload: JSON.stringify(entry.payload),
-							expires_at: entry.expires_at,
-							received_at: new Date().toISOString(),
-							processed: 0,
-							trace_context: entry.trace_context ?? null,
-						};
-						this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
-					} else {
-						// Hub fast-fail: the request never left the hub, so the target tool
-						// DEFINITELY did not execute. Lets the agent loop retry safely even
-						// for non-idempotent tools.
-						const errorPayload: ErrorPayload = {
-							error: `Target host ${entry.target_site_id} is not currently connected`,
-							retriable: true,
-							definitely_not_executed: true,
-						};
-						const errorInboxEntry: RelayInboxEntry = {
-							id: randomUUID(),
-							// Synthetic source: the hub speaks on behalf of the target so the
-							// response shape matches "remote error from target". The source
-							// matches by ref_id, not source_site_id.
-							source_site_id: entry.target_site_id,
-							kind: "error",
-							ref_id: entry.id,
-							idempotency_key: null,
-							stream_id: entry.stream_id,
-							payload: JSON.stringify(errorPayload),
-							expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-							received_at: new Date().toISOString(),
-							processed: 0,
-							trace_context: null,
-						};
-						this.sendRelayDeliver(sourceSiteId, [errorInboxEntry]);
-						this.config.logger?.debug("WsTransport sync-dispatch fast-fail: target offline", {
-							kind: entry.kind,
-							target: entry.target_site_id,
-							source: sourceSiteId,
-						});
-					}
-				} else {
-					// Response/async kinds: buffer to hub's outbox for durability, then
-					// forward if connected. The entry stays delivered=0 until the target's
-					// next drainRelayInbox marks it (on reconnect) or the TTL pruner reaps
-					// it (on stable connections). This guarantees recovery for frames lost
-					// mid-flight on a flapping link (#174).
-					writeOutbox(this.config.db, {
-						id: entry.id,
-						source_site_id: sourceSiteId,
-						target_site_id: entry.target_site_id,
-						kind: entry.kind as RelayKind,
-						ref_id: entry.ref_id ?? entry.id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id,
-						payload: JSON.stringify(entry.payload),
-						created_at: new Date().toISOString(),
-						expires_at: entry.expires_at,
-						trace_context: entry.trace_context ?? null,
-					});
-
-					if (targetPeer) {
-						// Target connected: forward optimistically. The buffered entry
-						// (delivered=0) acts as a fallback if this frame is lost.
-						const inboxEntry: RelayInboxEntry = {
-							id: entry.id,
-							source_site_id: sourceSiteId,
-							kind: entry.kind as RelayKind,
-							ref_id: entry.ref_id ?? entry.id,
-							idempotency_key: entry.idempotency_key,
-							stream_id: entry.stream_id,
-							payload: JSON.stringify(entry.payload),
-							expires_at: entry.expires_at,
-							received_at: new Date().toISOString(),
-							processed: 0,
-							trace_context: entry.trace_context ?? null,
-						};
-						this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
-					}
-				}
-
-				deliveredIds.push(entry.id);
+				// Send relay_ack back to source
+				this.sendRelayAck(sourceSiteId, deliveredIds);
+				operation.complete(deliveredIds.length > 0 ? "delivered" : "duplicate");
+			} catch (error) {
+				operation.fail(error);
+				throw error;
 			}
-
-			// Send relay_ack back to source
-			this.sendRelayAck(sourceSiteId, deliveredIds);
-			operation.complete(deliveredIds.length > 0 ? "delivered" : "duplicate");
-		} catch (error) {
-			operation.fail(error);
-			throw error;
-		}
+		});
 	}
 
 	/**
@@ -969,42 +973,44 @@ export class WsTransport {
 			traceContext: payload.entries.length === 1 ? payload.entries[0]?.trace_context : null,
 		});
 
-		try {
-			for (const entry of payload.entries) {
-				const inboxEntry: RelayInboxEntry = {
-					id: entry.id,
-					source_site_id: entry.source_site_id,
-					kind: entry.kind as RelayKind,
-					ref_id: entry.ref_id ?? null,
-					idempotency_key: entry.idempotency_key ?? null,
-					stream_id: entry.stream_id ?? null,
-					payload: JSON.stringify(entry.payload),
-					expires_at: entry.expires_at,
-					received_at: new Date().toISOString(),
-					processed: 0,
-					trace_context: entry.trace_context ?? null,
-				};
+		operation.run(() => {
+			try {
+				for (const entry of payload.entries) {
+					const inboxEntry: RelayInboxEntry = {
+						id: entry.id,
+						source_site_id: entry.source_site_id,
+						kind: entry.kind as RelayKind,
+						ref_id: entry.ref_id ?? null,
+						idempotency_key: entry.idempotency_key ?? null,
+						stream_id: entry.stream_id ?? null,
+						payload: JSON.stringify(entry.payload),
+						expires_at: entry.expires_at,
+						received_at: new Date().toISOString(),
+						processed: 0,
+						trace_context: entry.trace_context ?? null,
+					};
 
-				const inserted = insertInbox(this.config.db, inboxEntry);
-				if (inserted) {
-					receivedIds.push(entry.id);
+					const inserted = insertInbox(this.config.db, inboxEntry);
+					if (inserted) {
+						receivedIds.push(entry.id);
 
-					// Emit relay:inbox event for new entries
-					this.config.eventBus.emit("relay:inbox", {
-						ref_id: inboxEntry.ref_id || undefined,
-						stream_id: inboxEntry.stream_id || undefined,
-						kind: inboxEntry.kind,
-					});
+						// Emit relay:inbox event for new entries
+						this.config.eventBus.emit("relay:inbox", {
+							ref_id: inboxEntry.ref_id || undefined,
+							stream_id: inboxEntry.stream_id || undefined,
+							kind: inboxEntry.kind,
+						});
+					}
 				}
-			}
 
-			// Send relay_ack back to hub
-			this.sendRelayAck(sourceSiteId, receivedIds);
-			operation.complete(receivedIds.length > 0 ? "inserted" : "duplicate");
-		} catch (error) {
-			operation.fail(error);
-			throw error;
-		}
+				// Send relay_ack back to hub
+				this.sendRelayAck(sourceSiteId, receivedIds);
+				operation.complete(receivedIds.length > 0 ? "inserted" : "duplicate");
+			} catch (error) {
+				operation.fail(error);
+				throw error;
+			}
+		});
 	}
 
 	/**
@@ -1090,15 +1096,17 @@ export class WsTransport {
 					),
 					traceContext: batch.length === 1 ? batch[0]?.trace_context : null,
 				});
-				let sent: boolean;
-				try {
-					const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
-					sent = peer.sendFrame(frame);
-					operation.complete(sent ? "sent" : "backpressured");
-				} catch (error) {
-					operation.fail(error);
-					throw error;
-				}
+				let sent = false;
+				operation.run(() => {
+					try {
+						const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
+						sent = peer.sendFrame(frame);
+						operation.complete(sent ? "sent" : "backpressured");
+					} catch (error) {
+						operation.fail(error);
+						throw error;
+					}
+				});
 
 				if (!sent) {
 					this.config.logger?.warn("WsTransport relay drain backpressured", {

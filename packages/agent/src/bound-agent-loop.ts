@@ -1643,7 +1643,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			traceCarrier ? JSON.stringify(traceCarrier) : undefined,
 		);
 		try {
-			writeOutbox(this.ctx.db, outboxEntry);
+			context.with(dispatchCtx, () => writeOutbox(this.ctx.db, outboxEntry));
 		} catch (error) {
 			this.ctx.logger.error("[agent-loop] Failed to write client_tool relay outbox entry", {
 				tool: toolCall.name,

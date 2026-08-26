@@ -1,5 +1,5 @@
 import { counter, histogram, upDownCounter } from "@bound/shared";
-import { SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
+import { type Span, SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
 
 interface CounterLike {
 	add(value: number, attributes?: Record<string, string | number | boolean>): void;
@@ -48,7 +48,7 @@ export interface SyncTelemetry {
 		name: "ws.handshake" | "replication.drain" | "relay.operation",
 		attributes: Record<string, string | number | boolean>,
 		parentContext?: import("@opentelemetry/api").Context,
-	): SpanLike;
+	): SpanLike & Partial<Pick<Span, "spanContext">>;
 	now?: () => number;
 }
 
@@ -142,6 +142,7 @@ export function startReplicationDrain(
 export type RelayOperationDirection = "send" | "receive" | "deliver";
 
 export interface RelayOperationSpan {
+	run<T>(fn: () => T): T;
 	complete(outcome: "inserted" | "duplicate" | "sent" | "delivered" | "backpressured"): void;
 	fail(error: unknown): void;
 }
@@ -211,8 +212,13 @@ export function startRelayOperation(
 		},
 		parentContext,
 	);
+	const operationContext =
+		typeof span.spanContext === "function"
+			? trace.setSpan(parentContext, span as Span)
+			: parentContext;
 	let ended = false;
 	return {
+		run: (fn) => context.with(operationContext, fn),
 		complete(outcome) {
 			if (ended) return;
 			ended = true;

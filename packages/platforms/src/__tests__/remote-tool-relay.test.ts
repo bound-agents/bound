@@ -5,7 +5,7 @@ import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { PlatformMcpRegistry } from "../mcp-registry.js";
+import { PlatformMcpRegistry, setPlatformTelemetry } from "../mcp-registry.js";
 
 /**
  * Tests for cross-host platform tool discovery via the relay proxy.
@@ -84,6 +84,7 @@ describe("PlatformMcpRegistry: remote tool relay (Option 2)", () => {
 	let registry: PlatformMcpRegistry;
 
 	beforeEach(() => {
+		setPlatformTelemetry();
 		db = new Database(":memory:");
 		applySchema(db);
 		siteId = `local-${randomBytes(4).toString("hex")}`;
@@ -117,6 +118,103 @@ describe("PlatformMcpRegistry: remote tool relay (Option 2)", () => {
 			siteId,
 		);
 	}
+
+	it("bounds one tools/list discovery poll in a parent span and records retry outcomes", async () => {
+		seedRemoteHost("remote-A", ["discord"]);
+		const spans: Array<{
+			name: string;
+			attributes: Record<string, string | number | boolean>;
+			events: Array<{ name: string; attributes?: Record<string, string | number | boolean> }>;
+			ended: boolean;
+		}> = [];
+		let activeDiscoveryOperation = false;
+		setPlatformTelemetry({
+			async withSpan(name, attributes, operation) {
+				const recorded = { name, attributes: { ...attributes }, events: [], ended: false };
+				spans.push(recorded);
+				const span = {
+					setAttribute(key, value) {
+						recorded.attributes[key] = value;
+					},
+					addEvent(eventName, eventAttributes) {
+						recorded.events.push({ name: eventName, attributes: eventAttributes });
+					},
+					recordException() {},
+					setStatus() {},
+					end() {
+						recorded.ended = true;
+					},
+				};
+				activeDiscoveryOperation = true;
+				try {
+					return await operation(span);
+				} finally {
+					activeDiscoveryOperation = false;
+				}
+			},
+		});
+
+		let calls = 0;
+		registry.setRemotePlatformRequest(async () => {
+			expect(activeDiscoveryOperation).toBe(true);
+			calls++;
+			if (calls === 1) throw new Error("relay timeout with raw-id-123");
+			return { tools: [] };
+		});
+		await registry.discoverRemoteTools();
+
+		expect(spans).toHaveLength(1);
+		expect(spans[0]?.name).toBe("platform.mcp.tool-discovery");
+		expect(spans[0]?.ended).toBe(true);
+		expect(spans[0]?.attributes).toEqual({
+			"platform.category": "discord",
+			"server.category": "remote",
+			outcome: "success",
+		});
+		expect(spans[0]?.events).toEqual([
+			{ name: "platform.mcp.tool-discovery.attempt", attributes: { attempt: 1, outcome: "error" } },
+			{
+				name: "platform.mcp.tool-discovery.attempt",
+				attributes: { attempt: 2, outcome: "success" },
+			},
+		]);
+		expect(JSON.stringify(spans)).not.toContain("raw-id-123");
+	});
+
+	it("ends the tools/list discovery span when both attempts fail", async () => {
+		seedRemoteHost("remote-A", ["discord"]);
+		const ended: boolean[] = [];
+		const attributes: Record<string, string | number | boolean> = {};
+		setPlatformTelemetry({
+			async withSpan(_name, initialAttributes, operation) {
+				Object.assign(attributes, initialAttributes);
+				return operation({
+					setAttribute(key, value) {
+						attributes[key] = value;
+					},
+					addEvent() {},
+					recordException() {},
+					setStatus() {},
+					end() {
+						ended.push(true);
+					},
+				});
+			},
+		});
+		registry.setRemotePlatformRequest(async () => {
+			throw new Error("relay timeout with raw-id-456");
+		});
+
+		await registry.discoverRemoteTools();
+
+		expect(ended).toEqual([true]);
+		expect(attributes).toEqual({
+			"platform.category": "discord",
+			"server.category": "remote",
+			outcome: "error",
+		});
+		expect(JSON.stringify(attributes)).not.toContain("raw-id-456");
+	});
 
 	it("discovers remote read-only tools and surfaces them through getReadOnlyPlatformTools()", async () => {
 		seedRemoteHost("remote-A", ["discord"]);

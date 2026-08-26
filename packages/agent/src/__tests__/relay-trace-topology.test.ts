@@ -1,6 +1,6 @@
 import Database from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { applyMetricsSchema, applySchema, insertInbox } from "@bound/core";
+import { applyMetricsSchema, applySchema, insertInbox, readUndelivered } from "@bound/core";
 import type { Logger, RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -88,6 +88,11 @@ describe("relay trace topology", () => {
 		expect(receive?.parentSpanId).toBe(remoteSpanId);
 		expect(child?.parentSpanId).toBe(receive?.spanContext().spanId);
 		expect(receive?.attributes["relay.kind"]).toBe("tool_call");
+
+		const response = readUndelivered(db, "source-site").find((outbox) => outbox.kind === "result");
+		expect(response?.trace_context).not.toBeNull();
+		const responseCarrier = JSON.parse(response?.trace_context ?? "{}");
+		expect(responseCarrier.traceparent).toContain(receive?.spanContext().traceId);
 	});
 
 	it("does not create receive spans for passive mailbox rows", async () => {

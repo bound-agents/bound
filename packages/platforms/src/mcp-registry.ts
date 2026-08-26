@@ -39,6 +39,32 @@ const mcpDeliveryDuration = histogram("bound.platform.mcp.delivery.duration", {
 });
 const platformTracer = trace.getTracer("bound.platforms");
 
+interface PlatformSpanLike {
+	setAttribute(name: string, value: string | number | boolean): void;
+	addEvent(name: string, attributes?: Record<string, string | number | boolean>): void;
+	recordException(error: Error): void;
+	setStatus(status: { code: SpanStatusCode }): void;
+	end(): void;
+}
+
+interface PlatformTelemetry {
+	withSpan<T>(
+		name: string,
+		attributes: Record<string, string | number | boolean>,
+		operation: (span: PlatformSpanLike) => Promise<T>,
+	): Promise<T>;
+}
+
+const defaultPlatformTelemetry: PlatformTelemetry = {
+	withSpan: (name, attributes, operation) =>
+		platformTracer.startActiveSpan(name, { attributes }, operation),
+};
+let platformTelemetry: PlatformTelemetry = defaultPlatformTelemetry;
+
+export function setPlatformTelemetry(overrides?: Partial<PlatformTelemetry>): void {
+	platformTelemetry = { ...defaultPlatformTelemetry, ...overrides };
+}
+
 function platformMetricName(name: string): string {
 	return name === "discord" || name === "discord-interaction" || name === "rss" ? name : "other";
 }
@@ -499,46 +525,78 @@ export class PlatformMcpRegistry {
 		const nextCache = new Map<string, Map<string, PlatformRegisteredTool>>();
 
 		for (const serverName of remoteServerNames) {
-			try {
-				// On-demand discovery with ONE retry (§7): a single transient relay
-				// failure (e.g. the owning host mid-reconnect) should not blank out a
-				// platform's tools for a whole refresh cycle, because the single
-				// delegation path means a loop on any host may need this definition
-				// before assembly. One immediate retry covers the common transient;
-				// a persistent failure still drops the server (see catch).
-				let result: {
-					tools?: Array<{
-						name: string;
-						description?: string;
-						inputSchema?: Record<string, unknown>;
-						annotations?: PlatformRegisteredTool["annotations"];
-					}>;
-				};
-				try {
-					result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
-				} catch (firstErr) {
-					this.deps.logger.warn(
-						`Remote tools/list for platform '${serverName}' failed; retrying once: ${firstErr}`,
-					);
-					result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
-				}
-				const tools = result?.tools ?? [];
-				const serverTools = new Map<string, PlatformRegisteredTool>();
-				for (const tool of tools) {
-					serverTools.set(tool.name, this.makeRemoteTool(serverName, tool, remotePlatformRequest));
-				}
-				nextCache.set(serverName, serverTools);
-				this.deps.logger.info(
-					`Discovered ${serverTools.size} remote tools from platform '${serverName}'`,
-				);
-			} catch (err) {
-				this.deps.logger.error(
-					`Failed to discover remote tools from platform '${serverName}': ${err}`,
-				);
-				// Drop this server from the cache on failure rather than holding
-				// onto stale entries — a healthy local fallback is preferable to
-				// pointing the agent at a relay endpoint that won't answer.
-			}
+			await platformTelemetry.withSpan(
+				"platform.mcp.tool-discovery",
+				{
+					"platform.category": platformMetricName(serverName),
+					"server.category": "remote",
+				},
+				async (span) => {
+					try {
+						// On-demand discovery with ONE retry (§7): a single transient relay
+						// failure (e.g. the owning host mid-reconnect) should not blank out a
+						// platform's tools for a whole refresh cycle, because the single
+						// delegation path means a loop on any host may need this definition
+						// before assembly. One immediate retry covers the common transient;
+						// a persistent failure still drops the server (see catch).
+						let result: {
+							tools?: Array<{
+								name: string;
+								description?: string;
+								inputSchema?: Record<string, unknown>;
+								annotations?: PlatformRegisteredTool["annotations"];
+							}>;
+						};
+						try {
+							result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
+							span.addEvent("platform.mcp.tool-discovery.attempt", {
+								attempt: 1,
+								outcome: "success",
+							});
+						} catch (firstErr) {
+							span.addEvent("platform.mcp.tool-discovery.attempt", {
+								attempt: 1,
+								outcome: "error",
+							});
+							this.deps.logger.warn(
+								`Remote tools/list for platform '${serverName}' failed; retrying once: ${firstErr}`,
+							);
+							result = (await remotePlatformRequest(serverName, "tools/list", {})) as typeof result;
+							span.addEvent("platform.mcp.tool-discovery.attempt", {
+								attempt: 2,
+								outcome: "success",
+							});
+						}
+						const tools = result?.tools ?? [];
+						const serverTools = new Map<string, PlatformRegisteredTool>();
+						for (const tool of tools) {
+							serverTools.set(
+								tool.name,
+								this.makeRemoteTool(serverName, tool, remotePlatformRequest),
+							);
+						}
+						nextCache.set(serverName, serverTools);
+						this.deps.logger.info(
+							`Discovered ${serverTools.size} remote tools from platform '${serverName}'`,
+						);
+						span.setAttribute("outcome", "success");
+						span.setStatus({ code: SpanStatusCode.OK });
+					} catch (err) {
+						span.addEvent("platform.mcp.tool-discovery.attempt", { attempt: 2, outcome: "error" });
+						span.setAttribute("outcome", "error");
+						span.recordException(err instanceof Error ? err : new Error(String(err)));
+						span.setStatus({ code: SpanStatusCode.ERROR });
+						this.deps.logger.error(
+							`Failed to discover remote tools from platform '${serverName}': ${err}`,
+						);
+						// Drop this server from the cache on failure rather than holding
+						// onto stale entries — a healthy local fallback is preferable to
+						// pointing the agent at a relay endpoint that won't answer.
+					} finally {
+						span.end();
+					}
+				},
+			);
 		}
 
 		this.remoteTools = nextCache;
