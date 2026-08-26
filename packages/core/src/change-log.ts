@@ -7,6 +7,11 @@ import {
 	generateHlc,
 	mergeHlc,
 } from "@bound/shared";
+import {
+	recordChangeLogPostcommitEvent,
+	recordChangeLogTransaction,
+	withCoreSpan,
+} from "./telemetry";
 
 type SqlBinding = string | number | bigint | boolean | null | Uint8Array;
 
@@ -96,18 +101,36 @@ export function withChangeLog<T>(
 		return { result: result_obj.result, hlc, tableName: result_obj.tableName };
 	});
 
-	const { result, hlc, tableName } = transaction() as {
-		result: T;
-		hlc: string;
-		tableName: SyncedTableName;
-	};
+	return withCoreSpan("changelog.transaction", (span) => {
+		let committed: { result: T; hlc: string; tableName: SyncedTableName };
+		try {
+			committed = transaction() as typeof committed;
+			recordChangeLogTransaction("committed");
+			span.addEvent("changelog.committed", { table_name: committed.tableName });
+		} catch (error) {
+			recordChangeLogTransaction("failed");
+			throw error;
+		}
 
-	// Emit event after transaction commits
-	if (changelogEventBus) {
-		changelogEventBus.emit("changelog:written", { hlc, tableName, siteId });
-	}
+		if (changelogEventBus) {
+			try {
+				changelogEventBus.emit("changelog:written", {
+					hlc: committed.hlc,
+					tableName: committed.tableName,
+					siteId,
+				});
+				recordChangeLogPostcommitEvent("succeeded");
+			} catch (error) {
+				recordChangeLogPostcommitEvent("failed");
+				span.addEvent("changelog.postcommit_event_failed", {
+					table_name: committed.tableName,
+				});
+				throw error;
+			}
+		}
 
-	return result;
+		return committed.result;
+	});
 }
 
 export function insertRow<T extends SyncedTableName>(

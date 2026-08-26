@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { RelayInboxEntry, RelayOutboxEntry, TypedEventEmitter } from "@bound/shared";
+import { recordRelayOutboxOperation, withCoreSpan } from "./telemetry";
 
 const MAX_PAYLOAD_BYTES_DEFAULT = 2 * 1024 * 1024;
 
@@ -42,75 +43,91 @@ export function writeOutbox(
 	// idx_relay_outbox_idempotency), the duplicate is silently discarded.
 	// Entries with NULL idempotency_key are never deduplicated by idempotency
 	// (partial index excludes NULLs), but PK conflicts on `id` still ignore.
-	const result = db.run(
-		`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered, trace_context)
+	return withCoreSpan("relay_outbox.operation", (span) => {
+		const result = db.run(
+			`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered, trace_context)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-		[
-			entry.id,
-			entry.source_site_id,
-			entry.target_site_id,
-			entry.kind,
-			entry.ref_id,
-			entry.idempotency_key,
-			entry.stream_id,
-			entry.payload,
-			entry.created_at,
-			entry.expires_at,
-			entry.trace_context ?? null,
-		],
-	);
+			[
+				entry.id,
+				entry.source_site_id,
+				entry.target_site_id,
+				entry.kind,
+				entry.ref_id,
+				entry.idempotency_key,
+				entry.stream_id,
+				entry.payload,
+				entry.created_at,
+				entry.expires_at,
+				entry.trace_context ?? null,
+			],
+		);
 
-	// Emit event ONLY when a new row was actually inserted. Emitting on a
-	// no-op INSERT-OR-IGNORE creates an infinite synchronous recursion when
-	// the listener calls back into writeOutbox with the same id (e.g. the
-	// hub-side offline-async-buffer path in WsTransport.handleRelaySend, which
-	// re-buffers an entry that's already in relay_outbox). The Node
-	// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
-	// throws RangeError.
-	//
-	// Returns whether a row was actually inserted (mirrors insertInbox), so
-	// callers using per-event idempotency keys can gate dependent writes on
-	// the dedupe outcome (e.g. deliverBatch skips the developer message for a
-	// crash-replayed event the outbox already carries).
-	if (result.changes === 0) return false;
+		// Emit event ONLY when a new row was actually inserted. Emitting on a
+		// no-op INSERT-OR-IGNORE creates an infinite synchronous recursion when
+		// the listener calls back into writeOutbox with the same id (e.g. the
+		// hub-side offline-async-buffer path in WsTransport.handleRelaySend, which
+		// re-buffers an entry that's already in relay_outbox). The Node
+		// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
+		// throws RangeError.
+		//
+		// Returns whether a row was actually inserted (mirrors insertInbox), so
+		// callers using per-event idempotency keys can gate dependent writes on
+		// the dedupe outcome (e.g. deliverBatch skips the developer message for a
+		// crash-replayed event the outbox already carries).
+		if (result.changes === 0) {
+			recordRelayOutboxOperation("write", "duplicate");
+			return false;
+		}
+		recordRelayOutboxOperation("write", "inserted");
 
-	// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
-	const bus = eventBus ?? relayOutboxEventBus;
-	if (bus) {
-		bus.emit("relay:outbox-written", {
-			id: entry.id,
-			target_site_id: entry.target_site_id,
-		});
-	}
-	return true;
+		// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
+		const bus = eventBus ?? relayOutboxEventBus;
+		if (bus) {
+			bus.emit("relay:outbox-written", {
+				id: entry.id,
+				target_site_id: entry.target_site_id,
+			});
+		}
+		span.addEvent("relay_outbox.write", { outcome: "inserted" });
+		return true;
+	});
 }
 
 export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {
-	if (targetSiteId) {
-		return db
-			.query(
-				"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
-			)
-			.all(targetSiteId) as RelayOutboxEntry[];
-	}
-	return db
-		.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
-		.all() as RelayOutboxEntry[];
+	return withCoreSpan("relay_outbox.operation", (span) => {
+		const rows = targetSiteId
+			? (db
+					.query(
+						"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
+					)
+					.all(targetSiteId) as RelayOutboxEntry[])
+			: (db
+					.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
+					.all() as RelayOutboxEntry[]);
+		recordRelayOutboxOperation("read", rows.length > 0 ? "hit" : "miss");
+		span.addEvent("relay_outbox.read", { entry_count: rows.length });
+		return rows;
+	});
 }
 
 export function markDelivered(db: Database, ids: string[]): void {
 	if (ids.length === 0) return;
 	const placeholders = ids.map(() => "?").join(", ");
-	db.run(`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders})`, ids);
+	const result = db.run(
+		`UPDATE relay_outbox SET delivered = 1 WHERE delivered = 0 AND id IN (${placeholders})`,
+		ids,
+	);
+	if (result.changes > 0) recordRelayOutboxOperation("ack", "delivered", result.changes);
 }
 
 export function markDeliveredForTarget(db: Database, ids: string[], targetSiteId: string): void {
 	if (ids.length === 0) return;
 	const placeholders = ids.map(() => "?").join(", ");
-	db.run(
-		`UPDATE relay_outbox SET delivered = 1 WHERE id IN (${placeholders}) AND target_site_id = ?`,
+	const result = db.run(
+		`UPDATE relay_outbox SET delivered = 1 WHERE delivered = 0 AND id IN (${placeholders}) AND target_site_id = ?`,
 		[...ids, targetSiteId],
 	);
+	if (result.changes > 0) recordRelayOutboxOperation("ack", "delivered", result.changes);
 }
 
 export function readUnprocessed(db: Database): RelayInboxEntry[] {

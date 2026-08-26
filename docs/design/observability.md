@@ -1,17 +1,75 @@
 # Observability
 
-Last verified: 2026-05-25
+Last verified: 2026-08-26
 
-OpenTelemetry distributed tracing across all binaries (`bound`, `boundless`, `boundctl`) and the relay protocol. Opt-in via `OTEL_ENABLED=1`; when unset, `@opentelemetry/api` returns no-op spans (zero overhead). When enabled, the OTLP HTTP exporter sends to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`).
+OpenTelemetry tracing and metrics across process binaries (`bound`, `boundless`, `boundctl`) and the relay protocol. Telemetry is opt-in via `OTEL_ENABLED=1`; when unset, the OpenTelemetry API returns no-op spans and instruments. When enabled, OTLP/HTTP exporters send both signals to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://localhost:4318`). Signal-specific `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` override the full exporter URL.
 
 ## Bootstrap
 
-`initTelemetry(serviceName)` and `shutdownTelemetry()` are exported from `@bound/shared`. `@opentelemetry/context-async-hooks` and `@opentelemetry/exporter-trace-otlp-http` are runtime deps of `@bound/shared`. Each binary calls `initTelemetry` at startup with its own service name so traces group correctly in Jaeger:
+`initTelemetry(serviceName, options?)`, `shutdownTelemetry()`, `meter()`, `counter()`, and `histogram()` are exported from `@bound/shared`. The shared package owns tracing and metrics SDK providers, AsyncLocalStorage context propagation, OTLP/HTTP exporters, and process-wide registration. Each binary calls `initTelemetry` at startup with its own service name:
 
 - `bound` — Phase 0 of `runStart()` in `@bound/cli`, before bootstrap
 - `boundless` — Step 0 of `boundless.tsx`
 
-Both register a `BasicTracerProvider` with `BatchSpanProcessor` and call `shutdownTelemetry()` to flush on graceful shutdown. `packages/cli/src/commands/start/telemetry.ts` is a thin re-export of the shared helpers for backward compat.
+The default bootstrap registers a `BasicTracerProvider` with `BatchSpanProcessor` and a `MeterProvider` with `PeriodicExportingMetricReader`. Both providers share one resource carrying `service.name` plus the process and host attributes from `Resource.default()`. `shutdownTelemetry()` shuts down both providers, flushing pending spans and metrics, then clears global API registrations. Repeated shutdown is safe.
+
+Tests and embedders can pass `{ enabled, traceExporter, metricReader, resourceAttributes }`. The positional `SpanExporter` overload remains supported for existing callers. Injecting test exporters avoids network I/O while exercising the same providers and resource.
+
+### Bun 1.4 auto-instrumentation compatibility
+
+Bun 1.4 explicitly advertises compatibility for the npm packages
+`@opentelemetry/instrumentation-http` and `@opentelemetry/instrumentation-fs`, including the
+`shimmer` and `require-in-the-middle` patching hooks they use. That support is narrower than
+Node's complete auto-instrumentation catalog:
+
+- `instrumentation-http` patches `node:http` / `node:https`. Bound's production listeners use
+  `Bun.serve`, and production outbound requests use Bun's global `fetch`; neither path crosses
+  `node:http`. The sole repository `node:http` server is a development script under
+  `packages/web/scripts/`.
+- `instrumentation-fs` patches `node:fs`, but filesystem calls are high-volume implementation
+  details here. Automatically emitting one span per call would be noisy and would overlap the
+  existing operation-level spans (`hydrate-fs`, sandbox commands, config/context assembly).
+- `instrumentation-undici` is not one of the two packages named by Bun's compatibility claim.
+  Bun's global `fetch` is native and is not the npm `undici` module, so Undici instrumentation
+  does not cover Bound's actual fetch calls.
+- Bun-native APIs (`Bun.serve`, `Bun.file`, `Bun.write`, `bun:sqlite`) have no compatible npm
+  auto-instrumentation package. They require intentionally placed domain or boundary spans.
+
+This was checked on Bun 1.4.0 with both Bound's OpenTelemetry 1.30/0.57 generation and the
+current 2.10/0.221 generation. Isolated preload probes registered in-memory exporters before
+application imports, then exercised a `node:http` client/server pair and a global `fetch` call.
+Neither probe exported a span in this runtime/build. That negative result does not contradict
+Bun's package-loading compatibility claim, but it means the current Bound bootstrap cannot rely
+on those packages without a repository-level span-producing integration test.
+
+Bound therefore registers no auto-instrumentation package. Adding the broad
+`@opentelemetry/auto-instrumentations-node` bundle would add dependency and patching surface
+without useful production coverage. Reconsider `instrumentation-http` only if production traffic
+moves through `node:http`, and reconsider fetch coverage when Bun documents and tests an
+instrumentation hook for its native fetch. Any future integration belongs in this shared
+bootstrap and must prove emitted spans under the pinned Bun version before it is enabled.
+
+Bound still registers providers explicitly so manual instrumentation shares one global tracer and
+meter provider rather than constructing SDKs at domain call sites.
+
+### Metric API
+
+Domain packages import instruments from `@bound/shared`, not SDK providers or exporters:
+
+```ts
+import { counter, histogram, meter } from "@bound/shared";
+
+const jobsStarted = counter("bound.scheduler.jobs.started", {
+	description: "Scheduled jobs started",
+});
+const jobDuration = histogram("bound.scheduler.job.duration", { unit: "ms" });
+const schedulerMeter = meter("bound.scheduler");
+
+jobsStarted.add(1, { "bound.task.type": task.type });
+jobDuration.record(elapsedMs, { "bound.task.type": task.type });
+```
+
+`meter(name?, version?)`, `counter(name, options?)`, and `histogram(name, options?)` cache stable API objects. Before telemetry is enabled they are safe no-ops. Counter and histogram helpers use the default `bound` meter; use `meter()` directly for observable gauges or package-specific instrumentation scopes. Metric attributes must remain low-cardinality: IDs belong in traces or logs, not metric dimensions.
 
 ### Site ID span tag (`bound.site_id`)
 

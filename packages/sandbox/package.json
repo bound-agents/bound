@@ -8,6 +8,7 @@
 	"dependencies": {
 		"@bound/core": "workspace:*",
 		"@bound/shared": "workspace:*",
+		"@opentelemetry/api": "^1.9.0",
 		"just-bash": "^2.14.0",
 		"uuid": "^13.0.0"
 	},

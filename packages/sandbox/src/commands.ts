@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { formatError } from "@bound/shared";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
+import { withCommandTelemetry } from "./telemetry";
 
 /**
  * Per-loop execution context injected by the agent loop factory.
@@ -232,7 +233,10 @@ export function createDefineCommands(
 						}
 					: context;
 
-				return await def.handler(args, effectiveCtx);
+				return await withCommandTelemetry(def.name, (span) => {
+					span.addEvent("sandbox.command.dispatch");
+					return def.handler(args, effectiveCtx);
+				});
 			} catch (error) {
 				const errorMsg = formatError(error);
 				return {

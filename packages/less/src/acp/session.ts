@@ -27,6 +27,7 @@ import type { ContentBlock } from "@bound/llm";
 import type { WsStreamChunk } from "@bound/shared";
 import type { AppLogger } from "../logging";
 import { parseContentBlocks } from "../session/tool-call-pairing";
+import { withLessTelemetry } from "../telemetry";
 import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import {
@@ -507,7 +508,16 @@ export class AcpSession {
 		const controller = new AbortController();
 		this.inFlightTools.add(controller);
 		try {
-			const result = await handler(args, controller.signal, this.deps.cwd);
+			const result = await withLessTelemetry(
+				"boundless.tool.call",
+				{ "tool.name": toolName, "tool.kind": isShellToolName(toolName) ? "shell" : "client" },
+				async (span) => {
+					span.addEvent("boundless.tool.permission.allowed");
+					const value = await handler(args, controller.signal, this.deps.cwd);
+					span.addEvent("boundless.tool.completed", { "tool.is_error": value.isError ?? false });
+					return value;
+				},
+			);
 			const status: ToolCallStatus = result.isError ? "failed" : "completed";
 			const shellOutput = isShellToolName(toolName)
 				? shellTerminalOutput(toolName, acpId, result.content)

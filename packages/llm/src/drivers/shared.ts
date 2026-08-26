@@ -1,7 +1,57 @@
-import type { Logger } from "@bound/shared";
+import { type Logger, counter, histogram } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { type MapChunksOptions, mapChunks, mapError } from "../bridge";
 import { createLoggingFetch } from "../fetch-logger";
 import type { StreamChunk } from "../types";
+
+const llmDriverAttempts = counter("bound.llm.driver.attempts", {
+	description: "LLM driver stream attempts by outcome, provider, and model",
+});
+const llmDriverRetries = counter("bound.llm.driver.retries", {
+	description: "LLM driver stream retries by reason, provider, and model",
+});
+const llmRequestDuration = histogram("bound.llm.request.duration", {
+	description: "Physical LLM request duration",
+	unit: "s",
+});
+const llmTimeToFirstToken = histogram("bound.llm.request.time_to_first_token", {
+	description: "Physical LLM request time to first content token",
+	unit: "s",
+});
+const llmUsageTokens = counter("bound.llm.usage.tokens", {
+	description: "LLM usage tokens by token type, provider, and model",
+});
+const llmCost = counter("bound.llm.cost", {
+	description: "Authoritative LLM request cost where supplied",
+	unit: "USD",
+});
+
+type LlmDriverMetricName = "attempt" | "retry" | "duration" | "ttft" | "tokens" | "cost";
+type LlmDriverMetricRecorder = (
+	name: LlmDriverMetricName,
+	value: number,
+	attributes: Record<string, string>,
+) => void;
+
+let testMetricRecorder: LlmDriverMetricRecorder | undefined;
+
+export function setLlmDriverMetricRecorderForTest(recorder?: LlmDriverMetricRecorder): void {
+	testMetricRecorder = recorder;
+}
+
+function recordLlmDriverMetric(
+	name: LlmDriverMetricName,
+	value: number,
+	attributes: Record<string, string>,
+): void {
+	testMetricRecorder?.(name, value, attributes);
+	if (name === "attempt") llmDriverAttempts.add(value, attributes);
+	else if (name === "retry") llmDriverRetries.add(value, attributes);
+	else if (name === "duration") llmRequestDuration.record(value, attributes);
+	else if (name === "ttft") llmTimeToFirstToken.record(value, attributes);
+	else if (name === "tokens") llmUsageTokens.add(value, attributes);
+	else llmCost.add(value, attributes);
+}
 
 export interface ProviderFetchConfig {
 	fetch?: typeof fetch;
@@ -55,6 +105,7 @@ export async function* runProviderStream(params: ProviderStreamParams): AsyncIte
 	yield* withEmptyRetry(() => mapProviderStream(params), {
 		maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 		isAborted: () => params.signal?.aborted ?? false,
+		providerName: params.providerName,
 	});
 }
 
@@ -83,40 +134,124 @@ export async function* withEmptyRetry(
 		maxRetries: number;
 		isAborted: () => boolean;
 		onRetry?: (attempt: number) => void;
+		/** Stable backend label for bounded metric dimensions. */
+		providerName?: string;
+		/** Stable configured model identifier, when known at the driver call site. */
+		modelId?: string;
 	},
 ): AsyncIterable<StreamChunk> {
 	for (let attempt = 0; ; attempt++) {
+		const startedAt = performance.now();
+		const provider = opts.providerName ?? "unknown";
+		const model = opts.modelId ?? "unknown";
+		const dimensions = { provider, model };
+		const tracer = trace.getTracer("bound.llm");
+		const requestSpan = tracer.startSpan("llm.provider.request", {
+			attributes: {
+				"llm.provider": provider,
+				"llm.model": model,
+				"llm.retry": attempt,
+			},
+		});
+		const requestContext = trace.setSpan(context.active(), requestSpan);
 		const isLastAttempt = attempt >= opts.maxRetries;
 		let sawContent = false;
 		let retrying = false;
-
-		for await (const chunk of runAttempt()) {
-			if (chunk.type === "done") {
-				const isEmpty = !sawContent && chunk.usage.output_tokens === 0;
-				if (isEmpty && !isLastAttempt && !opts.isAborted()) {
-					// Swallow this empty `done` and re-issue. Nothing substantive
-					// was yielded, so the consumer never sees the discarded turn.
-					opts.onRetry?.(attempt + 1);
-					retrying = true;
-					break;
+		let sawDone = false;
+		let recordedTtft = false;
+		let outcome = "incomplete";
+		let iterator: AsyncIterator<StreamChunk> | undefined;
+		try {
+			iterator = context.with(requestContext, () => runAttempt()[Symbol.asyncIterator]());
+			for (;;) {
+				const next = await context.with(requestContext, () => iterator?.next());
+				if (!next || next.done) break;
+				const chunk = next.value;
+				if (chunk.type === "done") {
+					sawDone = true;
+					const isEmpty = !sawContent && chunk.usage.output_tokens === 0;
+					if (isEmpty && !isLastAttempt && !opts.isAborted()) {
+						// Swallow this empty `done` and re-issue. Nothing substantive
+						// was yielded, so the consumer never sees the discarded turn.
+						requestSpan.addEvent("llm.retry", { "llm.retry.reason": "empty_completion" });
+						requestSpan.setStatus({ code: SpanStatusCode.ERROR, message: "empty completion" });
+						outcome = "retry";
+						recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+						recordLlmDriverMetric("retry", 1, { ...dimensions, reason: "empty_completion" });
+						opts.onRetry?.(attempt + 1);
+						retrying = true;
+						break;
+					}
+					outcome = isEmpty ? "empty" : "success";
+					recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+					requestSpan.setAttribute("llm.outcome", outcome);
+					for (const [type, value] of [
+						["input", chunk.usage.input_tokens],
+						["output", chunk.usage.output_tokens],
+						["cache_write", chunk.usage.cache_write_tokens],
+						["cache_read", chunk.usage.cache_read_tokens],
+					] as const) {
+						if (value !== null) recordLlmDriverMetric("tokens", value, { ...dimensions, type });
+					}
+					if (chunk.cost_usd !== undefined) {
+						recordLlmDriverMetric("cost", chunk.cost_usd, dimensions);
+					}
+					requestSpan.setStatus({ code: SpanStatusCode.OK });
+					yield chunk;
+					return;
+				}
+				if (
+					chunk.type === "text" ||
+					chunk.type === "thinking" ||
+					chunk.type === "tool_use_start" ||
+					chunk.type === "tool_use_args" ||
+					chunk.type === "tool_use_end"
+				) {
+					sawContent = true;
+					if (!recordedTtft) {
+						recordedTtft = true;
+						recordLlmDriverMetric(
+							"ttft",
+							Math.max(0, performance.now() - startedAt) / 1000,
+							dimensions,
+						);
+					}
 				}
 				yield chunk;
+			}
+
+			if (!retrying) {
+				if (!sawDone) {
+					outcome = opts.isAborted() ? "aborted" : "incomplete";
+					recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+					requestSpan.setAttribute("llm.outcome", outcome);
+					requestSpan.setStatus({
+						code: SpanStatusCode.ERROR,
+						message:
+							outcome === "aborted" ? "provider stream aborted" : "stream ended without done",
+					});
+				}
 				return;
 			}
-			if (
-				chunk.type === "text" ||
-				chunk.type === "thinking" ||
-				chunk.type === "tool_use_start" ||
-				chunk.type === "tool_use_args" ||
-				chunk.type === "tool_use_end"
-			) {
-				sawContent = true;
+		} catch (error) {
+			requestSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+			outcome = "error";
+			requestSpan.setAttribute("llm.outcome", outcome);
+			requestSpan.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: error instanceof Error ? error.message : "provider stream failed",
+			});
+			recordLlmDriverMetric("attempt", 1, { ...dimensions, outcome });
+			throw error;
+		} finally {
+			if (retrying && iterator?.return) {
+				await context.with(requestContext, () => iterator?.return?.());
 			}
-			yield chunk;
+			recordLlmDriverMetric("duration", Math.max(0, performance.now() - startedAt) / 1000, {
+				...dimensions,
+				outcome,
+			});
+			requestSpan.end();
 		}
-
-		// Stream ended without a `done` and we are not retrying (e.g. aborted
-		// mid-flight): nothing more to emit.
-		if (!retrying) return;
 	}
 }

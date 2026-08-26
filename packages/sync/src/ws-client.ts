@@ -3,6 +3,7 @@ import type { Logger } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
 import { incrementSyncErrors, resetSyncErrors } from "./peer-cursor.js";
 import { signRequest } from "./signing.js";
+import { type HandshakeSpan, startWsHandshake } from "./telemetry.js";
 import type {
 	ChangelogAckPayload,
 	ChangelogPushPayload,
@@ -110,6 +111,7 @@ export class WsSyncClient {
 	 *  `open` or `close`. If it fires, the socket reached neither — a half-open
 	 *  CONNECTING zombie that no other path will ever reconnect. */
 	private handshakeTimer: Timer | null = null;
+	private handshakeSpan: HandshakeSpan | null = null;
 
 	onMessage: ((data: Uint8Array) => void) | null = null;
 	onConnected: (() => void) | null = null;
@@ -132,11 +134,10 @@ export class WsSyncClient {
 			return;
 		}
 
+		this.handshakeSpan?.complete("failed", new Error("superseded handshake"));
+		this.handshakeSpan = startWsHandshake();
 		try {
-			// Step 1: Derive WS URL
 			const { wsUrl } = this.deriveWsUrl(this.config.hubUrl);
-
-			// Step 2: Sign the upgrade request
 			const signedHeaders = await signRequest(
 				this.config.privateKey,
 				this.config.siteId,
@@ -144,40 +145,30 @@ export class WsSyncClient {
 				"/sync/ws",
 				"",
 			);
-
-			// Step 3: Get symmetric key from keyManager
 			this.symmetricKey = this.config.keyManager.getSymmetricKey(this.config.hubSiteId);
-			if (!this.symmetricKey) {
+			if (!this.symmetricKey)
 				throw new Error(`Symmetric key not found for hub ${this.config.hubSiteId}`);
-			}
-
-			// Step 4: Create WebSocket with signed headers
-			// Bun's WebSocket constructor supports custom headers via { headers } option
 			// biome-ignore lint/suspicious/noExplicitAny: Bun WebSocket API requires any for non-standard options
 			this.ws = new WebSocket(wsUrl, { headers: signedHeaders } as any);
-
-			// Set binary type for binary frame handling
 			this.ws.binaryType = "nodebuffer" as BinaryType;
-
-			// Step 5: Wire up event handlers
 			this.ws.onopen = () => this.handleOpen();
 			this.ws.onmessage = (event) => this.handleMessage(event);
 			this.ws.onclose = () => this.handleClose();
 			this.ws.onerror = (event) => this.handleError(event);
-
-			// Step 6: Arm the handshake deadline. A stalled upgrade produces no
-			// open AND no close, so without this the client latches dark.
 			this.startHandshakeTimer();
 		} catch (error) {
 			this.config.logger?.error("WsSyncClient: failed to establish connection", {
 				error: error instanceof Error ? error.message : String(error),
 			});
-			// A throw before the socket exists is still a failed attempt against the
-			// hub peer — count it, or the mesh reports 0 errors over a dark link.
 			this.recordHandshakeFailure(error instanceof Error ? error.message : String(error));
-			// Schedule reconnection on connection failure
+			this.finishHandshake("failed", error);
 			this.scheduleReconnect();
 		}
+	}
+
+	private finishHandshake(outcome: "connected" | "failed" | "timeout", error?: unknown): void {
+		this.handshakeSpan?.complete(outcome, error);
+		this.handshakeSpan = null;
 	}
 
 	/**
@@ -217,6 +208,7 @@ export class WsSyncClient {
 		this.stopReconnectBackfillTimer();
 		this.stopLivenessTimer();
 		this.stopHandshakeTimer();
+		this.finishHandshake("failed", new Error("client closed during handshake"));
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
@@ -285,6 +277,7 @@ export class WsSyncClient {
 		// a socket that is now healthy.
 		this.stopHandshakeTimer();
 		this.recordHandshakeSuccess();
+		this.finishHandshake("connected");
 		this.connectionHealthy = false;
 		this.sendState = "ready";
 
@@ -486,6 +479,7 @@ export class WsSyncClient {
 		// A close observed before the handshake landed is already a full teardown;
 		// disarm the deadline so it can't fire against the next socket.
 		this.stopHandshakeTimer();
+		this.finishHandshake("failed", new Error("socket closed during handshake"));
 
 		// Reset snapshot state — a reconnection starts a fresh seeding session.
 		this.snapshotHlc = null;
@@ -691,6 +685,7 @@ export class WsSyncClient {
 				{ timeoutMs, readyState: this.ws.readyState },
 			);
 			this.recordHandshakeFailure("handshake deadline exceeded");
+			this.finishHandshake("timeout", new Error("handshake deadline exceeded"));
 
 			// Drop our handlers before closing: a CONNECTING socket may never emit
 			// close, so we cannot rely on handleClose() to schedule the retry.

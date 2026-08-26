@@ -9,6 +9,7 @@ import type { Message } from "@bound/shared";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
+import { withLessTelemetry } from "../telemetry";
 import { buildSystemPromptAddition, buildToolSet } from "../tools/registry";
 import type { ResolvedSandboxConfig } from "../tools/sandbox";
 import type { ResolvedShell } from "../tools/shell";
@@ -61,6 +62,17 @@ export interface AttachResult {
  * Returns messages, pending tool call IDs, and MCP failures (non-fatal).
  */
 export async function performAttach(params: AttachParams): Promise<AttachResult> {
+	return withLessTelemetry(
+		"boundless.transport.attach",
+		{ "transport.kind": params.surface?.type === "acp" ? "acp" : "terminal" },
+		(span) => performAttachInner(params, span),
+	);
+}
+
+async function performAttachInner(
+	params: AttachParams,
+	span: { addEvent(name: string, attributes?: Record<string, string | number>): void },
+): Promise<AttachResult> {
 	const {
 		client,
 		threadId,
@@ -79,6 +91,7 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	// Cap to 200 messages to avoid OOM on large threads (17k+ messages)
 	const MESSAGE_LIMIT = 200;
 	logger.info("attach_flow_start", { threadId, step: "listMessages" });
+	span.addEvent("boundless.attach.messages.fetch");
 	let messages = await client.listMessages(threadId, { limit: MESSAGE_LIMIT });
 	const turns =
 		typeof client.getContextDebug === "function"
@@ -131,12 +144,14 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 	// Step 2: Subscribe to thread
 	logger.info("attach_flow_subscribe", { threadId });
 	client.subscribe(threadId);
+	span.addEvent("boundless.attach.transport.subscribed");
 
 	// Step 3: Ensure MCP servers
 	logger.info("attach_flow_ensure_mcp", { serverCount: mcpConfigs.length });
 	const mcpFailures: Array<{ serverName: string; error: string }> = [];
 
 	await mcpManager.ensureAllEnabled(mcpConfigs);
+	span.addEvent("boundless.attach.mcp.ready", { server_count: mcpConfigs.length });
 
 	// Collect failures from server states
 	const allStates = mcpManager.getServerStates();
@@ -183,6 +198,7 @@ export async function performAttach(params: AttachParams): Promise<AttachResult>
 		surface: params.surface,
 	});
 
+	span.addEvent("boundless.attach.tools.configured", { tool_count: toolSet.tools.length });
 	client.configureTools(toolSet.tools, {
 		systemPromptAddition,
 	});

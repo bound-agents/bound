@@ -7,6 +7,7 @@ import { WsConnectionManager, createWsHandlers } from "@bound/sync";
 import type { MountableFs } from "just-bash";
 import type { BackendPricing, ModelsConfig, SyncAppConfig, WebAppConfig } from "./index";
 import { createWebApp } from "./index";
+import { instrumentSyncWebSocketHandlers } from "./sync-websocket-lifecycle.js";
 import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "./webhook-handler.js";
 import { createWebSocketHandler } from "./websocket";
 import type { ConnectionRegistry } from "./websocket";
@@ -282,15 +283,17 @@ export async function createSyncServer(
 	}
 
 	const wsConnectionManager = new WsConnectionManager();
-	const wsHandlers = createWsHandlers({
-		connectionManager: wsConnectionManager,
-		keyring: config.keyring,
-		keyManager: config.keyManager,
-		logger: config.logger,
-		idleTimeout: config.wsConfig?.idleTimeout,
-		backpressureLimit: config.wsConfig?.backpressureLimit,
-		wsTransport: config.wsTransportHolder ?? undefined,
-	});
+	const wsHandlers = instrumentSyncWebSocketHandlers(
+		createWsHandlers({
+			connectionManager: wsConnectionManager,
+			keyring: config.keyring,
+			keyManager: config.keyManager,
+			logger: config.logger,
+			idleTimeout: config.wsConfig?.idleTimeout,
+			backpressureLimit: config.wsConfig?.backpressureLimit,
+			wsTransport: config.wsTransportHolder ?? undefined,
+		}),
+	);
 
 	let server: ReturnType<typeof Bun.serve> | null = null;
 

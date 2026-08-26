@@ -382,4 +382,33 @@ describe("thread renaming", () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+	describe("HTTP metric outcome accounting", () => {
+		it("records the same terminal outcome on request count and duration", async () => {
+			const source = await Bun.file(new URL("../client.ts", import.meta.url)).text();
+			expect(source).toContain(
+				"httpRequestDuration.record(performance.now() - startedAt, { ...attributes, outcome })",
+			);
+		});
+	});
+});
+
+describe("WebSocket terminal outcome accounting", () => {
+	it("records an erroring socket as one exclusive terminal outcome", () => {
+		const source = Bun.file(new URL("../client.ts", import.meta.url)).text();
+		return source.then((text) => {
+			expect(text).toContain('counter("bound.client.websocket.terminal_outcomes"');
+			expect(text).toContain('this.wsAttemptHadError ? "error" : "closed"');
+			expect(text).not.toContain('wsConnectionCounter.add(1, { outcome: "error" })');
+			expect(text).not.toContain('wsConnectionCounter.add(1, { outcome: "closed" })');
+		});
+	});
+
+	it("names successful opens as lifecycle events rather than terminal outcomes", () => {
+		const source = Bun.file(new URL("../client.ts", import.meta.url)).text();
+		return source.then((text) => {
+			expect(text).toContain('counter("bound.client.websocket.lifecycle"');
+			expect(text).toContain('wsLifecycleCounter.add(1, { event: "opened" })');
+		});
+	});
 });

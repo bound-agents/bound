@@ -64,6 +64,7 @@ import {
 import { getConfirmedSyncWatermark } from "@bound/sync";
 import type { Context, Span } from "@opentelemetry/api";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
+import { recordAgentOperationalMetric, recordAgentToolDuration } from "./operational-metrics";
 
 import {
 	Observable,
@@ -2031,6 +2032,8 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				parentCtx,
 			);
 
+			const toolStartedAt = performance.now();
+
 			try {
 				let result: {
 					content: string;
@@ -2102,6 +2105,16 @@ export class BoundAgentLoop extends ModularAgentLoop {
 							toolCall.input.cwd,
 						);
 						if (isRelayRequest(sandboxResult)) {
+							toolSpan.addEvent("bound.tool.dispatch.outcome", { "tool.outcome": "relayed" });
+							recordAgentOperationalMetric("tool_dispatch", {
+								outcome: "relayed",
+								kind: tool.kind,
+							});
+							recordAgentToolDuration(performance.now() - toolStartedAt, {
+								outcome: "relayed",
+								kind: tool.kind,
+								location: "relay",
+							});
 							toolSpan.setStatus({ code: SpanStatusCode.OK });
 							return sandboxResult; // finally block ends span
 						}
@@ -2189,6 +2202,14 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				toolSpan.setAttribute("tool.output_size_raw", rawOutputSize);
 
 				// Set span status based on execution result
+				const outcome = result.exitCode !== 0 ? "error" : "success";
+				toolSpan.addEvent("bound.tool.dispatch.outcome", { "tool.outcome": outcome });
+				recordAgentOperationalMetric("tool_dispatch", { outcome, kind: tool.kind });
+				recordAgentToolDuration(performance.now() - toolStartedAt, {
+					outcome,
+					kind: tool.kind,
+					location: "local",
+				});
 				if (result.exitCode !== 0) {
 					toolSpan.setStatus({
 						code: SpanStatusCode.ERROR,
@@ -2201,6 +2222,13 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				return result;
 			} catch (err) {
 				toolSpan.setAttribute("tool.input_size", JSON.stringify(toolCall.input).length);
+				toolSpan.addEvent("bound.tool.dispatch.outcome", { "tool.outcome": "exception" });
+				recordAgentOperationalMetric("tool_dispatch", { outcome: "exception", kind: tool.kind });
+				recordAgentToolDuration(performance.now() - toolStartedAt, {
+					outcome: "exception",
+					kind: tool.kind,
+					location: "local",
+				});
 				toolSpan.setStatus({
 					code: SpanStatusCode.ERROR,
 					message: err instanceof Error ? err.message : String(err),

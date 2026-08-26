@@ -1,6 +1,22 @@
 import type { Database } from "bun:sqlite";
 import { createChangeLogEntry } from "@bound/core";
+import { counter, histogram } from "@bound/shared";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
+import { SpanStatusCode, trace } from "@opentelemetry/api";
+
+const leadershipTransitions = counter("bound.platform.leadership.transitions", {
+	description: "Platform leadership transitions by platform and outcome",
+});
+const leadershipConnectDuration = histogram("bound.platform.leadership.connect.duration", {
+	description: "Platform leader connector activation duration",
+	unit: "ms",
+});
+
+const KNOWN_PLATFORM_METRIC_NAMES = new Set(["discord", "discord-interaction", "rss"]);
+
+export function platformMetricName(platform: string): string {
+	return KNOWN_PLATFORM_METRIC_NAMES.has(platform) ? platform : "other";
+}
 
 // NOTE: Host heartbeat (hosts.modified_at) is handled by startHostHeartbeat() in @bound/core.
 // This class only manages platform leader election via cluster_config.
@@ -92,8 +108,35 @@ export class PlatformLeaderElection {
 		})();
 
 		this.isLeaderFlag = true;
-		await this.connector.connect?.(this.hostBaseUrl);
-		this.startOwnershipWatch(leaderKey);
+		const span = trace.getTracer("bound.platforms").startSpan("platform.leadership.claim", {
+			attributes: { "platform.name": this.connector.platform },
+		});
+		const startedAt = performance.now();
+		try {
+			await this.connector.connect?.(this.hostBaseUrl);
+			leadershipTransitions.add(1, {
+				platform: platformMetricName(this.connector.platform),
+				outcome: "claimed",
+			});
+			span.setStatus({ code: SpanStatusCode.OK });
+			this.startOwnershipWatch(leaderKey);
+		} catch (error) {
+			this.isLeaderFlag = false;
+			leadershipTransitions.add(1, {
+				platform: platformMetricName(this.connector.platform),
+				outcome: "error",
+			});
+			span.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: error instanceof Error ? error.message : String(error),
+			});
+			throw error;
+		} finally {
+			leadershipConnectDuration.record(performance.now() - startedAt, {
+				platform: platformMetricName(this.connector.platform),
+			});
+			span.end();
+		}
 	}
 
 	/**
@@ -128,6 +171,10 @@ export class PlatformLeaderElection {
 			}
 			this.ownershipTimer = null;
 			this.isLeaderFlag = false;
+			leadershipTransitions.add(1, {
+				platform: platformMetricName(this.connector.platform),
+				outcome: "lost",
+			});
 			try {
 				await this.connector.disconnect?.();
 			} catch (error) {
