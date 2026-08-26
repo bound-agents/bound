@@ -548,11 +548,18 @@ export function applySnapshotRows(
 	// same as before — correct for first-time seeding.
 	const pkColumn = getPkColumn(tableName);
 	const updateColumns = columns.filter((col) => col !== pkColumn);
+	// Snapshots carry a peer's current row image. If it is older than this
+	// node's copy, an unconditional upsert regresses fields such as message
+	// metadata. Apply the same modified_at ordering as replay whenever both
+	// sides expose that column; fresh inserts remain unaffected.
+	const lwwWhere = columns.includes("modified_at")
+		? ` WHERE excluded.modified_at > ${tableName}.modified_at`
+		: "";
 	const conflictClause =
 		updateColumns.length > 0
 			? `ON CONFLICT(${pkColumn}) DO UPDATE SET ${updateColumns
 					.map((col) => `${col} = excluded.${col}`)
-					.join(", ")}`
+					.join(", ")}${lwwWhere}`
 			: `ON CONFLICT(${pkColumn}) DO NOTHING`;
 	const sql = `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES (${placeholders}) ${conflictClause}`;
 

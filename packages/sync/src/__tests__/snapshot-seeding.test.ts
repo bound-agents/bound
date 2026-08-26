@@ -190,6 +190,44 @@ describe("applySnapshotRows", () => {
 		expect(result.host_origin).toBe("host-b");
 	});
 
+	it("does not regress a message metadata stamp from an older snapshot row", () => {
+		const newer = "2026-08-24T01:19:50.210Z";
+		const older = "2026-08-24T01:19:50.209Z";
+		applySnapshotRows(db, "messages", [
+			{
+				id: "message-metadata-lww",
+				thread_id: "thread-1",
+				role: "tool_result",
+				content: "placeholder",
+				host_origin: "newer-peer",
+				created_at: older,
+				modified_at: newer,
+				metadata: '{"aux_thread":"aux-1","background":true}',
+				deleted: 0,
+			},
+		]);
+
+		applySnapshotRows(db, "messages", [
+			{
+				id: "message-metadata-lww",
+				thread_id: "thread-1",
+				role: "tool_result",
+				content: "placeholder",
+				host_origin: "older-peer",
+				created_at: older,
+				modified_at: older,
+				metadata: null,
+				deleted: 0,
+			},
+		]);
+
+		const row = db
+			.query("SELECT metadata, modified_at FROM messages WHERE id = ?")
+			.get("message-metadata-lww") as { metadata: string; modified_at: string };
+		expect(row.metadata).toBe('{"aux_thread":"aux-1","background":true}');
+		expect(row.modified_at).toBe(newer);
+	});
+
 	it("preserves locally-present columns that are absent from the incoming row (schema skew)", () => {
 		// Local row written by a newer node — title + summary populated.
 		applySnapshotRows(db, "threads", [

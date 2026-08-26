@@ -111,6 +111,7 @@ interface ThreadMessageOpts {
 	modelId?: string | null;
 	toolName?: string | null;
 	exitCode?: number;
+	metadata?: Record<string, unknown>;
 }
 
 /** Insert a message into a thread via the change-log outbox. Returns the message ID. */
@@ -132,7 +133,7 @@ export function insertThreadMessage(db: Database, opts: ThreadMessageOpts, siteI
 			host_origin: opts.hostOrigin,
 			deleted: 0,
 			exit_code: opts.exitCode ?? null,
-			metadata: null,
+			metadata: opts.metadata === undefined ? null : JSON.stringify(opts.metadata),
 		},
 		siteId,
 	);
