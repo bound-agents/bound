@@ -1,10 +1,65 @@
 import type { Database } from "bun:sqlite";
 import type { RelayInboxEntry, RelayOutboxEntry, TypedEventEmitter } from "@bound/shared";
+import { RELAY_KINDS } from "@bound/shared";
+import { trace } from "@opentelemetry/api";
 import { recordRelayOutboxOperation, withCoreSpan } from "./telemetry";
 
 const MAX_PAYLOAD_BYTES_DEFAULT = 2 * 1024 * 1024;
 
 let relayOutboxEventBus: TypedEventEmitter | null = null;
+
+const MAX_RELAY_ENTRY_COUNT = 10_000;
+
+function boundedRelayKind(kind: string): string {
+	return RELAY_KINDS.includes(kind as (typeof RELAY_KINDS)[number]) ? kind : "other";
+}
+
+function boundedEntryCount(entryCount: number): number {
+	return Math.min(Math.max(Math.floor(entryCount), 0), MAX_RELAY_ENTRY_COUNT);
+}
+
+const TRACEPARENT_PATTERN = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/;
+const TRACESTATE_KEY_PATTERN =
+	/^(?:[a-z0-9][_0-9a-z*/-]{0,255}|[a-z0-9][_0-9a-z*/-]{0,240}@[a-z0-9][_0-9a-z*/-]{0,13})$/;
+
+function validTracestate(value: string): boolean {
+	if (value.length === 0 || value.length > 512) return false;
+	const members = value.split(",");
+	if (members.length > 32) return false;
+	const seen = new Set<string>();
+	for (const member of members) {
+		const separator = member.indexOf("=");
+		if (separator <= 0) return false;
+		const key = member.slice(0, separator).trim();
+		const memberValue = member.slice(separator + 1).trim();
+		if (!TRACESTATE_KEY_PATTERN.test(key) || seen.has(key)) return false;
+		if (memberValue.length === 0 || memberValue.length > 256) return false;
+		for (const character of memberValue) {
+			const code = character.charCodeAt(0);
+			if (code < 0x20 || code > 0x7e || character === "," || character === "=") return false;
+		}
+		seen.add(key);
+	}
+	return true;
+}
+
+function hasValidTraceContext(value?: string | null): boolean {
+	if (!value || value.length > 2048) return false;
+	try {
+		const parsed: unknown = JSON.parse(value);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+		const record = parsed as Record<string, unknown>;
+		if (Object.keys(record).some((key) => key !== "traceparent" && key !== "tracestate"))
+			return false;
+		if (typeof record.traceparent !== "string") return false;
+		const match = TRACEPARENT_PATTERN.exec(record.traceparent);
+		if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return false;
+		if (record.tracestate !== undefined && typeof record.tracestate !== "string") return false;
+		return typeof record.tracestate !== "string" || validTracestate(record.tracestate);
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Set the event bus for relay:outbox-written events.
@@ -37,85 +92,121 @@ export function writeOutbox(
 	if (!entry.source_site_id) {
 		throw new Error("writeOutbox: source_site_id is required for relay routing");
 	}
-	const payloadBytes = new TextEncoder().encode(entry.payload).byteLength;
 	enforcePayloadLimit(entry.payload, maxPayloadBytes);
-	// INSERT OR IGNORE: when the primary key `id` matches an existing row, OR
-	// when idempotency_key + target_site_id matches an existing row (via
-	// idx_relay_outbox_idempotency), the duplicate is silently discarded.
-	// Entries with NULL idempotency_key are never deduplicated by idempotency
-	// (partial index excludes NULLs), but PK conflicts on `id` still ignore.
-	return withCoreSpan("relay_outbox.operation", (span) => {
-		span.setAttribute?.("kind", entry.kind);
-		span.setAttribute?.("direction", "outbound");
-		span.setAttribute?.("payload_bytes", payloadBytes);
-		span.setAttribute?.("trace_context_present", entry.trace_context != null);
-		const result = db.run(
-			`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered, trace_context)
+	const carrierState = hasValidTraceContext(entry.trace_context)
+		? "extracted"
+		: entry.trace_context != null
+			? "invalid"
+			: trace.getActiveSpan()
+				? "active"
+				: "absent";
+	return withCoreSpan(
+		"relay_outbox.operation",
+		{
+			"relay.trigger": "push-write",
+			"relay.path": "outbox.write",
+			"relay.direction": "outbound",
+			"relay.kind": boundedRelayKind(entry.kind),
+			"relay.carrier_state": carrierState,
+			"relay.entry_count": 1,
+			"relay.persistence.operation": "write",
+		},
+		(span) => {
+			let result: { changes: number };
+			try {
+				result = db.run(
+					`INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered, trace_context)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-			[
-				entry.id,
-				entry.source_site_id,
-				entry.target_site_id,
-				entry.kind,
-				entry.ref_id,
-				entry.idempotency_key,
-				entry.stream_id,
-				entry.payload,
-				entry.created_at,
-				entry.expires_at,
-				entry.trace_context ?? null,
-			],
-		);
+					[
+						entry.id,
+						entry.source_site_id,
+						entry.target_site_id,
+						entry.kind,
+						entry.ref_id,
+						entry.idempotency_key,
+						entry.stream_id,
+						entry.payload,
+						entry.created_at,
+						entry.expires_at,
+						entry.trace_context ?? null,
+					],
+				);
+			} catch (error) {
+				span.setAttribute?.("relay.persistence.outcome", "failed");
+				throw error;
+			}
 
-		// Emit event ONLY when a new row was actually inserted. Emitting on a
-		// no-op INSERT-OR-IGNORE creates an infinite synchronous recursion when
-		// the listener calls back into writeOutbox with the same id (e.g. the
-		// hub-side offline-async-buffer path in WsTransport.handleRelaySend, which
-		// re-buffers an entry that's already in relay_outbox). The Node
-		// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
-		// throws RangeError.
-		//
-		// Returns whether a row was actually inserted (mirrors insertInbox), so
-		// callers using per-event idempotency keys can gate dependent writes on
-		// the dedupe outcome (e.g. deliverBatch skips the developer message for a
-		// crash-replayed event the outbox already carries).
-		if (result.changes === 0) {
-			recordRelayOutboxOperation("write", "duplicate");
-			span.setAttribute?.("outcome", "duplicate");
-			span.addEvent?.("relay_outbox.write", { outcome: "duplicate" });
-			return false;
-		}
-		recordRelayOutboxOperation("write", "inserted");
-		span.setAttribute?.("outcome", "inserted");
+			// Emit event ONLY when a new row was actually inserted. Emitting on a
+			// no-op INSERT-OR-IGNORE creates an infinite synchronous recursion when
+			// the listener calls back into writeOutbox with the same id (e.g. the
+			// hub-side offline-async-buffer path in WsTransport.handleRelaySend, which
+			// re-buffers an entry that's already in relay_outbox). The Node
+			// EventEmitter is synchronous, so duplicate emits stack-recurse until V8
+			// throws RangeError.
+			//
+			// Returns whether a row was actually inserted (mirrors insertInbox), so
+			// callers using per-event idempotency keys can gate dependent writes on
+			// the dedupe outcome (e.g. deliverBatch skips the developer message for a
+			// crash-replayed event the outbox already carries).
+			if (result.changes === 0) {
+				recordRelayOutboxOperation("write", "duplicate");
+				span.setAttribute?.("relay.persistence.outcome", "duplicate");
+				span.addEvent?.("relay_outbox.write", { outcome: "duplicate" });
+				return false;
+			}
+			recordRelayOutboxOperation("write", "inserted");
+			span.setAttribute?.("relay.persistence.outcome", "inserted");
 
-		// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
-		const bus = eventBus ?? relayOutboxEventBus;
-		if (bus) {
-			bus.emit("relay:outbox-written", {
-				id: entry.id,
-				target_site_id: entry.target_site_id,
-			});
-		}
-		span.addEvent?.("relay_outbox.write", { outcome: "inserted" });
-		return true;
-	});
+			// Use module-level eventBus if set, otherwise use passed-in eventBus (for backward compat)
+			const bus = eventBus ?? relayOutboxEventBus;
+			if (bus) {
+				bus.emit("relay:outbox-written", {
+					id: entry.id,
+					target_site_id: entry.target_site_id,
+				});
+			}
+			span.addEvent?.("relay_outbox.write", { outcome: "inserted" });
+			return true;
+		},
+	);
 }
 
 export function readUndelivered(db: Database, targetSiteId?: string): RelayOutboxEntry[] {
-	return withCoreSpan("relay_outbox.operation", (span) => {
-		const rows = targetSiteId
-			? (db
-					.query(
-						"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
-					)
-					.all(targetSiteId) as RelayOutboxEntry[])
-			: (db
-					.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
-					.all() as RelayOutboxEntry[]);
-		recordRelayOutboxOperation("read", rows.length > 0 ? "hit" : "miss");
-		span.addEvent?.("relay_outbox.read", { entry_count: rows.length });
-		return rows;
-	});
+	return withCoreSpan(
+		"relay_outbox.operation",
+		{
+			"relay.trigger": "reconnect-drain",
+			"relay.path": "outbox.read",
+			"relay.direction": "outbound",
+			"relay.kind": "batch",
+			"relay.carrier_state": trace.getActiveSpan() ? "active" : "absent",
+			"relay.entry_count": 0,
+			"relay.persistence.operation": "read",
+		},
+		(span) => {
+			let rows: RelayOutboxEntry[];
+			try {
+				rows = targetSiteId
+					? (db
+							.query(
+								"SELECT * FROM relay_outbox WHERE delivered = 0 AND target_site_id = ? ORDER BY created_at ASC",
+							)
+							.all(targetSiteId) as RelayOutboxEntry[])
+					: (db
+							.query("SELECT * FROM relay_outbox WHERE delivered = 0 ORDER BY created_at ASC")
+							.all() as RelayOutboxEntry[]);
+			} catch (error) {
+				span.setAttribute?.("relay.persistence.outcome", "failed");
+				throw error;
+			}
+			const outcome = rows.length > 0 ? "hit" : "miss";
+			recordRelayOutboxOperation("read", outcome);
+			span.setAttribute?.("relay.entry_count", boundedEntryCount(rows.length));
+			span.setAttribute?.("relay.persistence.outcome", outcome);
+			span.addEvent?.("relay_outbox.read", { entry_count: rows.length });
+			return rows;
+		},
+	);
 }
 
 export function markDelivered(db: Database, ids: string[]): void {

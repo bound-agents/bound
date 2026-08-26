@@ -1,4 +1,4 @@
-import { counter, histogram, upDownCounter } from "@bound/shared";
+import { RELAY_KINDS, counter, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
 
 interface CounterLike {
@@ -8,6 +8,7 @@ interface CounterLike {
 interface SpanLike {
 	addEvent(name: string, attributes?: Record<string, string | number | boolean>): void;
 	recordException(error: Error): void;
+	setAttribute?(name: string, value: string | number | boolean): void;
 	setStatus(status: { code: SpanStatusCode; message?: string }): void;
 	end(): void;
 }
@@ -34,6 +35,7 @@ const noopCounter: CounterLike = { add() {} };
 const noopSpan: SpanLike = {
 	addEvent() {},
 	recordException() {},
+	setAttribute() {},
 	setStatus() {},
 	end() {},
 };
@@ -196,19 +198,57 @@ function validTraceCarrier(
 	}
 }
 
+export type RelayTrigger = "push-write" | "receive" | "deliver" | "reconnect-drain";
+export type RelayPath =
+	| "spoke.outbox.push"
+	| "hub.relay.receive"
+	| "spoke.relay.deliver"
+	| "spoke.outbox.drain";
+
+const MAX_RELAY_ENTRY_COUNT = 10_000;
+
+function boundedRelayKind(kind: string): string {
+	return RELAY_KINDS.includes(kind as (typeof RELAY_KINDS)[number]) ? kind : "other";
+}
+
+function boundedEntryCount(entryCount: number): number {
+	if (!Number.isFinite(entryCount)) return MAX_RELAY_ENTRY_COUNT;
+	return Math.min(Math.max(Math.floor(entryCount), 0), MAX_RELAY_ENTRY_COUNT);
+}
+
 export function startRelayOperation(
 	direction: RelayOperationDirection,
-	options: { kind: string; payloadBytes: number; traceContext?: string | null },
+	options: {
+		kind: string;
+		traceContext?: string | null;
+		trigger: RelayTrigger;
+		path: RelayPath;
+		entryCount: number;
+	},
 ): RelayOperationSpan {
+	const activeContext = context.active();
+	const kind = boundedRelayKind(options.kind);
+	const entryCount = boundedEntryCount(options.entryCount);
 	const carrier = validTraceCarrier(options.traceContext);
-	const parentContext = carrier ? propagation.extract(context.active(), carrier) : context.active();
+	const activeSpanContext = trace.getSpan(activeContext)?.spanContext();
+	const carrierState =
+		carrier !== null
+			? "extracted"
+			: options.traceContext != null
+				? "invalid"
+				: activeSpanContext !== undefined && trace.isSpanContextValid(activeSpanContext)
+					? "active"
+					: "absent";
+	const parentContext = carrier ? propagation.extract(activeContext, carrier) : activeContext;
 	const span = telemetry.startSpan(
 		"relay.operation",
 		{
-			direction,
-			kind: options.kind,
-			payload_bytes: options.payloadBytes,
-			trace_context_present: carrier !== null,
+			"relay.trigger": options.trigger,
+			"relay.path": options.path,
+			"relay.direction": direction,
+			"relay.kind": kind,
+			"relay.carrier_state": carrierState,
+			"relay.entry_count": entryCount,
 		},
 		parentContext,
 	);
@@ -222,6 +262,7 @@ export function startRelayOperation(
 		complete(outcome) {
 			if (ended) return;
 			ended = true;
+			span.setAttribute?.("relay.outcome", outcome);
 			span.addEvent("relay.operation.complete", { outcome });
 			span.setStatus({ code: SpanStatusCode.OK });
 			span.end();
@@ -230,6 +271,7 @@ export function startRelayOperation(
 			if (ended) return;
 			ended = true;
 			const failure = errorValue(error);
+			span.setAttribute?.("relay.outcome", "failed");
 			span.recordException(failure);
 			span.setStatus({ code: SpanStatusCode.ERROR, message: failure.message });
 			span.end();

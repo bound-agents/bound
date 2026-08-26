@@ -7,7 +7,13 @@ import {
 	withCoreSpan,
 } from "../telemetry";
 const noop = { add() {} };
-const noopSpan = { addEvent() {}, recordException() {}, setStatus() {}, end() {} };
+const noopSpan = {
+	addEvent() {},
+	recordException() {},
+	setAttribute() {},
+	setStatus() {},
+	end() {},
+};
 afterEach(() =>
 	setCoreTelemetry({
 		changeLogTransactions: noop,
@@ -54,5 +60,46 @@ describe("core telemetry", () => {
 			{ name: "changelog.transaction", event: "committed", attributes: { entry_count: 1 } },
 		]);
 		expect(ended).toBe(1);
+	});
+
+	it("exports bounded attribution on detached relay-outbox root spans", () => {
+		const starts: unknown[] = [];
+		setCoreTelemetry({
+			changeLogTransactions: noop,
+			changeLogPostcommitEvents: noop,
+			relayOutboxOperations: noop,
+			relayOutboxOperationDuration: { record() {} },
+			startSpan: (name, attributes) => {
+				starts.push({ name, attributes });
+				return noopSpan;
+			},
+		});
+
+		withCoreSpan(
+			"relay_outbox.operation",
+			{
+				"relay.trigger": "push-write",
+				"relay.path": "outbox.write",
+				"relay.direction": "outbound",
+				"relay.kind": "tool_call",
+				"relay.carrier_state": "absent",
+				"relay.entry_count": 1,
+			},
+			() => undefined,
+		);
+
+		expect(starts).toEqual([
+			{
+				name: "relay_outbox.operation",
+				attributes: {
+					"relay.trigger": "push-write",
+					"relay.path": "outbox.write",
+					"relay.direction": "outbound",
+					"relay.kind": "tool_call",
+					"relay.carrier_state": "absent",
+					"relay.entry_count": 1,
+				},
+			},
+		]);
 	});
 });
