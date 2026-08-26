@@ -1445,6 +1445,25 @@ export class Scheduler {
 					// Helper returns processedIds for post-insert draining
 					// (below).
 					const eventResult = buildEventWakeupContent(this.ctx.db, task);
+					// `next_run_at` on an event task is the mid-run re-arm path. The
+					// inbox is local-only, but the re-armed task row syncs; a peer can
+					// therefore claim this firing without the envelope that caused it.
+					// Do not persist a synthetic wakeup or invoke the loop without a
+					// locally foldable envelope. Resetting returns the listener to its
+					// normal pending state; the host holding the inbox row will still
+					// consume it on its own re-arm.
+					if ((task.run_count ?? 0) > 0 && eventResult.processedIds.length === 0) {
+						this.ctx.logger.info(
+							"[scheduler] Skipping re-armed event task with no local inbox payload",
+							{
+								taskId: task.id,
+								threadId: task.thread_id,
+							},
+						);
+						resetEventTask(this.ctx.db, task, this.ctx.logger, "empty re-arm", this.ctx.siteId);
+						this.runningTasks.delete(task.id);
+						return;
+					}
 					taskContent = eventResult.content;
 					inboxIdsToMarkProcessed = eventResult.processedIds;
 				} else {
