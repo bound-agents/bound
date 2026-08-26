@@ -6,9 +6,10 @@ interface CounterLike {
 }
 
 interface SpanLike {
-	addEvent(name: string, attributes?: Record<string, string | number>): void;
-	recordException(error: Error): void;
-	setStatus(status: { code: SpanStatusCode; message?: string }): void;
+	addEvent?(name: string, attributes?: Record<string, string | number | boolean>): void;
+	recordException?(error: Error): void;
+	setAttribute?(name: string, value: string | number | boolean): void;
+	setStatus?(status: { code: SpanStatusCode; message?: string }): void;
 	end(): void;
 }
 
@@ -31,6 +32,7 @@ const noopCounter: CounterLike = { add() {} };
 const noopSpan: SpanLike = {
 	addEvent() {},
 	recordException() {},
+	setAttribute() {},
 	setStatus() {},
 	end() {},
 };
@@ -73,7 +75,7 @@ export function withCoreSpan<T>(
 		span.setStatus?.({ code: SpanStatusCode.OK });
 		return result;
 	} catch (error) {
-		span.recordException(error instanceof Error ? error : new Error(String(error)));
+		span.recordException?.(error instanceof Error ? error : new Error(String(error)));
 		span.setStatus?.({
 			code: SpanStatusCode.ERROR,
 			message: error instanceof Error ? error.message : String(error),

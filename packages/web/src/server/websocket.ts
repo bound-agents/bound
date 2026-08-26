@@ -27,6 +27,7 @@ import type { YardExecutionEvent } from "@bound/shared";
 import {
 	appendToolDuration,
 	capToolResultContent,
+	extractTraceContext,
 	formatFileAttachment,
 	getTraceExporter,
 	reExportSpans,
@@ -39,10 +40,12 @@ import type {
 	TypedEventEmitter,
 	WsStreamChunk,
 } from "@bound/shared";
+import { ROOT_CONTEXT, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { ServerWebSocket } from "bun";
 import { z } from "zod";
 import { reapStaleClientSessions } from "./client-session-reaper";
 import { storeFile } from "./routes/files";
+import { startClientToolResultReceive, startSessionHostHandoff } from "./trace-topology";
 import { YardExecutionCache } from "./yard-execution-cache";
 
 // Zod schemas for all client→server message types
@@ -1008,6 +1011,7 @@ export function createWebSocketHandler(
 			return;
 		}
 
+		let receiveSpan: ReturnType<typeof startClientToolResultReceive> | undefined;
 		try {
 			const now = new Date().toISOString();
 
@@ -1043,9 +1047,20 @@ export function createWebSocketHandler(
 			for (const entry of pendingCalls) {
 				if (!entry.event_payload) continue;
 				try {
-					const payload = JSON.parse(entry.event_payload) as { call_id?: string };
+					const payload = JSON.parse(entry.event_payload) as {
+						call_id?: string;
+						trace_context?: Record<string, string> | null;
+					};
 					if (payload.call_id === msg.call_id) {
 						matchingEntry = entry;
+						const dispatchContext = payload.trace_context
+							? extractTraceContext(payload.trace_context)
+							: undefined;
+						receiveSpan = startClientToolResultReceive(
+							trace.getTracer("bound.web"),
+							dispatchContext,
+							{ isError: msg.is_error === true, hasTraceData: Boolean(msg.trace_data) },
+						);
 						break;
 					}
 				} catch {
@@ -1170,7 +1185,10 @@ export function createWebSocketHandler(
 				message,
 				thread_id: msg.thread_id,
 			});
+			receiveSpan?.setStatus({ code: SpanStatusCode.OK });
 		} catch (error) {
+			receiveSpan?.recordException(error instanceof Error ? error : new Error(String(error)));
+			receiveSpan?.setStatus({ code: SpanStatusCode.ERROR });
 			const errorMsg = error instanceof Error ? error.message : "Unknown error";
 			conn.ws.send(
 				JSON.stringify({
@@ -1179,6 +1197,8 @@ export function createWebSocketHandler(
 					message: errorMsg,
 				}),
 			);
+		} finally {
+			receiveSpan?.end();
 		}
 	}
 
@@ -1213,9 +1233,9 @@ export function createWebSocketHandler(
 		traceContext?: Record<string, string> | null;
 	}): void => {
 		// Find the first connection subscribed to this thread that has the matching tool.
-		// data.traceContext is captured by the agent loop while its tool-execute span is
-		// active. We can't call injectTraceContext() here — this listener runs outside the
-		// emitter's OTel context and would observe no active span.
+		// The carrier was captured while agent-loop.tool-execute was active. This async
+		// listener extracts it explicitly instead of inheriting an unrelated callback context.
+		const carrierContext = data.traceContext ? extractTraceContext(data.traceContext) : undefined;
 		const candidates = subscriptionCandidates(data.threadId);
 		for (const [, conn] of clients) {
 			if (
@@ -1231,7 +1251,20 @@ export function createWebSocketHandler(
 					...(data.traceContext ? { trace_context: JSON.stringify(data.traceContext) } : {}),
 				});
 				if (conn.ws.readyState === 1) {
-					conn.ws.send(toolCallMessage);
+					const handoff = startSessionHostHandoff(
+						trace.getTracer("bound.web"),
+						carrierContext ?? ROOT_CONTEXT,
+					);
+					try {
+						conn.ws.send(toolCallMessage);
+						handoff.setStatus({ code: SpanStatusCode.OK });
+					} catch (error) {
+						handoff.recordException(error instanceof Error ? error : new Error(String(error)));
+						handoff.setStatus({ code: SpanStatusCode.ERROR });
+						throw error;
+					} finally {
+						handoff.end();
+					}
 				}
 				// Update dispatch_queue entry status to 'processing' and claimed_by to connectionId
 				if (db) {
