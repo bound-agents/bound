@@ -15,6 +15,7 @@ import {
 	routeNotificationWakeup,
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
+	serializeRelayTraceCarrier,
 } from "@bound/agent";
 import type { ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -67,6 +68,7 @@ import {
 	deterministicUUID,
 	extractTraceContext,
 	formatError,
+	injectTraceContext,
 	isUserFacingInterface,
 	parseJsonSafe,
 	resultPayloadSchema,
@@ -80,6 +82,15 @@ import { resolvePlatformToolsForThread } from "./platform-tools.js";
 export type { AgentLoopFactory } from "./agent-factory.js";
 
 const getTracer = () => trace.getTracer("bound.web");
+
+function injectRelayTraceCarrier(): Record<string, string> | null {
+	const injected = injectTraceContext();
+	if (injected) return injected;
+	const span = trace.getActiveSpan();
+	if (!span) return null;
+	const { traceId, spanId, traceFlags } = span.spanContext();
+	return { traceparent: `00-${traceId}-${spanId}-${traceFlags.toString(16).padStart(2, "0")}` };
+}
 
 /**
  * Format a notification payload as a human-readable message for the agent.
@@ -101,6 +112,68 @@ const getTracer = () => trace.getTracer("bound.web");
  * are system-generated payloads (the runtime produces their fields
  * from real DB state) so they keep the simpler `[notification]` shape.
  */
+export function createRemotePlatformRequest(
+	deps: Pick<AppContext, "db" | "siteId" | "eventBus">,
+): NonNullable<ConnectorToolContext["remotePlatformRequest"]> {
+	return async (
+		serverName: string,
+		method: string,
+		params: Record<string, unknown>,
+	): Promise<unknown> => {
+		// Pick a *fresh* remote host (heartbeat within stale threshold) that
+		// advertises this platform. Filtering on freshness here is what
+		// turns the failure mode of "remote daemon crashed silently" from
+		// a 15s relay timeout into an immediate descriptive error.
+		const targetSiteId = findFreshPlatformHost(deps.db, serverName, deps.siteId);
+		if (!targetSiteId) {
+			throw new Error(
+				`No fresh remote host found for platform server '${serverName}' (no advertising peer has heart-beated within the stale threshold)`,
+			);
+		}
+
+		const entry = createRelayOutboxEntry(
+			targetSiteId,
+			deps.siteId,
+			"platform_request",
+			JSON.stringify({
+				server_name: serverName,
+				method,
+				params,
+				timeout_ms: 15_000,
+			}),
+			15_000,
+			undefined,
+			undefined,
+			undefined,
+			serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
+		);
+		writeOutbox(deps.db, entry, undefined, deps.eventBus);
+
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline) {
+			const response = readInboxByRefId(deps.db, entry.id);
+			if (response) {
+				markProcessed(deps.db, [response.id]);
+				if (response.kind === "error") {
+					const errPayload = JSON.parse(response.payload) as { error?: string };
+					throw new Error(errPayload.error ?? response.payload);
+				}
+				const parsed = parseJsonSafe(
+					resultPayloadSchema,
+					response.payload,
+					"platform_request result",
+				);
+				if (!parsed.ok) {
+					throw new Error(`Invalid platform_request response: ${parsed.error}`);
+				}
+				return JSON.parse(parsed.value.stdout);
+			}
+			await new Promise((r) => setTimeout(r, 200));
+		}
+		throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
+	};
+}
+
 export function formatNotification(payload: Record<string, unknown>): string {
 	switch (payload.type) {
 		case "task_complete":
@@ -1428,59 +1501,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			registry: platformMcpRegistry,
 			db: appContext.db,
 			siteId: appContext.siteId,
-			remotePlatformRequest: async (
-				serverName: string,
-				method: string,
-				params: Record<string, unknown>,
-			): Promise<unknown> => {
-				// Pick a *fresh* remote host (heartbeat within stale threshold) that
-				// advertises this platform. Filtering on freshness here is what
-				// turns the failure mode of "remote daemon crashed silently" from
-				// a 15s relay timeout into an immediate descriptive error.
-				const targetSiteId = findFreshPlatformHost(appContext.db, serverName, appContext.siteId);
-				if (!targetSiteId) {
-					throw new Error(
-						`No fresh remote host found for platform server '${serverName}' (no advertising peer has heart-beated within the stale threshold)`,
-					);
-				}
-
-				const entry = createRelayOutboxEntry(
-					targetSiteId,
-					appContext.siteId,
-					"platform_request",
-					JSON.stringify({
-						server_name: serverName,
-						method,
-						params,
-						timeout_ms: 15_000,
-					}),
-					15_000,
-				);
-				writeOutbox(appContext.db, entry, undefined, appContext.eventBus);
-
-				const deadline = Date.now() + 15_000;
-				while (Date.now() < deadline) {
-					const response = readInboxByRefId(appContext.db, entry.id);
-					if (response) {
-						markProcessed(appContext.db, [response.id]);
-						if (response.kind === "error") {
-							const errPayload = JSON.parse(response.payload) as { error?: string };
-							throw new Error(errPayload.error ?? response.payload);
-						}
-						const parsed = parseJsonSafe(
-							resultPayloadSchema,
-							response.payload,
-							"platform_request result",
-						);
-						if (!parsed.ok) {
-							throw new Error(`Invalid platform_request response: ${parsed.error}`);
-						}
-						return JSON.parse(parsed.value.stdout);
-					}
-					await new Promise((r) => setTimeout(r, 200));
-				}
-				throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
-			},
+			remotePlatformRequest: createRemotePlatformRequest(appContext),
 		};
 		const rawConnectorTool = createConnectorTool(connectorCtx);
 		connectorTool = {
