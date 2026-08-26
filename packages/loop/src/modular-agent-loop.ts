@@ -519,7 +519,11 @@ export class ModularAgentLoop {
 						: degenerateDecision.action !== "continue"
 							? degenerateDecision
 							: parseDecision;
-				const decisionOutcome = await this.applyTurnDecision(decision, { loopSpan, turnSpan });
+				const decisionOutcome = await this.applyTurnDecision(
+					decision,
+					{ loopSpan, turnSpan },
+					recordTurnMetric,
+				);
 				if (decisionOutcome.action !== "continue") {
 					return decisionOutcome;
 				}
@@ -534,7 +538,11 @@ export class ModularAgentLoop {
 				}
 
 				const toolDecision = await this.handleToolCalls(parsed, frame, turn);
-				const toolOutcome = await this.applyTurnDecision(toolDecision, { loopSpan, turnSpan });
+				const toolOutcome = await this.applyTurnDecision(
+					toolDecision,
+					{ loopSpan, turnSpan },
+					recordTurnMetric,
+				);
 				if (toolOutcome.action !== "continue") {
 					return toolOutcome;
 				}
@@ -651,7 +659,6 @@ export class ModularAgentLoop {
 		await this.persistAlert(`Loop error: ${message}`);
 		const outcome = this.aborted ? "aborted" : "error";
 		spans.turnSpan.addEvent("bound.loop.turn.outcome", { "loop.turn.outcome": outcome });
-		recordLoopOperationalMetric("turn", { outcome });
 		spans.turnSpan.setStatus({ code: SpanStatusCode.ERROR, message });
 		spans.turnSpan.end();
 		spans.loopSpan.setStatus({ code: SpanStatusCode.ERROR, message });
@@ -661,20 +668,24 @@ export class ModularAgentLoop {
 	protected async applyTurnDecision(
 		decision: LoopTurnDecision,
 		spans: LoopDecisionSpans = {},
+		recordMetric?: (outcome: string) => void,
 	): Promise<LoopDecisionOutcome> {
 		switch (decision.action) {
 			case "continue":
 				return { action: "continue" };
 			case "retry":
+				recordMetric?.("retry");
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.OK });
 				spans.turnSpan?.end();
 				return { action: "retry", rebuildFrame: decision.rebuildFrame };
 			case "yield":
+				recordMetric?.("yielded");
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.OK });
 				spans.turnSpan?.end();
 				return { action: "return", result: this.result({ yielded: true, outcome: "yielded" }) };
 			case "stop": {
 				const outcome = decision.outcome ?? "completed";
+				recordMetric?.(outcome);
 				const isGuard = outcome.startsWith("guard:");
 				spans.turnSpan?.setStatus(
 					isGuard
@@ -693,6 +704,7 @@ export class ModularAgentLoop {
 				};
 			}
 			case "error":
+				recordMetric?.("error");
 				spans.turnSpan?.setStatus({ code: SpanStatusCode.ERROR, message: decision.error });
 				spans.turnSpan?.end();
 				spans.loopSpan?.setStatus({ code: SpanStatusCode.ERROR, message: decision.error });

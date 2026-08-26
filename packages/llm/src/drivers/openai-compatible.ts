@@ -110,6 +110,7 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		const tools = toToolSet(params.tools);
 
 		yield* runProviderStream({
+			modelId,
 			providerName: this.providerName,
 			signal: params.signal,
 			stream: () =>

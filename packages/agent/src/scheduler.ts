@@ -1322,6 +1322,8 @@ export class Scheduler {
 
 		// Create agent loop and run asynchronously
 		setImmediate(async () => {
+			const executionStartedAt = performance.now();
+			let schedulerOutcome = "hard_failed";
 			// Cross-host lease verification: the phase1/phase3 CAS updates above
 			// (`pending → claimed → running`) are local-only on each replica's
 			// SQLite. In a multi-master cluster, two hosts polling concurrently
@@ -1803,7 +1805,6 @@ export class Scheduler {
 				}
 
 				const agentLoop = this.agentLoopFactory(loopConfig);
-				const executionStartedAt = performance.now();
 				if (task.claimed_at) {
 					recordSchedulerClaimDelay(Date.now() - new Date(task.claimed_at).getTime(), {
 						type: task.type,
@@ -1868,12 +1869,7 @@ export class Scheduler {
 					if (result.error) {
 						rootSpan.addEvent("bound.scheduler.outcome", { "scheduler.outcome": "soft_failed" });
 						rootSpan.setStatus({ code: SpanStatusCode.ERROR, message: result.error });
-						const metricAttributes = { outcome: "soft_failed", type: task.type };
-						recordAgentOperationalMetric("scheduler", metricAttributes);
-						recordSchedulerExecutionDuration(
-							performance.now() - executionStartedAt,
-							metricAttributes,
-						);
+						schedulerOutcome = "soft_failed";
 						this.ctx.logger.warn("[scheduler] Task soft-failed", {
 							taskId: task.id,
 							triggerSpec: task.trigger_spec,
@@ -1932,6 +1928,7 @@ export class Scheduler {
 
 						const newConsecutiveFailures = txFn();
 						if (newConsecutiveFailures === -1) {
+							schedulerOutcome = "lease_lost";
 							// Lease CAS guard rejected the update; bail without advisory.
 							rootSpan.end();
 							return;
@@ -1969,12 +1966,7 @@ export class Scheduler {
 					} else {
 						rootSpan.addEvent("bound.scheduler.outcome", { "scheduler.outcome": "completed" });
 						rootSpan.setStatus({ code: SpanStatusCode.OK });
-						const metricAttributes = { outcome: "completed", type: task.type };
-						recordAgentOperationalMetric("scheduler", metricAttributes);
-						recordSchedulerExecutionDuration(
-							performance.now() - executionStartedAt,
-							metricAttributes,
-						);
+						schedulerOutcome = "completed";
 						this.ctx.logger.info("[scheduler] Task completed", {
 							taskId: task.id,
 							triggerSpec: task.trigger_spec,
@@ -2008,6 +2000,7 @@ export class Scheduler {
 						);
 
 						if (!wrote) {
+							schedulerOutcome = "lease_lost";
 							this.ctx.logger.warn(
 								"[scheduler] Completion update skipped — task no longer running (likely evicted)",
 								{
@@ -2037,6 +2030,8 @@ export class Scheduler {
 						);
 						resetEventTask(this.ctx.db, task, this.ctx.logger, "completion", this.ctx.siteId);
 					}
+				} else {
+					schedulerOutcome = "lease_lost";
 				}
 				rootSpan.end();
 
@@ -2177,8 +2172,13 @@ export class Scheduler {
 						this.config.retryBackoffMs,
 					);
 					resetEventTask(this.ctx.db, task, this.ctx.logger, "hard error", this.ctx.siteId);
+				} else {
+					schedulerOutcome = "lease_lost";
 				}
 			} finally {
+				const metricAttributes = { outcome: schedulerOutcome, type: task.type };
+				recordAgentOperationalMetric("scheduler", metricAttributes);
+				recordSchedulerExecutionDuration(performance.now() - executionStartedAt, metricAttributes);
 				this.runningTasks.delete(task.id);
 			}
 		});

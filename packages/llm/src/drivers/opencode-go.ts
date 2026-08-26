@@ -116,6 +116,7 @@ export class OpenCodeGoDriver implements LLMBackend {
 					maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 					isAborted: () => params.signal?.aborted ?? false,
 					providerName: PROVIDER_NAME,
+					modelId,
 				},
 			);
 			return;
@@ -154,6 +155,7 @@ export class OpenCodeGoDriver implements LLMBackend {
 				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
 				isAborted: () => params.signal?.aborted ?? false,
 				providerName: PROVIDER_NAME,
+				modelId,
 			},
 		);
 	}

@@ -6,12 +6,19 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"exports": {
-		".": "./src/index.ts",
+		".": {
+			"browser": "./src/browser.ts",
+			"default": "./src/index.ts"
+		},
 		"./test-utils": "./src/test-utils.ts",
 		"./strings": "./src/strings.ts",
 		"./yard-format": "./src/yard-format.ts",
 		"./trace-collector": "./src/trace-collector.ts",
-		"./telemetry-api": "./src/telemetry-api.ts"
+		"./telemetry-api": "./src/telemetry-api.ts",
+		"./telemetry": "./src/telemetry.ts",
+		"./site-id-span-processor": "./src/site-id-span-processor.ts",
+		"./trace-exporter-context": "./src/trace-exporter-context.ts",
+		"./trace-reexport": "./src/trace-reexport.ts"
 	},
 	"dependencies": {
 		"@noble/hashes": "^1.7.1",
