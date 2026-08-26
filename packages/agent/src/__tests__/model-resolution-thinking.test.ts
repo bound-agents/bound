@@ -1,6 +1,7 @@
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
+import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
@@ -13,8 +14,7 @@ let testDbPath: string;
 beforeEach(() => {
 	const testId = randomBytes(4).toString("hex");
 	testDbPath = join(tmpdir(), `test-model-resolution-thinking-${testId}.db`);
-	const sqlite3 = require("bun:sqlite");
-	db = new sqlite3.Database(testDbPath);
+	db = new Database(testDbPath);
 	applySchema(db);
 });
 
@@ -25,7 +25,7 @@ afterEach(() => {
 		// Already closed
 	}
 	try {
-		require("node:fs").unlinkSync(testDbPath);
+		unlinkSync(testDbPath);
 	} catch {
 		// Already deleted
 	}
