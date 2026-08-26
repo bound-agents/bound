@@ -363,6 +363,25 @@ export function buildIdempotencyKey(
 	return createHash("sha256").update(data).digest("hex").slice(0, 32);
 }
 
+/**
+ * Serialize only a valid W3C trace carrier for a durable relay envelope.
+ * Baggage and unrelated propagation fields must not cross a host boundary.
+ */
+export function serializeRelayTraceCarrier(carrier: Record<string, string> | null): string | null {
+	const traceparent = carrier?.traceparent;
+	if (
+		!traceparent ||
+		!/^\d{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/i.test(traceparent) ||
+		/^\d{2}-0{32}-[0-9a-f]{16}-[0-9a-f]{2}$/i.test(traceparent) ||
+		/^\d{2}-[0-9a-f]{32}-0{16}-[0-9a-f]{2}$/i.test(traceparent)
+	) {
+		return null;
+	}
+	const sanitized: Record<string, string> = { traceparent };
+	if (carrier?.tracestate) sanitized.tracestate = carrier.tracestate.slice(0, 512);
+	return JSON.stringify(sanitized);
+}
+
 export function createRelayOutboxEntry(
 	targetSiteId: string,
 	sourceSiteId: string,

@@ -90,7 +90,7 @@ export { Scheduler } from "./scheduler";
 // Export relay processor
 export { RelayProcessor } from "./relay-processor";
 export type { ClientToolResolver } from "./relay-processor";
-export { createRelayOutboxEntry } from "./relay-router";
+export { createRelayOutboxEntry, serializeRelayTraceCarrier } from "./relay-router";
 
 // Export native tools
 export { createAgentTools } from "./tools/index";

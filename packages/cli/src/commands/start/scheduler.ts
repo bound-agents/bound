@@ -13,7 +13,7 @@ import {
 } from "@bound/agent";
 import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
-import { createRelayOutboxEntry } from "@bound/agent";
+import { createRelayOutboxEntry, serializeRelayTraceCarrier } from "@bound/agent";
 import {
 	type AppContext,
 	findFreshPlatformHost,
@@ -29,7 +29,7 @@ import {
 	createConnectorTool,
 	registerConnectorEventDelivery,
 } from "@bound/platforms";
-import { formatError, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
+import { formatError, injectTraceContext, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 import { resolvePlatformToolsForThread } from "./platform-tools.js";
 import { shutdownTelemetry } from "./telemetry.js";
 
@@ -125,6 +125,10 @@ export function initScheduler(
 							timeout_ms: 15_000,
 						}),
 						15_000,
+						undefined,
+						undefined,
+						undefined,
+						serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
 					);
 					writeOutbox(appContext.db, entry, undefined, appContext.eventBus);
 

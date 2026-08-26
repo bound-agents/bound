@@ -18,6 +18,7 @@ import type {
 	ModelBackendsConfig as SharedModelBackendsConfig,
 } from "@bound/shared";
 import { createLogger, formatError } from "@bound/shared";
+import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
 type SharedBackendRow = SharedModelBackendsConfig["backends"][number];
 
@@ -25,6 +26,55 @@ export interface InferenceResult {
 	modelRouter: ReturnType<typeof createModelRouter> | null;
 	routerConfig: ModelBackendsConfig;
 	backendModelMap: Map<string, string>;
+}
+
+/** Run the bounded, post-restart summary backlog under one startup lifecycle. */
+export async function runStartupSummaryRecovery(
+	threadIds: readonly string[],
+	extract: (threadId: string) => Promise<unknown>,
+	logger?: Pick<AppContext["logger"], "warn">,
+): Promise<void> {
+	const tracer = trace.getTracer("bound.cli");
+	const recovery = tracer.startSpan("startup.summary-recovery", {
+		attributes: { "startup.summary_recovery.queue_count": threadIds.length },
+	});
+	const recoveryContext = trace.setSpan(context.active(), recovery);
+	let failedCount = 0;
+	try {
+		await context.with(recoveryContext, async () => {
+			for (const threadId of threadIds) {
+				const extraction = tracer.startSpan("startup.summary-extraction", {
+					attributes: { "thread.id": threadId },
+				});
+				const extractionContext = trace.setSpan(context.active(), extraction);
+				try {
+					await context.with(extractionContext, () => extract(threadId));
+					extraction.setAttribute("outcome", "success");
+					extraction.setStatus({ code: SpanStatusCode.OK });
+				} catch (err) {
+					failedCount++;
+					const message = formatError(err as Error);
+					extraction.setAttribute("outcome", "error");
+					extraction.recordException(err as Error);
+					extraction.setStatus({ code: SpanStatusCode.ERROR, message });
+					logger?.warn(`[recovery] Summary extraction failed for ${threadId}:`, { error: message });
+				} finally {
+					extraction.end();
+				}
+			}
+		});
+		recovery.setAttribute("startup.summary_recovery.failed_count", failedCount);
+		recovery.setAttribute("outcome", failedCount === 0 ? "success" : "partial_failure");
+		recovery.setStatus({ code: failedCount === 0 ? SpanStatusCode.OK : SpanStatusCode.ERROR });
+	} catch (err) {
+		const message = formatError(err as Error);
+		recovery.setAttribute("outcome", "error");
+		recovery.recordException(err as Error);
+		recovery.setStatus({ code: SpanStatusCode.ERROR, message });
+		throw err;
+	} finally {
+		recovery.end();
+	}
 }
 
 /**
@@ -317,22 +367,12 @@ export async function initInference(
 			);
 			// Process sequentially to avoid flooding the LLM backend with
 			// concurrent requests that trigger rate-limiting at startup.
-			(async () => {
-				for (const { id } of threadsNeedingSummary) {
-					try {
-						await extractSummaryAndMemories(
-							appContext.db,
-							id,
-							modelRouter.getDefault(),
-							appContext.siteId,
-						);
-					} catch (err: unknown) {
-						appContext.logger.warn(`[recovery] Summary extraction failed for ${id}:`, {
-							error: formatError(err as Error),
-						});
-					}
-				}
-			})();
+			void runStartupSummaryRecovery(
+				threadsNeedingSummary.map(({ id }) => id),
+				(id) =>
+					extractSummaryAndMemories(appContext.db, id, modelRouter.getDefault(), appContext.siteId),
+				appContext.logger,
+			);
 		}
 	}
 

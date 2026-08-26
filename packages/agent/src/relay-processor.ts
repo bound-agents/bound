@@ -84,6 +84,25 @@ import {
 	InferenceRequestPartAssembler,
 } from "./inference-request-parts.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
+import { serializeRelayTraceCarrier } from "./relay-router.js";
+
+/** Parse a serialized relay carrier without trusting its shape. */
+function parseTraceCarrier(raw: string | null | undefined): Record<string, string> | null {
+	if (!raw) return null;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const carrier: Record<string, string> = {};
+			for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+				if (typeof value === "string") carrier[key] = value;
+			}
+			return Object.keys(carrier).length > 0 ? carrier : null;
+		}
+	} catch {
+		// Trace linkage is best-effort.
+	}
+	return null;
+}
 import { formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
@@ -97,47 +116,6 @@ const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 export const INTAKE_RECONCILIATION_STARTUP_GRACE_MS = 20 * 60 * 1000;
 
 const getTracer = () => trace.getTracer("bound.relay");
-
-/**
- * Best-effort parse of a relay entry's serialized W3C trace carrier into the
- * `{header: value}` record shape the `client_tool_call:created` event expects.
- * Returns null for a missing or unparseable carrier — trace linkage is purely
- * observability and must never gate a tool call.
- */
-function parseTraceCarrier(raw: string | null | undefined): Record<string, string> | null {
-	if (!raw) return null;
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			const out: Record<string, string> = {};
-			for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-				if (typeof v === "string") out[k] = v;
-			}
-			return Object.keys(out).length > 0 ? out : null;
-		}
-	} catch {
-		// Unparseable carrier — no parent linkage.
-	}
-	return null;
-}
-
-/**
- * Persist only the validated W3C headers needed to continue a causal relay
- * path. Baggage is intentionally never copied into durable relay payloads.
- */
-function serializeTraceCarrier(carrier: Record<string, string> | null): string | null {
-	const traceparent = carrier?.traceparent;
-	if (
-		!traceparent ||
-		!/^\d{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/i.test(traceparent) ||
-		/^\d{2}-(?:0{32})-(?:0{16})-[0-9a-f]{2}$/i.test(traceparent)
-	) {
-		return null;
-	}
-	const sanitized: Record<string, string> = { traceparent };
-	if (carrier?.tracestate) sanitized.tracestate = carrier.tracestate;
-	return JSON.stringify(sanitized);
-}
 
 /**
  * Handler for a relay request kind. Returns a response string (written as a
@@ -398,7 +376,7 @@ export class RelayProcessor {
 						expires_at: entry.expires_at,
 						received_at: now,
 						processed: 0,
-						trace_context: serializeTraceCarrier(parseTraceCarrier(entry.trace_context)),
+						trace_context: serializeRelayTraceCarrier(parseTraceCarrier(entry.trace_context)),
 					});
 				}
 				// Response kinds are silently marked delivered — they are acknowledged by
@@ -801,7 +779,7 @@ export class RelayProcessor {
 				payload: entry.payload,
 				created_at: new Date().toISOString(),
 				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-				trace_context: serializeTraceCarrier(injectTraceContext()),
+				trace_context: serializeRelayTraceCarrier(injectTraceContext()),
 			});
 		}
 
@@ -1078,7 +1056,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(resultPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-			trace_context: serializeTraceCarrier(injectTraceContext()),
+			trace_context: serializeRelayTraceCarrier(injectTraceContext()),
 		});
 	}
 
@@ -1364,7 +1342,7 @@ export class RelayProcessor {
 			payload,
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-			trace_context: serializeTraceCarrier(injectTraceContext()),
+			trace_context: serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)),
 		});
 	}
 
@@ -1389,7 +1367,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(chunkPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
-			trace_context: serializeTraceCarrier(injectTraceContext()),
+			trace_context: serializeRelayTraceCarrier(injectTraceContext()),
 		};
 		writeOutbox(this.db, outboxEntry);
 	}
@@ -2054,7 +2032,7 @@ export class RelayProcessor {
 						payload: JSON.stringify(collectedSpans),
 						created_at: now.toISOString(),
 						expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-						trace_context: serializeTraceCarrier(injectTraceContext()),
+						trace_context: serializeRelayTraceCarrier(injectTraceContext()),
 					});
 				}
 			}

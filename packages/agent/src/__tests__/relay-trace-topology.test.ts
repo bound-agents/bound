@@ -92,7 +92,7 @@ describe("relay trace topology", () => {
 		const response = readUndelivered(db, "source-site").find((outbox) => outbox.kind === "result");
 		expect(response?.trace_context).not.toBeNull();
 		const responseCarrier = JSON.parse(response?.trace_context ?? "{}");
-		expect(responseCarrier.traceparent).toContain(receive?.spanContext().traceId);
+		expect(responseCarrier).toEqual({ traceparent: `00-${remoteTraceId}-${remoteSpanId}-01` });
 	});
 
 	it("does not create receive spans for passive mailbox rows", async () => {
