@@ -20,6 +20,7 @@ import {
 	writeOutbox,
 } from "../relay";
 import { applySchema } from "../schema";
+import { setCoreTelemetry } from "../telemetry";
 
 describe("Relay CRUD Helpers", () => {
 	let dbPath: string;
@@ -56,6 +57,69 @@ describe("Relay CRUD Helpers", () => {
 			} catch {
 				// ignore
 			}
+		});
+
+		it("records precise carrier and failed persistence outcomes", () => {
+			const spans: Array<Record<string, string | number | boolean>> = [];
+			setCoreTelemetry({
+				changeLogTransactions: { add() {} },
+				changeLogPostcommitEvents: { add() {} },
+				relayOutboxOperations: { add() {} },
+				relayOutboxOperationDuration: { record() {} },
+				startSpan: (_name, attributes = {}) => {
+					const captured = { ...attributes };
+					spans.push(captured);
+					return {
+						addEvent() {},
+						recordException() {},
+						setAttribute(name, value) {
+							captured[name] = value;
+						},
+						setStatus() {},
+						end() {},
+					};
+				},
+			});
+			const now = new Date().toISOString();
+			const entry: Omit<RelayOutboxEntry, "delivered"> = {
+				id: "telemetry-entry",
+				source_site_id: "site-1",
+				target_site_id: "site-2",
+				kind: "tool_call",
+				ref_id: null,
+				idempotency_key: null,
+				payload: "{}",
+				created_at: now,
+				expires_at: now,
+				trace_context: JSON.stringify({
+					traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+					tracestate: "UPPER=value",
+				}),
+			};
+
+			expect(() =>
+				writeOutbox(
+					{
+						run() {
+							throw new Error("write failed");
+						},
+					} as never,
+					entry,
+				),
+			).toThrow("write failed");
+			expect(() =>
+				readUndelivered({
+					query() {
+						throw new Error("read failed");
+					},
+				} as never),
+			).toThrow("read failed");
+
+			expect(spans[0]).toMatchObject({
+				"relay.carrier_state": "invalid",
+				"relay.persistence.outcome": "failed",
+			});
+			expect(spans[1]["relay.persistence.outcome"]).toBe("failed");
 		});
 
 		it("writeOutbox inserts a valid entry and readUndelivered returns it", () => {

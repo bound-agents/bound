@@ -44,7 +44,10 @@ export interface CoreTelemetry {
 	relayOutboxOperationDuration: {
 		record(value: number, attributes?: Record<string, string>): void;
 	};
-	startSpan(name: "changelog.transaction" | "relay_outbox.operation"): SpanLike;
+	startSpan(
+		name: "changelog.transaction" | "relay_outbox.operation",
+		attributes?: Record<string, string | number | boolean>,
+	): SpanLike;
 }
 
 let telemetry: CoreTelemetry = {
@@ -52,7 +55,7 @@ let telemetry: CoreTelemetry = {
 	changeLogPostcommitEvents,
 	relayOutboxOperations,
 	relayOutboxOperationDuration,
-	startSpan: (name) => tracer.startSpan(name),
+	startSpan: (name, attributes) => tracer.startSpan(name, { attributes }),
 };
 
 export function setCoreTelemetry(value?: CoreTelemetry): void {
@@ -68,8 +71,21 @@ export function setCoreTelemetry(value?: CoreTelemetry): void {
 export function withCoreSpan<T>(
 	name: "changelog.transaction" | "relay_outbox.operation",
 	fn: (span: SpanLike) => T,
+): T;
+export function withCoreSpan<T>(
+	name: "changelog.transaction" | "relay_outbox.operation",
+	attributes: Record<string, string | number | boolean>,
+	fn: (span: SpanLike) => T,
+): T;
+export function withCoreSpan<T>(
+	name: "changelog.transaction" | "relay_outbox.operation",
+	attributesOrFn: Record<string, string | number | boolean> | ((span: SpanLike) => T),
+	maybeFn?: (span: SpanLike) => T,
 ): T {
-	const span = telemetry.startSpan(name);
+	const attributes = typeof attributesOrFn === "function" ? undefined : attributesOrFn;
+	const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn;
+	if (!fn) throw new TypeError("withCoreSpan requires a callback");
+	const span = telemetry.startSpan(name, attributes);
 	try {
 		const result = fn(span);
 		span.setStatus?.({ code: SpanStatusCode.OK });

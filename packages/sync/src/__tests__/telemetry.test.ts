@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { SpanStatusCode, context, propagation } from "@opentelemetry/api";
+import { SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
 	setSyncTelemetry,
 	startRelayOperation,
@@ -10,7 +11,7 @@ import {
 function harness() {
 	const spans: Array<{
 		name: string;
-		attributes: Record<string, string>;
+		attributes: Record<string, string | number | boolean>;
 		events: Array<{ name: string; attributes?: Record<string, string | number> }>;
 		exceptions: Error[];
 		statuses: Array<{ code: SpanStatusCode; message?: string }>;
@@ -43,6 +44,9 @@ function harness() {
 				addEvent: (eventName, eventAttributes) =>
 					state.events.push({ name: eventName, attributes: eventAttributes }),
 				recordException: (error) => state.exceptions.push(error),
+				setAttribute: (name, value) => {
+					state.attributes[name] = value;
+				},
 				setStatus: (status) => state.statuses.push(status),
 				end: () => state.ends++,
 			};
@@ -122,32 +126,136 @@ describe("sync telemetry operation lifetimes", () => {
 	});
 });
 
-it("starts relay operations from a validated carrier and records safe attributes", () => {
-	const h = harness();
-	const carrier = JSON.stringify({
-		traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+describe("relay operation attribution", () => {
+	it.each([
+		["push-write", "spoke.outbox.push", "send", 1],
+		["receive", "hub.relay.receive", "receive", 2],
+		["deliver", "spoke.relay.deliver", "deliver", 3],
+		["reconnect-drain", "spoke.outbox.drain", "send", 4],
+	] as const)("exports bounded %s source attributes", (trigger, path, direction, entryCount) => {
+		const h = harness();
+		startRelayOperation(direction, {
+			kind: "stream_chunk",
+			traceContext: null,
+			trigger,
+			path,
+			entryCount,
+		});
+
+		expect(h.spans[0].attributes).toEqual({
+			"relay.trigger": trigger,
+			"relay.path": path,
+			"relay.direction": direction,
+			"relay.kind": "stream_chunk",
+			"relay.carrier_state": "absent",
+			"relay.entry_count": entryCount,
+		});
 	});
-	const operation = startRelayOperation("receive", {
-		kind: "stream_chunk",
-		payloadBytes: 42,
-		traceContext: carrier,
+
+	it("retains a detached relay operation as an exportable root span", () => {
+		const h = harness();
+		const operation = startRelayOperation("send", {
+			kind: "tool_call",
+			trigger: "push-write",
+			path: "spoke.outbox.push",
+			entryCount: 1,
+		});
+		expect(h.spans).toHaveLength(1);
+		expect(h.spans[0].attributes["relay.carrier_state"]).toBe("absent");
+		operation.complete("sent");
+		expect(h.spans[0].attributes["relay.outcome"]).toBe("sent");
 	});
-	operation.complete("inserted");
-	expect(h.spans[0].attributes).toEqual({
-		direction: "receive",
-		kind: "stream_chunk",
-		payload_bytes: 42,
-		trace_context_present: true,
+	it("classifies extracted, active, absent, and invalid carriers without changing parentage", () => {
+		const validCarrier = JSON.stringify({
+			traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		});
+		const extractedContext = context.active();
+		propagation.extract = (() => extractedContext) as typeof propagation.extract;
+		const extracted = harness();
+		startRelayOperation("receive", {
+			kind: "tool_call",
+			traceContext: validCarrier,
+			trigger: "receive",
+			path: "hub.relay.receive",
+			entryCount: 1,
+		});
+		expect(extracted.spans[0].attributes["relay.carrier_state"]).toBe("extracted");
+		expect(extracted.spans[0].parentContext).toBe(extractedContext);
+
+		const activeContext = trace.setSpan(
+			context.active(),
+			trace.wrapSpanContext({
+				traceId: "0af7651916cd43dd8448eb211c80319c",
+				spanId: "b7ad6b7169203331",
+				traceFlags: 1,
+			}),
+		);
+		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+		const active = harness();
+		context.with(activeContext, () => {
+			startRelayOperation("send", {
+				kind: "tool_result",
+				trigger: "push-write",
+				path: "spoke.outbox.push",
+				entryCount: 1,
+			});
+		});
+		expect(active.spans[0].attributes["relay.carrier_state"]).toBe("active");
+		expect(active.spans[0].parentContext).toBe(activeContext);
+
+		const absent = harness();
+		startRelayOperation("send", {
+			kind: "tool_result",
+			trigger: "reconnect-drain",
+			path: "spoke.outbox.drain",
+			entryCount: 2,
+		});
+		expect(absent.spans[0].attributes["relay.carrier_state"]).toBe("absent");
+
+		const invalid = harness();
+		startRelayOperation("deliver", {
+			kind: "tool_result",
+			traceContext: "{",
+			trigger: "deliver",
+			path: "spoke.relay.deliver",
+			entryCount: 1,
+		});
+		expect(invalid.spans[0].attributes["relay.carrier_state"]).toBe("invalid");
 	});
-	expect(h.spans[0].events).toEqual([
-		{ name: "relay.operation.complete", attributes: { outcome: "inserted" } },
-	]);
+
+	it("collapses unknown kinds and clamps non-finite entry counts at the telemetry boundary", () => {
+		const h = harness();
+		startRelayOperation("receive", {
+			kind: "unrecognized-kind",
+			trigger: "receive",
+			path: "hub.relay.receive",
+			entryCount: Number.POSITIVE_INFINITY,
+		});
+
+		expect(h.spans[0].attributes["relay.kind"]).toBe("other");
+		expect(h.spans[0].attributes["relay.entry_count"]).toBeGreaterThan(0);
+		expect(Number.isFinite(h.spans[0].attributes["relay.entry_count"])).toBe(true);
+
+		const negative = harness();
+		startRelayOperation("receive", {
+			kind: "tool_call",
+			trigger: "receive",
+			path: "hub.relay.receive",
+			entryCount: -1.5,
+		});
+		expect(negative.spans[0].attributes["relay.entry_count"]).toBe(0);
+	});
 });
 
 it("ends failed relay operations exactly once with ERROR status and exception", () => {
 	const h = harness();
 	const failure = new Error("relay failed");
-	const operation = startRelayOperation("receive", { kind: "error", payloadBytes: 1 });
+	const operation = startRelayOperation("receive", {
+		kind: "error",
+		trigger: "receive",
+		path: "hub.relay.receive",
+		entryCount: 1,
+	});
 	operation.fail(failure);
 	operation.fail(new Error("late failure"));
 	operation.complete("duplicate");
@@ -197,7 +305,13 @@ describe("inbound relay trace carrier security", () => {
 				return base;
 			}) as typeof propagation.extract;
 
-			startRelayOperation("receive", { kind: "tool_call", payloadBytes: 1, traceContext });
+			startRelayOperation("receive", {
+				kind: "tool_call",
+				traceContext,
+				trigger: "receive",
+				path: "hub.relay.receive",
+				entryCount: 1,
+			});
 
 			expect(extracts).toBe(0);
 			expect(
@@ -207,7 +321,7 @@ describe("inbound relay trace carrier security", () => {
 					}
 				).parentContext,
 			).toBe(localContext);
-			expect(h.spans[0].attributes.trace_context_present).toBe(false);
+			expect(h.spans[0].attributes["relay.carrier_state"]).toBe("invalid");
 		});
 	}
 
@@ -224,7 +338,13 @@ describe("inbound relay trace carrier security", () => {
 			tracestate: "vendor=value",
 		});
 
-		startRelayOperation("receive", { kind: "tool_call", payloadBytes: 1, traceContext });
+		startRelayOperation("receive", {
+			kind: "tool_call",
+			traceContext,
+			trigger: "receive",
+			path: "hub.relay.receive",
+			entryCount: 1,
+		});
 
 		expect(extractedCarrier).toEqual({ traceparent: validTraceparent, tracestate: "vendor=value" });
 		expect(

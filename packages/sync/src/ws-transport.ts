@@ -661,8 +661,10 @@ export class WsTransport {
 
 				const operation = startRelayOperation("send", {
 					kind: entry.kind,
-					payloadBytes: new TextEncoder().encode(entry.payload).byteLength,
 					traceContext: entry.trace_context,
+					trigger: "push-write",
+					path: "spoke.outbox.push",
+					entryCount: 1,
 				});
 				operation.run(() => {
 					try {
@@ -737,8 +739,10 @@ export class WsTransport {
 		const deliveredIds: string[] = [];
 		const operation = startRelayOperation("receive", {
 			kind: payload.entries.length === 1 ? (payload.entries[0]?.kind ?? "batch") : "batch",
-			payloadBytes: new TextEncoder().encode(JSON.stringify(payload)).byteLength,
 			traceContext: payload.entries.length === 1 ? payload.entries[0]?.trace_context : null,
+			trigger: "receive",
+			path: "hub.relay.receive",
+			entryCount: payload.entries.length,
 		});
 
 		operation.run(() => {
@@ -969,8 +973,10 @@ export class WsTransport {
 		const receivedIds: string[] = [];
 		const operation = startRelayOperation("deliver", {
 			kind: payload.entries.length === 1 ? (payload.entries[0]?.kind ?? "batch") : "batch",
-			payloadBytes: new TextEncoder().encode(JSON.stringify(payload)).byteLength,
 			traceContext: payload.entries.length === 1 ? payload.entries[0]?.trace_context : null,
+			trigger: "deliver",
+			path: "spoke.relay.deliver",
+			entryCount: payload.entries.length,
 		});
 
 		operation.run(() => {
@@ -1090,11 +1096,10 @@ export class WsTransport {
 
 				const operation = startRelayOperation("send", {
 					kind: batch.length === 1 ? (batch[0]?.kind ?? "batch") : "batch",
-					payloadBytes: batch.reduce(
-						(total, entry) => total + new TextEncoder().encode(entry.payload).byteLength,
-						0,
-					),
 					traceContext: batch.length === 1 ? batch[0]?.trace_context : null,
+					trigger: "reconnect-drain",
+					path: "spoke.outbox.drain",
+					entryCount: batch.length,
 				});
 				let sent = false;
 				operation.run(() => {
