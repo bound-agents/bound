@@ -24,7 +24,13 @@ describe("release Docker native ABI contract", () => {
 		expect(releaseWorkflow).toContain(
 			"IMAGE: ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.arch }}",
 		);
-		expect(smokeScript).toContain('docker run -d --rm --name "$container"');
+		expect(smokeScript).toContain(
+			'{"default_web_user":"smoke","users":{"smoke":{"display_name":"Smoke"}}}',
+		);
+		expect(smokeScript).toContain('{"backends":[],"default":""}');
+		expect(smokeScript).not.toContain('docker run -d --rm --name "$container"');
+		expect(smokeScript).toContain('docker run -d --name "$container"');
+		expect(smokeScript).toMatch(/docker logs "\$container"[\s\S]*docker rm -f "\$container"/);
 		expect(smokeScript).toContain("-e BIND_HOST=localhost -e WEB_BIND_HOST=localhost");
 		expect(smokeScript).not.toMatch(/(?:BIND_HOST|WEB_BIND_HOST)=0\.0\.0\.0/);
 		expect(smokeScript).toContain("bound start");
