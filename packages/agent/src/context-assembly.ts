@@ -25,7 +25,7 @@ import type {
 	RelevantMemoryDebugEntry,
 } from "@bound/shared";
 import { PERSONA_CLUSTER_CONFIG_KEY, countContentTokens, countTokens } from "@bound/shared";
-import { context, trace } from "@opentelemetry/api";
+import { type Span, SpanStatusCode, context, createContextKey, trace } from "@opentelemetry/api";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "./agent-loop-utils";
 import { annotateMessagesWithTokens } from "./annotation";
 import { substituteUnsupportedBlocks } from "./content-substitution";
@@ -91,26 +91,68 @@ function getTracer() {
 	return trace.getTracer("bound.context-assembly");
 }
 
+const CONTEXT_EVENT_OWNER = createContextKey("bound.context-assembly.event-owner");
+
+type ContextEventAttributes = Record<string, string | number | boolean>;
+
 /**
- * Time a synchronous sub-step under its own child span. Assembly is fully
- * synchronous, so this just brackets `fn` with start/end and makes the span the
- * active parent for anything `fn` starts. The child nests under whatever span is
- * active (the agent loop's `agent-loop.assemble-context`), so the Jaeger
- * waterfall attributes cold-rebuild wall-clock to the exact sub-helper. Added to
- * localize the production cold-assembly latency that isolated profiling could not
- * reproduce; keep these around the DB/tiktoken-heavy helpers.
+ * Own one context stage's event. Completion always emits exactly one event;
+ * failures also decorate the durable owner before the original exception
+ * continues outward.
+ */
+function startContextStage(span: Span, name: string, attributes?: ContextEventAttributes) {
+	const startedAt = performance.now();
+	let finished = false;
+	return {
+		finish(error?: unknown, completionAttributes?: ContextEventAttributes) {
+			if (finished) return;
+			finished = true;
+			const failed = error !== undefined;
+			if (failed) {
+				span.recordException(error instanceof Error ? error : String(error));
+				span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) });
+			}
+			span.addEvent(name, {
+				...attributes,
+				...completionAttributes,
+				"context.elapsed_ms": Math.max(0, performance.now() - startedAt),
+				"context.outcome": failed ? "error" : "ok",
+				...(failed ? { "context.error": String(error) } : {}),
+			});
+		},
+	};
+}
+
+/** Record a synchronous helper stage as a failure-aware durable-span event. */
+function recordContextEvent<T>(
+	span: Span,
+	name: string,
+	fn: () => T,
+	attributes?: ContextEventAttributes,
+): T {
+	const stage = startContextStage(span, name, attributes);
+	try {
+		return fn();
+	} catch (error) {
+		stage.finish(error);
+		throw error;
+	} finally {
+		stage.finish();
+	}
+}
+
+/**
+ * Legacy helper seam. Context assembly now records helper work as events on a
+ * durable owning span; callers without an owner keep their behavior but emit no
+ * detached telemetry.
  */
 function withChildSpan<T>(
 	name: string,
 	fn: () => T,
 	attributes?: Record<string, string | number | boolean>,
 ): T {
-	const span = getTracer().startSpan(name, attributes ? { attributes } : undefined);
-	try {
-		return context.with(trace.setSpan(context.active(), span), fn);
-	} finally {
-		span.end();
-	}
+	const owner = context.active().getValue(CONTEXT_EVENT_OWNER) as { span: Span } | undefined;
+	return owner ? recordContextEvent(owner.span, name, fn, attributes) : fn();
 }
 
 /**
@@ -1366,6 +1408,37 @@ export function formatInstant(
  * 8. METRIC_RECORDING - Record tokens (deferred to Phase 8)
  */
 export function assembleContext(params: ContextParams): ContextAssemblyResult {
+	const historySpan = getTracer().startSpan("context.history.prepare");
+	const contextualizeSpan = getTracer().startSpan("context.contextualize");
+	const budgetSpan = getTracer().startSpan("context.budget");
+	const eventOwner: { span: Span; stage?: ReturnType<typeof startContextStage> } = {
+		span: historySpan,
+	};
+	try {
+		return context.with(context.active().setValue(CONTEXT_EVENT_OWNER, eventOwner), () => {
+			try {
+				return assembleContextInner(params, historySpan, contextualizeSpan, budgetSpan, eventOwner);
+			} catch (error) {
+				eventOwner.stage?.finish(error);
+				throw error;
+			}
+		});
+	} finally {
+		// The normal and truncation returns finalize early for exporter visibility;
+		// end is idempotent, and this also closes durable spans on thrown assembly errors.
+		historySpan.end();
+		contextualizeSpan.end();
+		budgetSpan.end();
+	}
+}
+
+function assembleContextInner(
+	params: ContextParams,
+	historySpan: Span,
+	contextualizeSpan: Span,
+	budgetSpan: Span,
+	eventOwner: { span: Span; stage?: ReturnType<typeof startContextStage> },
+): ContextAssemblyResult {
 	const {
 		db,
 		threadId,
@@ -1422,7 +1495,8 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 	// thousands of rows in `bun:sqlite` is in the low-hundreds of ms; the
 	// downstream tiktoken cost is bounded by Stage 7's post-truncation set,
 	// not the raw load.
-	const stage1Span = getTracer().startSpan("context.stage-1-message-retrieval");
+	const stage1 = startContextStage(historySpan, "context.stage-1-message-retrieval");
+	eventOwner.stage = stage1;
 	const MESSAGE_LOAD_HARD_CEILING = 100_000;
 	const messages: Message[] = [];
 	if (!noHistory) {
@@ -1447,14 +1521,18 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 			messages.push(...rows.filter((row) => !isYardClientBookkeepingRow(row)));
 		}
 	}
-	stage1Span.setAttribute("message_count", messages.length);
-	stage1Span.end();
+	stage1.finish(undefined, { message_count: messages.length });
+	eventOwner.stage = undefined;
 
 	// Stage 1.5: RETROACTIVE_RESULT_TRUNCATION
 	// Truncate oversized tool_result content in-memory (does not modify DB).
 	// This is a second guard behind the agent-loop offloading: historical results
 	// persisted before offloading was introduced still get capped here.
-	const stage1_5Span = getTracer().startSpan("context.stage-1.5-retroactive-result-truncation");
+	const stage1_5 = startContextStage(
+		historySpan,
+		"context.stage-1.5-retroactive-result-truncation",
+	);
+	eventOwner.stage = stage1_5;
 	for (const msg of messages) {
 		if (msg.role === "tool_result" && msg.content.length > TOOL_RESULT_OFFLOAD_THRESHOLD) {
 			const originalLength = msg.content.length;
@@ -1462,7 +1540,8 @@ export function assembleContext(params: ContextParams): ContextAssemblyResult {
 Original output was too large for the context window. If you need the full content, use: query "SELECT substr(content, 1, 2000) FROM messages WHERE id = '${msg.id}'"`;
 		}
 	}
-	stage1_5Span.end();
+	stage1_5.finish();
+	eventOwner.stage = undefined;
 
 	// History compaction is handled exclusively by the Stage 7 telescope
 	// (tieredHistoryTruncation), which folds old tool cycles cache-stably and
@@ -1478,9 +1557,11 @@ Original output was too large for the context window. If you need the full conte
 	// per-group, provenance prefix, non-purged survival,
 	// determinism, malformed-metadata graceful skip, and empty
 	// input — see purge-substitution/__tests__/purge.property.test.ts.
-	const stage2Span = getTracer().startSpan("context.stage-2-purge-substitution");
+	const stage2 = startContextStage(historySpan, "context.stage-2-purge-substitution");
+	eventOwner.stage = stage2;
 	const messagesAfterPurge = substitutePurgedMessages({ messages, threadId });
-	stage2Span.end();
+	stage2.finish();
+	eventOwner.stage = undefined;
 
 	// Stage 2.5: NON-LLM ROLE HANDLING
 	// Two roles are genuinely non-LLM and get dropped: 'purge' (a tombstone
@@ -1495,7 +1576,8 @@ Original output was too large for the context window. If you need the full conte
 	// developer-role messages (Invariant #9 — 'alert' is not a wire role;
 	// Invariant #19 — 'developer' is the role for injected system context). The
 	// label keeps them distinguishable from operator-authored developer context.
-	const stage2_5Span = getTracer().startSpan("context.stage-2.5-role-filtering");
+	const stage2_5 = startContextStage(historySpan, "context.stage-2.5-role-filtering");
+	eventOwner.stage = stage2_5;
 	const DROP_ROLES = new Set(["purge", "system"]);
 	const messagesFiltered = messagesAfterPurge
 		.filter((m) => !DROP_ROLES.has(m.role))
@@ -1504,7 +1586,8 @@ Original output was too large for the context window. If you need the full conte
 			const labeled = typeof m.content === "string" ? `[system alert] ${m.content}` : m.content;
 			return { ...m, role: "developer", content: labeled };
 		});
-	stage2_5Span.end();
+	stage2_5.finish();
+	eventOwner.stage = undefined;
 
 	// Stage 3: TOOL_PAIR_SANITIZATION
 	// Two-pass tool-pair sanitization. See `tool-pair-sanitize/index.ts`
@@ -1519,25 +1602,29 @@ Original output was too large for the context window. If you need the full conte
 	// `tool-pair-sanitize/__tests__/sanitize.property.test.ts`;
 	// parity with the historical inline implementation pinned by
 	// `__tests__/parity-with-production.test.ts`.
-	const stage3Span = getTracer().startSpan("context.stage-3-tool-pair-sanitization");
+	const stage3 = startContextStage(historySpan, "context.stage-3-tool-pair-sanitization");
+	eventOwner.stage = stage3;
 	const sanitized = sanitizeToolPairs({
 		messages: messagesFiltered,
 		threadId,
 	});
 
-	stage3Span.end();
+	stage3.finish();
+	eventOwner.stage = undefined;
 
 	// Stage 4: MESSAGE_QUEUEING
 	// Already handled by filtering - skip messages that were persisted during active tool-use
-	const stage4Span = getTracer().startSpan("context.stage-4-message-queueing");
-	stage4Span.setAttribute("stage.implicit", true);
-	stage4Span.end();
+	const stage4 = startContextStage(historySpan, "context.stage-4-message-queueing", {
+		"stage.implicit": true,
+	});
+	stage4.finish();
 
 	// Stage 5: ANNOTATION — model-switch markers, tool_use_id
 	// propagation, content-block parsing, user-message timestamp
 	// annotation. See `annotation/` for the full contract;
 	// property-tested at annotation/__tests__/annotate.property.test.ts.
-	const stage5Span = getTracer().startSpan("context.stage-5-annotation");
+	const stage5 = startContextStage(historySpan, "context.stage-5-annotation");
+	eventOwner.stage = stage5;
 	// Annotation also returns an aligned per-message token count (computed once,
 	// keyed by each row's stable identity) so Stage 6/7 reuse it instead of
 	// re-tokenizing the full history 2-3x per cold rebuild — the fix for the
@@ -1551,12 +1638,14 @@ Original output was too large for the context window. If you need the full conte
 			}),
 		{ message_count: sanitized.length },
 	);
-	stage5Span.end();
+	stage5.finish();
+	eventOwner.stage = undefined;
 
 	// Stage 5b: CONTENT_SUBSTITUTION
 	// Replace image/document blocks in assembled messages when the target backend lacks vision support.
 	// This modifies the LLMMessage[] only — the persisted messages.content is never changed.
-	const stage5bSpan = getTracer().startSpan("context.stage-5b-content-substitution");
+	const stage5b = startContextStage(historySpan, "context.stage-5b-content-substitution");
+	eventOwner.stage = stage5b;
 	// `substituteUnsupportedBlocks` returns the SAME object reference when it
 	// makes no change (the common case), and a new object only when it actually
 	// rewrites content (image→text, file_ref→base64 hydration). Recount ONLY the
@@ -1570,7 +1659,8 @@ Original output was too large for the context window. If you need the full conte
 				return substituted;
 			})
 		: annotated;
-	stage5bSpan.end();
+	stage5b.finish();
+	eventOwner.stage = undefined;
 
 	// Identity map from each annotated history message to its precomputed token
 	// count. Downstream stages (history sizing, budget gate, tier allocation) look
@@ -1588,7 +1678,9 @@ Original output was too large for the context window. If you need the full conte
 	};
 
 	// Stage 6: ASSEMBLY
-	const stage6Span = getTracer().startSpan("context.stage-6-assembly");
+	eventOwner.span = contextualizeSpan;
+	const stage6 = startContextStage(contextualizeSpan, "context.stage-6-assembly");
+	eventOwner.stage = stage6;
 	// Build stable system prompt as a string (returned separately, not in messages array).
 	// Drivers receive this via the `system` param, keeping it out of the message prefix.
 	//
@@ -1872,10 +1964,12 @@ Original output was too large for the context window. If you need the full conte
 
 	const toolTokens = params.toolTokenEstimate ?? 0;
 	if (toolTokens > 0) sections.push({ name: "tools", tokens: toolTokens });
-	stage6Span.end();
+	stage6.finish();
+	eventOwner.stage = undefined;
 
 	// Stage 5.5: VOLATILE_ENRICHMENT
-	const stage5_5Span = getTracer().startSpan("context.stage-5.5-volatile-enrichment");
+	const stage5_5 = startContextStage(contextualizeSpan, "context.stage-5.5-volatile-enrichment");
+	eventOwner.stage = stage5_5;
 
 	// Stage 5.5 (noHistory path): Inject enrichment
 	if (noHistory) {
@@ -2023,7 +2117,8 @@ Original output was too large for the context window. If you need the full conte
 			allVaryingLines = varyingTailLines;
 		}
 	}
-	stage5_5Span.end();
+	stage5_5.finish();
+	eventOwner.stage = undefined;
 
 	// Build the final system prompt string. Deferred until after both Stage 6
 	// (history path) and Stage 5.5 (noHistory path) have appended any stable
@@ -2041,7 +2136,9 @@ Original output was too large for the context window. If you need the full conte
 	// is handled by truncation — budget pressure should only fire when the
 	// fixed-size context (system prompt, volatile enrichment, tools) genuinely
 	// crowds the window.
-	const stage7Span = getTracer().startSpan("context.stage-7-budget-validation");
+	eventOwner.span = budgetSpan;
+	const stage7 = startContextStage(budgetSpan, "context.stage-7-budget-validation");
+	eventOwner.stage = stage7;
 
 	// Helper to apply reduced enrichment to the assembled context or developer message.
 	// Under budget pressure, re-compose the three sections with reduced (3,3) caps and budgetPressure:true.
@@ -2426,10 +2523,14 @@ Original output was too large for the context window. If you need the full conte
 			const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
 			// Must end on all return paths — span is used for truncation event visibility.
-			stage7Span.setAttribute("context.total_tokens", totalEstimated);
-			stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
-			stage7Span.setAttribute("context.truncated_messages", truncatedCount);
-			stage7Span.end();
+			budgetSpan.setAttribute("context.total_tokens", totalEstimated);
+			budgetSpan.setAttribute("context.headroom", effectiveBudget - totalEstimated);
+			budgetSpan.setAttribute("context.truncated_messages", truncatedCount);
+			stage7.finish();
+			eventOwner.stage = undefined;
+			// Metric recording is a no-op, but remains visible even when the
+			// budget gate returns through its truncation path.
+			startContextStage(budgetSpan, "context.stage-8-metric-recording").finish();
 
 			// Progressive fidelity debug info — present when the middle tier fired.
 			const progressiveFidelity =
@@ -2449,6 +2550,9 @@ Original output was too large for the context window. If you need the full conte
 
 			// #97: tools ride in the cached prefix — render the slice after system.
 			placeToolsAfterSystem(sections);
+			historySpan.end();
+			contextualizeSpan.end();
+			budgetSpan.end();
 
 			return {
 				messages: truncatedMessages,
@@ -2477,16 +2581,20 @@ Original output was too large for the context window. If you need the full conte
 
 	// Stage 8: METRIC_RECORDING
 	// No-op — metrics recorded by caller after LLM response
-	const stage8Span = getTracer().startSpan("context.stage-8-metric-recording");
+	const stage8 = startContextStage(budgetSpan, "context.stage-8-metric-recording");
 
 	const totalEstimated = sections.reduce((sum, s) => sum + s.tokens, 0);
 
 	// Add attributes to stage 7 before ending it (no-truncation path)
-	stage7Span.setAttribute("context.total_tokens", totalEstimated);
-	stage7Span.setAttribute("context.headroom", effectiveBudget - totalEstimated);
-	stage7Span.setAttribute("context.truncated_messages", truncatedCount);
-	stage7Span.end();
-	stage8Span.end();
+	budgetSpan.setAttribute("context.total_tokens", totalEstimated);
+	budgetSpan.setAttribute("context.headroom", effectiveBudget - totalEstimated);
+	budgetSpan.setAttribute("context.truncated_messages", truncatedCount);
+	stage7.finish();
+	eventOwner.stage = undefined;
+	stage8.finish();
+	historySpan.end();
+	contextualizeSpan.end();
+	budgetSpan.end();
 
 	// #97: tools ride in the cached prefix — render the slice after system.
 	placeToolsAfterSystem(sections);
