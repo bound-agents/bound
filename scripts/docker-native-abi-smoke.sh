@@ -76,6 +76,7 @@ EOF
 
 printf '%s\n' '{"default_web_user":"smoke","users":{"smoke":{"display_name":"Smoke"}}}' >"$config_dir/allowlist.json"
 printf '%s\n' '{"backends":[],"default":""}' >"$config_dir/model_backends.json"
+mkdir -p "$probe_dir/node_modules"
 docker run -d --name "$container" -v "$config_dir:/app/config:ro" \
 	-v "$probe_dir:/probe:ro" -v "$PWD/packages/shared/node_modules:/probe/node_modules:ro" \
 	-e BIND_HOST=localhost -e WEB_BIND_HOST=localhost "$IMAGE" >/dev/null
