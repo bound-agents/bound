@@ -278,3 +278,16 @@ only when the local replica should be replaced from a hub snapshot.
 
 Confirm that the downloaded binary matches the host platform and is executable. Current
 binaries are available on the [GitHub releases page](https://github.com/bound-agents/bound/releases).
+
+## Docker image runtime ABI
+
+Release images use Ubuntu 24.04 and install `libstdc++6` explicitly. This matches the
+native Linux build environment and supplies the C++ ABI required by Bun-embedded native
+addons such as the structure reader's tree-sitter parser. Do not replace the runtime
+check with an ELF dependency scan: embedded addons are loaded by Bun and are not visible
+through the executable's `DT_NEEDED` entries.
+
+Every release architecture runs the image smoke test after publishing its platform image.
+It starts `bound`, which imports `bms_read_structure` and loads the embedded tree-sitter
+addon. The test needs Docker, so local development without Docker validates the static
+Dockerfile/workflow contract; the runtime image check runs in release CI.

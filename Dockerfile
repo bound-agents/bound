@@ -3,12 +3,12 @@
 # Pre-built binaries are supplied via the build context (binaries/<arch>/*).
 # No compilation happens here — just copy and set up the runtime environment.
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r -g 1001 bound \
