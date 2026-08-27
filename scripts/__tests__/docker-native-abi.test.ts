@@ -57,6 +57,10 @@ describe("release Docker native ABI contract", () => {
 		expect(smokeScript).toContain(
 			"BUN_BE_BUN=1 /usr/local/bin/bound /probe/structure-reader-probe.ts",
 		);
+		expect(smokeScript).toContain('mkdir -p "$probe_dir/node_modules"');
+		expect(smokeScript).toMatch(
+			/mkdir -p "\$probe_dir\/node_modules"[\s\S]*-v "\$probe_dir:\/probe:ro" -v "\$PWD\/packages\/shared\/node_modules:\/probe\/node_modules:ro"/,
+		);
 		expect(smokeScript).toContain('-v "$PWD/packages/shared/node_modules:/probe/node_modules:ro"');
 		expect(smokeScript).toContain('import Cpp from "tree-sitter-cpp"');
 		expect(smokeScript).toContain('import Kotlin from "tree-sitter-kotlin"');
