@@ -370,16 +370,19 @@ describe("Agent Loop OTEL Spans", () => {
 		// Verify context assembly spans were created
 		const spans = exporter.getFinishedSpans();
 
-		// Check for stage spans
-		const stageSpanNames = [
-			"context.stage-1-message-retrieval",
-			"context.stage-2-purge-substitution",
-		];
-
-		for (const stageName of stageSpanNames) {
-			const stageSpan = spans.find((s) => s.name === stageName);
-			expect(stageSpan).toBeDefined(`Stage span "${stageName}" should exist in finished spans`);
-		}
+		const contextSpans = spans.filter((span) => span.name.startsWith("context."));
+		expect(contextSpans.map((span) => span.name).sort()).toEqual([
+			"context.budget",
+			"context.contextualize",
+			"context.history.prepare",
+		]);
+		const history = contextSpans.find((span) => span.name === "context.history.prepare");
+		expect(
+			history?.events.some((event) => event.name === "context.stage-1-message-retrieval"),
+		).toBe(true);
+		expect(
+			history?.events.some((event) => event.name === "context.stage-2-purge-substitution"),
+		).toBe(true);
 	});
 
 	it("should record thinking_chars and messages_in_flight on turn span", async () => {

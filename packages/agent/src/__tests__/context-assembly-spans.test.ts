@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
 	BasicTracerProvider,
 	InMemorySpanExporter,
@@ -21,105 +22,68 @@ describe("Context Assembly OTEL Spans", () => {
 	let exporter: InMemorySpanExporter;
 	let userId: string;
 
-	beforeAll(async () => {
-		// Create temporary test database using the same setup as context-assembly.test.ts
+	beforeAll(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "context-spans-test-"));
-		const dbPath = join(tmpDir, "test.db");
-
-		db = createDatabase(dbPath);
+		db = createDatabase(join(tmpDir, "test.db"));
 		applySchema(db);
 		applyMetricsSchema(db);
-
-		// Create a test user
 		userId = randomUUID();
 		db.run(
 			"INSERT INTO users (id, display_name, platform_ids, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?)",
 			[userId, "Test User", null, new Date().toISOString(), new Date().toISOString(), 0],
 		);
-
-		// Set up OTEL tracing
+		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 		exporter = new InMemorySpanExporter();
 		provider = new BasicTracerProvider();
 		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
 		trace.setGlobalTracerProvider(provider);
 	});
-
-	beforeEach(() => {
-		exporter.reset();
-	});
-
+	beforeEach(() => exporter.reset());
 	afterAll(async () => {
-		if (db) {
-			db.close();
-		}
-		if (tmpDir) {
-			await cleanupTmpDir(tmpDir);
-		}
+		db.close();
+		await cleanupTmpDir(tmpDir);
 		await provider.shutdown();
 		trace.disable();
+		context.disable();
 	});
 
-	it("should create spans for all context assembly stages", async () => {
-		// Create test data
+	function createThread(withMessage = true): string {
 		const threadId = randomUUID();
-
+		const now = new Date().toISOString();
 		db.run(
 			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
+			[threadId, userId, "web", "local", 0, "Test", null, null, null, null, now, now, now, 0],
 		);
+		if (withMessage)
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				[randomUUID(), threadId, "user", "hello", null, null, now, now, "local", 0],
+			);
+		return threadId;
+	}
 
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				"msg-1",
-				threadId,
-				"user",
-				"Hello, this is a test message",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-				0,
-			],
+	function assembleUnderParent(threadId: string, params: Record<string, unknown> = {}) {
+		const parent = trace.getTracer("test").startSpan("agent-loop.assemble-context");
+		context.with(trace.setSpan(context.active(), parent), () =>
+			assembleContext({ db, threadId, userId, ...params }),
 		);
+		parent.end();
+		return exporter.getFinishedSpans();
+	}
 
-		// Create parent span context for context assembly (simulating agent-loop.assemble-context)
-		const parentSpan = trace.getTracer("test").startSpan("agent-loop.assemble-context");
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			// Call assembleContext
-			const result = await assembleContext({
-				db,
-				threadId,
-				userId,
-			});
-
-			expect(result.messages).toBeDefined();
-		});
-
-		parentSpan.end();
-
-		// Get finished spans
-		const spans = exporter.getFinishedSpans();
-
-		// Verify stage spans were created
-		const stageNames = [
+	it("uses exactly three direct durable context children and moves every stage to timed events", () => {
+		const spans = assembleUnderParent(createThread());
+		const contextSpans = spans.filter((span) => span.name.startsWith("context."));
+		expect(contextSpans).toHaveLength(3);
+		expect(contextSpans.map((span) => span.name).sort()).toEqual([
+			"context.budget",
+			"context.contextualize",
+			"context.history.prepare",
+		]);
+		const parent = spans.find((span) => span.name === "agent-loop.assemble-context");
+		for (const span of contextSpans) expect(span.parentSpanId).toBe(parent?.spanContext().spanId);
+		const events = contextSpans.flatMap((span) => span.events);
+		for (const name of [
 			"context.stage-1-message-retrieval",
 			"context.stage-1.5-retroactive-result-truncation",
 			"context.stage-2-purge-substitution",
@@ -132,475 +96,136 @@ describe("Context Assembly OTEL Spans", () => {
 			"context.stage-6-assembly",
 			"context.stage-7-budget-validation",
 			"context.stage-8-metric-recording",
-		];
-
-		for (const stageName of stageNames) {
-			const span = spans.find((s) => s.name === stageName);
-			expect(span).toBeDefined(
-				`Stage span "${stageName}" should exist in finished spans. Found: ${spans.map((s) => s.name).join(", ")}`,
-			);
-		}
-	});
-
-	it("emits per-helper child spans so the Jaeger waterfall attributes cold-assembly latency", async () => {
-		// These wrap the DB/tiktoken-heavy sub-helpers that dominate a cold
-		// rebuild (buildCrossThreadDigest, buildVolatileEnrichment,
-		// selectRelevantMemory, annotate-with-tokens, the budget-gate token
-		// passes, tiered truncation). Their durations are what pinpoint the
-		// production 48s that isolated profiling could not reproduce.
-		exporter.reset();
-		const threadId = randomUUID();
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Span Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				"span-msg-1",
-				threadId,
-				"user",
-				"hello",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-				0,
-			],
-		);
-
-		const parentSpan = trace.getTracer("test").startSpan("agent-loop.assemble-context");
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({ db, threadId, userId });
-		});
-		parentSpan.end();
-
-		const spans = exporter.getFinishedSpans();
-		const parent = spans.find((s) => s.name === "agent-loop.assemble-context");
-		expect(parent).toBeDefined();
-
-		// Each helper span must exist AND carry a parent — i.e. it is nested in the
-		// active trace, not detached. (Under the real agent loop the active parent
-		// is `agent-loop.assemble-context`, so these render in its Jaeger
-		// waterfall; here the same nesting holds via the test's parent span.) A
-		// detached span would have an undefined parentSpanId and float free.
-		const helperNames = [
-			"context.helper.load-memory-entries",
-			"context.helper.build-cross-thread-digest",
-			"context.helper.build-volatile-enrichment",
-			"context.helper.select-relevant-memory",
 			"context.helper.annotate-with-tokens",
 			"context.helper.tokenize-system-prompt",
 			"context.helper.sum-history-tokens",
-		];
-		for (const name of helperNames) {
-			const span = spans.find((s) => s.name === name);
-			expect(span).toBeDefined(
-				`Helper span "${name}" should exist. Found: ${spans.map((s) => s.name).join(", ")}`,
-			);
+		]) {
+			const event = events.find((candidate) => candidate.name === name);
+			expect(event).toBeDefined(name);
+			expect(typeof event?.attributes?.["context.elapsed_ms"]).toBe("number");
 		}
+		const history = contextSpans.find((span) => span.name === "context.history.prepare");
+		expect(
+			history?.events.find((event) => event.name === "context.stage-1-message-retrieval")
+				?.attributes.message_count,
+		).toBe(1);
+		const budget = contextSpans.find((span) => span.name === "context.budget");
+		expect(typeof budget?.attributes["context.total_tokens"]).toBe("number");
+		expect(typeof budget?.attributes["context.headroom"]).toBe("number");
 	});
 
-	it("should record message_count attribute on stage 1 span", async () => {
-		// Clear previous spans to prevent isolation issues
-		exporter.reset();
+	function expectContextSignals(spans: ReturnType<typeof exporter.getFinishedSpans>) {
+		const contextSpans = spans.filter((span) => span.name.startsWith("context."));
+		expect(contextSpans.length).toBeLessThanOrEqual(4);
+		for (const span of contextSpans) {
+			for (const event of span.events) {
+				if (!event.name.startsWith("context.")) continue;
+				expect(typeof event.attributes["context.elapsed_ms"]).toBe("number");
+				expect(["ok", "error"]).toContain(event.attributes["context.outcome"]);
+			}
+		}
+	}
 
-		// Create test data
-		const threadId = randomUUID();
-
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		// Create multiple messages
-		for (let i = 0; i < 3; i++) {
+	it("keeps the bounded span/event contract through truncation and budget pressure", () => {
+		const truncationThread = createThread(false);
+		const now = new Date().toISOString();
+		for (let i = 0; i < 20; i++) {
 			db.run(
 				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 				[
-					`msg-count-${i}`,
-					threadId,
-					i === 0 ? "user" : "assistant",
-					`Message ${i}`,
-					null,
-					null,
-					new Date(Date.now() + i * 1000).toISOString(),
-					new Date().toISOString(),
-					"local",
-					0,
-				],
-			);
-		}
-
-		// Create parent span context
-		const parentSpan = trace.getTracer("test").startSpan("test-parent");
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({
-				db,
-				threadId,
-				userId,
-			});
-		});
-
-		parentSpan.end();
-
-		const spans = exporter.getFinishedSpans();
-		const stage1Span = spans.find((s) => s.name === "context.stage-1-message-retrieval");
-
-		expect(stage1Span).toBeDefined();
-		expect(stage1Span?.attributes?.message_count).toBe(3);
-		expect(typeof stage1Span?.attributes?.message_count).toBe("number");
-	});
-
-	it("should record total_tokens and headroom attributes on stage 7 span", async () => {
-		// Create test data
-		const threadId = randomUUID();
-
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				"msg-budget-test",
-				threadId,
-				"user",
-				"Test for budget tracking",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-				0,
-			],
-		);
-
-		// Create parent span context
-		const parentSpan = trace.getTracer("test").startSpan("test-parent-budget");
-
-		exporter.reset();
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({
-				db,
-				threadId,
-				userId,
-				contextWindow: 8000,
-			});
-		});
-
-		parentSpan.end();
-
-		const spans = exporter.getFinishedSpans();
-		const stage7Span = spans.find((s) => s.name === "context.stage-7-budget-validation");
-
-		expect(stage7Span).toBeDefined();
-		expect(stage7Span?.attributes?.["context.total_tokens"]).toBeDefined();
-		expect(typeof stage7Span?.attributes?.["context.total_tokens"]).toBe("number");
-		expect(stage7Span?.attributes?.["context.headroom"]).toBeDefined();
-		expect(typeof stage7Span?.attributes?.["context.headroom"]).toBe("number");
-	});
-
-	it("should record truncated_messages attribute when truncation occurs", async () => {
-		// Create test data
-		const threadId = randomUUID();
-
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		// Create many messages to exceed context window
-		for (let i = 0; i < 5; i++) {
-			db.run(
-				"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				[
-					`msg-trunc-${i}`,
-					threadId,
+					randomUUID(),
+					truncationThread,
 					i % 2 === 0 ? "user" : "assistant",
-					"x".repeat(500), // Moderate content
+					"word ".repeat(200),
 					null,
 					null,
-					new Date(Date.now() + i * 1000).toISOString(),
-					new Date().toISOString(),
+					new Date(Date.parse(now) + i * 1000).toISOString(),
+					new Date(Date.parse(now) + i * 1000).toISOString(),
 					"local",
 					0,
 				],
 			);
 		}
-
-		// Create parent span context
-		const parentSpan = trace.getTracer("test").startSpan("test-parent-trunc");
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({
+		const parent = trace.getTracer("test").startSpan("agent-loop.assemble-context");
+		let result: ReturnType<typeof assembleContext>;
+		context.with(trace.setSpan(context.active(), parent), () => {
+			result = assembleContext({
 				db,
-				threadId,
+				threadId: truncationThread,
 				userId,
-				contextWindow: 2000, // Small window to force truncation
+				contextWindow: 5_000,
+				maxOutputTokens: 1_000,
+				truncationTargetTokens: 100,
 			});
 		});
-
-		parentSpan.end();
-
-		const spans = exporter.getFinishedSpans();
-
-		// Stage 7 must FINISH (not leak) on the truncation path, otherwise
-		// BatchSpanProcessor never flushes it and Jaeger has zero visibility
-		// into truncation events. Pre-fix the early-return at the truncation
-		// branch returned without calling stage7Span.end(), so the span
-		// existed in process memory but never reached the exporter.
-		const stage7 = spans.find((s) => s.name === "context.stage-7-budget-validation");
-		expect(stage7).toBeDefined();
-		expect(stage7?.attributes["context.truncated_messages"]).toBeGreaterThan(0);
-		expect(stage7?.attributes["context.total_tokens"]).toBeGreaterThan(0);
-	});
-
-	it("should nest stage spans as children of parent assembleContext span", async () => {
-		// Create test data
-		const threadId = randomUUID();
-
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				"msg-parent-test",
-				threadId,
-				"user",
-				"Testing span hierarchy",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-				0,
-			],
-		);
-
-		// Create parent span context
-		const parentSpan = trace.getTracer("test").startSpan("assembly-parent");
+		parent.end();
+		if (!result) throw new Error("expected truncation assembly result");
+		expect(result.debug.truncated).toBeGreaterThan(0);
+		expectContextSignals(exporter.getFinishedSpans());
 
 		exporter.reset();
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({
+		const pressureThread = createThread();
+		const pressureParent = trace.getTracer("test").startSpan("agent-loop.assemble-context");
+		context.with(trace.setSpan(context.active(), pressureParent), () => {
+			result = assembleContext({
 				db,
-				threadId,
+				threadId: pressureThread,
 				userId,
+				contextWindow: 10_000,
+				maxOutputTokens: 1_000,
+				toolTokenEstimate: 9_500,
 			});
 		});
-
-		parentSpan.end();
-
-		const spans = exporter.getFinishedSpans();
-
-		// Find parent and child spans
-		const parent = spans.find((s) => s.name === "assembly-parent");
-		const stage1Child = spans.find((s) => s.name === "context.stage-1-message-retrieval");
-
-		expect(parent).toBeDefined();
-		expect(stage1Child).toBeDefined();
-
-		// Verify both spans were created
-		expect(spans.length).toBeGreaterThanOrEqual(2);
+		pressureParent.end();
+		if (!result) throw new Error("expected budget-pressure assembly result");
+		expect(result.debug.budgetPressure).toBe(true);
+		expectContextSignals(exporter.getFinishedSpans());
 	});
 
-	it("should mark stage 4 span as implicit", async () => {
-		const threadId = randomUUID();
-
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				"msg-stage4-test",
-				threadId,
-				"user",
-				"Testing stage 4 marker",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-				0,
-			],
-		);
-
-		const parentSpan = trace.getTracer("test").startSpan("test-parent-stage4");
-		exporter.reset();
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({ db, threadId, userId });
-		});
-
-		parentSpan.end();
-
+	it("records an error event and status on the owning span without replacing the exception", () => {
+		const parent = trace.getTracer("test").startSpan("agent-loop.assemble-context");
+		const failure = new Error("forced stage failure");
+		expect(() =>
+			context.with(trace.setSpan(context.active(), parent), () =>
+				assembleContext({
+					db: new Proxy(db, {
+						get(target, property, receiver) {
+							if (property === "query")
+								return () => {
+									throw failure;
+								};
+							return Reflect.get(target, property, receiver);
+						},
+					}) as Database,
+					threadId: createThread(),
+					userId,
+				}),
+			),
+		).toThrow(failure);
+		parent.end();
 		const spans = exporter.getFinishedSpans();
-		const stage4Span = spans.find((s) => s.name === "context.stage-4-message-queueing");
-
-		expect(stage4Span).toBeDefined();
-		expect(stage4Span?.attributes?.["stage.implicit"]).toBe(true);
+		expectContextSignals(spans);
+		const history = spans.find((span) => span.name === "context.history.prepare");
+		const event = history?.events.find(
+			(candidate) => candidate.name === "context.stage-1-message-retrieval",
+		);
+		expect(event?.attributes["context.outcome"]).toBe("error");
+		expect(event?.attributes["context.error"]).toContain("forced stage failure");
+		expect(history?.status.code).toBe(2);
 	});
 
-	it("should not nest stage 5.5 inside stage 6", async () => {
-		const threadId = randomUUID();
-
-		db.run(
-			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, summary, summary_through, summary_model_id, extracted_through, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				threadId,
-				userId,
-				"web",
-				"local",
-				0,
-				"Test Thread",
-				null,
-				null,
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				new Date().toISOString(),
-				0,
-			],
+	it("keeps optional no-history contextualization and budget events on durable spans", () => {
+		const spans = assembleUnderParent(createThread(false), { noHistory: true });
+		const contextualize = spans.find((span) => span.name === "context.contextualize");
+		const budget = spans.find((span) => span.name === "context.budget");
+		expect(
+			contextualize?.events.some((event) => event.name === "context.stage-5.5-volatile-enrichment"),
+		).toBe(true);
+		expect(budget?.events.some((event) => event.name === "context.stage-7-budget-validation")).toBe(
+			true,
 		);
-
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				"msg-nesting-test",
-				threadId,
-				"user",
-				"Testing stage nesting",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-				0,
-			],
+		expect(budget?.events.some((event) => event.name === "context.stage-8-metric-recording")).toBe(
+			true,
 		);
-
-		const parentSpan = trace.getTracer("test").startSpan("test-parent-nesting");
-		exporter.reset();
-
-		await context.with(trace.setSpan(context.active(), parentSpan), async () => {
-			await assembleContext({ db, threadId, userId });
-		});
-
-		parentSpan.end();
-
-		const spans = exporter.getFinishedSpans();
-		const stage6 = spans.find((s) => s.name === "context.stage-6-assembly");
-		const stage5_5 = spans.find((s) => s.name === "context.stage-5.5-volatile-enrichment");
-
-		expect(stage6).toBeDefined();
-		expect(stage5_5).toBeDefined();
-
-		// Stage 5.5 should NOT be a child of Stage 6 — they should share the same parent
-		expect(stage5_5?.parentSpanId).not.toBe(stage6?.spanContext().spanId);
-		// Both should have the same parent (the assembly-parent span)
-		expect(stage5_5?.parentSpanId).toBe(stage6?.parentSpanId);
 	});
 });
