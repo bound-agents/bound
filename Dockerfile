@@ -16,6 +16,7 @@ RUN groupadd -r -g 1001 bound \
 
 COPY binaries/${TARGETARCH}/bound     /usr/local/bin/bound
 COPY binaries/${TARGETARCH}/boundctl  /usr/local/bin/boundctl
+COPY binaries/${TARGETARCH}/tree-sitter-native-probe /usr/local/bin/tree-sitter-native-probe
 
 WORKDIR /app
 

@@ -43,7 +43,15 @@ jobs:
       - name: Install native addon build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ node-gyp
+          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ node-gyp curl ca-certificates
+          NODE_VERSION=22.15.0
+          NODE_HEADERS_SHA256=cda8bbbfb4f7fb19b65efd5faabc97ccea1e94422e7066b9a1e70280c1ca6453
+          HEADER_DIR="$RUNNER_TEMP/node-v${NODE_VERSION}"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/node-headers.tar.gz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-headers.tar.gz"
+          echo "${NODE_HEADERS_SHA256}  $RUNNER_TEMP/node-headers.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/node-headers.tar.gz" -C "$RUNNER_TEMP"
+          test -f "$HEADER_DIR/include/node/node_api.h"
+          printf "NODE_GYP_NODEDIR=%s\n" "$HEADER_DIR" >> "$GITHUB_ENV"
 
       - run: bun install --frozen-lockfile
 
@@ -58,6 +66,7 @@ jobs:
         run: |
           mkdir -p binaries/${{ matrix.arch }}
           cp dist/bound dist/boundctl binaries/${{ matrix.arch }}/
+          cp dist/tree-sitter-native-probe binaries/${{ matrix.arch }}/
 
       # Build and push per-platform Docker image (native, no QEMU)
       - uses: docker/setup-buildx-action@v3

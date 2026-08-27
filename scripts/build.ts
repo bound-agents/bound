@@ -279,6 +279,12 @@ async function build() {
 		console.log("Use 'bun packages/cli/src/bound.ts' to run directly");
 	}
 
+	// Step 3b: Compile an isolated native-addon probe for release-image smoke tests.
+	// It imports and exercises the same parser runtime and grammars without expanding
+	// the application parser API or relying on a runtime node_modules tree.
+	console.log("\n3b. Compiling Tree-sitter native probe...");
+	await compileBinary("scripts/tree-sitter-native-probe.ts", "dist/tree-sitter-native-probe");
+
 	// Step 4: Compile boundctl (management CLI)
 	console.log("\n4. Compiling boundctl binary...");
 	try {
@@ -321,7 +327,12 @@ async function build() {
 	// Bun.compile appends ".exe" on Windows, so the summary check must
 	// look for the platform-correct file name.
 	const binaryExt = process.platform === "win32" ? ".exe" : "";
-	for (const binary of ["dist/bound", "dist/boundctl", "dist/boundless"]) {
+	for (const binary of [
+		"dist/bound",
+		"dist/boundctl",
+		"dist/boundless",
+		"dist/tree-sitter-native-probe",
+	]) {
 		const binaryPath = binary + binaryExt;
 		if (existsSync(binaryPath)) {
 			const sizeMB = (statSync(binaryPath).size / (1024 * 1024)).toFixed(2);

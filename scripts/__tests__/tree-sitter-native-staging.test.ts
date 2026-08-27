@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
 	ELF_MACHINE,
 	buildNativePackageManifest,
+	hasLibnodeDependency,
 	loaderPrebuildPath,
 	normalizeReleaseArchitecture,
 	readElfMachine,
@@ -12,16 +13,17 @@ import {
 
 const root = join(import.meta.dir, "../..");
 const expectedNativePaths = {
+	"tree-sitter": ["tree-sitter.node", "tree_sitter_runtime_binding"],
 	"tree-sitter-bash": ["tree-sitter-bash.node", "tree_sitter_bash_binding"],
 	"tree-sitter-c": ["tree-sitter-c.node", "tree_sitter_c_binding"],
 	"tree-sitter-cpp": ["tree-sitter-cpp.node", "tree_sitter_cpp_binding"],
 	"tree-sitter-go": ["tree-sitter-go.node", "tree_sitter_go_binding"],
 	"tree-sitter-java": ["tree-sitter-java.node", "tree_sitter_java_binding"],
-	"tree-sitter-kotlin": [undefined, "tree_sitter_kotlin_binding"],
+	"tree-sitter-kotlin": ["tree-sitter-kotlin.node", "tree_sitter_kotlin_binding"],
 	"tree-sitter-python": ["tree-sitter-python.node", "tree_sitter_python_binding"],
 	"tree-sitter-ruby": ["tree-sitter-ruby.node", "tree_sitter_ruby_binding"],
 	"tree-sitter-rust": ["tree-sitter-rust.node", "tree_sitter_rust_binding"],
-	"tree-sitter-swift": [undefined, "tree_sitter_swift_binding"],
+	"tree-sitter-swift": ["tree-sitter-swift.node", "tree_sitter_swift_binding"],
 } as const;
 
 function elf(machine: number, littleEndian = true): Uint8Array {
@@ -56,7 +58,13 @@ describe("Tree-sitter native release staging", () => {
 			const expected = expectedNativePaths[entry.packageName as keyof typeof expectedNativePaths];
 			if (!expected) throw new Error(`missing expected native path for ${entry.packageName}`);
 			const [prebuildFilename, targetName] = expected;
-			const loader = readFileSync(join(entry.packageRoot, "bindings/node/index.js"), "utf8");
+			const loader = readFileSync(
+				join(
+					entry.packageRoot,
+					entry.packageName === "tree-sitter" ? "index.js" : "bindings/node/index.js",
+				),
+				"utf8",
+			);
 			const bindingGyp = readFileSync(join(entry.packageRoot, "binding.gyp"), "utf8");
 			expect(bindingGyp).toContain(`\"target_name\": \"${targetName}\"`);
 			expect(entry.buildTargetName).toBe(targetName);
@@ -68,13 +76,21 @@ describe("Tree-sitter native release staging", () => {
 				expect(entry.loaderRelativePath).toBe(
 					`prebuilds/${"${process.platform}"}-${"${process.arch}"}/${prebuildFilename}`,
 				);
-				expect(entry.prebuildPath).toEndWith(`prebuilds/linux-x64/${prebuildFilename}`);
 			} else {
-				expect(loader).toContain('require("node-gyp-build")');
-				expect(entry.loaderRelativePath).toBeUndefined();
-				expect(entry.prebuildPath).toBeUndefined();
+				throw new Error(
+					`${entry.packageName}: every embedded native package needs a Bun prebuild path`,
+				);
 			}
 		}
+	});
+
+	it("rejects native addons linked against libnode", () => {
+		expect(
+			hasLibnodeDependency(" 0x0000000000000001 (NEEDED) Shared library: [libnode.so.108] "),
+		).toBe(true);
+		expect(
+			hasLibnodeDependency(" 0x0000000000000001 (NEEDED) Shared library: [libstdc++.so.6] "),
+		).toBe(false);
 	});
 
 	it("does not synthesize a generic node.napi filename", () => {

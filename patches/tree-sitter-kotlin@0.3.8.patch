@@ -1,0 +1,8 @@
+--- a/bindings/node/index.js
++++ b/bindings/node/index.js
+@@ -3 +3,4 @@
+-module.exports = require("node-gyp-build")(root);
++module.exports = typeof process.versions.bun === "string" && process.platform === "linux"
++  // Bun compile must see the exact staged addon path; node-gyp-build remains for Node.
++  ? require(`../../prebuilds/${process.platform}-${process.arch}/tree-sitter-kotlin.node`)
++  : require("node-gyp-build")(root);

@@ -298,6 +298,8 @@
   },
   "patchedDependencies": {
     "just-bash@2.14.4": "patches/just-bash@2.14.4.patch",
+    "tree-sitter-kotlin@0.3.8": "patches/tree-sitter-kotlin@0.3.8.patch",
+    "tree-sitter-swift@0.7.1": "patches/tree-sitter-swift@0.7.1.patch",
   },
   "packages": {
     "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@0.24.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-vvu9appvGvfYstBj19C6NCepV6SvUhY5VRv60KUZ4XzhTah/olOYul5Zo4C+x2enyshMSvgB2mm/OEmrsHaSmA=="],
