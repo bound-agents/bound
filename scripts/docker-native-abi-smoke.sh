@@ -43,42 +43,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Use Bun's CLI mode embedded in the release binary to load every grammar through
-# its real bindings/node/index.js branch. This is deliberately separate from daemon
-# liveness: each parser receives a harmless declaration and must construct a tree.
-cat >"$probe_dir/structure-reader-probe.ts" <<'EOF'
-import Parser from "tree-sitter";
-import Bash from "tree-sitter-bash";
-import C from "tree-sitter-c";
-import Cpp from "tree-sitter-cpp";
-import Go from "tree-sitter-go";
-import Java from "tree-sitter-java";
-import Kotlin from "tree-sitter-kotlin";
-import Python from "tree-sitter-python";
-import Ruby from "tree-sitter-ruby";
-import Rust from "tree-sitter-rust";
-import Swift from "tree-sitter-swift";
+# Shadow any image-local dependency path with an empty mount. Startup must use only
+# addons embedded by `bun build --compile`; no runner node_modules are ever mounted.
+mkdir -p "$probe_dir/node_modules"
 
-const grammars = [
-	["bash", Bash, "probe() { :; }"], ["c", C, "int probe(void) { return 0; }"],
-	["cpp", Cpp, "class Probe {};"], ["go", Go, "package probe\nfunc Probe() {}"],
-	["java", Java, "class Probe {}"], ["kotlin", Kotlin, "class Probe"],
-	["python", Python, "class Probe:\n    pass"], ["ruby", Ruby, "class Probe; end"],
-	["rust", Rust, "struct Probe;"], ["swift", Swift, "struct Probe {}"],
-] as const;
-for (const [name, language, source] of grammars) {
-	const parser = new Parser();
-	parser.setLanguage(language);
-	if (parser.parse(source).rootNode.hasError) throw new Error(`${name}: probe parse failed`);
-}
-console.log(`loaded ${grammars.length} structure-reader grammar addons`);
-EOF
-
+# Exercise the standalone compiled probe; its dependency graph is embedded at build time.
 printf '%s\n' '{"default_web_user":"smoke","users":{"smoke":{"display_name":"Smoke"}}}' >"$config_dir/allowlist.json"
 printf '%s\n' '{"backends":[],"default":""}' >"$config_dir/model_backends.json"
-mkdir -p "$probe_dir/node_modules"
-docker run -d --name "$container" -v "$config_dir:/app/config:ro" \
-	-v "$probe_dir:/probe:ro" -v "$PWD/packages/shared/node_modules:/probe/node_modules:ro" \
+docker run -d --name "$container" -v "$config_dir:/app/config:ro" -v "$probe_dir:/probe:ro" \
+	-v "$probe_dir/node_modules:/app/node_modules:ro" \
 	-e BIND_HOST=localhost -e WEB_BIND_HOST=localhost "$IMAGE" >/dev/null
 
 for _ in {1..5}; do
@@ -88,5 +61,6 @@ for _ in {1..5}; do
 	fi
 done
 
-docker exec "$container" env BUN_BE_BUN=1 /usr/local/bin/bound /probe/structure-reader-probe.ts
-printf '%s\n' 'bound startup and direct structure-reader grammar probe passed'
+docker exec "$container" test -d /app/node_modules
+docker exec "$container" /usr/local/bin/tree-sitter-native-probe
+printf '%s\n' 'bound startup and direct embedded structure-reader grammar probe passed'
