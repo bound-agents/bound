@@ -18,7 +18,7 @@ jobs:
       matrix:
         include:
           - target: linux-amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             arch: amd64
             platform: linux/amd64
           - target: linux-arm64
@@ -76,6 +76,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,scope=${{ matrix.target }},mode=max
+
+      - name: Smoke-test native ABI in runtime image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.arch }}
+        run: |
+          docker pull "$IMAGE"
+          bash scripts/docker-native-abi-smoke.sh
 
       # Upload binaries for GitHub release
       - name: Rename binaries for release
