@@ -288,6 +288,19 @@ check with an ELF dependency scan: embedded addons are loaded by Bun and are not
 through the executable's `DT_NEEDED` entries.
 
 Every release architecture runs the image smoke test after publishing its platform image.
-It starts `bound`, which imports `bms_read_structure` and loads the embedded tree-sitter
-addon. The test needs Docker, so local development without Docker validates the static
-Dockerfile/workflow contract; the runtime image check runs in release CI.
+Before `bun run build`, the native Linux runner derives the complete grammar manifest from
+`packages/shared/src/read-structure.ts`. For every imported grammar it reads that package's
+actual `bindings/node/index.js` loader: loaders with Bun's explicit branch are staged at their
+own `prebuilds/linux-x64` or `prebuilds/linux-arm64` filename, while node-gyp-build-only loaders
+are audited at the exact `build/Release/<target_name>.node` output derived from `binding.gyp`.
+Missing or wrong-architecture binaries are rebuilt from the shipped `binding.gyp` and audited
+again. The stage step prints the package, selected path, expected ELF machine, and the retained
+failure diagnostics. Release runners install Python 3, `node-gyp`, and a native C/C++ toolchain
+for this repair path.
+
+The runtime smoke keeps its container and ABI diagnostics on failure. It uses the compiled binary's
+embedded Bun CLI mode to execute a read-only probe against the staged package tree. The probe imports
+every grammar used by the structure reader, parses one harmless declaration per grammar, and therefore
+exercises each package's actual `bindings/node/index.js` loader—not daemon liveness alone. The test
+needs Docker, so local development without Docker validates the static Dockerfile/workflow contract;
+the runtime image check runs in release CI.

@@ -15,6 +15,7 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: linux-amd64
@@ -39,7 +40,15 @@ jobs:
           key: bun-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-${{ matrix.target }}-
 
+      - name: Install native addon build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ node-gyp
+
       - run: bun install --frozen-lockfile
+
+      - name: Audit and stage Tree-sitter native addons
+        run: bun run scripts/tree-sitter-native-staging.ts
 
       - name: Build
         run: bun run build
