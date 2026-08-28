@@ -180,7 +180,9 @@ describe("relay operation attribution", () => {
 			entryCount: 1,
 		});
 		expect(extracted.spans[0].attributes["relay.carrier_state"]).toBe("extracted");
-		expect(extracted.spans[0].parentContext).toBe(extractedContext);
+		expect(trace.getSpan(extracted.spans[0].parentContext)?.spanContext().spanId).toBe(
+			"b7ad6b7169203331",
+		);
 
 		const activeContext = trace.setSpan(
 			context.active(),
@@ -348,11 +350,15 @@ describe("inbound relay trace carrier security", () => {
 
 		expect(extractedCarrier).toEqual({ traceparent: validTraceparent, tracestate: "vendor=value" });
 		expect(
-			(
-				h.spans[0] as (typeof h.spans)[number] & {
-					parentContext: import("@opentelemetry/api").Context;
-				}
-			).parentContext,
-		).toBe(extractedContext);
+			trace
+				.getSpan(
+					(
+						h.spans[0] as (typeof h.spans)[number] & {
+							parentContext: import("@opentelemetry/api").Context;
+						}
+					).parentContext,
+				)
+				?.spanContext().spanId,
+		).toBe("b7ad6b7169203331");
 	});
 });

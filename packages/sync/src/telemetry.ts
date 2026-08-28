@@ -1,4 +1,4 @@
-import { RELAY_KINDS, counter, histogram, upDownCounter } from "@bound/shared";
+import { RELAY_KINDS, counter, extractTraceContext, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
 
 interface CounterLike {
@@ -198,6 +198,16 @@ function validTraceCarrier(
 	}
 }
 
+function extractRelayTraceContext(
+	activeContext: import("@opentelemetry/api").Context,
+	carrier: { traceparent: string; tracestate?: string },
+): import("@opentelemetry/api").Context {
+	const propagated = propagation.extract(activeContext, carrier);
+	const propagatedSpan = trace.getSpan(propagated)?.spanContext();
+	if (propagatedSpan && trace.isSpanContextValid(propagatedSpan)) return propagated;
+	return extractTraceContext(carrier);
+}
+
 export type RelayTrigger = "push-write" | "receive" | "deliver" | "reconnect-drain";
 export type RelayPath =
 	| "spoke.outbox.push"
@@ -239,7 +249,7 @@ export function startRelayOperation(
 				: activeSpanContext !== undefined && trace.isSpanContextValid(activeSpanContext)
 					? "active"
 					: "absent";
-	const parentContext = carrier ? propagation.extract(activeContext, carrier) : activeContext;
+	const parentContext = carrier ? extractRelayTraceContext(activeContext, carrier) : activeContext;
 	const span = telemetry.startSpan(
 		"relay.operation",
 		{
