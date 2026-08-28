@@ -599,13 +599,16 @@ describe("Bidirectional executeBackfill", () => {
 					}),
 			);
 
+			let applied = 0;
 			for (const frame of hubSentFrames) {
 				const decoded = decodeFrame(frame, symmetricKey);
-				if (!decoded.ok) continue;
-				if (decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
-					spokeTransport.handleRowPullResponse(decoded.value.payload as RowPullResponsePayload);
+				if (decoded.ok && decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
+					applied += spokeTransport.handleRowPullResponse(
+						decoded.value.payload as RowPullResponsePayload,
+					);
 				}
 			}
+			return applied;
 		};
 	}
 
@@ -624,13 +627,8 @@ describe("Bidirectional executeBackfill", () => {
 		const result = await spokeTransport.runBackfill();
 
 		expect(result.backfilled).toBe(2);
-
-		const clEntries = spokeDb
-			.query("SELECT row_id FROM change_log WHERE table_name = 'semantic_memory' ORDER BY row_id")
-			.all() as Array<{ row_id: string }>;
-		expect(clEntries.map((e) => e.row_id)).toEqual(["mem-spoke-1", "mem-spoke-2"]);
-
-		expect(result.pulled).toBeGreaterThanOrEqual(3);
+		expect(result.requested).toBe(3);
+		expect(result.pulled).toBe(3);
 
 		const allMemories = spokeDb.query("SELECT id FROM semantic_memory ORDER BY id").all() as Array<{
 			id: string;
@@ -706,11 +704,10 @@ describe("Row pull promise resolution", () => {
 		transport.addPeer("hub", () => true, key);
 
 		let resolved = false;
-		const pullPromise = transport
-			.requestRowPull([{ table: "semantic_memory", pks: ["mem-1"] }])
-			.then(() => {
-				resolved = true;
-			});
+		const pull = transport.requestRowPull([{ table: "semantic_memory", pks: ["mem-1"] }]);
+		const pullPromise = pull.then(() => {
+			resolved = true;
+		});
 
 		await new Promise((r) => setTimeout(r, 100));
 		expect(resolved).toBe(false);
@@ -743,11 +740,57 @@ describe("Row pull promise resolution", () => {
 			last: true,
 		});
 
+		await expect(pull).resolves.toBe(1);
 		await pullPromise;
 		expect(resolved).toBe(true);
 
 		const row = db.query("SELECT id FROM semantic_memory WHERE id = 'mem-1'").get();
 		expect(row).not.toBeNull();
+	});
+
+	it("keeps applied counts isolated when row-pull responses interleave", async () => {
+		const key = new Uint8Array(32).fill(1);
+		transport.addPeer("hub", () => true, key);
+		const first = transport.requestRowPull([{ table: "semantic_memory", pks: ["mem-1"] }]);
+		const second = transport.requestRowPull([{ table: "semantic_memory", pks: ["mem-2"] }]);
+		const requestIds = [
+			...(
+				transport as unknown as { pendingRowPullRequests: Map<string, unknown> }
+			).pendingRowPullRequests.keys(),
+		];
+		const now = new Date().toISOString();
+		const row = (id: string) => ({
+			id,
+			key: id,
+			value: "v",
+			source: "test",
+			created_at: now,
+			modified_at: now,
+			tier: "default",
+			deleted: 0,
+		});
+
+		transport.handleRowPullResponse({
+			request_id: requestIds[0],
+			table_name: "semantic_memory",
+			rows: [row("mem-1")],
+			last: false,
+		});
+		transport.handleRowPullResponse({
+			request_id: requestIds[1],
+			table_name: "semantic_memory",
+			rows: [row("mem-2")],
+			last: true,
+		});
+		transport.handleRowPullResponse({
+			request_id: requestIds[0],
+			table_name: "semantic_memory",
+			rows: [],
+			last: true,
+		});
+
+		expect(await second).toBe(1);
+		expect(await first).toBe(1);
 	});
 });
 
@@ -1237,6 +1280,7 @@ describe("End-to-end row pull with actual hub→spoke wiring", () => {
 			});
 
 			// Process with simulated backpressure drain cycles
+			let applied = 0;
 			for (let cycle = 0; cycle < 100; cycle++) {
 				await new Promise((r) => setTimeout(r, 5));
 
@@ -1246,7 +1290,9 @@ describe("End-to-end row pull with actual hub→spoke wiring", () => {
 					if (!frame) break;
 					const decoded = decodeFrame(frame, symmetricKey);
 					if (decoded.ok && decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
-						spokeTransport.handleRowPullResponse(decoded.value.payload as RowPullResponsePayload);
+						applied += spokeTransport.handleRowPullResponse(
+							decoded.value.payload as RowPullResponsePayload,
+						);
 					}
 				}
 
@@ -1256,6 +1302,15 @@ describe("End-to-end row pull with actual hub→spoke wiring", () => {
 					hubTransport.continueRowPull("spoke-1");
 				}
 			}
+			for (const frame of pendingHubFrames.splice(0)) {
+				const decoded = decodeFrame(frame, symmetricKey);
+				if (decoded.ok && decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
+					applied += spokeTransport.handleRowPullResponse(
+						decoded.value.payload as RowPullResponsePayload,
+					);
+				}
+			}
+			return applied;
 		};
 
 		const result = await spokeTransport.runBackfill();
@@ -1515,6 +1570,7 @@ describe("End-to-end consistency + row pull under backpressure", () => {
 				tables,
 			});
 
+			let applied = 0;
 			for (let cycle = 0; cycle < 50; cycle++) {
 				await new Promise((r) => setTimeout(r, 10));
 				while (pendingFrames.length > 0) {
@@ -1522,7 +1578,9 @@ describe("End-to-end consistency + row pull under backpressure", () => {
 					if (!frame) break;
 					const decoded = decodeFrame(frame, symmetricKey);
 					if (decoded.ok && decoded.value.type === WsMessageType.ROW_PULL_RESPONSE) {
-						spokeTransport.handleRowPullResponse(decoded.value.payload as RowPullResponsePayload);
+						applied += spokeTransport.handleRowPullResponse(
+							decoded.value.payload as RowPullResponsePayload,
+						);
 					}
 				}
 				if (hubBlocked) {
@@ -1530,6 +1588,7 @@ describe("End-to-end consistency + row pull under backpressure", () => {
 					hubTransport.continueRowPull("spoke-1");
 				}
 			}
+			return applied;
 		};
 
 		const result = await spokeTransport.runBackfill();

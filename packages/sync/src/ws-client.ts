@@ -297,7 +297,10 @@ export class WsSyncClient {
 
 		if (this.config.wsTransport) {
 			const wt = this.config.wsTransport as unknown as {
-				runBackfill?: (opts?: { isFirstConnect?: boolean }) => Promise<unknown>;
+				runBackfill?: (opts?: {
+					isFirstConnect?: boolean;
+					trigger?: "initial" | "reconnect" | "periodic";
+				}) => Promise<unknown>;
 				clearSyncedTables?: () => void;
 			};
 
@@ -312,7 +315,7 @@ export class WsSyncClient {
 			if (typeof wt.runBackfill === "function") {
 				const isFirstConnect = !this.hasOpenedOnce;
 				if (isFirstConnect) {
-					wt.runBackfill({ isFirstConnect }).catch((err: Error) => {
+					wt.runBackfill({ isFirstConnect, trigger: "initial" }).catch((err: Error) => {
 						this.config.logger?.warn("[backfill] Failed", { error: err.message });
 					});
 				} else {
@@ -450,7 +453,10 @@ export class WsSyncClient {
 	}
 
 	private scheduleReconnectBackfill(wt: {
-		runBackfill?: (opts?: { isFirstConnect?: boolean }) => Promise<unknown>;
+		runBackfill?: (opts?: {
+			isFirstConnect?: boolean;
+			trigger?: "initial" | "reconnect" | "periodic";
+		}) => Promise<unknown>;
 	}): void {
 		this.stopReconnectBackfillTimer();
 		const delayMs = this.config.reconnectBackfillDelayMs ?? 15_000;
@@ -458,7 +464,7 @@ export class WsSyncClient {
 			this.reconnectBackfillTimer = null;
 			if (!this.connected || !this.connectionHealthy || typeof wt.runBackfill !== "function")
 				return;
-			wt.runBackfill().catch((err: Error) => {
+			wt.runBackfill({ trigger: "reconnect" }).catch((err: Error) => {
 				this.config.logger?.warn("[backfill] Failed", { error: err.message });
 			});
 		}, delayMs);
@@ -598,10 +604,13 @@ export class WsSyncClient {
 		if (intervalSeconds <= 0) return;
 		this.backfillTimer = setInterval(() => {
 			const wt = this.config.wsTransport as unknown as {
-				runBackfill?: (opts?: { isFirstConnect?: boolean }) => Promise<unknown>;
+				runBackfill?: (opts?: {
+					isFirstConnect?: boolean;
+					trigger?: "initial" | "reconnect" | "periodic";
+				}) => Promise<unknown>;
 			};
 			if (typeof wt?.runBackfill === "function") {
-				wt.runBackfill().catch((err: Error) => {
+				wt.runBackfill({ trigger: "periodic" }).catch((err: Error) => {
 					this.config.logger?.warn("[backfill] Periodic backfill failed", {
 						error: err.message,
 					});

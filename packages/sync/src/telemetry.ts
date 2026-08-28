@@ -1,4 +1,11 @@
-import { RELAY_KINDS, counter, extractTraceContext, histogram, upDownCounter } from "@bound/shared";
+import {
+	RELAY_KINDS,
+	type SyncedTableName,
+	counter,
+	extractTraceContext,
+	histogram,
+	upDownCounter,
+} from "@bound/shared";
 import { type Span, SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
 
 interface CounterLike {
@@ -27,6 +34,16 @@ const drainDuration = histogram("bound.sync.replication.drain.duration", {
 	description: "Replication drain duration",
 	unit: "ms",
 });
+const backfillRuns = counter("bound.sync.backfill.runs", {
+	description: "Backfill runs by trigger and outcome",
+});
+const backfillDuration = histogram("bound.sync.backfill.duration", {
+	description: "Backfill run duration",
+	unit: "ms",
+});
+const backfillSkipped = counter("bound.sync.backfill.skipped", {
+	description: "Backfill attempts skipped by guard",
+});
 const activeConnections = upDownCounter("bound.sync.ws.active_connections", {
 	description: "Currently active replication WebSocket peers by endpoint role",
 });
@@ -46,8 +63,13 @@ export interface SyncTelemetry {
 	drainedEntries: CounterLike;
 	drainDuration: { record(value: number, attributes?: Record<string, string>): void };
 	activeConnections: CounterLike;
+	backfillRuns?: CounterLike;
+	backfillDuration?: {
+		record(value: number, attributes?: Record<string, string | number | boolean>): void;
+	};
+	backfillSkipped?: CounterLike;
 	startSpan(
-		name: "ws.handshake" | "replication.drain" | "relay.operation",
+		name: "ws.handshake" | "replication.drain" | "relay.operation" | "sync.backfill",
 		attributes: Record<string, string | number | boolean>,
 		parentContext?: import("@opentelemetry/api").Context,
 	): SpanLike & Partial<Pick<Span, "spanContext">>;
@@ -60,6 +82,9 @@ let telemetry: SyncTelemetry = {
 	drainedEntries,
 	drainDuration,
 	activeConnections,
+	backfillRuns,
+	backfillDuration,
+	backfillSkipped,
 	startSpan: (name, attributes, parentContext) =>
 		tracer.startSpan(name, { attributes }, parentContext ?? context.active()),
 	now: () => performance.now(),
@@ -140,6 +165,96 @@ export function startReplicationDrain(
 		fail: (error, entryCount = 0) => finish("failed", entryCount, error),
 	};
 }
+
+export type BackfillTrigger = "initial" | "reconnect" | "periodic";
+export type BackfillSkipGuard = "running" | "cooldown";
+
+export interface BackfillSpan {
+	drift(table: SyncedTableName, localPushCount: number, remotePullRequestedCount: number): void;
+	complete(counts: {
+		localPushCount: number;
+		remotePullRequestedCount: number;
+		remotePullAppliedCount: number;
+		driftTableCount: number;
+	}): void;
+	fail(error: unknown): void;
+}
+
+const BACKFILL_TABLES = new Set<SyncedTableName>([
+	"users",
+	"hosts",
+	"cluster_config",
+	"threads",
+	"messages",
+	"turns",
+	"semantic_memory",
+	"memory_edges",
+	"tasks",
+	"files",
+	"advisories",
+	"skills",
+]);
+
+function boundedBackfillTable(table: SyncedTableName): string {
+	return BACKFILL_TABLES.has(table) ? table : "other";
+}
+
+export function startBackfill(trigger: BackfillTrigger): BackfillSpan {
+	const span = telemetry.startSpan("sync.backfill", { "backfill.trigger": trigger });
+	const startedAt = (telemetry.now ?? performance.now)();
+	const emittedDriftTables = new Set<string>();
+	let ended = false;
+	const finish = (
+		outcome: "completed" | "failed",
+		counts?: {
+			localPushCount: number;
+			remotePullRequestedCount: number;
+			remotePullAppliedCount: number;
+			driftTableCount: number;
+		},
+		error?: unknown,
+	): void => {
+		if (ended) return;
+		ended = true;
+		const attributes = { "backfill.trigger": trigger, "backfill.outcome": outcome };
+		span.setAttribute?.("backfill.outcome", outcome);
+		if (counts) {
+			span.setAttribute?.("backfill.local_push_count", counts.localPushCount);
+			span.setAttribute?.("backfill.remote_pull_requested_count", counts.remotePullRequestedCount);
+			span.setAttribute?.("backfill.remote_pull_applied_count", counts.remotePullAppliedCount);
+			span.setAttribute?.("backfill.drift_table_count", counts.driftTableCount);
+		}
+		if (error !== undefined) span.recordException(errorValue(error));
+		telemetry.backfillRuns?.add(1, attributes);
+		telemetry.backfillDuration?.record(
+			(telemetry.now ?? performance.now)() - startedAt,
+			attributes,
+		);
+		span.setStatus({
+			code: error === undefined ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+			...(error === undefined ? {} : { message: errorValue(error).message }),
+		});
+		span.end();
+	};
+	return {
+		drift(table, localPushCount, remotePullRequestedCount) {
+			const bounded = boundedBackfillTable(table);
+			if (emittedDriftTables.has(bounded)) return;
+			emittedDriftTables.add(bounded);
+			span.addEvent("sync.backfill.drift", {
+				table: bounded,
+				local_push_count: localPushCount,
+				remote_pull_requested_count: remotePullRequestedCount,
+			});
+		},
+		complete: (counts) => finish("completed", counts),
+		fail: (error) => finish("failed", undefined, error),
+	};
+}
+
+startBackfill.skip = (guard: BackfillSkipGuard, trigger: BackfillTrigger): void => {
+	telemetry.backfillSkipped?.add(1, { guard, trigger });
+};
 
 export type RelayOperationDirection = "send" | "receive" | "deliver";
 

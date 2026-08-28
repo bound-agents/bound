@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
+import { setSyncTelemetry } from "../telemetry.js";
 import { WsTransport } from "../ws-transport.js";
 
 function createTestSchema(db: Database): void {
@@ -141,6 +142,7 @@ describe("WsTransport.runBackfill", () => {
 	});
 
 	afterEach(() => {
+		setSyncTelemetry();
 		transport.stop();
 		db.close();
 	});
@@ -270,7 +272,7 @@ describe("WsTransport.runBackfill", () => {
 		// path, rather than throwing — otherwise callers log warn-level noise for an
 		// expected condition.
 		const second = await transport.runBackfill();
-		expect(second).toEqual({ backfilled: 0, tables: 0, pulled: 0 });
+		expect(second).toEqual({ backfilled: 0, tables: 0, requested: 0, pulled: 0 });
 
 		resolveFirst?.(new Map());
 		await first;
@@ -315,5 +317,77 @@ describe("WsTransport.runBackfill", () => {
 			.query("SELECT COUNT(*) AS c FROM change_log WHERE table_name = 'tasks'")
 			.get() as { c: number };
 		expect(taskEntries.c).toBe(0);
+	});
+	it("emits one outer backfill span for a successful remote pull", async () => {
+		const spans: Array<{ attributes: Record<string, string | number | boolean>; ends: number }> =
+			[];
+		setSyncTelemetry({
+			handshakes: { add() {} },
+			drains: { add() {} },
+			drainedEntries: { add() {} },
+			drainDuration: { record() {} },
+			activeConnections: { add() {} },
+			startSpan: (_name, attributes) => {
+				const span = { attributes, ends: 0 };
+				spans.push(span);
+				return {
+					addEvent() {},
+					recordException() {},
+					setAttribute: (name, value) => {
+						span.attributes[name] = value;
+					},
+					setStatus() {},
+					end: () => {
+						span.ends++;
+					},
+				};
+			},
+		});
+		mockHubPks(new Map([["semantic_memory", { count: 1, pks: ["remote-1"] }]]));
+		transport.requestRowPull = async () => 0;
+		await transport.runBackfill({ trigger: "initial" });
+		expect(spans).toHaveLength(1);
+		expect(spans[0].attributes).toMatchObject({
+			"backfill.trigger": "initial",
+			"backfill.outcome": "completed",
+			"backfill.remote_pull_requested_count": 1,
+			"backfill.remote_pull_applied_count": 0,
+		});
+		expect(spans[0].ends).toBe(1);
+	});
+
+	it("records a failed backfill and does not open spans for cooldown skips", async () => {
+		const spans: Array<{ exceptions: Error[]; ends: number }> = [];
+		setSyncTelemetry({
+			handshakes: { add() {} },
+			drains: { add() {} },
+			drainedEntries: { add() {} },
+			drainDuration: { record() {} },
+			activeConnections: { add() {} },
+			startSpan: () => {
+				const span = { exceptions: [] as Error[], ends: 0 };
+				spans.push(span);
+				return {
+					addEvent() {},
+					recordException: (error) => span.exceptions.push(error),
+					setStatus() {},
+					end: () => {
+						span.ends++;
+					},
+				};
+			},
+		});
+		transport.requestConsistency = async () => {
+			throw new Error("consistency failed");
+		};
+		await expect(transport.runBackfill({ trigger: "reconnect" })).rejects.toThrow(
+			"consistency failed",
+		);
+		expect(spans).toHaveLength(1);
+		expect(spans[0].exceptions[0]?.message).toBe("consistency failed");
+		transport.requestConsistency = async () => new Map();
+		await transport.runBackfill({ trigger: "periodic" });
+		await transport.runBackfill({ trigger: "periodic" });
+		expect(spans).toHaveLength(2);
 	});
 });
