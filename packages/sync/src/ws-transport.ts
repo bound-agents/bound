@@ -165,6 +165,23 @@ interface SnapshotState {
 	pendingIsLastBatch?: boolean;
 }
 
+interface ConsistencyObserver {
+	requestSent(details: {
+		resumeUsed: boolean;
+		resumeTableIndex: number;
+		resumeOffset: number;
+	}): void;
+	response(details: {
+		tableIndex: number;
+		nextOffset: number;
+		rowCount: number;
+		observedAt?: number;
+	}): void;
+	complete(reason: "all_done" | "table_count_match", observedAt?: number): void;
+	timeout(cursor: { tableIndex: number; offset: number }): void;
+	sendFailed(): void;
+}
+
 export class WsTransport {
 	private changelogCoalescer: MicrotaskCoalescer<ChangeLogEntry>;
 	private peerConnections: Map<string, PeerConnection> = new Map();
@@ -1984,14 +2001,17 @@ export class WsTransport {
 			data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
 			timer: Timer;
 			cursor: { tableIndex: number; offset: number };
+			observer?: ConsistencyObserver;
 		}
 	>();
 
 	requestConsistency(
 		tables: string[],
+		observer?: ConsistencyObserver,
 	): Promise<Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>> {
 		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
 		if (!hubPeer) {
+			observer?.sendFailed();
 			return Promise.reject(new Error("Not connected to hub"));
 		}
 
@@ -2017,8 +2037,14 @@ export class WsTransport {
 			hubPeer.symmetricKey,
 		);
 		if (!hubPeer.sendFrame(frame)) {
+			observer?.sendFailed();
 			return Promise.reject(new Error("Failed to send consistency request"));
 		}
+		observer?.requestSent({
+			resumeUsed: resume !== null,
+			resumeTableIndex,
+			resumeOffset,
+		});
 
 		this.config.logger?.debug("[consistency] Request sent", {
 			requestId,
@@ -2034,6 +2060,7 @@ export class WsTransport {
 						cursor: { ...req.cursor },
 						data: req.data,
 					};
+					req.observer?.timeout(this.consistencyResumeState.cursor);
 				}
 				this.pendingConsistencyRequests.delete(requestId);
 				reject(new Error("Consistency check timed out (5m)"));
@@ -2044,6 +2071,7 @@ export class WsTransport {
 				data: initialData,
 				timer,
 				cursor: { tableIndex: resumeTableIndex, offset: resumeOffset },
+				observer,
 			});
 		});
 	}
@@ -2065,12 +2093,16 @@ export class WsTransport {
 		if (!rid) return;
 		const req = this.pendingConsistencyRequests.get(rid);
 		if (!req) return;
-
 		// Track the cursor so that if this exchange times out, we can resume
 		// from where the hub left off rather than restarting from scratch.
 		if (typeof payload.next_table_index === "number" && typeof payload.next_offset === "number") {
 			req.cursor = { tableIndex: payload.next_table_index, offset: payload.next_offset };
 		}
+		req.observer?.response({
+			tableIndex: req.cursor.tableIndex,
+			nextOffset: req.cursor.offset,
+			rowCount: payload.pks.length,
+		});
 
 		const existing = req.data.get(payload.table);
 		if (existing) {
@@ -2088,13 +2120,13 @@ export class WsTransport {
 		}
 
 		if (payload.all_done) {
-			this.resolveConsistency(rid, "all_done flag");
+			this.resolveConsistency(rid, "all_done");
 			return;
 		}
 
 		const tc = payload.table_count;
 		if (!payload.has_more && typeof tc === "number" && tc > 0 && req.data.size >= tc) {
-			this.resolveConsistency(rid, "table_count match");
+			this.resolveConsistency(rid, "table_count_match");
 			return;
 		}
 	}
@@ -2110,13 +2142,15 @@ export class WsTransport {
 		clearTimeout(req.timer);
 		this.pendingConsistencyRequests.delete(requestId);
 		this.consistencyResumeState = null;
+		req.observer?.complete(reason === "all_done" ? "all_done" : "table_count_match");
 		req.resolve(req.data);
 	}
 
-	private async requestConsistencyWithTimeout(): Promise<
-		Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>
-	> {
-		return this.requestConsistency([]);
+	private async requestConsistencyWithTimeout(observer?: ConsistencyObserver): Promise<{
+		tables: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
+	}> {
+		const tables = await this.requestConsistency([], observer);
+		return { tables };
 	}
 
 	// ── Auto-backfill: push local-only rows as changelog entries ─────────
@@ -2183,7 +2217,9 @@ export class WsTransport {
 		this.backfillRunning = true;
 		const operation = startBackfill(trigger);
 		try {
-			const result = await this.executeBackfill(opts?.isFirstConnect, operation);
+			const result = await operation.run(() =>
+				this.executeBackfill(opts?.isFirstConnect, operation),
+			);
 			this.lastBackfillAt = Date.now();
 			operation.complete({
 				localPushCount: result.backfilled,
@@ -2204,7 +2240,103 @@ export class WsTransport {
 		isFirstConnect?: boolean,
 		operation?: BackfillSpan,
 	): Promise<{ backfilled: number; tables: number; pulled: number; requested: number }> {
-		const remoteTables = await this.requestConsistencyWithTimeout();
+		const consistency = operation?.consistency();
+		let frameCount = 0;
+		let tableCount = 0;
+		let completionReason: "all_done" | "table_count_match" | "timeout" | "send_failed" =
+			"send_failed";
+		let requestSentAt = 0;
+		let firstResponseAt: number | undefined;
+		let lastResponseAt: number | undefined;
+		let maxGapMs = 0;
+		let resumeUsed = false;
+		let resumeTableIndex = 0;
+		let resumeOffset = 0;
+		let lastTableIndex = 0;
+		let lastOffset = 0;
+		const now = () => performance.now();
+		const diagnostics: ConsistencyObserver = {
+			requestSent(details) {
+				requestSentAt = now();
+				resumeUsed = details.resumeUsed;
+				resumeTableIndex = details.resumeTableIndex;
+				resumeOffset = details.resumeOffset;
+				consistency?.addEvent("sync.consistency.request_sent", {
+					resume_used: resumeUsed,
+					resume_table_index: resumeTableIndex,
+					resume_offset: resumeOffset,
+				});
+			},
+			response(details) {
+				const observedAt = details.observedAt ?? now();
+				frameCount++;
+				tableCount = Math.max(tableCount, details.tableIndex + 1);
+				lastTableIndex = details.tableIndex;
+				lastOffset = details.nextOffset;
+				if (firstResponseAt === undefined) {
+					firstResponseAt = observedAt;
+					consistency?.addEvent("sync.consistency.first_response", {
+						delay_ms: observedAt - requestSentAt,
+					});
+				}
+				const gapMs = lastResponseAt === undefined ? 0 : observedAt - lastResponseAt;
+				maxGapMs = Math.max(maxGapMs, gapMs);
+				if (gapMs > 1_000) {
+					consistency?.addEvent("sync.consistency.response_gap", {
+						gap_ms: gapMs,
+						table_index: details.tableIndex,
+						offset: details.nextOffset,
+						row_count: details.rowCount,
+					});
+				}
+				lastResponseAt = observedAt;
+			},
+			complete(reason, observedAt = now()) {
+				completionReason = reason;
+				consistency?.addEvent("sync.consistency.complete", {
+					completion_reason: reason,
+					last_response_to_completion_ms: observedAt - (lastResponseAt ?? observedAt),
+				});
+			},
+			timeout(cursor) {
+				completionReason = "timeout";
+				lastTableIndex = cursor.tableIndex;
+				lastOffset = cursor.offset;
+			},
+			sendFailed() {
+				completionReason = "send_failed";
+			},
+		};
+		const attributes = () => ({
+			"consistency.completion_reason": completionReason,
+			"consistency.received_table_count": tableCount,
+			"consistency.received_page_count": frameCount,
+			"consistency.response_frame_count": frameCount,
+			"consistency.resume_used": resumeUsed,
+			"consistency.resume_table_index": resumeTableIndex,
+			"consistency.resume_offset": resumeOffset,
+			"consistency.first_response_delay_ms":
+				firstResponseAt === undefined ? -1 : firstResponseAt - requestSentAt,
+			"consistency.max_inter_frame_gap_ms": maxGapMs,
+			"consistency.last_response_to_completion_ms":
+				lastResponseAt === undefined ? -1 : now() - lastResponseAt,
+			"consistency.last_table_index": lastTableIndex,
+			"consistency.last_offset": lastOffset,
+		});
+		let consistencyResult: Awaited<ReturnType<WsTransport["requestConsistencyWithTimeout"]>>;
+		try {
+			consistencyResult = await this.requestConsistencyWithTimeout(diagnostics);
+			consistency?.complete({
+				...attributes(),
+				"consistency.received_table_count": consistencyResult.tables.size,
+			});
+		} catch (error) {
+			if (error instanceof Error && error.message.includes("timed out"))
+				completionReason = "timeout";
+			consistency?.fail(error, attributes());
+			throw error;
+		}
+		const remoteTables = consistencyResult.tables;
 
 		const allSyncedTables = WsTransport.SYNCED_TABLES;
 
@@ -2321,7 +2453,22 @@ export class WsTransport {
 				tables: remoteOnlyByTable.length,
 				rows: totalRemoteOnly,
 			});
-			pulled = await this.requestRowPull(remoteOnlyByTable);
+			const rowPull = operation?.rowPull();
+			let frameCount = 0;
+			try {
+				pulled = await this.requestRowPull(remoteOnlyByTable, () => frameCount++);
+				rowPull?.complete({
+					"row_pull.requested_count": requested,
+					"row_pull.response_frame_count": frameCount,
+					"row_pull.applied_count": pulled,
+				});
+			} catch (error) {
+				rowPull?.fail(error, {
+					"row_pull.requested_count": requested,
+					"row_pull.response_frame_count": frameCount,
+				});
+				throw error;
+			}
 		}
 
 		if (isFirstConnect) {
@@ -2568,10 +2715,14 @@ export class WsTransport {
 			timer: Timer;
 			rowsApplied: number;
 			frames: number;
+			onFrame?: () => void;
 		}
 	>();
 
-	requestRowPull(tables: Array<{ table: string; pks: string[] }>): Promise<number> {
+	requestRowPull(
+		tables: Array<{ table: string; pks: string[] }>,
+		onFrame?: () => void,
+	): Promise<number> {
 		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
 		if (!hubPeer) {
 			return Promise.reject(new Error("Not connected to hub"));
@@ -2607,6 +2758,7 @@ export class WsTransport {
 				timer,
 				rowsApplied: 0,
 				frames: 0,
+				onFrame,
 			});
 		});
 	}
@@ -2615,7 +2767,10 @@ export class WsTransport {
 		const req = payload.request_id
 			? this.pendingRowPullRequests.get(payload.request_id)
 			: undefined;
-		if (req) req.frames++;
+		if (req) {
+			req.frames++;
+			req.onFrame?.();
+		}
 		let applied = 0;
 		if (payload.rows.length > 0) {
 			applied = applySnapshotRows(

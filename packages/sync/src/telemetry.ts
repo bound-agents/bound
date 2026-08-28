@@ -69,7 +69,13 @@ export interface SyncTelemetry {
 	};
 	backfillSkipped?: CounterLike;
 	startSpan(
-		name: "ws.handshake" | "replication.drain" | "relay.operation" | "sync.backfill",
+		name:
+			| "ws.handshake"
+			| "replication.drain"
+			| "relay.operation"
+			| "sync.backfill"
+			| "sync.consistency"
+			| "sync.row-pull",
 		attributes: Record<string, string | number | boolean>,
 		parentContext?: import("@opentelemetry/api").Context,
 	): SpanLike & Partial<Pick<Span, "spanContext">>;
@@ -169,7 +175,16 @@ export function startReplicationDrain(
 export type BackfillTrigger = "initial" | "reconnect" | "periodic";
 export type BackfillSkipGuard = "running" | "cooldown";
 
+export interface BackfillChildSpan {
+	addEvent(name: string, attributes?: Record<string, string | number | boolean>): void;
+	complete(attributes: Record<string, string | number | boolean>): void;
+	fail(error: unknown, attributes?: Record<string, string | number | boolean>): void;
+}
+
 export interface BackfillSpan {
+	run<T>(fn: () => T): T;
+	consistency(): BackfillChildSpan;
+	rowPull(): BackfillChildSpan;
 	drift(table: SyncedTableName, localPushCount: number, remotePullRequestedCount: number): void;
 	complete(counts: {
 		localPushCount: number;
@@ -202,8 +217,35 @@ function boundedBackfillTable(table: SyncedTableName): string {
 export function startBackfill(trigger: BackfillTrigger): BackfillSpan {
 	const span = telemetry.startSpan("sync.backfill", { "backfill.trigger": trigger });
 	const startedAt = (telemetry.now ?? performance.now)();
+	const operationContext =
+		typeof span.spanContext === "function"
+			? trace.setSpan(context.active(), span as Span)
+			: context.active();
 	const emittedDriftTables = new Set<string>();
 	let ended = false;
+	const startChild = (name: "sync.consistency" | "sync.row-pull"): BackfillChildSpan => {
+		const child = telemetry.startSpan(name, {}, operationContext);
+		let childEnded = false;
+		const finish = (
+			attributes: Record<string, string | number | boolean>,
+			error?: unknown,
+		): void => {
+			if (childEnded) return;
+			childEnded = true;
+			for (const [key, value] of Object.entries(attributes)) child.setAttribute?.(key, value);
+			if (error !== undefined) child.recordException(errorValue(error));
+			child.setStatus({
+				code: error === undefined ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+				...(error === undefined ? {} : { message: errorValue(error).message }),
+			});
+			child.end();
+		};
+		return {
+			addEvent: (name, attributes) => child.addEvent(name, attributes),
+			complete: (attributes) => finish(attributes),
+			fail: (error, attributes = {}) => finish(attributes, error),
+		};
+	};
 	const finish = (
 		outcome: "completed" | "failed",
 		counts?: {
@@ -237,6 +279,9 @@ export function startBackfill(trigger: BackfillTrigger): BackfillSpan {
 		span.end();
 	};
 	return {
+		run: (fn) => context.with(operationContext, fn),
+		consistency: () => startChild("sync.consistency"),
+		rowPull: () => startChild("sync.row-pull"),
 		drift(table, localPushCount, remotePullRequestedCount) {
 			const bounded = boundedBackfillTable(table);
 			if (emittedDriftTables.has(bounded)) return;
