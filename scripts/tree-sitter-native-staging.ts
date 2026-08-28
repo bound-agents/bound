@@ -130,11 +130,25 @@ async function audit(path: string, arch: ReleaseArchitecture): Promise<string | 
 	}
 }
 
-async function rebuild(entry: NativePackageManifestEntry, destination: string): Promise<void> {
+export function nodeGypRebuildCommand(workspaceRoot: string, nodeDir: string): string[] {
+	return [
+		process.execPath,
+		join(workspaceRoot, "node_modules", "node-gyp", "bin", "node-gyp.js"),
+		"rebuild",
+		`--nodedir=${nodeDir}`,
+		"--node_shared=false",
+	];
+}
+
+async function rebuild(
+	entry: NativePackageManifestEntry,
+	destination: string,
+	workspaceRoot: string,
+): Promise<void> {
 	const nodeDir = process.env.NODE_GYP_NODEDIR;
 	if (!nodeDir) throw new Error("NODE_GYP_NODEDIR must name pinned official Node headers");
 	await rm(join(entry.packageRoot, "build"), { recursive: true, force: true });
-	const child = Bun.spawn(["node-gyp", "rebuild", `--nodedir=${nodeDir}`], {
+	const child = Bun.spawn(nodeGypRebuildCommand(workspaceRoot, nodeDir), {
 		cwd: entry.packageRoot,
 		env: { ...process.env, npm_config_nodedir: nodeDir, npm_config_node_shared: "false" },
 		stdout: "inherit",
@@ -164,7 +178,7 @@ export async function stageTreeSitterNativeAddons(options: {
 		let problem = await audit(entry.prebuildPath, options.arch);
 		if (problem) {
 			console.log(`${entry.packageName}: ${problem}; rebuilding ${entry.buildTargetName}`);
-			await rebuild(entry, entry.prebuildPath);
+			await rebuild(entry, entry.prebuildPath, options.workspaceRoot);
 			problem = await audit(entry.prebuildPath, options.arch);
 		}
 		if (problem)
