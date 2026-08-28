@@ -29,6 +29,7 @@ describe("release Docker native ABI contract", () => {
 		expect(releaseWorkflow).toContain("build-essential python3 make g++ curl ca-certificates");
 		expect(releaseWorkflow).not.toMatch(/apt-get install[^\n]*\bnode-gyp\b/);
 		expect(packageJson).toMatch(/"node-gyp": "11\.4\.0"/);
+		expect(packageJson).toMatch(/"abbrev": "3\.0\.1"/);
 		expect(nativeStaging).toContain('"node_modules", "node-gyp", "bin", "node-gyp.js"');
 		expect(nativeStaging).not.toContain('Bun.spawn(["node-gyp"');
 		expect(nativeStaging).toContain('"--node_shared=false"');
