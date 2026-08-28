@@ -3,6 +3,7 @@ import { SpanStatusCode, context, propagation, trace } from "@opentelemetry/api"
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
 	setSyncTelemetry,
+	startBackfill,
 	startRelayOperation,
 	startReplicationDrain,
 	startWsHandshake,
@@ -21,14 +22,27 @@ function harness() {
 		handshakes: [] as unknown[],
 		drains: [] as unknown[],
 		entries: [] as unknown[],
+		backfillRuns: [] as unknown[],
+		backfillSkipped: [] as unknown[],
 	};
 	const durations: Array<{ value: number; attributes?: Record<string, string> }> = [];
+	const backfillDurations: Array<{
+		value: number;
+		attributes?: Record<string, string | number | boolean>;
+	}> = [];
 	let now = 10;
 	setSyncTelemetry({
 		handshakes: { add: (value, attributes) => counters.handshakes.push({ value, attributes }) },
 		drains: { add: (value, attributes) => counters.drains.push({ value, attributes }) },
 		drainedEntries: { add: (value, attributes) => counters.entries.push({ value, attributes }) },
 		drainDuration: { record: (value, attributes) => durations.push({ value, attributes }) },
+		backfillRuns: { add: (value, attributes) => counters.backfillRuns.push({ value, attributes }) },
+		backfillSkipped: {
+			add: (value, attributes) => counters.backfillSkipped.push({ value, attributes }),
+		},
+		backfillDuration: {
+			record: (value, attributes) => backfillDurations.push({ value, attributes }),
+		},
 		startSpan(name, attributes, parentContext) {
 			const state = {
 				name,
@@ -57,6 +71,7 @@ function harness() {
 		spans,
 		counters,
 		durations,
+		backfillDurations,
 		advance: (ms: number) => {
 			now += ms;
 		},
@@ -360,5 +375,64 @@ describe("inbound relay trace carrier security", () => {
 				)
 				?.spanContext().spanId,
 		).toBe("b7ad6b7169203331");
+	});
+});
+
+describe("backfill telemetry operation lifetime", () => {
+	it("records successful pulls, bounded drift, metrics, and closes once", () => {
+		const h = harness();
+		const operation = startBackfill("initial");
+		operation.drift("semantic_memory", 2, 3);
+		operation.drift("semantic_memory", 9, 9);
+		h.advance(12);
+		operation.complete({
+			localPushCount: 2,
+			remotePullRequestedCount: 3,
+			remotePullAppliedCount: 3,
+			driftTableCount: 1,
+		});
+		operation.complete({
+			localPushCount: 2,
+			remotePullRequestedCount: 3,
+			remotePullAppliedCount: 3,
+			driftTableCount: 1,
+		});
+		expect(h.spans[0].name).toBe("sync.backfill");
+		expect(h.spans[0].attributes).toMatchObject({
+			"backfill.trigger": "initial",
+			"backfill.outcome": "completed",
+			"backfill.local_push_count": 2,
+			"backfill.remote_pull_requested_count": 3,
+			"backfill.remote_pull_applied_count": 3,
+			"backfill.drift_table_count": 1,
+		});
+		expect(h.spans[0].events).toEqual([
+			{
+				name: "sync.backfill.drift",
+				attributes: {
+					table: "semantic_memory",
+					local_push_count: 2,
+					remote_pull_requested_count: 3,
+				},
+			},
+		]);
+		expect(h.counters.backfillRuns).toEqual([
+			{ value: 1, attributes: { "backfill.trigger": "initial", "backfill.outcome": "completed" } },
+		]);
+		expect(h.backfillDurations).toEqual([
+			{ value: 12, attributes: { "backfill.trigger": "initial", "backfill.outcome": "completed" } },
+		]);
+		expect(h.spans[0].ends).toBe(1);
+	});
+
+	it("records failure and skipped guard without creating a span for the skip", () => {
+		const h = harness();
+		const operation = startBackfill("reconnect");
+		const failure = new Error("consistency failed");
+		operation.fail(failure);
+		expect(h.spans[0].exceptions).toEqual([failure]);
+		expect(h.spans[0].statuses.at(-1)?.code).toBe(SpanStatusCode.ERROR);
+		startBackfill.skip("cooldown", "periodic");
+		expect(h.spans).toHaveLength(1);
 	});
 });

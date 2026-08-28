@@ -41,7 +41,14 @@ import {
 	replayEvents,
 	validateTableName,
 } from "./reducers.js";
-import { recordActiveConnection, startRelayOperation, startReplicationDrain } from "./telemetry.js";
+import {
+	type BackfillSpan,
+	type BackfillTrigger,
+	recordActiveConnection,
+	startBackfill,
+	startRelayOperation,
+	startReplicationDrain,
+} from "./telemetry.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
 import type {
 	ChangelogAckPayload,
@@ -2151,30 +2158,43 @@ export class WsTransport {
 	private static readonly BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 	private backfillRunning = false;
 	private lastBackfillAt = 0;
-
 	async runBackfill(opts?: {
 		isFirstConnect?: boolean;
-	}): Promise<{ backfilled: number; tables: number; pulled: number }> {
+		trigger?: BackfillTrigger;
+	}): Promise<{ backfilled: number; tables: number; requested: number; pulled: number }> {
+		const trigger = opts?.trigger ?? (opts?.isFirstConnect ? "initial" : "periodic");
 		if (this.backfillRunning) {
 			// A concurrent backfill is normal on slow or unstable connections (#160):
 			// a periodic timer fire can overlap an in-flight on-connect backfill. Treat
 			// it like the cooldown path — a benign no-op — rather than throwing, so the
 			// callers don't log warn-level noise for an expected condition.
 			this.config.logger?.debug("[backfill] Skipping — already in progress");
-			return { backfilled: 0, tables: 0, pulled: 0 };
+			startBackfill.skip("running", trigger);
+			return { backfilled: 0, tables: 0, requested: 0, pulled: 0 };
 		}
 		const elapsed = Date.now() - this.lastBackfillAt;
 		if (this.lastBackfillAt > 0 && elapsed < WsTransport.BACKFILL_COOLDOWN_MS) {
 			this.config.logger?.debug("[backfill] Skipping — cooldown active", {
 				remainingMs: WsTransport.BACKFILL_COOLDOWN_MS - elapsed,
 			});
-			return { backfilled: 0, tables: 0, pulled: 0 };
+			startBackfill.skip("cooldown", trigger);
+			return { backfilled: 0, tables: 0, requested: 0, pulled: 0 };
 		}
 		this.backfillRunning = true;
+		const operation = startBackfill(trigger);
 		try {
-			const result = await this.executeBackfill(opts?.isFirstConnect);
+			const result = await this.executeBackfill(opts?.isFirstConnect, operation);
 			this.lastBackfillAt = Date.now();
+			operation.complete({
+				localPushCount: result.backfilled,
+				remotePullRequestedCount: result.requested,
+				remotePullAppliedCount: result.pulled,
+				driftTableCount: result.tables,
+			});
 			return result;
+		} catch (error) {
+			operation.fail(error);
+			throw error;
 		} finally {
 			this.backfillRunning = false;
 		}
@@ -2182,7 +2202,8 @@ export class WsTransport {
 
 	private async executeBackfill(
 		isFirstConnect?: boolean,
-	): Promise<{ backfilled: number; tables: number; pulled: number }> {
+		operation?: BackfillSpan,
+	): Promise<{ backfilled: number; tables: number; pulled: number; requested: number }> {
 		const remoteTables = await this.requestConsistencyWithTimeout();
 
 		const allSyncedTables = WsTransport.SYNCED_TABLES;
@@ -2237,9 +2258,12 @@ export class WsTransport {
 			if (pullPks.length > 0) {
 				remoteOnlyByTable.push({ table, pks: pullPks });
 			}
+			if (pushPks.length > 0 || pullPks.length > 0) {
+				tablesWithDrift++;
+				operation?.drift(table, pushPks.length, pullPks.length);
+			}
 
 			if (pushPks.length === 0) continue;
-			tablesWithDrift++;
 
 			this.config.logger?.info("[backfill] Table needs backfill", {
 				table,
@@ -2289,14 +2313,15 @@ export class WsTransport {
 		}
 
 		let pulled = 0;
+		let requested = 0;
 		if (remoteOnlyByTable.length > 0) {
 			const totalRemoteOnly = remoteOnlyByTable.reduce((sum, t) => sum + t.pks.length, 0);
+			requested = totalRemoteOnly;
 			this.config.logger?.info("[backfill] Pulling remote rows", {
 				tables: remoteOnlyByTable.length,
 				rows: totalRemoteOnly,
 			});
-			await this.requestRowPull(remoteOnlyByTable);
-			pulled = totalRemoteOnly;
+			pulled = await this.requestRowPull(remoteOnlyByTable);
 		}
 
 		if (isFirstConnect) {
@@ -2311,7 +2336,7 @@ export class WsTransport {
 			});
 		}
 
-		return { backfilled, tables: tablesWithDrift, pulled };
+		return { backfilled, tables: tablesWithDrift, pulled, requested };
 	}
 
 	// ── Hub-side: row pull ───────────────────────────────────────────────
@@ -2538,13 +2563,15 @@ export class WsTransport {
 	private pendingRowPullRequests = new Map<
 		string,
 		{
-			resolve: () => void;
+			resolve: (rowsApplied: number) => void;
 			reject: (err: Error) => void;
 			timer: Timer;
+			rowsApplied: number;
+			frames: number;
 		}
 	>();
 
-	requestRowPull(tables: Array<{ table: string; pks: string[] }>): Promise<void> {
+	requestRowPull(tables: Array<{ table: string; pks: string[] }>): Promise<number> {
 		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
 		if (!hubPeer) {
 			return Promise.reject(new Error("Not connected to hub"));
@@ -2574,23 +2601,30 @@ export class WsTransport {
 				this.pendingRowPullRequests.delete(requestId);
 				reject(new Error(`Row pull request timed out (${Math.round(timeoutMs / 1000)}s)`));
 			}, timeoutMs);
-			this.pendingRowPullRequests.set(requestId, { resolve, reject, timer });
+			this.pendingRowPullRequests.set(requestId, {
+				resolve,
+				reject,
+				timer,
+				rowsApplied: 0,
+				frames: 0,
+			});
 		});
 	}
 
-	private rowPullReceivedCount = 0;
-	private rowPullFrameCount = 0;
-
-	handleRowPullResponse(payload: RowPullResponsePayload): void {
-		this.rowPullFrameCount++;
+	handleRowPullResponse(payload: RowPullResponsePayload): number {
+		const req = payload.request_id
+			? this.pendingRowPullRequests.get(payload.request_id)
+			: undefined;
+		if (req) req.frames++;
+		let applied = 0;
 		if (payload.rows.length > 0) {
-			const applied = applySnapshotRows(
+			applied = applySnapshotRows(
 				this.config.db,
 				payload.table_name,
 				payload.rows,
 				this.config.logger,
 			);
-			this.rowPullReceivedCount += applied;
+			if (req) req.rowsApplied += applied;
 		}
 
 		if (payload.col_chunk_row_id && payload.col_chunk_column && payload.col_chunk_data != null) {
@@ -2605,23 +2639,16 @@ export class WsTransport {
 			);
 		}
 
-		if (payload.last) {
+		if (payload.last && req && payload.request_id) {
 			this.config.logger?.info("[row-pull] All responses received", {
-				frames: this.rowPullFrameCount,
-				rowsApplied: this.rowPullReceivedCount,
+				frames: req.frames,
+				rowsApplied: req.rowsApplied,
 			});
-			this.rowPullReceivedCount = 0;
-			this.rowPullFrameCount = 0;
-
-			const req = payload.request_id
-				? this.pendingRowPullRequests.get(payload.request_id)
-				: undefined;
-			if (req) {
-				clearTimeout(req.timer);
-				this.pendingRowPullRequests.delete(payload.request_id);
-				req.resolve();
-			}
+			clearTimeout(req.timer);
+			this.pendingRowPullRequests.delete(payload.request_id);
+			req.resolve(req.rowsApplied);
 		}
+		return applied;
 	}
 
 	sendRowPullAck(requestId: string): void {

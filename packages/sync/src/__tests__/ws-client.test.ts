@@ -550,6 +550,7 @@ describe("WsSyncClient", () => {
 
 		it("debounces reconnect backfill until the socket stays open", async () => {
 			let runs = 0;
+			let trigger: string | undefined;
 			const client = new WsSyncClient({
 				hubUrl: "http://localhost:3000",
 				privateKey: spokeKeypair.privateKey,
@@ -561,18 +562,22 @@ describe("WsSyncClient", () => {
 			clients.push(client);
 			const internal = client as unknown as {
 				ws: { readyState: number } | null;
-				scheduleReconnectBackfill(wt: { runBackfill(): Promise<void> }): void;
+				scheduleReconnectBackfill(wt: {
+					runBackfill(opts?: { trigger?: string }): Promise<void>;
+				}): void;
 			};
 			internal.ws = { readyState: WebSocket.OPEN };
 			(client as unknown as { connectionHealthy: boolean }).connectionHealthy = true;
 			internal.scheduleReconnectBackfill({
-				runBackfill: async () => {
+				runBackfill: async (opts) => {
+					trigger = opts?.trigger;
 					runs++;
 				},
 			});
 			expect(runs).toBe(0);
 			await new Promise((resolve) => setTimeout(resolve, 40));
 			expect(runs).toBe(1);
+			expect(trigger).toBe("reconnect");
 		});
 
 		it("cancels reconnect backfill when the socket drops again", async () => {
