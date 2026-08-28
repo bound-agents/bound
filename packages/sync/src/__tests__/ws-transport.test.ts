@@ -3,6 +3,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
 import { TraceFlags, context, propagation, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import {
+	BasicTracerProvider,
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
 import { setCoreTelemetry } from "../../../core/src/telemetry.js";
 import { getConfirmedSyncWatermark, getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
 import { setSyncTelemetry } from "../telemetry.js";
@@ -1626,5 +1631,63 @@ describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
 		// buffer would (pre-fix) re-emit, giving emits.length = 2.
 		expect(emits).toHaveLength(1);
 		expect(emits[0].id).toBe("already-delivered");
+	});
+});
+
+describe("relay delivery trace topology", () => {
+	it("creates a child span for an extracted delivery carrier", () => {
+		const exporter = new InMemorySpanExporter();
+		const provider = new BasicTracerProvider();
+		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+		provider.register({ contextManager: new AsyncLocalStorageContextManager() });
+		setSyncTelemetry({
+			handshakes: { add() {} },
+			drains: { add() {} },
+			drainedEntries: { add() {} },
+			drainDuration: { record() {} },
+			activeConnections: { add() {} },
+			startSpan: (name, attributes, parentContext) =>
+				trace.getTracer("bound.sync").startSpan(name, { attributes }, parentContext),
+		});
+
+		const deliveryDb = new Database(":memory:");
+		deliveryDb.run(`CREATE TABLE relay_inbox (
+			id TEXT PRIMARY KEY, source_site_id TEXT NOT NULL, kind TEXT NOT NULL, ref_id TEXT,
+			idempotency_key TEXT, stream_id TEXT, payload TEXT NOT NULL, expires_at TEXT NOT NULL,
+			received_at TEXT NOT NULL, processed INTEGER NOT NULL DEFAULT 0, trace_context TEXT
+		)`);
+		const deliveryTransport = new WsTransport({
+			db: deliveryDb,
+			siteId: "spoke",
+			eventBus: new TypedEventEmitter(),
+		});
+		try {
+			deliveryTransport.handleRelayDeliver("hub", {
+				entries: [
+					{
+						id: "traced-delivery",
+						source_site_id: "hub",
+						kind: "result",
+						ref_id: "request-1",
+						idempotency_key: null,
+						stream_id: null,
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						payload: { ok: true },
+						trace_context: JSON.stringify({
+							traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+						}),
+					},
+				],
+			});
+			const delivery = exporter
+				.getFinishedSpans()
+				.find((span: { name: string }) => span.name === "relay.operation");
+			expect(delivery?.parentSpanId).toBe("b7ad6b7169203331");
+		} finally {
+			deliveryTransport.stop();
+			deliveryDb.close();
+			provider.shutdown();
+			trace.disable();
+		}
 	});
 });

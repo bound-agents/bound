@@ -95,6 +95,44 @@ describe("relay trace topology", () => {
 		expect(responseCarrier).toEqual({ traceparent: `00-${remoteTraceId}-${remoteSpanId}-01` });
 	});
 
+	it("preserves the initiating carrier when asynchronous inference flushes a stream chunk", () => {
+		const carrier = JSON.stringify({
+			traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		});
+		const processor = new RelayProcessor(db, "target-site", new Map(), null, logger, eventBus());
+		const request: RelayInboxEntry = {
+			id: "inference-1",
+			source_site_id: "source-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: "stream-1",
+			payload: "{}",
+			expires_at: new Date(Date.now() + 60_000).toISOString(),
+			received_at: new Date().toISOString(),
+			processed: 0,
+			trace_context: carrier,
+		};
+
+		// Flushes run after the receipt callback's context may have exited. The
+		// durable request carrier, not ambient context, is the response authority.
+		(
+			processor as unknown as {
+				writeStreamChunk: (
+					request: RelayInboxEntry,
+					kind: "stream_chunk" | "stream_end",
+					streamId: string,
+					seq: number,
+					chunks: unknown[],
+				) => void;
+			}
+		).writeStreamChunk(request, "stream_chunk", "stream-1", 0, []);
+		const response = readUndelivered(db, "source-site").find(
+			(entry) => entry.kind === "stream_chunk",
+		);
+		expect(response?.trace_context).toBe(carrier);
+	});
+
 	it("does not create receive spans for passive mailbox rows", async () => {
 		insertInbox(db, {
 			id: "passive-1",

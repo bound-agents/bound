@@ -1367,7 +1367,7 @@ export class RelayProcessor {
 			payload: JSON.stringify(chunkPayload),
 			created_at: now.toISOString(),
 			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
-			trace_context: serializeRelayTraceCarrier(injectTraceContext()),
+			trace_context: serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)),
 		};
 		writeOutbox(this.db, outboxEntry);
 	}
@@ -2032,7 +2032,7 @@ export class RelayProcessor {
 						payload: JSON.stringify(collectedSpans),
 						created_at: now.toISOString(),
 						expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-						trace_context: serializeRelayTraceCarrier(injectTraceContext()),
+						trace_context: serializeRelayTraceCarrier(parseTraceCarrier(entry.trace_context)),
 					});
 				}
 			}
