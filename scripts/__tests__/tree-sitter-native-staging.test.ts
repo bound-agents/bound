@@ -6,6 +6,7 @@ import {
 	buildNativePackageManifest,
 	hasLibnodeDependency,
 	loaderPrebuildPath,
+	nodeGypRebuildCommand,
 	normalizeReleaseArchitecture,
 	readElfMachine,
 	treeSitterImports,
@@ -82,6 +83,21 @@ describe("Tree-sitter native release staging", () => {
 				);
 			}
 		}
+	});
+
+	it("uses only the repository-pinned node-gyp with official headers and static linking", () => {
+		const command = nodeGypRebuildCommand(root, "/opt/node-headers");
+		expect(command).toEqual([
+			process.execPath,
+			join(root, "node_modules/node-gyp/bin/node-gyp.js"),
+			"rebuild",
+			"--nodedir=/opt/node-headers",
+			"--node_shared=false",
+		]);
+		expect(command.join(" ")).not.toContain("/usr/bin/node-gyp");
+		expect(readFileSync(join(root, "scripts/tree-sitter-native-staging.ts"), "utf8")).not.toContain(
+			'Bun.spawn(["node-gyp"',
+		);
 	});
 
 	it("rejects native addons linked against libnode", () => {

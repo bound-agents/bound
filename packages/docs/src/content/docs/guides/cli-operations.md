@@ -293,10 +293,11 @@ Before `bun run build`, the native Linux runner derives the complete grammar man
 actual `bindings/node/index.js` loader: loaders with Bun's explicit branch are staged at their
 own `prebuilds/linux-x64` or `prebuilds/linux-arm64` filename, while node-gyp-build-only loaders
 are audited at the exact `build/Release/<target_name>.node` output derived from `binding.gyp`.
-Missing or wrong-architecture binaries are rebuilt from the shipped `binding.gyp` and audited
-again. The stage step prints the package, selected path, expected ELF machine, and the retained
-failure diagnostics. Release runners install Python 3, `node-gyp`, and a native C/C++ toolchain
-for this repair path.
+Missing, wrong-architecture, or `libnode.so`-linked binaries are rebuilt from the shipped
+`binding.gyp` and audited again. Rebuilds use the repository-pinned upstream `node-gyp` executable,
+verified official Node headers, and `node_shared=false`; the release runner installs Python 3 and a
+native C/C++ toolchain but deliberately does not install Ubuntu's `node-gyp` package. The stage step
+prints the package, selected path, expected ELF machine, and retained failure diagnostics.
 
 The runtime smoke keeps its container and ABI diagnostics on failure. It uses the compiled binary's
 embedded Bun CLI mode to execute a read-only probe against the staged package tree. The probe imports

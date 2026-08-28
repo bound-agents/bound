@@ -6,6 +6,8 @@ const root = join(import.meta.dir, "../..");
 const dockerfile = readFileSync(join(root, "Dockerfile"), "utf8");
 const releaseWorkflow = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
 const smokeScript = readFileSync(join(root, "scripts/docker-native-abi-smoke.sh"), "utf8");
+const packageJson = readFileSync(join(root, "package.json"), "utf8");
+const nativeStaging = readFileSync(join(root, "scripts/tree-sitter-native-staging.ts"), "utf8");
 const nativeProbe = readFileSync(join(root, "scripts/tree-sitter-native-probe.ts"), "utf8");
 
 describe("release Docker native ABI contract", () => {
@@ -24,7 +26,12 @@ describe("release Docker native ABI contract", () => {
 		expect(releaseWorkflow).toContain("runner: ubuntu-24.04");
 		expect(releaseWorkflow).toContain("runner: ubuntu-24.04-arm");
 		expect(releaseWorkflow).toContain("fail-fast: false");
-		expect(releaseWorkflow).toContain("build-essential python3 make g++ node-gyp");
+		expect(releaseWorkflow).toContain("build-essential python3 make g++ curl ca-certificates");
+		expect(releaseWorkflow).not.toMatch(/apt-get install[^\n]*\bnode-gyp\b/);
+		expect(packageJson).toMatch(/"node-gyp": "11\.4\.0"/);
+		expect(nativeStaging).toContain('"node_modules", "node-gyp", "bin", "node-gyp.js"');
+		expect(nativeStaging).not.toContain('Bun.spawn(["node-gyp"');
+		expect(nativeStaging).toContain('"--node_shared=false"');
 		expect(releaseWorkflow).toContain("NODE_VERSION=22.15.0");
 		expect(releaseWorkflow).toContain(
 			"NODE_HEADERS_SHA256=cda8bbbfb4f7fb19b65efd5faabc97ccea1e94422e7066b9a1e70280c1ca6453",
