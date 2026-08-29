@@ -160,7 +160,18 @@ export function injectTraceContext(): Record<string, string> | null {
 	if (!span) return null;
 	const carrier: Record<string, string> = {};
 	propagation.inject(context.active(), carrier);
-	if (!carrier.traceparent) return null;
+	if (carrier.traceparent) return carrier;
+
+	const spanContext = span.spanContext();
+	if (
+		!/^[0-9a-f]{32}$/.test(spanContext.traceId) ||
+		!/^[0-9a-f]{16}$/.test(spanContext.spanId) ||
+		/^0+$/.test(spanContext.traceId) ||
+		/^0+$/.test(spanContext.spanId)
+	)
+		return null;
+	const traceFlags = (spanContext.traceFlags & 0xff).toString(16).padStart(2, "0");
+	carrier.traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${traceFlags}`;
 	return carrier;
 }
 

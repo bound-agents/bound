@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { metrics, trace } from "@opentelemetry/api";
+import { context, metrics, propagation, trace } from "@opentelemetry/api";
 import {
 	InMemoryMetricExporter,
 	MeterProvider,
@@ -69,6 +69,20 @@ describe("shared telemetry bootstrap", () => {
 		trace.getTracer("test").startSpan("enabled").end();
 		await exporter.forceFlush();
 		expect(exporter.getFinishedSpans()).toHaveLength(1);
+	});
+
+	it("registers a W3C propagator during production bootstrap", () => {
+		// Reproduce process startup before telemetry has installed a propagator.
+		propagation.disable();
+		const exporter = new InMemorySpanExporter();
+		initTelemetry("test-service", { enabled: true, traceExporter: exporter });
+		const span = trace.getTracer("test").startSpan("active");
+		const carrier: Record<string, string> = {};
+		context.with(trace.setSpan(context.active(), span), () => {
+			propagation.inject(context.active(), carrier);
+		});
+		span.end();
+		expect(carrier.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
 	});
 
 	it("leaves traces and metrics as no-ops when disabled", () => {

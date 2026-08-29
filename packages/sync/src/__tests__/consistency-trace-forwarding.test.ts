@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter, setTraceExporter } from "@bound/shared";
-import { context, trace } from "@opentelemetry/api";
+import { context, propagation, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
 	BasicTracerProvider,
@@ -39,6 +39,9 @@ afterEach(() => {
 
 describe("consistency serve trace forwarding", () => {
 	it("re-exports the hub serve span once with the spoke consistency span as parent", async () => {
+		// Reproduce a process whose bootstrap has not installed a propagator. The
+		// request must use injectTraceContext's manual traceparent fallback.
+		propagation.disable();
 		const { exporter, provider } = configureSpokeTracing();
 		const hubDb = createDb();
 		hubDb.run(
@@ -67,12 +70,15 @@ describe("consistency serve trace forwarding", () => {
 				},
 				key,
 			);
+			let requestTraceContext: { traceparent: string; tracestate?: string } | undefined;
 			spoke.addPeer(
 				"hub",
 				(frame) => {
 					const decoded = decodeFrame(frame, key);
-					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_REQUEST)
+					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_REQUEST) {
+						requestTraceContext = decoded.value.payload.trace_context;
 						setTimeout(() => hub.handleConsistencyRequest("spoke", decoded.value.payload), 0);
+					}
 					return true;
 				},
 				key,
@@ -82,6 +88,9 @@ describe("consistency serve trace forwarding", () => {
 				spoke.requestConsistency(["semantic_memory"]),
 			);
 			parent.end();
+			expect(requestTraceContext?.traceparent).toBe(
+				`00-${parent.spanContext().traceId}-${parent.spanContext().spanId}-01`,
+			);
 			const serving = exporter
 				.getFinishedSpans()
 				.filter((span) => span.name === "sync.consistency.serve");
@@ -121,6 +130,131 @@ describe("consistency serve trace forwarding", () => {
 			hub.handleConsistencyRequest("spoke", { tables: ["semantic_memory"] });
 			await Bun.sleep(10);
 			expect(payloads[0]?.trace_data).toBeUndefined();
+		} finally {
+			hub.stop();
+			db.close();
+		}
+	});
+});
+
+describe("consistency continuation failures", () => {
+	it("forwards one traced ERROR frame when an asynchronous page continuation fails", async () => {
+		const { provider } = configureSpokeTracing();
+		const db = createDb();
+		const hub = new WsTransport({
+			db,
+			siteId: "hub",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+		const errors: Array<{ request_id?: string; trace_data?: string }> = [];
+		try {
+			hub.addPeer(
+				"spoke",
+				(frame) => {
+					const decoded = decodeFrame(frame, key);
+					if (decoded.ok && decoded.value.type === WsMessageType.ERROR)
+						errors.push(decoded.value.payload);
+					return true;
+				},
+				key,
+			);
+			const parent = trace.getTracer("test").startSpan("sync.consistency");
+			await context.with(trace.setSpan(context.active(), parent), () => {
+				hub.handleConsistencyRequest("spoke", {
+					tables: ["semantic_memory", "tasks"],
+					request_id: "request-1",
+					trace_context: {
+						traceparent: `00-${parent.spanContext().traceId}-${parent.spanContext().spanId}-01`,
+					},
+				});
+			});
+			parent.end();
+			await Bun.sleep(10);
+			expect(errors).toHaveLength(1);
+			expect(errors[0]?.request_id).toBe("request-1");
+			const spans = JSON.parse(errors[0]?.trace_data ?? "[]") as Array<{
+				name: string;
+				traceId: string;
+				parentSpanId?: string;
+			}>;
+			expect(spans).toEqual([
+				expect.objectContaining({
+					name: "sync.consistency.serve",
+					traceId: parent.spanContext().traceId,
+					parentSpanId: parent.spanContext().spanId,
+				}),
+			]);
+		} finally {
+			hub.stop();
+			db.close();
+			await provider.shutdown();
+		}
+	});
+
+	it("emits one terminal traced ERROR when synchronous and scheduled continuation failures overlap", async () => {
+		const db = createDb();
+		const hub = new WsTransport({
+			db,
+			siteId: "hub",
+			eventBus: new TypedEventEmitter(),
+			isHub: true,
+		});
+		const errors: Array<{ request_id?: string; trace_data?: string }> = [];
+		try {
+			hub.addPeer(
+				"spoke",
+				(frame) => {
+					const decoded = decodeFrame(frame, key);
+					if (decoded.ok && decoded.value.type === WsMessageType.ERROR)
+						errors.push(decoded.value.payload);
+					return true;
+				},
+				key,
+			);
+
+			const transport = hub as unknown as {
+				streamConsistencyPages: (...args: unknown[]) => void;
+			};
+			const originalStreamConsistencyPages = transport.streamConsistencyPages.bind(hub);
+			let streamCalls = 0;
+			transport.streamConsistencyPages = (...args) => {
+				streamCalls++;
+				if (streamCalls === 1) {
+					// Schedule the real continuation, then fail the request handler itself.
+					originalStreamConsistencyPages(...args);
+					throw new Error("synchronous handler failure");
+				}
+				// The real setTimeout callback below invokes this second call and reaches
+				// streamConsistencyPages' asynchronous continuation catch.
+				throw new Error("scheduled continuation failure");
+			};
+
+			expect(() =>
+				hub.handleConsistencyRequest("spoke", {
+					tables: ["semantic_memory", "tasks"],
+					request_id: "request-1",
+					trace_context: {
+						traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+					},
+				}),
+			).toThrow("synchronous handler failure");
+			await Bun.sleep(10);
+
+			expect(streamCalls).toBe(2);
+			expect(errors).toHaveLength(1);
+			expect(errors[0]?.request_id).toBe("request-1");
+			const spans = JSON.parse(errors[0]?.trace_data ?? "[]") as Array<{
+				name: string;
+				attributes: Record<string, unknown>;
+				events: Array<{ name: string }>;
+			}>;
+			expect(spans).toHaveLength(1);
+			expect(spans[0]?.name).toBe("sync.consistency.serve");
+			expect(spans[0]?.attributes["consistency.serve.terminal"]).toBe("error");
+			expect(
+				spans[0]?.events.filter((event) => event.name === "sync.consistency.serve.error"),
+			).toHaveLength(1);
 		} finally {
 			hub.stop();
 			db.close();

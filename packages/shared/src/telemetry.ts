@@ -1,5 +1,6 @@
-import { context, metrics, trace } from "@opentelemetry/api";
+import { context, metrics, propagation, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { Resource } from "@opentelemetry/resources";
@@ -105,6 +106,7 @@ export function initTelemetry(
 		ownsMetrics = metrics.setGlobalMeterProvider(nextMeterProvider);
 		nextContextManager.enable();
 		ownsContext = context.setGlobalContextManager(nextContextManager);
+		propagation.setGlobalPropagator(new W3CTraceContextPropagator());
 		ownsTrace = trace.setGlobalTracerProvider(nextProvider);
 	} catch (error) {
 		void Promise.allSettled([nextProvider.shutdown(), nextMeterProvider.shutdown()]);

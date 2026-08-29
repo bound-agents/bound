@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { context, trace } from "@opentelemetry/api";
+import { context, propagation, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { SITE_ID_ATTR } from "../site-id-span-processor";
 import {
 	createScopedTraceCollector,
@@ -138,12 +139,60 @@ describe("trace-collector", () => {
 			expect(result).toBeNull();
 		});
 
-		it("would inject traceparent if global span was active", async () => {
-			// This test documents the expected behavior if trace.getActiveSpan() returned a span.
-			// In production, this happens when global telemetry is initialized.
-			// The function signature is correct; it's just not testable without global setup.
-			const carrier = injectTraceContext();
-			expect(carrier).toBeNull(); // Currently no global span
+		it.each([
+			{ traceId: "bad", spanId: "b7ad6b7169203331", traceFlags: 1 },
+			{ traceId: "00000000000000000000000000000000", spanId: "b7ad6b7169203331", traceFlags: 1 },
+			{ traceId: "0af7651916cd43dd8448eb211c80319c", spanId: "0000000000000000", traceFlags: 1 },
+		])("returns null rather than emitting an invalid fallback carrier", (spanContext) => {
+			const manager = new AsyncLocalStorageContextManager().enable();
+			context.setGlobalContextManager(manager);
+			let carrier: Record<string, string> | null = null;
+			context.with(trace.setSpanContext(context.active(), spanContext), () => {
+				carrier = injectTraceContext();
+			});
+			expect(carrier).toBeNull();
+			context.disable();
+			manager.disable();
+		});
+
+		it("preserves a traceparent emitted by propagation instead of using the fallback", () => {
+			const collector = createScopedTraceCollector();
+			const manager = new AsyncLocalStorageContextManager().enable();
+			context.setGlobalContextManager(manager);
+			const span = collector.getTracer("test.tracer").startSpan("active");
+			propagation.disable();
+			propagation.setGlobalPropagator({
+				inject: (_context, carrier) => {
+					carrier.traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+				},
+				extract: (activeContext) => activeContext,
+				fields: () => ["traceparent"],
+			});
+			let carrier: Record<string, string> | null = null;
+			context.with(trace.setSpan(context.active(), span), () => {
+				carrier = injectTraceContext();
+			});
+			expect(carrier?.traceparent).toBe("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+			span.end();
+			propagation.disable();
+			context.disable();
+			manager.disable();
+		});
+
+		it("falls back to a manually formatted traceparent without a global propagator", async () => {
+			const collector = createScopedTraceCollector();
+			const manager = new AsyncLocalStorageContextManager().enable();
+			context.setGlobalContextManager(manager);
+			const span = collector.getTracer("test.tracer").startSpan("active");
+			let carrier: Record<string, string> | null = null;
+			await context.with(trace.setSpan(context.active(), span), () => {
+				carrier = injectTraceContext();
+			});
+			span.end();
+			expect(carrier?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+			context.disable();
+			manager.disable();
+			await collector.flush();
 		});
 	});
 
