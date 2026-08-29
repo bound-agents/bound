@@ -168,6 +168,8 @@ export type ConsistencyResponsePayload = {
 	table_count: number;
 	all_done: boolean;
 	request_id?: string;
+	/** Serialized hub-side serving spans, present only on the terminal frame. */
+	trace_data?: string;
 };
 
 export type RowPullRequestPayload = {
@@ -193,7 +195,10 @@ export type RowPullAckPayload = {
 
 export type ErrorPayload = {
 	code: string;
+	request_id?: string;
 	message: string;
+	/** Serialized terminal spans for a failed request, if tracing was requested. */
+	trace_data?: string;
 };
 
 // Discriminated union for all frame types

@@ -385,6 +385,8 @@ const MAX_CONSISTENCY_SERVING_EVENT_OCCURRENCES = 3;
 
 export interface ConsistencyServingSpan {
 	requestReceived(): void;
+	/** Present only for request-scoped collectors after this span has ended. */
+	getTraceData?(): string | undefined;
 	page(details: {
 		queryMs: number;
 		encodeMs: number;
@@ -398,13 +400,21 @@ export interface ConsistencyServingSpan {
 	fail(error: unknown): void;
 }
 
-export function startConsistencyServing(carrier?: unknown): ConsistencyServingSpan {
+export function startConsistencyServing(
+	carrier?: unknown,
+	startSpan?: (
+		name: "sync.consistency.serve",
+		attributes: Record<string, string | number | boolean>,
+		parentContext: Context,
+	) => SpanLike & Partial<Pick<Span, "spanContext">>,
+	onEnd?: () => string | undefined,
+): ConsistencyServingSpan {
 	const activeContext = context.active();
 	const validated = validateConsistencyTraceCarrier(carrier);
 	const parentContext: Context = validated
 		? extractRelayTraceContext(activeContext, validated)
 		: activeContext;
-	const span = telemetry.startSpan(
+	const span = (startSpan ?? telemetry.startSpan)(
 		"sync.consistency.serve",
 		{
 			"consistency.serve.carrier_state": validated
@@ -426,6 +436,7 @@ export function startConsistencyServing(carrier?: unknown): ConsistencyServingSp
 	let firstPage = true;
 	let pressureStartedAt: number | undefined;
 	let ended = false;
+	let traceData: string | undefined;
 	const eventOccurrences = new Map<string, number>();
 	const addBoundedEvent = (
 		name: string,
@@ -456,10 +467,12 @@ export function startConsistencyServing(carrier?: unknown): ConsistencyServingSp
 			...(error === undefined ? {} : { message: errorValue(error).message }),
 		});
 		span.end();
+		traceData = onEnd?.();
 	};
 	const now = () => (telemetry.now ?? performance.now)();
 	const tableIndexes = new Set<number>();
 	return {
+		getTraceData: () => traceData,
 		requestReceived: () => span.addEvent("sync.consistency.serve.request_received"),
 		page(details) {
 			pageCount++;

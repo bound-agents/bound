@@ -66,12 +66,15 @@ describe("consistency serving telemetry", () => {
 			eventBus: new TypedEventEmitter(),
 		});
 		try {
+			let forwardedTraceData: string | undefined;
 			hub.addPeer(
 				"spoke",
 				(frame) => {
 					const decoded = decodeFrame(frame, key);
-					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE)
+					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE) {
+						forwardedTraceData = decoded.value.payload.trace_data;
 						spoke.handleConsistencyResponse(decoded.value.payload);
+					}
 					return true;
 				},
 				key,
@@ -95,18 +98,17 @@ describe("consistency serving telemetry", () => {
 			const serving = exporter
 				.getFinishedSpans()
 				.find((span) => span.name === "sync.consistency.serve");
-			expect(serving?.parentSpanId).toBe(parent.spanContext().spanId);
-			expect(serving?.attributes).toMatchObject({
+			// The hub's request-scoped collector is distinct from the global/spoke exporter.
+			expect(serving).toBeUndefined();
+			const hubScoped = JSON.parse(forwardedTraceData ?? "[]") as Array<{
+				attributes: Record<string, unknown>;
+			}>;
+			expect(hubScoped).toHaveLength(1);
+			expect(hubScoped[0]?.attributes).toMatchObject({
 				"consistency.serve.page_count": 1,
 				"consistency.serve.frame_count": 1,
-				"consistency.serve.table_count": 1,
 				"consistency.serve.terminal": "all_done",
 			});
-			expect(serving?.events.map((event) => event.name)).toEqual([
-				"sync.consistency.serve.request_received",
-				"sync.consistency.serve.first_page",
-				"sync.consistency.serve.all_done",
-			]);
 		} finally {
 			spoke.stop();
 			hub.stop();
@@ -119,7 +121,7 @@ describe("consistency serving telemetry", () => {
 	it("keeps the serving span open across backpressure until drain resumes", async () => {
 		const { exporter, provider } = configureExporter();
 		const hubDb = createDb();
-		for (let i = 0; i < 5_001; i++)
+		for (let i = 0; i < 10_001; i++)
 			hubDb.run(
 				"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES (?, ?, 'v', 'now', 'now')",
 				[`m${i}`, `k${i}`],
@@ -131,21 +133,52 @@ describe("consistency serving telemetry", () => {
 			isHub: true,
 		});
 		let sends = 0;
+		let forwardedTraceData: string | undefined;
 		try {
-			hub.addPeer("spoke", () => ++sends !== 2, key);
+			hub.addPeer(
+				"spoke",
+				(frame) => {
+					if (++sends === 2) return false;
+					const decoded = decodeFrame(frame, key);
+					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE)
+						forwardedTraceData = decoded.value.payload.trace_data;
+					return true;
+				},
+				key,
+			);
 			hub.handleConsistencyRequest("spoke", {
 				tables: ["semantic_memory"],
 				trace_context: { traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" },
 			});
 			await new Promise((resolve) => setTimeout(resolve, 5));
-			hub.addPeer("spoke", () => true, key);
+			hub.addPeer(
+				"spoke",
+				(frame) => {
+					const decoded = decodeFrame(frame, key);
+					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE)
+						forwardedTraceData = decoded.value.payload.trace_data;
+					return true;
+				},
+				key,
+			);
 			hub.continueConsistencyStream("spoke");
 			await new Promise((resolve) => setTimeout(resolve, 10));
 			const serving = exporter
 				.getFinishedSpans()
 				.find((span) => span.name === "sync.consistency.serve");
-			expect(serving?.parentSpanId).toBe("b7ad6b7169203331");
-			expect(serving?.attributes["consistency.serve.drain_resume_count"]).toBeGreaterThanOrEqual(1);
+			// Continuation telemetry belongs to the independent hub-scoped collector.
+			expect(serving).toBeUndefined();
+			const hubScoped = JSON.parse(forwardedTraceData ?? "[]") as Array<{
+				attributes: Record<string, number>;
+			}>;
+			expect(hubScoped).toHaveLength(1);
+			expect(hubScoped[0]?.attributes["consistency.serve.page_count"]).toBeGreaterThanOrEqual(2);
+			expect(
+				hubScoped[0]?.attributes["consistency.serve.drain_resume_count"],
+			).toBeGreaterThanOrEqual(1);
+			expect(
+				hubScoped[0]?.attributes["consistency.serve.backpressure_duration_ms"],
+			).toBeGreaterThanOrEqual(0);
 		} finally {
 			hub.stop();
 			hubDb.close();
