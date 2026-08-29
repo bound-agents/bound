@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { ContextDebugInfo } from "@bound/shared";
 import { applyMetricsSchema, recordContextDebug, recordTurn } from "../metrics-schema";
 
-describe("metrics-schema — AC4.6 cache token persistence", () => {
+describe("metrics-schema â AC4.6 cache token persistence", () => {
 	let dbPath: string;
 	let db: Database;
 
@@ -37,6 +37,12 @@ describe("metrics-schema — AC4.6 cache token persistence", () => {
 
 		expect(columnNames).toContain("tokens_cache_write");
 		expect(columnNames).toContain("tokens_cache_read");
+		const indexes = db
+			.query(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_turns_consistency'",
+			)
+			.all() as Array<{ name: string }>;
+		expect(indexes).toHaveLength(1);
 	});
 
 	it("should persist cache token values from recordTurn()", () => {
@@ -99,10 +105,16 @@ describe("metrics-schema — AC4.6 cache token persistence", () => {
 
 		expect(columnNames).toContain("tokens_cache_write");
 		expect(columnNames).toContain("tokens_cache_read");
+		const indexes = db
+			.query(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_turns_consistency'",
+			)
+			.all() as Array<{ name: string }>;
+		expect(indexes).toHaveLength(1);
 	});
 });
 
-describe("metrics-schema — AC3 context debug persistence", () => {
+describe("metrics-schema â AC3 context debug persistence", () => {
 	let dbPath: string;
 	let db: Database;
 
@@ -198,7 +210,7 @@ describe("metrics-schema — AC3 context debug persistence", () => {
 	});
 });
 
-describe("metrics-schema — turns created_at index (daily-budget scan)", () => {
+describe("metrics-schema â turns created_at index (daily-budget scan)", () => {
 	let dbPath: string;
 	let db: Database;
 

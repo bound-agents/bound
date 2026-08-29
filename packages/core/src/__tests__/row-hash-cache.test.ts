@@ -5,7 +5,7 @@ import { SYNCED_TABLE_NAMES } from "../change-log.js";
 import { applyMetricsSchema } from "../metrics-schema.js";
 import { computeRowStateHash } from "../row-hash-cache.js";
 import { getCachedRowStateHashes } from "../row-hash-cache.js";
-import { applySchema } from "../schema.js";
+import { applySchema, installRowHashInvalidationTriggers } from "../schema.js";
 
 describe("row state hash cache", () => {
 	test("computes canonical hashes for cache misses and reuses warm entries", () => {
@@ -64,6 +64,56 @@ describe("row state hash cache", () => {
 		expect(computeRowStateHash(row)).toBe(
 			"c05b700393e9d797b038c7c7db40389f395aa51b5d0996c86981493a4fbf87cd",
 		);
+	});
+
+	test("uses a UTF-8 byte range scan for non-ASCII cache keys", () => {
+		const db = new Database(":memory:");
+		applySchema(db);
+		const ids = ["a", "x\u{10000}b", "x\uFF61a"];
+		for (const id of ids)
+			db.run(
+				"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES (?, ?, ?, 'now', 'now')",
+				[id, id, id],
+			);
+		getCachedRowStateHashes(db, "semantic_memory", ids);
+
+		const result = getCachedRowStateHashes(db, "semantic_memory", ids);
+
+		expect(result.cacheHitCount).toBe(3);
+		expect(result.cacheMissCount).toBe(0);
+		for (const id of ids)
+			expect(result.hashes.get(id)).toBe(
+				computeRowStateHash(
+					db.query("SELECT * FROM semantic_memory WHERE id = ?").get(id) as Record<string, unknown>,
+				),
+			);
+		db.close();
+	});
+
+	test("starts using a cache table created after an initial uncached lookup", () => {
+		const db = new Database(":memory:");
+		applySchema(db);
+		db.run(
+			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'key', 'value', 'now', 'now')",
+		);
+		db.run("DROP TABLE row_state_hashes");
+
+		const uncached = getCachedRowStateHashes(db, "semantic_memory", ["m1"]);
+		expect(uncached.cacheMissCount).toBe(1);
+		expect(uncached.cacheHitCount).toBe(0);
+
+		installRowHashInvalidationTriggers(db);
+		const cached = getCachedRowStateHashes(db, "semantic_memory", ["m1"]);
+		expect(cached.cacheMissCount).toBe(1);
+		expect(
+			db
+				.query(
+					"SELECT state_hash FROM row_state_hashes WHERE table_name = 'semantic_memory' AND pk = 'm1'",
+				)
+				.get(),
+		).not.toBeNull();
+		expect(getCachedRowStateHashes(db, "semantic_memory", ["m1"]).cacheHitCount).toBe(1);
+		db.close();
 	});
 
 	test("triggers invalidate cached rows after a raw synced-table update", () => {

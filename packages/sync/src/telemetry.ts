@@ -444,6 +444,8 @@ export function startConsistencyServing(
 	let hashMs = 0;
 	let encodeMs = 0;
 	let sendMs = 0;
+	let cacheHitCount = 0;
+	let cacheMissCount = 0;
 	let backpressureMs = 0;
 	let drainResumeCount = 0;
 	let firstPage = true;
@@ -473,6 +475,8 @@ export function startConsistencyServing(
 		span.setAttribute?.("consistency.serve.hash_duration_ms", hashMs);
 		span.setAttribute?.("consistency.serve.encode_duration_ms", encodeMs);
 		span.setAttribute?.("consistency.serve.send_duration_ms", sendMs);
+		span.setAttribute?.("consistency.serve.cache_hit_count", cacheHitCount);
+		span.setAttribute?.("consistency.serve.cache_miss_count", cacheMissCount);
 		span.setAttribute?.("consistency.serve.backpressure_duration_ms", backpressureMs);
 		span.setAttribute?.("consistency.serve.drain_resume_count", drainResumeCount);
 		span.setAttribute?.("consistency.serve.terminal", terminal);
@@ -520,10 +524,8 @@ export function startConsistencyServing(
 			if (details.sendMs > 1_000)
 				addBoundedEvent("sync.consistency.serve.slow_send", { duration_ms: details.sendMs });
 			span.setAttribute?.("consistency.serve.table_count", tableIndexes.size);
-			if (details.cacheHitCount !== undefined)
-				span.setAttribute?.("consistency.serve.cache_hit_count", details.cacheHitCount);
-			if (details.cacheMissCount !== undefined)
-				span.setAttribute?.("consistency.serve.cache_miss_count", details.cacheMissCount);
+			cacheHitCount += details.cacheHitCount ?? 0;
+			cacheMissCount += details.cacheMissCount ?? 0;
 		},
 		backpressured() {
 			if (pressureStartedAt === undefined) {

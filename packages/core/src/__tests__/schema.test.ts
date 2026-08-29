@@ -90,6 +90,16 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_threads_user");
 		expect(indexNames).toContain("idx_messages_thread");
 		expect(indexNames).toContain("idx_messages_live_thread_created");
+		expect(indexNames).toContain("idx_messages_consistency");
+		expect(indexNames).toContain("idx_semantic_memory_consistency");
+		const consistencyPlan = db
+			.query(
+				"EXPLAIN QUERY PLAN SELECT id, modified_at FROM messages WHERE role != 'system' AND id > ? ORDER BY id ASC LIMIT ?",
+			)
+			.all("", 100) as Array<{ detail: string }>;
+		expect(consistencyPlan.map((row) => row.detail).join(" ")).toContain(
+			"COVERING INDEX idx_messages_consistency",
+		);
 		expect(indexNames).toContain("idx_relay_inbox_ref_unprocessed_received");
 
 		const messagePlan = db
@@ -115,7 +125,7 @@ describe("Database Schema", () => {
 		expect(indexNames).toContain("idx_edges_triple");
 		expect(indexNames).toContain("idx_edges_source");
 		expect(indexNames).toContain("idx_edges_target");
-		// idx_changelog_seq removed in HLC migration — hlc is TEXT PRIMARY KEY
+		// idx_changelog_seq removed in HLC migration â hlc is TEXT PRIMARY KEY
 		expect(indexNames).toContain("idx_memory_modified");
 		expect(indexNames).toContain("idx_tasks_last_run");
 		expect(indexNames).toContain("idx_memory_detail_recency");
@@ -189,7 +199,7 @@ describe("Database Schema", () => {
 			)
 			.all() as Array<{ key: string; last_accessed_at: string | null }>;
 
-		// Should have ~480 detail rows (1200 * 0.4 ≈ 480, minus 1 deleted)
+		// Should have ~480 detail rows (1200 * 0.4 â 480, minus 1 deleted)
 		expect(results.length).toBeGreaterThan(400);
 		expect(results.length).toBeLessThan(500);
 		// Verify they are sorted by last_accessed_at descending
@@ -599,7 +609,7 @@ describe("platform-connectors Phase 1 migrations", () => {
 	it("AC1.5: threads table accepts non-web-non-discord interface values", () => {
 		const db = createDatabase(":memory:");
 		applySchema(db);
-		// Insert a thread with interface = "telegram" — should not throw
+		// Insert a thread with interface = "telegram" â should not throw
 		expect(() => {
 			db.run(
 				`INSERT INTO threads (id, user_id, interface, host_origin, color, created_at, last_message_at, modified_at, deleted)

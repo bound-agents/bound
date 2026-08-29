@@ -7,6 +7,37 @@ const HASH_EXCLUDED_COLUMNS = new Set(["modified_at"]);
 const IN_BATCH_SIZE = 500;
 const logger = createLogger("core", "row-hash-cache");
 let warnedMissingCacheTable = false;
+const cacheTableExists = new WeakMap<Database, boolean>();
+
+function compareUtf8Bytes(left: Uint8Array, right: Uint8Array): number {
+	const length = Math.min(left.length, right.length);
+	for (let index = 0; index < length; index++) {
+		const difference = (left[index] ?? 0) - (right[index] ?? 0);
+		if (difference !== 0) return difference;
+	}
+	return left.length - right.length;
+}
+
+function utf8Range(pks: readonly string[]): [string, string] {
+	const encoder = new TextEncoder();
+	let first = pks[0];
+	let last = pks[0];
+	if (first === undefined || last === undefined) throw new Error("non-empty PK list expected");
+	let firstBytes = encoder.encode(first);
+	let lastBytes = firstBytes;
+	for (const pk of pks.slice(1)) {
+		const bytes = encoder.encode(pk);
+		if (compareUtf8Bytes(bytes, firstBytes) < 0) {
+			first = pk;
+			firstBytes = bytes;
+		}
+		if (compareUtf8Bytes(bytes, lastBytes) > 0) {
+			last = pk;
+			lastBytes = bytes;
+		}
+	}
+	return [first, last];
+}
 
 function canonicalSerialize(row: Record<string, unknown>): string {
 	const keys = Object.keys(row)
@@ -48,9 +79,14 @@ export function getCachedRowStateHashes(
 	const uniquePks = [...new Set(pks)];
 	const hashes = new Map<string, string>();
 	const missing: string[] = [];
-	const cacheExists = db
-		.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'row_state_hashes'")
-		.get();
+	let cacheExists = cacheTableExists.get(db) === true;
+	if (!cacheExists) {
+		cacheExists =
+			db
+				.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'row_state_hashes'")
+				.get() !== null;
+		if (cacheExists) cacheTableExists.set(db, true);
+	}
 	if (!cacheExists) {
 		if (!warnedMissingCacheTable) {
 			warnedMissingCacheTable = true;
@@ -71,16 +107,14 @@ export function getCachedRowStateHashes(
 		return { hashes, cacheHitCount: 0, cacheMissCount: uniquePks.length };
 	}
 	const resolve = db.transaction(() => {
-		for (let start = 0; start < uniquePks.length; start += IN_BATCH_SIZE) {
-			const batch = uniquePks.slice(start, start + IN_BATCH_SIZE);
-			const placeholders = batch.map(() => "?").join(", ");
-			const cached = db
-				.query(
-					`SELECT pk, state_hash FROM row_state_hashes WHERE table_name = ? AND pk IN (${placeholders})`,
-				)
-				.all(table, ...batch) as Array<{ pk: string; state_hash: string }>;
-			for (const row of cached) hashes.set(row.pk, row.state_hash);
-		}
+		const requested = new Set(uniquePks);
+		const [firstPk, lastPk] = utf8Range(uniquePks);
+		const cached = db
+			.query(
+				"SELECT pk, state_hash FROM row_state_hashes WHERE table_name = ? AND pk >= ? AND pk <= ? ORDER BY pk ASC",
+			)
+			.all(table, firstPk, lastPk) as Array<{ pk: string; state_hash: string }>;
+		for (const row of cached) if (requested.has(row.pk)) hashes.set(row.pk, row.state_hash);
 		for (const pk of uniquePks) if (!hashes.has(pk)) missing.push(pk);
 		const pkColumn = getPkColumn(table);
 		validateColumnName(pkColumn);

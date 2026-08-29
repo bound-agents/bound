@@ -14,7 +14,7 @@ function migrateChangeLogToHlc(db: Database): void {
 		name: string;
 		type: string;
 	}>;
-	if (cols.length === 0) return; // Table doesn't exist yet — fresh install
+	if (cols.length === 0) return; // Table doesn't exist yet â fresh install
 	const hasSeq = cols.some((c) => c.name === "seq");
 	const hasHlc = cols.some((c) => c.name === "hlc");
 	if (!hasSeq || hasHlc) return; // Already migrated or fresh install
@@ -152,7 +152,7 @@ function migrateSyncStateToHlc(db: Database): void {
  * `CREATE TABLE IF NOT EXISTS` is a no-op on an existing database, so a column
  * declared inline in the CREATE never materializes on an upgrade path. Any index
  * or trigger created later in `applySchema` that references such a column then
- * fails with "no such column" — on existing installs only, while fresh installs
+ * fails with "no such column" â on existing installs only, while fresh installs
  * stay green. #201 hit exactly that: `agent_id` was declared inline on
  * semantic_memory / memory_edges / threads and the composite unique indexes
  * referencing it are created immediately after the CREATE, ~500 lines before the
@@ -163,7 +163,7 @@ function migrateSyncStateToHlc(db: Database): void {
  */
 function ensureColumn(db: Database, table: string, column: string, type = "TEXT"): void {
 	const cols = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-	if (cols.length === 0) return; // table doesn't exist yet — CREATE will carry the column
+	if (cols.length === 0) return; // table doesn't exist yet â CREATE will carry the column
 	if (cols.some((c) => c.name === column)) return;
 	db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
@@ -254,6 +254,10 @@ export function applySchema(db: Database): void {
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at)
 	`);
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_messages_consistency
+		ON messages(id, modified_at, role) WHERE role != 'system'
+	`);
 
 	// Context assembly and web history repeatedly fetch live thread messages in
 	// chronological order. The general index above includes tombstones, so this
@@ -287,6 +291,10 @@ export function applySchema(db: Database): void {
 	// inline agent_id never materialized and the composite index below would
 	// fail with "no such column: agent_id".
 	ensureColumn(db, "semantic_memory", "agent_id");
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_semantic_memory_consistency
+		ON semantic_memory(id, modified_at)
+	`);
 	db.run("DROP INDEX IF EXISTS idx_memory_key");
 	db.run(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_key
@@ -429,16 +437,16 @@ export function applySchema(db: Database): void {
 			WHERE deleted = 0
 	`);
 
-	// 11b. agents (#201) — durable, persona-scoped auxiliary-agent identities.
+	// 11b. agents (#201) â durable, persona-scoped auxiliary-agent identities.
 	// Shaped like `skills` (synced LWW, cluster-wide): an identity defined on one
 	// host is invocable from any thread on any host, and its memory namespace
 	// travels with it. `retired_at` is domain state (hidden from list/invoke,
 	// namespace still readable) and is deliberately distinct from `deleted`, which
-	// stays a pure sync tombstone — conflating them would make retirement
+	// stays a pure sync tombstone â conflating them would make retirement
 	// indistinguishable from removal at the sync layer. `name` carries NO UNIQUE
 	// index (unlike skills): synced tables can't enforce cluster-wide uniqueness,
 	// so two hosts defining the same name offline must both converge, not break
-	// sync; dispatch resolves name → non-retired/non-deleted with a deterministic
+	// sync; dispatch resolves name â non-retired/non-deleted with a deterministic
 	// modified_at DESC tiebreak, and `list` surfaces duplicates for cleanup.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS agents (
@@ -507,7 +515,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// 14. webhooks (synced) — HMAC-authenticated HTTP endpoints that trigger agent tasks
+	// 14. webhooks (synced) â HMAC-authenticated HTTP endpoints that trigger agent tasks
 	db.run(`
 		CREATE TABLE IF NOT EXISTS webhooks (
 			id               TEXT PRIMARY KEY,
@@ -528,12 +536,12 @@ export function applySchema(db: Database): void {
 		ON webhooks(name) WHERE deleted = 0
 	`);
 
-	// 14a. rss_feeds (synced) — polled RSS/Atom feeds that trigger agent tasks.
+	// 14a. rss_feeds (synced) â polled RSS/Atom feeds that trigger agent tasks.
 	// Mirrors the webhook three-row pattern (feed row + delivery thread + event
 	// task with trigger_spec `rss:<name>`), but items are PULLED by the
 	// leader-gated poller in @bound/platforms rather than pushed over HTTP.
 	// `seen_guids` is the durable dedup cursor (JSON array, newest last, capped)
-	// — relay_inbox idempotency keys are pruned with the inbox, so seen-state
+	// â relay_inbox idempotency keys are pruned with the inbox, so seen-state
 	// must live on the synced row to survive leader failover.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS rss_feeds (
@@ -556,7 +564,7 @@ export function applySchema(db: Database): void {
 		ON rss_feeds(name) WHERE deleted = 0
 	`);
 
-	// 14b. client_sessions (synced) — tracks which host holds the live WS
+	// 14b. client_sessions (synced) â tracks which host holds the live WS
 	// connection (boundless / external BoundClient) subscribed to a thread, so
 	// notify/introspect wakeups can be routed to the host that can actually
 	// supply the thread's client tools. See invariant #21 (client-session
@@ -613,7 +621,7 @@ export function applySchema(db: Database): void {
 		) STRICT
 	`);
 
-	// last_confirmed column migration (idempotent — ignore if column already
+	// last_confirmed column migration (idempotent â ignore if column already
 	// exists). Distinct from last_sent (optimistic) and last_received (inbound):
 	// last_confirmed is the peer-acknowledged watermark, advanced ONLY on
 	// changelog_ack, and is the sole anchor authority for delegation range
@@ -711,7 +719,7 @@ export function applySchema(db: Database): void {
 		ON relay_cycles(created_at)
 	`);
 
-	// stream_id column migrations (idempotent — ignore if column already exists)
+	// stream_id column migrations (idempotent â ignore if column already exists)
 	try {
 		db.run("ALTER TABLE relay_outbox ADD COLUMN stream_id TEXT");
 	} catch {
@@ -752,10 +760,10 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// ── Platform connector migrations (Phase 1) ──────────────────────────────
+	// ââ Platform connector migrations (Phase 1) ââââââââââââââââââââââââââââââ
 
 	// #93: link an advisory to the thread it originated from so the web UI can
-	// navigate operators straight to the source conversation. Idempotent — older
+	// navigate operators straight to the source conversation. Idempotent â older
 	// databases gain the column on next startup; existing rows default to NULL.
 	try {
 		db.run("ALTER TABLE advisories ADD COLUMN thread_id TEXT");
@@ -766,7 +774,7 @@ export function applySchema(db: Database): void {
 	// #192: record advisory outcome provenance. `resolved_by` stamps the actor
 	// that changed state ("agent" for the advisory tool, an operator user id for
 	// the web path); `resolution_note` carries the required rationale/outcome for
-	// the transition. Idempotent — older rows default to NULL.
+	// the transition. Idempotent â older rows default to NULL.
 	try {
 		db.run("ALTER TABLE advisories ADD COLUMN resolved_by TEXT");
 	} catch {
@@ -778,11 +786,11 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// #201: auxiliary-agent columns. All nullable — NULL means the main agent, so
+	// #201: auxiliary-agent columns. All nullable â NULL means the main agent, so
 	// every existing row keeps main-agent semantics and no behavior changes until
 	// the aux tool starts writing them. Idempotent ALTERs (older DBs gain them on
 	// next startup); STRICT tables accept nullable ADD COLUMN cleanly. No FK
-	// clauses (invariant #20 — referential integrity by convention on synced
+	// clauses (invariant #20 â referential integrity by convention on synced
 	// tables). Behavioral code identifies aux threads by `agent_id IS NOT NULL`,
 	// never by `threads.interface`.
 	//   - threads.agent_id / parent_thread_id: an aux conversation is a child
@@ -813,7 +821,7 @@ export function applySchema(db: Database): void {
 	} catch {
 		/* already exists */
 	}
-	// Migrate existing discord_id values → platform_ids JSON {"discord":"<id>"}
+	// Migrate existing discord_id values â platform_ids JSON {"discord":"<id>"}
 	// Safe to re-run: WHERE clause skips rows already migrated
 	// Uses PRAGMA table_info to check if discord_id column still exists before migrating
 	try {
@@ -847,7 +855,7 @@ export function applySchema(db: Database): void {
 	}
 
 	// Add mcp_tool_annotations column to hosts (per-server, per-tool MCP-spec
-	// annotations captured from listTools() — used by the agent retry policy
+	// annotations captured from listTools() â used by the agent retry policy
 	// to look up target idempotency for relay-routed tool calls).
 	// Shape: {[serverName]: {[toolName]: {idempotentHint?, readOnlyHint?}}}
 	try {
@@ -857,9 +865,9 @@ export function applySchema(db: Database): void {
 	}
 
 	// Full per-server MCP capability inventory (serverInfo from the initialize
-	// handshake, tools with descriptions, prompts, resources) — the complete
+	// handshake, tools with descriptions, prompts, resources) â the complete
 	// surface a server exposes to agents. Rendered by the web UI's
-	// Connections → MCP view.
+	// Connections â MCP view.
 	// Shape: {[serverName]: {serverInfo?, tools?, prompts?, resources?}}
 	try {
 		db.run("ALTER TABLE hosts ADD COLUMN mcp_capabilities TEXT");
@@ -869,7 +877,7 @@ export function applySchema(db: Database): void {
 
 	// #120: record each node's build commit hash so `hostinfo` can surface it,
 	// letting agents reason about inconsistent cluster behavior across nodes
-	// running different builds. Idempotent — older databases gain the column on
+	// running different builds. Idempotent â older databases gain the column on
 	// next startup; existing rows default to NULL until the host re-registers.
 	try {
 		db.run("ALTER TABLE hosts ADD COLUMN commit_hash TEXT");
@@ -885,7 +893,7 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// system_prompt_addition column on tasks — persistent prompt injection for
+	// system_prompt_addition column on tasks â persistent prompt injection for
 	// event tasks (webhooks, scheduled), replacing ephemeral WS-only mechanism.
 	// Read by scheduler and relay processor when building AgentLoopConfig.
 	try {
@@ -894,7 +902,7 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// deleted column on cluster_config — brings it under the soft-delete invariant
+	// deleted column on cluster_config â brings it under the soft-delete invariant
 	// (invariant #2). Existing rows default to live (0). Writers soft-delete via
 	// the standard UPDATE-deleted=1 path; live reads filter deleted = 0.
 	try {
@@ -906,7 +914,7 @@ export function applySchema(db: Database): void {
 	// The `retire` operation and status filtering were removed; the only skill
 	// states are live (deleted = 0) and tombstoned (deleted = 1), so these
 	// three columns carry no information. On existing DBs they are dropped here;
-	// fresh installs never create them (see the CREATE TABLE above). DDL only —
+	// fresh installs never create them (see the CREATE TABLE above). DDL only â
 	// not a synced row write, so raw db.run is correct (cf. the discord_id drop).
 	// None are indexed (the unique index is on `name`), so DROP COLUMN succeeds.
 	// (Requires SQLite 3.35.0+; Bun bundles 3.51.0.)
@@ -922,7 +930,7 @@ export function applySchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_memory_modified ON semantic_memory(modified_at DESC)
 	`);
 
-	// #201: namespace-scoped lookups — dispatch resolves (agent_id, key), and
+	// #201: namespace-scoped lookups â dispatch resolves (agent_id, key), and
 	// aux context injection filters by agent_id on every memory read.
 	db.run(`
 		CREATE INDEX IF NOT EXISTS idx_memory_agent_key
@@ -980,7 +988,7 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// metadata column on messages — opaque JSON property bag scoped to
+	// metadata column on messages â opaque JSON property bag scoped to
 	// platform connectors (e.g. Discord delivery-retry tombstones). Most of
 	// the application treats this field as "does not exist." Platform-specific
 	// code reads/writes it via readMessageMetadata / writeMessageMetadata.
@@ -1013,7 +1021,7 @@ export function applySchema(db: Database): void {
 
 	// 21. dispatch_queue (non-replicated, local-only)
 	// Tracks message dispatch status for event-driven conversation model.
-	// NOT a synced table — dispatch state is local coordination only.
+	// NOT a synced table â dispatch state is local coordination only.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS dispatch_queue (
 			message_id    TEXT PRIMARY KEY,
@@ -1074,7 +1082,7 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// ── Edge graph normalization ─────────────────────────────────────────────────
+	// ââ Edge graph normalization âââââââââââââââââââââââââââââââââââââââââââââââââ
 
 	// Add context column to memory_edges (nullable free-text annotation)
 	try {
@@ -1083,7 +1091,7 @@ export function applySchema(db: Database): void {
 		/* already exists */
 	}
 
-	// Generate trigger SQL from canonical set — single source of truth.
+	// Generate trigger SQL from canonical set â single source of truth.
 	// Safety: CANONICAL_RELATIONS values are string literals defined in memory-relations.ts.
 	// None contain single quotes, so interpolation into SQL string literals is safe.
 	// If a value with a single quote were ever added to the set, the trigger CREATE
@@ -1105,7 +1113,7 @@ export function applySchema(db: Database): void {
 		BEGIN SELECT RAISE(ABORT, '${triggerMsg}'); END
 	`);
 
-	// ── FTS5 full-text search index for semantic_memory ─────────────────────────
+	// ââ FTS5 full-text search index for semantic_memory âââââââââââââââââââââââââ
 	// Local-only index (NOT synced). Each node rebuilds from semantic_memory data.
 	// Uses porter stemmer for morphological matching and unicode61 for non-ASCII.
 	//
@@ -1115,9 +1123,9 @@ export function applySchema(db: Database): void {
 
 	// #201: FTS5 virtual tables do NOT support ALTER TABLE ADD COLUMN.
 	// The previous migration tried ALTER inside try/catch, which silently
-	// failed on existing databases — leaving the FTS table without agent_id
+	// failed on existing databases â leaving the FTS table without agent_id
 	// while triggers referenced it, causing runtime errors on aux memory writes.
-	// Fix: detect the missing column and DROP+CREATE (safe — FTS is local-only,
+	// Fix: detect the missing column and DROP+CREATE (safe â FTS is local-only,
 	// rebuilt from the base semantic_memory table).
 	const ftsColumns = db.query("PRAGMA table_info(semantic_memory_fts)").all() as Array<{
 		name: string;
@@ -1133,7 +1141,7 @@ export function applySchema(db: Database): void {
 
 	// Triggers to keep FTS5 in sync with semantic_memory writes.
 	// All writes go through insertRow/updateRow/softDelete, which hit the base
-	// table — triggers fire automatically, including on sync replay.
+	// table â triggers fire automatically, including on sync replay.
 	// #201: DROP+CREATE (not IF NOT EXISTS) so trigger definitions pick up
 	// the agent_id scoping on existing installations.
 	db.run("DROP TRIGGER IF EXISTS memory_fts_insert");
