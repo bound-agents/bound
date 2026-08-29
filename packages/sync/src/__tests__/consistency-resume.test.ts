@@ -80,6 +80,24 @@ function createTestSchema(db: Database): void {
 	`);
 
 	db.run(`
+		CREATE TABLE hosts (
+			site_id TEXT PRIMARY KEY,
+			host_name TEXT NOT NULL,
+			modified_at TEXT NOT NULL,
+			deleted INTEGER DEFAULT 0
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE cluster_config (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			modified_at TEXT NOT NULL,
+			deleted INTEGER DEFAULT 0
+		)
+	`);
+
+	db.run(`
 		CREATE TABLE messages (
 			id TEXT PRIMARY KEY,
 			thread_id TEXT NOT NULL,
@@ -320,6 +338,190 @@ describe("consistency exchange resume", () => {
 		expect(advertisedEntries.map((e) => e.pk).sort()).toEqual(["m-assistant", "m-user"]);
 		// count must match the filtered set so pagination stays consistent.
 		expect(response?.count).toBe(2);
+	});
+
+	it("uses a PK cursor after the first page while preserving offset resume ordering", async () => {
+		const pageSizeTarget = WsTransport as unknown as { CONSISTENCY_PAGE_SIZE: number };
+		const originalPageSize = pageSizeTarget.CONSISTENCY_PAGE_SIZE;
+		pageSizeTarget.CONSISTENCY_PAGE_SIZE = 2;
+		for (const id of ["d", "b", "e", "a", "c"]) insertMemory(hubDb, id, `key-${id}`);
+
+		const queries: string[] = [];
+		const originalQuery = hubDb.query.bind(hubDb);
+		(hubDb as unknown as { query: (sql: string) => ReturnType<Database["query"]> }).query = (
+			sql,
+		) => {
+			queries.push(sql);
+			return originalQuery(sql);
+		};
+		const pages: Array<{ pks: string[]; next_offset?: number }> = [];
+		try {
+			hub.addPeer(
+				"spoke",
+				(frame) => {
+					const decoded = decodeFrame(frame, key);
+					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE) {
+						const payload = decoded.value.payload as { pks: string[]; next_offset?: number };
+						pages.push(payload);
+					}
+					return true;
+				},
+				key,
+			);
+			hub.handleConsistencyRequest("spoke", { tables: ["semantic_memory"] });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+
+			expect(pages.flatMap((page) => page.pks)).toEqual([
+				"a",
+				"b",
+				"c",
+				"d",
+				"e",
+				"mem-1",
+				"mem-2",
+			]);
+			expect(queries.filter((sql) => sql.includes("SELECT *"))).not.toContainEqual(
+				expect.stringContaining("OFFSET"),
+			);
+
+			pages.length = 0;
+			queries.length = 0;
+			hub.handleConsistencyRequest("spoke", {
+				tables: ["semantic_memory"],
+				resume_offset: 2,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(pages.flatMap((page) => page.pks)).toEqual(["c", "d", "e", "mem-1", "mem-2"]);
+			expect(queries.filter((sql) => sql.includes("SELECT *"))).toContainEqual(
+				expect.stringContaining("OFFSET"),
+			);
+		} finally {
+			pageSizeTarget.CONSISTENCY_PAGE_SIZE = originalPageSize;
+		}
+	});
+
+	it("composes filtered and non-id keyset pages without loss or duplication", async () => {
+		const target = WsTransport as unknown as { CONSISTENCY_PAGE_SIZE: number };
+		const original = target.CONSISTENCY_PAGE_SIZE;
+		target.CONSISTENCY_PAGE_SIZE = 2;
+		const now = new Date().toISOString();
+		for (const [id, role] of [
+			["m4", "user"],
+			["m1", "assistant"],
+			["m3", "system"],
+			["m2", "user"],
+			["m5", "assistant"],
+			["m6", "system"],
+			["m7", "user"],
+		] as const)
+			insertMessageRole(hubDb, id, role);
+		for (const siteId of ["c", "a", "b", "d", "e"])
+			hubDb.run("INSERT INTO hosts (site_id, host_name, modified_at) VALUES (?, ?, ?)", [
+				siteId,
+				siteId,
+				now,
+			]);
+		for (const configKey of ["zeta", "alpha", "delta", "beta", "gamma"])
+			hubDb.run("INSERT INTO cluster_config (key, value, modified_at) VALUES (?, ?, ?)", [
+				configKey,
+				configKey,
+				now,
+			]);
+		const pages = new Map<string, string[]>();
+		try {
+			hub.addPeer(
+				"spoke",
+				(frame) => {
+					const d = decodeFrame(frame, key);
+					if (d.ok && d.value.type === WsMessageType.CONSISTENCY_RESPONSE) {
+						const x = d.value.payload as { table: string; pks: string[] };
+						pages.set(x.table, [...(pages.get(x.table) ?? []), ...x.pks]);
+					}
+					return true;
+				},
+				key,
+			);
+			hub.handleConsistencyRequest("spoke", { tables: ["messages", "hosts", "cluster_config"] });
+			await new Promise((r) => setTimeout(r, 40));
+			expect(pages.get("messages")).toEqual(["m1", "m2", "m4", "m5", "m7"]);
+			expect(pages.get("hosts")).toEqual(["a", "b", "c", "d", "e"]);
+			expect(pages.get("cluster_config")).toEqual(["alpha", "beta", "delta", "gamma", "zeta"]);
+		} finally {
+			target.CONSISTENCY_PAGE_SIZE = original;
+		}
+	});
+
+	it("keeps per-peer cursors isolated through backpressure drain-resume", async () => {
+		const target = WsTransport as unknown as { CONSISTENCY_PAGE_SIZE: number };
+		const original = target.CONSISTENCY_PAGE_SIZE;
+		target.CONSISTENCY_PAGE_SIZE = 2;
+		for (const id of ["a", "b", "c", "d", "e", "f", "g"]) insertMemory(hubDb, id, id);
+		const one: string[] = [];
+		const two: string[] = [];
+		let sends = 0;
+		let blocked = true;
+		try {
+			hub.addPeer(
+				"one",
+				(f) => {
+					sends++;
+					if (blocked && sends === 2) return false;
+					const d = decodeFrame(f, key);
+					if (d.ok && d.value.type === WsMessageType.CONSISTENCY_RESPONSE)
+						one.push(...(d.value.payload as { pks: string[] }).pks);
+					return true;
+				},
+				key,
+			);
+			hub.addPeer(
+				"two",
+				(f) => {
+					const d = decodeFrame(f, key);
+					if (d.ok && d.value.type === WsMessageType.CONSISTENCY_RESPONSE)
+						two.push(...(d.value.payload as { pks: string[] }).pks);
+					return true;
+				},
+				key,
+			);
+			hub.handleConsistencyRequest("one", { tables: ["semantic_memory"], request_id: "one" });
+			hub.handleConsistencyRequest("two", { tables: ["semantic_memory"], request_id: "two" });
+			await new Promise((r) => setTimeout(r, 15));
+			blocked = false;
+			hub.continueConsistencyStream("one");
+			await new Promise((r) => setTimeout(r, 40));
+			const expected = ["a", "b", "c", "d", "e", "f", "g", "mem-1", "mem-2"];
+			expect(one).toEqual(expected);
+			expect(two).toEqual(expected);
+		} finally {
+			target.CONSISTENCY_PAGE_SIZE = original;
+		}
+	});
+
+	it("uses one OFFSET seek on resume and keyset pages thereafter", async () => {
+		const target = WsTransport as unknown as { CONSISTENCY_PAGE_SIZE: number };
+		const original = target.CONSISTENCY_PAGE_SIZE;
+		target.CONSISTENCY_PAGE_SIZE = 2;
+		for (const id of ["a", "b", "c", "d", "e", "f", "g"]) insertMemory(hubDb, id, id);
+		const queries: string[] = [];
+		const originalQuery = hubDb.query.bind(hubDb);
+		(hubDb as unknown as { query: (sql: string) => ReturnType<Database["query"]> }).query = (
+			sql,
+		) => {
+			queries.push(sql);
+			return originalQuery(sql);
+		};
+		try {
+			hub.addPeer("spoke", () => true, key);
+			hub.handleConsistencyRequest("spoke", { tables: ["semantic_memory"], resume_offset: 2 });
+			await new Promise((r) => setTimeout(r, 40));
+			const pageQueries = queries.filter((sql) => sql.includes("SELECT *"));
+			expect(pageQueries.filter((sql) => sql.includes("OFFSET"))).toHaveLength(1);
+			expect(
+				pageQueries.filter((sql) => !sql.includes("OFFSET")).every((sql) => sql.includes("id > ?")),
+			).toBe(true);
+		} finally {
+			target.CONSISTENCY_PAGE_SIZE = original;
+		}
 	});
 
 	it("clears resume state on successful completion", async () => {
