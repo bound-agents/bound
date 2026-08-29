@@ -184,6 +184,7 @@ export type BackfillTrigger = "initial" | "reconnect" | "periodic";
 export type BackfillSkipGuard = "running" | "cooldown";
 
 export interface BackfillChildSpan {
+	run<T>(fn: () => T): T;
 	addEvent(name: string, attributes?: Record<string, string | number | boolean>): void;
 	complete(attributes: Record<string, string | number | boolean>): void;
 	fail(error: unknown, attributes?: Record<string, string | number | boolean>): void;
@@ -248,7 +249,12 @@ export function startBackfill(trigger: BackfillTrigger): BackfillSpan {
 			});
 			child.end();
 		};
+		const childContext =
+			typeof child.spanContext === "function"
+				? trace.setSpan(operationContext, child as Span)
+				: operationContext;
 		return {
+			run: (fn) => context.with(childContext, fn),
 			addEvent: (name, attributes) => child.addEvent(name, attributes),
 			complete: (attributes) => finish(attributes),
 			fail: (error, attributes = {}) => finish(attributes, error),

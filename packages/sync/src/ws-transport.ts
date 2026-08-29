@@ -1956,25 +1956,37 @@ export class WsTransport {
 				serving,
 			);
 		} catch (error) {
-			serving.fail(error);
-			const peer = this.peerConnections.get(peerSiteId);
-			if (peer) {
-				peer.sendFrame(
-					encodeFrame(
-						WsMessageType.ERROR,
-						{
-							code: "consistency_error",
-							message: error instanceof Error ? error.message : String(error),
-							request_id: payload.request_id,
-							trace_data: serving.getTraceData?.(),
-						},
-						peer.symmetricKey,
-					),
-				);
-			}
+			this.failConsistencyServing(peerSiteId, payload.request_id, serving, error);
 			throw error;
 		}
 	}
+
+	private failConsistencyServing(
+		peerSiteId: string,
+		requestId: string | undefined,
+		serving: ConsistencyServingSpan,
+		error: unknown,
+	): void {
+		serving.fail(error);
+		if (this.consistencyErrorSent.has(serving)) return;
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+		this.consistencyErrorSent.add(serving);
+		peer.sendFrame(
+			encodeFrame(
+				WsMessageType.ERROR,
+				{
+					code: "consistency_error",
+					message: error instanceof Error ? error.message : String(error),
+					request_id: requestId,
+					trace_data: serving.getTraceData?.(),
+				},
+				peer.symmetricKey,
+			),
+		);
+	}
+
+	private consistencyErrorSent = new WeakSet<ConsistencyServingSpan>();
 
 	private pendingConsistencyStream = new Map<
 		string,
@@ -2119,7 +2131,7 @@ export class WsTransport {
 					serving,
 				);
 			} catch (error) {
-				serving?.fail(error);
+				if (serving) this.failConsistencyServing(peerSiteId, requestId, serving, error);
 			}
 		}, 0);
 	}
@@ -2157,7 +2169,7 @@ export class WsTransport {
 					state.serving,
 				);
 			} catch (error) {
-				state.serving.fail(error);
+				this.failConsistencyServing(peerSiteId, state.requestId, state.serving, error);
 			}
 		}, 0);
 	}
@@ -2525,7 +2537,9 @@ export class WsTransport {
 		});
 		let consistencyResult: Awaited<ReturnType<WsTransport["requestConsistencyWithTimeout"]>>;
 		try {
-			consistencyResult = await this.requestConsistencyWithTimeout(diagnostics);
+			consistencyResult = await (consistency?.run(() =>
+				this.requestConsistencyWithTimeout(diagnostics),
+			) ?? this.requestConsistencyWithTimeout(diagnostics));
 			consistency?.complete({
 				...attributes(),
 				"consistency.received_table_count": consistencyResult.tables.size,
