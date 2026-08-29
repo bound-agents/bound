@@ -383,6 +383,7 @@ describe("consistency exchange resume", () => {
 			expect(queries.filter((sql) => sql.includes("SELECT *"))).not.toContainEqual(
 				expect.stringContaining("OFFSET"),
 			);
+			expect(queries.filter((sql) => sql.includes("SELECT COUNT(*) AS c"))).toHaveLength(1);
 
 			pages.length = 0;
 			queries.length = 0;
@@ -458,6 +459,14 @@ describe("consistency exchange resume", () => {
 		for (const id of ["a", "b", "c", "d", "e", "f", "g"]) insertMemory(hubDb, id, id);
 		const one: string[] = [];
 		const two: string[] = [];
+		const queries: string[] = [];
+		const originalQuery = hubDb.query.bind(hubDb);
+		(hubDb as unknown as { query: (sql: string) => ReturnType<Database["query"]> }).query = (
+			sql,
+		) => {
+			queries.push(sql);
+			return originalQuery(sql);
+		};
 		let sends = 0;
 		let blocked = true;
 		try {
@@ -492,6 +501,8 @@ describe("consistency exchange resume", () => {
 			const expected = ["a", "b", "c", "d", "e", "f", "g", "mem-1", "mem-2"];
 			expect(one).toEqual(expected);
 			expect(two).toEqual(expected);
+			// Each request owns its count cache, and peer one's cache survives its drain resume.
+			expect(queries.filter((sql) => sql.includes("SELECT COUNT(*) AS c"))).toHaveLength(2);
 		} finally {
 			target.CONSISTENCY_PAGE_SIZE = original;
 		}
@@ -519,6 +530,7 @@ describe("consistency exchange resume", () => {
 			expect(
 				pageQueries.filter((sql) => !sql.includes("OFFSET")).every((sql) => sql.includes("id > ?")),
 			).toBe(true);
+			expect(queries.filter((sql) => sql.includes("SELECT COUNT(*) AS c"))).toHaveLength(1);
 		} finally {
 			target.CONSISTENCY_PAGE_SIZE = original;
 		}

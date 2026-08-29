@@ -1956,6 +1956,7 @@ export class WsTransport {
 				undefined,
 				payload.request_id,
 				serving,
+				new Map(),
 			);
 		} catch (error) {
 			this.failConsistencyServing(peerSiteId, payload.request_id, serving, error);
@@ -2002,6 +2003,7 @@ export class WsTransport {
 			requestId?: string;
 			serving: ConsistencyServingSpan;
 			backpressureStartedAt?: number;
+			counts: Map<number, number>;
 		}
 	>();
 
@@ -2013,6 +2015,7 @@ export class WsTransport {
 		cursor: string | undefined,
 		requestId?: string,
 		serving?: ConsistencyServingSpan,
+		counts: Map<number, number> = new Map(),
 	): void {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) {
@@ -2033,12 +2036,16 @@ export class WsTransport {
 		// `syncableWhereClause` so the two sides cannot drift apart again.
 		const whereClause = syncableWhereClause(table);
 
-		const queryStartedAt = performance.now();
-		const countRow = this.config.db
-			.query(`SELECT COUNT(*) AS c FROM ${table}${whereClause}`)
-			.get() as {
-			c: number;
-		};
+		const countStartedAt = performance.now();
+		let count = counts.get(tableIndex);
+		if (count === undefined) {
+			const countRow = this.config.db
+				.query(`SELECT COUNT(*) AS c FROM ${table}${whereClause}`)
+				.get() as { c: number };
+			count = countRow.c;
+			counts.set(tableIndex, count);
+		}
+		const countMs = performance.now() - countStartedAt;
 
 		// State-aware backfill: select full rows so we can compute per-row
 		// content hashes for divergence detection. PK-only diff is insufficient
@@ -2048,6 +2055,7 @@ export class WsTransport {
 		// request has no PK cursor, so it pays one legacy OFFSET query to locate
 		// its first page; every subsequent page carries its last-seen validated PK
 		// in this serving state and uses a keyset predicate instead.
+		const selectStartedAt = performance.now();
 		const rows =
 			cursor === undefined && offset > 0
 				? (this.config.db
@@ -2065,15 +2073,17 @@ export class WsTransport {
 						Record<string, unknown>
 					>);
 
-		const queryMs = performance.now() - queryStartedAt;
+		const selectMs = performance.now() - selectStartedAt;
 		const hasMore = rows.length > pageSize;
 		const pageRows = rows.slice(0, pageSize);
 		const pks = pageRows.map((r) => String(r[pkCol]));
+		const hashStartedAt = performance.now();
 		const entries = pageRows.map((r) => ({
 			pk: String(r[pkCol]),
 			hash: hashRow(r),
 			modified_at: typeof r.modified_at === "string" ? r.modified_at : null,
 		}));
+		const hashMs = performance.now() - hashStartedAt;
 		const isLastTable = tableIndex === tables.length - 1;
 		const allDone = isLastTable && !hasMore;
 		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
@@ -2087,7 +2097,7 @@ export class WsTransport {
 				table,
 				pks,
 				entries,
-				count: countRow.c,
+				count,
 				has_more: hasMore,
 				table_index: tableIndex,
 				table_count: tables.length,
@@ -2102,7 +2112,15 @@ export class WsTransport {
 		const encodeMs = performance.now() - encodeStartedAt;
 		// Record the terminal page before ending the scoped span. Its serialized
 		// representation must include this page's aggregate telemetry.
-		serving?.page({ queryMs, encodeMs, sendMs: 0, rows: pageRows.length, tableIndex });
+		serving?.page({
+			countMs,
+			selectMs,
+			hashMs,
+			encodeMs,
+			sendMs: 0,
+			rows: pageRows.length,
+			tableIndex,
+		});
 		if (allDone) {
 			serving?.complete("all_done");
 			frame = encodeFrame(
@@ -2111,7 +2129,7 @@ export class WsTransport {
 					table,
 					pks,
 					entries,
-					count: countRow.c,
+					count,
 					has_more: hasMore,
 					table_index: tableIndex,
 					table_count: tables.length,
@@ -2135,6 +2153,7 @@ export class WsTransport {
 				requestId,
 				serving: serving ?? startConsistencyServing(),
 				backpressureStartedAt: performance.now(),
+				counts,
 			});
 			return;
 		}
@@ -2154,6 +2173,7 @@ export class WsTransport {
 					nextCursor,
 					requestId,
 					serving,
+					counts,
 				);
 			} catch (error) {
 				if (serving) this.failConsistencyServing(peerSiteId, requestId, serving, error);
@@ -2193,6 +2213,7 @@ export class WsTransport {
 					state.nextCursor,
 					state.requestId,
 					state.serving,
+					state.counts,
 				);
 			} catch (error) {
 				this.failConsistencyServing(peerSiteId, state.requestId, state.serving, error);

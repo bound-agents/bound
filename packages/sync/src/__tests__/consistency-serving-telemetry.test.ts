@@ -227,7 +227,15 @@ describe("consistency serving telemetry", () => {
 			const serving = startConsistencyServing();
 			serving.requestReceived();
 			for (let index = 0; index < 20; index++) {
-				serving.page({ queryMs: 1_001, encodeMs: 1_002, sendMs: 1_003, rows: 2, tableIndex: 0 });
+				serving.page({
+					countMs: 500,
+					selectMs: 501,
+					hashMs: 303,
+					encodeMs: 1_002,
+					sendMs: 1_003,
+					rows: 2,
+					tableIndex: 0,
+				});
 				serving.backpressured();
 				serving.resumed(10);
 			}
@@ -246,13 +254,22 @@ describe("consistency serving telemetry", () => {
 			expect(span?.attributes).toMatchObject({
 				"consistency.serve.page_count": 20,
 				"consistency.serve.row_count": 40,
-				"consistency.serve.query_duration_ms": 20_020,
+				"consistency.serve.query_duration_ms": 26_080,
+				"consistency.serve.count_duration_ms": 10_000,
+				"consistency.serve.select_duration_ms": 10_020,
+				"consistency.serve.hash_duration_ms": 6_060,
 				"consistency.serve.encode_duration_ms": 20_040,
 				"consistency.serve.send_duration_ms": 20_060,
 				"consistency.serve.backpressure_duration_ms": 200,
 				"consistency.serve.drain_resume_count": 20,
 				"consistency.serve.terminal": "all_done",
 			});
+			const attributes = span?.attributes;
+			expect(attributes?.["consistency.serve.query_duration_ms"]).toBe(
+				Number(attributes?.["consistency.serve.count_duration_ms"]) +
+					Number(attributes?.["consistency.serve.select_duration_ms"]) +
+					Number(attributes?.["consistency.serve.hash_duration_ms"]),
+			);
 		} finally {
 			provider.shutdown();
 		}
