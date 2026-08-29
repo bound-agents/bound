@@ -102,6 +102,35 @@ export default { spawn: unavailable };
 	};
 }
 
+/**
+ * Stub out `react-devtools-core` (ink@5's optional peer, never installed).
+ * See stubReactDevtoolsPlugin for why the boundless compile needs it.
+ */
+function stubReactDevtoolsPlugin(): BunPlugin {
+	return {
+		name: "stub-react-devtools",
+		setup(build) {
+			build.onResolve({ filter: /^react-devtools-core$/ }, () => ({
+				path: "react-devtools-core",
+				namespace: "stub-react-devtools",
+			}));
+			build.onLoad({ filter: /.*/, namespace: "stub-react-devtools" }, () => ({
+				contents: `
+const unavailable = () => {
+	throw new Error(
+		"react-devtools-core is stubbed in the boundless binary; DEV-mode ink devtools integration is unavailable.",
+	);
+};
+export const connectToDevtools = unavailable;
+export const initSocket = unavailable;
+export default { connectToDevtools, initSocket };
+`,
+				loader: "js",
+			}));
+		},
+	};
+}
+
 interface CompileBinaryOptions {
 	/**
 	 * Apply the just-bash / sqlite3 worker rewrite plugin. Only `bound`
@@ -113,7 +142,24 @@ interface CompileBinaryOptions {
 	 * `@microsoft/mxc-sdk`), and its native addon can't ride into a
 	 * `bun build --compile` binary — see `stubNodePtyPlugin`.
 	 */
-	stubNodePty?: boolean;
+	/**
+	 * Stub out `react-devtools-core` (ink's optional peer, never installed).
+	 * Only `boundless` bundles ink — see stubReactDevtoolsPlugin.
+	 */
+	stubReactDevtools?: boolean;
+}
+
+/**
+ * Flatten a Bun.build failure into printable text. AggregateError.message is
+ * just "Bundle failed"; the per-module ResolveMessage/BuildMessage details live
+ * on .errors and are the only place the actual cause (e.g. an unresolvable
+ * optional peer) appears.
+ */
+function formatBuildError(error: unknown): string {
+	if (error instanceof AggregateError) {
+		return error.errors.map((e) => (e instanceof Error ? e.message : String(e))).join("\n");
+	}
+	return error instanceof Error ? error.message : String(error);
 }
 
 async function compileBinary(
@@ -133,6 +179,9 @@ async function compileBinary(
 	}
 	if (options.stubNodePty) {
 		plugins.push(stubNodePtyPlugin());
+	}
+	if (options.stubReactDevtools) {
+		plugins.push(stubReactDevtoolsPlugin());
 	}
 
 	const result = await Bun.build({
@@ -275,7 +324,7 @@ async function build() {
 			rewriteJustBashWorkers: true,
 		});
 	} catch (e) {
-		console.error("bound compilation failed:", e instanceof Error ? e.message : e);
+		console.error("bound compilation failed:", formatBuildError(e));
 		console.log("Use 'bun packages/cli/src/bound.ts' to run directly");
 	}
 
@@ -290,7 +339,7 @@ async function build() {
 	try {
 		await compileBinary("packages/cli/src/boundctl.ts", "dist/boundctl");
 	} catch (e) {
-		console.error("boundctl compilation failed:", e instanceof Error ? e.message : e);
+		console.error("boundctl compilation failed:", formatBuildError(e));
 		console.log("Use 'bun packages/cli/src/boundctl.ts' to run directly");
 	}
 
@@ -316,9 +365,10 @@ async function build() {
 	try {
 		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
 			stubNodePty: true,
+			stubReactDevtools: true,
 		});
 	} catch (e) {
-		console.error("boundless compilation failed:", e instanceof Error ? e.message : e);
+		console.error("boundless compilation failed:", formatBuildError(e));
 		console.log("Use 'bun packages/less/src/boundless.tsx' to run directly");
 	}
 
