@@ -32,7 +32,15 @@ import type {
 	SyncedTableName,
 	TypedEventEmitter,
 } from "@bound/shared";
-import { HLC_ZERO, RELAY_KIND_REGISTRY, generateHlc, randomUUID } from "@bound/shared";
+import {
+	HLC_ZERO,
+	RELAY_KIND_REGISTRY,
+	createScopedTraceCollector,
+	generateHlc,
+	getTraceExporter,
+	randomUUID,
+	reExportSpans,
+} from "@bound/shared";
 import { getPeerCursor, updatePeerCursor } from "./peer-cursor.js";
 import {
 	applyColumnChunk as applyColumnChunkFn,
@@ -51,8 +59,74 @@ import {
 	startConsistencyServing,
 	startRelayOperation,
 	startReplicationDrain,
+	validateConsistencyTraceCarrier,
 } from "./telemetry.js";
 import { MicrotaskCoalescer } from "./ws-coalescer.js";
+
+const MAX_FORWARDED_TRACE_DATA_BYTES = 64 * 1024;
+const MAX_FORWARDED_TRACE_SPANS = 4;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isSerializedConsistencySpan(value: unknown): boolean {
+	if (!isRecord(value)) return false;
+	if (
+		typeof value.traceId !== "string" ||
+		!/^[0-9a-f]{32}$/i.test(value.traceId) ||
+		typeof value.spanId !== "string" ||
+		!/^[0-9a-f]{16}$/i.test(value.spanId) ||
+		(value.parentSpanId !== undefined &&
+			(typeof value.parentSpanId !== "string" || !/^[0-9a-f]{16}$/i.test(value.parentSpanId))) ||
+		typeof value.name !== "string" ||
+		typeof value.kind !== "number" ||
+		!Number.isFinite(value.kind) ||
+		typeof value.startTimeUnixNano !== "string" ||
+		typeof value.endTimeUnixNano !== "string" ||
+		!isRecord(value.attributes) ||
+		!isRecord(value.status) ||
+		typeof value.status.code !== "number" ||
+		!Array.isArray(value.events)
+	)
+		return false;
+	try {
+		BigInt(value.startTimeUnixNano);
+		BigInt(value.endTimeUnixNano);
+	} catch {
+		return false;
+	}
+	return value.events.every(
+		(event) =>
+			isRecord(event) &&
+			typeof event.name === "string" &&
+			typeof event.timeUnixNano === "string" &&
+			(event.attributes === undefined || isRecord(event.attributes)),
+	);
+}
+
+function forwardConsistencyTraceData(
+	traceData: unknown,
+	exporter: ReturnType<typeof getTraceExporter>,
+	logger?: WsTransportConfig["logger"],
+): void {
+	if (
+		typeof traceData !== "string" ||
+		new TextEncoder().encode(traceData).byteLength > MAX_FORWARDED_TRACE_DATA_BYTES
+	)
+		return;
+	try {
+		const spans: unknown = JSON.parse(traceData);
+		if (
+			Array.isArray(spans) &&
+			spans.length <= MAX_FORWARDED_TRACE_SPANS &&
+			spans.every(isSerializedConsistencySpan)
+		)
+			reExportSpans(spans, exporter, logger);
+	} catch {
+		// Observability forwarding must never disrupt consistency handling.
+	}
+}
 import type {
 	ChangelogAckPayload,
 	ChangelogPushPayload,
@@ -1855,7 +1929,22 @@ export class WsTransport {
 				offset: resumeOffset,
 			});
 		}
-		const serving = startConsistencyServing(payload.trace_context);
+		const carrier = validateConsistencyTraceCarrier(payload.trace_context);
+		const collector = carrier ? createScopedTraceCollector(this.config.siteId) : undefined;
+		const serving = startConsistencyServing(
+			payload.trace_context,
+			collector
+				? (name, attributes, parentContext) =>
+						collector.getTracer("bound.sync").startSpan(name, { attributes }, parentContext)
+				: undefined,
+			collector
+				? () => {
+						const spans = collector.serialize();
+						void collector.shutdown();
+						return spans.length > 0 ? JSON.stringify(spans) : undefined;
+					}
+				: undefined,
+		);
 		serving.requestReceived();
 		try {
 			this.streamConsistencyPages(
@@ -1868,6 +1957,21 @@ export class WsTransport {
 			);
 		} catch (error) {
 			serving.fail(error);
+			const peer = this.peerConnections.get(peerSiteId);
+			if (peer) {
+				peer.sendFrame(
+					encodeFrame(
+						WsMessageType.ERROR,
+						{
+							code: "consistency_error",
+							message: error instanceof Error ? error.message : String(error),
+							request_id: payload.request_id,
+							trace_data: serving.getTraceData?.(),
+						},
+						peer.symmetricKey,
+					),
+				);
+			}
 			throw error;
 		}
 	}
@@ -1942,7 +2046,7 @@ export class WsTransport {
 		const nextOffset = hasMore ? offset + pageSize : 0;
 
 		const encodeStartedAt = performance.now();
-		const frame = encodeFrame(
+		let frame = encodeFrame(
 			WsMessageType.CONSISTENCY_RESPONSE,
 			{
 				table,
@@ -1956,14 +2060,34 @@ export class WsTransport {
 				request_id: requestId,
 				next_table_index: allDone ? undefined : nextTableIndex,
 				next_offset: allDone ? undefined : nextOffset,
+				trace_data: undefined,
 			},
 			peer.symmetricKey,
 		);
 		const encodeMs = performance.now() - encodeStartedAt;
-		const sendStartedAt = performance.now();
+		// Record the terminal page before ending the scoped span. Its serialized
+		// representation must include this page's aggregate telemetry.
+		serving?.page({ queryMs, encodeMs, sendMs: 0, rows: pageRows.length, tableIndex });
+		if (allDone) {
+			serving?.complete("all_done");
+			frame = encodeFrame(
+				WsMessageType.CONSISTENCY_RESPONSE,
+				{
+					table,
+					pks,
+					entries,
+					count: countRow.c,
+					has_more: hasMore,
+					table_index: tableIndex,
+					table_count: tables.length,
+					all_done: true,
+					request_id: requestId,
+					trace_data: serving?.getTraceData?.(),
+				},
+				peer.symmetricKey,
+			);
+		}
 		const sent = peer.sendFrame(frame);
-		const sendMs = performance.now() - sendStartedAt;
-		serving?.page({ queryMs, encodeMs, sendMs, rows: pageRows.length, tableIndex });
 		if (!sent) {
 			serving?.backpressured();
 			this.pendingConsistencyStream.set(peerSiteId, {
@@ -1981,7 +2105,6 @@ export class WsTransport {
 
 		if (allDone) {
 			this.pendingConsistencyStream.delete(peerSiteId);
-			serving?.complete("all_done");
 			return;
 		}
 
@@ -2151,6 +2274,7 @@ export class WsTransport {
 		request_id?: string;
 		next_table_index?: number;
 		next_offset?: number;
+		trace_data?: string;
 	}): void {
 		const rid = payload.request_id;
 		if (!rid) return;
@@ -2183,6 +2307,7 @@ export class WsTransport {
 		}
 
 		if (payload.all_done) {
+			forwardConsistencyTraceData(payload.trace_data, getTraceExporter(), this.config.logger);
 			this.resolveConsistency(rid, "all_done");
 			return;
 		}
@@ -2192,6 +2317,18 @@ export class WsTransport {
 			this.resolveConsistency(rid, "table_count_match");
 			return;
 		}
+	}
+
+	handleConsistencyError(payload: { request_id?: string; trace_data?: string }): void {
+		const requestId = payload.request_id;
+		if (!requestId) return;
+		const request = this.pendingConsistencyRequests.get(requestId);
+		if (!request) return;
+		// Clear before re-exporting: duplicate terminal error frames are harmless.
+		clearTimeout(request.timer);
+		this.pendingConsistencyRequests.delete(requestId);
+		forwardConsistencyTraceData(payload.trace_data, getTraceExporter(), this.config.logger);
+		request.reject(new Error("Consistency request failed"));
 	}
 
 	private resolveConsistency(requestId: string, reason: string): void {

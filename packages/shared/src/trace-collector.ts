@@ -100,6 +100,13 @@ export function createScopedTraceCollector(siteId?: string) {
 			await provider.shutdown();
 			return serialized;
 		},
+		/** Serialize synchronously after an ended span for an in-band terminal frame. */
+		serialize(): SerializedSpan[] {
+			return exporter.getFinishedSpans().map(serializeReadableSpan);
+		},
+		shutdown(): Promise<void> {
+			return provider.shutdown();
+		},
 	};
 }
 

@@ -434,6 +434,14 @@ export class WsSyncClient {
 					).handleConsistencyResponse?.(decodedFrame.payload);
 				}
 
+				if (decodedFrame.type === WsMessageType.ERROR && this.config.wsTransport) {
+					(
+						this.config.wsTransport as unknown as {
+							handleConsistencyError?: (payload: unknown) => void;
+						}
+					).handleConsistencyError?.(decodedFrame.payload);
+				}
+
 				if (decodedFrame.type === WsMessageType.ROW_PULL_RESPONSE && this.config.wsTransport) {
 					(
 						this.config.wsTransport as unknown as {
