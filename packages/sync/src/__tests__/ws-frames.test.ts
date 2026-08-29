@@ -233,6 +233,31 @@ describe("ws-frames module", () => {
 			});
 		});
 
+		describe("consistency trace carrier", () => {
+			it("accepts an absent carrier for backwards-compatible requests", () => {
+				const frame = encodeFrame(
+					WsMessageType.CONSISTENCY_REQUEST,
+					{ tables: ["tasks"] },
+					symmetricKey,
+				);
+				expect(decodeFrame(frame, symmetricKey).ok).toBe(true);
+			});
+
+			it("rejects malformed or baggage-bearing carriers", () => {
+				for (const trace_context of [
+					{ traceparent: 12 },
+					{ traceparent: "00-abc", baggage: "not-allowed" },
+				]) {
+					const frame = encodeFrame(
+						WsMessageType.CONSISTENCY_REQUEST,
+						{ tables: ["tasks"], trace_context },
+						symmetricKey,
+					);
+					expect(decodeFrame(frame, symmetricKey).ok).toBe(false);
+				}
+			});
+		});
+
 		describe("Robustness tests", () => {
 			describe("Frame too short", () => {
 				it("frame with < 41 bytes returns error", () => {

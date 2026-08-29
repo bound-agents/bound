@@ -6,7 +6,14 @@ import {
 	histogram,
 	upDownCounter,
 } from "@bound/shared";
-import { type Span, SpanStatusCode, context, propagation, trace } from "@opentelemetry/api";
+import {
+	type Context,
+	type Span,
+	SpanStatusCode,
+	context,
+	propagation,
+	trace,
+} from "@opentelemetry/api";
 
 interface CounterLike {
 	add(value: number, attributes?: Record<string, string | number | boolean>): void;
@@ -75,6 +82,7 @@ export interface SyncTelemetry {
 			| "relay.operation"
 			| "sync.backfill"
 			| "sync.consistency"
+			| "sync.consistency.serve"
 			| "sync.row-pull",
 		attributes: Record<string, string | number | boolean>,
 		parentContext?: import("@opentelemetry/api").Context,
@@ -356,6 +364,144 @@ function validTraceCarrier(
 	} catch {
 		return null;
 	}
+}
+
+export type ConsistencyTraceCarrier = { traceparent: string; tracestate?: string };
+
+export function validateConsistencyTraceCarrier(value: unknown): ConsistencyTraceCarrier | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	if (Object.keys(record).some((key) => key !== "traceparent" && key !== "tracestate")) return null;
+	return validTraceCarrier(JSON.stringify(record));
+}
+
+export function injectConsistencyTraceCarrier(): ConsistencyTraceCarrier | undefined {
+	const carrier: Record<string, string> = {};
+	propagation.inject(context.active(), carrier);
+	return validateConsistencyTraceCarrier(carrier) ?? undefined;
+}
+
+const MAX_CONSISTENCY_SERVING_EVENT_OCCURRENCES = 3;
+
+export interface ConsistencyServingSpan {
+	requestReceived(): void;
+	page(details: {
+		queryMs: number;
+		encodeMs: number;
+		sendMs: number;
+		rows: number;
+		tableIndex: number;
+	}): void;
+	backpressured(): void;
+	resumed(delayMs: number): void;
+	complete(terminal: "all_done"): void;
+	fail(error: unknown): void;
+}
+
+export function startConsistencyServing(carrier?: unknown): ConsistencyServingSpan {
+	const activeContext = context.active();
+	const validated = validateConsistencyTraceCarrier(carrier);
+	const parentContext: Context = validated
+		? extractRelayTraceContext(activeContext, validated)
+		: activeContext;
+	const span = telemetry.startSpan(
+		"sync.consistency.serve",
+		{
+			"consistency.serve.carrier_state": validated
+				? "extracted"
+				: carrier === undefined
+					? "absent"
+					: "invalid",
+		},
+		parentContext,
+	);
+	let pageCount = 0;
+	let frameCount = 0;
+	let rowCount = 0;
+	let queryMs = 0;
+	let encodeMs = 0;
+	let sendMs = 0;
+	let backpressureMs = 0;
+	let drainResumeCount = 0;
+	let firstPage = true;
+	let pressureStartedAt: number | undefined;
+	let ended = false;
+	const eventOccurrences = new Map<string, number>();
+	const addBoundedEvent = (
+		name: string,
+		attributes?: Record<string, string | number | boolean>,
+	): void => {
+		const occurrences = eventOccurrences.get(name) ?? 0;
+		if (occurrences >= MAX_CONSISTENCY_SERVING_EVENT_OCCURRENCES) return;
+		eventOccurrences.set(name, occurrences + 1);
+		span.addEvent(name, attributes);
+	};
+	const finish = (terminal: "all_done" | "error", error?: unknown): void => {
+		if (ended) return;
+		ended = true;
+		span.setAttribute?.("consistency.serve.page_count", pageCount);
+		span.setAttribute?.("consistency.serve.frame_count", frameCount);
+		span.setAttribute?.("consistency.serve.row_count", rowCount);
+		span.setAttribute?.("consistency.serve.table_count", tableIndexes.size);
+		span.setAttribute?.("consistency.serve.query_duration_ms", queryMs);
+		span.setAttribute?.("consistency.serve.encode_duration_ms", encodeMs);
+		span.setAttribute?.("consistency.serve.send_duration_ms", sendMs);
+		span.setAttribute?.("consistency.serve.backpressure_duration_ms", backpressureMs);
+		span.setAttribute?.("consistency.serve.drain_resume_count", drainResumeCount);
+		span.setAttribute?.("consistency.serve.terminal", terminal);
+		if (error !== undefined) span.recordException(errorValue(error));
+		span.addEvent(`sync.consistency.serve.${terminal}`);
+		span.setStatus({
+			code: error === undefined ? SpanStatusCode.OK : SpanStatusCode.ERROR,
+			...(error === undefined ? {} : { message: errorValue(error).message }),
+		});
+		span.end();
+	};
+	const now = () => (telemetry.now ?? performance.now)();
+	const tableIndexes = new Set<number>();
+	return {
+		requestReceived: () => span.addEvent("sync.consistency.serve.request_received"),
+		page(details) {
+			pageCount++;
+			frameCount++;
+			rowCount += details.rows;
+			tableIndexes.add(details.tableIndex);
+			queryMs += details.queryMs;
+			encodeMs += details.encodeMs;
+			sendMs += details.sendMs;
+			if (firstPage) {
+				firstPage = false;
+				span.addEvent("sync.consistency.serve.first_page", {
+					table_index: details.tableIndex,
+					row_count: details.rows,
+				});
+			}
+			if (details.queryMs > 1_000)
+				addBoundedEvent("sync.consistency.serve.slow_query", { duration_ms: details.queryMs });
+			if (details.encodeMs > 1_000)
+				addBoundedEvent("sync.consistency.serve.slow_encode", { duration_ms: details.encodeMs });
+			if (details.sendMs > 1_000)
+				addBoundedEvent("sync.consistency.serve.slow_send", { duration_ms: details.sendMs });
+			span.setAttribute?.("consistency.serve.table_count", tableIndexes.size);
+		},
+		backpressured() {
+			if (pressureStartedAt === undefined) {
+				pressureStartedAt = now();
+				addBoundedEvent("sync.consistency.serve.send_backpressure");
+			}
+		},
+		resumed(delayMs) {
+			drainResumeCount++;
+			backpressureMs += delayMs;
+			pressureStartedAt = undefined;
+			addBoundedEvent("sync.consistency.serve.drain_resume", {
+				delay_ms: delayMs,
+				count: drainResumeCount,
+			});
+		},
+		complete: () => finish("all_done"),
+		fail: (error) => finish("error", error),
+	};
 }
 
 function extractRelayTraceContext(

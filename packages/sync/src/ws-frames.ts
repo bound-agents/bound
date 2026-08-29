@@ -129,6 +129,11 @@ export type ReseedRequestPayload = {
 	reason: string;
 };
 
+export type W3CTraceCarrier = {
+	traceparent: string;
+	tracestate?: string;
+};
+
 export type ConsistencyRequestPayload = {
 	tables: string[];
 	request_id?: string;
@@ -139,6 +144,8 @@ export type ConsistencyRequestPayload = {
 	 */
 	resume_table_index?: number;
 	resume_offset?: number;
+	/** Optional W3C parent context for hub-side serving telemetry. */
+	trace_context?: W3CTraceCarrier;
 };
 
 export type ConsistencyResponsePayload = {
@@ -415,7 +422,14 @@ function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
 		case WsMessageType.RESEED_REQUEST:
 			return typeof p.reason === "string";
 		case WsMessageType.CONSISTENCY_REQUEST:
-			return Array.isArray(p.tables);
+			return (
+				Array.isArray(p.tables) &&
+				(p.trace_context === undefined ||
+					(isW3CTraceCarrier(p.trace_context) &&
+						Object.keys(p.trace_context).every(
+							(key) => key === "traceparent" || key === "tracestate",
+						)))
+			);
 		case WsMessageType.CONSISTENCY_RESPONSE:
 			return (
 				typeof p.table === "string" &&
@@ -446,4 +460,13 @@ function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
 		default:
 			return false;
 	}
+}
+
+function isW3CTraceCarrier(value: unknown): value is W3CTraceCarrier {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const carrier = value as Record<string, unknown>;
+	return (
+		typeof carrier.traceparent === "string" &&
+		(carrier.tracestate === undefined || typeof carrier.tracestate === "string")
+	);
 }
