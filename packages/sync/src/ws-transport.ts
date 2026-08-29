@@ -44,8 +44,11 @@ import {
 import {
 	type BackfillSpan,
 	type BackfillTrigger,
+	type ConsistencyServingSpan,
+	injectConsistencyTraceCarrier,
 	recordActiveConnection,
 	startBackfill,
+	startConsistencyServing,
 	startRelayOperation,
 	startReplicationDrain,
 } from "./telemetry.js";
@@ -245,6 +248,12 @@ export class WsTransport {
 			}
 		}
 		this.snapshotStates.delete(peerSiteId);
+
+		const consistencyState = this.pendingConsistencyStream.get(peerSiteId);
+		if (consistencyState) {
+			this.pendingConsistencyStream.delete(peerSiteId);
+			consistencyState.serving.fail(new Error("Consistency connection closed during backpressure"));
+		}
 
 		if (wasSeeding) {
 			// Remove the HLC_ZERO cursor so pruning can resume for other peers.
@@ -1802,6 +1811,7 @@ export class WsTransport {
 			request_id?: string;
 			resume_table_index?: number;
 			resume_offset?: number;
+			trace_context?: { traceparent: string; tracestate?: string };
 		},
 	): void {
 		if (!this.config.isHub) return;
@@ -1845,7 +1855,21 @@ export class WsTransport {
 				offset: resumeOffset,
 			});
 		}
-		this.streamConsistencyPages(peerSiteId, tables, resumeTable, resumeOffset, payload.request_id);
+		const serving = startConsistencyServing(payload.trace_context);
+		serving.requestReceived();
+		try {
+			this.streamConsistencyPages(
+				peerSiteId,
+				tables,
+				resumeTable,
+				resumeOffset,
+				payload.request_id,
+				serving,
+			);
+		} catch (error) {
+			serving.fail(error);
+			throw error;
+		}
 	}
 
 	private pendingConsistencyStream = new Map<
@@ -1857,6 +1881,8 @@ export class WsTransport {
 			nextOffset: number;
 			tables: SyncedTableName[];
 			requestId?: string;
+			serving: ConsistencyServingSpan;
+			backpressureStartedAt?: number;
 		}
 	>();
 
@@ -1866,9 +1892,13 @@ export class WsTransport {
 		tableIndex: number,
 		offset: number,
 		requestId?: string,
+		serving?: ConsistencyServingSpan,
 	): void {
 		const peer = this.peerConnections.get(peerSiteId);
-		if (!peer) return;
+		if (!peer) {
+			serving?.fail(new Error("Consistency peer is not connected"));
+			return;
+		}
 
 		const table = tables[tableIndex];
 		const pkCol = getPkColumn(table);
@@ -1882,6 +1912,7 @@ export class WsTransport {
 		// `syncableWhereClause` so the two sides cannot drift apart again.
 		const whereClause = syncableWhereClause(table);
 
+		const queryStartedAt = performance.now();
 		const countRow = this.config.db
 			.query(`SELECT COUNT(*) AS c FROM ${table}${whereClause}`)
 			.get() as {
@@ -1896,6 +1927,7 @@ export class WsTransport {
 			.query(`SELECT * FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
 			.all(pageSize + 1, offset) as Array<Record<string, unknown>>;
 
+		const queryMs = performance.now() - queryStartedAt;
 		const hasMore = rows.length > pageSize;
 		const pageRows = rows.slice(0, pageSize);
 		const pks = pageRows.map((r) => String(r[pkCol]));
@@ -1909,6 +1941,7 @@ export class WsTransport {
 		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
 		const nextOffset = hasMore ? offset + pageSize : 0;
 
+		const encodeStartedAt = performance.now();
 		const frame = encodeFrame(
 			WsMessageType.CONSISTENCY_RESPONSE,
 			{
@@ -1926,8 +1959,13 @@ export class WsTransport {
 			},
 			peer.symmetricKey,
 		);
+		const encodeMs = performance.now() - encodeStartedAt;
+		const sendStartedAt = performance.now();
 		const sent = peer.sendFrame(frame);
+		const sendMs = performance.now() - sendStartedAt;
+		serving?.page({ queryMs, encodeMs, sendMs, rows: pageRows.length, tableIndex });
 		if (!sent) {
+			serving?.backpressured();
 			this.pendingConsistencyStream.set(peerSiteId, {
 				frame,
 				allDone,
@@ -1935,17 +1973,31 @@ export class WsTransport {
 				nextOffset,
 				tables,
 				requestId,
+				serving: serving ?? startConsistencyServing(),
+				backpressureStartedAt: performance.now(),
 			});
 			return;
 		}
 
 		if (allDone) {
 			this.pendingConsistencyStream.delete(peerSiteId);
+			serving?.complete("all_done");
 			return;
 		}
 
 		setTimeout(() => {
-			this.streamConsistencyPages(peerSiteId, tables, nextTableIndex, nextOffset, requestId);
+			try {
+				this.streamConsistencyPages(
+					peerSiteId,
+					tables,
+					nextTableIndex,
+					nextOffset,
+					requestId,
+					serving,
+				);
+			} catch (error) {
+				serving?.fail(error);
+			}
 		}, 0);
 	}
 
@@ -1956,24 +2008,34 @@ export class WsTransport {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) {
 			this.pendingConsistencyStream.delete(peerSiteId);
+			state.serving.fail(new Error("Consistency peer disconnected before drain resume"));
 			return;
 		}
 
 		const sent = peer.sendFrame(state.frame);
 		if (!sent) return;
+		state.serving.resumed(performance.now() - (state.backpressureStartedAt ?? performance.now()));
 
 		this.pendingConsistencyStream.delete(peerSiteId);
 
-		if (state.allDone) return;
+		if (state.allDone) {
+			state.serving.complete("all_done");
+			return;
+		}
 
 		setTimeout(() => {
-			this.streamConsistencyPages(
-				peerSiteId,
-				state.tables,
-				state.nextTableIndex,
-				state.nextOffset,
-				state.requestId,
-			);
+			try {
+				this.streamConsistencyPages(
+					peerSiteId,
+					state.tables,
+					state.nextTableIndex,
+					state.nextOffset,
+					state.requestId,
+					state.serving,
+				);
+			} catch (error) {
+				state.serving.fail(error);
+			}
 		}, 0);
 	}
 
@@ -2026,7 +2088,8 @@ export class WsTransport {
 			request_id: string;
 			resume_table_index?: number;
 			resume_offset?: number;
-		} = { tables, request_id: requestId };
+			trace_context?: { traceparent: string; tracestate?: string };
+		} = { tables, request_id: requestId, trace_context: injectConsistencyTraceCarrier() };
 		if (resumeTableIndex > 0 || resumeOffset > 0) {
 			framePayload.resume_table_index = resumeTableIndex;
 			framePayload.resume_offset = resumeOffset;
