@@ -19,6 +19,7 @@ import {
 	mergeDiffPks,
 	readUndelivered,
 	syncableWhereClause,
+	validateColumnName,
 	writeOutbox,
 } from "@bound/core";
 import type {
@@ -1952,6 +1953,7 @@ export class WsTransport {
 				tables,
 				resumeTable,
 				resumeOffset,
+				undefined,
 				payload.request_id,
 				serving,
 			);
@@ -1995,6 +1997,7 @@ export class WsTransport {
 			allDone: boolean;
 			nextTableIndex: number;
 			nextOffset: number;
+			nextCursor?: string;
 			tables: SyncedTableName[];
 			requestId?: string;
 			serving: ConsistencyServingSpan;
@@ -2007,6 +2010,7 @@ export class WsTransport {
 		tables: SyncedTableName[],
 		tableIndex: number,
 		offset: number,
+		cursor: string | undefined,
 		requestId?: string,
 		serving?: ConsistencyServingSpan,
 	): void {
@@ -2018,6 +2022,7 @@ export class WsTransport {
 
 		const table = tables[tableIndex];
 		const pkCol = getPkColumn(table);
+		validateColumnName(pkCol);
 		const pageSize = WsTransport.CONSISTENCY_PAGE_SIZE;
 
 		// Exclude unsyncable rows (invariant #19: role='system' messages) from
@@ -2039,9 +2044,26 @@ export class WsTransport {
 		// content hashes for divergence detection. PK-only diff is insufficient
 		// because tier flips, soft-delete tombstones, and value mutations on
 		// rows present on both sides are silently skipped.
-		const rows = this.config.db
-			.query(`SELECT * FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
-			.all(pageSize + 1, offset) as Array<Record<string, unknown>>;
+		// Resume cursors on the wire remain (table_index, offset). A resumed
+		// request has no PK cursor, so it pays one legacy OFFSET query to locate
+		// its first page; every subsequent page carries its last-seen validated PK
+		// in this serving state and uses a keyset predicate instead.
+		const rows =
+			cursor === undefined && offset > 0
+				? (this.config.db
+						.query(`SELECT * FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
+						.all(pageSize + 1, offset) as Array<Record<string, unknown>>)
+				: (this.config.db
+						.query(
+							`SELECT * FROM ${table}${
+								cursor === undefined
+									? whereClause
+									: `${whereClause ? `${whereClause} AND` : " WHERE"} ${pkCol} > ?`
+							} ORDER BY ${pkCol} ASC LIMIT ?`,
+						)
+						.all(...(cursor === undefined ? [pageSize + 1] : [cursor, pageSize + 1])) as Array<
+						Record<string, unknown>
+					>);
 
 		const queryMs = performance.now() - queryStartedAt;
 		const hasMore = rows.length > pageSize;
@@ -2056,6 +2078,7 @@ export class WsTransport {
 		const allDone = isLastTable && !hasMore;
 		const nextTableIndex = hasMore ? tableIndex : tableIndex + 1;
 		const nextOffset = hasMore ? offset + pageSize : 0;
+		const nextCursor = hasMore ? String(pageRows.at(-1)?.[pkCol]) : undefined;
 
 		const encodeStartedAt = performance.now();
 		let frame = encodeFrame(
@@ -2107,6 +2130,7 @@ export class WsTransport {
 				allDone,
 				nextTableIndex,
 				nextOffset,
+				nextCursor,
 				tables,
 				requestId,
 				serving: serving ?? startConsistencyServing(),
@@ -2127,6 +2151,7 @@ export class WsTransport {
 					tables,
 					nextTableIndex,
 					nextOffset,
+					nextCursor,
 					requestId,
 					serving,
 				);
@@ -2165,6 +2190,7 @@ export class WsTransport {
 					state.tables,
 					state.nextTableIndex,
 					state.nextOffset,
+					state.nextCursor,
 					state.requestId,
 					state.serving,
 				);
