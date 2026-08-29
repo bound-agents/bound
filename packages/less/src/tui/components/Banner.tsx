@@ -1,6 +1,6 @@
-import { tokens } from "../theme";
 import { Box, Text, useInput } from "ink";
 import type React from "react";
+import { tokens } from "../theme";
 
 export interface BannerProps {
 	type: "error" | "info";

@@ -1,5 +1,5 @@
-import { tokens } from "../../theme";
 import { describe, expect, it } from "bun:test";
+import { tokens } from "../../theme";
 import { type StyledRun, wrapStyledRuns } from "../wrap-styled";
 
 /** Concatenate a visual line's runs back into its plain string. */

@@ -1,8 +1,8 @@
-import { tokens } from "../theme";
 import { formatYardValue } from "@bound/shared/yard-format";
 import { Text } from "ink";
 import type React from "react";
 import type { YardTreeSnapshot } from "../hooks/useYardExecutions";
+import { tokens } from "../theme";
 import { HighlightedCodeBlock } from "./HighlightedCode";
 import { StripeBox, formatDuration } from "./MessageBlock";
 

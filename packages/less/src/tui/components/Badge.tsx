@@ -1,6 +1,6 @@
-import { tokens } from "../theme";
 import { Text } from "ink";
 import type React from "react";
+import { tokens } from "../theme";
 
 export type BadgeStatus =
 	| "running"

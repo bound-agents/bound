@@ -1,4 +1,3 @@
-import { tokens } from "../theme";
 import { readFileSync } from "node:fs";
 import type { Message } from "@bound/shared";
 import { Box, Text, useInput } from "ink";
@@ -8,6 +7,7 @@ import { SelectList } from "../components";
 import { TokenSpan, highlightLineToRows, langFromPath } from "../components/HighlightedCode";
 import { summarizeToolArgs } from "../components/MessageBlock";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { tokens } from "../theme";
 import { extractFullText, parseBlocks } from "../util/message-text";
 import { tildifyPath } from "../util/path";
 import { stripTerminalControlSequences } from "../util/terminal-control";

@@ -1,9 +1,9 @@
-import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
 import type { McpServerConfig } from "../../config";
 import type { McpServerManager } from "../../mcp/manager";
 import { ActionBar, Badge, ModalOverlay, SelectList } from "../components";
+import { tokens } from "../theme";
 
 export interface McpViewProps {
 	mcpManager: McpServerManager;

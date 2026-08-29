@@ -1,4 +1,3 @@
-import { tokens } from "../theme";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ContentBlock } from "@bound/llm";
@@ -7,6 +6,7 @@ import { Box, Text } from "ink";
 import type React from "react";
 import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
+import { tokens } from "../theme";
 import { getImageGraphics, getImagePreview, parseImageDescription } from "../util/image-preview";
 import { linkifyPath } from "../util/osc8";
 import { tildifyPath, tildifyText } from "../util/path";
