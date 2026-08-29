@@ -394,7 +394,9 @@ export interface ConsistencyServingSpan {
 	/** Present only for request-scoped collectors after this span has ended. */
 	getTraceData?(): string | undefined;
 	page(details: {
-		queryMs: number;
+		countMs: number;
+		selectMs: number;
+		hashMs: number;
 		encodeMs: number;
 		sendMs: number;
 		rows: number;
@@ -435,6 +437,9 @@ export function startConsistencyServing(
 	let frameCount = 0;
 	let rowCount = 0;
 	let queryMs = 0;
+	let countMs = 0;
+	let selectMs = 0;
+	let hashMs = 0;
 	let encodeMs = 0;
 	let sendMs = 0;
 	let backpressureMs = 0;
@@ -461,6 +466,9 @@ export function startConsistencyServing(
 		span.setAttribute?.("consistency.serve.row_count", rowCount);
 		span.setAttribute?.("consistency.serve.table_count", tableIndexes.size);
 		span.setAttribute?.("consistency.serve.query_duration_ms", queryMs);
+		span.setAttribute?.("consistency.serve.count_duration_ms", countMs);
+		span.setAttribute?.("consistency.serve.select_duration_ms", selectMs);
+		span.setAttribute?.("consistency.serve.hash_duration_ms", hashMs);
 		span.setAttribute?.("consistency.serve.encode_duration_ms", encodeMs);
 		span.setAttribute?.("consistency.serve.send_duration_ms", sendMs);
 		span.setAttribute?.("consistency.serve.backpressure_duration_ms", backpressureMs);
@@ -485,7 +493,12 @@ export function startConsistencyServing(
 			frameCount++;
 			rowCount += details.rows;
 			tableIndexes.add(details.tableIndex);
-			queryMs += details.queryMs;
+			// The compatibility aggregate covers the full per-page serving work exactly once:
+			// count query + row select + content-hash computation.
+			queryMs += details.countMs + details.selectMs + details.hashMs;
+			countMs += details.countMs;
+			selectMs += details.selectMs;
+			hashMs += details.hashMs;
 			encodeMs += details.encodeMs;
 			sendMs += details.sendMs;
 			if (firstPage) {
@@ -495,8 +508,11 @@ export function startConsistencyServing(
 					row_count: details.rows,
 				});
 			}
-			if (details.queryMs > 1_000)
-				addBoundedEvent("sync.consistency.serve.slow_query", { duration_ms: details.queryMs });
+			// Keep slow-query alerts scoped to the database stages they historically measured;
+			// hashing remains visible in the aggregate and its dedicated duration attribute.
+			const databasePageMs = details.countMs + details.selectMs;
+			if (databasePageMs > 1_000)
+				addBoundedEvent("sync.consistency.serve.slow_query", { duration_ms: databasePageMs });
 			if (details.encodeMs > 1_000)
 				addBoundedEvent("sync.consistency.serve.slow_encode", { duration_ms: details.encodeMs });
 			if (details.sendMs > 1_000)
