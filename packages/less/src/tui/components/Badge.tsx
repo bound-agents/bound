@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Text } from "ink";
 import type React from "react";
 
@@ -10,12 +11,12 @@ export type BadgeStatus =
 	| "disconnected";
 
 const STATUS_COLORS: Record<BadgeStatus, string> = {
-	running: "green",
-	failed: "red",
-	disabled: "gray",
-	connected: "green",
-	connecting: "cyan",
-	disconnected: "yellow",
+	running: tokens.statusRunning,
+	failed: tokens.statusFailed,
+	disabled: tokens.statusDisabled,
+	connected: tokens.statusConnected,
+	connecting: tokens.statusConnecting,
+	disconnected: tokens.statusDisconnected,
 };
 
 export interface BadgeProps {

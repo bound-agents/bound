@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { formatYardValue } from "@bound/shared/yard-format";
 import { Text } from "ink";
 import type React from "react";
@@ -88,7 +89,7 @@ function durationMs(started?: string, finished?: string): number | null {
 }
 
 function DurationFragment({ ms }: { ms: number }): React.ReactElement {
-	const color = ms >= 60_000 ? "red" : ms >= 10_000 ? "yellow" : undefined;
+	const color = ms >= 60_000 ? tokens.durationCritical : ms >= 10_000 ? tokens.durationCaution : undefined;
 	return color ? (
 		<Text color={color}> · {formatDuration(ms)}</Text>
 	) : (
@@ -98,20 +99,20 @@ function DurationFragment({ ms }: { ms: number }): React.ReactElement {
 
 /** State → color, used for glyphs and the header phase word. */
 function phaseColor(phase: NodeState["phase"]): string {
-	if (phase === "completed") return "green";
-	if (phase === "failed") return "red";
-	return "yellow";
+	if (phase === "completed") return tokens.phaseCompleted;
+	if (phase === "failed") return tokens.phaseFailed;
+	return tokens.yardRunning;
 }
 
 /** Node kind → label color, so tool / inference / nested-run rows read apart. */
 function kindColor(node: NodeState): string | undefined {
 	switch (node.node.kind) {
 		case "run":
-			return "magenta";
+			return tokens.nodeRun;
 		case "tool":
-			return "cyan";
+			return tokens.nodeTool;
 		case "inference":
-			return "blue";
+			return tokens.nodeInference;
 	}
 }
 
@@ -306,13 +307,13 @@ export function YardExecutionCard({
 	const formatLang = (f: { isJson: boolean; isJavaScript?: boolean }): string =>
 		f.isJavaScript ? "javascript" : f.isJson ? "json" : "text";
 	return (
-		<StripeBox color="magenta" width={stripeWidth}>
+		<StripeBox color={tokens.yardStripe} width={stripeWidth}>
 			<Text>
-				<Text color="magenta" bold>
+				<Text color={tokens.yardStripe} bold>
 					Yard
 				</Text>
 				<Text dimColor> · </Text>
-				<Text color={running ? "yellow" : phaseColor(tree.phase)}>
+				<Text color={running ? tokens.yardRunning : phaseColor(tree.phase)}>
 					{running ? "running" : tree.phase}
 				</Text>
 				<Text dimColor> · </Text>
@@ -392,7 +393,7 @@ export function YardExecutionCard({
 					return (
 						<Text key={row.key} wrap="truncate-end">
 							<Text dimColor>{row.prefix}</Text>
-							<Text color="red">✗ #{row.index}</Text>
+							<Text color={tokens.phaseFailed}>✗ #{row.index}</Text>
 							<Text dimColor> · {clampLine(row.node.summary ?? "")}</Text>
 						</Text>
 					);
@@ -402,7 +403,7 @@ export function YardExecutionCard({
 					<Text key={row.key} wrap="truncate-end">
 						<Text dimColor>{row.prefix}</Text>
 						<Text color={phaseColor(row.node.phase)}>{glyph(row.node.phase)}</Text>{" "}
-						<Text color={row.node.phase === "failed" ? "red" : kindColor(row.node)}>
+						<Text color={row.node.phase === "failed" ? tokens.phaseFailed : kindColor(row.node)}>
 							{label(row.node)}
 						</Text>
 						{ms !== null ? <DurationFragment ms={ms} /> : null}
@@ -413,12 +414,12 @@ export function YardExecutionCard({
 			{!running && tree.resultPreview ? (
 				formattedResult === null || (!formattedResult.isJson && !formattedResult.isJavaScript) ? (
 					<Text wrap={previewWrap}>
-						<Text color="magenta">result · </Text>
+						<Text color={tokens.yardStripe}>result · </Text>
 						{preview(tree.resultPreview)}
 					</Text>
 				) : (
 					<>
-						<Text color="magenta">result · {formattedResult.hint}</Text>
+						<Text color={tokens.yardStripe}>result · {formattedResult.hint}</Text>
 						<HighlightedCodeBlock
 							code={formattedResult.display}
 							lang={formatLang(formattedResult)}

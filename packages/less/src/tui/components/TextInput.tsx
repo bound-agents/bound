@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text, useInput, useStdin } from "ink";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -582,7 +583,7 @@ export function TextInput({
 			{menuItems.slice(0, MENU_MAX_ITEMS).map((c, i) => (
 				<Text key={c.value} wrap="truncate-end">
 					<Text
-						color={i === menuSel ? "cyan" : undefined}
+						color={i === menuSel ? tokens.selectedRow : undefined}
 						bold={i === menuSel}
 						dimColor={i !== menuSel}
 					>

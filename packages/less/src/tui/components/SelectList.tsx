@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text, useInput, useStdout } from "ink";
 import type React from "react";
 import { useState } from "react";
@@ -85,7 +86,7 @@ export function SelectList<T>({
 
 	return (
 		<Box flexDirection="column">
-			{hasMoreAbove && <Text color="gray">↑ {start} more above</Text>}
+			{hasMoreAbove && <Text color={tokens.scrollIndicator}>↑ {start} more above</Text>}
 			{visible.map((item, i) => {
 				const absoluteIndex = start + i;
 				const rendered = renderItem(item, absoluteIndex === selectedIndex);
@@ -101,7 +102,7 @@ export function SelectList<T>({
 					</Box>
 				);
 			})}
-			{hasMoreBelow && <Text color="gray">↓ {total - end} more below</Text>}
+			{hasMoreBelow && <Text color={tokens.scrollIndicator}>↓ {total - end} more below</Text>}
 		</Box>
 	);
 }

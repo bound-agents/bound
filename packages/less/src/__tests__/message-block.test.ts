@@ -120,7 +120,7 @@ describe("MessageBlock", () => {
 				"";
 			expect(frame).toContain("+ const newValue = 2;");
 			const source = await Bun.file("packages/less/src/tui/components/MessageBlock.tsx").text();
-			expect(source).toContain('<Text color={line.kind === "added" ? "green" : "red"}>');
+			expect(source).toContain('<Text color={line.kind === "added" ? tokens.diffAdded : tokens.diffRemoved}>');
 			expect(source).not.toMatch(/<HighlightedLine[\s\S]{0,160}color=\{line\.kind/);
 			expect(source).not.toContain('lang={lang} color="green"');
 		} finally {
@@ -1409,3 +1409,6 @@ describe("remote tag on collapsed one-line results (#215)", () => {
 		expect(lastFrame()).not.toContain("[remote]");
 	});
 });
+
+
+[duration: 6.210s]

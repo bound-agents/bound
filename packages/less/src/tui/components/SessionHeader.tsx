@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
 import { tildifyPath } from "../util/path";
@@ -12,14 +13,14 @@ export function SessionHeader({ commitHash, cwd }: SessionHeaderProps): React.Re
 	return (
 		<Box flexDirection="row">
 			<Box flexDirection="column" marginRight={2}>
-				<Text color="cyan">{"     ▄▄▄▄▄▄▄     "}</Text>
-				<Text color="cyan">{"   ▄█████████▄   "}</Text>
-				<Text color="cyan">{"  ███       ███  "}</Text>
-				<Text color="cyan">{" ██   ▄███▄   ██ "}</Text>
-				<Text color="cyan">{" ██   ▀███▀   ██ "}</Text>
-				<Text color="cyan">{"  ███       ███  "}</Text>
-				<Text color="cyan">{"   ▀█████████▀   "}</Text>
-				<Text color="cyan">{"     ▀▀▀▀▀▀▀     "}</Text>
+				<Text color={tokens.commandHighlight}>{"     ▄▄▄▄▄▄▄     "}</Text>
+				<Text color={tokens.commandHighlight}>{"   ▄█████████▄   "}</Text>
+				<Text color={tokens.commandHighlight}>{"  ███       ███  "}</Text>
+				<Text color={tokens.commandHighlight}>{" ██   ▄███▄   ██ "}</Text>
+				<Text color={tokens.commandHighlight}>{" ██   ▀███▀   ██ "}</Text>
+				<Text color={tokens.commandHighlight}>{"  ███       ███  "}</Text>
+				<Text color={tokens.commandHighlight}>{"   ▀█████████▀   "}</Text>
+				<Text color={tokens.commandHighlight}>{"     ▀▀▀▀▀▀▀     "}</Text>
 			</Box>
 			<Box flexDirection="column" marginTop={1}>
 				<Box flexDirection="row">
@@ -27,7 +28,7 @@ export function SessionHeader({ commitHash, cwd }: SessionHeaderProps): React.Re
 					<Text dimColor>{" · "}</Text>
 					<Text dimColor>{commitHash}</Text>
 				</Box>
-				<Text color="cyan">Beginning service to the Boundless Satellite Station</Text>
+				<Text color={tokens.commandHighlight}>Beginning service to the Boundless Satellite Station</Text>
 				<Text dimColor>{tildifyPath(cwd)}</Text>
 			</Box>
 		</Box>
