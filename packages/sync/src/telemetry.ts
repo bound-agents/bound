@@ -400,6 +400,8 @@ export interface ConsistencyServingSpan {
 		encodeMs: number;
 		sendMs: number;
 		rows: number;
+		cacheHitCount?: number;
+		cacheMissCount?: number;
 		tableIndex: number;
 	}): void;
 	backpressured(): void;
@@ -518,6 +520,10 @@ export function startConsistencyServing(
 			if (details.sendMs > 1_000)
 				addBoundedEvent("sync.consistency.serve.slow_send", { duration_ms: details.sendMs });
 			span.setAttribute?.("consistency.serve.table_count", tableIndexes.size);
+			if (details.cacheHitCount !== undefined)
+				span.setAttribute?.("consistency.serve.cache_hit_count", details.cacheHitCount);
+			if (details.cacheMissCount !== undefined)
+				span.setAttribute?.("consistency.serve.cache_miss_count", details.cacheMissCount);
 		},
 		backpressured() {
 			if (pressureStartedAt === undefined) {

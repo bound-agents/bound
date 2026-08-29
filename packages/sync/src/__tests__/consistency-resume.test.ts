@@ -380,7 +380,7 @@ describe("consistency exchange resume", () => {
 				"mem-1",
 				"mem-2",
 			]);
-			expect(queries.filter((sql) => sql.includes("SELECT *"))).not.toContainEqual(
+			expect(queries.filter((sql) => sql.includes("SELECT id, modified_at"))).not.toContainEqual(
 				expect.stringContaining("OFFSET"),
 			);
 			expect(queries.filter((sql) => sql.includes("SELECT COUNT(*) AS c"))).toHaveLength(1);
@@ -393,7 +393,7 @@ describe("consistency exchange resume", () => {
 			});
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			expect(pages.flatMap((page) => page.pks)).toEqual(["c", "d", "e", "mem-1", "mem-2"]);
-			expect(queries.filter((sql) => sql.includes("SELECT *"))).toContainEqual(
+			expect(queries.filter((sql) => sql.includes("SELECT id, modified_at"))).toContainEqual(
 				expect.stringContaining("OFFSET"),
 			);
 		} finally {
@@ -525,7 +525,7 @@ describe("consistency exchange resume", () => {
 			hub.addPeer("spoke", () => true, key);
 			hub.handleConsistencyRequest("spoke", { tables: ["semantic_memory"], resume_offset: 2 });
 			await new Promise((r) => setTimeout(r, 40));
-			const pageQueries = queries.filter((sql) => sql.includes("SELECT *"));
+			const pageQueries = queries.filter((sql) => sql.includes("SELECT id, modified_at"));
 			expect(pageQueries.filter((sql) => sql.includes("OFFSET"))).toHaveLength(1);
 			expect(
 				pageQueries.filter((sql) => !sql.includes("OFFSET")).every((sql) => sql.includes("id > ?")),

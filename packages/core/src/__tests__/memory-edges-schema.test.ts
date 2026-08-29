@@ -52,7 +52,7 @@ describe("memory_edges schema and triggers", () => {
 
 			const triggers = db
 				.query(
-					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' ORDER BY name",
+					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%' ORDER BY name",
 				)
 				.all() as Array<{ name: string }>;
 
@@ -135,7 +135,9 @@ describe("memory_edges schema and triggers", () => {
 			applySchema(db);
 
 			const triggers = db
-				.query("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges'")
+				.query(
+					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%'",
+				)
 				.all() as Array<{ name: string }>;
 
 			expect(triggers.length).toBe(2);
@@ -177,7 +179,9 @@ describe("memory_edges schema and triggers", () => {
 
 			// Count triggers before second applySchema
 			const triggersBefore = db
-				.query("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges'")
+				.query(
+					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%'",
+				)
 				.all() as Array<{ name: string }>;
 			const countBefore = triggersBefore.length;
 
@@ -186,7 +190,9 @@ describe("memory_edges schema and triggers", () => {
 
 			// Verify trigger count unchanged
 			const triggersAfter = db
-				.query("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges'")
+				.query(
+					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%'",
+				)
 				.all() as Array<{ name: string }>;
 			const countAfter = triggersAfter.length;
 			expect(countAfter).toBe(countBefore);
@@ -206,7 +212,9 @@ describe("memory_edges schema and triggers", () => {
 			applySchema(db);
 
 			const triggers = db
-				.query("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges'")
+				.query(
+					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%'",
+				)
 				.all() as Array<{ name: string }>;
 
 			expect(triggers.length).toBe(2);

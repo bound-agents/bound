@@ -730,3 +730,8 @@ interface StreamChunkPayload {
 | `stream_id` | Stream ID for inference operations |
 
 The `turns` table also records relay metrics per agent turn: `relay_target` (host_name of the inference provider) and `relay_latency_ms` (time to first chunk). Both are NULL for local inference.
+
+
+### Local row-state hash cache
+
+Consistency pages select only the primary key and `modified_at`. `row_state_hashes` is a local-only, lazily warmed cache of the canonical SHA-256 state hash (every column except `modified_at`); cache misses fetch only the requested primary keys. `applySchema` installs generated INSERT/UPDATE/DELETE invalidation triggers for every synced table, so reducer, snapshot, outbox, and sanctioned raw-write paths all invalidate without relying on writer discipline. The cache is never synchronized or startup-backfilled.

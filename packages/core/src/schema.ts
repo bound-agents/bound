@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { HLC_ZERO } from "@bound/shared";
+import { SYNCED_TABLE_NAMES, getPkColumn, validateColumnName } from "./change-log.js";
 import { CANONICAL_RELATIONS } from "./memory-relations";
 
 /**
@@ -165,6 +166,33 @@ function ensureColumn(db: Database, table: string, column: string, type = "TEXT"
 	if (cols.length === 0) return; // table doesn't exist yet — CREATE will carry the column
 	if (cols.some((c) => c.name === column)) return;
 	db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+}
+
+export function installRowHashInvalidationTriggers(db: Database): void {
+	db.run(`
+		CREATE TABLE IF NOT EXISTS row_state_hashes (
+			table_name TEXT NOT NULL, pk TEXT NOT NULL, state_hash TEXT NOT NULL, hashed_at TEXT NOT NULL,
+			PRIMARY KEY (table_name, pk)
+		) STRICT, WITHOUT ROWID
+	`);
+	for (const table of SYNCED_TABLE_NAMES) {
+		const exists = db
+			.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+			.get(table);
+		if (!exists) continue;
+		validateColumnName(table);
+		const pk = getPkColumn(table);
+		validateColumnName(pk);
+		for (const [operation, reference] of [
+			["insert", "NEW"],
+			["update", "NEW"],
+			["delete", "OLD"],
+		] as const) {
+			db.run(
+				`CREATE TRIGGER IF NOT EXISTS rsh_inv_${table}_${operation} AFTER ${operation.toUpperCase()} ON ${table} BEGIN DELETE FROM row_state_hashes WHERE table_name = '${table}' AND pk = ${reference}.${pk}; END`,
+			);
+		}
+	}
 }
 
 export function applySchema(db: Database): void {
@@ -1166,4 +1194,6 @@ export function applySchema(db: Database): void {
 			WHERE deleted = 0 AND key NOT LIKE '_internal.%'
 		`);
 	}
+
+	installRowHashInvalidationTriggers(db);
 }

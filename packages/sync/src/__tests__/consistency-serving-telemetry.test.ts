@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
+import { applySchema } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { context, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -14,9 +15,11 @@ import { WsTransport } from "../ws-transport.js";
 
 const key = new Uint8Array(32).fill(9);
 
-function createDb(): Database {
+function createDb(withSchema = false): Database {
 	const db = new Database(":memory:");
-	db.run(`CREATE TABLE semantic_memory (
+	if (withSchema) applySchema(db);
+	else
+		db.run(`CREATE TABLE semantic_memory (
 		id TEXT PRIMARY KEY, key TEXT NOT NULL, value TEXT NOT NULL, source TEXT,
 		created_at TEXT NOT NULL, modified_at TEXT NOT NULL, last_accessed_at TEXT,
 		tier TEXT DEFAULT 'default', deleted INTEGER DEFAULT 0
@@ -49,7 +52,7 @@ afterEach(() => {
 describe("consistency serving telemetry", () => {
 	it("carries the spoke consistency parent through hub serving completion", async () => {
 		const { exporter, provider } = configureExporter();
-		const hubDb = createDb();
+		const hubDb = createDb(true);
 		hubDb.run(
 			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'k', 'v', 'now', 'now')",
 		);
@@ -108,6 +111,19 @@ describe("consistency serving telemetry", () => {
 				"consistency.serve.page_count": 1,
 				"consistency.serve.frame_count": 1,
 				"consistency.serve.terminal": "all_done",
+				"consistency.serve.cache_miss_count": 1,
+				"consistency.serve.cache_hit_count": 0,
+			});
+			await context.with(
+				trace.setSpan(context.active(), trace.getTracer("test").startSpan("sync.consistency.warm")),
+				() => spoke.requestConsistency(["semantic_memory"]),
+			);
+			const warm = JSON.parse(forwardedTraceData ?? "[]") as Array<{
+				attributes: Record<string, unknown>;
+			}>;
+			expect(warm[0]?.attributes).toMatchObject({
+				"consistency.serve.cache_hit_count": 1,
+				"consistency.serve.cache_miss_count": 0,
 			});
 		} finally {
 			spoke.stop();

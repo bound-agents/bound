@@ -88,8 +88,8 @@ describe("Relay Metrics", () => {
 				.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 				.all() as Array<{ name: string }>;
 
-			// 23 base tables + 1 FTS5 virtual table + 5 FTS5 shadow tables = 29
-			expect(tables.length).toBe(29);
+			// 24 base tables (including local-only row_state_hashes cache) + 1 FTS5 virtual table + 5 FTS5 shadow tables = 30
+			expect(tables.length).toBe(30);
 
 			db.close();
 		});
