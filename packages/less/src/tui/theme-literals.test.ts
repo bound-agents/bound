@@ -9,7 +9,7 @@ describe("TUI semantic theme", () => {
 		const offenders: string[] = [];
 		for (const pattern of ["**/*.ts", "**/*.tsx"]) {
 			for await (const path of new Glob(pattern).scan({ cwd: import.meta.dir })) {
-				if (path === "theme.ts") continue;
+				if (path === "theme.ts" || path === "theme-literals.test.ts") continue;
 				const source = await Bun.file(`${import.meta.dir}/${path}`).text();
 				if (DIRECT_COLOR_PROP.test(source) || STYLE_COLOR_VALUE.test(source)) offenders.push(path);
 			}

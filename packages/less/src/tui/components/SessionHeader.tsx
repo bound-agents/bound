@@ -1,6 +1,6 @@
-import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
+import { tokens } from "../theme";
 import { tildifyPath } from "../util/path";
 
 export interface SessionHeaderProps {

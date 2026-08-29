@@ -1,8 +1,8 @@
-import { tokens } from "../theme";
 import type { ConnectionState } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
 import { type SessionHudState, formatTokens, formatUsd } from "../hooks/useSessionHud";
+import { tokens } from "../theme";
 import { tildifyPath } from "../util/path";
 import { Badge } from "./Badge";
 

@@ -1,4 +1,3 @@
-import { tokens } from "../theme";
 import type { BoundClient, ConnectionState } from "@bound/client";
 import type { ContentBlock } from "@bound/llm";
 import { type Message, YARD_CLIENT_CALL_ID_PREFIX } from "@bound/shared";
@@ -27,6 +26,7 @@ import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { useSessionHud } from "../hooks/useSessionHud";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { type YardTreeSnapshot, useYardExecutions } from "../hooks/useYardExecutions";
+import { tokens } from "../theme";
 import { readClipboardImage } from "../util/clipboard-image";
 import { renderHalfBlocks } from "../util/half-blocks";
 import {

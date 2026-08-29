@@ -1,7 +1,7 @@
-import { tokens } from "../theme";
 import { Box, Text, useInput, useStdin } from "ink";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { tokens } from "../theme";
 import { expandTabs } from "../util/wrap";
 
 export interface SlashCompletion {

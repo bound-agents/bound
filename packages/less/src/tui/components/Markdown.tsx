@@ -1,6 +1,6 @@
-import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
+import { tokens } from "../theme";
 import { osc8Link } from "../util/osc8";
 import { type StyledRun, wrapStyledRuns } from "../util/wrap-styled";
 import { HighlightedCodeBlock } from "./HighlightedCode";

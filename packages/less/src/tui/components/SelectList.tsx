@@ -1,7 +1,7 @@
-import { tokens } from "../theme";
 import { Box, Text, useInput, useStdout } from "ink";
 import type React from "react";
 import { useState } from "react";
+import { tokens } from "../theme";
 
 export interface SelectListProps<T> {
 	items: T[];
