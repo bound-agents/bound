@@ -167,7 +167,12 @@ export function formatDuration(ms: number): string {
  * the reader parsing every number.
  */
 function DurationFragment({ ms }: { ms: number }): React.ReactElement {
-	const color = ms >= 60_000 ? tokens.durationCritical : ms >= 10_000 ? tokens.durationCaution : undefined;
+	const color =
+		ms >= 60_000
+			? tokens.durationCritical
+			: ms >= 10_000
+				? tokens.durationCaution
+				: undefined;
 	return color ? (
 		<Text color={color}> · {formatDuration(ms)}</Text>
 	) : (
@@ -769,7 +774,10 @@ export function MessageBlock({
 		// "sending…" cue so it reads as in-flight, not yet committed.
 		const isPending = message.id === PENDING_USER_MESSAGE_ID;
 		return (
-			<StripeBox color={isPending ? tokens.pendingStripe : tokens.userStripe} width={stripeWidth}>
+			<StripeBox
+				color={isPending ? tokens.pendingStripe : tokens.userStripe}
+				width={stripeWidth}
+			>
 				<Text bold color={isPending ? tokens.pendingStripe : tokens.userStripe}>
 					you{isPending ? <Text dimColor> · sending…</Text> : null}
 				</Text>
