@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { SyncedTableName } from "@bound/shared";
-import { CryptoHasher } from "bun";
 import { getPkColumn } from "./change-log.js";
+import { computeRowStateHash, getCachedRowStateHashes } from "./row-hash-cache.js";
 
 export interface TableDiff {
 	table: SyncedTableName;
@@ -174,39 +174,8 @@ export function compareAllTables(
  * how this protocol detects tier flips, soft-delete tombstones, and value
  * mutations that PK-set diff misses.
  */
-const HASH_EXCLUDED_COLUMNS = new Set(["modified_at"]);
-
-/**
- * Canonical serialization for hash computation. Must be deterministic across
- * peers: keys sorted alphabetically, undefined coerced to null, JSON-encoded
- * with no whitespace. We do not rely on JS's native object-key insertion
- * order; we explicitly sort.
- */
-function canonicalSerialize(row: Record<string, unknown>): string {
-	const keys = Object.keys(row)
-		.filter((k) => !HASH_EXCLUDED_COLUMNS.has(k))
-		.sort();
-	let out = "{";
-	for (let i = 0; i < keys.length; i++) {
-		if (i > 0) out += ",";
-		const k = keys[i];
-		const v = row[k];
-		out += `${JSON.stringify(k)}:${JSON.stringify(v ?? null)}`;
-	}
-	out += "}";
-	return out;
-}
-
-/**
- * Compute a deterministic SHA-256 hex hash over a row's content, excluding
- * `modified_at`. Used by the state-aware backfill protocol to detect
- * divergence on rows whose primary key exists on both sides.
- */
-export function hashRow(row: Record<string, unknown>): string {
-	const hasher = new CryptoHasher("sha256");
-	hasher.update(canonicalSerialize(row));
-	return hasher.digest("hex");
-}
+/** Compute the canonical state hash shared with the local row-hash cache. */
+export const hashRow = computeRowStateHash;
 
 /**
  * Per-row entry in the consistency check protocol. `modified_at` is included
@@ -230,13 +199,20 @@ export function getBackfillableEntriesSorted(
 	table: SyncedTableName,
 ): ConsistencyEntry[] {
 	const pkCol = getPkColumn(table);
-	const query = `SELECT * FROM ${table}${syncableWhereClause(table)} ORDER BY ${pkCol} ASC`;
+	const query = `SELECT ${pkCol}, modified_at FROM ${table}${syncableWhereClause(table)} ORDER BY ${pkCol} ASC`;
 	const rows = db.query(query).all() as Array<Record<string, unknown>>;
-	return rows.map((row) => ({
-		pk: String(row[pkCol]),
-		hash: hashRow(row),
-		modified_at: typeof row.modified_at === "string" ? row.modified_at : null,
-	}));
+	const cached = getCachedRowStateHashes(
+		db,
+		table,
+		rows.map((row) => String(row[pkCol])),
+	);
+	return rows.flatMap((row) => {
+		const pk = String(row[pkCol]);
+		const hash = cached.hashes.get(pk);
+		return hash
+			? [{ pk, hash, modified_at: typeof row.modified_at === "string" ? row.modified_at : null }]
+			: [];
+	});
 }
 
 /**

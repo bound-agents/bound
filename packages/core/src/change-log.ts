@@ -31,7 +31,27 @@ export function setChangelogEventBus(eventBus: TypedEventEmitter | null): void {
 }
 
 // Primary key column per synced table. Defaults to "id" for all others.
-const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
+export const SYNCED_TABLE_NAMES: SyncedTableName[] = [
+	"users",
+	"threads",
+	"messages",
+	"semantic_memory",
+	"tasks",
+	"files",
+	"hosts",
+	"cluster_config",
+	"advisories",
+	"skills",
+	"agents",
+	"memory_edges",
+	"connector_handles",
+	"webhooks",
+	"rss_feeds",
+	"client_sessions",
+	"turns",
+];
+
+export const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
 	hosts: "site_id",
 	cluster_config: "key",
 };

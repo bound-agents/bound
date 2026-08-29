@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ContextDebugInfo } from "@bound/shared";
 import { insertRow, updateRow } from "./change-log.js";
+import { installRowHashInvalidationTriggers } from "./schema.js";
 
 /**
  * A single LLM turn, recorded once per inference attempt. Rows replicate
@@ -115,6 +116,8 @@ export function applyMetricsSchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_turns_thread
 		ON turns(thread_id, created_at DESC)
 	`);
+
+	installRowHashInvalidationTriggers(db);
 
 	// Performance index for turns by created_at. The scheduler's daily-budget
 	// check (shouldSkipDueToBudget) sums cost_usd over a single calendar day and

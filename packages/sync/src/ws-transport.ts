@@ -10,8 +10,8 @@ import {
 	createChangeLogEntry,
 	getBackfillableEntriesSorted,
 	getBackfillablePksSorted,
+	getCachedRowStateHashes,
 	getPkColumn as getPkColumnTyped,
-	hashRow,
 	insertInbox,
 	markDelivered,
 	markDeliveredForTarget,
@@ -2047,42 +2047,35 @@ export class WsTransport {
 		}
 		const countMs = performance.now() - countStartedAt;
 
-		// State-aware backfill: select full rows so we can compute per-row
-		// content hashes for divergence detection. PK-only diff is insufficient
-		// because tier flips, soft-delete tombstones, and value mutations on
-		// rows present on both sides are silently skipped.
-		// Resume cursors on the wire remain (table_index, offset). A resumed
-		// request has no PK cursor, so it pays one legacy OFFSET query to locate
-		// its first page; every subsequent page carries its last-seen validated PK
-		// in this serving state and uses a keyset predicate instead.
+		// Metadata paging remains narrow; only cache misses read full rows.
 		const selectStartedAt = performance.now();
 		const rows =
 			cursor === undefined && offset > 0
 				? (this.config.db
-						.query(`SELECT * FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`)
+						.query(
+							`SELECT ${pkCol}, modified_at FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`,
+						)
 						.all(pageSize + 1, offset) as Array<Record<string, unknown>>)
 				: (this.config.db
 						.query(
-							`SELECT * FROM ${table}${
-								cursor === undefined
-									? whereClause
-									: `${whereClause ? `${whereClause} AND` : " WHERE"} ${pkCol} > ?`
-							} ORDER BY ${pkCol} ASC LIMIT ?`,
+							`SELECT ${pkCol}, modified_at FROM ${table}${cursor === undefined ? whereClause : `${whereClause ? `${whereClause} AND` : " WHERE"} ${pkCol} > ?`} ORDER BY ${pkCol} ASC LIMIT ?`,
 						)
 						.all(...(cursor === undefined ? [pageSize + 1] : [cursor, pageSize + 1])) as Array<
 						Record<string, unknown>
 					>);
-
 		const selectMs = performance.now() - selectStartedAt;
 		const hasMore = rows.length > pageSize;
 		const pageRows = rows.slice(0, pageSize);
-		const pks = pageRows.map((r) => String(r[pkCol]));
+		const pks = pageRows.map((row) => String(row[pkCol]));
 		const hashStartedAt = performance.now();
-		const entries = pageRows.map((r) => ({
-			pk: String(r[pkCol]),
-			hash: hashRow(r),
-			modified_at: typeof r.modified_at === "string" ? r.modified_at : null,
-		}));
+		const cached = getCachedRowStateHashes(this.config.db, table, pks);
+		const entries = pageRows.flatMap((row) => {
+			const pk = String(row[pkCol]);
+			const hash = cached.hashes.get(pk);
+			return hash
+				? [{ pk, hash, modified_at: typeof row.modified_at === "string" ? row.modified_at : null }]
+				: [];
+		});
 		const hashMs = performance.now() - hashStartedAt;
 		const isLastTable = tableIndex === tables.length - 1;
 		const allDone = isLastTable && !hasMore;
@@ -2119,6 +2112,8 @@ export class WsTransport {
 			encodeMs,
 			sendMs: 0,
 			rows: pageRows.length,
+			cacheHitCount: cached.cacheHitCount,
+			cacheMissCount: cached.cacheMissCount,
 			tableIndex,
 		});
 		if (allDone) {

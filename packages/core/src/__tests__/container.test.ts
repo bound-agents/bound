@@ -115,7 +115,7 @@ describe("DI Container", async () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(31); // ... + agents (#201) + 1 FTS5 virtual + 5 FTS5 shadow
+		expect(tables.length).toBe(32); // ... + agents (#201) + local-only row_state_hashes cache + 1 FTS5 virtual + 5 FTS5 shadow
 		testDb.close();
 	});
 });

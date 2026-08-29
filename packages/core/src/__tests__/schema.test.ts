@@ -70,9 +70,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 23 base tables + FTS5 virtual table + 5 FTS5 shadow tables = 29
+		// 24 base tables (including local-only row_state_hashes cache) + FTS5 virtual table + 5 FTS5 shadow tables = 30
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(24); // 23 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(25); // 24 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -253,8 +253,8 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 29 tables (23 base + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(29);
+		// Still exactly 30 tables (24 base, including local-only row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(30);
 
 		db.close();
 	});

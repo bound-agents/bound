@@ -1,5 +1,5 @@
 export { createDatabase, getSiteId } from "./database";
-export { applySchema } from "./schema";
+export { applySchema, installRowHashInvalidationTriggers } from "./schema";
 export {
 	getSyncedTableSchemas,
 	type ColumnInfo,
@@ -21,6 +21,11 @@ export {
 	validateColumnName,
 	getPkColumn,
 } from "./change-log";
+export {
+	getCachedRowStateHashes,
+	computeRowStateHash,
+	type CachedRowStateHashes,
+} from "./row-hash-cache";
 export {
 	syncableRowPredicate,
 	syncableWhereClause,
