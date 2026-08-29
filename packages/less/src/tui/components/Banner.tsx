@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text, useInput } from "ink";
 import type React from "react";
 
@@ -14,7 +15,7 @@ export interface BannerProps {
  * part of the banner rather than trailing text.
  */
 export function Banner({ type, message, onDismiss }: BannerProps): React.ReactElement {
-	const color = type === "error" ? "red" : "cyan";
+	const color = type === "error" ? tokens.bannerError : tokens.bannerInfo;
 	const icon = type === "error" ? "⚠" : "ℹ";
 
 	useInput(

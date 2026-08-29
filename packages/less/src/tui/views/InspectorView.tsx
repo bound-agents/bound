@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { readFileSync } from "node:fs";
 import type { Message } from "@bound/shared";
 import { Box, Text, useInput } from "ink";
@@ -94,7 +95,7 @@ export function buildInspectorItems(
 					label = `${use.name} ${firstNonEmptyLine(summary)}`;
 				}
 			}
-			items.push({ msg, glyph: "⏵", color: "cyan", time, label });
+			items.push({ msg, glyph: "⏵", color: tokens.toolRequestMarker, time, label });
 		} else if (msg.role === "tool_result") {
 			const isError = msg.exit_code != null && msg.exit_code !== 0;
 			const m = meta.get(msg.id);
@@ -103,16 +104,16 @@ export function buildInspectorItems(
 			items.push({
 				msg,
 				glyph: isError ? "✗" : "✓",
-				color: isError ? "red" : "green",
+				color: isError ? tokens.failureIndicator : tokens.successIndicator,
 				time,
 				label: `${name} · ${lineCount} ${lineCount === 1 ? "line" : "lines"}`,
 			});
 		} else if (msg.role === "user") {
-			items.push({ msg, glyph: "❯", color: "green", time, label: firstNonEmptyLine(text) });
+			items.push({ msg, glyph: "❯", color: tokens.userMarker, time, label: firstNonEmptyLine(text) });
 		} else if (msg.role === "assistant") {
-			items.push({ msg, glyph: "●", color: "white", time, label: firstNonEmptyLine(text) });
+			items.push({ msg, glyph: "●", color: tokens.assistantMarker, time, label: firstNonEmptyLine(text) });
 		} else {
-			items.push({ msg, glyph: "◦", color: "gray", time, label: firstNonEmptyLine(text) });
+			items.push({ msg, glyph: "◦", color: tokens.otherRoleMarker, time, label: firstNonEmptyLine(text) });
 		}
 	}
 	return items;
@@ -236,8 +237,8 @@ export function InspectorView({ messages, onClose }: InspectorViewProps): React.
 	const hiddenBelow = Math.max(0, bodyRows.length - scroll - visible.length);
 
 	return (
-		<Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
-			<Text bold color="magenta">
+		<Box flexDirection="column" borderStyle="round" borderColor={tokens.yardStripe} paddingX={1}>
+			<Text bold color={tokens.yardStripe}>
 				Inspector{selected ? "" : ` — ${items.length} messages`}
 			</Text>
 			{!selected ? (
@@ -251,7 +252,7 @@ export function InspectorView({ messages, onClose }: InspectorViewProps): React.
 						onCancel={onClose}
 						reservedRows={6}
 						renderItem={(it, sel) => (
-							<Text color={sel ? "magenta" : undefined} wrap="truncate-end">
+							<Text color={sel ? tokens.selectedRow : undefined} wrap="truncate-end">
 								{sel ? "❯ " : "  "}
 								<Text dimColor>{it.time} </Text>
 								<Text color={it.color}>{it.glyph}</Text> {it.label}
@@ -271,14 +272,14 @@ export function InspectorView({ messages, onClose }: InspectorViewProps): React.
 							received
 						</Text>
 					)}
-					{detail.hydrateError && <Text color="yellow">{detail.hydrateError}</Text>}
-					{scroll > 0 && <Text color="gray">↑ {scroll} more</Text>}
+					{detail.hydrateError && <Text color={tokens.warningNotice}>{detail.hydrateError}</Text>}
+					{scroll > 0 && <Text color={tokens.scrollIndicator}>↑ {scroll} more</Text>}
 					<Box flexDirection="column">
 						{visible.map((rowTokens, i) => (
 							<TokenSpan key={`ln-${scroll + i}`} tokens={rowTokens} />
 						))}
 					</Box>
-					{hiddenBelow > 0 && <Text color="gray">↓ {hiddenBelow} more</Text>}
+					{hiddenBelow > 0 && <Text color={tokens.scrollIndicator}>↓ {hiddenBelow} more</Text>}
 					<Text dimColor>↑/↓ scroll · PgUp/PgDn page · g/G ends · Esc back</Text>
 				</>
 			) : null}

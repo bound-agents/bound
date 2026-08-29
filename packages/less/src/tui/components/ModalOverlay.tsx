@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, useInput } from "ink";
 import type React from "react";
 
@@ -17,7 +18,7 @@ export function ModalOverlay({ onDismiss, children }: ModalOverlayProps): React.
 	);
 
 	return (
-		<Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={1}>
+		<Box flexDirection="column" borderStyle="round" borderColor={tokens.modalBorder} paddingX={1} paddingY={1}>
 			{children}
 		</Box>
 	);

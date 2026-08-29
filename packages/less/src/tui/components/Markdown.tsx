@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
 import { osc8Link } from "../util/osc8";
@@ -170,7 +171,7 @@ function elementsToRuns(node: MdNode, base: InlineStyle = {}): StyledRun[] {
 		// the affordance; the backticks were just noise). Taken as plain text so a
 		// nested element inside code can't smuggle styling in.
 		case "code":
-			return [{ ...base, color: "yellow", text: plainText(children) }];
+			return [{ ...base, color: tokens.inlineCode, text: plainText(children) }];
 		case "a": {
 			// Carry the href on the run; renderRun wraps the label in an OSC 8
 			// hyperlink escape at draw time. Recursing keeps styled link labels
@@ -178,7 +179,7 @@ function elementsToRuns(node: MdNode, base: InlineStyle = {}): StyledRun[] {
 			const href = node.props?.href;
 			return elementsToRuns(children, {
 				...base,
-				color: "cyan",
+				color: tokens.link,
 				underline: true,
 				hyperlink: typeof href === "string" ? href : undefined,
 			});
@@ -254,7 +255,7 @@ function renderProse(
 
 /** Heading colors by level; h1 is the only one that differs. */
 function headingColor(level: number): string {
-	return level === 1 ? "magenta" : "cyan";
+	return level === 1 ? tokens.headingPrimary : tokens.headingSecondary;
 }
 
 /**
@@ -291,7 +292,7 @@ function renderBlock(el: MdElement, index: number, width?: number): React.ReactE
 					borderRight={false}
 					borderTop={false}
 					borderBottom={false}
-					borderColor="gray"
+					borderColor={tokens.borderMuted}
 				>
 					{lang && (
 						<Text dimColor italic>
@@ -451,7 +452,7 @@ function renderBlock(el: MdElement, index: number, width?: number): React.ReactE
 				.filter((x): x is React.ReactElement => x !== null);
 			return (
 				<Box key={key} paddingLeft={1}>
-					<Text color="gray">{"\u2502"} </Text>
+					<Text color={tokens.borderMuted}>{"│"} </Text>
 					<Box flexDirection="column">{inner}</Box>
 				</Box>
 			);

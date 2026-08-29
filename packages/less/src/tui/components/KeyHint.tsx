@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
 
@@ -13,7 +14,7 @@ export interface KeyHintProps {
 export function KeyHint({ keys, label }: KeyHintProps): React.ReactElement {
 	return (
 		<Box>
-			<Text color="cyan">{keys}</Text>
+			<Text color={tokens.keyHint}>{keys}</Text>
 			<Text dimColor> {label}</Text>
 		</Box>
 	);

@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ContentBlock } from "@bound/llm";
@@ -166,7 +167,7 @@ export function formatDuration(ms: number): string {
  * the reader parsing every number.
  */
 function DurationFragment({ ms }: { ms: number }): React.ReactElement {
-	const color = ms >= 60_000 ? "red" : ms >= 10_000 ? "yellow" : undefined;
+	const color = ms >= 60_000 ? tokens.durationCritical : ms >= 10_000 ? tokens.durationCaution : undefined;
 	return color ? (
 		<Text color={color}> · {formatDuration(ms)}</Text>
 	) : (
@@ -364,7 +365,7 @@ function HashlineEditsBody({
 						width={codeWidth}
 						dim={line.kind === "removed"}
 						firstPrefix={
-							<Text color={line.kind === "added" ? "green" : "red"}>
+							<Text color={line.kind === "added" ? tokens.diffAdded : tokens.diffRemoved}>
 								{line.kind === "added" ? "+ " : "− "}
 							</Text>
 						}
@@ -398,7 +399,7 @@ function HashlineEditsBody({
 				: null;
 		rows.push(
 			<Text key={`h${ei}`}>
-				<Text color="red">− </Text>
+				<Text color={tokens.diffRemoved}>− </Text>
 				<Text dimColor>
 					{range}
 					{removedCount != null
@@ -419,7 +420,7 @@ function HashlineEditsBody({
 					line={contentLines[li]}
 					lang={lang}
 					width={codeWidth}
-					firstPrefix={<Text color="green">+ </Text>}
+					firstPrefix={<Text color={tokens.diffAdded}>+ </Text>}
 					contIndent="  "
 				/>,
 			);
@@ -468,7 +469,7 @@ function WritePreviewBody({
 					line={line}
 					lang={lang}
 					width={codeWidth}
-					firstPrefix={<Text color="green">+ </Text>}
+					firstPrefix={<Text color={tokens.diffAdded}>+ </Text>}
 					contIndent="  "
 				/>
 			))}
@@ -516,8 +517,8 @@ function ToolCallRow({
 		return (
 			<Box flexDirection="column">
 				<Text>
-					<Text color="cyan">⏵ </Text>
-					<Text color="cyan" bold>
+					<Text color={tokens.toolRequestMarker}>⏵ </Text>
+					<Text color={tokens.toolRequestMarker} bold>
 						{name}
 					</Text>
 					<Text dimColor> {linkedPath}</Text>
@@ -534,8 +535,8 @@ function ToolCallRow({
 		return (
 			<Box flexDirection="column">
 				<Text>
-					<Text color="cyan">⏵ </Text>
-					<Text color="cyan" bold>
+					<Text color={tokens.toolRequestMarker}>⏵ </Text>
+					<Text color={tokens.toolRequestMarker} bold>
 						{name}
 					</Text>
 					<Text dimColor>
@@ -552,9 +553,9 @@ function ToolCallRow({
 	const argSummary = summarizeToolArgs(block.name, block.input);
 	return (
 		<Text>
-			<Text color="cyan">⏵ </Text>
+			<Text color={tokens.toolRequestMarker}>⏵ </Text>
 			{isRemote && <Text dimColor>[remote] </Text>}
-			<Text color="cyan" bold>
+			<Text color={tokens.toolRequestMarker} bold>
 				{name}
 			</Text>
 			{argSummary ? <Text dimColor> {argSummary}</Text> : null}
@@ -768,8 +769,8 @@ export function MessageBlock({
 		// "sending…" cue so it reads as in-flight, not yet committed.
 		const isPending = message.id === PENDING_USER_MESSAGE_ID;
 		return (
-			<StripeBox color={isPending ? "gray" : "green"} width={stripeWidth}>
-				<Text bold color={isPending ? "gray" : "green"}>
+			<StripeBox color={isPending ? tokens.pendingStripe : tokens.userStripe} width={stripeWidth}>
+				<Text bold color={isPending ? tokens.pendingStripe : tokens.userStripe}>
 					you{isPending ? <Text dimColor> · sending…</Text> : null}
 				</Text>
 				{isPending ? (
@@ -801,9 +802,9 @@ export function MessageBlock({
 			? `cache ${formatCompactCount(cacheUsage.read)} r / ${formatCompactCount(cacheUsage.write)} w`
 			: null;
 		return (
-			<StripeBox color="cyan" width={stripeWidth}>
+			<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 				<Text>
-					<Text bold color="cyan">
+					<Text bold color={tokens.agentStripe}>
 						agent
 					</Text>
 					{activitySummary ? <Text dimColor> · {activitySummary}</Text> : null}
@@ -834,10 +835,10 @@ export function MessageBlock({
 
 		if (toolUses.length > 0) {
 			return (
-				<StripeBox color="cyan" width={stripeWidth}>
+				<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 					{inlineText && (
 						<Box flexDirection="column" marginBottom={toolUseBlocks.length > 0 ? 1 : 0}>
-							<Text bold color="cyan">
+							<Text bold color={tokens.agentStripe}>
 								agent
 							</Text>
 							<Markdown text={inlineText} />
@@ -852,10 +853,10 @@ export function MessageBlock({
 		}
 
 		return (
-			<StripeBox color="cyan" width={stripeWidth}>
+			<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 				<Text>
-					<Text color="cyan">⏵ </Text>
-					<Text color="cyan" bold>
+					<Text color={tokens.toolRequestMarker}>⏵ </Text>
+					<Text color={tokens.toolRequestMarker} bold>
 						{displayToolName(message.tool_name || "tool")}
 					</Text>
 					<Text dimColor>: {stripTerminalControlSequences(message.content)}</Text>
@@ -903,10 +904,10 @@ export function MessageBlock({
 		if (resolvedToolName === "aux") {
 			const clipped = clipToolResultSourceLines(allLines);
 			return (
-				<StripeBox color="cyan" width={stripeWidth}>
+				<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 					<Box flexDirection="column" paddingLeft={2}>
 						<Text>
-							<Text color="green" bold>
+							<Text color={tokens.successIndicator} bold>
 								✓
 							</Text>
 							<Text dimColor> aux</Text>
@@ -922,7 +923,7 @@ export function MessageBlock({
 		// the call header in long output).
 		const isError = message.exit_code != null && message.exit_code !== 0;
 		const indicator = isError ? "✗" : "✓";
-		const indicatorColor = isError ? "red" : "green";
+		const indicatorColor = isError ? tokens.failureIndicator : tokens.successIndicator;
 		// Render the tool NAME resolved upstream (e.g. "read"), never
 		// `message.tool_name` — on tool_result rows that column holds the opaque
 		// tool_use_id, which is noise in the TUI. When the name can't be resolved
@@ -979,7 +980,7 @@ export function MessageBlock({
 					? parseQuerySummary(allLines)
 					: lineCount;
 			return (
-				<StripeBox color="cyan" width={stripeWidth}>
+				<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 					{/* No paddingLeft: this line IS the invocation (the ⏵ call row
 					    was suppressed), so it sits at ⏵-column depth — indenting it
 					    like a result body made it read as an orphaned extra result
@@ -990,7 +991,7 @@ export function MessageBlock({
 								{indicator}
 							</Text>
 							{isRemoteResult && <Text dimColor> [remote]</Text>}
-							<Text color="cyan" bold>
+							<Text color={tokens.toolRequestMarker} bold>
 								{" "}
 								{toolName}
 							</Text>
@@ -1036,7 +1037,7 @@ export function MessageBlock({
 				: tildifyText(allLines[0] ?? "");
 			const linkedTarget = filePath ? linkifyPath(target, filePath, cwd) : target;
 			return (
-				<StripeBox color="cyan" width={stripeWidth}>
+				<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 					{/* Parallel groups: the call's listing is suppressed, so the
 					    diff/preview rides here with the request row — without it the
 					    change content would never commit at all. */}
@@ -1059,8 +1060,8 @@ export function MessageBlock({
 							{diffStat ? (
 								<>
 									<Text dimColor> · </Text>
-									<Text color="green">+{diffStat.added}</Text>
-									<Text color="red">
+									<Text color={tokens.diffAdded}>+{diffStat.added}</Text>
+									<Text color={tokens.diffRemoved}>
 										{" "}
 										−{diffStat.measured ? "" : "~"}
 										{diffStat.removed}
@@ -1215,7 +1216,7 @@ export function MessageBlock({
 		};
 
 		return (
-			<StripeBox color="cyan" width={stripeWidth}>
+			<StripeBox color={tokens.agentStripe} width={stripeWidth}>
 				{/* Parallel-group results re-render their ⏵ request row here so
 				    each result immediately follows its request — the call row's
 				    own listing is suppressed because <Static> commits it before
@@ -1241,7 +1242,7 @@ export function MessageBlock({
 						)}
 						<Text>{headerLabel}</Text>
 						{showExit && message.exit_code != null ? (
-							<Text color="red">
+							<Text color={tokens.failureIndicator}>
 								{" "}
 								· exit {message.exit_code}
 								{exitCodeHint(message.exit_code) ? ` (${exitCodeHint(message.exit_code)})` : ""}
@@ -1266,11 +1267,11 @@ export function MessageBlock({
 		// + "alert" header so it reads as a turn in the transcript like every
 		// other message, not as raw floating text (#139).
 		return (
-			<StripeBox color="red" width={stripeWidth}>
-				<Text bold color="red">
+			<StripeBox color={tokens.alertStripe} width={stripeWidth}>
+				<Text bold color={tokens.alertStripe}>
 					alert
 				</Text>
-				<Text color="red">
+				<Text color={tokens.alertStripe}>
 					{stripTerminalControlSequences(
 						typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent),
 					)}
@@ -1286,8 +1287,8 @@ export function MessageBlock({
 	// rather than raw dimmed text (#139).
 	if (message.role === "system" || message.role === "developer") {
 		return (
-			<StripeBox color="yellow" width={stripeWidth}>
-				<Text bold color="yellow">
+			<StripeBox color={tokens.systemStripe} width={stripeWidth}>
+				<Text bold color={tokens.systemStripe}>
 					system
 				</Text>
 				<Text>

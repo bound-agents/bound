@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import { Box, Text } from "ink";
 import type React from "react";
 import type { McpServerConfig } from "../../config";
@@ -36,7 +37,7 @@ export function McpView({
 				<Text bold>MCP Server Configuration</Text>
 
 				{items.length === 0 ? (
-					<Text color="yellow">No servers configured</Text>
+					<Text color={tokens.warningNotice}>No servers configured</Text>
 				) : (
 					<Box marginTop={1}>
 						<SelectList
@@ -51,8 +52,8 @@ export function McpView({
 									<Text> [</Text>
 									<Badge status={item.state?.status === "running" ? "connected" : "disconnected"} />
 									<Text>]</Text>
-									{!item.config.enabled && <Text color="yellow"> (disabled)</Text>}
-									{item.state?.error && <Text color="red"> {item.state.error}</Text>}
+									{!item.config.enabled && <Text color={tokens.warningNotice}> (disabled)</Text>}
+									{item.state?.error && <Text color={tokens.failureIndicator}> {item.state.error}</Text>}
 								</Box>
 							)}
 						/>

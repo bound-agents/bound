@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Message } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
+import { tokens } from "../tui/theme";
 import { buildToolResultMetaMap } from "../tui/views/ChatView";
 import {
 	InspectorView,
@@ -119,7 +120,7 @@ describe("buildInspectorItems", () => {
 		];
 		const items = buildInspectorItems(messages, buildToolResultMetaMap(messages));
 		expect(items[0].glyph).toBe("✗");
-		expect(items[0].color).toBe("red");
+		expect(items[0].color).toBe(tokens.failureIndicator);
 	});
 
 	it("slices an HH:MM:SS time from the ISO timestamp", () => {

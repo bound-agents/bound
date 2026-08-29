@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import type { ConnectionState } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
@@ -17,9 +18,9 @@ export interface StatusBarProps {
 
 /** Color for the context gauge: calm → caution → pressure. */
 export function contextGaugeColor(pct: number): string {
-	if (pct >= 0.85) return "red";
-	if (pct >= 0.6) return "yellow";
-	return "green";
+	if (pct >= 0.85) return tokens.contextGaugeCritical;
+	if (pct >= 0.6) return tokens.contextGaugeCaution;
+	return tokens.contextGaugeNormal;
 }
 
 /**
@@ -109,7 +110,7 @@ export function StatusBar({
 							</Text>
 						)}
 						{(showCtx || showCost) && showBg && sep}
-						{showBg && <Text color="magenta">● {bgCount} background</Text>}
+						{showBg && <Text color={tokens.backgroundWork}>● {bgCount} background</Text>}
 					</Text>
 				</Box>
 			)}
@@ -119,7 +120,7 @@ export function StatusBar({
 					<Text> </Text>
 					<Text dimColor>{threadId}</Text>
 					{sep}
-					<Text color="cyan">{model || "default"}</Text>
+					<Text color={tokens.modelName}>{model || "default"}</Text>
 					{mcpServerCount > 0 && (
 						<>
 							{sep}

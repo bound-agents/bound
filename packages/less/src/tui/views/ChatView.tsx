@@ -1,3 +1,4 @@
+import { tokens } from "../theme";
 import type { BoundClient, ConnectionState } from "@bound/client";
 import type { ContentBlock } from "@bound/llm";
 import { type Message, YARD_CLIENT_CALL_ID_PREFIX } from "@bound/shared";
@@ -591,10 +592,10 @@ export function ChatView({
 	// UI surfaces session state without the user having to scan the status bar.
 	const frameColor =
 		connectionState === "connected"
-			? "cyan"
+			? tokens.frameConnected
 			: connectionState === "disconnected"
-				? "red"
-				: "yellow";
+				? tokens.frameDisconnected
+				: tokens.frameConnecting;
 
 	// A dismissable banner captures 'x' to close (see Banner). While one is
 	// mounted it must steal focus from the chat input — ink broadcasts every
@@ -816,7 +817,7 @@ export function ChatView({
 							].map(([cmd, desc]) => (
 								<Box key={cmd}>
 									<Box width={18}>
-										<Text color="cyan">{cmd}</Text>
+										<Text color={tokens.commandHighlight}>{cmd}</Text>
 									</Box>
 									<Text>{desc}</Text>
 								</Box>
