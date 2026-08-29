@@ -9,7 +9,7 @@ import { installRowHashInvalidationTriggers } from "./schema.js";
  * across hosts via the change_log (append-only / hybrid reducer) so
  * cost/usage queries and the web context-debug panel span the whole
  * cluster. All columns replicate, including `context_debug`,
- * `relay_target`, and `relay_latency_ms` — a thread can bounce between
+ * `relay_target`, and `relay_latency_ms` â a thread can bounce between
  * hosts mid-run, so any host may be asked to render the full context
  * history for a thread.
  */
@@ -97,7 +97,7 @@ export function applyMetricsSchema(db: Database): void {
 		try {
 			db.run(`ALTER TABLE turns ADD COLUMN ${colName} ${decl}`);
 		} catch {
-			// Column already exists — fine.
+			// Column already exists â fine.
 		}
 	}
 
@@ -116,13 +116,17 @@ export function applyMetricsSchema(db: Database): void {
 		CREATE INDEX IF NOT EXISTS idx_turns_thread
 		ON turns(thread_id, created_at DESC)
 	`);
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_turns_consistency
+		ON turns(id, modified_at)
+	`);
 
 	installRowHashInvalidationTriggers(db);
 
 	// Performance index for turns by created_at. The scheduler's daily-budget
 	// check (shouldSkipDueToBudget) sums cost_usd over a single calendar day and
 	// runs per autonomous task on scheduler ticks. idx_turns_thread leads with
-	// thread_id, so a created_at-only range cannot use it — this index lets the
+	// thread_id, so a created_at-only range cannot use it â this index lets the
 	// sargable `created_at >= ? AND created_at < ?` bound SEARCH instead of SCAN
 	// the whole (growing) table.
 	db.run(`
@@ -145,7 +149,7 @@ function migrateTurnsIntToText(
 	const colDecls = cols.map((c) => {
 		if (c.name === "id") return "id TEXT PRIMARY KEY";
 		// Preserve NOT NULL constraint on model_id, tokens_in, tokens_out,
-		// created_at — these pre-existed in the legacy schema. Safest path
+		// created_at â these pre-existed in the legacy schema. Safest path
 		// is to rebuild from PRAGMA (which doesn't surface NOT NULL), so
 		// instead we re-declare the known-required columns explicitly and
 		// let the rest be nullable.
@@ -180,7 +184,7 @@ function migrateTurnsIntToText(
 /**
  * Insert a turn row. If `siteId` is provided, the row replicates via the
  * standard outbox (`insertRow`) so cost/usage and context-debug data are
- * visible from every host. Without `siteId` the row stays local — tests
+ * visible from every host. Without `siteId` the row stays local â tests
  * and utility scripts use this path.
  */
 export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): string {
@@ -221,7 +225,7 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 	}
 
 	// Update daily_summary for the calendar date of this turn. daily_summary
-	// is a local rollup — not synced — so this runs outside the outbox path.
+	// is a local rollup â not synced â so this runs outside the outbox path.
 	const date = turn.created_at.split("T")[0];
 	const existing = db.prepare("SELECT 1 FROM daily_summary WHERE date = ?").get(date);
 	if (existing) {

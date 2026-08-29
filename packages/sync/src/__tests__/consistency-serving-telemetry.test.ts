@@ -250,6 +250,8 @@ describe("consistency serving telemetry", () => {
 					encodeMs: 1_002,
 					sendMs: 1_003,
 					rows: 2,
+					cacheHitCount: 1,
+					cacheMissCount: 2,
 					tableIndex: 0,
 				});
 				serving.backpressured();
@@ -278,6 +280,8 @@ describe("consistency serving telemetry", () => {
 				"consistency.serve.send_duration_ms": 20_060,
 				"consistency.serve.backpressure_duration_ms": 200,
 				"consistency.serve.drain_resume_count": 20,
+				"consistency.serve.cache_hit_count": 20,
+				"consistency.serve.cache_miss_count": 40,
 				"consistency.serve.terminal": "all_done",
 			});
 			const attributes = span?.attributes;
