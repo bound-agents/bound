@@ -609,6 +609,11 @@ export function ChatView({
 	 * Parse and handle slash commands.
 	 */
 	const handleSubmit = async (input: string) => {
+		// Reject blank text before mutating UI state or calling the app-level sender,
+		// which otherwise creates an optimistic "sending…" placeholder before the
+		// server rejects the empty message.
+		if (!stagedImage && input.trim().length === 0) return;
+
 		setCommandError(null);
 		setShowHelp(false);
 
