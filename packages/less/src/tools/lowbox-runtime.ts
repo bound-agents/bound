@@ -5,7 +5,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { LOWBOX_EMBEDDED_HELPER, LOWBOX_HELPER_HASH } from "../_lowbox/embedded";
-import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy";
+import {
+	type ResolvedSandboxConfig,
+	type SandboxSpawnResult,
+	computeGitProtectedPaths,
+} from "./sandbox-policy";
 import type { ResolvedShell } from "./shell";
 
 export class LowboxUnavailableError extends Error {
@@ -120,6 +124,10 @@ export function buildLowboxArgs(
 		cfg.network,
 		...(testNamespace ? ["--test-namespace", testNamespace] : []),
 		...[policyCwd, cwd, tempRoot, ...cfg.writablePaths].flatMap((root) => ["--writable", root]),
+		...computeGitProtectedPaths(policyCwd, "win32", cfg.gitWorktreeMetadata).flatMap((path) => [
+			"--git-protected",
+			path,
+		]),
 	];
 }
 
