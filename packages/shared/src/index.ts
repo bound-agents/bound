@@ -31,6 +31,7 @@ export * from "./search.js";
 // Hashline read/edit format (issue #16): per-line content-hash anchors
 export * from "./hashline.js";
 export * from "./offload.js";
+export * from "./network.js";
 
 // Hybrid Logical Clocks
 export * from "./hlc.js";
