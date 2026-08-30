@@ -4,6 +4,7 @@ import type React from "react";
 import { useEffect, useState } from "react";
 import { ActionBar, ModalOverlay, SelectList, Spinner } from "../components";
 import { useTerminalSize } from "../hooks/useTerminalSize";
+import { tokens } from "../theme";
 import { formatThreadPickerLabel } from "./picker-label";
 
 export type PickerMode = "thread" | "model";
@@ -96,8 +97,10 @@ export function PickerView({
 						<Text> Loading...</Text>
 					</Box>
 				)}
-				{error && <Text color="red">Error: {error}</Text>}
-				{!loading && !error && items.length === 0 && <Text color="yellow">No items available</Text>}
+				{error && <Text color={tokens.bannerError}>Error: {error}</Text>}
+				{!loading && !error && items.length === 0 && (
+					<Text color={tokens.warningNotice}>No items available</Text>
+				)}
 				{!loading && !error && items.length > 0 && (
 					<Box marginTop={1}>
 						<SelectList
@@ -106,10 +109,10 @@ export function PickerView({
 							onCancel={onCancel}
 							renderItem={(item, selected) => (
 								<Text>
-									<Text color="cyan">{selected ? "› " : "  "}</Text>
+									<Text color={tokens.selectionCaret}>{selected ? "› " : "  "}</Text>
 									{item.label}
 									{mode === "model" && item.id === currentValue && (
-										<Text color="green" dimColor>
+										<Text color={tokens.successIndicator} dimColor>
 											{" (active)"}
 										</Text>
 									)}

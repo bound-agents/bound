@@ -28,7 +28,9 @@ export function SessionHeader({ commitHash, cwd }: SessionHeaderProps): React.Re
 					<Text dimColor>{" · "}</Text>
 					<Text dimColor>{commitHash}</Text>
 				</Box>
-				<Text color={tokens.commandHighlight}>Beginning service to the Boundless Satellite Station</Text>
+				<Text color={tokens.commandHighlight}>
+					Beginning service to the Boundless Satellite Station
+				</Text>
 				<Text dimColor>{tildifyPath(cwd)}</Text>
 			</Box>
 		</Box>

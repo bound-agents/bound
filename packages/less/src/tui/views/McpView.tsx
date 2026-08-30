@@ -53,7 +53,9 @@ export function McpView({
 									<Badge status={item.state?.status === "running" ? "connected" : "disconnected"} />
 									<Text>]</Text>
 									{!item.config.enabled && <Text color={tokens.warningNotice}> (disabled)</Text>}
-									{item.state?.error && <Text color={tokens.failureIndicator}> {item.state.error}</Text>}
+									{item.state?.error && (
+										<Text color={tokens.failureIndicator}> {item.state.error}</Text>
+									)}
 								</Box>
 							)}
 						/>
