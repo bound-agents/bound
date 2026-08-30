@@ -117,6 +117,21 @@ describe("ChatView slash commands", () => {
 	});
 });
 
+describe("ChatView submissions", () => {
+	it("does not submit empty or whitespace-only messages while a turn is active", async () => {
+		const onSendMessage = vi.fn();
+		const props = makeProps({ isProcessing: true, onSendMessage });
+		const { stdin, lastFrame } = render(React.createElement(ChatView, props));
+		await tick();
+
+		await typeAndSubmit(stdin, "");
+		await typeAndSubmit(stdin, "   ");
+
+		expect(onSendMessage).not.toHaveBeenCalled();
+		expect(lastFrame() ?? "").not.toContain("sending");
+	});
+});
+
 describe("ChatView active prop", () => {
 	it("renders dynamic content by default (active=true)", async () => {
 		const props = makeProps();
