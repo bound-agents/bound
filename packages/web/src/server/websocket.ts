@@ -1553,6 +1553,14 @@ export function createWebSocketHandler(
 	eventBus.on("client_tool_call:created", handleClientToolCallCreated);
 	eventBus.on("status:forward", handleStatusForward);
 	eventBus.on("stream:chunk", handleStreamChunk);
+	for (const type of ["aux:started", "aux:completed"] as const) {
+		eventBus.on(type, (data) => {
+			const payload = JSON.stringify({ type, data });
+			for (const [ws, conn] of clients) {
+				if (conn.subscriptions.has(data.parent_thread_id) && ws.readyState === 1) ws.send(payload);
+			}
+		});
+	}
 	eventBus.on("yard:execution", handleYardExecution);
 	eventBus.on("background:count", handleBackgroundCount);
 

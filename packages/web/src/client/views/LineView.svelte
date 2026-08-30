@@ -10,6 +10,7 @@ import McpAppPanel from "../components/McpAppPanel.svelte";
 import MessageList from "../components/MessageList.svelte";
 import ModelSelector from "../components/ModelSelector.svelte";
 import StatusChip from "../components/StatusChip.svelte";
+import { reduceActiveAuxRuns } from "../lib/aux-invoke-cards";
 import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
 import { formatRelativeTime } from "../lib/format-time";
 import type { McpAppHost } from "../lib/mcp-app-host";
@@ -51,7 +52,8 @@ let waitingSinceMessageCount = $state(0);
 let agentActive = $state(false);
 let agentState = $state<string | null>(null);
 let uploadStatus = $state<string | null>(null);
-let pendingFile = $state<File | null>(null);
+let pendingFiles = $state<File[]>([]);
+let activeAuxRuns = $state<Array<{ threadId: string; agentName: string }>>([]);
 let thread = $state<ThreadDetail | null>(null);
 let panelMode = $state<"context" | "debugger">("context");
 
@@ -121,6 +123,26 @@ function scanForAppPanels(): void {
 const unsubscribeWs = wsEvents.subscribe((events) => {
 	if (events.length === 0) return;
 	const last = events[events.length - 1];
+	if (last?.type === "aux:started" && typeof last.data === "object" && last.data !== null) {
+		const aux = last.data as { thread_id?: string; parent_thread_id?: string; agent_name?: string };
+		if (aux.parent_thread_id === threadId && aux.thread_id && aux.agent_name) {
+			activeAuxRuns = reduceActiveAuxRuns(activeAuxRuns, {
+				type: "aux:started",
+				thread_id: aux.thread_id,
+				agent_name: aux.agent_name,
+			});
+		}
+		return;
+	}
+	if (last?.type === "aux:completed" && typeof last.data === "object" && last.data !== null) {
+		const aux = last.data as { thread_id?: string; parent_thread_id?: string };
+		if (aux.parent_thread_id === threadId && aux.thread_id)
+			activeAuxRuns = reduceActiveAuxRuns(activeAuxRuns, {
+				type: "aux:completed",
+				thread_id: aux.thread_id,
+			});
+		return;
+	}
 	if (
 		last &&
 		last.type === "message:created" &&
@@ -268,7 +290,7 @@ onDestroy(() => {
 });
 
 async function handleSendMessage(): Promise<void> {
-	if (!inputText.trim() && !pendingFile) return;
+	if (!inputText.trim() && pendingFiles.length === 0) return;
 	if (sending) return;
 	sending = true;
 	try {
@@ -276,12 +298,14 @@ async function handleSendMessage(): Promise<void> {
 		// part of the send. If the upload fails, abort the whole send — keep the
 		// text and the held file so the user can retry — rather than dispatching
 		// a message that references a file that never landed.
-		let fileId: string | undefined;
-		if (pendingFile) {
-			uploadStatus = "Uploading…";
+		const fileIds: string[] = [];
+		if (pendingFiles.length > 0) {
+			uploadStatus = `Uploading ${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"}…`;
 			try {
-				const uploaded = await client.uploadFile(pendingFile, pendingFile.name);
-				fileId = uploaded.id ?? undefined;
+				for (const file of pendingFiles) {
+					const uploaded = await client.uploadFile(file, file.name);
+					if (uploaded.id) fileIds.push(uploaded.id);
+				}
 			} catch (error) {
 				console.error("Failed to upload attachment:", error);
 				uploadStatus = "Upload failed — message not sent";
@@ -290,10 +314,10 @@ async function handleSendMessage(): Promise<void> {
 		}
 		client.sendMessage(threadId, inputText.trim(), {
 			modelId: modelStore.getModel() || undefined,
-			fileId,
+			fileIds,
 		});
 		inputText = "";
-		pendingFile = null;
+		pendingFiles = [];
 		uploadStatus = null;
 		waitingSinceMessageCount = messages.length;
 		waiting = true;
@@ -317,15 +341,26 @@ let fileInputEl: HTMLInputElement | null = null;
 function handleFileChange(e: Event): void {
 	const input = e.target as HTMLInputElement;
 	if (!input.files || input.files.length === 0) return;
-	const file = input.files[0];
-	// #158: hold the file, don't upload yet — the upload happens on send.
-	pendingFile = file;
-	uploadStatus = `Attached · ${file.name}`;
+	// #158: hold files, don't upload yet — upload happens atomically on send.
+	pendingFiles = [...pendingFiles, ...Array.from(input.files)];
+	uploadStatus = `${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"} staged`;
 	input.value = "";
 }
 
 function handleBackClick(): void {
 	navigateTo(from ?? "/");
+}
+
+function handlePaste(e: ClipboardEvent): void {
+	const imageFiles = Array.from(e.clipboardData?.files ?? []).filter((file) =>
+		file.type.startsWith("image/"),
+	);
+	if (imageFiles.length === 0) return;
+	// Let text paste retain the browser default; image clipboard items become
+	// ordinary staged attachments and travel through the same upload path.
+	e.preventDefault();
+	pendingFiles = [...pendingFiles, ...imageFiles];
+	uploadStatus = `${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"} staged`;
 }
 
 function handleKeydown(e: KeyboardEvent): void {
@@ -440,6 +475,9 @@ function turnPreview(content: string): string {
 	<!-- Body: conversation + right panel -->
 	<div class="body">
 		<div class="conversation">
+			{#each activeAuxRuns as aux (aux.threadId)}
+				<div class="aux-running mono">aux: {aux.agentName} running · thread {aux.threadId}</div>
+			{/each}
 			<MessageList
 				{messages}
 				{waiting}
@@ -463,12 +501,13 @@ function turnPreview(content: string): string {
 						rows={2}
 						disabled={sending}
 						onkeydown={handleKeydown}
+						onpaste={handlePaste}
 					></textarea>
 					<button
 						class="dispatch"
 						class:active={inputText.trim().length > 0}
 						onclick={handleSendMessage}
-						disabled={sending || (!inputText.trim() && !pendingFile)}
+						disabled={sending || (!inputText.trim() && pendingFiles.length === 0)}
 					>
 						{sending ? "Sending" : "Dispatch"}
 					</button>
@@ -481,6 +520,7 @@ function turnPreview(content: string): string {
 						<input
 							type="file"
 							class="file-input"
+							multiple
 							onchange={handleFileChange}
 							bind:this={fileInputEl}
 						/>
@@ -1061,5 +1101,14 @@ function turnPreview(content: string): string {
 		.panel-body {
 			padding: 16px 14px;
 		}
+	}
+
+	.aux-running {
+		margin: 0.5rem 1rem;
+		padding: 0.55rem 0.7rem;
+		border-left: 3px solid var(--accent);
+		background: var(--paper-2);
+		color: var(--ink-2);
+		font-size: 0.78rem;
 	}
 </style>

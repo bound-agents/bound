@@ -682,7 +682,8 @@ export class BoundClient {
 					...(traceContext ? { trace_context: JSON.stringify(traceContext) } : {}),
 				};
 				if (options?.modelId) msg.model_id = options.modelId;
-				if (options?.fileId) msg.file_ids = [options.fileId];
+				if (options?.fileIds?.length) msg.file_ids = options.fileIds;
+				else if (options?.fileId) msg.file_ids = [options.fileId];
 				// Stamp the sender's UTC offset (minutes, east-of-UTC positive) so the
 				// server can render the user-message timestamp prefix in local wall-clock.
 				// getTimezoneOffset() returns minutes WEST of UTC (positive for west), so

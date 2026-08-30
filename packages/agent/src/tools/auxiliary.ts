@@ -373,6 +373,14 @@ async function handleInvoke(
 			agent_name: input.name,
 		};
 	}
+	// The child now exists durably. Surface this before the synchronous nested
+	// loop blocks the parent so subscribed UIs can render a live invocation card.
+	ctx.eventBus.emit("aux:started", {
+		thread_id: threadId,
+		parent_thread_id: parentThreadId,
+		agent_name: input.name,
+	});
+
 	insertRow(
 		ctx.db,
 		"messages",
@@ -418,28 +426,32 @@ async function handleInvoke(
 	// Synchronous mode: execute the nested loop and block for the result.
 	if (ctx.auxLoopRunner) {
 		const allowlistedTools = agent.tools ? (JSON.parse(agent.tools) as string[]) : null;
-		const result = await ctx.auxLoopRunner({
-			threadId,
-			agentId: agent.id,
-			persona: agent.persona,
-			modelHint: input.model ?? agent.model_hint ?? null,
-			allowlistedTools,
-			instructions: input.instructions,
-			userId: parentInfo.user_id,
-			parentThreadId: ctx.threadId,
-		});
-		// aux_thread rides the persisted tool_result row's metadata bag — the
-		// web chat view reads it to render the inline card linking to the aux
-		// thread (which is excluded from the thread directory, so that card is
-		// its only door). Metadata, not a content trailer: the LLM-visible
-		// content stays the summary alone.
-		if (result.error) {
-			return {
-				content: `Auxiliary agent '${input.name}' completed with error: ${result.error}`,
-				metadata: { aux_thread: threadId },
-			};
+		try {
+			const result = await ctx.auxLoopRunner({
+				threadId,
+				agentId: agent.id,
+				persona: agent.persona,
+				modelHint: input.model ?? agent.model_hint ?? null,
+				allowlistedTools,
+				instructions: input.instructions,
+				userId: parentInfo.user_id,
+				parentThreadId: ctx.threadId,
+			});
+			// aux_thread rides the persisted tool_result row's metadata bag — the
+			// web chat view reads it to render the inline card linking to the aux
+			// thread (which is excluded from the thread directory, so that card is
+			// its only door). Metadata, not a content trailer: the LLM-visible
+			// content stays the summary alone.
+			if (result.error) {
+				return {
+					content: `Auxiliary agent '${input.name}' completed with error: ${result.error}`,
+					metadata: { aux_thread: threadId },
+				};
+			}
+			return { content: extractAssistantText(result.summary), metadata: { aux_thread: threadId } };
+		} finally {
+			ctx.eventBus.emit("aux:completed", { thread_id: threadId, parent_thread_id: parentThreadId });
 		}
-		return { content: extractAssistantText(result.summary), metadata: { aux_thread: threadId } };
 	}
 
 	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}. Loop runner not available — thread is ready for manual execution.`;

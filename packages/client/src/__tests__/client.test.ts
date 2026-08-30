@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { BoundClient } from "../client";
 import type { BoundClientEvents, ToolDefinition } from "../types";
 
@@ -169,6 +169,14 @@ describe("AC2: BoundClient Merges BoundSocket", () => {
 			expect(() => {
 				client.sendMessage("thread-1", "hello", { modelId: "opus" });
 			}).not.toThrow();
+		});
+
+		it("sends every uploaded attachment id in one message", () => {
+			const client = new BoundClient("http://localhost:3001");
+			const send = vi.fn();
+			(client as unknown as { sendWsMessage: typeof send }).sendWsMessage = send;
+			client.sendMessage("thread-1", "hello", { fileIds: ["first", "second"] });
+			expect(send).toHaveBeenCalledWith(expect.objectContaining({ file_ids: ["first", "second"] }));
 		});
 	});
 

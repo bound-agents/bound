@@ -124,3 +124,21 @@ export function extractAuxInvokeRefs(
 	}
 	return refs;
 }
+
+export interface ActiveAuxRun {
+	threadId: string;
+	agentName: string;
+}
+
+/** Applies ephemeral aux lifecycle events without requiring a prior start frame. */
+export function reduceActiveAuxRuns(
+	runs: ActiveAuxRun[],
+	event: { type: "aux:started" | "aux:completed"; thread_id: string; agent_name?: string },
+): ActiveAuxRun[] {
+	if (event.type === "aux:completed") return runs.filter((run) => run.threadId !== event.thread_id);
+	if (!event.agent_name) return runs;
+	return [
+		...runs.filter((run) => run.threadId !== event.thread_id),
+		{ threadId: event.thread_id, agentName: event.agent_name },
+	];
+}

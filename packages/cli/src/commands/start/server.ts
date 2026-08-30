@@ -626,6 +626,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							appContext.siteId,
 							appContext.eventBus,
 						);
+						appContext.eventBus.emit("aux:completed", {
+							thread_id,
+							parent_thread_id: seed.parentThreadId,
+						});
 					} else {
 						// Already delivered — this is the spurious re-wake the guard exists
 						// for. Push the recomputed count so a stale client indicator

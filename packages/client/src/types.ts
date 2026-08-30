@@ -46,6 +46,8 @@ export interface CreateThreadOptions {
 export interface SendMessageOptions {
 	modelId?: string;
 	fileId?: string;
+	/** Multiple uploaded file attachments. Takes precedence over fileId when present. */
+	fileIds?: string[];
 	/**
 	 * Sender's UTC offset in minutes, east-of-UTC positive (EDT=-240, JST=+540).
 	 * Defaults to the host's local offset (`-new Date().getTimezoneOffset()`),
@@ -577,6 +579,12 @@ export interface BoundClientEvents {
 		model: string | null;
 	}) => void;
 	"stream:chunk": (data: { thread_id: string; chunk: WsStreamChunk }) => void;
+	"aux:started": (data: {
+		thread_id: string;
+		parent_thread_id: string;
+		agent_name: string;
+	}) => void;
+	"aux:completed": (data: { thread_id: string; parent_thread_id: string }) => void;
 	"yard:execution": (data: YardExecutionEvent) => void;
 	/**
 	 * Number of background (deferred, #76) tool calls in flight on a thread.
