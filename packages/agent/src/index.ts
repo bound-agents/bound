@@ -31,7 +31,13 @@ export {
 } from "./relay-wait$.js";
 
 // Export model resolution
-export { resolveModel, resolveModelTier, resolveSameTierFallback } from "./model-resolution";
+export {
+	MAX_MODEL_RECONNECT_WAIT_MS,
+	resolveModel,
+	resolveModelTier,
+	resolveSameTierFallback,
+	waitForModelResolution,
+} from "./model-resolution";
 export { createModelCommandSpec } from "./platform-command-handlers";
 export type { PlatformCommandHandlerDeps } from "./platform-command-handlers";
 
@@ -61,6 +67,7 @@ export {
 	calculateTurnCost,
 	estimateMaxTurnCost,
 	createFileRefResolver,
+	extractAssistantText,
 } from "./agent-loop-utils";
 export {
 	HandleMessageTracker,

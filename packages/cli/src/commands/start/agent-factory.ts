@@ -10,6 +10,7 @@ import {
 	createAgentTools,
 	createBuiltInTools,
 	dispatchAwaitableClientTool,
+	extractAssistantText,
 } from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
@@ -382,7 +383,9 @@ export function createAgentLoopFactory(
 
 			const loopResult = await auxLoop.run();
 
-			// Extract the last assistant message as the summary
+			// Extended-thinking and tool-use turns persist a ContentBlock[] transcript
+			// for provider replay. An aux result is its final visible assistant text,
+			// not that private/internal persistence representation.
 			const lastAssistant = appContext.db
 				.prepare(
 					"SELECT content FROM messages WHERE thread_id = ? AND role = 'assistant' AND deleted = 0 ORDER BY created_at DESC LIMIT 1",
@@ -390,7 +393,7 @@ export function createAgentLoopFactory(
 				.get(params.threadId) as { content: string } | null;
 
 			return {
-				summary: lastAssistant?.content ?? "(no response)",
+				summary: lastAssistant ? extractAssistantText(lastAssistant.content) : "(no response)",
 				error: loopResult.error,
 			};
 		};
