@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,7 +37,7 @@ import {
  */
 describe("resolveSandboxConfig", () => {
 	it("defaults to ON when the setting is absent (opt-out)", () => {
-		expect(resolveSandboxConfig(undefined)).toEqual({
+		expect(resolveSandboxConfig(undefined)).toMatchObject({
 			enabled: true,
 			writablePaths: [],
 			network: "open",
@@ -37,7 +46,7 @@ describe("resolveSandboxConfig", () => {
 	});
 
 	it("treats `true` as the same enabled default", () => {
-		expect(resolveSandboxConfig(true)).toEqual({
+		expect(resolveSandboxConfig(true)).toMatchObject({
 			enabled: true,
 			writablePaths: [],
 			network: "open",
@@ -46,7 +55,7 @@ describe("resolveSandboxConfig", () => {
 	});
 
 	it("treats `false` as fully disabled", () => {
-		expect(resolveSandboxConfig(false)).toEqual({
+		expect(resolveSandboxConfig(false)).toMatchObject({
 			enabled: false,
 			writablePaths: [],
 			network: "open",
@@ -55,7 +64,7 @@ describe("resolveSandboxConfig", () => {
 	});
 
 	it("fills per-field defaults for a partial object", () => {
-		expect(resolveSandboxConfig({ writablePaths: ["/opt/extra"] })).toEqual({
+		expect(resolveSandboxConfig({ writablePaths: ["/opt/extra"] })).toMatchObject({
 			enabled: true,
 			writablePaths: ["/opt/extra"],
 			network: "open",
@@ -71,7 +80,7 @@ describe("resolveSandboxConfig", () => {
 				network: "blocked",
 				onUnavailable: "error",
 			}),
-		).toEqual({
+		).toMatchObject({
 			enabled: true,
 			writablePaths: ["/a", "/b"],
 			network: "blocked",
@@ -177,11 +186,22 @@ describe("computeWritableRoots (git worktree gitdir resolution)", () => {
 		if (root) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
-	it("adds the worktree gitdir and shared commondir to the writable set", () => {
-		// Mirror git's worktree layout: the main repo's .git holds a per-worktree
-		// gitdir under .git/worktrees/<name>, the worktree's own .git is a FILE
-		// pointing at it, and that gitdir's `commondir` file points back at the
-		// shared .git (where objects/ and packed-refs live). Both are OUTSIDE cwd.
+	it("does not grant paths named by a workspace-created .git pointer without startup metadata", () => {
+		const worktree = join(root, "workspace");
+		const operatorSsh = join(root, "operator-home", ".ssh");
+		mkdirSync(worktree, { recursive: true });
+		mkdirSync(operatorSsh, { recursive: true });
+		writeFileSync(join(worktree, ".git"), `gitdir: ${operatorSsh}\n`);
+
+		const roots = computeWritableRoots(worktree, cfg);
+		expect(roots).toContain(realpathSync(worktree));
+		expect(roots).not.toContain(realpathSync(operatorSsh));
+	});
+
+	it("preserves real linked-worktree git writes from metadata captured before tools run", () => {
+		// Mirror git's linked-worktree layout. The trust boundary is the metadata
+		// captured at session startup, not the workspace-controlled .git file read
+		// later by an untrusted tool invocation.
 		const mainGit = join(root, "repo", ".git");
 		const wtGitdir = join(mainGit, "worktrees", "wt1");
 		const worktree = join(root, "repo", ".worktrees", "wt1");
@@ -190,13 +210,14 @@ describe("computeWritableRoots (git worktree gitdir resolution)", () => {
 		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
 		writeFileSync(join(wtGitdir, "commondir"), "../..\n");
 
-		const roots = computeWritableRoots(worktree, cfg);
+		const metadata = { gitdir: wtGitdir, commondir: mainGit, protectedPaths: [] };
+		const roots = computeWritableRoots(worktree, { ...cfg, gitWorktreeMetadata: metadata });
 		expect(roots).toContain(realpathSync(worktree));
 		expect(roots).toContain(realpathSync(wtGitdir));
 		expect(roots).toContain(realpathSync(mainGit));
 	});
 
-	it("resolves an absolute commondir as-is", () => {
+	it("resolves an absolute commondir as-is when it was captured at startup", () => {
 		const mainGit = join(root, "repo", ".git");
 		const wtGitdir = join(mainGit, "worktrees", "wt1");
 		const worktree = join(root, "elsewhere", "wt1");
@@ -205,12 +226,13 @@ describe("computeWritableRoots (git worktree gitdir resolution)", () => {
 		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
 		writeFileSync(join(wtGitdir, "commondir"), `${mainGit}\n`);
 
-		const roots = computeWritableRoots(worktree, cfg);
+		const metadata = { gitdir: wtGitdir, commondir: mainGit, protectedPaths: [] };
+		const roots = computeWritableRoots(worktree, { ...cfg, gitWorktreeMetadata: metadata });
 		expect(roots).toContain(realpathSync(wtGitdir));
 		expect(roots).toContain(realpathSync(mainGit));
 	});
 
-	it("falls back to the gitdir alone when no commondir file exists", () => {
+	it("fails closed for a linked worktree when no trusted startup metadata was captured", () => {
 		const wtGitdir = join(root, "bare-gitdir");
 		const worktree = join(root, "wt");
 		mkdirSync(wtGitdir, { recursive: true });
@@ -218,7 +240,96 @@ describe("computeWritableRoots (git worktree gitdir resolution)", () => {
 		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
 
 		const roots = computeWritableRoots(worktree, cfg);
-		expect(roots).toContain(realpathSync(wtGitdir));
+		expect(roots).not.toContain(realpathSync(wtGitdir));
+	});
+
+	it("protects linked-worktree shared config, hooks, configured hooks, and per-worktree config", () => {
+		const mainGit = join(root, "repo", ".git");
+		const wtGitdir = join(mainGit, "worktrees", "wt1");
+		const worktree = join(root, "repo", ".worktrees", "wt1");
+		const configuredHooks = join(worktree, ".hooks");
+		mkdirSync(join(mainGit, "hooks"), { recursive: true });
+		mkdirSync(configuredHooks, { recursive: true });
+		mkdirSync(wtGitdir, { recursive: true });
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitdir}\n`);
+		writeFileSync(join(wtGitdir, "commondir"), "../..\n");
+		writeFileSync(join(mainGit, "config"), "[core]\n\thooksPath = .hooks\n");
+		writeFileSync(join(wtGitdir, "config.worktree"), "[core]\n\tbare = false\n");
+
+		const metadata = {
+			gitdir: wtGitdir,
+			commondir: mainGit,
+			protectedPaths: [
+				realpathSync(join(mainGit, "config")),
+				realpathSync(join(mainGit, "hooks")),
+				realpathSync(configuredHooks),
+				realpathSync(join(wtGitdir, "config.worktree")),
+			],
+		};
+		const paths = computeGitProtectedPaths(worktree, "linux", metadata);
+		expect(paths).toContain(realpathSync(join(mainGit, "config")));
+		expect(paths).toContain(realpathSync(join(mainGit, "hooks")));
+		expect(paths).toContain(realpathSync(configuredHooks));
+		expect(paths).toContain(realpathSync(join(wtGitdir, "config.worktree")));
+	});
+
+	it("pins session metadata before a later .git replacement and honors quoted effective hooksPath", () => {
+		const repo = join(root, "repo");
+		const worktree = join(root, "linked");
+		const gitHome = join(root, "git-home");
+		mkdirSync(gitHome);
+		const gitEnv = {
+			...process.env,
+			HOME: gitHome,
+			GIT_CONFIG_GLOBAL: "/dev/null",
+			GIT_CONFIG_SYSTEM: "/dev/null",
+			GIT_TERMINAL_PROMPT: "0",
+		};
+		for (const key of [
+			"GIT_DIR",
+			"GIT_WORK_TREE",
+			"GIT_INDEX_FILE",
+			"GIT_COMMON_DIR",
+			"GIT_OBJECT_DIRECTORY",
+			"GIT_NAMESPACE",
+			"GIT_PREFIX",
+		]) {
+			delete gitEnv[key];
+		}
+		const runGit = (args: string[], encoding?: "utf8") =>
+			execFileSync("git", args, { env: gitEnv, ...(encoding ? { encoding } : {}) });
+
+		runGit(["init", repo]);
+		runGit(["-C", repo, "config", "user.email", "test@example.invalid"]);
+		runGit(["-C", repo, "config", "user.name", "Test"]);
+		writeFileSync(join(repo, "tracked"), "x");
+		runGit(["-C", repo, "add", "tracked"]);
+		runGit(["-C", repo, "commit", "-m", "init"]);
+		runGit(["-C", repo, "worktree", "add", worktree]);
+		const hooks = join(worktree, ".hooks with spaces");
+		mkdirSync(hooks);
+		// config.worktree takes precedence here; Git (rather than a local regex)
+		// must parse the quotes and resolve the relative value before session startup.
+		runGit(["-C", repo, "config", "extensions.worktreeConfig", "true"]);
+		writeFileSync(join(worktree, ".git"), readFileSync(join(worktree, ".git"), "utf8"));
+		const gitdir = String(runGit(["-C", worktree, "rev-parse", "--git-dir"], "utf8")).trim();
+		writeFileSync(join(worktree, ".git"), `gitdir: ${gitdir}\n`);
+		writeFileSync(join(gitdir, "config.worktree"), '[core]\n\thooksPath = ".hooks with spaces"\n');
+
+		const session = resolveSandboxConfig(undefined, worktree);
+		const original = session.gitWorktreeMetadata;
+		if (!original) throw new Error("expected startup git worktree metadata");
+		expect(original.protectedPaths).toContain(realpathSync(hooks));
+		const attacker = join(root, "operator-home", ".ssh");
+		mkdirSync(attacker, { recursive: true });
+		writeFileSync(join(worktree, ".git"), `gitdir: ${attacker}\n`);
+
+		const roots = computeWritableRoots(worktree, session);
+		expect(roots).toContain(original.gitdir);
+		expect(roots).toContain(original.commondir);
+		expect(roots).not.toContain(realpathSync(attacker));
+		expect(computeGitProtectedPaths(worktree, undefined, original)).toContain(realpathSync(hooks));
 	});
 
 	it("leaves a normal checkout unaffected (.git is a directory, already under cwd)", () => {

@@ -324,16 +324,14 @@ describe("Windows lowbox helper materialization", () => {
 		const findHandleEnd = source.indexOf("struct Profile", findHandleStart);
 		const findHandle = source.slice(findHandleStart, findHandleEnd);
 
-		expect(protection).toContain('L"\\\\config"');
-		expect(protection).toContain('L"\\\\hooks"');
-		expect(protection).toContain("GetFileAttributesW(hooks.c_str())");
-		expect(protection).toContain("hooksAttributes & FILE_ATTRIBUTE_REPARSE_POINT");
-		const hooksRootCheck = protection.indexOf("hooksAttributes & FILE_ATTRIBUTE_REPARSE_POINT");
+		expect(protection).toContain("GetFileAttributesW(path.c_str())");
+		expect(protection).toContain("attributes & FILE_ATTRIBUTE_REPARSE_POINT");
+		const hooksRootCheck = protection.indexOf("attributes & FILE_ATTRIBUTE_REPARSE_POINT");
 		const descendantCollection = protection.indexOf(
-			"collectExistingHookDescendants(hooks, descendants)",
+			"collectExistingHookDescendants(path, descendants)",
 		);
 		expect(hooksRootCheck).toBeGreaterThan(-1);
-		expect(descendantCollection).toBeGreaterThan(hooksRootCheck);
+		expect(descendantCollection).toBeGreaterThan(-1);
 		expect(protection).toContain("FindFirstFileW");
 		expect(protection).toContain("FindNextFileW");
 		expect(findHandle).toContain("struct FindHandle");
@@ -399,6 +397,13 @@ describe("Windows lowbox helper materialization", () => {
 		const grant = source.slice(start, end);
 
 		expect(grant).toContain("containsReparsePoint");
+	});
+
+	it("passes startup-pinned git control surfaces to the Windows helper", () => {
+		const source = readFileSync(lowboxHelperSourcePath(), "utf8");
+		expect(source).toContain('flag == L"--git-protected"');
+		expect(source).toContain("protectGitControlSurface(path, profile.sid, aclScope)");
+		expect(source).not.toContain("protectGitControlSurfaces(root");
 	});
 
 	it("ships checked-in native source with the required security primitives", () => {

@@ -13,7 +13,8 @@
  * The policy shape mirrors an empirically-verified probe: reads anywhere
  * succeed, writes outside the writable set are denied, network is open.
  */
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -56,6 +57,18 @@ export const IDENTITY_MACH_LOOKUPS: readonly string[] = [
 export type SandboxNetwork = "open" | "blocked";
 export type SandboxOnUnavailable = "passthrough" | "error";
 
+/**
+ * Git worktree metadata captured while Boundless initializes the session, before
+ * the model receives a filesystem-writing tool. It is deliberately not derived
+ * from `.git` at tool-execution time: that file is workspace-controlled.
+ */
+export interface GitWorktreeMetadata {
+	gitdir: string;
+	commondir: string;
+	/** Existing Git execution surfaces resolved by Git before tool exposure. */
+	protectedPaths: string[];
+}
+
 /** Normalized sandbox settings, resolved from the `sandbox` config field. */
 export interface ResolvedSandboxConfig {
 	enabled: boolean;
@@ -63,6 +76,8 @@ export interface ResolvedSandboxConfig {
 	writablePaths: string[];
 	network: SandboxNetwork;
 	onUnavailable: SandboxOnUnavailable;
+	/** Captured once at session startup; never recompute from a tool-mutated workspace. */
+	gitWorktreeMetadata?: GitWorktreeMetadata;
 }
 
 /**
@@ -141,21 +156,28 @@ export interface SandboxSpawnResult {
 }
 
 /** Normalize the raw config `sandbox` value into {@link ResolvedSandboxConfig}. */
-export function resolveSandboxConfig(setting: SandboxSetting | undefined): ResolvedSandboxConfig {
-	// Absent → opt-out default is ON (a fresh install with no config still
-	// gets the guard). `false` shorthand → disabled.
-	if (setting === undefined || setting === true) {
-		return { enabled: true, writablePaths: [], network: "open", onUnavailable: "error" };
-	}
-	if (setting === false) {
-		return DISABLED_SANDBOX;
-	}
-	return {
-		enabled: setting.enabled ?? true,
-		writablePaths: setting.writablePaths ?? [],
-		network: setting.network ?? "open",
-		onUnavailable: setting.onUnavailable ?? "error",
-	};
+export function resolveSandboxConfig(
+	setting: SandboxSetting | undefined,
+	cwd: string = process.cwd(),
+): ResolvedSandboxConfig {
+	const base =
+		setting === false
+			? DISABLED_SANDBOX
+			: {
+					enabled: setting === true || setting === undefined ? true : (setting.enabled ?? true),
+					writablePaths:
+						setting === true || setting === undefined ? [] : (setting.writablePaths ?? []),
+					network: setting === true || setting === undefined ? "open" : (setting.network ?? "open"),
+					onUnavailable:
+						setting === true || setting === undefined
+							? "error"
+							: (setting.onUnavailable ?? "error"),
+				};
+	// This runs while Boundless creates its tool session, before the model can
+	// create or rewrite cwd/.git. Failure is intentionally fail-closed: linked
+	// worktree git writes lose their external grants rather than widening them.
+	const gitWorktreeMetadata = captureGitWorktreeMetadata(cwd);
+	return gitWorktreeMetadata ? { ...base, gitWorktreeMetadata } : base;
 }
 
 /**
@@ -217,7 +239,7 @@ export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 			// computeGitProtectedPaths for why. The in-process checkWritePath guard
 			// enforces the same carve-out for the TS file tools on every platform
 			// except Windows.
-			readonlyPaths: ["/", ...computeGitProtectedPaths(cwd)],
+			readonlyPaths: ["/", ...computeGitProtectedPaths(cwd, undefined, cfg.gitWorktreeMetadata)],
 		},
 		// All network flags default to false (no access) when `network` is
 		// omitted, so "blocked" is the empty object. "open" must be genuinely
@@ -259,7 +281,10 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
 	} catch {
 		// no /tmp on this platform — nothing to grant
 	}
-	for (const dir of gitWorktreeWritablePaths(cwd)) addPath(dir);
+	for (const dir of cfg.gitWorktreeMetadata
+		? [cfg.gitWorktreeMetadata.gitdir, cfg.gitWorktreeMetadata.commondir]
+		: [])
+		addPath(dir);
 	for (const extra of cfg.writablePaths) addPath(extra);
 	return [...writable];
 }
@@ -286,18 +311,21 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
  * enforces the same carve-out through scoped DACLs. Keeping it here also makes
  * the in-process file tools refuse writes consistently on every platform.
  */
-const GIT_EXEC_SURFACE_RELPATHS = [".git/hooks", ".git/config"] as const;
-
-export function computeGitProtectedPaths(cwd: string, _platform?: NodeJS.Platform): string[] {
+export function computeGitProtectedPaths(
+	cwd: string,
+	_platform?: NodeJS.Platform,
+	metadata?: GitWorktreeMetadata,
+): string[] {
+	if (metadata) return metadata.protectedPaths;
 	const protectedPaths: string[] = [];
-	for (const rel of GIT_EXEC_SURFACE_RELPATHS) {
+	for (const rel of ["hooks", "config", "config.worktree"] as const) {
 		try {
-			protectedPaths.push(realpathSync(resolve(cwd, rel)));
+			protectedPaths.push(realpathSync(join(cwd, ".git", rel)));
 		} catch {
-			// Missing (non-repo cwd, or `.git` is a worktree/submodule file) — nothing to bind.
+			// Missing paths are never bound: a missing readonly bind aborts mxc.
 		}
 	}
-	return protectedPaths;
+	return [...new Set(protectedPaths)];
 }
 
 /**
@@ -316,37 +344,53 @@ export function computeGitProtectedPaths(cwd: string, _platform?: NodeJS.Platfor
  * PATH, and stays a pure fs read like the rest of this module. A normal checkout
  * (`.git` is a directory) and a cwd with no `.git` at all both return `[]`.
  */
-function gitWorktreeWritablePaths(cwd: string): string[] {
-	const dotGit = join(cwd, ".git");
-	let st: ReturnType<typeof statSync>;
+export function captureGitWorktreeMetadata(cwd: string): GitWorktreeMetadata | undefined {
 	try {
-		st = statSync(dotGit);
-	} catch {
-		return []; // not a repo working tree
-	}
-	// Normal checkout: .git is a directory already nested under cwd.
-	if (!st.isFile()) return [];
+		const discovery = spawnSync("git", ["-C", cwd, "rev-parse", "--git-dir", "--git-common-dir"], {
+			encoding: "utf8",
+		});
+		if (discovery.status !== 0) return undefined;
+		const [rawGitdir, rawCommonDir] = discovery.stdout.trim().split(/\r?\n/);
+		if (!rawGitdir || !rawCommonDir) return undefined;
+		const gitdir = realpathSync(resolve(cwd, rawGitdir));
+		const commondir = realpathSync(resolve(cwd, rawCommonDir));
+		// Git itself creates linked-worktree administrative directories beneath
+		// <commondir>/worktrees. A normal checkout uses the common directory itself.
+		if (gitdir !== commondir && !isWithin(gitdir, join(commondir, "worktrees"))) return undefined;
 
-	let pointer: string;
-	try {
-		pointer = readFileSync(dotGit, "utf8");
+		const protectedPaths: string[] = [];
+		for (const base of new Set([gitdir, commondir])) {
+			for (const rel of ["hooks", "config", "config.worktree"] as const) {
+				try {
+					protectedPaths.push(realpathSync(join(base, rel)));
+				} catch {
+					// A missing path cannot be a sandbox bind and remains absent.
+				}
+			}
+		}
+		// Let Git parse its effective config (includes, quotes, escape sequences, and
+		// config.worktree overrides) and normalize the path before tools run.
+		const hooksPath = spawnSync("git", ["-C", cwd, "config", "--path", "--get", "core.hooksPath"], {
+			encoding: "utf8",
+		});
+		if (hooksPath.status === 0 && hooksPath.stdout.trim()) {
+			try {
+				const configuredHooksPath = hooksPath.stdout.trim();
+				protectedPaths.push(
+					realpathSync(
+						isAbsolute(configuredHooksPath)
+							? configuredHooksPath
+							: resolve(cwd, configuredHooksPath),
+					),
+				);
+			} catch {
+				// A missing hooks path is harmless: no bind is possible yet.
+			}
+		}
+		return { gitdir, commondir, protectedPaths: [...new Set(protectedPaths)] };
 	} catch {
-		return [];
+		return undefined;
 	}
-	const match = pointer.match(/^gitdir:\s*(.+?)\s*$/m);
-	if (!match) return [];
-	const gitdir = isAbsolute(match[1]) ? match[1] : resolve(cwd, match[1]);
-	const paths = [gitdir];
-
-	// The shared object store / refs: `commondir` holds a path (usually relative,
-	// e.g. `../..`) resolved against the per-worktree gitdir.
-	try {
-		const raw = readFileSync(join(gitdir, "commondir"), "utf8").trim();
-		if (raw) paths.push(isAbsolute(raw) ? raw : resolve(gitdir, raw));
-	} catch {
-		// No commondir file — gitdir alone (degenerate/older layouts).
-	}
-	return paths;
 }
 
 /**
@@ -410,7 +454,7 @@ export function checkWritePath(
 	cfg: ResolvedSandboxConfig,
 ): WritePathCheck {
 	const writableRoots = computeWritableRoots(cwd, cfg);
-	const protectedRoots = computeGitProtectedPaths(cwd);
+	const protectedRoots = computeGitProtectedPaths(cwd, undefined, cfg.gitWorktreeMetadata);
 	const absTarget = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 	const resolvedTarget = resolveThroughExisting(absTarget);
 	const withinWritable = writableRoots.some((root) => isWithin(resolvedTarget, root));

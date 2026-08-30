@@ -490,7 +490,7 @@ bool parseInheritedHandle(const std::wstring& value, HANDLE& handle) {
 
 bool parseArguments(int argc, wchar_t** argv, HANDLE& control, std::wstring& cwd,
 	std::wstring& shell, std::wstring& shellFlag, std::wstring& command, std::wstring& network,
-	std::vector<std::wstring>& writable, std::wstring& namespaceValue) {
+	std::vector<std::wstring>& writable, std::vector<std::wstring>& gitProtected, std::wstring& namespaceValue) {
 	if (argc < 2 || std::wstring(argv[1]) != L"spawn") return false;
 	for (int i = 2; i < argc; i += 2) {
 		if (i + 1 >= argc) return false;
@@ -504,6 +504,7 @@ bool parseArguments(int argc, wchar_t** argv, HANDLE& control, std::wstring& cwd
 		else if (flag == L"--command") command = value;
 		else if (flag == L"--network") network = value;
 		else if (flag == L"--writable") writable.push_back(value);
+		else if (flag == L"--git-protected") gitProtected.push_back(value);
 		else if (flag == L"--test-namespace") namespaceValue = value;
 		else return false;
 	}
@@ -1312,28 +1313,21 @@ bool collectExistingHookDescendants(const std::wstring& directory,
 	return GetLastError() == ERROR_NO_MORE_FILES;
 }
 
-bool protectGitControlSurfaces(const std::wstring& root, PSID sid, AclScope& scope) {
-	const std::wstring git = fullPath(root + L"\\.git");
-	if (git.empty() || GetFileAttributesW(git.c_str()) == INVALID_FILE_ATTRIBUTES) return true;
-	const std::wstring config = git + L"\\config";
-	if (GetFileAttributesW(config.c_str()) != INVALID_FILE_ATTRIBUTES &&
-		!saveAndProtectGitControlSurface(config, sid, NO_INHERITANCE, scope)) return false;
-	const std::wstring hooks = git + L"\\hooks";
-	const DWORD hooksAttributes = GetFileAttributesW(hooks.c_str());
-	if (hooksAttributes != INVALID_FILE_ATTRIBUTES) {
-		if ((hooksAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-			SetLastError(ERROR_ACCESS_DENIED);
-			return false;
-		}
-		std::vector<std::pair<std::wstring, bool>> descendants;
-		if (!collectExistingHookDescendants(hooks, descendants)) return false;
-		if (!saveAndProtectGitControlSurface(hooks, sid, SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope)) {
-			return false;
-		}
-		for (const auto& [path, isDirectory] : descendants) {
-			const DWORD inheritance = isDirectory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
-			if (!saveAndProtectGitControlSurface(path, sid, inheritance, scope)) return false;
-		}
+bool protectGitControlSurface(const std::wstring& path, PSID sid, AclScope& scope) {
+	const DWORD attributes = GetFileAttributesW(path.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) return true;
+	if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+		SetLastError(ERROR_ACCESS_DENIED);
+		return false;
+	}
+	if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+		return saveAndProtectGitControlSurface(path, sid, NO_INHERITANCE, scope);
+	std::vector<std::pair<std::wstring, bool>> descendants;
+	if (!collectExistingHookDescendants(path, descendants)) return false;
+	if (!saveAndProtectGitControlSurface(path, sid, SUB_CONTAINERS_AND_OBJECTS_INHERIT, scope)) return false;
+	for (const auto& [descendant, isDirectory] : descendants) {
+		const DWORD inheritance = isDirectory ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
+		if (!saveAndProtectGitControlSurface(descendant, sid, inheritance, scope)) return false;
 	}
 	return true;
 }
@@ -2087,9 +2081,9 @@ int wmain(int argc, wchar_t** argv) {
 	}
 
 	std::wstring cwd, shell, shellFlag, command, network;
-	std::vector<std::wstring> writable;
+	std::vector<std::wstring> writable, gitProtected;
 	if (!parseArguments(argc, argv, controlHandle, cwd, shell, shellFlag, command, network, writable,
-		testNamespace)) {
+		gitProtected, testNamespace)) {
 		return 125;
 	}
 	if (!recoverStaleAuthority(testNamespace)) {
@@ -2107,11 +2101,11 @@ int wmain(int argc, wchar_t** argv) {
 				profile, aclScope);
 		}
 	}
-	for (const auto& root : writable) {
-		if (!protectGitControlSurfaces(root, profile.sid, aclScope)) {
+	for (const auto& path : gitProtected) {
+		if (!protectGitControlSurface(path, profile.sid, aclScope)) {
 			const DWORD win32 = GetLastError();
 			return failAfterCheckedLocalAuthorityCleanup("LOWBOX_GIT_ACL",
-				L"SetNamedSecurityInfoW(.git)", win32, profile, aclScope);
+				L"SetNamedSecurityInfoW(git-protected)", win32, profile, aclScope);
 		}
 	}
 
