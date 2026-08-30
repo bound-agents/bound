@@ -81,6 +81,32 @@ export function parseContentBlocks(content: string): string | ContentBlock[] {
 }
 
 /**
+ * Convert persisted assistant content into the public result of an aux invocation.
+ * Assistant turns that carry extended-thinking or tool-use blocks are stored as a
+ * JSON ContentBlock[] transcript so they can be replayed to the provider. That
+ * persistence format is not a caller-facing result: an aux caller receives only
+ * the assistant's final visible text.
+ */
+export function extractAssistantText(content: string): string {
+	try {
+		const parsed: unknown = JSON.parse(content);
+		if (!Array.isArray(parsed) || !parsed.every((block) => block && typeof block === "object")) {
+			return content;
+		}
+
+		const textBlocks = parsed.filter(
+			(block): block is { type: "text"; text: string } =>
+				block.type === "text" && typeof block.text === "string",
+		);
+		return textBlocks.length > 0
+			? textBlocks.map((block) => block.text).join("\n")
+			: "(no response)";
+	} catch {
+		return content;
+	}
+}
+
+/**
  * Finds the first user message in a thread that arrived after the last
  * assistant response — i.e., a message that was likely skipped because
  * the agent loop was already active when it was delivered.

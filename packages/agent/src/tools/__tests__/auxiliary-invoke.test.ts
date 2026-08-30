@@ -229,6 +229,26 @@ describe("Native Aux Tool (invoke slice)", () => {
 			expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
 		});
 
+		it("strips reasoning and tool transcript blocks from an aux result", async () => {
+			const transcript = JSON.stringify([
+				{ type: "thinking", thinking: "private reasoning", signature: "sig" },
+				{ type: "tool_use", id: "call-1", name: "query", input: { sql: "SELECT 1" } },
+				{ type: "text", text: "The final answer." },
+			]);
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					auxLoopRunner: async () => ({ summary: transcript }),
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+
+			const out = await exec({ action: "invoke", name: "tama", instructions: "investigate" });
+			const res = out as { content: string; metadata: Record<string, unknown> };
+			expect(res.content).toBe("The final answer.");
+			expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
+		});
+
 		it("returns error summary when loop runner errors", async () => {
 			const exec = getExecute(
 				createAuxTool({

@@ -10,6 +10,7 @@ import {
 } from "@bound/core";
 import type { Agent } from "@bound/shared";
 import { z } from "zod";
+import { extractAssistantText } from "../agent-loop-utils";
 import type {
 	DeferredToolResult,
 	RegisteredTool,
@@ -438,7 +439,7 @@ async function handleInvoke(
 				metadata: { aux_thread: threadId },
 			};
 		}
-		return { content: result.summary, metadata: { aux_thread: threadId } };
+		return { content: extractAssistantText(result.summary), metadata: { aux_thread: threadId } };
 	}
 
 	return `Invoked auxiliary agent '${input.name}' — thread ${threadId} created and seeded with instructions. Agent ID: ${agent.id}. Parent: ${ctx.threadId}. Loop runner not available — thread is ready for manual execution.`;

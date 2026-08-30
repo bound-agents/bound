@@ -731,6 +731,41 @@ describe("parseContentBlocks", () => {
 	});
 });
 
+describe("extractAssistantText", () => {
+	let extractAssistantText: typeof import("../agent-loop-utils").extractAssistantText;
+
+	beforeAll(async () => {
+		const mod = await import("../agent-loop-utils");
+		extractAssistantText = mod.extractAssistantText;
+	});
+
+	it("returns only text blocks from a persisted thinking and tool-use transcript", () => {
+		const transcript = JSON.stringify([
+			{ type: "thinking", thinking: "private chain of thought", signature: "sig" },
+			{ type: "text", text: "The repository has two affected files." },
+			{ type: "tool_use", id: "call-1", name: "bms_read", input: { path: "x.ts" } },
+			{ type: "text", text: "The fix is ready." },
+		]);
+
+		expect(extractAssistantText(transcript)).toBe(
+			"The repository has two affected files.\nThe fix is ready.",
+		);
+	});
+
+	it("returns a fallback for a persisted transcript with no visible text", () => {
+		const transcript = JSON.stringify([
+			{ type: "thinking", thinking: "private chain of thought", signature: "sig" },
+			{ type: "tool_use", id: "call-1", name: "bms_read", input: { path: "x.ts" } },
+		]);
+
+		expect(extractAssistantText(transcript)).toBe("(no response)");
+	});
+
+	it("returns ordinary assistant text unchanged", () => {
+		expect(extractAssistantText("plain final answer")).toBe("plain final answer");
+	});
+});
+
 // ---------------------------------------------------------------------------
 // convertDeltaMessages — regression coverage for parallel tool-call delta
 // ---------------------------------------------------------------------------
