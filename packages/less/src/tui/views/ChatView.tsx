@@ -466,11 +466,13 @@ export function ChatView({
 	// are all prepared at paste time — the preview parks in the session cache
 	// under the content hash stamped into the block's description, so the
 	// committed message renders it synchronously (see util/image-preview.ts).
-	const [stagedImage, setStagedImage] = useState<{
-		block: ContentBlock;
-		label: string;
-		preview: string[];
-	} | null>(null);
+	const [stagedImages, setStagedImages] = useState<
+		Array<{
+			block: ContentBlock;
+			label: string;
+			preview: string[];
+		}>
+	>([]);
 	const yardExecutions = useYardExecutions(client, threadId);
 	const { columns: termColumns, rows: termRows } = useTerminalSize();
 	// The oldest live Yard run on this thread anchors the processing spinner:
@@ -612,7 +614,7 @@ export function ChatView({
 		// Reject blank text before mutating UI state or calling the app-level sender,
 		// which otherwise creates an optimistic "sending…" placeholder before the
 		// server rejects the empty message.
-		if (!stagedImage && input.trim().length === 0) return;
+		if (stagedImages.length === 0 && input.trim().length === 0) return;
 
 		setCommandError(null);
 		setShowHelp(false);
@@ -663,12 +665,12 @@ export function ChatView({
 		// Attach the staged image (if any): text rides as a leading text block,
 		// image after — caption order. Staging clears immediately so a slow
 		// send can't double-attach on a second Enter.
-		if (stagedImage) {
-			const blocks: ContentBlock[] =
-				input.trim().length > 0
-					? [{ type: "text", text: input }, stagedImage.block]
-					: [stagedImage.block];
-			setStagedImage(null);
+		if (stagedImages.length > 0) {
+			const blocks: ContentBlock[] = [
+				...(input.trim().length > 0 ? [{ type: "text", text: input } as ContentBlock] : []),
+				...stagedImages.map((image) => image.block),
+			];
+			setStagedImages([]);
 			onSendMessage(blocks);
 			return;
 		}
@@ -728,11 +730,14 @@ export function ChatView({
 				},
 				description: stampImageDescription(width, height, hash),
 			};
-			setStagedImage({
-				block,
-				label: decoded ? `image ${width}×${height}` : "image (unrecognized PNG variant)",
-				preview,
-			});
+			setStagedImages((images) => [
+				...images,
+				{
+					block,
+					label: decoded ? `image ${width}×${height}` : "image (unrecognized PNG variant)",
+					preview,
+				},
+			]);
 		})();
 	}, [termColumns]);
 
@@ -893,13 +898,21 @@ export function ChatView({
 					    GraphicsImage's doc: the whole dynamic frame re-emits per
 					    keystroke, so each redraw blits a fresh image and stacks. Real
 					    pixels stay in the committed card (<Static>, emit-once). */}
-					{stagedImage && (
+					{stagedImages.length > 0 && (
 						<Box flexDirection="column" marginBottom={0}>
-							{stagedImage.preview.map((line, i) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable once staged
-								<Text key={i}>{line}</Text>
+							{stagedImages.map((image, imageIndex) => (
+								<Box key={`${image.label}-${imageIndex}`} flexDirection="column">
+									{image.preview.map((line, i) => (
+										// biome-ignore lint/suspicious/noArrayIndexKey: preview lines are immutable once staged
+										<Text key={i}>{line}</Text>
+									))}
+									<Text dimColor>⧉ {image.label} staged</Text>
+								</Box>
 							))}
-							<Text dimColor>⧉ {stagedImage.label} staged · Enter sends · Esc removes</Text>
+							<Text dimColor>
+								{stagedImages.length} image{stagedImages.length === 1 ? "" : "s"} staged · Enter
+								sends · Esc removes
+							</Text>
 						</Box>
 					)}
 
@@ -916,7 +929,7 @@ export function ChatView({
 								history={inputHistory}
 								completions={CHAT_SLASH_COMPLETIONS}
 								onPasteImage={handlePasteImage}
-								onEscapeEmpty={() => setStagedImage(null)}
+								onEscapeEmpty={() => setStagedImages([])}
 							/>
 						</Box>
 					</Box>

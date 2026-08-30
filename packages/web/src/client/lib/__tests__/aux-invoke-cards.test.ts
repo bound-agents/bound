@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { extractAuxInvokeRefs } from "../aux-invoke-cards";
+import { extractAuxInvokeRefs, reduceActiveAuxRuns } from "../aux-invoke-cards";
 
 const THREAD = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 const THREAD2 = "11111111-2222-3333-4444-555555555555";
@@ -217,5 +217,11 @@ describe("extractAuxInvokeRefs", () => {
 			["scout", THREAD],
 			["auditor", THREAD2],
 		]);
+	});
+});
+
+describe("reduceActiveAuxRuns", () => {
+	it("ignores aux:completed when its transient start frame was missed", () => {
+		expect(reduceActiveAuxRuns([], { type: "aux:completed", thread_id: THREAD })).toEqual([]);
 	});
 });

@@ -82,6 +82,62 @@ describe("Native Aux Tool (invoke slice)", () => {
 		});
 	});
 
+	describe("invoke lifecycle", () => {
+		it("emits aux:completed for successful synchronous invocations", async () => {
+			const events: string[] = [];
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					eventBus: { ...ctx.eventBus, emit: (name: string) => events.push(name) } as any,
+					auxLoopRunner: async () => ({ summary: "done" }),
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+			await exec({ action: "invoke", name: "tama", instructions: "inspect" });
+			expect(events).toContain("aux:completed");
+		});
+
+		it("emits aux:completed when a synchronous invocation throws", async () => {
+			const events: string[] = [];
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					eventBus: { ...ctx.eventBus, emit: (name: string) => events.push(name) } as any,
+					auxLoopRunner: async () => {
+						throw new Error("boom");
+					},
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+			const result = await exec({ action: "invoke", name: "tama", instructions: "inspect" });
+			expect(result).toContain("boom");
+			expect(events).toContain("aux:completed");
+		});
+
+		it("emits aux:started with the child thread before its synchronous loop runs", async () => {
+			const events: Array<Record<string, unknown>> = [];
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					eventBus: {
+						...ctx.eventBus,
+						emit: (name: string, data: Record<string, unknown>) => {
+							if (name === "aux:started") events.push(data);
+						},
+					} as any,
+					auxLoopRunner: async () => {
+						expect(events).toHaveLength(1);
+						return { summary: "done" };
+					},
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+			await exec({ action: "invoke", name: "tama", instructions: "inspect" });
+			expect(events[0]).toMatchObject({ parent_thread_id: "parent-thread", agent_name: "tama" });
+			expect(events[0]?.thread_id).toMatch(/^[0-9a-f-]{36}$/);
+		});
+	});
+
 	describe("invoke thread creation (no loop runner)", () => {
 		it("creates a child thread with agent_id and parent_thread_id", async () => {
 			const exec = getExecute(createAuxTool(ctx));

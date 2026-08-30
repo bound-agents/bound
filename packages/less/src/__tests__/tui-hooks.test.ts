@@ -294,6 +294,20 @@ describe("useToolCalls", () => {
 		const frame = lastFrame();
 		expect(frame).toContain("valid:yes");
 	});
+	it("ignores aux completion when the transient start event was missed", async () => {
+		const mockClient = createMockClient();
+		let count = -1;
+		function TestAuxCompletion() {
+			const { inFlightTools } = useToolCalls(mockClient, new Map(), "localhost", "/tmp");
+			count = inFlightTools.size;
+			return React.createElement(Text, null, `size:${count}`);
+		}
+		render(React.createElement(TestAuxCompletion));
+		await new Promise((r) => setTimeout(r, 20));
+		mockClient.emit("aux:completed", { thread_id: "missed-start", parent_thread_id: "parent" });
+		await new Promise((r) => setTimeout(r, 20));
+		expect(count).toBe(0);
+	});
 });
 
 // ============================================================================

@@ -21,6 +21,8 @@ Completed trees rebuild after reload from the persisted Yard tool-call program a
 tool result. This preserves the completed topology without a separate persistence layer. Older results retain a compact final card.
 Threads opened from **System Map** appear here.
 
+You can stage multiple attachments in the composer, including images pasted from the clipboard, then send them together. Press Escape with an empty input to clear staged attachments. Auxiliary invocations show a live running card while the web UI is connected. That card is intentionally transient: a client connecting after invocation begins sees the completed result but does not reconstruct an in-progress card.
+
 **Related documentation:** [Agent system](/bound/concepts/agent-system/) explains how a
 thread advances through the agent loop. [Work lifecycle](/bound/concepts/work-lifecycle/)
 explains the states around active and interrupted work.

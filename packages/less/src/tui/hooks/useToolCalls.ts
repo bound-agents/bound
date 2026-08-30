@@ -165,11 +165,38 @@ export function useToolCalls(
 		};
 
 		// Register event listeners
+		const handleAuxStarted = (event: {
+			thread_id: string;
+			parent_thread_id: string;
+			agent_name: string;
+		}) => {
+			setInFlightTools((prev) => {
+				const next = new Map(prev);
+				next.set(`aux:${event.thread_id}`, {
+					controller: new AbortController(),
+					toolName: "aux",
+					startTime: Date.now(),
+					args: { action: "invoke", name: event.agent_name, thread_id: event.thread_id },
+					threadId: event.parent_thread_id,
+				});
+				return next;
+			});
+		};
+		const handleAuxCompleted = (event: { thread_id: string }) =>
+			setInFlightTools((prev) => {
+				const next = new Map(prev);
+				next.delete(`aux:${event.thread_id}`);
+				return next;
+			});
 		client.onToolCall(toolCallHandler);
 		client.on("tool:cancel", handleToolCancel);
+		client.on("aux:started", handleAuxStarted);
+		client.on("aux:completed", handleAuxCompleted);
 
 		return () => {
 			client.off("tool:cancel", handleToolCancel);
+			client.off("aux:started", handleAuxStarted);
+			client.off("aux:completed", handleAuxCompleted);
 		};
 	}, [client, handlers, hostname, cwd, shell, sandbox]);
 

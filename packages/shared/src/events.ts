@@ -46,6 +46,9 @@ export interface EventMap {
 		traceContext?: Record<string, string> | null;
 	};
 	"stream:chunk": { thread_id: string; chunk: WsStreamChunk };
+	/** An aux invocation created its child thread and is now executing. */
+	"aux:started": { thread_id: string; parent_thread_id: string; agent_name: string };
+	"aux:completed": { thread_id: string; parent_thread_id: string };
 	"yard:execution": YardExecutionEvent;
 	"connector:event": {
 		trigger_key: string;

@@ -73,6 +73,16 @@ For details about host-tool trust boundaries and shell write confinement, read
 [Security boundaries](/bound/concepts/security-boundaries/) and
 [Sandbox and filesystems](/bound/concepts/sandbox/).
 
+## Add attachments
+
+Attach several files to one message before sending it. Paste an image into the composer to stage it as an attachment. On macOS, `boundless` reads images through `pngpaste` or `osascript`; on Linux it uses `wl-paste` or `xclip`; on Windows it uses PowerShell. Install a reader appropriate to your platform when pasting an image.
+
+Press Escape while the input is empty to clear every staged attachment.
+
+## Watch auxiliary work
+
+Foreground and background auxiliary invocations show a live running card while this terminal client is connected. These lifecycle events are transient: a client that connects after an invocation starts does not reconstruct its running card, but receives the completed result when it lands.
+
 ## Connect to another server
 
 Override the configured server URL for the current run:
