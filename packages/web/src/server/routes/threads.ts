@@ -9,7 +9,7 @@ import {
 	insertRow,
 	listContextDebugTurnsByThread,
 	listThreadsDirectory,
-	sumTurnCostByThread,
+	sumTurnCostByThreadAndDirectChildren,
 	updateRow,
 } from "@bound/core";
 
@@ -344,10 +344,10 @@ export function createThreadsRoutes(
 				);
 			}
 
-			// Whole-life spend for this thread from the synced `turns` table.
-			// SUM over zero rows is NULL — normalize to 0 so the client never
-			// has to distinguish "no turns yet" from "spent nothing".
-			const { total } = sumTurnCostByThread(db, id);
+			// Whole-life spend for this thread and the aux-agent threads it directly
+			// spawned. SUM over zero rows is NULL — normalize to 0 so the client
+			// never has to distinguish "no turns yet" from "spent nothing".
+			const { total } = sumTurnCostByThreadAndDirectChildren(db, id);
 
 			return c.json({ cost_usd: total ?? 0 });
 		} catch (error) {

@@ -62,6 +62,7 @@ export * from "./queries/recent-threads-with-messages";
 export * from "./queries/thread-user-display-name";
 export * from "./queries/threads-directory-listing";
 export * from "./queries/threads-needing-summary";
+export * from "./queries/thread-cost";
 export * from "./relay-outbox";
 export * from "./queries/webhook-response-by-id";
 export * from "./queries/interrupted-tool-use";
