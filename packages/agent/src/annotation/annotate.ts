@@ -24,6 +24,12 @@ const USER_MESSAGE_TAG = "user-message";
  * Today that's the send time (`created_at` + the once-written `tz_offset`);
  * additional immutable fields slot in here as new attributes.
  */
+function formatUserMessageSentAt(m: Message, nowMsRef?: number): string | undefined {
+	return m.created_at
+		? formatInstant(m.created_at, readTzOffsetMinutes(m.metadata), nowMsRef)
+		: undefined;
+}
+
 function buildUserMessageAttributes(m: Message, nowMsRef?: number): string {
 	const attrs: string[] = [];
 	// `from` first so the envelope reads "<user-message from="Kara" sent="...">".
@@ -46,8 +52,9 @@ function buildUserMessageAttributes(m: Message, nowMsRef?: number): string {
 	if (role) {
 		attrs.push(`role="${escapeXmlAttr(role)}"`);
 	}
-	if (m.created_at) {
-		attrs.push(`sent="${formatInstant(m.created_at, readTzOffsetMinutes(m.metadata), nowMsRef)}"`);
+	const sentAt = formatUserMessageSentAt(m, nowMsRef);
+	if (sentAt) {
+		attrs.push(`sent="${sentAt}"`);
 	}
 	return attrs.length > 0 ? ` ${attrs.join(" ")}` : "";
 }
@@ -270,9 +277,20 @@ export function annotateMessagesWithTokens(
 			if (typeof annotatedContent === "string") {
 				annotatedContent = `<${USER_MESSAGE_TAG}${attrs}>\n${annotatedContent}\n</${USER_MESSAGE_TAG}>`;
 			} else if (Array.isArray(annotatedContent)) {
+				const sentAt = formatUserMessageSentAt(m, nowMs);
 				annotatedContent = [
 					{ type: "text", text: `<${USER_MESSAGE_TAG}${attrs}>` },
-					...annotatedContent,
+					...annotatedContent.flatMap((block) =>
+						block.type === "image" && sentAt
+							? [
+									{
+										type: "text" as const,
+										text: `[Image attachment sent ${sentAt}. It belongs to this historical user message, not the latest message.]`,
+									},
+									block,
+								]
+							: [block],
+					),
 					{ type: "text", text: `</${USER_MESSAGE_TAG}>` },
 				] as ContentBlock[];
 			}

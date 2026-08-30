@@ -1445,7 +1445,15 @@ describe("warm-cold-path", () => {
 			expect(laterIdx).toBeGreaterThan(earlierIdx);
 			const earlierMessage = secondInference[earlierIdx];
 			expect(Array.isArray(earlierMessage?.content)).toBe(true);
-			expect((earlierMessage?.content as Array<{ type: string }>)[2]?.type).toBe("image");
+			const annotatedEarlierContent = earlierMessage?.content as Array<{
+				type: string;
+				text?: string;
+			}>;
+			expect(annotatedEarlierContent[2]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("Image attachment sent"),
+			});
+			expect(annotatedEarlierContent[3]?.type).toBe("image");
 		});
 
 		it("falls back to cold reassembly when warm-path delta would leave an orphaned tool_call", async () => {

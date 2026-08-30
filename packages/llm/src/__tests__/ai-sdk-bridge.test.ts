@@ -701,6 +701,29 @@ describe("toModelMessages — content blocks", () => {
 		]);
 	});
 
+	it("keeps historical image provenance immediately before the image", () => {
+		const data = Buffer.from("hello").toString("base64");
+		const provenance =
+			"[Image attachment sent May 25, 11:00 UTC. It belongs to this historical user message, not the latest message.]";
+		const out = toModelMessages([
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: '<user-message sent="May 25, 11:00 UTC">' },
+					{ type: "text", text: provenance },
+					{
+						type: "image",
+						source: { type: "base64", media_type: "image/png", data },
+					},
+					{ type: "text", text: "</user-message>" },
+				],
+			},
+		]);
+		const parts = out[0].content as Array<Record<string, unknown>>;
+		expect(parts[1]).toEqual({ type: "text", text: provenance });
+		expect(parts[2]).toMatchObject({ type: "image", mediaType: "image/png" });
+	});
+
 	it("converts base64 image blocks on user messages", () => {
 		const data = Buffer.from("hello").toString("base64");
 		const out = toModelMessages([

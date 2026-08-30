@@ -2422,16 +2422,22 @@ This skill reviews pull requests.`;
 			const userMsg = messages.find((m) => m.role === "user");
 			expect(userMsg).toBeDefined();
 			// Content should be parsed into ContentBlock[] array, then wrapped
-			// in the <user-message> envelope: [open-text, orig-text, image, close-text].
+			// in the <user-message> envelope: [open-text, original-text, provenance, image, close-text].
 			expect(Array.isArray(userMsg?.content)).toBe(true);
 			const blocks = userMsg?.content as Array<{ type: string; [k: string]: unknown }>;
-			expect(blocks.length).toBe(4);
+			expect(blocks.length).toBe(5);
 			expect(blocks[0].type).toBe("text");
 			expect((blocks[0] as { text: string }).text).toMatch(/^<user-message sent=/);
 			expect(blocks[1].type).toBe("text");
-			expect(blocks[2].type).toBe("image");
-			expect(blocks[3].type).toBe("text");
-			expect((blocks[3] as { text: string }).text).toBe("</user-message>");
+			expect(blocks[2]).toMatchObject({
+				type: "text",
+				text: expect.stringMatching(
+					/^\[Image attachment sent .+\. It belongs to this historical user message, not the latest message\.\]$/,
+				),
+			});
+			expect(blocks[3].type).toBe("image");
+			expect(blocks[4].type).toBe("text");
+			expect((blocks[4] as { text: string }).text).toBe("</user-message>");
 		});
 
 		it("leaves plain text content as string", () => {
