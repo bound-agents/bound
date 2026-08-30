@@ -1209,14 +1209,10 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		_frame: BoundPreparedFrame,
 		_turn: number,
 	): LoopTurnDecision {
-		// Truncation and duplicate-call circuit breakers run in the base loop's
-		// runPreExecutionGuards before this hook; here we only handle Bound's
-		// cooperative yield checkpoint.
-		if (this.config.shouldYield?.()) {
-			this.yielded = true;
-			return { action: "yield" };
-		}
-
+		// A normal queued message must not preempt a tool round after the model has
+		// requested it. Finish execution and persist every tool result first; then
+		// afterToolPersistence yields so the next dispatch rebuilds context with the
+		// queued message. Explicit aborts still travel through abortSignal.
 		return { action: "continue" };
 	}
 

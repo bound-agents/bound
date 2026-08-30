@@ -2432,42 +2432,30 @@ describe("MainAgentLoop", () => {
 	});
 
 	describe("cooperative cancellation (shouldYield)", () => {
-		it("stops before executing tool call when shouldYield returns true", async () => {
+		it("finishes and persists an in-flight tool call before yielding to a queued message", async () => {
 			const backend = new MockLLMBackend();
-
-			// LLM wants to call a tool, then produce text
 			backend.setToolThenTextResponse("tool-1", "bash", { command: "query SELECT 1" }, "Done!");
 
 			const sandbox = createMockSandbox();
-
-			// shouldYield returns true after the first LLM call (before tool execution)
-			let llmCallCount = 0;
 			const loop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(backend), {
 				threadId,
 				userId: "test-user",
-				shouldYield: () => {
-					// Yield after LLM returns tool_call but before tool executes
-					return llmCallCount > 0;
-				},
+				// Simulate a message arriving while the tool executes. The round must
+				// persist its result before the next yield check sees the queued work.
+				shouldYield: () => sandbox.calls.length > 0,
 			});
-
-			// Intercept LLM calls to track count
-			const origChat = backend.chat.bind(backend);
-			backend.chat = async function* (...args: [ChatParams]) {
-				llmCallCount++;
-				yield* origChat(...args);
-			};
 
 			const result = await loop.run();
 
-			// Tool should NOT have been executed
-			expect(sandbox.calls).toHaveLength(0);
-
-			// The loop should have yielded, not errored
+			expect(sandbox.calls).toHaveLength(1);
+			expect(result.yielded).toBe(true);
 			expect(result.error).toBeUndefined();
-
-			// Only 1 LLM call (the one that requested the tool), not 2
 			expect(backend.getCallCount()).toBe(1);
+
+			const toolMessages = db
+				.query("SELECT role FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+				.all(threadId) as Array<{ role: string }>;
+			expect(toolMessages.map((message) => message.role)).toEqual(["tool_call", "tool_result"]);
 		});
 
 		it("yields during LLM streaming when shouldYield returns true", async () => {
