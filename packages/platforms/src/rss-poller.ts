@@ -347,6 +347,8 @@ export interface RssPollerDeps {
 	now?: () => number;
 	/** Captures the active W3C context at durable intake time. */
 	traceContext?: () => Record<string, string> | null;
+	/** Injectable only for failure-path tests. */
+	insertInbox?: typeof insertInbox;
 }
 
 interface FeedRuntimeState {
@@ -552,40 +554,42 @@ export class RssPoller {
 			let delivered = 0;
 			const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
 			const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
-			if (!isFirstPoll) {
-				for (const item of fresh) {
-					const inserted = insertInbox(this.deps.db, {
-						id: randomUUID(),
-						source_site_id: this.deps.siteId,
-						kind: "rss_intake",
-						ref_id: feed.thread_id,
-						idempotency_key: `rss-${feed.name}-${item.guid}`.slice(0, 512),
-						stream_id: null,
-						payload: JSON.stringify({ feed: feed.name, url: feed.url, ...item }),
-						expires_at: new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString(),
-						received_at: new Date(nowMs).toISOString(),
-						processed: 0,
-						trace_context: serializedTraceContext,
-					});
-					if (inserted) {
-						delivered++;
-						rssDeliveryCounter.add(1);
+			const persistIntake = this.deps.insertInbox ?? insertInbox;
+			const persistTransaction = this.deps.db.transaction(() => {
+				if (!isFirstPoll) {
+					for (const item of fresh) {
+						const inserted = persistIntake(this.deps.db, {
+							id: randomUUID(),
+							source_site_id: this.deps.siteId,
+							kind: "rss_intake",
+							ref_id: feed.thread_id,
+							idempotency_key: `rss-${feed.name}-${item.guid}`.slice(0, 512),
+							stream_id: null,
+							payload: JSON.stringify({ feed: feed.name, url: feed.url, ...item }),
+							expires_at: new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString(),
+							received_at: new Date(nowMs).toISOString(),
+							processed: 0,
+							trace_context: serializedTraceContext,
+						});
+						if (inserted) delivered++;
 					}
 				}
-			}
 
-			if (fresh.length > 0 || isFirstPoll) {
-				// Persist the advanced cursor (newest last, capped). Synced write —
-				// deliberately so, since the cursor must survive leader failover.
-				const advanced = [...seen, ...fresh.map((i) => i.guid)].slice(-RSS_SEEN_GUIDS_CAP);
-				updateRow(
-					this.deps.db,
-					"rss_feeds",
-					feed.id,
-					{ seen_guids: JSON.stringify(advanced) },
-					this.deps.siteId,
-				);
-			}
+				if (fresh.length > 0 || isFirstPoll) {
+					// Persist the advanced cursor (newest last, capped). Synced write —
+					// deliberately so, since the cursor must survive leader failover.
+					const advanced = [...seen, ...fresh.map((i) => i.guid)].slice(-RSS_SEEN_GUIDS_CAP);
+					updateRow(
+						this.deps.db,
+						"rss_feeds",
+						feed.id,
+						{ seen_guids: JSON.stringify(advanced) },
+						this.deps.siteId,
+					);
+				}
+			});
+			persistTransaction();
+			if (delivered > 0) rssDeliveryCounter.add(delivered);
 
 			if (isFirstPoll) {
 				// Leave a visible trace of the seeding poll. Without this, a freshly

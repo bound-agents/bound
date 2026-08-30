@@ -305,7 +305,7 @@ export class RelayProcessor {
 						const { advisoriesRaised, deadLettered } = reconcileStaleWebhookIntake(
 							this.db,
 							this.siteId,
-							{ logger: this.logger },
+							{ logger: this.logger, eventBus: this.eventBus },
 						);
 						if (advisoriesRaised > 0 || deadLettered > 0) {
 							this.logger.warn("[relay] Webhook intake reconcile acted", {

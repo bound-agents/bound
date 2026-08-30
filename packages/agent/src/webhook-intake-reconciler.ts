@@ -6,6 +6,7 @@ import {
 	markProcessed,
 	readUnprocessedInboxByRefId,
 } from "@bound/core";
+import type { TypedEventEmitter } from "@bound/shared";
 import { createAdvisory, hasAdvisoryWithTitle } from "./advisories";
 
 /** Logger surface this module needs — the relay-processor passes its own. */
@@ -35,11 +36,15 @@ export interface ReconcileStaleWebhookIntakeOptions {
 	now?: Date;
 	/** Optional logger for dead-letter visibility (the relay-processor passes its own). */
 	logger?: ReconcilerLogger;
+	/** Local event bus: intake rows belong to this host, not the platform leader. */
+	eventBus?: TypedEventEmitter;
 }
 
 export interface ReconcileStaleWebhookIntakeResult {
 	/** Recoverable dark handlers that got a (deduplicated) advisory this sweep. */
 	advisoriesRaised: number;
+	/** Live bindings nudged back through their durable inbox backlog. */
+	redelivered: number;
 	/** Orphaned intake rows marked processed because no live binding can ever drain them. */
 	deadLettered: number;
 }
@@ -92,6 +97,7 @@ export function reconcileStaleWebhookIntake(
 	const logger = options.logger;
 
 	let advisoriesRaised = 0;
+	let redelivered = 0;
 	let deadLettered = 0;
 
 	// Sweep each passive intake kind that binds a thread to an external event
@@ -126,8 +132,22 @@ export function reconcileStaleWebhookIntake(
 				continue;
 			}
 
-			// Recoverable: a live binding still owns the thread but its handler is dark.
-			// Dedup across ALL non-deleted advisory statuses so applying does not re-raise.
+			// Recoverable: durable intake is the source of truth, not the original
+			// in-memory wakeup. Re-emit locally; scheduler claims and inbox processing
+			// make repeated nudges harmless.
+			options.eventBus?.emit("connector:event", {
+				trigger_key: `${sweep.triggerPrefix}:${liveBinding.name}`,
+				handle_id: liveBinding.id,
+				task_id: liveBinding.task_id,
+				batch_size: group.count,
+			});
+			if (options.eventBus) {
+				redelivered++;
+				continue;
+			}
+
+			// No event bus is only possible in a diagnostic caller; preserve the
+			// former advisory instead of silently losing visibility.
 			const title = sweep.titleFor(group.ref_id);
 			if (hasAdvisoryWithTitle(db, title)) continue;
 
@@ -158,7 +178,7 @@ export function reconcileStaleWebhookIntake(
 		}
 	}
 
-	return { advisoriesRaised, deadLettered };
+	return { advisoriesRaised, redelivered, deadLettered };
 }
 
 /**
@@ -172,7 +192,11 @@ interface IntakeSweep {
 	kind: "webhook_intake" | "rss_intake";
 	/** Operator-facing noun used in advisory prose ("webhook" / "RSS feed"). */
 	noun: string;
-	findBinding: (db: Database, threadId: string) => { id: string; name: string } | null;
+	findBinding: (
+		db: Database,
+		threadId: string,
+	) => { id: string; name: string; task_id: string } | null;
+	triggerPrefix: "webhook" | "rss";
 	titleFor: (refId: string) => string;
 }
 
@@ -181,12 +205,14 @@ const INTAKE_SWEEPS: IntakeSweep[] = [
 		kind: WEBHOOK_INTAKE_KIND,
 		noun: "webhook",
 		findBinding: findActiveWebhookByThreadId,
+		triggerPrefix: "webhook",
 		titleFor: (refId) => `Webhook intake not draining: handler thread ${refId} is dark`,
 	},
 	{
 		kind: RSS_INTAKE_KIND,
 		noun: "RSS feed",
 		findBinding: findActiveRssFeedByThreadId,
+		triggerPrefix: "rss",
 		titleFor: (refId) => `RSS intake not draining: handler thread ${refId} is dark`,
 	},
 ];
