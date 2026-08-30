@@ -99,7 +99,13 @@ import { resolveClientSessionHost } from "./delegation";
 import { segmentAssembledMessages } from "./delegation-segments";
 import { trackFilePath } from "./file-thread-tracker";
 import { type RelayToolCallRequest, isRelayRequest } from "./mcp-bridge";
-import { type ModelResolution, resolveModel, resolveSameTierFallback } from "./model-resolution";
+import {
+	MAX_MODEL_RECONNECT_WAIT_MS,
+	type ModelResolution,
+	resolveModel,
+	resolveSameTierFallback,
+	waitForModelResolution,
+} from "./model-resolution";
 import { createRelayBackend } from "./relay-backend";
 import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
@@ -515,6 +521,24 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			this.ctx.siteId,
 			this.requirements,
 		);
+		// A stale host row means the requested remote model is known but its relay
+		// is reconnecting. Wait here, at inference dispatch only: resolveModel()
+		// itself remains synchronous for startup, model listing, and validation.
+		if (this.config.modelId !== undefined) {
+			this.lastModelResolution = await waitForModelResolution({
+				initial: this.lastModelResolution,
+				resolve: () =>
+					resolveModel(
+						this.config.modelId,
+						this.modelRouter,
+						this.ctx.db,
+						this.ctx.siteId,
+						this.requirements,
+					),
+				timeoutMs: Math.min(this.inferenceTimeoutMs, MAX_MODEL_RECONNECT_WAIT_MS),
+				signal: this.config.abortSignal,
+			});
+		}
 
 		if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
 			if (this.config.modelTier !== undefined) {
