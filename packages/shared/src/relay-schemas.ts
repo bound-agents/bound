@@ -23,7 +23,6 @@ export const promptInvokePayloadSchema = z.object({
 });
 
 export const cacheWarmPayloadSchema = z.object({
-	paths: z.array(z.string()),
 	timeout_ms: z.number().int().positive(),
 });
 

@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
 	type AppContext,
 	type ThreadExecutor,
@@ -22,7 +21,6 @@ import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@
 import { LLMError, type ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry } from "@bound/platforms";
 import type {
-	CacheWarmPayload,
 	ClientResultPayload,
 	ClientToolPayload,
 	ErrorPayload,
@@ -103,7 +101,7 @@ function parseTraceCarrier(raw: string | null | undefined): Record<string, strin
 	}
 	return null;
 }
-import { formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
+import { buildMCPDispatchRegistry, formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
@@ -176,12 +174,9 @@ export class RelayProcessor {
 	private wsRegistry: ClientToolResolver | null = null;
 	private fileReader?: (path: string) => Promise<Uint8Array>;
 	private threadExecutor: ThreadExecutor | null = null;
-	// Lazy per-server cache of tool inputSchemas, keyed serverName → toolName →
-	// inputSchema. Populated on first relay tool_call for a server so arg
-	// coercion does not add a listTools round-trip on every call.
-	private toolSchemaCache = new Map<string, Map<string, Tool["inputSchema"]>>();
 	private readonly intakeReconciliationNotBeforeMs: number;
 	private readonly now: () => number;
+	private mcpConfirmGates = new Map<string, string[]>();
 
 	/**
 	 * Typed handler map — every HandledRequestKind MUST have an entry.
@@ -201,10 +196,7 @@ export class RelayProcessor {
 			this.handleParsedPayload(entry, parseJsonUntyped, (p) =>
 				this.executePromptInvoke(p as PromptInvokePayload),
 			),
-		cache_warm: (entry) =>
-			this.handleParsedPayload(entry, parseJsonUntyped, (p) =>
-				this.executeCacheWarm(entry, p as CacheWarmPayload),
-			),
+		cache_warm: (entry) => this.executeCacheWarm(entry),
 		platform_request: (entry) =>
 			this.handleParsedPayload(entry, parseJsonUntyped, (p) =>
 				this.executePlatformRequest(p as PlatformRequestPayload),
@@ -235,6 +227,10 @@ export class RelayProcessor {
 	}
 
 	/** Inject the agent loop factory after startup completes (avoids circular init order). */
+	setMcpConfirmationGates(gates: Map<string, string[]>): void {
+		this.mcpConfirmGates = gates;
+	}
+
 	setAgentLoopFactory(factory: (config: AgentLoopConfig) => MainAgentLoop): void {
 		this.agentLoopFactory = factory;
 	}
@@ -1137,17 +1133,25 @@ export class RelayProcessor {
 			throw new Error(`Missing or invalid subcommand in args for server: ${serverName}`);
 		}
 
-		// Strip subcommand from args before calling
+		// A relay request is untrusted input. Resolve it through the same filtered
+		// registry as local MCP dispatch; never forward an unadvertised subcommand.
+		const tools = await client.listTools();
+		const dispatchTable = buildMCPDispatchRegistry(
+			tools,
+			client.getConfig(),
+			this.mcpConfirmGates.get(serverName) ?? [],
+		);
+		const entry = dispatchTable.get(subcommand);
+		if (!entry) throw new Error(`Unknown subcommand: ${subcommand}`);
+		// Relay calls are autonomous: there is no human at this host to confirm one.
+		if (entry.isConfirmed) {
+			throw new Error(
+				`Subcommand ${subcommand} requires confirmation and cannot be used in autonomous mode`,
+			);
+		}
 		const { subcommand: _, ...toolArgs } = payload.args;
-
-		// Coerce string args to their JSON-Schema types before dispatch, mirroring
-		// the local MCP path (mcp-bridge.ts generateMCPCommands). Relay payload args
-		// arrive as bash --key value strings; strict servers reject e.g. "160" where
-		// a number is expected ("not of type float64"). Best-effort: an unavailable
-		// schema (listTools failure, unknown tool) falls back to the raw args.
-		const inputSchema = await this.getToolInputSchema(serverName, client, subcommand);
-		const coercedArgs = inputSchema ? coerceArgsFromSchema(toolArgs, inputSchema) : toolArgs;
-
+		const inputSchema = entry.tool.inputSchema;
+		const coercedArgs = coerceArgsFromSchema(toolArgs, inputSchema);
 		const result = await client.callTool(subcommand, coercedArgs);
 		const resultPayload: ResultPayload = {
 			stdout: result.content,
@@ -1159,38 +1163,6 @@ export class RelayProcessor {
 			execution_ms: 0,
 		};
 		return JSON.stringify(resultPayload);
-	}
-
-	/**
-	 * Resolve a tool's inputSchema for arg coercion, caching the server's tool
-	 * list on first use. Returns undefined when the schema can't be resolved
-	 * (listTools failure, or the subcommand isn't an advertised tool) so the
-	 * caller falls back to forwarding raw args — coercion is best-effort and
-	 * must never block a dispatch.
-	 */
-	private async getToolInputSchema(
-		serverName: string,
-		client: MCPClient,
-		toolName: string,
-	): Promise<Tool["inputSchema"] | undefined> {
-		let serverSchemas = this.toolSchemaCache.get(serverName);
-		if (!serverSchemas) {
-			try {
-				const tools = await client.listTools();
-				serverSchemas = new Map<string, Tool["inputSchema"]>();
-				for (const tool of tools) {
-					serverSchemas.set(tool.name, tool.inputSchema);
-				}
-				this.toolSchemaCache.set(serverName, serverSchemas);
-			} catch (error) {
-				this.logger.debug("[relay] listTools failed; forwarding raw args", {
-					server: serverName,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return undefined;
-			}
-		}
-		return serverSchemas.get(toolName);
 	}
 
 	private async executePlatformRequest(payload: PlatformRequestPayload): Promise<string> {
@@ -1266,59 +1238,17 @@ export class RelayProcessor {
 		throw lastError || new Error(`Could not invoke prompt: ${payload.prompt_name}`);
 	}
 
-	private async executeCacheWarm(
-		entry: RelayInboxEntry | RelayOutboxEntry,
-		payload: CacheWarmPayload,
-	): Promise<string | null> {
-		// Read files from paths and return content
-		// If combined response exceeds max_payload_bytes, split into per-file results
-		const maxPayloadBytes = this.relayConfig?.max_payload_bytes ?? 1024 * 1024;
-		const fileContents: Array<{ path: string; content: string }> = [];
-
-		for (const path of payload.paths) {
-			try {
-				const content = readFileSync(path, "utf-8");
-				fileContents.push({ path, content });
-			} catch (error) {
-				fileContents.push({ path, content: `[Error reading ${path}: ${String(error)}]` });
-			}
-		}
-
-		// Check if we need to split based on payload size
-		const combinedContent = fileContents.map((fc) => fc.content).join("\n---FILE_SEPARATOR---\n");
-		const combinedPayload: ResultPayload = {
-			stdout: combinedContent,
+	private async executeCacheWarm(_entry: RelayInboxEntry | RelayOutboxEntry): Promise<string> {
+		// Prompt-cache warming is performed by local cache_warm_poke notification turns.
+		// This legacy relay request deliberately ignores payload data: a relay peer
+		// must never turn it into a host filesystem read.
+		const resultPayload: ResultPayload = {
+			stdout: "cache_warm acknowledged",
 			stderr: "",
 			exit_code: 0,
 			execution_ms: 0,
 		};
-		const combinedSize = JSON.stringify(combinedPayload).length;
-
-		// If combined response is within limit, return as single response
-		if (combinedSize <= maxPayloadBytes) {
-			return JSON.stringify(combinedPayload);
-		}
-
-		// Otherwise, split into per-file responses and write them separately
-		// Each response has the same ref_id, final chunk marked with complete:true
-		for (let i = 0; i < fileContents.length; i++) {
-			const fc = fileContents[i];
-			const isLastChunk = i === fileContents.length - 1;
-			const resultPayload: ResultPayload & { complete?: boolean } = {
-				stdout: fc.content,
-				stderr: "",
-				exit_code: 0,
-				execution_ms: 0,
-				complete: isLastChunk,
-			};
-			const responseStr = JSON.stringify(resultPayload);
-
-			// Write each chunk to outbox
-			this.writeResponse(entry, "result", responseStr);
-		}
-
-		// All chunks already written to outbox — signal caller to skip writeResponse
-		return null;
+		return JSON.stringify(resultPayload);
 	}
 
 	private writeResponse(
@@ -1639,10 +1569,7 @@ export class RelayProcessor {
 							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
 							return results;
 						}
-						response = await this.executeCacheWarm(
-							request,
-							payloadResult.value as CacheWarmPayload,
-						);
+						response = await this.executeCacheWarm(request);
 						break;
 					}
 					default: {

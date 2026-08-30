@@ -8,7 +8,6 @@ import { applyMetricsSchema } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type {
-	CacheWarmPayload,
 	Logger,
 	PromptInvokePayload,
 	RelayInboxEntry,
@@ -573,7 +572,7 @@ describe("RelayProcessor", () => {
 	});
 
 	describe("execution - cache_warm (AC1.5)", () => {
-		it("executes cache_warm and writes file contents to outbox (AC1.5)", async () => {
+		it("acknowledges cache_warm without returning content from supplied host paths", async () => {
 			const mcpClients = new Map<string, MCPClient>();
 			const processor = new RelayProcessor(
 				db,
@@ -584,14 +583,12 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			// Create temporary test files
 			const fs = require("node:fs");
 			const testDir = join(tmpdir(), `relay-cache-warm-test-${randomBytes(4).toString("hex")}`);
-			require("node:fs").mkdirSync(testDir, { recursive: true });
-			const testFile1 = `${testDir}/file1.txt`;
-			const testFile2 = `${testDir}/file2.txt`;
-			fs.writeFileSync(testFile1, "test content 1");
-			fs.writeFileSync(testFile2, "test content 2");
+			fs.mkdirSync(testDir, { recursive: true });
+			const secretFile = `${testDir}/secret.txt`;
+			const secret = "cache-warm-must-not-read-this-host-file";
+			fs.writeFileSync(secretFile, secret);
 
 			try {
 				const now = new Date();
@@ -601,10 +598,7 @@ describe("RelayProcessor", () => {
 					kind: "cache_warm",
 					ref_id: null,
 					idempotency_key: null,
-					payload: JSON.stringify({
-						paths: [testFile1, testFile2],
-						max_payload_bytes: 1000,
-					} as CacheWarmPayload),
+					payload: JSON.stringify({ paths: [secretFile], timeout_ms: 1_000 }),
 					expires_at: new Date(now.getTime() + 60000).toISOString(),
 					received_at: now.toISOString(),
 					processed: 0,
@@ -630,26 +624,19 @@ describe("RelayProcessor", () => {
 				await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
 				handle.stop();
 
-				// Check that result was written to outbox
-				const results = db
+				const [result] = db
 					.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
 					.all("result", inboxEntry.id) as RelayOutboxEntry[];
-				expect(results.length).toBeGreaterThan(0);
-
-				// Verify the content includes file data
-				if (results.length > 0) {
-					const resultPayload = JSON.parse(results[0].payload);
-					expect(resultPayload.stdout).toContain("test content");
-				}
+				expect(result).toBeDefined();
+				expect(result.payload).not.toContain(secret);
+				expect(JSON.parse(result.payload)).toEqual({
+					stdout: "cache_warm acknowledged",
+					stderr: "",
+					exit_code: 0,
+					execution_ms: 0,
+				});
 			} finally {
-				// Cleanup
-				try {
-					require("node:fs").unlinkSync(testFile1);
-					require("node:fs").unlinkSync(testFile2);
-					require("node:fs").rmdirSync(testDir);
-				} catch {
-					// Cleanup errors are non-fatal
-				}
+				fs.rmSync(testDir, { recursive: true, force: true });
 			}
 		});
 	});

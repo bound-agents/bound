@@ -307,6 +307,32 @@ export function formatMcpHelp(
 	return { stdout: out, stderr: "", exitCode: 0 };
 }
 
+/** A tool admitted by the MCP server's operator policy. */
+export interface MCPDispatchEntry {
+	tool: Tool;
+	isConfirmed: boolean;
+}
+
+/**
+ * Build the single policy-filtered dispatch registry used by both local and
+ * relay MCP execution. Tools absent here must never reach `callTool`.
+ */
+export function buildMCPDispatchRegistry(
+	tools: Tool[],
+	config: { allow_tools?: string[]; confirm?: string[] },
+	confirmGates: string[] = config.confirm ?? [],
+): Map<string, MCPDispatchEntry> {
+	const dispatchTable = new Map<string, MCPDispatchEntry>();
+	for (const tool of tools) {
+		if (config.allow_tools && !config.allow_tools.includes(tool.name)) continue;
+		dispatchTable.set(tool.name, {
+			tool,
+			isConfirmed: confirmGates.includes(tool.name),
+		});
+	}
+	return dispatchTable;
+}
+
 /**
  * Return type for generateMCPCommands.
  * Carries both the command definitions and a registry of server names
@@ -350,22 +376,8 @@ export async function generateMCPCommands(
 		if (!inventory) continue;
 		const { serverName, client, toolsList } = inventory;
 		const config = client.getConfig();
-		const allowTools = config.allow_tools;
-
 		const serverConfirms = confirmGates.get(serverName) ?? [];
-
-		// Build dispatch table with allow_tools filtering applied
-		type DispatchEntry = { tool: Tool; isConfirmed: boolean };
-		const dispatchTable = new Map<string, DispatchEntry>();
-		for (const tool of toolsList) {
-			if (allowTools && !allowTools.includes(tool.name)) {
-				continue;
-			}
-			dispatchTable.set(tool.name, {
-				tool,
-				isConfirmed: serverConfirms.includes(tool.name),
-			});
-		}
+		const dispatchTable = buildMCPDispatchRegistry(toolsList, config, serverConfirms);
 
 		// Description sourcing: serverInfo.description -> instructions (first sentence) -> synthesized
 		let serverDescription: string;

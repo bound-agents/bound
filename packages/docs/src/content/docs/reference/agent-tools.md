@@ -96,6 +96,14 @@ webhook, or RSS events. Tasks can depend on earlier tasks and use their results 
 | `hostinfo` | Displays registered-host and capability information. |
 | `connector` | Manages connector access when platform connectors make it available. |
 
+`introspect` and `notify` deliver into another thread by ID. Both require the
+target thread to belong to the same user as the calling thread: the tool resolves
+the caller's owner and the target's owner and refuses a cross-user delivery. Threads
+without a recorded owner are treated as unowned and remain reachable, so
+single-user deployments are unaffected. This keeps a thread from being used to
+inject content or trigger inference in another user's thread once a deployment
+hosts more than one user.
+
 ## Tool sources
 
 A thread can receive tools from Bound, configured servers, a connected client, or an API

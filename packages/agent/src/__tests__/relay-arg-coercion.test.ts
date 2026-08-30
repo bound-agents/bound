@@ -29,7 +29,10 @@ class RecordingMCPClient implements Partial<MCPClient> {
 	public lastCallName: string | null = null;
 	public listToolsCalls = 0;
 
-	constructor(private toolList: Tool[]) {}
+	constructor(
+		private toolList: Tool[],
+		private config: { allow_tools?: string[]; confirm?: string[] } = {},
+	) {}
 
 	async listTools(): Promise<Tool[]> {
 		this.listToolsCalls++;
@@ -40,6 +43,10 @@ class RecordingMCPClient implements Partial<MCPClient> {
 		this.lastCallName = name;
 		this.lastCallArgs = args;
 		return { content: JSON.stringify({ ok: true }), isError: false };
+	}
+
+	getConfig() {
+		return { name: "github", transport: "stdio" as const, ...this.config };
 	}
 }
 
@@ -147,21 +154,76 @@ describe("RelayProcessor arg coercion", () => {
 		expect(client.lastCallArgs?.state).toBe("closed");
 	});
 
-	it("passes through args for tools/params absent from the schema (no crash)", async () => {
+	it("rejects an advertised subcommand excluded by allow_tools", async () => {
+		const client = new RecordingMCPClient([triageTool], { allow_tools: [] });
+		const processor = makeProcessor(new Map([["github", client as unknown as MCPClient]]));
+
+		await expect(
+			callExecute(processor, {
+				tool: "github",
+				args: { subcommand: "triage_issue", some_param: "123" },
+				timeout_ms: 30_000,
+			} as ToolCallPayload),
+		).rejects.toThrow("Unknown subcommand");
+		expect(client.lastCallName).toBeNull();
+	});
+
+	it("rejects a genuinely unadvertised relay subcommand without calling it", async () => {
 		const client = new RecordingMCPClient([triageTool]);
-		const processor = makeProcessor(new Map([["github", client]]));
+		const processor = makeProcessor(new Map([["github", client as unknown as MCPClient]]));
+		await expect(
+			callExecute(processor, {
+				tool: "github",
+				args: { subcommand: "not_advertised" },
+				timeout_ms: 30_000,
+			}),
+		).rejects.toThrow("Unknown subcommand");
+		expect(client.lastCallName).toBeNull();
+	});
+
+	it("rejects a confirmation-gated relay subcommand", async () => {
+		const client = new RecordingMCPClient([triageTool], { confirm: ["triage_issue"] });
+		const processor = makeProcessor(new Map([["github", client as unknown as MCPClient]]));
+		processor.setMcpConfirmationGates(new Map([["github", ["triage_issue"]]]));
+
+		await expect(
+			callExecute(processor, {
+				tool: "github",
+				args: { subcommand: "triage_issue", owner: "o", repo: "r", issue_number: "7" },
+				timeout_ms: 30_000,
+			} as ToolCallPayload),
+		).rejects.toThrow("requires confirmation");
+		expect(client.lastCallName).toBeNull();
+	});
+
+	it("rejects a confirmation-gated relay subcommand independently of the caller", async () => {
+		const client = new RecordingMCPClient([triageTool]);
+		const processor = makeProcessor(new Map([["github", client as unknown as MCPClient]]));
+		processor.setMcpConfirmationGates(new Map([["github", ["triage_issue"]]]));
+
+		await expect(
+			callExecute(processor, {
+				tool: "github",
+				args: { subcommand: "triage_issue" },
+				timeout_ms: 30_000,
+			} as unknown as ToolCallPayload),
+		).rejects.toThrow("requires confirmation");
+		expect(client.lastCallName).toBeNull();
+	});
+
+	it("allows an advertised relay subcommand that is not confirmation-gated", async () => {
+		const client = new RecordingMCPClient([triageTool], { confirm: ["triage_issue"] });
+		const processor = makeProcessor(new Map([["github", client as unknown as MCPClient]]));
 
 		await callExecute(processor, {
 			tool: "github",
-			args: { subcommand: "unknown_tool", some_param: "123" },
+			args: { subcommand: "triage_issue", owner: "o", repo: "r", issue_number: "7" },
 			timeout_ms: 30_000,
 		} as ToolCallPayload);
-
-		// Unknown tool: no schema to coerce against, arg stays a string.
-		expect(client.lastCallArgs?.some_param).toBe("123");
+		expect(client.lastCallName).toBe("triage_issue");
 	});
 
-	it("caches the tool schema so repeated calls do not re-list tools each time", async () => {
+	it("revalidates the live dispatch registry before each relay call", async () => {
 		const client = new RecordingMCPClient([triageTool]);
 		const processor = makeProcessor(new Map([["github", client]]));
 
@@ -175,10 +237,10 @@ describe("RelayProcessor arg coercion", () => {
 		await callExecute(processor, payload);
 		await callExecute(processor, payload);
 
-		expect(client.listToolsCalls).toBe(1);
+		expect(client.listToolsCalls).toBe(3);
 	});
 
-	it("still dispatches when listTools fails (coercion is best-effort)", async () => {
+	it("rejects relay dispatch when the policy registry cannot be loaded", async () => {
 		const failingClient = new (class extends RecordingMCPClient {
 			async listTools(): Promise<Tool[]> {
 				throw new Error("listTools unavailable");
@@ -186,13 +248,13 @@ describe("RelayProcessor arg coercion", () => {
 		})([triageTool]);
 		const processor = makeProcessor(new Map([["github", failingClient as unknown as MCPClient]]));
 
-		await callExecute(processor, {
-			tool: "github",
-			args: { subcommand: "triage_issue", owner: "o", repo: "r", issue_number: "7" },
-			timeout_ms: 30_000,
-		} as ToolCallPayload);
-
-		// Falls back to uncoerced string rather than throwing.
-		expect(failingClient.lastCallArgs?.issue_number).toBe("7");
+		await expect(
+			callExecute(processor, {
+				tool: "github",
+				args: { subcommand: "triage_issue", owner: "o", repo: "r", issue_number: "7" },
+				timeout_ms: 30_000,
+			} as ToolCallPayload),
+		).rejects.toThrow("listTools unavailable");
+		expect(failingClient.lastCallName).toBeNull();
 	});
 });
