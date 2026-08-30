@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import { RssPoller, parseFeed } from "../rss-poller.js";
+import { RssPoller, fetchValidatedUrl, parseFeed } from "../rss-poller.js";
 
 const RSS_DOC = `<?xml version="1.0"?>
 <rss version="2.0">
@@ -25,6 +25,8 @@ const RSS_DOC = `<?xml version="1.0"?>
 		</item>
 	</channel>
 </rss>`;
+
+const resolvePublicHost = async (): Promise<readonly string[]> => ["93.184.216.34"];
 
 const ATOM_DOC = `<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -115,6 +117,8 @@ describe("RssPoller", () => {
 			new Response(status === 304 ? null : body, { status })) as unknown as typeof fetch;
 	}
 
+	const pollerDeps = { resolveHost: resolvePublicHost };
+
 	function inboxRows(): Array<{ ref_id: string; kind: string; payload: string }> {
 		return db
 			.query("SELECT ref_id, kind, payload FROM relay_inbox ORDER BY received_at ASC")
@@ -141,6 +145,7 @@ describe("RssPoller", () => {
 	it("first poll seeds the cursor without delivering the backlog", async () => {
 		const feed = seedFeed();
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -163,6 +168,7 @@ describe("RssPoller", () => {
 	it("persists the active W3C context when supplied by the intake runtime", async () => {
 		const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -189,6 +195,7 @@ describe("RssPoller", () => {
 	it("delivers only unseen items as rss_intake rows and emits connector:event", async () => {
 		const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -217,6 +224,7 @@ describe("RssPoller", () => {
 	it("re-polling the same document delivers nothing (cursor + idempotency)", async () => {
 		seedFeed({ seen_guids: JSON.stringify([]) });
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -249,6 +257,7 @@ describe("RssPoller", () => {
 
 		let t = 1_000_000_000_000;
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -270,9 +279,127 @@ describe("RssPoller", () => {
 		expect(fetches).toBe(2);
 	});
 
+	it("refuses a private feed URL before fetching", async () => {
+		seedFeed({ url: "http://169.254.169.254/latest/meta-data" });
+		let fetches = 0;
+		const poller = new RssPoller({
+			...pollerDeps,
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: (async () => {
+				fetches++;
+				return new Response(RSS_DOC);
+			}) as unknown as typeof fetch,
+		});
+
+		await poller.tick();
+		expect(fetches).toBe(0);
+		expect(inboxRows()).toEqual([]);
+	});
+
+	it("refuses a redirect to a private address", async () => {
+		seedFeed({ seen_guids: JSON.stringify([]) });
+		let fetches = 0;
+		const poller = new RssPoller({
+			...pollerDeps,
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: (async () => {
+				fetches++;
+				return new Response(null, {
+					status: 302,
+					headers: { location: "http://127.0.0.1/internal" },
+				});
+			}) as unknown as typeof fetch,
+		});
+
+		await poller.tick();
+		expect(fetches).toBe(1);
+		expect(inboxRows()).toEqual([]);
+	});
+
+	it("pins a resolved public address so DNS rebinding cannot change the connection target", async () => {
+		seedFeed({ seen_guids: JSON.stringify([]), url: "https://rebind.example/feed.xml" });
+		const connectedAddresses: string[] = [];
+		let resolutions = 0;
+		const poller = new RssPoller({
+			db,
+			siteId,
+			eventBus,
+			resolveHost: async () => {
+				resolutions++;
+				return [resolutions === 1 ? "93.184.216.34" : "127.0.0.1"];
+			},
+			fetchValidatedUrl: async (_url, address) => {
+				connectedAddresses.push(address);
+				return new Response(RSS_DOC);
+			},
+		});
+
+		await poller.tick();
+		expect(resolutions).toBe(1);
+		expect(connectedAddresses).toEqual(["93.184.216.34"]);
+	});
+
+	it("refuses an oversized response body in the pinned Node transport", async () => {
+		let clientDisconnected = false;
+		const server = Bun.serve({
+			port: 0,
+			fetch() {
+				return new Response(
+					new ReadableStream({
+						start(controller) {
+							controller.enqueue(new Uint8Array(5 * 1024 * 1024 + 1));
+						},
+						cancel() {
+							clientDisconnected = true;
+						},
+					}),
+				);
+			},
+		});
+		try {
+			await expect(
+				fetchValidatedUrl(new URL(`http://127.0.0.1:${server.port}/feed.xml`), "127.0.0.1", {}),
+			).rejects.toThrow("RSS feed body exceeds size limit");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(clientDisconnected).toBe(true);
+		} finally {
+			server.stop(true);
+		}
+	});
+
+	it("does not start a redirect hop after the shared deadline expires", async () => {
+		seedFeed({ seen_guids: JSON.stringify([]) });
+		const controller = new AbortController();
+		let fetches = 0;
+		const poller = new RssPoller({
+			...pollerDeps,
+			db,
+			siteId,
+			eventBus,
+			createFetchDeadline: () => controller.signal,
+			fetchImpl: (async () => {
+				fetches++;
+				controller.abort(new Error("test deadline elapsed"));
+				return new Response(null, {
+					status: 302,
+					headers: { location: "https://example.com/redirected.xml" },
+				});
+			}) as unknown as typeof fetch,
+		});
+
+		await poller.tick();
+		expect(fetches).toBe(1);
+		expect(inboxRows()).toEqual([]);
+	});
+
 	it("survives a failing fetch without delivering or crashing", async () => {
 		seedFeed({ seen_guids: JSON.stringify([]) });
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -302,7 +429,14 @@ describe("RssPoller", () => {
 		}) as unknown as typeof fetch;
 
 		let t = 1_000_000_000_000;
-		const poller = new RssPoller({ db, siteId, eventBus, fetchImpl: flakyFetch, now: () => t });
+		const poller = new RssPoller({
+			...pollerDeps,
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: flakyFetch,
+			now: () => t,
+		});
 
 		await poller.tick();
 		expect(fetches).toBe(1); // failed
@@ -333,6 +467,7 @@ describe("RssPoller", () => {
 
 		let t = 1_000_000_000_000;
 		const poller = new RssPoller({
+			...pollerDeps,
 			db,
 			siteId,
 			eventBus,
@@ -375,7 +510,13 @@ describe("RssPoller", () => {
 			);
 		}) as typeof db.run;
 
-		const poller = new RssPoller({ db, siteId, eventBus, fetchImpl: fetchReturning(RSS_DOC) });
+		const poller = new RssPoller({
+			...pollerDeps,
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: fetchReturning(RSS_DOC),
+		});
 		await expect(poller.tick()).rejects.toThrow("cursor write failed");
 		expect(inboxInserts).toBe(2);
 	});
@@ -388,7 +529,13 @@ describe("RssPoller", () => {
 			<item><title>other</title><guid>guid-other</guid></item>
 		</channel></rss>`;
 		const feed = seedFeed({ seen_guids: JSON.stringify([]) });
-		const poller = new RssPoller({ db, siteId, eventBus, fetchImpl: fetchReturning(doc) });
+		const poller = new RssPoller({
+			...pollerDeps,
+			db,
+			siteId,
+			eventBus,
+			fetchImpl: fetchReturning(doc),
+		});
 
 		await poller.tick();
 

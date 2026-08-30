@@ -1,7 +1,17 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { insertInbox, listActiveRssFeeds, updateRow } from "@bound/core";
-import { RSS_SEEN_GUIDS_CAP, counter, histogram, injectTraceContext } from "@bound/shared";
+import {
+	RSS_SEEN_GUIDS_CAP,
+	counter,
+	histogram,
+	injectTraceContext,
+	isBlockedAddress,
+	isIpAddress,
+} from "@bound/shared";
 import type { RssFeed, TypedEventEmitter } from "@bound/shared";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 
@@ -48,6 +58,12 @@ const TICK_INTERVAL_MS = 30_000;
 
 /** Per-fetch timeout. */
 const FETCH_TIMEOUT_MS = 30_000;
+
+/** Bound redirects explicitly so every destination passes the SSRF guard. */
+const MAX_REDIRECTS = 10;
+
+/** Cap a feed document before parsing it into memory. */
+const MAX_RSS_BODY_BYTES = 5 * 1024 * 1024;
 
 /**
  * Retry window after a failed poll. A failed fetch used to wait the feed's
@@ -155,6 +171,165 @@ interface PollerLogger {
 	warn: (msg: string, meta?: Record<string, unknown>) => void;
 }
 
+export type ResolveHost = (hostname: string) => Promise<readonly string[]>;
+
+/**
+ * Fetch a URL through a connection pinned to a previously validated address.
+ * Kept injectable so the poller test can assert the address reaching the
+ * transport rather than merely the address returned by a DNS preflight.
+ */
+export type FetchValidatedUrl = (url: URL, address: string, init: RequestInit) => Promise<Response>;
+
+const resolveHost: ResolveHost = async (hostname) =>
+	(await lookup(hostname, { all: true, verbatim: true })).map(({ address }) => address);
+
+function addressFamily(address: string): 4 | 6 {
+	return address.includes(":") ? 6 : 4;
+}
+
+/**
+ * Performs an HTTP GET while supplying the already validated DNS result to
+ * Node's connection lookup. The request URL remains hostname-based, which
+ * preserves the Host header and TLS SNI/certificate validation.
+ */
+export function fetchValidatedUrl(url: URL, address: string, init: RequestInit): Promise<Response> {
+	return new Promise((resolve, reject) => {
+		const requestFn = url.protocol === "https:" ? httpsRequest : httpRequest;
+		const request = requestFn(
+			url.href,
+			{
+				headers: Object.fromEntries(new Headers(init.headers).entries()),
+				...(url.hostname === address
+					? {}
+					: {
+							lookup: (_hostname: string, optionsOrCallback: unknown, maybeCallback?: unknown) => {
+								const callback =
+									typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+								if (typeof callback === "function") callback(null, address, addressFamily(address));
+							},
+						}),
+			},
+			(response) => {
+				const contentLength = Number(response.headers["content-length"]);
+				if (Number.isFinite(contentLength) && contentLength > MAX_RSS_BODY_BYTES) {
+					const error = new Error("RSS feed body exceeds size limit");
+					response.destroy(error);
+					reject(error);
+					return;
+				}
+
+				const chunks: Buffer[] = [];
+				let bytes = 0;
+				response.on("data", (chunk: Buffer) => {
+					bytes += chunk.length;
+					if (bytes > MAX_RSS_BODY_BYTES) {
+						response.destroy(new Error("RSS feed body exceeds size limit"));
+						return;
+					}
+					chunks.push(chunk);
+				});
+				response.on("error", reject);
+				response.on("end", () => {
+					const headers = new Headers();
+					for (const [name, value] of Object.entries(response.headers)) {
+						if (Array.isArray(value)) {
+							for (const entry of value) headers.append(name, entry);
+						} else if (value !== undefined) {
+							headers.set(name, String(value));
+						}
+					}
+					resolve(
+						new Response(Buffer.concat(chunks), { status: response.statusCode ?? 500, headers }),
+					);
+				});
+			},
+		);
+		request.on("error", reject);
+		const abort = () => request.destroy(init.signal?.reason);
+		if (init.signal?.aborted) abort();
+		else init.signal?.addEventListener("abort", abort, { once: true });
+		request.end();
+	});
+}
+
+async function readResponseBody(response: Response): Promise<string> {
+	if (!response.body) return "";
+
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let bytes = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytes += value.byteLength;
+			if (bytes > MAX_RSS_BODY_BYTES) {
+				const error = new Error("RSS feed body exceeds size limit");
+				await reader.cancel(error);
+				throw error;
+			}
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+function redirectLocation(resp: Response): string | null {
+	return [301, 302, 303, 307, 308].includes(resp.status) ? resp.headers.get("location") : null;
+}
+
+interface ValidatedDestination {
+	url: URL;
+	address: string;
+}
+
+async function validateDestination(
+	rawUrl: string,
+	resolve: ResolveHost,
+	signal?: AbortSignal,
+): Promise<ValidatedDestination> {
+	const url = new URL(rawUrl);
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new Error(`RSS feed URL must use http(s): ${url.protocol}`);
+	}
+
+	const hostname = url.hostname.replace(/^\[|\]$/g, "");
+	// Race DNS resolution against the shared fetch deadline: a hostname whose
+	// authoritative nameserver never answers would otherwise hold the poll open
+	// indefinitely, past the whole-chain timeout that only guards the HTTP hops.
+	const addresses = isIpAddress(hostname) ? [hostname] : await raceAbort(resolve(hostname), signal);
+	if (addresses.length === 0 || addresses.some(isBlockedAddress)) {
+		throw new Error(`RSS feed destination is not publicly routable: ${hostname}`);
+	}
+	return { url, address: addresses[0] };
+}
+
+/**
+ * Reject as soon as `signal` aborts, otherwise resolve with the wrapped promise.
+ * The underlying DNS lookup is not itself cancelable, but the poll no longer
+ * waits on it: the deadline wins the race and the caller unwinds on schedule.
+ */
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return promise;
+	if (signal.aborted) return Promise.reject(signal.reason ?? new Error("aborted"));
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason ?? new Error("aborted"));
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(
+			(value) => {
+				signal.removeEventListener("abort", onAbort);
+				resolve(value);
+			},
+			(err) => {
+				signal.removeEventListener("abort", onAbort);
+				reject(err);
+			},
+		);
+	});
+}
+
 export interface RssPollerDeps {
 	db: Database;
 	siteId: string;
@@ -162,6 +337,12 @@ export interface RssPollerDeps {
 	logger?: PollerLogger;
 	/** Injectable fetch for tests. Defaults to global fetch. */
 	fetchImpl?: typeof fetch;
+	/** Injectable DNS resolver for tests. Every resolved address must be public. */
+	resolveHost?: ResolveHost;
+	/** Injectable pinned transport for tests. Production uses the Node HTTP(S) transport below. */
+	fetchValidatedUrl?: FetchValidatedUrl;
+	/** Injectable full-chain deadline for deterministic tests. */
+	createFetchDeadline?: (timeoutMs: number) => AbortSignal;
 	/** Injectable clock for tests. */
 	now?: () => number;
 	/** Captures the active W3C context at durable intake time. */
@@ -251,11 +432,36 @@ export class RssPoller {
 				if (state.etag) headers["if-none-match"] = state.etag;
 				if (state.lastModified) headers["if-modified-since"] = state.lastModified;
 
-				const fetchImpl = this.deps.fetchImpl ?? fetch;
-				const resp = await fetchImpl(feed.url, {
-					headers,
-					signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-				});
+				const resolve = this.deps.resolveHost ?? resolveHost;
+				const deadline = (this.deps.createFetchDeadline ?? AbortSignal.timeout)(FETCH_TIMEOUT_MS);
+				let nextUrl = feed.url;
+				let resp: Response;
+				for (let redirects = 0; ; redirects++) {
+					deadline.throwIfAborted();
+					const { url: destination, address } = await validateDestination(
+						nextUrl,
+						resolve,
+						deadline,
+					);
+					const requestInit = {
+						headers,
+						redirect: "manual" as const,
+						signal: deadline,
+					};
+					if (this.deps.fetchValidatedUrl) {
+						resp = await this.deps.fetchValidatedUrl(destination, address, requestInit);
+					} else if (this.deps.fetchImpl) {
+						// Test seam only. Production must use the pinned transport below.
+						resp = await this.deps.fetchImpl(destination, requestInit);
+					} else {
+						resp = await fetchValidatedUrl(destination, address, requestInit);
+					}
+					const location = redirectLocation(resp);
+					if (!location) break;
+					deadline.throwIfAborted();
+					if (redirects >= MAX_REDIRECTS) throw new Error("RSS feed exceeded redirect limit");
+					nextUrl = new URL(location, destination).href;
+				}
 
 				if (resp.status === 304) {
 					outcome = "not_modified";
@@ -276,7 +482,7 @@ export class RssPoller {
 
 				state.etag = resp.headers.get("etag");
 				state.lastModified = resp.headers.get("last-modified");
-				body = await resp.text();
+				body = await readResponseBody(resp);
 			} catch (error) {
 				// Transient network failure — retry sooner than a long cadence (see
 				// scheduleRetry). Observed in production: a 4h-cadence feed's first

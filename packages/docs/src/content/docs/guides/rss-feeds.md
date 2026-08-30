@@ -65,6 +65,20 @@ The `prompt`, `model_hint`, and `no_history` fields are optional. Omitting
 `poll_interval_seconds` uses the 900-second default. Feed names must match
 `^[a-z0-9][a-z0-9_-]{0,63}$`.
 
+### Feed URL restrictions
+
+Bound polls feeds server-side, so a feed URL is a request the bound host makes on
+your behalf. To keep a feed from being used to reach internal services, the poller
+rejects any URL — and any redirect it follows — whose resolved address is not
+publicly routable: loopback, link-local (including the `169.254.0.0/16` cloud-metadata
+range), private (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), multicast, or
+unspecified, for both IPv4 and IPv6 (including IPv4-mapped IPv6 forms such as
+`::ffff:169.254.169.254`). URLs must be `http`/`https`. A whole poll — DNS resolution
+plus every redirect hop — shares one 30-second deadline, and the response body is
+capped while streaming, so a slow or oversized endpoint cannot hold a poll open or
+exhaust memory. A feed pointed at a blocked address fails its poll with a
+"not publicly routable" error and delivers nothing.
+
 ## Edit or delete the feed
 
 Open **Connections > RSS feeds** to edit or delete a feed. Changing the URL resets the seen
