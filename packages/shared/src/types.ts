@@ -730,7 +730,6 @@ export interface PromptInvokePayload {
 }
 
 export interface CacheWarmPayload {
-	paths: string[];
 	timeout_ms: number;
 }
 

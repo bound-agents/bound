@@ -34,6 +34,7 @@ export async function initRelay(
 	mcpClientsMap: Map<string, MCPClient>,
 	modelRouter: ModelRouter | null,
 	clusterFsObj: ClusterFsResult | null,
+	confirmGates: Map<string, string[]> = new Map(),
 ): Promise<RelayResult> {
 	// 8b. Relay processor setup
 	appContext.logger.info("Initializing relay processor...");
@@ -60,6 +61,7 @@ export async function initRelay(
 		appContext,
 		relayConfig,
 	);
+	relayProcessor.setMcpConfirmationGates(confirmGates);
 
 	// Wire the virtual filesystem reader so discord_send_message can read files
 	// created by bash commands in the sandbox.

@@ -10,6 +10,26 @@ describe("notify tool", () => {
 	let ctx: ToolContext;
 	let emittedEvents: Array<{ event: string; payload: unknown }>;
 
+	function insertThread(id: string, userId: string): void {
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"threads",
+			{
+				id,
+				user_id: userId,
+				interface: "web",
+				host_origin: "test-host",
+				title: "Test Thread",
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			ctx.siteId,
+		);
+	}
+
 	beforeEach(() => {
 		db = new Database(":memory:");
 		applySchema(db);
@@ -77,6 +97,52 @@ describe("notify tool", () => {
 			.prepare("SELECT message_id FROM dispatch_queue WHERE thread_id = ? LIMIT 1")
 			.get("target-thread") as { message_id: string } | null;
 		expect(queueEntry).not.toBeNull();
+	});
+
+	it("allows notifications between threads owned by the same user", async () => {
+		const userId = deterministicUUID(BOUND_NAMESPACE, "same-user");
+		insertThread("current-thread", userId);
+		insertThread("same-user-target", userId);
+
+		const result = await createNotifyTool(ctx).execute({
+			thread_id: "same-user-target",
+			message: "Hello",
+		});
+
+		expect(result).toContain("enqueued");
+		expect(emittedEvents).toHaveLength(1);
+	});
+
+	it("blocks notifications to a thread owned by another user", async () => {
+		insertThread("current-thread", deterministicUUID(BOUND_NAMESPACE, "caller-user"));
+		insertThread("other-user-target", deterministicUUID(BOUND_NAMESPACE, "other-user"));
+
+		const result = await createNotifyTool(ctx).execute({
+			thread_id: "other-user-target",
+			message: "Hello",
+		});
+
+		expect(result).toContain("Error");
+		expect(result).toContain("different user");
+		expect(emittedEvents).toHaveLength(0);
+		expect(
+			db
+				.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+				.get("other-user-target"),
+		).toBeNull();
+	});
+
+	it("allows notifications when either thread has no ownership", async () => {
+		insertThread("current-thread", "");
+		insertThread("unowned-target", deterministicUUID(BOUND_NAMESPACE, "target-user"));
+
+		const result = await createNotifyTool(ctx).execute({
+			thread_id: "unowned-target",
+			message: "Hello",
+		});
+
+		expect(result).toContain("enqueued");
+		expect(emittedEvents).toHaveLength(1);
 	});
 
 	it("returns error when thread_id is missing", async () => {

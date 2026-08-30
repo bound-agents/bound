@@ -11,6 +11,26 @@ describe("introspect tool", () => {
 	let ctx: ToolContext;
 	let emittedEvents: Array<{ event: string; payload: unknown }>;
 
+	function insertThread(id: string, userId: string): void {
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"threads",
+			{
+				id,
+				user_id: userId,
+				interface: "web",
+				host_origin: "test-host",
+				title: "Test Thread",
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			ctx.siteId,
+		);
+	}
+
 	beforeEach(() => {
 		db = new Database(":memory:");
 		applySchema(db);
@@ -95,6 +115,56 @@ describe("introspect tool", () => {
 			const result = await executePromise;
 			expect(result).toContain("Error");
 			expect(result).toContain("timed out");
+		});
+	});
+
+	describe("thread ownership", () => {
+		it("allows introspection between threads owned by the same user", async () => {
+			const userId = deterministicUUID(BOUND_NAMESPACE, "same-user");
+			insertThread("current-thread", userId);
+			insertThread("same-user-target", userId);
+
+			const result = await createIntrospectTool(ctx).execute({
+				thread_id: "same-user-target",
+				message: "Hello",
+				timeout: 10,
+			});
+
+			expect(result).toContain("timed out");
+			expect(emittedEvents).toHaveLength(1);
+		});
+
+		it("blocks introspection of a thread owned by another user", async () => {
+			insertThread("current-thread", deterministicUUID(BOUND_NAMESPACE, "caller-user"));
+			insertThread("other-user-target", deterministicUUID(BOUND_NAMESPACE, "other-user"));
+
+			const result = await createIntrospectTool(ctx).execute({
+				thread_id: "other-user-target",
+				message: "Hello",
+			});
+
+			expect(result).toContain("Error");
+			expect(result).toContain("different user");
+			expect(emittedEvents).toHaveLength(0);
+			expect(
+				db
+					.query("SELECT message_id FROM dispatch_queue WHERE thread_id = ?")
+					.get("other-user-target"),
+			).toBeNull();
+		});
+
+		it("allows introspection when either thread has no ownership", async () => {
+			insertThread("current-thread", "");
+			insertThread("unowned-target", deterministicUUID(BOUND_NAMESPACE, "target-user"));
+
+			const result = await createIntrospectTool(ctx).execute({
+				thread_id: "unowned-target",
+				message: "Hello",
+				timeout: 10,
+			});
+
+			expect(result).toContain("timed out");
+			expect(emittedEvents).toHaveLength(1);
 		});
 	});
 

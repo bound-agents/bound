@@ -1,15 +1,11 @@
 import type { Database as BunDatabase } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { writeMessageMetadata } from "@bound/core";
+import { findLiveThreadById, writeMessageMetadata } from "@bound/core";
 import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { routeNotificationWakeup } from "../wakeup-routing.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
-
-interface ThreadRow {
-	id: string;
-}
 
 const introspectSchema = z.object({
 	thread_id: z.string().describe("Target thread ID to introspect"),
@@ -60,13 +56,15 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 					return "Error: Cannot introspect self. Use introspect to consult a different thread.";
 				}
 
-				// Check thread exists and is not deleted
-				const thread = ctx.db
-					.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
-					.get(input.thread_id) as ThreadRow | null;
+				const thread = findLiveThreadById(ctx.db, input.thread_id);
 
 				if (!thread) {
 					return `Error: Thread not found or is deleted: ${input.thread_id}`;
+				}
+
+				const caller = ctx.threadId ? findLiveThreadById(ctx.db, ctx.threadId) : null;
+				if (caller?.user_id && thread.user_id && caller.user_id !== thread.user_id) {
+					return "Error: Cannot introspect a thread owned by a different user.";
 				}
 
 				// Non-fatal advisory (issue #96): if the target is a boundless thread

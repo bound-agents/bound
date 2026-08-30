@@ -1,12 +1,9 @@
+import { findLiveThreadById } from "@bound/core";
 import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { routeNotificationWakeup } from "../wakeup-routing.js";
 import { parseToolInput, zodToToolParams } from "./tool-schema";
-
-interface ThreadRow {
-	id: string;
-}
 
 const notifySchema = z.object({
 	thread_id: z.string().describe("Target thread ID"),
@@ -43,12 +40,15 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 					return "Error: Cannot notify the current thread. Run notify from a background task to deliver to this thread.";
 				}
 
-				const thread = ctx.db
-					.query("SELECT id FROM threads WHERE id = ? AND deleted = 0")
-					.get(thread_id) as ThreadRow | null;
+				const thread = findLiveThreadById(ctx.db, thread_id);
 
 				if (!thread) {
 					return `Error: Thread not found or is deleted: ${thread_id}`;
+				}
+
+				const caller = ctx.threadId ? findLiveThreadById(ctx.db, ctx.threadId) : null;
+				if (caller?.user_id && thread.user_id && caller.user_id !== thread.user_id) {
+					return "Error: Cannot notify a thread owned by a different user.";
 				}
 
 				// Route the wakeup to the host holding the thread's live WS session
