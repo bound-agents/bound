@@ -313,6 +313,56 @@ export function resolveSameTierFallback(
  * Backward-compatible: when requirements is undefined (text-only requests), the qualify
  * phase is a no-op and resolution behaves identically to before.
  */
+export const MODEL_RECONNECT_POLL_INTERVAL_MS = 1_000;
+export const MAX_MODEL_RECONNECT_WAIT_MS = 120_000;
+
+export interface WaitForModelResolutionOptions {
+	initial: ModelResolution;
+	resolve: () => ModelResolution;
+	timeoutMs: number;
+	pollIntervalMs?: number;
+	signal?: AbortSignal;
+}
+
+/**
+ * Wait for a model which is known to exist but is temporarily unavailable, such
+ * as one advertised by a remote host whose heartbeat has gone stale. This is
+ * intentionally separate from resolveModel(): model listing and configuration
+ * validation must remain instantaneous; inference callers opt into the wait.
+ */
+export async function waitForModelResolution({
+	initial,
+	resolve,
+	timeoutMs,
+	pollIntervalMs = MODEL_RECONNECT_POLL_INTERVAL_MS,
+	signal,
+}: WaitForModelResolutionOptions): Promise<ModelResolution> {
+	if (initial.kind !== "error" || initial.reason !== "transient-unavailable" || timeoutMs <= 0) {
+		return initial;
+	}
+
+	let latest: ModelResolution = initial;
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline && !signal?.aborted) {
+		await new Promise<void>((resolveSleep) => {
+			const finish = () => {
+				signal?.removeEventListener("abort", abort);
+				resolveSleep();
+			};
+			const abort = () => {
+				clearTimeout(timeout);
+				finish();
+			};
+			const timeout = setTimeout(finish, Math.min(pollIntervalMs, deadline - Date.now()));
+			if (signal) signal.addEventListener("abort", abort, { once: true });
+		});
+		if (signal?.aborted) break;
+		latest = resolve();
+		if (latest.kind !== "error" || latest.reason !== "transient-unavailable") return latest;
+	}
+	return latest;
+}
+
 export function resolveModel(
 	modelId: string | undefined,
 	modelRouter: ModelRouter,
