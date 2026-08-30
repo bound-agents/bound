@@ -254,16 +254,26 @@ describe("annotateMessages — property tests", () => {
 		});
 		const arrContent = arrOut[0].content;
 		if (!Array.isArray(arrContent)) throw new Error("expected ContentBlock[] content");
-		if (arrContent.length !== 4) {
-			throw new Error(`expected 4 blocks (open + 2 orig + close), got ${arrContent.length}`);
+		if (arrContent.length !== 5) {
+			throw new Error(
+				`expected 5 blocks (open + text + provenance + image + close), got ${arrContent.length}`,
+			);
 		}
 		const first = arrContent[0] as { type: string; text?: string };
-		const last = arrContent[3] as { type: string; text?: string };
+		const provenance = arrContent[2] as { type: string; text?: string };
+		const last = arrContent[4] as { type: string; text?: string };
 		if (first.type !== "text" || !first.text?.startsWith("<user-message sent=")) {
 			throw new Error("first block should open the envelope");
 		}
-		if ((arrContent[2] as { type: string }).type !== "image") {
-			throw new Error("original image block should be preserved");
+		if (
+			provenance.type !== "text" ||
+			provenance.text !==
+				"[Image attachment sent May 25, 11:00 UTC. It belongs to this historical user message, not the latest message.]"
+		) {
+			throw new Error("image should have adjacent historical-message provenance");
+		}
+		if ((arrContent[3] as { type: string }).type !== "image") {
+			throw new Error("original image block should be preserved after provenance");
 		}
 		if (last.type !== "text" || last.text !== "</user-message>") {
 			throw new Error("last block should close the envelope");
