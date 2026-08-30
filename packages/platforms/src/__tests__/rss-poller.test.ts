@@ -519,6 +519,11 @@ describe("RssPoller", () => {
 		});
 		await expect(poller.tick()).rejects.toThrow("cursor write failed");
 		expect(inboxInserts).toBe(2);
+		// Intake and synced cursor are one transaction: an interrupted cursor
+		// write cannot consume GUIDs while leaving durable rows behind.
+		expect(inboxRows()).toEqual([]);
+		const row = db.query("SELECT seen_guids FROM rss_feeds").get() as { seen_guids: string };
+		expect(JSON.parse(row.seen_guids)).toEqual([]);
 	});
 
 	it("dedupes repeated guids within a single document", async () => {

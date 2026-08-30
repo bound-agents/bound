@@ -78,10 +78,10 @@ export function findWebhookTaskIdById(db: Database, id: string): { task_id: stri
 export function findActiveWebhookByThreadId(
 	db: Database,
 	threadId: string,
-): { id: string; name: string } | null {
+): { id: string; name: string; task_id: string } | null {
 	return db
-		.query("SELECT id, name FROM webhooks WHERE thread_id = ? AND deleted = 0")
-		.get(threadId) as { id: string; name: string } | null;
+		.query("SELECT id, name, task_id FROM webhooks WHERE thread_id = ? AND deleted = 0")
+		.get(threadId) as { id: string; name: string; task_id: string } | null;
 }
 
 /**
