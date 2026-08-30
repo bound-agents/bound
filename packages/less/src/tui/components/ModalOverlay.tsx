@@ -18,7 +18,13 @@ export function ModalOverlay({ onDismiss, children }: ModalOverlayProps): React.
 	);
 
 	return (
-		<Box flexDirection="column" borderStyle="round" borderColor={tokens.modalBorder} paddingX={1} paddingY={1}>
+		<Box
+			flexDirection="column"
+			borderStyle="round"
+			borderColor={tokens.modalBorder}
+			paddingX={1}
+			paddingY={1}
+		>
 			{children}
 		</Box>
 	);

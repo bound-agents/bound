@@ -90,11 +90,7 @@ function durationMs(started?: string, finished?: string): number | null {
 
 function DurationFragment({ ms }: { ms: number }): React.ReactElement {
 	const color =
-		ms >= 60_000
-			? tokens.durationCritical
-			: ms >= 10_000
-				? tokens.durationCaution
-				: undefined;
+		ms >= 60_000 ? tokens.durationCritical : ms >= 10_000 ? tokens.durationCaution : undefined;
 	return color ? (
 		<Text color={color}> · {formatDuration(ms)}</Text>
 	) : (
@@ -408,9 +404,7 @@ export function YardExecutionCard({
 					<Text key={row.key} wrap="truncate-end">
 						<Text dimColor>{row.prefix}</Text>
 						<Text color={phaseColor(row.node.phase)}>{glyph(row.node.phase)}</Text>{" "}
-						<Text
-							color={row.node.phase === "failed" ? tokens.phaseFailed : kindColor(row.node)}
-						>
+						<Text color={row.node.phase === "failed" ? tokens.phaseFailed : kindColor(row.node)}>
 							{label(row.node)}
 						</Text>
 						{ms !== null ? <DurationFragment ms={ms} /> : null}

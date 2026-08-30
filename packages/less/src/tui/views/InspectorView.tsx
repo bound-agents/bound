@@ -109,11 +109,29 @@ export function buildInspectorItems(
 				label: `${name} · ${lineCount} ${lineCount === 1 ? "line" : "lines"}`,
 			});
 		} else if (msg.role === "user") {
-			items.push({ msg, glyph: "❯", color: tokens.userMarker, time, label: firstNonEmptyLine(text) });
+			items.push({
+				msg,
+				glyph: "❯",
+				color: tokens.userMarker,
+				time,
+				label: firstNonEmptyLine(text),
+			});
 		} else if (msg.role === "assistant") {
-			items.push({ msg, glyph: "●", color: tokens.assistantMarker, time, label: firstNonEmptyLine(text) });
+			items.push({
+				msg,
+				glyph: "●",
+				color: tokens.assistantMarker,
+				time,
+				label: firstNonEmptyLine(text),
+			});
 		} else {
-			items.push({ msg, glyph: "◦", color: tokens.otherRoleMarker, time, label: firstNonEmptyLine(text) });
+			items.push({
+				msg,
+				glyph: "◦",
+				color: tokens.otherRoleMarker,
+				time,
+				label: firstNonEmptyLine(text),
+			});
 		}
 	}
 	return items;

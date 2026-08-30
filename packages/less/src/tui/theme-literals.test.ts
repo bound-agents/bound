@@ -1,12 +1,15 @@
-import { Glob } from "bun";
 import { describe, expect, it } from "bun:test";
+import { Glob } from "bun";
 
-const DIRECT_COLOR_PROP =
-	/\b(?:color|borderColor|backgroundColor)\s*=\s*\{?\s*["'][^"']+["']/;
-const STYLE_COLOR_VALUE =
-	/\b(?:color|borderColor|backgroundColor)\s*:\s*["'][^"']+["']/;
+const DIRECT_COLOR_PROP = /\b(?:color|borderColor|backgroundColor)\s*=\s*\{?\s*["'][^"']+["']/;
+const STYLE_COLOR_VALUE = /\b(?:color|borderColor|backgroundColor)\s*:\s*["'][^"']+["']/;
 
-const PRODUCTION_GLOBS = ["components/**/*.ts", "components/**/*.tsx", "views/**/*.ts", "views/**/*.tsx"];
+const PRODUCTION_GLOBS = [
+	"components/**/*.ts",
+	"components/**/*.tsx",
+	"views/**/*.ts",
+	"views/**/*.tsx",
+];
 
 describe("TUI semantic theme", () => {
 	it("does not allow direct literal color values in production TUI surfaces", async () => {
