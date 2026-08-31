@@ -416,6 +416,89 @@ export function resetTransferringLocalDurableWork(db: Database): number {
 	);
 }
 
+/**
+ * Transfer/claim staleness window for the running-process transfer sweep. A
+ * peer-targeted row that has been `transferring` (i.e. `claimed_at`) longer than
+ * this has almost certainly lost its SPOOL_TRANSFER_ACK — a live ack round-trips
+ * in the RPC-TTL class (~seconds), so 30s is generous headroom that never races
+ * a slow-but-live ack. This is DISTINCT from `expires_at` (the work's terminal
+ * semantic TTL, owned by {@link deadLetterExpiredDurableWork}): a dropped ack
+ * must be retried while the work is still LIVE, long before its terminal
+ * deadline, and the two clocks must not be conflated.
+ */
+export const DURABLE_WORK_TRANSFER_STALE_MS = 30_000;
+
+/**
+ * Attempt cap for durable work, enforced on BOTH sides. The relay consumer
+ * applies it post-claim on the destination ({@link deadLetterClaimedDurableWork}
+ * once `attempt_count >= this`); {@link sweepStaleTransferringDurableWork} and
+ * {@link redriveTransferringDurableWork} apply it on the sender transfer path.
+ * One source of truth so the two paths cannot drift; `DURABLE_RELAY_MAX_ATTEMPTS`
+ * in the relay processor is defined as this value.
+ */
+export const DURABLE_WORK_MAX_ATTEMPTS = 3;
+
+/**
+ * Running-process recovery for a peer-targeted row stuck in `transferring` after
+ * its transfer timeout lapsed: the SPOOL_TRANSFER shipped but no
+ * SPOOL_TRANSFER_ACK ever retired the sender copy, and — unlike a crash — the
+ * process never restarts to re-run boot recovery. `beginDurableWorkTransfer`
+ * mints the transferring generation without charging an attempt, so the spool
+ * only re-sends on a *reconnect* drain; a persistently-connected sender whose
+ * ack was dropped has no other retry path (R-DW10: retire only on ack).
+ *
+ * STALENESS IS KEYED ON THE TRANSFER CLOCK, NOT THE TERMINAL TTL. A row is stale
+ * when `claimed_at <= now - DURABLE_WORK_TRANSFER_STALE_MS`. `expires_at` keeps
+ * its terminal meaning entirely: a row already past `expires_at` is NOT swept
+ * here — it belongs to {@link deadLetterExpiredDurableWork}, which dead-letters
+ * it rather than requeuing it. Excluding terminally-expired rows means the two
+ * sweeps never race over the same row and a resend can never carry an expired
+ * deadline.
+ *
+ * ATTEMPT CAP (sender-side). A row whose `attempt_count` is already at or over
+ * the caller-supplied `maxAttempts` is dead-lettered with a transfer-exhaustion
+ * `last_error` instead of being re-pended — the sender path enforces the cap the
+ * runbook promises, mirroring the post-claim cap the relay consumer applies on
+ * the destination. Otherwise the row returns to `pending` with `attempt_count`
+ * incremented so a genuinely poisoned transfer marches toward that cap.
+ *
+ * The `claim_token` is cleared with the reset: a late ack for the retired
+ * generation carries the old token and the (id, transferring, token) fence in
+ * {@link acknowledgeDurableWorkTransfer} rejects it, so a re-sent-then-acked row
+ * cannot be double-retired. Returns the number of rows touched (re-pended plus
+ * dead-lettered).
+ */
+export function sweepStaleTransferringDurableWork(
+	db: Database,
+	maxAttempts: number,
+	now = new Date().toISOString(),
+): number {
+	return instrument("sweep-stale-transferring", "any", () => {
+		const staleBefore = new Date(Date.parse(now) - DURABLE_WORK_TRANSFER_STALE_MS).toISOString();
+		const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
+		// Dead-letter the poisoned generations first (at/over cap), then re-pend the
+		// rest. Both are gated identically: transferring, transfer timeout lapsed,
+		// and NOT already past terminal expiry (that is the terminal sweep's row).
+		const deadLettered = db.run(
+			`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+		 last_error = 'transfer retries exhausted (no SPOOL_TRANSFER_ACK)', dead_lettered_at = ?, expires_at = ?
+		 WHERE claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?
+		   AND (expires_at IS NULL OR expires_at > ?)
+		   AND attempt_count >= ?`,
+			[now, retention, staleBefore, now, maxAttempts],
+		).changes;
+		const rePended = db.run(
+			`UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL,
+		 attempt_count = attempt_count + 1
+		 WHERE claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?
+		   AND (expires_at IS NULL OR expires_at > ?)
+		   AND attempt_count < ?`,
+			[staleBefore, now, maxAttempts],
+		).changes;
+		return deadLettered + rePended;
+	});
+}
+
 /** Expiry and terminal failure are preserved as seven-day dead-letter rows, never silently discarded. */
 export function deadLetterExpiredDurableWork(db: Database, now = new Date().toISOString()): number {
 	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -504,6 +587,46 @@ export function deadLetterPendingDurableWork(
 				[error, now, retention, id],
 			).changes === 1,
 	);
+}
+
+/**
+ * Operator/agent manual recovery for one wedged transfer: reclaim a specific
+ * `transferring` row. The by-id sibling of {@link sweepStaleTransferringDurableWork}
+ * for the `workspool redrive` path, with no transfer-timeout guard — an operator
+ * naming a row has already judged it stuck. It DOES respect the attempt cap: a
+ * row already at or over `maxAttempts` dead-letters (transfer-exhaustion
+ * `last_error`) rather than re-pending, so a redrive cannot loop a poisoned row
+ * past its budget; otherwise the row returns to `pending` with the attempt
+ * charged. Requires the row to still be `transferring`; a row that raced to
+ * `consumed`/`dead_letter` is a no-op. Returns true iff the named row was
+ * transferring and was acted on (re-pended or dead-lettered).
+ */
+export function redriveTransferringDurableWork(
+	db: Database,
+	id: string,
+	maxAttempts: number,
+	now = new Date().toISOString(),
+): boolean {
+	return instrument("redrive-transferring", "unknown", () => {
+		const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
+		if (
+			db.run(
+				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+		 last_error = 'transfer retries exhausted (no SPOOL_TRANSFER_ACK)', dead_lettered_at = ?, expires_at = ?
+		 WHERE id = ? AND claim_state = 'transferring' AND attempt_count >= ?`,
+				[now, retention, id, maxAttempts],
+			).changes === 1
+		)
+			return true;
+		return (
+			db.run(
+				`UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL,
+		 attempt_count = attempt_count + 1
+		 WHERE id = ? AND claim_state = 'transferring' AND attempt_count < ?`,
+				[id, maxAttempts],
+			).changes === 1
+		);
+	});
 }
 
 /** Retain consumed idempotency fences for the same one-hour window as legacy dispatch acknowledgements. */

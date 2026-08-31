@@ -16,9 +16,10 @@ export function listDurableWorkForInspection(
 			 FROM durable_work
 			 WHERE claim_state = 'dead_letter'
 			    OR (claim_state IN ('pending', 'processing') AND created_at <= ?)
+			    OR (claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?)
 			 ORDER BY created_at ASC`,
 		)
-		.all(staleBefore) as DurableWorkInspectionRow[];
+		.all(staleBefore, staleBefore) as DurableWorkInspectionRow[];
 }
 
 export function getDurableWork(db: Database, id: string): DurableWorkRow | null {

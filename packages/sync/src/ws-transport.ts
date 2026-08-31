@@ -1,5 +1,6 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
+	DURABLE_WORK_MAX_ATTEMPTS,
 	type DurableWorkRow,
 	LOCAL_WORK_TARGET,
 	acknowledgeDurableWorkTransfer,
@@ -12,6 +13,7 @@ import {
 	insertDurableWork,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
+	sweepStaleTransferringDurableWork,
 } from "@bound/core";
 import {
 	type ConsistencyEntry,
@@ -287,6 +289,8 @@ export class WsTransport {
 	private durableWorkWrittenListener:
 		| ((event: { id: string; target_site_id: string }) => void)
 		| null = null;
+	/** Periodic stale durable-work recovery sweep (R-DW10/R-DW11 running-process leg). */
+	private staleDurableWorkSweepTimer: ReturnType<typeof setInterval> | null = null;
 	/** Per-peer snapshot seeding progress. */
 	private snapshotStates = new Map<string, SnapshotState>();
 
@@ -429,6 +433,27 @@ export class WsTransport {
 		this.config.eventBus.on("changelog:written", this.changelogWrittenListener);
 		this.config.eventBus.on("relay:outbox-written", this.relayOutboxWrittenListener);
 		this.config.eventBus.on("durable_work:written", this.durableWorkWrittenListener);
+
+		// Running-process leg of the stale-durable-work recovery (see
+		// sweepAndRedriveStaleDurableWork): reclaim + re-drive transferring rows
+		// whose transfer has been outstanding past the transfer-stale window
+		// (claimed_at + DURABLE_WORK_TRANSFER_STALE_MS — transfer age, NOT the
+		// work's own terminal TTL), so a persistently-connected sender whose ack
+		// was dropped is not wedged until the next reconnect. Reconnect-time
+		// recovery is covered by the drain call in the ws-client/ws-server open
+		// handlers; this timer covers the no-reconnect window. 30s matches the
+		// transfer window without hammering the DB.
+		this.staleDurableWorkSweepTimer = setInterval(() => {
+			try {
+				this.sweepAndRedriveStaleDurableWork();
+			} catch (error) {
+				this.config.logger?.warn("WsTransport stale durable-work sweep failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}, 30_000);
+		// Node/Bun: don't hold the event loop open for the sweep timer alone.
+		(this.staleDurableWorkSweepTimer as { unref?: () => void }).unref?.();
 		this.config.logger?.debug("WsTransport started");
 	}
 
@@ -447,6 +472,10 @@ export class WsTransport {
 		if (this.durableWorkWrittenListener) {
 			this.config.eventBus.off("durable_work:written", this.durableWorkWrittenListener);
 			this.durableWorkWrittenListener = null;
+		}
+		if (this.staleDurableWorkSweepTimer) {
+			clearInterval(this.staleDurableWorkSweepTimer);
+			this.staleDurableWorkSweepTimer = null;
 		}
 		this.config.logger?.debug("WsTransport stopped");
 	}
@@ -1566,6 +1595,45 @@ export class WsTransport {
 				});
 				break;
 			}
+		}
+	}
+
+	/**
+	 * Periodic + on-reconnect recovery for peer-targeted durable-work rows stuck
+	 * in `transferring` after their transfer timeout lapsed. `drainDurableWorkSpool`
+	 * only re-sends `transferring` rows on a fresh peer connection, so a
+	 * persistently-connected sender whose SPOOL_TRANSFER_ACK was dropped has no
+	 * retry path — the row wedges at `transferring` forever (the #253 incident:
+	 * 200+ platform_request rows, attempt_count=0). This sweep is the missing
+	 * running-process leg: reclaim stale `transferring` rows to `pending` (charging
+	 * an attempt, dead-lettering at the attempt cap so a poisoned row does not loop
+	 * forever), then re-drive every live peer so the reclaimed rows re-send at once
+	 * rather than waiting for the next reconnect. Called from a periodic timer and
+	 * whenever a peer (re)connects. Idempotent: with nothing stale it re-drives
+	 * connected peers, which is itself a no-op when their spools are empty.
+	 *
+	 * Staleness is keyed on the TRANSFER clock (`claimed_at` + the transfer
+	 * timeout), never on the terminal `expires_at`. A `processing` row is NOT swept
+	 * here: an expired `processing` row does not prove its consumer died (the token
+	 * fence protects the row, not the consumer's external side effects), so
+	 * returning it to `pending` could double-execute. Processing recovery stays
+	 * scoped to boot/generation liveness per R-DW10; a genuinely wedged processing
+	 * row is investigated and redriven by id, not auto-swept.
+	 */
+	sweepAndRedriveStaleDurableWork(now = new Date().toISOString()): void {
+		const reclaimed = sweepStaleTransferringDurableWork(
+			this.config.db,
+			DURABLE_WORK_MAX_ATTEMPTS,
+			now,
+		);
+		if (reclaimed === 0) return;
+		// Each reclaimed transferring row is now pending. The drain re-begins + ships
+		// pending peer-targeted rows, so one drain per live peer re-sends everything
+		// the sweep freed (a row dead-lettered at the cap is not pending, so the drain
+		// correctly leaves it alone).
+		for (const [peerSiteId] of this.peerConnections) {
+			if (peerSiteId === this.config.siteId) continue;
+			this.drainDurableWorkSpool(peerSiteId);
 		}
 	}
 

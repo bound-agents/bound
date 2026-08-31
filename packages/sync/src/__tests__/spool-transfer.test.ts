@@ -576,6 +576,140 @@ describe("spool transfer (4D-B)", () => {
 		});
 	});
 
+	describe("(h) stale-transferring recovery without a reconnect", () => {
+		let sender: Node;
+		let receiver: Node;
+
+		beforeEach(() => {
+			sender = createNode("sender");
+			receiver = createNode("receiver");
+		});
+		afterEach(() => {
+			sender.stop();
+			receiver.stop();
+		});
+
+		// Live incident (#253, spoke 7cf34dd659c0): a peer-targeted row flips
+		// pending -> transferring on the push path, the SPOOL_TRANSFER ships, the
+		// receiver DURABLY accepts it, but its SPOOL_TRANSFER_ACK never reaches the
+		// sender. drainDurableWorkSpool only re-sends on a *reconnect*; a
+		// persistently-connected sender whose ack was dropped has no retry path, so
+		// the row wedges at transferring past its transfer timeout forever (observed:
+		// 200+ platform_request rows, attempt_count=0). This test drives the full real
+		// interaction with SELECTIVE ack suppression — real frame path, no transport
+		// stub: (1) receiver durably accepts the original transfer, (2) that ack is
+		// dropped, (3) the sender sweep reclaims under a NEW token and re-sends, (4)
+		// the stale original ack arrives and is REJECTED by the (id, transferring,
+		// token) fence, (5) the duplicate transfer is deduplicated receiver-side, (6)
+		// the new-token ack finally retires the sender row.
+		it("survives a dropped ack: reclaims under a new token, rejects the stale ack, dedups the resend, and retires on the new ack", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+			connect(receiver, "sender");
+
+			// (1) Push path: the row begins transferring and ships. Its terminal TTL is
+			// far in the FUTURE — the work is still live; only its transfer ack failed.
+			seedPendingRow(sender, {
+				id: "stale-1",
+				target_site_id: "receiver",
+				source_site: "sender",
+				expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+			});
+			expect(rowState(sender.db, "stale-1")?.claim_state).toBe("transferring");
+			const originalToken = rowState(sender.db, "stale-1")?.claim_token;
+			const originalTransfer = payloadOf(
+				decodeSpoolFrames(sender).find((f) => f.type === WsMessageType.SPOOL_TRANSFER),
+			) as SpoolTransferPayload;
+
+			// (1) The receiver durably accepts the ORIGINAL transfer and emits its ack
+			// echoing the original token — but that ack is DROPPED (never handed to the
+			// sender). Capture it so we can replay it stale in step (4).
+			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", originalTransfer));
+			expect(rowState(receiver.db, "stale-1")?.claim_state).toBe("pending");
+			const droppedAck = payloadOf(
+				decodeSpoolFrames(receiver).find((f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK),
+			) as SpoolTransferAckPayload;
+			expect(droppedAck.entries[0].token).toBe(originalToken);
+
+			// The transfer timeout lapses with the sender still transferring (ack never
+			// arrived). Back-date claimed_at so the sweep's transfer clock fires; the
+			// terminal expiry is untouched (the work is still live). Clear captured
+			// frames so the next SPOOL_TRANSFER provably comes from recovery.
+			const staleClaimedAt = new Date(Date.now() - 120_000).toISOString();
+			sender.db.run("UPDATE durable_work SET claimed_at = ? WHERE id = 'stale-1'", [
+				staleClaimedAt,
+			]);
+			sender.sent.length = 0;
+			receiver.sent.length = 0;
+
+			// (3) Recovery: the sweep reclaims the stale transferring row and re-drives
+			// it over the live link. The redrive re-begins the transfer under a NEW
+			// generation (fresh token), charging one attempt.
+			sender.transport.sweepAndRedriveStaleDurableWork();
+			const reswept = rowState(sender.db, "stale-1");
+			expect(reswept?.claim_state).toBe("transferring");
+			expect(reswept?.attempt_count).toBe(1);
+			const newToken = reswept?.claim_token;
+			expect(newToken).toBeTruthy();
+			expect(newToken).not.toBe(originalToken);
+
+			const resend = decodeSpoolFrames(sender).filter(
+				(f) => f.type === WsMessageType.SPOOL_TRANSFER,
+			);
+			expect(resend).toHaveLength(1);
+			const resendPayload = resend[0].payload as SpoolTransferPayload;
+			expect(resendPayload.entries[0].id).toBe("stale-1");
+			expect(resendPayload.entries[0].token).toBe(newToken);
+
+			// (4) The stale ORIGINAL ack (carrying the retired token) finally arrives.
+			// The (id, transferring, token) fence rejects it: the sender row is now under
+			// the new generation, so the stale delete matches nothing and the row stays
+			// transferring — it is NOT double-retired.
+			sender.transport.handleSpoolTransferAck("receiver", droppedAck);
+			expect(rowState(sender.db, "stale-1")?.claim_state).toBe("transferring");
+			expect(rowState(sender.db, "stale-1")?.claim_token).toBe(newToken);
+
+			// (5) The receiver applies the DUPLICATE resend. Its destination copy is
+			// already present under the (kind, idempotency_key) fence, so the insert is a
+			// no-op dedup — the receiver still acks (echoing the NEW token) so the sender
+			// can retire either way.
+			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", resendPayload));
+			const newAcks = decodeSpoolFrames(receiver).filter(
+				(f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK,
+			);
+			expect(newAcks).toHaveLength(1);
+			const newAck = newAcks[0].payload as SpoolTransferAckPayload;
+			expect(newAck.entries[0].token).toBe(newToken);
+
+			// (6) The new-token ack retires the sender copy — the stall clears exactly
+			// once. The receiver still holds its single durable copy.
+			sender.transport.handleSpoolTransferAck("receiver", newAck);
+			expect(rowState(sender.db, "stale-1")).toBeNull();
+			expect(rowState(receiver.db, "stale-1")?.claim_state).toBe("pending");
+		});
+
+		it("leaves a still-fresh transferring row untouched (TTL not yet lapsed)", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+
+			seedPendingRow(sender, {
+				id: "fresh-1",
+				target_site_id: "receiver",
+				source_site: "sender",
+				expires_at: new Date(Date.now() + 60_000).toISOString(),
+			});
+			const tokenBefore = rowState(sender.db, "fresh-1")?.claim_token;
+			sender.sent.length = 0;
+
+			sender.transport.sweepAndRedriveStaleDurableWork();
+
+			// Not swept: same token, no attempt charged, nothing re-sent.
+			expect(rowState(sender.db, "fresh-1")?.claim_token).toBe(tokenBefore ?? "");
+			expect(rowState(sender.db, "fresh-1")?.attempt_count).toBe(0);
+			expect(decodeSpoolFrames(sender)).toHaveLength(0);
+		});
+	});
+
 	describe("(f) receiver consumer wake", () => {
 		let sender: Node;
 		let receiver: Node;

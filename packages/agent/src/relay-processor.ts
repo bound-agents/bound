@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
 	type AppContext,
+	DURABLE_WORK_MAX_ATTEMPTS,
 	type ThreadExecutor,
 	acknowledgeBatch,
 	acknowledgeDurableWork,
@@ -119,7 +120,7 @@ import { deliverNotificationWakeup } from "./wakeup-routing.js";
 import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const DURABLE_RELAY_MAX_ATTEMPTS = 3;
+const DURABLE_RELAY_MAX_ATTEMPTS = DURABLE_WORK_MAX_ATTEMPTS;
 
 /** Allow event handlers to claim pre-existing durable intake after daemon startup. */
 export const INTAKE_RECONCILIATION_STARTUP_GRACE_MS = 20 * 60 * 1000;

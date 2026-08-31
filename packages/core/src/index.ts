@@ -138,6 +138,9 @@ export {
 	acknowledgeDurableWorkTransfer,
 	resetProcessingDurableWork,
 	resetTransferringLocalDurableWork,
+	sweepStaleTransferringDurableWork,
+	DURABLE_WORK_TRANSFER_STALE_MS,
+	DURABLE_WORK_MAX_ATTEMPTS,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
 	LOCAL_WORK_TARGET,
@@ -185,4 +188,8 @@ export {
 export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";
 // Read repository layer (synced-table SELECT helpers). Writes go through change-log.ts.
 export * from "./repositories";
-export { redriveDeadLetterDurableWork, type DurableWorkInspectionRow } from "./durable-work";
+export {
+	redriveDeadLetterDurableWork,
+	redriveTransferringDurableWork,
+	type DurableWorkInspectionRow,
+} from "./durable-work";

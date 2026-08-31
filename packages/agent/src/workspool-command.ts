@@ -1,9 +1,11 @@
 import {
+	DURABLE_WORK_MAX_ATTEMPTS,
 	type DurableWorkInspectionRow,
 	getDurableWork,
 	listDeadLetterDurableWork,
 	listDurableWorkForInspection,
 	redriveDeadLetterDurableWork,
+	redriveTransferringDurableWork,
 } from "@bound/core";
 import type { CommandDefinition, CommandResult } from "@bound/sandbox";
 import { DURABLE_WORK_REGISTRY } from "./durable-work-registry";
@@ -85,6 +87,22 @@ export function createWorkspoolCommand(): CommandDefinition {
 				const row = getDurableWork(ctx.db, id);
 				if (!row || row.claim_state === "consumed")
 					return { id, outcome: "not found or already consumed" };
+				// A wedged spool transfer (ack never returned) is reclaimed to pending so
+				// the sender re-sends it; charging an attempt lets a poisoned row cap.
+				// No registered-TTL gate: a transferring row already carries the RPC TTL
+				// its producer set, and an operator naming it has judged it stuck.
+				// A wedged spool transfer (ack never returned) is reclaimed to pending so
+				// the sender re-sends it; charging an attempt lets a poisoned row cap and,
+				// at the cap, dead-letter instead of looping. No registered-TTL gate: a
+				// transferring row already carries the RPC TTL its producer set, and an
+				// operator naming it has judged it stuck.
+				if (row.claim_state === "transferring")
+					return {
+						id,
+						outcome: redriveTransferringDurableWork(ctx.db, id, DURABLE_WORK_MAX_ATTEMPTS)
+							? "redriven"
+							: "not transferring",
+					};
 				if (ttlForKind(row.kind) === undefined)
 					return { id, outcome: "rejected: unknown kind has no registered TTL" };
 				return {
