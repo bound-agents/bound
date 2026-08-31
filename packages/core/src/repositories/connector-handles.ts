@@ -43,6 +43,31 @@ export function listActiveConnectorHandles(db: Database): ConnectorHandleRow[] {
 }
 
 /**
+ * Finds the live connector handle whose event task owns `threadId`.
+ *
+ * Connector intake rows use the task thread as `ref_id`; this mirrors the
+ * webhook and RSS binding finders used by the local stale-intake reconciler.
+ * A handle's task is its routing identity, so the returned handle id recreates
+ * the exact `connector:event:<handle-id>` trigger emitted at delivery time.
+ */
+export function findActiveConnectorHandleByThreadId(
+	db: Database,
+	threadId: string,
+): { id: string; name: string; task_id: string } | null {
+	return db
+		.query(
+			`SELECT h.id, h.server_name || ':' || h.event_name AS name, h.task_id
+			 FROM connector_handles h
+			 JOIN tasks t ON t.id = h.task_id
+			 WHERE t.thread_id = ?
+			   AND h.deleted = 0
+			   AND t.deleted = 0
+			   AND t.status <> 'cancelled'`,
+		)
+		.get(threadId) as { id: string; name: string; task_id: string } | null;
+}
+
+/**
  * Looks up which connector server owns the event handler task `taskId` was
  * created for. Used to resolve tool scoping for an event-task thread: the
  * server name tells `getToolsForThread` which platform's tools to expose.
