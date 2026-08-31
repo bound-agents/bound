@@ -1,7 +1,19 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
+import type { TypedEventEmitter } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
 import { withCoreSpan } from "./telemetry";
+
+let durableWorkEventBus: TypedEventEmitter | null = null;
+
+/**
+ * Set the event bus for `durable_work:written` events. Called at startup to
+ * enable push-on-insert spool transfer for peer-targeted rows (R-DW10/R-DW11),
+ * mirroring {@link setRelayOutboxEventBus}.
+ */
+export function setDurableWorkEventBus(eventBus: TypedEventEmitter | null): void {
+	durableWorkEventBus = eventBus;
+}
 
 /** Set BOUND_DURABLE_INTAKE=0 or false before startup to restore legacy relay-inbox intake writes. */
 export let DURABLE_INTAKE_ENABLED = !["0", "false"].includes(
@@ -123,8 +135,55 @@ export function insertDurableWork(db: Database, row: NewDurableWork): boolean {
 				row.stream_id ?? null,
 			],
 		);
-		return result.changes === 1;
+		const inserted = result.changes === 1;
+		// Emit only when a NEW row was inserted (never on the INSERT-OR-IGNORE
+		// fence dedupe), mirroring writeOutbox's cycle-breaker: a duplicate emit
+		// would re-drive an already-transferred row. The transport listener filters
+		// to peer-targeted rows and capability-gates them, so emitting for
+		// local-targeted rows is harmless (no matching peer drain).
+		//
+		// Events-after-commit (invariant #6): a standalone insert has already
+		// committed via the implicit single-statement transaction by the time we
+		// reach here, so it is safe to emit. But when this insert runs INSIDE a
+		// larger transaction (db.inTransaction), the enclosing write has NOT
+		// committed yet and may still ROLL BACK — a spool-drain listener firing now
+		// could transition/send a row whose transaction later aborts. So we SKIP
+		// the emit and let the caller flush it post-commit via
+		// emitDurableWorkWritten(). The `inserted` return lets the caller collect
+		// exactly the ids that actually became durable, so a deferred emit never
+		// fires for a dedupe or a rolled-back insert.
+		if (inserted && !db.inTransaction && durableWorkEventBus) {
+			durableWorkEventBus.emit("durable_work:written", {
+				id: row.id,
+				target_site_id: row.target_site_id,
+			});
+		}
+		return inserted;
 	});
+}
+
+/**
+ * Post-commit emission of `durable_work:written` for rows inserted inside a
+ * transaction, where {@link insertDurableWork} deliberately suppressed the
+ * automatic emit (invariant #6 — events fire after COMMIT, never mid-
+ * transaction). An in-transaction producer collects the ids that actually
+ * became durable (insertDurableWork returned true) and calls this once the
+ * enclosing transaction has returned/committed. Emitting only for genuinely-
+ * inserted rows preserves the writeOutbox cycle-breaker: no re-drive of a
+ * deduped row, and nothing at all for a transaction that rolled back (the
+ * caller never collected those ids). Standalone inserts must NOT route through
+ * this — they already emitted inline.
+ */
+export function emitDurableWorkWritten(
+	rows: ReadonlyArray<{ id: string; target_site_id: string }>,
+): void {
+	if (!durableWorkEventBus || rows.length === 0) return;
+	for (const row of rows) {
+		durableWorkEventBus.emit("durable_work:written", {
+			id: row.id,
+			target_site_id: row.target_site_id,
+		});
+	}
 }
 
 /** BEGIN IMMEDIATE makes local-exclusive selection and ownership one SQLite operation. */
@@ -427,4 +486,51 @@ export function redriveDeadLetterDurableWork(
 				[expiresAt, id],
 			).changes === 1,
 	);
+}
+
+/**
+ * Peer-targeted pending rows the local host must drain over the spool. Excludes
+ * the owning host's own local-consumer rows (those are claimed in-process, never
+ * transferred). Ordered oldest-first for a stable reconnect drain, mirroring
+ * {@link readUndelivered} for the relay outbox.
+ */
+export function readPendingPeerTargetedDurableWork(
+	db: Database,
+	ownSiteId: string,
+	targetSiteId?: string,
+): DurableWorkRow[] {
+	if (targetSiteId) {
+		return db
+			.query(
+				`SELECT * FROM durable_work WHERE claim_state = 'pending' AND target_site_id = ? AND target_site_id != ? ORDER BY created_at`,
+			)
+			.all(targetSiteId, ownSiteId) as DurableWorkRow[];
+	}
+	return db
+		.query(
+			`SELECT * FROM durable_work WHERE claim_state = 'pending' AND target_site_id != ? ORDER BY created_at`,
+		)
+		.all(ownSiteId) as DurableWorkRow[];
+}
+
+/**
+ * Rows this host began transferring but has not yet had acknowledged. On
+ * reconnect (or boot), these re-send to the target: the receiver's
+ * `(kind, idempotency_key)` fence makes a redelivered transfer idempotent, so
+ * resuming an in-flight transfer with the retained token is safe. Ordered
+ * oldest-first. Boot recovery ({@link resetProcessingDurableWork}) touches only
+ * `processing`, never `transferring`, so a crashed sender keeps its transfer
+ * identity and resumes rather than double-inserting a fresh pending row.
+ */
+export function readTransferringDurableWork(db: Database, targetSiteId?: string): DurableWorkRow[] {
+	if (targetSiteId) {
+		return db
+			.query(
+				`SELECT * FROM durable_work WHERE claim_state = 'transferring' AND target_site_id = ? ORDER BY created_at`,
+			)
+			.all(targetSiteId) as DurableWorkRow[];
+	}
+	return db
+		.query(`SELECT * FROM durable_work WHERE claim_state = 'transferring' ORDER BY created_at`)
+		.all() as DurableWorkRow[];
 }

@@ -5,6 +5,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import {
 	DURABLE_INTAKE_ENABLED,
+	emitDurableWorkWritten,
 	insertDurableWork,
 	insertInbox,
 	listActiveRssFeeds,
@@ -560,6 +561,15 @@ export class RssPoller {
 			}
 
 			let delivered = 0;
+			// Durable-work ids that actually became durable INSIDE the poll
+			// transaction. insertDurableWork suppresses its automatic
+			// durable_work:written emit while db.inTransaction is true (invariant #6
+			// — events fire after COMMIT). We collect the genuinely-inserted ids here
+			// and flush them via emitDurableWorkWritten AFTER persistTransaction()
+			// returns, so a spool-drain listener never sees a row whose enclosing
+			// transaction (this insert PLUS the seen_guids cursor advance) has not
+			// committed and may still roll back.
+			const durableWritten: Array<{ id: string; target_site_id: string }> = [];
 			const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
 			const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
 			const persistIntake = this.deps.insertInbox ?? insertInbox;
@@ -572,33 +582,38 @@ export class RssPoller {
 						const payload = JSON.stringify({ feed: feed.name, url: feed.url, ...item });
 						const receivedAt = new Date(nowMs).toISOString();
 						const expiresAt = new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString();
-						const inserted =
-							DURABLE_INTAKE_ENABLED && !this.deps.insertInbox
-								? persistDurable(this.deps.db, {
-										id,
-										target_site_id: this.deps.siteId,
-										kind: "rss_intake",
-										payload,
-										idempotency_key: idempotencyKey,
-										expires_at: expiresAt,
-										ref_id: feed.thread_id,
-										source_site: this.deps.siteId,
-										received_at: receivedAt,
-									})
-								: persistIntake(this.deps.db, {
-										id,
-										source_site_id: this.deps.siteId,
-										kind: "rss_intake",
-										ref_id: feed.thread_id,
-										idempotency_key: idempotencyKey,
-										stream_id: null,
-										payload,
-										expires_at: expiresAt,
-										received_at: receivedAt,
-										processed: 0,
-										trace_context: serializedTraceContext,
-									});
-						if (inserted) delivered++;
+						const useDurable = DURABLE_INTAKE_ENABLED && !this.deps.insertInbox;
+						const inserted = useDurable
+							? persistDurable(this.deps.db, {
+									id,
+									target_site_id: this.deps.siteId,
+									kind: "rss_intake",
+									payload,
+									idempotency_key: idempotencyKey,
+									expires_at: expiresAt,
+									ref_id: feed.thread_id,
+									source_site: this.deps.siteId,
+									received_at: receivedAt,
+								})
+							: persistIntake(this.deps.db, {
+									id,
+									source_site_id: this.deps.siteId,
+									kind: "rss_intake",
+									ref_id: feed.thread_id,
+									idempotency_key: idempotencyKey,
+									stream_id: null,
+									payload,
+									expires_at: expiresAt,
+									received_at: receivedAt,
+									processed: 0,
+									trace_context: serializedTraceContext,
+								});
+						if (inserted) {
+							delivered++;
+							// Only the durable path emits durable_work:written; the legacy
+							// relay-inbox path has no spool drain. Collect for post-commit flush.
+							if (useDurable) durableWritten.push({ id, target_site_id: this.deps.siteId });
+						}
 					}
 				}
 
@@ -616,6 +631,11 @@ export class RssPoller {
 				}
 			});
 			persistTransaction();
+			// Post-commit: now that the poll transaction (durable inserts PLUS the
+			// seen_guids cursor advance) has committed, it is safe to fire
+			// durable_work:written for the rows that became durable — the spool drain
+			// can transition/send them without racing an open transaction (invariant #6).
+			if (durableWritten.length > 0) emitDurableWorkWritten(durableWritten);
 			if (delivered > 0) rssDeliveryCounter.add(delivered);
 
 			if (isFirstPoll) {

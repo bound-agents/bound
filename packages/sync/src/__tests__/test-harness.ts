@@ -130,6 +130,7 @@ const FULL_SCHEMA = `
 		online_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL,
 		platforms TEXT,
+		work_spool_capable INTEGER NOT NULL DEFAULT 0,
 		deleted INTEGER NOT NULL DEFAULT 0
 	);
 
