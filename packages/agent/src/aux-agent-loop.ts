@@ -10,6 +10,7 @@ import { context } from "@opentelemetry/api";
 
 import { getResolvedModelId, parseContentBlocks } from "./agent-loop-utils";
 import { BoundAgentLoop, type BoundPreparedFrame } from "./bound-agent-loop";
+import { buildCacheMarkers, coldPathPlaceCacheMarker } from "./cache-marker";
 import { selectCacheTtl } from "./cache-prediction";
 import { assembleContext, computeBaseTruncationTarget, realTimeClock } from "./context-assembly";
 import { resolveTargetCapabilities } from "./model-resolution";
@@ -20,6 +21,19 @@ const CLIENT_TOOL_POLL_MS = 150;
 const CLIENT_TOOL_TIMEOUT_MS = 300_000;
 
 export class AuxAgentLoop extends BoundAgentLoop {
+	protected prepareAuxCacheMarker(
+		messages: import("@bound/llm").LLMMessage[],
+		cacheMarkerCaps: BoundPreparedFrame["cacheMarkerCaps"],
+	) {
+		return coldPathPlaceCacheMarker(
+			messages,
+			{
+				bucketTokens: 0,
+				estimateTokens: (message) => countTokens(JSON.stringify(message.content)),
+			},
+			cacheMarkerCaps ?? undefined,
+		);
+	}
 	protected override async prepareFrame(input: {
 		resolution: BoundPreparedFrame["resolution"];
 	}): Promise<Omit<BoundPreparedFrame, "resolution">> {
@@ -36,6 +50,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		}
 
 		const resolvedCaps = resolveTargetCapabilities(resolution, this.modelRouter);
+		const cacheMarkerCaps = resolvedCaps;
 		const contextWindow = resolution.max_context;
 		const mergedTools = this.getMergedTools();
 		const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
@@ -76,8 +91,14 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			clock: assemblyClock,
 		});
 
+		const fixedPlacement = this.prepareAuxCacheMarker(result.messages, cacheMarkerCaps);
 		const contextDebug: ContextDebugInfo = {
 			...result.debug,
+			cacheMarkers: buildCacheMarkers({
+				sections: result.debug.sections,
+				messagePlacement: fixedPlacement,
+				ttl: cacheTtl,
+			}),
 			cachePath: "cold",
 			cachePathReason: "no-stored-state",
 			truncationTargetTokens,
@@ -106,7 +127,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			relayInfo,
 			resolvedModelForDebug,
 			resolvedCaps,
-			cacheMarkerCaps: undefined,
+			cacheMarkerCaps,
 			contextWindow,
 			toolTokenEstimate,
 			truncationTargetTokens,
@@ -129,8 +150,9 @@ export class AuxAgentLoop extends BoundAgentLoop {
 	 *
 	 * Deliberately NOT copied from MainAgentLoop: warm-tail refresh and rolling
 	 * cache-marker maintenance. Aux frames have no cached-turn state; instead,
-	 * afterToolPersistence performs a cold rebuild after every tool round so
-	 * the full persisted transcript is re-budgeted and truncated.
+	 * afterToolPersistence performs a full cold rebuild after every tool round.
+	 * Each rebuilt request gets a fresh fixed marker, so caching remains enabled
+	 * without weakening aux's current-transcript reassembly guarantee.
 	 */
 	protected override beforeTurn(_turn: number, _frame: BoundPreparedFrame): void {
 		this.currentTurnId = null;
