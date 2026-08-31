@@ -12,6 +12,12 @@ import {
 	pruneExpiredDeadLetters,
 	resetProcessingDurableWork,
 } from "../durable-work";
+import {
+	countPendingIntakeDurableWork,
+	findDurableWorkByKindAndIdempotencyKeys,
+	listPendingIntakeDurableWork,
+	listPendingIntakeDurableWorkForRef,
+} from "../repositories/durable-work";
 import { applySchema } from "../schema";
 
 let db: Database;
@@ -116,5 +122,96 @@ describe("durable_work upgrade", () => {
 			claim_state: "consumed",
 		});
 		legacy.close();
+	});
+
+	it("adds nullable intake columns to a 4B durable_work table without losing rows", () => {
+		const legacy = new Database(":memory:");
+		legacy.exec(`CREATE TABLE durable_work (
+			id TEXT PRIMARY KEY, target_site_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
+			claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+			created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT
+		) STRICT`);
+		legacy.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, created_at) VALUES ('4b-row', 'local', 'webhook_intake', '{}', '4b-key', ?)`,
+			[new Date().toISOString()],
+		);
+		applySchema(legacy);
+		expect(legacy.query("PRAGMA table_info(durable_work)").all()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "ref_id" }),
+				expect.objectContaining({ name: "source_site" }),
+				expect.objectContaining({ name: "received_at" }),
+			]),
+		);
+		expect(
+			legacy
+				.query("SELECT id, ref_id, source_site, received_at FROM durable_work WHERE id = '4b-row'")
+				.get(),
+		).toEqual({ id: "4b-row", ref_id: null, source_site: null, received_at: null });
+		legacy.close();
+	});
+});
+
+// 4C-1 intake provenance and read helpers.
+
+describe("durable_work intake reads", () => {
+	it("round-trips nullable intake provenance through durable work", () => {
+		insertDurableWork(db, {
+			...row("intake"),
+			ref_id: "thread-1",
+			source_site: "site-a",
+			received_at: "2026-01-01T00:00:00.000Z",
+		});
+		insertDurableWork(db, row("dispatch"));
+		expect(
+			db
+				.query("SELECT ref_id, source_site, received_at FROM durable_work WHERE id = 'intake'")
+				.get(),
+		).toEqual({
+			ref_id: "thread-1",
+			source_site: "site-a",
+			received_at: "2026-01-01T00:00:00.000Z",
+		});
+		expect(
+			db
+				.query("SELECT ref_id, source_site, received_at FROM durable_work WHERE id = 'dispatch'")
+				.get(),
+		).toEqual({ ref_id: null, source_site: null, received_at: null });
+	});
+
+	it("orders pending intake by received_at with created_at fallback", () => {
+		insertDurableWork(db, {
+			...row("late"),
+			kind: "webhook_intake",
+			ref_id: "thread-1",
+			received_at: "2026-01-03T00:00:00.000Z",
+		});
+		insertDurableWork(db, { ...row("fallback"), kind: "rss_intake", ref_id: "thread-1" });
+		db.run("UPDATE durable_work SET created_at = ? WHERE id = 'fallback'", [
+			"2026-01-01T00:00:00.000Z",
+		]);
+		insertDurableWork(db, {
+			...row("early"),
+			kind: "webhook_intake",
+			ref_id: "thread-1",
+			received_at: "2026-01-02T00:00:00.000Z",
+		});
+		expect(
+			listPendingIntakeDurableWork(db, "webhook_intake", "thread-1").map((entry) => entry.id),
+		).toEqual(["early", "late"]);
+		expect(listPendingIntakeDurableWorkForRef(db, "thread-1").map((entry) => entry.id)).toEqual([
+			"fallback",
+			"early",
+			"late",
+		]);
+		expect(
+			findDurableWorkByKindAndIdempotencyKeys(db, [
+				["webhook_intake", "key:late"],
+				["rss_intake", "missing"],
+			]).map((entry) => entry.id),
+		).toEqual(["late"]);
+		expect(countPendingIntakeDurableWork(db, "thread-1")).toBe(3);
 	});
 });

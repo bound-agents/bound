@@ -44,3 +44,18 @@ describe("durable work registry", () => {
 		).toBe("tool-result:thread-789:call-abc");
 	});
 });
+
+describe("passive intake durable work registrations", () => {
+	it("uses scheduler-owned seven-day local-exclusive lifecycle metadata", () => {
+		for (const kind of ["webhook_intake", "rss_intake", "connector_intake"]) {
+			const entry = DURABLE_WORK_REGISTRY.find((candidate) => candidate.kind === kind);
+			expect(entry).toMatchObject({
+				ttlMs: 7 * 24 * 60 * 60 * 1000,
+				consumer: "scheduler",
+				claimDiscipline: "local-exclusive",
+				retirementRule: "single-ack",
+				backing: "local",
+			});
+		}
+	});
+});
