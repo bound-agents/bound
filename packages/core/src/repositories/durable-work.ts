@@ -27,3 +27,46 @@ export function listDeadLetterDurableWork(db: Database, kind: string): DurableWo
 		)
 		.all(kind) as DurableWorkRow[];
 }
+
+const PASSIVE_INTAKE_KINDS = ["webhook_intake", "rss_intake", "connector_intake"] as const;
+
+export function listPendingIntakeDurableWork(
+	db: Database,
+	kind: string,
+	refId: string,
+): DurableWorkRow[] {
+	return db
+		.query(
+			`SELECT * FROM durable_work WHERE kind = ? AND ref_id = ? AND claim_state = 'pending' ORDER BY COALESCE(received_at, created_at) ASC`,
+		)
+		.all(kind, refId) as DurableWorkRow[];
+}
+
+export function listPendingIntakeDurableWorkForRef(db: Database, refId: string): DurableWorkRow[] {
+	return db
+		.query(
+			`SELECT * FROM durable_work WHERE ref_id = ? AND kind IN (${PASSIVE_INTAKE_KINDS.map(() => "?").join(", ")}) AND claim_state = 'pending' ORDER BY COALESCE(received_at, created_at) ASC`,
+		)
+		.all(refId, ...PASSIVE_INTAKE_KINDS) as DurableWorkRow[];
+}
+
+export function findDurableWorkByKindAndIdempotencyKeys(
+	db: Database,
+	pairs: readonly (readonly [string, string])[],
+): DurableWorkRow[] {
+	if (pairs.length === 0) return [];
+	const where = pairs.map(() => "(kind = ? AND idempotency_key = ?)").join(" OR ");
+	return db
+		.query(`SELECT * FROM durable_work WHERE ${where}`)
+		.all(...pairs.flat()) as DurableWorkRow[];
+}
+
+export function countPendingIntakeDurableWork(db: Database, refId: string): number {
+	return (
+		db
+			.query(
+				`SELECT COUNT(*) AS count FROM durable_work WHERE ref_id = ? AND kind IN (${PASSIVE_INTAKE_KINDS.map(() => "?").join(", ")}) AND claim_state = 'pending'`,
+			)
+			.get(refId, ...PASSIVE_INTAKE_KINDS) as { count: number }
+	).count;
+}
