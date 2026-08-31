@@ -13,13 +13,13 @@ Bound currently represents delivery work in three local tables with three partia
 
 This split has concrete costs. A kind must be taught to every component that happens to know about its consumer. The `connector_intake` stale-recovery omission fixed in #252 is the direct example. Directed work can occupy an outbox, an inbox, then a dispatch queue before its real consumer sees it. The same transition guards, recovery cases, expiry behavior, and duplicate-delivery questions are independently expressed in each implementation.
 
-Stages 1–3 of #253 removed immediate prerequisites:
+The following existing contracts bound this RFC:
 
 - #254 (`3e8b8f58`) makes relay consumers duplicate-safe for the known `client_tool`, streaming-inference, and notify-wakeup gaps.
 - #252 (`57775978`) restores `connector_intake` stale sweeping.
-- `796e732a` introduces `intake-kind-registry.ts`; passive-kind membership is declared once and relay exclusion, payload folding, re-arm, and sweeping derive from it.
+- `796e732a` provides `intake-kind-registry.ts`; passive-kind membership is declared once and relay exclusion, payload folding, re-arm, and sweeping derive from it.
 
-This RFC specifies stages 4–5: collapse local delivery storage, then separate synced schedule definitions from locally executable work.
+This RFC collapses local delivery storage, then separates synced schedule definitions from locally executable work.
 
 ## 2. Scope and Non-Goals
 
@@ -170,17 +170,17 @@ The current end state has one local work backing and the change-log cursor imple
 
 **R-DW20.** Synced schedule writes shall obey invariant #1’s change-log outbox and invariant #20’s no-foreign-key rule. The local work table, transfer acknowledgements, boot recovery, and dead-letter transitions shall be local-only dedicated CRUD operations.
 
-**R-DW21.** The sandbox-shell command framework shall expose an uncommon, operator-grade command to list dead-lettered and stale work rows and re-drive selected rows through the normal delivery path. A re-drive shall retain and traverse the ordinary idempotency/transfer fences, so re-driving an already-consumed row is a no-op. The same migration slice shall add a bound-reference skill runbook describing when and how to use the command.
+**R-DW21.** The sandbox-shell command framework shall expose an uncommon, operator-grade command to list dead-lettered and stale work rows and re-drive selected rows through the normal delivery path. A re-drive shall retain and traverse the ordinary idempotency/transfer fences, so re-driving an already-consumed row is a no-op. Slice 4B shall add the command and a bound-reference skill runbook describing when and how to use it. Slice 4B is the first slice with live work-table rows, so the command exercises local claim and recovery through the real lifecycle before passive and relay kinds migrate.
 
-**R-DW22.** A task-fire idempotency identity shall be exactly `(task_id, scheduled_at)`, where `scheduled_at` is the binding’s `next_run_at` planned instant. It shall not include `modified_at`, `run_count`, or another generation component. A generation component becomes required only if catch-up/backfill semantics permit the same planned instant to fire again.
+**R-DW22.** A task-fire idempotency identity shall be exactly `(task_id, scheduled_at)`, where `scheduled_at` is the binding’s `next_run_at` planned instant. It shall not include `modified_at`, `run_count`, or another generation component: concurrent claimants agree on `task_id` and `scheduled_at` despite LWW replica divergence, while generation components can diverge and defeat rendezvous deduplication. A generation component becomes required only if catch-up/backfill semantics permit the same planned instant to fire again.
 
 **R-DW23.** Work-spool support shall be advertised by an explicit synced feature bit following the `hosts.models`, `hosts.platforms`, and `hosts.mcp_capabilities` pattern. Release N shall advertise it unconditionally at startup. The bit means only “this binary speaks the spool protocol”; it does not attest that this host has drained or dropped its local legacy tables. `hosts.version` shall not be used: it has no writer and gates no behavior. The static capability enables R-DW13’s per-pair send-path selection; R-DW15’s dynamic drain and drop conditions remain per host.
 
-## 6. Task Firing: Decision C
+## 6. Task Firing
 
 `tasks` currently looks like a synced queue because it carries status, claim, lease, and heartbeat fields. Its claim is not cluster mutual exclusion: two partitioned SQLite replicas can each win local CAS. `scheduler.ts` documents the later re-read as a heuristic, not consensus. The actual duplicate mitigation is rendezvous selection plus deterministic artifacts whose LWW resolution collapses equivalent state.
 
-Decision C makes that boundary explicit. A task row is a replicated definition and liveness record. A firing is local executable work.
+A task row is a replicated definition and liveness record. A firing is local executable work.
 
 1. Each host evaluates due bindings from its synced `tasks` replica.
 2. It computes the existing rendezvous winner.
@@ -215,7 +215,7 @@ Add the local table, dedicated CRUD, state-machine transition guards, row valida
 
 ### Slice 4B — `dispatch_queue` kinds
 
-Move local thread-message dispatch to `durable_work` with `local-exclusive` plus single-ack. New code dual-reads both sources and bridges any legacy row through a derived legacy identity. Add the operator-grade sandbox-shell redrive command and the bound-reference runbook required by R-DW21. This is the right slice because it is the first slice with live work-table rows and validates local claim/recovery behavior without relay-transfer complexity; the command can therefore exercise the real lifecycle before passive and relay kinds migrate.
+Move local thread-message dispatch to `durable_work` with `local-exclusive` plus single-ack. New code dual-reads both sources and bridges any legacy row through a derived legacy identity. Add the operator-grade sandbox-shell redrive command and the bound-reference runbook required by R-DW21.
 
 **Rollback:** route new enqueues back to `dispatch_queue`; dual-read drains work-table dispatch rows until empty. Do not drop either table.
 
@@ -239,11 +239,11 @@ Release N is the ordering-invariant migration release: every host advertises spo
 
 ### Slice 5 — Split task firings from bindings
 
-Only after the local spool and its claim/recovery behavior are proven, change `tasks` to schedule/binding semantics and enqueue deterministic local `task_fire` rows on the rendezvous winner. Preserve all scheduler mechanics listed in R-DW18 and event semantics in R-DW19. This is last because it changes scheduler behavior, while stages 4A–4E establish the local execution primitive it needs.
+After Slices 4A–4E establish the local execution primitive, change `tasks` to schedule/binding semantics and enqueue deterministic local `task_fire` rows on the rendezvous winner. Preserve all scheduler mechanics listed in R-DW18 and event semantics in R-DW19.
 
 **Rollback:** retain the legacy scheduler firing path behind a release-scoped compatibility switch until dual execution comparison proves that the same deterministic artifact would be selected. Disable new firing creation, drain or deterministically reconcile unclaimed `task_fire` rows, and resume legacy claiming. Never run both execution paths for the same artifact without the shared idempotency fence.
 
-The order is intentional: build and verify the primitive; migrate the single-host client; migrate the already-registered passive consumers; migrate transfer and streams; remove the superseded tables; then move the scheduler, whose semantics depend on every earlier property.
+Migration order is: establish the primitive; migrate the single-host client; migrate registered passive consumers; migrate transfer and streams; remove superseded tables; then move the scheduler, whose semantics depend on every earlier property.
 
 ## 9. Deferred Synced Pending-Delivery Ledger
 
@@ -263,13 +263,3 @@ If required later, it fits this design without a new queue species: a work defin
 - Redrive tests prove selected dead-lettered/stale rows re-enter the ordinary path and that re-driving an already-consumed row is a no-op under the same idempotency fences.
 - The sandbox-shell redrive command and its bound-reference runbook ship together in Slice 4B.
 - Architecture and invariant documentation describe two stores and the revised invariant #3.
-
-## 11. Resolved Decisions
-
-1. **Dead-letter retention and redrive (Q1):** dead-lettered work rows retain a seven-day TTL, matching intake `expires_at`. The operator can list dead-lettered/stale rows and re-drive selected rows through a deliberately uncommon sandbox-shell command; the command uses the normal delivery path and its idempotency fences, so an already-consumed row remains a no-op. Slice 4B ships the command and its bound-reference runbook because it is the first slice with live `durable_work` rows and can validate the lifecycle without relay-transfer complexity.
-
-2. **Compatibility horizon (Q2):** there is no multi-release support horizon. The cluster is operator-controlled and can be fully deployed whenever ordering is known or the rollout is ordering-invariant; legacy tables and code paths should be removed as soon as state permits. Release N advertises spool support unconditionally, sends spool traffic to advertising peers and legacy envelopes to non-advertising peers, and drains each host’s own legacy tables. Each host drops only its own relay tables after all live peers advertise support and its own tables are empty after drain; hosts may do so at different times. Release N+1 deletes bridge/dual-read code and refuses startup if local legacy tables still contain rows, directing the operator to run release N first or export and drain them. These per-host gates are the enforcement, not a calendar policy.
-
-3. **Task-fire identity (Q3):** the identity is `(task_id, scheduled_at)` alone, with `scheduled_at` equal to `next_run_at`. Concurrent racers can agree on those values despite LWW divergence; adding `modified_at` or `run_count` could mint divergent keys and defeat rendezvous deduplication. An edit that leaves `next_run_at` identical still correctly permits one firing at that instant under either schedule meaning. A generation component is necessary only if future catch-up/backfill semantics allow planned-instant re-fires.
-
-4. **Capability advertisement (Q4):** use an explicit synced feature bit, following the existing `hosts.models`, `hosts.platforms`, and `hosts.mcp_capabilities` pattern. `hosts.version` has no writer and gates nothing. The bit says only that a binary speaks spool: it selects the send path per peer, while all-live-peer capability plus local drain gates only that host’s destructive local-table drop.
