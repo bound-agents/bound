@@ -1,9 +1,16 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
+	type DurableWorkRow,
+	acknowledgeDurableWorkTransfer,
+	beginDurableWorkTransfer,
 	findChangeLogEntryByHlc,
 	findConnectorHandleForSyncNotification,
+	findHostWorkSpoolCapabilityById,
 	findMessageForSyncBroadcast,
 	findUndeliveredRelayOutboxById,
+	insertDurableWork,
+	readPendingPeerTargetedDurableWork,
+	readTransferringDurableWork,
 } from "@bound/core";
 import {
 	type ConsistencyEntry,
@@ -139,6 +146,8 @@ import type {
 	SnapshotAckPayload,
 	SnapshotChunkPayload,
 	SnapshotEndPayload,
+	SpoolTransferAckPayload,
+	SpoolTransferPayload,
 } from "./ws-frames.js";
 import { WsMessageType, encodeFrame } from "./ws-frames.js";
 
@@ -273,6 +282,9 @@ export class WsTransport {
 	private relayOutboxWrittenListener:
 		| ((event: { id: string; target_site_id: string }) => void)
 		| null = null;
+	private durableWorkWrittenListener:
+		| ((event: { id: string; target_site_id: string }) => void)
+		| null = null;
 	/** Per-peer snapshot seeding progress. */
 	private snapshotStates = new Map<string, SnapshotState>();
 
@@ -400,8 +412,17 @@ export class WsTransport {
 			}
 		};
 
+		// Sender push path for the durable-work spool (R-DW10/R-DW11): on a new
+		// peer-targeted row, transfer it if the target advertises spool support.
+		// Runs on hubs too, so a hub buffering a forwarded row drains it onward.
+		this.durableWorkWrittenListener = (event) => {
+			if (event.target_site_id === this.config.siteId) return;
+			this.sendDurableWorkToPeer(event.target_site_id, event.id);
+		};
+
 		this.config.eventBus.on("changelog:written", this.changelogWrittenListener);
 		this.config.eventBus.on("relay:outbox-written", this.relayOutboxWrittenListener);
+		this.config.eventBus.on("durable_work:written", this.durableWorkWrittenListener);
 		this.config.logger?.debug("WsTransport started");
 	}
 
@@ -416,6 +437,10 @@ export class WsTransport {
 		if (this.relayOutboxWrittenListener) {
 			this.config.eventBus.off("relay:outbox-written", this.relayOutboxWrittenListener);
 			this.relayOutboxWrittenListener = null;
+		}
+		if (this.durableWorkWrittenListener) {
+			this.config.eventBus.off("durable_work:written", this.durableWorkWrittenListener);
+			this.durableWorkWrittenListener = null;
 		}
 		this.config.logger?.debug("WsTransport stopped");
 	}
@@ -1353,6 +1378,242 @@ export class WsTransport {
 
 		const frame = encodeFrame(WsMessageType.RELAY_DELIVER, payload, peer.symmetricKey);
 		peer.sendFrame(frame);
+	}
+
+	// ── Durable-work spool transfer (R-DW10/R-DW11) ───────────────────────
+	//
+	// A peer-targeted durable_work row travels host-to-host over SPOOL_TRANSFER.
+	// The sender begins a transfer (pending → transferring, token retained),
+	// ships immutable identity only, and retires its copy on SPOOL_TRANSFER_ACK.
+	// The receiver inserts a fresh pending row under the (kind, idempotency_key)
+	// fence — a redelivered transfer dedupes — and acks the ids that are now
+	// durable (both newly-inserted AND already-present). This mirrors the relay
+	// delivered/processed double-ack in storage-independent terms, and runs on
+	// hubs too, so a hub that buffers a forwarded row drains it onward (the
+	// mail-spool relay model: one spool per host, rows hop spool to spool).
+
+	/**
+	 * Resolve the next-hop peer for a peer-targeted row, mirroring the relay
+	 * routing model (see {@link sendRelayOutboxEntry}):
+	 *   - Spoke: everything routes to the single hub connection, regardless of
+	 *     the row's final `target_site_id`; the hub forwards it onward.
+	 *   - Hub: route directly to the connected peer whose siteId equals
+	 *     `target_site_id` (a spoke->hub->spoke row's final destination).
+	 * Returns null when no eligible next hop is connected, so the row stays
+	 * where it is until a reconnect drain retries.
+	 */
+	private resolveSpoolNextHop(targetSiteId: string): string | null {
+		if (!this.config.isHub) {
+			// Spoke: the hub is the only peer. Never send back to the row's origin
+			// site if that is somehow a peer; pick the first non-self connection.
+			for (const [peerSiteId] of this.peerConnections) {
+				if (peerSiteId !== this.config.siteId) return peerSiteId;
+			}
+			return null;
+		}
+		// Hub: forward to the connected final-destination peer.
+		return this.peerConnections.has(targetSiteId) ? targetSiteId : null;
+	}
+
+	/**
+	 * Wire a single peer-targeted durable_work row into a spool transfer
+	 * (push path). The next hop (hub for a spoke, target peer for a hub) must
+	 * advertise spool support; an advertising, connected next hop gets the row
+	 * begun (transferring) and sent. Otherwise the row is LEFT PENDING — no
+	 * legacy-envelope fallback happens here (that is 4D-C's producer-side
+	 * decision; no production traffic writes peer-targeted rows yet). A later
+	 * reconnect drain retries once the next hop is connected and advertising.
+	 */
+	private sendDurableWorkToPeer(targetSiteId: string, id: string): void {
+		const nextHop = this.resolveSpoolNextHop(targetSiteId);
+		if (!nextHop) return;
+		const capability = findHostWorkSpoolCapabilityById(this.config.db, nextHop);
+		if (!capability?.work_spool_capable) return;
+
+		const row = this.config.db
+			.query(
+				`SELECT * FROM durable_work WHERE id = ? AND claim_state = 'pending' AND target_site_id = ?`,
+			)
+			.get(id, targetSiteId) as DurableWorkRow | null;
+		if (!row) return;
+
+		const token = beginDurableWorkTransfer(this.config.db, row.id);
+		if (!token) return; // Lost the race (claimed/transferred elsewhere) — nothing to send.
+
+		// The row was SELECTed as pending before the begin, so carry the freshly-
+		// minted generation token onto it — sendSpoolTransfer ships row.claim_token
+		// as the wire token the receiver echoes back for end-to-end fencing.
+		this.sendSpoolTransfer(nextHop, [{ ...row, claim_state: "transferring", claim_token: token }]);
+	}
+
+	/**
+	 * Encode and send a SPOOL_TRANSFER frame carrying immutable work identity.
+	 * Rows must already be in `transferring` (the caller begins the transfer).
+	 */
+	private sendSpoolTransfer(peerSiteId: string, rows: DurableWorkRow[]): boolean {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return false;
+
+		const payload: SpoolTransferPayload = {
+			entries: rows.map((row) => ({
+				id: row.id,
+				target_site_id: row.target_site_id,
+				source_site: row.source_site,
+				kind: row.kind,
+				payload: JSON.parse(row.payload),
+				idempotency_key: row.idempotency_key,
+				ref_id: row.ref_id,
+				stream_id: row.stream_id,
+				expires_at: row.expires_at,
+				received_at: row.received_at,
+				// The row is `transferring` with its generation token retained
+				// (begun by beginDurableWorkTransfer, or resumed with the same token on
+				// reconnect). Ship the token so the receiver echoes it in the ack and
+				// the sender retires EXACTLY this generation — never whatever token the
+				// row currently carries after a boot-recovery re-begin.
+				token: row.claim_token ?? "",
+			})),
+		};
+		const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, peer.symmetricKey);
+		return peer.sendFrame(frame);
+	}
+
+	/**
+	 * Reconnect/boot drain for the durable-work spool over a just-connected peer.
+	 * Re-sends any rows already transferring whose next hop is this peer, then
+	 * begins transfers for pending peer-targeted rows whose next hop is this peer.
+	 * Next-hop resolution matches {@link resolveSpoolNextHop}: on a spoke the peer
+	 * is the hub and carries every peer-targeted row; on a hub only rows whose
+	 * final destination equals the peer route to it. Batched 100/frame, mirroring
+	 * {@link drainRelayOutbox}. Runs on both spokes and hubs.
+	 */
+	drainDurableWorkSpool(peerSiteId: string): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer) return;
+
+		const capability = findHostWorkSpoolCapabilityById(this.config.db, peerSiteId);
+		if (!capability?.work_spool_capable) return;
+
+		// Recovery first: re-send rows already transferring whose next hop is this
+		// peer. The retained token stays valid (beginDurableWorkTransfer is not
+		// re-run), and the receiver's fence makes the redelivery idempotent. Boot
+		// recovery (resetProcessingDurableWork) only touches `processing`, never
+		// `transferring`, so a crashed sender resumes rather than double-inserting.
+		const transferring = readTransferringDurableWork(this.config.db).filter(
+			(row) => this.resolveSpoolNextHop(row.target_site_id) === peerSiteId,
+		);
+
+		// Then begin transfers for pending rows whose next hop is this peer.
+		const pending = readPendingPeerTargetedDurableWork(this.config.db, this.config.siteId).filter(
+			(row) => this.resolveSpoolNextHop(row.target_site_id) === peerSiteId,
+		);
+		const begun: DurableWorkRow[] = [];
+		for (const row of pending) {
+			const token = beginDurableWorkTransfer(this.config.db, row.id);
+			if (token) begun.push({ ...row, claim_state: "transferring", claim_token: token });
+		}
+
+		const all = [...transferring, ...begun];
+		if (all.length === 0) return;
+
+		const batchSize = 100;
+		for (let i = 0; i < all.length; i += batchSize) {
+			const sent = this.sendSpoolTransfer(peerSiteId, all.slice(i, i + batchSize));
+			if (!sent) {
+				this.config.logger?.warn("WsTransport spool drain backpressured", {
+					peerSiteId,
+					batchIndex: i / batchSize,
+				});
+				break;
+			}
+		}
+	}
+
+	/**
+	 * Receive a SPOOL_TRANSFER frame. Insert each entry into the local
+	 * durable_work table as a fresh PENDING row under the (kind, idempotency_key)
+	 * fence (INSERT OR IGNORE), preserving source metadata. Ack the ids that are
+	 * now durable — both newly-inserted AND already-present duplicates — so the
+	 * sender retires either way. Emit `relay:inbox` to wake the local durable
+	 * consumer lane (the 4D-A relay-processor tick).
+	 *
+	 * HUB FORWARDING: a row whose target_site_id is NOT this host is still
+	 * inserted locally with its ORIGINAL target — the hub's own durable buffer
+	 * IS the durability the upstream ack promises (same model as today's
+	 * response-kind hub buffering). The hub's own sender-drain forwards it to the
+	 * final destination when that peer is connected and advertising.
+	 */
+	handleSpoolTransfer(sourceSiteId: string, payload: SpoolTransferPayload): void {
+		if (!payload.entries || payload.entries.length === 0) return;
+
+		const acked: Array<{ id: string; token: string }> = [];
+		for (const entry of payload.entries) {
+			// INSERT OR IGNORE: a new row returns true; a duplicate under the fence
+			// returns false. Both mean the id is now durable here, so both ack.
+			insertDurableWork(this.config.db, {
+				id: entry.id,
+				target_site_id: entry.target_site_id,
+				kind: entry.kind,
+				payload: JSON.stringify(entry.payload),
+				idempotency_key: entry.idempotency_key,
+				expires_at: entry.expires_at ?? null,
+				ref_id: entry.ref_id ?? null,
+				source_site: entry.source_site ?? null,
+				received_at: entry.received_at ?? null,
+				stream_id: entry.stream_id ?? null,
+			});
+			// Echo the sender's transfer-generation token verbatim so the sender
+			// retires EXACTLY the generation it shipped (see handleSpoolTransferAck).
+			// The token is opaque to this receiver — it never inspects or trusts it,
+			// only reflects it — so no new trust surface crosses the channel.
+			acked.push({ id: entry.id, token: entry.token });
+
+			// Wake the local durable consumer lane for rows this host consumes. The
+			// 4D-A lane runs on the relay-processor tick, nudged by relay:inbox. For
+			// a hub-forwarded row (target != self), insertDurableWork already emitted
+			// durable_work:written, which the hub's own sender-drain listens on.
+			if (entry.target_site_id === this.config.siteId) {
+				this.config.eventBus.emit("relay:inbox", {
+					ref_id: entry.ref_id ?? undefined,
+					stream_id: entry.stream_id ?? undefined,
+					kind: entry.kind as RelayKind,
+				});
+			}
+		}
+
+		this.sendSpoolTransferAck(sourceSiteId, acked);
+	}
+
+	/** Send a SPOOL_TRANSFER_ACK echoing each id + the sender's transfer token. */
+	private sendSpoolTransferAck(
+		peerSiteId: string,
+		entries: Array<{ id: string; token: string }>,
+	): void {
+		const peer = this.peerConnections.get(peerSiteId);
+		if (!peer || entries.length === 0) return;
+		const payload: SpoolTransferAckPayload = { entries };
+		const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER_ACK, payload, peer.symmetricKey);
+		peer.sendFrame(frame);
+	}
+
+	/**
+	 * Receive a SPOOL_TRANSFER_ACK: each entry names an id now durable on the peer
+	 * plus the exact transfer-generation token the sender shipped. Retire this
+	 * host's transferring copy by passing the ECHOED token straight to
+	 * {@link acknowledgeDurableWorkTransfer} — never the row's current DB token.
+	 * The fence is (id, transferring, echoed-token): a stale ack for a row that
+	 * was reclaimed by boot recovery and re-begun with a new generation carries
+	 * the OLD token, so the delete matches nothing and the row stays transferring
+	 * under its new token. Reading the current DB token here instead would
+	 * silently convert any ack into an ack for whatever generation is live now,
+	 * defeating the fence end-to-end.
+	 */
+	handleSpoolTransferAck(_sourceSiteId: string, payload: SpoolTransferAckPayload): void {
+		if (!payload.entries || payload.entries.length === 0) return;
+		for (const entry of payload.entries) {
+			if (!entry.token) continue;
+			acknowledgeDurableWorkTransfer(this.config.db, entry.id, entry.token);
+		}
 	}
 
 	// ── Snapshot seeding (new-spoke initial state handoff) ────────────────

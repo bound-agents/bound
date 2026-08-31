@@ -25,6 +25,8 @@ export enum WsMessageType {
 	ROW_PULL_REQUEST = 0x30,
 	ROW_PULL_RESPONSE = 0x31,
 	ROW_PULL_ACK = 0x32,
+	SPOOL_TRANSFER = 0x40,
+	SPOOL_TRANSFER_ACK = 0x41,
 	ERROR = 0xff,
 }
 
@@ -75,6 +77,50 @@ export type RelayDeliverPayload = {
 
 export type RelayAckPayload = {
 	ids: string[];
+};
+
+/**
+ * Spool transfer of durable_work rows to a peer's local work table (R-DW10/R-DW11).
+ * Carries IMMUTABLE work identity PLUS the sender's transfer-generation `token`
+ * (minted by beginDurableWorkTransfer) — no other mutable claim state
+ * (claim_state, claimed_at, attempt_count) travels. The receiver inserts a fresh
+ * pending row, echoes the token back in the ack so the sender fences the exact
+ * generation it sent (see {@link SpoolTransferAckPayload}), and claims the row
+ * locally. The token crosses only the authenticated, encrypted WS channel
+ * between peers that already exchange full row payloads, so it exposes no new
+ * trust surface. Batched like RELAY_SEND for drain efficiency.
+ */
+export type SpoolTransferPayload = {
+	entries: Array<{
+		id: string;
+		target_site_id: string;
+		source_site: string | null;
+		kind: string;
+		payload: unknown;
+		idempotency_key: string;
+		ref_id: string | null;
+		stream_id: string | null;
+		expires_at: string | null;
+		received_at: string | null;
+		trace_context?: string | null;
+		/** Sender's transfer-generation token; echoed back in the ack to fence staleness. */
+		token: string;
+	}>;
+};
+
+/**
+ * Acknowledges that the listed ids are now durable on the receiver — both
+ * newly-inserted rows AND rows the (kind, idempotency_key) fence deduplicated.
+ * Each entry echoes back the exact transfer-generation `token` the sender sent
+ * on the SPOOL_TRANSFER, so the sender retires ONLY the generation it shipped:
+ * a stale ack for a row that was reclaimed by boot recovery and re-begun with a
+ * new token is fenced end-to-end by {@link acknowledgeDurableWorkTransfer} and
+ * is a no-op. Without the echoed token the handler would have to read whatever
+ * token is currently on the row, silently converting any ack into an ack for
+ * the current generation.
+ */
+export type SpoolTransferAckPayload = {
+	entries: Array<{ id: string; token: string }>;
 };
 
 export type DrainRequestPayload = {
@@ -274,6 +320,14 @@ export type WsFrame =
 	| {
 			type: WsMessageType.ERROR;
 			payload: ErrorPayload;
+	  }
+	| {
+			type: WsMessageType.SPOOL_TRANSFER;
+			payload: SpoolTransferPayload;
+	  }
+	| {
+			type: WsMessageType.SPOOL_TRANSFER_ACK;
+			payload: SpoolTransferAckPayload;
 	  };
 
 export type WsFrameError =
@@ -462,6 +516,12 @@ function isValidPayloadForType(type: WsMessageType, payload: unknown): boolean {
 		case WsMessageType.ERROR:
 			// Lenient: allow any object (code/message are optional or may be in different format)
 			return true;
+		case WsMessageType.SPOOL_TRANSFER:
+			// Required: entries array
+			return Array.isArray(p.entries);
+		case WsMessageType.SPOOL_TRANSFER_ACK:
+			// Required: entries array (each { id, token }).
+			return Array.isArray(p.entries);
 		default:
 			return false;
 	}

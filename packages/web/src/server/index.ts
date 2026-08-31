@@ -120,6 +120,9 @@ export interface SyncAppConfig {
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayInbox: (siteId: string) => void;
+		handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => void;
+		handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => void;
+		drainDurableWorkSpool: (siteId: string) => void;
 		seedNewPeer: (siteId: string) => void;
 		handleSnapshotAck: (siteId: string, payload: unknown) => void;
 		continueSnapshotSeed: (siteId: string) => void;

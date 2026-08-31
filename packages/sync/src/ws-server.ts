@@ -11,6 +11,8 @@ import type {
 	RowPullAckPayload,
 	RowPullRequestPayload,
 	SnapshotAckPayload,
+	SpoolTransferAckPayload,
+	SpoolTransferPayload,
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame } from "./ws-frames.js";
 
@@ -215,6 +217,9 @@ export interface WsServerConfig {
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayInbox: (spokesSiteId: string) => void;
+		handleSpoolTransfer: (sourceSiteId: string, payload: SpoolTransferPayload) => void;
+		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
+		drainDurableWorkSpool: (peerSiteId: string) => void;
 		/** Seed a newly-connected peer with a full DB snapshot. */
 		seedNewPeer: (peerSiteId: string) => void;
 		/** Called when a spoke acks the final snapshot. Triggers changelog drain. */
@@ -338,6 +343,7 @@ export function createWsHandlers(config: WsServerConfig): {
 
 				config.wsTransport.drainChangelog(ws.data.siteId);
 				config.wsTransport.drainRelayInbox(ws.data.siteId);
+				config.wsTransport.drainDurableWorkSpool(ws.data.siteId);
 			}
 		},
 
@@ -402,6 +408,16 @@ export function createWsHandlers(config: WsServerConfig): {
 						config.wsTransport.handleRowPullRequest(ws.data.siteId, decodedFrame.payload);
 					} else if (decodedFrame.type === WsMessageType.ROW_PULL_ACK) {
 						config.wsTransport.handleRowPullAck(ws.data.siteId, decodedFrame.payload);
+					} else if (decodedFrame.type === WsMessageType.SPOOL_TRANSFER) {
+						config.wsTransport.handleSpoolTransfer(
+							ws.data.siteId,
+							decodedFrame.payload as SpoolTransferPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.SPOOL_TRANSFER_ACK) {
+						config.wsTransport.handleSpoolTransferAck(
+							ws.data.siteId,
+							decodedFrame.payload as SpoolTransferAckPayload,
+						);
 					}
 				} catch (error) {
 					logger?.error("WS transport frame dispatch failed", {

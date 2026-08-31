@@ -330,6 +330,9 @@ export interface ServerResult {
 		handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
 		handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
 		drainRelayInbox: (siteId: string) => void;
+		handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => void;
+		handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => void;
+		drainDurableWorkSpool: (siteId: string) => void;
 		seedNewPeer: (siteId: string) => void;
 		handleSnapshotAck: (siteId: string, payload: unknown) => void;
 		continueSnapshotSeed: (siteId: string) => void;
@@ -406,6 +409,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		handleRelaySend: () => {},
 		handleRelayAck: () => {},
 		drainRelayInbox: () => {},
+		handleSpoolTransfer: () => {},
+		handleSpoolTransferAck: () => {},
+		drainDurableWorkSpool: () => {},
 		seedNewPeer: () => {},
 		handleSnapshotAck: () => {},
 		continueSnapshotSeed: () => {},

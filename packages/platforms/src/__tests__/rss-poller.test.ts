@@ -675,5 +675,72 @@ describe("RssPoller", () => {
 			};
 			expect(JSON.parse(row.seen_guids)).toEqual([]);
 		});
+
+		it("fires durable_work:written ONLY after the poll transaction commits", async () => {
+			// Invariant #6: insertDurableWork suppresses its emit while db.inTransaction
+			// is true; the poller flushes the event post-commit via emitDurableWorkWritten.
+			// A listener observing the event must therefore see the transaction closed AND
+			// the row already visible via SELECT. emitDurableWorkWritten drives the
+			// module-level durable-work bus (setDurableWorkEventBus), so observe there —
+			// the poller's pollerDeps.eventBus (connector:event sink) is a separate stub.
+			const { setDurableWorkEventBus } = await import("@bound/core");
+			seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
+			const observations: Array<{ inTransaction: boolean; visible: boolean }> = [];
+			const durableBus = {
+				emit: (_event: string, e: { id: string; target_site_id: string }) => {
+					const row = db.query("SELECT id FROM durable_work WHERE id = ?").get(e.id);
+					observations.push({ inTransaction: db.inTransaction, visible: row !== null });
+				},
+			} as unknown as TypedEventEmitter;
+			setDurableWorkEventBus(durableBus);
+			try {
+				const poller = new RssPoller({
+					...pollerDeps,
+					db,
+					siteId,
+					eventBus,
+					fetchImpl: fetchReturning(RSS_DOC),
+				});
+				await poller.tick();
+			} finally {
+				setDurableWorkEventBus(null);
+			}
+
+			// Exactly one durable row inserted this poll → exactly one post-commit event,
+			// fired with the transaction closed and the row already durable.
+			expect(observations).toHaveLength(1);
+			expect(observations[0]).toEqual({ inTransaction: false, visible: true });
+		});
+
+		it("fires NO durable_work:written when the poll transaction rolls back", async () => {
+			const { setDurableWorkEventBus } = await import("@bound/core");
+			seedFeed({ seen_guids: JSON.stringify([]) });
+			const events: unknown[] = [];
+			const durableBus = {
+				emit: (_event: string, e: unknown) => events.push(e),
+			} as unknown as TypedEventEmitter;
+			setDurableWorkEventBus(durableBus);
+			try {
+				const poller = new RssPoller({
+					...pollerDeps,
+					db,
+					siteId,
+					eventBus,
+					fetchImpl: fetchReturning(RSS_DOC),
+					// Throw inside the transaction so the enclosing wrapper rolls back.
+					insertDurableWork: (() => {
+						throw new Error("durable intake write failed");
+					}) as typeof insertDurableWork,
+				});
+				await expect(poller.tick()).rejects.toThrow("durable intake write failed");
+			} finally {
+				setDurableWorkEventBus(null);
+			}
+
+			// The insert never became durable (it threw), so no id was collected and
+			// the post-commit flush has nothing to emit.
+			expect(events).toEqual([]);
+			expect(durableRows()).toEqual([]);
+		});
 	});
 });

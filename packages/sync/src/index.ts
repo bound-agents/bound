@@ -45,6 +45,8 @@ export {
 	type RelaySendPayload,
 	type RelayDeliverPayload,
 	type RelayAckPayload,
+	type SpoolTransferPayload,
+	type SpoolTransferAckPayload,
 	type DrainRequestPayload,
 	type DrainCompletePayload,
 	type SnapshotBeginPayload,

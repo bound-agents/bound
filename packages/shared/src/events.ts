@@ -30,6 +30,10 @@ export interface EventMap {
 	};
 	"changelog:written": { hlc: string; tableName: string; siteId: string };
 	"relay:outbox-written": { id: string; target_site_id: string };
+	/** Emitted after a NEW durable_work row is committed (never on INSERT-OR-IGNORE
+	 *  no-ops), so the transport can push a peer-targeted spool transfer immediately.
+	 *  Mirrors relay:outbox-written for the durable-work spool (R-DW10/R-DW11). */
+	"durable_work:written": { id: string; target_site_id: string };
 	"relay:inbox": { ref_id?: string; stream_id?: string; kind: RelayKind };
 	"client_tool_call:created": {
 		threadId: string;
