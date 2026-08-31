@@ -299,6 +299,15 @@ const FULL_SCHEMA = `
 		success INTEGER NOT NULL
 	);
 
+	CREATE TABLE durable_work (
+		id TEXT PRIMARY KEY, target_site_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
+		claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+		created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT,
+		ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT
+	) STRICT;
+
 	CREATE TABLE dispatch_queue (
 		message_id TEXT PRIMARY KEY,
 		thread_id TEXT NOT NULL,

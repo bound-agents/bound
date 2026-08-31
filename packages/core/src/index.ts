@@ -133,6 +133,8 @@ export {
 	resetProcessingDurableWork,
 	deadLetterExpiredDurableWork,
 	deadLetterDurableWork,
+	deadLetterClaimedDurableWork,
+	deadLetterPendingDurableWork,
 	pruneExpiredDeadLetters,
 	pruneConsumedDurableWork,
 	validateDurableWork,

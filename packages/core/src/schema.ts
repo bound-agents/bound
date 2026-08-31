@@ -195,7 +195,8 @@ function migrateDurableWorkForConsumedState(db: Database): void {
 			consumed_at TEXT,
 			ref_id TEXT,
 			source_site TEXT,
-			received_at TEXT
+			received_at TEXT,
+			stream_id TEXT
 		) STRICT`);
 		db.exec(`INSERT INTO durable_work_new (
 			id, target_site_id, kind, payload, idempotency_key, claim_state,
@@ -768,12 +769,14 @@ export function applySchema(db: Database): void {
 			consumed_at TEXT,
 			ref_id TEXT,
 			source_site TEXT,
-			received_at TEXT
+			received_at TEXT,
+			stream_id TEXT
 		) STRICT
 	`);
 	ensureColumn(db, "durable_work", "ref_id");
 	ensureColumn(db, "durable_work", "source_site");
 	ensureColumn(db, "durable_work", "received_at");
+	ensureColumn(db, "durable_work", "stream_id");
 
 	db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_work_kind_key
 		ON durable_work(kind, idempotency_key)`);
