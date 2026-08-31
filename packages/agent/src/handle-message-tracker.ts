@@ -295,7 +295,16 @@ export class HandleMessageTracker {
 				   AND status IN ('pending', 'processing')`,
 			)
 			.get(threadId) as { pending: number } | null;
-		const pending = row?.pending ?? 0;
+		const durable = db
+			.prepare(
+				`SELECT COUNT(*) AS pending FROM durable_work
+				 WHERE target_site_id = 'local'
+				   AND kind = 'dispatch_message'
+				   AND claim_state IN ('pending', 'processing')
+				   AND json_extract(payload, '$.thread_id') = ?`,
+			)
+			.get(threadId) as { pending: number } | null;
+		const pending = (row?.pending ?? 0) + (durable?.pending ?? 0);
 		if (pending > 0) return false;
 		this.closeTurn(threadId, status, errorReason);
 		return true;

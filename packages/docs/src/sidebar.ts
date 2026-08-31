@@ -49,6 +49,7 @@ export const sidebar: SidebarGroup[] = [
 		items: [
 			{ label: "Web UI", slug: "concepts/web-ui" },
 			{ label: "CLI and operations", slug: "guides/cli-operations" },
+			{ label: "Durable work recovery", slug: "reference/durable-work-recovery" },
 			{ label: "Agent tools", slug: "reference/agent-tools" },
 			{ label: "Configuration", slug: "reference/configuration" },
 			{ label: "Architecture", slug: "reference/architecture" },

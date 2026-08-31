@@ -2,7 +2,18 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TypedEventEmitter } from "@bound/shared";
 import { readMessageMetadata, updateRow } from "./change-log";
+import { acknowledgeDurableWork, insertDurableWork } from "./durable-work";
 import { countBackgroundToolCallsByThread } from "./repositories/messages";
+
+/** Set BOUND_DURABLE_DISPATCH=0 or false before startup to route new enqueues to legacy dispatch_queue. */
+export let DURABLE_DISPATCH_ENQUEUE_ENABLED = !["0", "false"].includes(
+	process.env.BOUND_DURABLE_DISPATCH?.toLowerCase() ?? "",
+);
+
+/** Test seam for exercising the rollback route without changing production defaults. */
+export function setDurableDispatchEnqueueEnabledForTesting(enabled: boolean): void {
+	DURABLE_DISPATCH_ENQUEUE_ENABLED = enabled;
+}
 
 export interface DispatchEntry {
 	message_id: string;
@@ -13,42 +24,71 @@ export interface DispatchEntry {
 	event_payload: string | null;
 	created_at: string;
 	modified_at: string;
+	durable_work_id?: string;
+	durable_claim_token?: string | null;
 }
 
 // Event type constants
 export const CLIENT_TOOL_CALL = "client_tool_call";
 export const TOOL_RESULT = "tool_result";
 
-/**
- * Enqueue a user message for dispatch. Idempotent — duplicate message_id is ignored.
- */
+/** Dispatch wakeups share one durable kind; the event type stays in the payload. */
+function enqueueDurableDispatch(
+	db: Database,
+	threadId: string,
+	messageId: string,
+	eventType: string,
+	eventPayload: string | null,
+	idempotencyKey: string,
+): void {
+	insertDurableWork(db, {
+		id: randomUUID(),
+		target_site_id: "local",
+		kind: "dispatch_message",
+		payload: JSON.stringify({
+			message_id: messageId,
+			thread_id: threadId,
+			event_type: eventType,
+			event_payload: eventPayload,
+		}),
+		idempotency_key: idempotencyKey,
+	});
+}
+
+/** Enqueue a user message for dispatch. Idempotent on its message id. */
 export function enqueueMessage(db: Database, messageId: string, threadId: string): void {
+	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
+		enqueueDurableDispatch(db, threadId, messageId, "user_message", null, messageId);
+		return;
+	}
 	const now = new Date().toISOString();
 	db.prepare(
-		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at)
-		 VALUES (?, ?, 'pending', ?, ?)`,
+		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at) VALUES (?, ?, 'pending', ?, ?)`,
 	).run(messageId, threadId, now, now);
 }
 
-/**
- * Enqueue a notification for dispatch. Notifications are non-user events
- * (task completions, advisories, etc.) that trigger agent inference.
- * Returns the generated entry ID.
- */
+/** Enqueue a notification for dispatch. */
 export function enqueueNotification(
 	db: Database,
 	threadId: string,
 	payload: Record<string, unknown>,
 	idempotencyKey?: string,
 ): string {
-	// Relay producers provide a stable key so an at-least-once delivery maps to
-	// the same local queue row. Local notifications deliberately retain their
-	// historical fresh-ID behaviour.
 	const entryId = idempotencyKey ?? randomUUID();
+	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
+		enqueueDurableDispatch(
+			db,
+			threadId,
+			entryId,
+			"notification",
+			JSON.stringify(payload),
+			idempotencyKey ?? `notify:${entryId}`,
+		);
+		return entryId;
+	}
 	const now = new Date().toISOString();
 	db.prepare(
-		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
-		 VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
+		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at) VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
 	).run(entryId, threadId, JSON.stringify(payload), now, now);
 	return entryId;
 }
@@ -96,6 +136,25 @@ export function enqueueClientToolCall(
  */
 export function enqueueToolResult(db: Database, threadId: string, callId: string): string {
 	const payload = JSON.stringify({ call_id: callId });
+	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
+		const messageId = randomUUID();
+		enqueueDurableDispatch(
+			db,
+			threadId,
+			messageId,
+			TOOL_RESULT,
+			payload,
+			`tool-result:${threadId}:${callId}`,
+		);
+		const existing = db
+			.query(
+				"SELECT payload FROM durable_work WHERE kind = 'dispatch_message' AND idempotency_key = ?",
+			)
+			.get(`tool-result:${threadId}:${callId}`) as { payload: string } | null;
+		return existing
+			? (JSON.parse(existing.payload) as { message_id: string }).message_id
+			: messageId;
+	}
 	const existing = db
 		.prepare(
 			`SELECT message_id FROM dispatch_queue
@@ -207,41 +266,92 @@ export function acknowledgeClientToolCall(db: Database, entryId: string): void {
  */
 export function claimPending(db: Database, threadId: string, claimedBy: string): DispatchEntry[] {
 	const now = new Date().toISOString();
-
-	// Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races
-	// in multi-process deployments. IMMEDIATE acquires a write lock before the
-	// SELECT, so no other process can claim the same entries concurrently.
 	db.exec("BEGIN IMMEDIATE");
 	try {
+		// Durable first: this establishes the new-store fence before legacy rows are considered.
+		const durable = db
+			.query(
+				`SELECT * FROM durable_work WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ? ORDER BY created_at`,
+			)
+			.all("local", threadId) as Array<{
+			id: string;
+			payload: string;
+			claim_token: string | null;
+			created_at: string;
+		}>;
+		const entries: DispatchEntry[] = [];
+		for (const row of durable) {
+			const token = randomUUID();
+			db.prepare(
+				"UPDATE durable_work SET claim_state = 'processing', claim_token = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE id = ? AND claim_state = 'pending'",
+			).run(token, now, row.id);
+			const payload = JSON.parse(row.payload) as Pick<
+				DispatchEntry,
+				"message_id" | "thread_id" | "event_type" | "event_payload"
+			>;
+			entries.push({
+				...payload,
+				status: "processing",
+				claimed_by: claimedBy,
+				created_at: row.created_at,
+				modified_at: now,
+				durable_work_id: row.id,
+				durable_claim_token: token,
+			});
+		}
 		const pending = db
 			.prepare(
-				`SELECT * FROM dispatch_queue
-				 WHERE thread_id = ? AND status = 'pending' AND event_type != ?
-				 ORDER BY created_at ASC`,
+				`SELECT * FROM dispatch_queue WHERE thread_id = ? AND status = 'pending' AND event_type != ? ORDER BY created_at ASC`,
 			)
 			.all(threadId, CLIENT_TOOL_CALL) as DispatchEntry[];
-
-		if (pending.length === 0) {
-			db.exec("COMMIT");
-			return [];
+		// Every durable state remains a bridge fence. In particular, allowing a
+		// legacy twin after a durable dead letter would silently bypass the durable
+		// failure decision; consumed rows retain the same fence during their TTL.
+		const durableFenceRows = db
+			.query(
+				`SELECT payload FROM durable_work
+				 WHERE target_site_id = ? AND kind = 'dispatch_message'
+				   AND json_extract(payload, '$.thread_id') = ?`,
+			)
+			.all("local", threadId) as Array<{ payload: string }>;
+		const fenced = new Set(
+			durableFenceRows.map(({ payload }) => {
+				const entry = JSON.parse(payload) as Pick<
+					DispatchEntry,
+					"message_id" | "thread_id" | "event_type" | "event_payload"
+				>;
+				return entry.event_type === "tool_result"
+					? `tool-result:${entry.thread_id}:${JSON.parse(entry.event_payload ?? "{}").call_id}`
+					: entry.message_id;
+			}),
+		);
+		const legacy = pending.filter((entry) => {
+			const identity =
+				entry.event_type === "tool_result"
+					? `tool-result:${entry.thread_id}:${JSON.parse(entry.event_payload ?? "{}").call_id}`
+					: entry.message_id;
+			return !fenced.has(identity);
+		});
+		const suppressed = pending.filter((entry) => !legacy.includes(entry));
+		if (suppressed.length) {
+			const ids = suppressed.map((row) => row.message_id);
+			db.prepare(
+				`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${ids.map(() => "?").join(",")})`,
+			).run(now, ...ids);
 		}
-
-		const ids = pending.map((r) => r.message_id);
-		const placeholders = ids.map(() => "?").join(",");
-		db.prepare(
-			`UPDATE dispatch_queue
-			 SET status = 'processing', claimed_by = ?, modified_at = ?
-			 WHERE message_id IN (${placeholders})`,
-		).run(claimedBy, now, ...ids);
-
+		if (legacy.length) {
+			const ids = legacy.map((r) => r.message_id);
+			const placeholders = ids.map(() => "?").join(",");
+			db.prepare(
+				`UPDATE dispatch_queue SET status = 'processing', claimed_by = ?, modified_at = ? WHERE message_id IN (${placeholders})`,
+			).run(claimedBy, now, ...ids);
+		}
 		db.exec("COMMIT");
-		return pending;
+		return [...entries, ...legacy];
 	} catch (error) {
 		try {
 			db.exec("ROLLBACK");
-		} catch {
-			// ROLLBACK may fail if transaction was already rolled back
-		}
+		} catch {}
 		throw error;
 	}
 }
@@ -249,15 +359,30 @@ export function claimPending(db: Database, threadId: string, claimedBy: string):
 /**
  * Mark a batch of message IDs as acknowledged (dispatch complete).
  */
-export function acknowledgeBatch(db: Database, messageIds: string[]): void {
-	if (messageIds.length === 0) return;
-	const now = new Date().toISOString();
-	const placeholders = messageIds.map(() => "?").join(",");
-	db.prepare(
-		`UPDATE dispatch_queue
-		 SET status = 'acknowledged', modified_at = ?
-		 WHERE message_id IN (${placeholders})`,
-	).run(now, ...messageIds);
+export function acknowledgeBatch(db: Database, entries: DispatchEntry[] | string[]): void {
+	if (entries.length > 0 && typeof entries[0] === "string") {
+		const now = new Date().toISOString();
+		const ids = entries as string[];
+		const placeholders = ids.map(() => "?").join(",");
+		db.prepare(
+			`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${placeholders})`,
+		).run(now, ...ids);
+		return;
+	}
+	const dispatchEntries = entries as DispatchEntry[];
+	const legacyIds = dispatchEntries
+		.filter((entry) => !entry.durable_work_id)
+		.map((entry) => entry.message_id);
+	if (legacyIds.length) {
+		const now = new Date().toISOString();
+		const placeholders = legacyIds.map(() => "?").join(",");
+		db.prepare(
+			`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${placeholders})`,
+		).run(now, ...legacyIds);
+	}
+	for (const entry of dispatchEntries)
+		if (entry.durable_work_id && entry.durable_claim_token)
+			acknowledgeDurableWork(db, entry.durable_work_id, entry.durable_claim_token);
 }
 
 /**
@@ -293,6 +418,21 @@ export function resetProcessingForThread(db: Database, threadId: string): number
 	return row?.c ?? 0;
 }
 
+/** Release only this thread's abandoned durable dispatch claims after a yielded or failed loop. */
+export function resetProcessingDurableDispatchForThread(db: Database, threadId: string): number {
+	const row = db
+		.prepare(
+			`UPDATE durable_work
+			 SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL
+			 WHERE target_site_id = 'local'
+			   AND kind = 'dispatch_message'
+			   AND claim_state = 'processing'
+			   AND json_extract(payload, '$.thread_id') = ?`,
+		)
+		.run(threadId) as { changes: number };
+	return row.changes;
+}
+
 /**
  * Check if a thread has any pending (unclaimed) messages in the dispatch queue
  * that the executor should drain. Excludes client_tool_call entries — those are
@@ -304,11 +444,15 @@ export function resetProcessingForThread(db: Database, threadId: string): number
 export function hasPending(db: Database, threadId: string): boolean {
 	const row = db
 		.prepare(
-			`SELECT COUNT(*) as c FROM dispatch_queue
-			 WHERE thread_id = ? AND status = 'pending' AND event_type != ?`,
+			`SELECT COUNT(*) as c FROM dispatch_queue WHERE thread_id = ? AND status = 'pending' AND event_type != ?`,
 		)
 		.get(threadId, CLIENT_TOOL_CALL) as { c: number };
-	return row.c > 0;
+	const durable = db
+		.prepare(
+			`SELECT COUNT(*) as c FROM durable_work WHERE target_site_id = 'local' AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ?`,
+		)
+		.get(threadId) as { c: number };
+	return row.c + durable.c > 0;
 }
 
 /**

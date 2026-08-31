@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applySchema } from "@bound/core";
+import { applySchema, setDurableDispatchEnqueueEnabledForTesting } from "@bound/core";
 import type { ToolContext } from "../../types";
 import { createAuxTool } from "../auxiliary";
 
@@ -16,6 +16,8 @@ describe("Native Aux Tool (invoke slice)", () => {
 	let ctx: ToolContext;
 
 	beforeEach(() => {
+		// These tool contracts inspect the legacy bridge directly; core owns durable-dispatch behavior tests.
+		setDurableDispatchEnqueueEnabledForTesting(false);
 		db = new Database(":memory:");
 		applySchema(db);
 		// Insert a parent thread so findThreadUserAndInterfaceById succeeds

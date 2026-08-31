@@ -1,7 +1,13 @@
 import Database from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applyMetricsSchema, applySchema, insertRow, writeMessageMetadata } from "@bound/core";
+import {
+	applyMetricsSchema,
+	applySchema,
+	insertRow,
+	setDurableDispatchEnqueueEnabledForTesting,
+	writeMessageMetadata,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { ToolContext } from "../../types";
 import { createIntrospectTool, runIntrospectResponseStamp } from "../introspect";
@@ -19,6 +25,8 @@ describe("introspect tool integration", () => {
 	});
 
 	beforeEach(() => {
+		// These tool contracts inspect the legacy bridge directly; core owns durable-dispatch behavior tests.
+		setDurableDispatchEnqueueEnabledForTesting(false);
 		// Clear all tables
 		db.exec(
 			"DELETE FROM threads; DELETE FROM messages; DELETE FROM dispatch_queue; DELETE FROM change_log; DELETE FROM turns;",

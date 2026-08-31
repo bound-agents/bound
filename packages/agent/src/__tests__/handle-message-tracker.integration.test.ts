@@ -142,10 +142,7 @@ describe("HandleMessageTracker.maybeCloseTurnIfIdle (dispatch_queue integration)
 		// Handler #1 finishes: agent loop returned, batch acknowledged. The
 		// close probe runs and MUST keep the turn open because the client
 		// tool dispatch is still in flight.
-		acknowledgeBatch(
-			db,
-			claimed1.map((c) => c.message_id),
-		);
+		acknowledgeBatch(db, claimed1);
 		expect(tracker.maybeCloseTurnIfIdle(db, threadId)).toBe(false);
 		expect(tracker.listOpenTurns()).toEqual([threadId]);
 
@@ -160,10 +157,7 @@ describe("HandleMessageTracker.maybeCloseTurnIfIdle (dispatch_queue integration)
 		const claimed2 = claimPending(db, threadId, siteId);
 		expect(claimed2.length).toBe(1);
 		expect(claimed2[0]?.event_type).toBe("tool_result");
-		acknowledgeBatch(
-			db,
-			claimed2.map((c) => c.message_id),
-		);
+		acknowledgeBatch(db, claimed2);
 
 		// Now the dispatch_queue is fully drained — turn closes.
 		expect(tracker.maybeCloseTurnIfIdle(db, threadId)).toBe(true);

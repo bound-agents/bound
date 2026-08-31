@@ -68,3 +68,9 @@ is seeded to the files table on startup and embedded into the compiled binary at
 build time. To change what this skill says, edit the markdown in the repo — not
 the seeded copy. The tool catalog is guarded by a test that fails if a native
 agent tool is added or renamed without updating `references/tools.md`.
+
+## Durable work recovery
+
+Use the sandbox-shell `workspool` command to inspect the host-local durable-work spool and redrive recoverable dead letters. Run `workspool list` to inspect dead letters and stale pending or processing rows; use `workspool list --stale-ms MS` for a custom stale threshold. Redrive one known dead letter with `workspool redrive --id ROW_ID`, or a known registered kind with `workspool redrive --kind KIND --all-dead-lettered`.
+
+Redrive only after a transient outage has recovered and the row's error and payload make repeat delivery safe. Do not redrive invalid input, permanent authorization failures, or actions that have become unsafe. A `not found or already consumed` result is a no-op: consumed rows are retired and are not recreated. Redrive restores `pending`, preserves attempt count, and recalculates expiry using the durable-work registry's TTL; ordinary consumers and idempotency fences perform delivery.

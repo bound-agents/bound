@@ -1,7 +1,11 @@
 import type { Database } from "bun:sqlite";
 import type { Logger } from "@bound/shared";
 import { formatError } from "@bound/shared";
-import { hasPending, resetProcessingForThread } from "./dispatch";
+import {
+	hasPending,
+	resetProcessingDurableDispatchForThread,
+	resetProcessingForThread,
+} from "./dispatch";
 
 /** Default timeout for a single runFn invocation (30 minutes).
  *  Must accommodate large cold-cache contexts (200k+ tokens) where
@@ -79,6 +83,7 @@ export class ThreadExecutor {
 
 					if (result.yielded) {
 						resetProcessingForThread(this.db, threadId);
+						resetProcessingDurableDispatchForThread(this.db, threadId);
 						continue;
 					}
 
@@ -88,6 +93,7 @@ export class ThreadExecutor {
 					this.logger.error(`[thread-executor] ${threadId}: ${formatError(error)}`);
 					// Reset any processing entries so they can be re-claimed on next attempt
 					resetProcessingForThread(this.db, threadId);
+					resetProcessingDurableDispatchForThread(this.db, threadId);
 					break;
 				}
 			}

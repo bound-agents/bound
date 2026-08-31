@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { countChangeLogEntries, countSyncStatePeers, getChangeLogHlcAtOffset } from "@bound/core";
-import { pruneAcknowledged, pruneRelayCycles } from "@bound/core";
+import { pruneAcknowledged, pruneConsumedDurableWork, pruneRelayCycles } from "@bound/core";
 import { HLC_ZERO } from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import { getMinConfirmedHlc } from "./peer-cursor.js";
@@ -115,6 +115,10 @@ export function startPruningLoop(
 			const dispatchPruned = pruneAcknowledged(db, dispatchCutoff);
 			if (dispatchPruned > 0) {
 				logger?.debug("Pruned dispatch_queue", { count: dispatchPruned });
+			}
+			const durableDispatchPruned = pruneConsumedDurableWork(db, dispatchCutoff);
+			if (durableDispatchPruned > 0) {
+				logger?.debug("Pruned consumed durable_work", { count: durableDispatchPruned });
 			}
 
 			// Reclaim freed pages incrementally

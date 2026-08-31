@@ -2,7 +2,7 @@
  * Sandbox subsystem: ClusterFs creation, command registry, VFS hydration.
  */
 
-import { generateRemoteMCPProxyCommands } from "@bound/agent";
+import { createWorkspoolCommand, generateRemoteMCPProxyCommands } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
@@ -72,7 +72,7 @@ export async function initSandbox(
 		}
 
 		// Only MCP commands (local + remote) go through the bash dispatch path now
-		const allDefinitions = [...mcpCommands, ...remoteMcpCommands];
+		const allDefinitions = [createWorkspoolCommand(), ...mcpCommands, ...remoteMcpCommands];
 		appContext.commandRegistry = allDefinitions.map((d) => ({
 			name: d.name,
 			description: d.description,

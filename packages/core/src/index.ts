@@ -98,6 +98,7 @@ export {
 } from "./relay";
 export {
 	enqueueMessage,
+	setDurableDispatchEnqueueEnabledForTesting,
 	enqueueNotification,
 	enqueueClientToolCall,
 	enqueueToolResult,
@@ -107,6 +108,7 @@ export {
 	acknowledgeBatch,
 	resetProcessing,
 	resetProcessingForThread,
+	resetProcessingDurableDispatchForThread,
 	pruneAcknowledged,
 	hasPending,
 	hasPendingClientToolCalls,
@@ -131,6 +133,7 @@ export {
 	deadLetterExpiredDurableWork,
 	deadLetterDurableWork,
 	pruneExpiredDeadLetters,
+	pruneConsumedDurableWork,
 	validateDurableWork,
 	InvalidDurableWorkRowError,
 	type DurableWorkRow,
@@ -163,3 +166,4 @@ export {
 export { normalizeEdgeRelations, type NormalizationSummary } from "./normalize-edge-relations";
 // Read repository layer (synced-table SELECT helpers). Writes go through change-log.ts.
 export * from "./repositories";
+export { redriveDeadLetterDurableWork, type DurableWorkInspectionRow } from "./durable-work";

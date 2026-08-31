@@ -31,7 +31,9 @@ function insertSession(db: Database, threadId: string, siteId: string) {
 
 function getDispatchRows(db: Database, threadId: string): Array<{ event_payload: string }> {
 	return db
-		.prepare("SELECT event_payload FROM dispatch_queue WHERE thread_id = ?")
+		.prepare(
+			"SELECT json_extract(payload, '$.event_payload') AS event_payload FROM durable_work WHERE kind = 'dispatch_message' AND json_extract(payload, '$.thread_id') = ?",
+		)
 		.all(threadId) as Array<{ event_payload: string }>;
 }
 

@@ -1,6 +1,11 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, insertRow, softDelete } from "@bound/core";
+import {
+	applySchema,
+	insertRow,
+	setDurableDispatchEnqueueEnabledForTesting,
+	softDelete,
+} from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import type { ToolContext } from "../../types";
 import { createNotifyTool } from "../notify";
@@ -31,6 +36,8 @@ describe("notify tool", () => {
 	}
 
 	beforeEach(() => {
+		// These tool contracts inspect the legacy bridge directly; core owns durable-dispatch behavior tests.
+		setDurableDispatchEnqueueEnabledForTesting(false);
 		db = new Database(":memory:");
 		applySchema(db);
 		emittedEvents = [];

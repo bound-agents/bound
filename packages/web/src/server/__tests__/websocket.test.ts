@@ -1094,6 +1094,7 @@ describe("ClientConnection type and WS message schemas", () => {
 					if (sql.includes("INSERT INTO messages")) {
 						insertedMessages.push({ sql, values });
 					}
+					return { changes: 1 };
 				},
 				query: (_sql: string) => ({
 					get: () => null,
@@ -1178,6 +1179,7 @@ describe("ClientConnection type and WS message schemas", () => {
 					if (sql.includes("INSERT INTO messages")) {
 						insertedMessages.push({ sql, values });
 					}
+					return { changes: 1 };
 				},
 				query: (_sql: string) => ({
 					get: () => null,
@@ -1252,6 +1254,7 @@ describe("ClientConnection type and WS message schemas", () => {
 					if (sql.includes("INSERT INTO messages")) {
 						insertedMessages.push({ sql, values });
 					}
+					return { changes: 1 };
 				},
 				query: (_sql: string) => ({
 					get: () => null,
