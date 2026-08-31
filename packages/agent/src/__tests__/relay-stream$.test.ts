@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Subject, lastValueFrom } from "rxjs";
 import { tap } from "rxjs/operators";
 
-import { applySchema } from "@bound/core";
+import { applySchema, insertDurableWork } from "@bound/core";
 import type { StreamChunk } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -670,5 +670,322 @@ describe("createRelayStream$", () => {
 				}
 			).count,
 		).toBe(0);
+	});
+});
+
+describe("createRelayStream$ — 4D-D durable chunk union", () => {
+	let db: Database;
+	let tmpDir: string;
+
+	afterEach(async () => {
+		await cleanup(db, tmpDir);
+	});
+
+	// The reducer reads the UNION of legacy relay_inbox chunk rows and pending
+	// durable chunk rows targeted at self for its stream_id, folding both through
+	// the same seq-dedup loop and consuming durable rows exactly-once.
+	function insertDurableChunk(
+		database: Database,
+		opts: {
+			id: string;
+			kind: string;
+			streamId: string;
+			target: string;
+			source: string;
+			seq: number;
+			chunks: unknown[];
+		},
+	): void {
+		const now = new Date().toISOString();
+		database
+			.prepare(`
+				INSERT INTO durable_work
+				(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, stream_id, source_site)
+				VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+			`)
+			.run(
+				opts.id,
+				opts.target,
+				opts.kind,
+				JSON.stringify({ seq: opts.seq, chunks: opts.chunks }),
+				`stream:${opts.streamId}:${opts.seq}`,
+				now,
+				opts.streamId,
+				opts.source,
+			);
+	}
+
+	it("folds durable chunk rows through seq-dedup and consumes them, completing on durable stream_end", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const remoteHost = "spoke-1";
+		const siteId = "hub";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId, logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 50 },
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+		const streamId = getStreamIdFromOutbox(db);
+
+		for (let seq = 0; seq < 3; seq++) {
+			insertDurableChunk(db, {
+				id: `dur-chunk-${seq}`,
+				kind: "stream_chunk",
+				streamId,
+				target: siteId,
+				source: remoteHost,
+				seq,
+				chunks: [{ type: "text_delta", text: String.fromCharCode(97 + seq) }],
+			});
+		}
+		insertDurableChunk(db, {
+			id: "dur-stream-end",
+			kind: "stream_end",
+			streamId,
+			target: siteId,
+			source: remoteHost,
+			seq: 3,
+			chunks: [],
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+
+		await done;
+
+		expect(chunks.map((c) => (c as { text: string }).text)).toEqual(["a", "b", "c"]);
+		const leftover = db
+			.prepare(
+				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND claim_state != 'consumed'",
+			)
+			.get(streamId) as { count: number };
+		expect(leftover.count).toBe(0);
+	});
+
+	it("a redelivered durable chunk (same seq) does not duplicate output", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const remoteHost = "spoke-1";
+		const siteId = "hub";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId, logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 50 },
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+		const streamId = getStreamIdFromOutbox(db);
+
+		// seq 0 folded and consumed. Model a redelivered transfer via insertDurableWork
+		// (the receiver's INSERT OR IGNORE), which is fenced by (kind, idempotency_key):
+		// only one row for stream:<id>:0 ever exists, so the consumer emits "a" once.
+		insertDurableChunk(db, {
+			id: "dur-chunk-0",
+			kind: "stream_chunk",
+			streamId,
+			target: siteId,
+			source: remoteHost,
+			seq: 0,
+			chunks: [{ type: "text_delta", text: "a" }],
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+		await new Promise((resolve) => setTimeout(resolve, 120));
+
+		// A redelivered transfer of the SAME logical chunk: fresh id, identical
+		// (kind, idempotency_key). insertDurableWork's INSERT OR IGNORE fences it.
+		const redelivered = insertDurableWork(db, {
+			id: "dur-chunk-0-redelivered",
+			target_site_id: siteId,
+			kind: "stream_chunk",
+			payload: JSON.stringify({ seq: 0, chunks: [{ type: "text_delta", text: "a" }] }),
+			idempotency_key: `stream:${streamId}:0`,
+			stream_id: streamId,
+			source_site: remoteHost,
+		});
+		expect(redelivered).toBe(false); // fence held — no second row for seq 0
+		insertDurableChunk(db, {
+			id: "dur-stream-end",
+			kind: "stream_end",
+			streamId,
+			target: siteId,
+			source: remoteHost,
+			seq: 1,
+			chunks: [],
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+
+		await done;
+
+		expect(chunks.map((c) => (c as { text: string }).text)).toEqual(["a"]);
+	});
+
+	it("a chunk crash before ack boot-resets the row; re-fold yields no duplicates and no gaps", async () => {
+		// OBJECTION 2 crash-window: the required order is claim → deliver → ack. A chunk
+		// row is CLAIMED while folding, but its ack is deferred until AFTER its content is
+		// emitted downstream. This test drives the recovery property directly: emit seq 0
+		// and 1, simulate a crash before their acks (boot-reset processing → pending), then
+		// re-fold. seq-dedup (nextExpectedSeq guard) must suppress the replayed seqs, so
+		// downstream output has NO duplicates and NO gaps.
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const remoteHost = "spoke-1";
+		const siteId = "hub";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId, logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 50 },
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+		const streamId = getStreamIdFromOutbox(db);
+
+		// Deliver seq 0 and seq 1; the reducer folds, emits, and (post-emission) acks.
+		for (let seq = 0; seq < 2; seq++) {
+			insertDurableChunk(db, {
+				id: `dur-recover-${seq}`,
+				kind: "stream_chunk",
+				streamId,
+				target: siteId,
+				source: remoteHost,
+				seq,
+				chunks: [{ type: "text_delta", text: String.fromCharCode(97 + seq) }],
+			});
+		}
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+		// Wait until both seqs have been emitted downstream.
+		await pollUntil(() => chunks.length >= 2, { timeoutMs: 2000, intervalMs: 20 });
+
+		// CRASH WINDOW: model a crash between emission and ack. The pipeline acks each
+		// seq to 'consumed' only AFTER emitting it downstream; a crash in that window
+		// leaves the ack unwritten. Boot recovery would find the row still claimable and
+		// re-present it. We model that directly: force the two already-emitted rows back
+		// to 'pending' (the state a lost ack + boot reset yields) and re-fire the poll.
+		// If the consumer re-emitted them, output would gain duplicates. It must not:
+		// nextExpectedSeq has already advanced past seq 0 and 1, so seq-dedup suppresses
+		// the replay and simply re-settles the rows.
+		db.run(
+			"UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL, consumed_at = NULL WHERE stream_id = ? AND claim_state = 'consumed'",
+			[streamId],
+		);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+		await new Promise((resolve) => setTimeout(resolve, 150));
+
+		// Now deliver the terminator at seq 2 to complete the stream.
+		insertDurableChunk(db, {
+			id: "dur-recover-end",
+			kind: "stream_end",
+			streamId,
+			target: siteId,
+			source: remoteHost,
+			seq: 2,
+			chunks: [],
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+
+		await done;
+
+		// No duplicates and no gaps: exactly ["a", "b"], each once, in order.
+		expect(chunks.map((c) => (c as { text: string }).text)).toEqual(["a", "b"]);
+		// All rows retired (replayed copies were folded-and-settled without re-emission).
+		const leftover = db
+			.prepare(
+				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND claim_state != 'consumed'",
+			)
+			.get(streamId) as { count: number };
+		expect(leftover.count).toBe(0);
+	});
+
+	it("a stream_chunk and a stream_end at the SAME seq coexist as distinct durable rows and the stream completes", async () => {
+		// OBJECTION 3 coexistence: keys are stream:<id>:<seq> for BOTH stream_chunk and
+		// stream_end. They do not collide because the unique index is (kind,
+		// idempotency_key) and the kinds differ. Prove both rows persist at the same seq
+		// and the terminator is not dropped (dropping it would hang the await path).
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const chunks: StreamChunk[] = [];
+		const remoteHost = "spoke-1";
+		const siteId = "hub";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId, logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 50 },
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const done = lastValueFrom(stream$.pipe(tap((chunk) => chunks.push(chunk))), {
+			defaultValue: undefined,
+		});
+		const streamId = getStreamIdFromOutbox(db);
+
+		// A content chunk at seq 0 and a terminator at seq 0 exist SIMULTANEOUSLY as
+		// distinct rows. insertDurableWork's fence is on (kind, idempotency_key), so a
+		// stream_chunk and a stream_end sharing stream:<id>:0 are two accepted rows.
+		const chunkWritten = insertDurableWork(db, {
+			id: "coexist-chunk-0",
+			target_site_id: siteId,
+			kind: "stream_chunk",
+			payload: JSON.stringify({ seq: 0, chunks: [{ type: "text_delta", text: "a" }] }),
+			idempotency_key: `stream:${streamId}:0`,
+			stream_id: streamId,
+			source_site: remoteHost,
+		});
+		const endWritten = insertDurableWork(db, {
+			id: "coexist-end-0",
+			target_site_id: siteId,
+			kind: "stream_end",
+			payload: JSON.stringify({ seq: 0, chunks: [] }),
+			idempotency_key: `stream:${streamId}:0`,
+			stream_id: streamId,
+			source_site: remoteHost,
+		});
+		expect(chunkWritten).toBe(true);
+		expect(endWritten).toBe(true); // same seq, different kind → NOT fenced
+
+		// Both rows are durable at the same seq before the consumer folds them.
+		const bothRows = db
+			.prepare(
+				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND idempotency_key = ?",
+			)
+			.get(streamId, `stream:${streamId}:0`) as { count: number };
+		expect(bothRows.count).toBe(2);
+
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_chunk" as const });
+
+		await done;
+
+		// The content chunk emitted once; the terminator drove completion (await did not hang).
+		expect(chunks.map((c) => (c as { text: string }).text)).toEqual(["a"]);
 	});
 });

@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 
 import type { Database } from "bun:sqlite";
-import { markProcessed, readInboxByStreamId, writeOutbox } from "@bound/core";
+import {
+	acknowledgeDurableWork,
+	claimDurableWorkByIds,
+	markProcessed,
+	readDurableResponsesByStreamId,
+	readInboxByStreamId,
+} from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { TypedEventEmitter } from "@bound/shared";
 import {
@@ -19,7 +25,9 @@ import {
 	type SchedulerLike,
 	TimeoutError,
 	catchError,
+	concat,
 	concatMap,
+	defer,
 	filter,
 	finalize,
 	from,
@@ -36,7 +44,7 @@ import {
 } from "rxjs";
 import type { Observable } from "rxjs";
 import { splitInferenceRequest } from "./inference-request-parts";
-import { type EligibleHost, createRelayOutboxEntry, routeRelayRequest } from "./relay-router";
+import { type EligibleHost, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
 import type { TopologyRole } from "./topology";
 
@@ -70,8 +78,17 @@ export interface RelayStreamOptions {
 const POLL_INTERVAL_MS = 500;
 const MAX_GAP_CYCLES = 6;
 
+interface BufferedChunk {
+	payload: StreamChunkPayload;
+	// Deferred consumer: the durable ack (token-fenced) or legacy markProcessed for
+	// the row this seq came from. Invoked ONLY after this seq's chunks are emitted
+	// downstream (claim → deliver → ack), so a crash between delivery and ack
+	// boot-resets the row and the re-fold is absorbed by seq-dedup below.
+	settle: () => void;
+}
+
 interface ScanOutput {
-	buffer: Map<number, StreamChunkPayload>;
+	buffer: Map<number, BufferedChunk>;
 	nextExpectedSeq: number;
 	gapCyclesWaited: number;
 	streamEndSeq: number | null;
@@ -79,6 +96,9 @@ interface ScanOutput {
 	firstChunkReceived: boolean;
 	hostStartTime: number;
 	chunksToEmit: StreamChunk[];
+	// Settle callbacks whose rows were emitted (or terminally consumed) THIS tick,
+	// invoked by the pipeline AFTER the tick's chunks are emitted downstream.
+	settlesToRun: Array<() => void>;
 	activity: boolean;
 	done: boolean;
 	error: string | null;
@@ -100,15 +120,46 @@ function createStreamReducer(
 			...state,
 			buffer: new Map(state.buffer),
 			chunksToEmit: [],
+			settlesToRun: [],
 			activity: false,
 		};
 
-		const inboxEntries = readInboxByStreamId(deps.db, streamId);
+		// 4D-D union: fold the UNION of legacy relay_inbox rows and pending durable
+		// response rows targeted at self for this stream_id. Both are adapted to a
+		// common { id, kind, payload, settle } shape; the seq-dedup / gap-skip logic
+		// below is identical for either source. CRITICAL ORDER (claim → deliver →
+		// ack): a durable row is CLAIMED under a fresh token now, but its ack is
+		// DEFERRED to settle() — invoked only after this seq's chunks are emitted
+		// downstream. A crash between emission and ack boot-resets the row → the
+		// re-fold is absorbed by the seq-dedup below (any seq < nextExpectedSeq is
+		// suppressed), so a late ack is harmless while an early ack would be lossy.
+		type UnionEntry = { id: string; kind: string; payload: string; settle: () => void };
+		const legacyRows = readInboxByStreamId(deps.db, streamId);
+		const unionEntries: UnionEntry[] = legacyRows.map((e) => ({
+			id: e.id,
+			kind: e.kind,
+			payload: e.payload,
+			settle: () => markProcessed(deps.db, [e.id]),
+		}));
+		for (const durable of readDurableResponsesByStreamId(deps.db, streamId, deps.siteId)) {
+			// Claim under a fresh token now so settle() acks exactly this generation.
+			const claimed = claimDurableWorkByIds(deps.db, [durable.id], deps.siteId)[0];
+			if (!claimed || !claimed.claim_token) continue; // lost the race; a later tick re-reads
+			const token = claimed.claim_token;
+			unionEntries.push({
+				id: claimed.id,
+				kind: claimed.kind,
+				payload: claimed.payload,
+				settle: () => acknowledgeDurableWork(deps.db, claimed.id, token),
+			});
+		}
 
-		const errorEntry = inboxEntries.find((e) => e.kind === "error");
+		const errorEntry = unionEntries.find((e) => e.kind === "error");
 		if (errorEntry) {
 			const errResult = parseJsonSafe(errorPayloadSchema, errorEntry.payload, errorEntry.kind);
-			markProcessed(deps.db, [errorEntry.id]);
+			// The error is delivered downstream as a thrown Error in mergeMap; settle
+			// only after that emission (queued into settlesToRun, run post-emission).
+			next.settlesToRun.push(errorEntry.settle);
 			next.error = !errResult.ok
 				? `Remote inference error: ${errorEntry.payload}`
 				: (errResult.value.error ?? "Remote inference error");
@@ -116,26 +167,36 @@ function createStreamReducer(
 		}
 
 		// Handle trace_data responses (AC5.4)
-		const traceDataEntry = inboxEntries.find((e) => e.kind === "trace_data");
+		// Handle trace_data responses (AC5.4)
+		const traceDataEntry = unionEntries.find((e) => e.kind === "trace_data");
 		if (traceDataEntry) {
 			const spanResult = parseJsonUntyped(traceDataEntry.payload, traceDataEntry.kind);
-			markProcessed(deps.db, [traceDataEntry.id]);
 			if (spanResult.ok) {
 				const spans = spanResult.value as SerializedSpan[];
 				reExportSpans(spans, getTraceExporter(), deps.logger);
 			}
-			// trace_data is fire-and-forget; continue processing other entries
+			// trace_data is fire-and-forget (no downstream chunk emission); its re-export
+			// happens here, so settling it this tick keeps claim → deliver → ack order.
+			next.settlesToRun.push(traceDataEntry.settle);
+			// continue processing other entries
 		}
 
-		const streamEndEntry = inboxEntries.find((e) => e.kind === "stream_end");
-		const chunkEntries = inboxEntries.filter((e) => e.kind === "stream_chunk");
+		const streamEndEntry = unionEntries.find((e) => e.kind === "stream_end");
+		const chunkEntries = unionEntries.filter((e) => e.kind === "stream_chunk");
 
 		for (const entry of [...chunkEntries, ...(streamEndEntry ? [streamEndEntry] : [])]) {
 			const chunkResult = parseJsonUntyped(entry.payload, entry.kind);
-			markProcessed(deps.db, [entry.id]);
-			if (!chunkResult.ok) continue;
+			if (!chunkResult.ok) {
+				// Unparseable row: retire it now (its content is discarded, so there is
+				// no downstream emission to order the ack after).
+				next.settlesToRun.push(entry.settle);
+				continue;
+			}
 			const chunkPayload = chunkResult.value as StreamChunkPayload;
-			if (typeof chunkPayload.seq !== "number" || !Array.isArray(chunkPayload.chunks)) continue;
+			if (typeof chunkPayload.seq !== "number" || !Array.isArray(chunkPayload.chunks)) {
+				next.settlesToRun.push(entry.settle);
+				continue;
+			}
 			// An empty stream_chunk is a source heartbeat. Receiving a valid,
 			// sequenced payload proves the target is alive even before its backend
 			// emits the first model token, so it satisfies the first-activity timeout.
@@ -152,8 +213,14 @@ function createStreamReducer(
 					latencyMs: firstChunkLatencyMs,
 				});
 			}
-			if (!next.buffer.has(chunkPayload.seq)) {
-				next.buffer.set(chunkPayload.seq, chunkPayload);
+			if (next.buffer.has(chunkPayload.seq)) {
+				// Duplicate seq already buffered (or already emitted via a prior tick):
+				// retire this copy without re-buffering. seq-dedup keeps output clean.
+				next.settlesToRun.push(entry.settle);
+			} else {
+				// Carry the row's settle WITH its payload: it fires only when this seq's
+				// chunks are emitted downstream (or skipped by the gap logic), never before.
+				next.buffer.set(chunkPayload.seq, { payload: chunkPayload, settle: entry.settle });
 			}
 			if (entry.kind === "stream_end") {
 				next.streamEndSeq = chunkPayload.seq;
@@ -162,7 +229,8 @@ function createStreamReducer(
 
 		while (next.buffer.has(next.nextExpectedSeq)) {
 			// biome-ignore lint/style/noNonNullAssertion: checked with buffer.has() above
-			const chunkPayload = next.buffer.get(next.nextExpectedSeq)!;
+			const buffered = next.buffer.get(next.nextExpectedSeq)!;
+			const chunkPayload = buffered.payload;
 			next.buffer.delete(next.nextExpectedSeq);
 			next.nextExpectedSeq++;
 
@@ -181,6 +249,11 @@ function createStreamReducer(
 				}
 				next.chunksToEmit.push(chunk);
 			}
+
+			// This seq's chunks are now queued for downstream emission this tick, so its
+			// row may be acked — but only AFTER the pipeline emits chunksToEmit. Queue
+			// the settle; the pipeline runs it post-emission (claim → deliver → ack).
+			next.settlesToRun.push(buffered.settle);
 
 			if (next.streamEndSeq !== null && next.nextExpectedSeq > next.streamEndSeq) {
 				next.streamEndConsumed = true;
@@ -204,7 +277,15 @@ function createStreamReducer(
 				});
 				if (lowestBuffered < next.nextExpectedSeq) {
 					for (const seq of sortedSeqs) {
-						if (seq < next.nextExpectedSeq) next.buffer.delete(seq);
+						if (seq < next.nextExpectedSeq) {
+							// biome-ignore lint/style/noNonNullAssertion: seq came from buffer.keys()
+							const dropped = next.buffer.get(seq)!;
+							// Skipped-behind seq: its content is discarded, so there is no
+							// emission to order its ack after — retire it now so the row does
+							// not linger pending and re-fold forever.
+							next.settlesToRun.push(dropped.settle);
+							next.buffer.delete(seq);
+						}
 					}
 				} else {
 					next.nextExpectedSeq = lowestBuffered;
@@ -243,27 +324,30 @@ export function createRelayStream$(
 					? null
 					: splitInferenceRequest(serializedPayload, requestId, maxPayloadBytes);
 			// Multi-part inference REQUESTs (payload exceeds the transport ceiling)
-			// stay 100% legacy: inference_part reassembly rides relay_outbox untouched
-			// this slice. Only the single-part `inference` REQUEST row flips to the
-			// durable spool when toggle + per-hop capability permit; its stream chunks
-			// still ride back legacy by stream_id.
+			// stay 100% legacy for reassembly on the receiver, but the individual part
+			// REQUESTs flip through the router (part-scoped keys) so they ride the durable
+			// spool when toggle + per-hop capability permit. Stream chunks still ride back
+			// by stream_id through the union-aware consumer below.
 			let outboxEntry: { id: string };
 			if (requestParts) {
-				const partEntries = requestParts.map((part) =>
-					createRelayOutboxEntry(
-						host.site_id,
-						deps.siteId,
-						"inference_part",
-						JSON.stringify(part),
-						perHostTimeoutMs,
-						requestId,
-						`inference-part:${requestId}:${part.index}`,
-						streamId,
-						traceContext ? JSON.stringify(traceContext) : undefined,
-					),
+				const partIds = requestParts.map(
+					(part) =>
+						routeRelayRequest(deps.db, {
+							targetSiteId: host.site_id,
+							sourceSiteId: deps.siteId,
+							kind: "inference_part",
+							payload: JSON.stringify(part),
+							timeoutMs: perHostTimeoutMs,
+							refId: requestId,
+							// Verbatim #254 key: part-scoped so a redelivered part transfer dedupes.
+							idempotencyKey: `inference-part:${requestId}:${part.index}`,
+							streamId,
+							traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
+							topologyRole: deps.topologyRole,
+							maxPayloadBytes,
+						}).id,
 				);
-				for (const entry of partEntries) writeOutbox(deps.db, entry, maxPayloadBytes);
-				outboxEntry = partEntries[0];
+				outboxEntry = { id: partIds[0] };
 			} else {
 				outboxEntry = routeRelayRequest(deps.db, {
 					targetSiteId: host.site_id,
@@ -299,6 +383,7 @@ export function createRelayStream$(
 				firstChunkReceived: false,
 				hostStartTime,
 				chunksToEmit: [],
+				settlesToRun: [],
 				activity: false,
 				done: false,
 				error: null,
@@ -317,11 +402,34 @@ export function createRelayStream$(
 				}),
 				mergeMap((s): Observable<RelayEmission> => {
 					const err = s.error;
-					if (err) return throwError(() => new Error(err));
+					const settles = s.settlesToRun;
+					if (err) {
+						// CRITICAL ORDER (claim → deliver → ack): run the error row's settle only
+						// AFTER the error has been thrown downstream. defer() ensures the ack
+						// fires on subscription to the tail, after the throwError emission.
+						return concat(
+							throwError(() => new Error(err)),
+							defer(() => {
+								for (const settle of settles) settle();
+								return EMPTY;
+							}),
+						);
+					}
 					const emissions: RelayEmission[] = s.activity
 						? [RELAY_ACTIVITY, ...s.chunksToEmit]
 						: [...s.chunksToEmit];
-					return from(emissions);
+					// CRITICAL ORDER (claim → deliver → ack): emit this tick's chunks FIRST,
+					// then run each emitted row's settle in a trailing defer() — so the durable
+					// ack (or legacy markProcessed) lands only after the chunk content has been
+					// delivered downstream. A crash between emission and settle boot-resets the
+					// row → re-fold → seq-dedup (nextExpectedSeq guard) suppresses the replay.
+					return concat(
+						from(emissions),
+						defer(() => {
+							for (const settle of settles) settle();
+							return EMPTY;
+						}),
+					);
 				}),
 				// Per-chunk inactivity clock: heartbeats (RELAY_ACTIVITY) reset this,
 				// so a live backend mid-thinking is never falsely failed over.
@@ -349,21 +457,23 @@ export function createRelayStream$(
 				}),
 				finalize(() => {
 					if (!hostSucceeded) {
-						const cancelEntry = createRelayOutboxEntry(
-							host.site_id,
-							deps.siteId,
-							"cancel",
-							JSON.stringify({}),
-							30_000,
-							logicalRequestId,
-							undefined,
-							undefined,
-							traceContext ? JSON.stringify(traceContext) : undefined,
-						);
+						// 4D-D: cancel is a directed active request — route it through the same
+						// helper as the initial dispatch so it rides the durable spool when the
+						// hop advertises capability. The receiving 4D-A lane dispatches a durable
+						// cancel row through the handler map like any request.
 						try {
-							writeOutbox(deps.db, cancelEntry);
+							routeRelayRequest(deps.db, {
+								targetSiteId: host.site_id,
+								sourceSiteId: deps.siteId,
+								kind: "cancel",
+								payload: JSON.stringify({}),
+								timeoutMs: 30_000,
+								refId: logicalRequestId,
+								traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
+								topologyRole: deps.topologyRole,
+							});
 						} catch (error) {
-							deps.logger.warn("Failed to write relay cancel outbox entry", {
+							deps.logger.warn("Failed to write relay cancel entry", {
 								streamId,
 								error: error instanceof Error ? error.message : String(error),
 							});

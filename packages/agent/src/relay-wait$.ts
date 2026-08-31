@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
-import { markProcessed, readInboxByRefId, recordTurnRelayMetrics, writeOutbox } from "@bound/core";
+import {
+	acknowledgeDurableWork,
+	claimDurableWorkByIds,
+	markProcessed,
+	readDurableResponseByRefId,
+	readInboxByRefId,
+	recordTurnRelayMetrics,
+} from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { errorPayloadSchema, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 import type { Logger } from "@bound/shared";
@@ -23,7 +30,7 @@ import {
 	timeout,
 } from "rxjs";
 import { buildCommandOutput } from "./agent-loop-utils";
-import { type EligibleHost, createRelayOutboxEntry, routeRelayRequest } from "./relay-router";
+import { type EligibleHost, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
 import type { TopologyRole } from "./topology";
 
@@ -93,6 +100,54 @@ function formatResponseText(response: { kind: string; payload: string }): RelayW
 	return { content: `Unknown response kind: ${response.kind}`, retriable: false };
 }
 
+/**
+ * 4D-D union-await read for one awaiting request. Returns the winning response
+ * as a `{ id, kind, payload, settle }` shape: `settle()` retires the row — a
+ * legacy relay_inbox row is `markProcessed`; a durable response row was claimed
+ * under a fresh token here and `settle()` acks it to `consumed`, so the
+ * token-fenced lifecycle makes delivery exactly-once even if a redelivered
+ * transfer produced a second (fenced-away) copy. CRITICAL ORDER (claim → deliver
+ * → ack): the claim happens now, but `settle()` is deferred by the Rx pipeline
+ * until AFTER the awaiter has received the value (post `take(1)` emission). A
+ * crash between delivery and ack boot-resets the durable row to pending; the
+ * later duplicate has no subscriber (take(1) completed) and ages out via its
+ * 300s TTL → dead_letter → prune — at-least-once with bounded residue, never
+ * silent loss. Legacy is checked first so an in-flight capability flip that split
+ * a request/response across stores still resolves. Returns null when neither
+ * store has a response yet.
+ */
+function readUnionResponse(
+	deps: RelayWaitDeps,
+	refId: string,
+): { id: string; kind: string; payload: string; settle: () => void } | null {
+	const legacy = readInboxByRefId(deps.db, refId);
+	if (legacy) {
+		return {
+			id: legacy.id,
+			kind: legacy.kind,
+			payload: legacy.payload,
+			// Legacy symmetry: mark-processed is deferred to settle() so it fires
+			// only AFTER delivery, matching the durable branch's ack ordering.
+			settle: () => markProcessed(deps.db, [legacy.id]),
+		};
+	}
+	const durable = readDurableResponseByRefId(deps.db, refId, deps.siteId);
+	if (!durable) return null;
+	const claimed = claimDurableWorkByIds(deps.db, [durable.id], deps.siteId);
+	const row = claimed[0];
+	// Lost the claim race (another reader took it) — treat as not-yet-available;
+	// the winning reader delivers it.
+	if (!row || !row.claim_token) return null;
+	const token = row.claim_token;
+	return {
+		id: row.id,
+		kind: row.kind,
+		payload: row.payload,
+		// Deferred token-fenced ack: fires only after the awaiter receives the value.
+		settle: () => acknowledgeDurableWork(deps.db, row.id, token),
+	};
+}
+
 export function createRelayWait$(
 	deps: RelayWaitDeps,
 	params: RelayWaitParams,
@@ -139,11 +194,17 @@ export function createRelayWait$(
 				host: currentHost.host_name,
 			});
 
+			// 4D-D union-await: a response resolves this awaiter whether it arrived
+			// over the LEGACY relay_inbox (the 4D-C status quo) or the DURABLE spool
+			// (this slice). readUnionResponse reads both stores; a durable row is
+			// claimed + delivered + acked (exactly-once via the token fence), a legacy
+			// row is markProcessed as before. A response arriving via EITHER store
+			// resolves the request, so a capability flip mid-flight is transparent.
 			const response$ = merge(
-				defer(() => of(readInboxByRefId(deps.db, currentOutboxId))),
+				defer(() => of(readUnionResponse(deps, currentOutboxId))),
 				fromEventBus(deps.eventBus, "relay:inbox").pipe(
 					filter((event) => event.ref_id === currentOutboxId),
-					map(() => readInboxByRefId(deps.db, currentOutboxId)),
+					map(() => readUnionResponse(deps, currentOutboxId)),
 				),
 			).pipe(
 				filter(
@@ -171,8 +232,20 @@ export function createRelayWait$(
 						}
 					}
 				}),
-				tap((response) => markProcessed(deps.db, [response.id])),
-				map((response) => formatResponseText(response)),
+				// CRITICAL ORDER (claim → deliver → ack): the durable row was CLAIMED in
+				// readUnionResponse but its ack (or legacy markProcessed) is deferred to
+				// entry.settle(), fired in finalize() below — which runs only AFTER take(1)
+				// has emitted the value downstream and completed. A crash between delivery
+				// and settle boot-resets the durable row to pending; the redelivered copy
+				// finds no subscriber (take(1) done) and ages out via TTL → dead_letter →
+				// prune. At-least-once with bounded residue, never silent loss.
+				map((entry) => ({ result: formatResponseText(entry), settle: entry.settle })),
+				tap({
+					next: ({ settle }) => {
+						settle();
+					},
+				}),
+				map(({ result }) => result),
 				catchError((err) => {
 					if (err instanceof TimeoutError) return EMPTY;
 					return throwError(() => err);
@@ -182,18 +255,22 @@ export function createRelayWait$(
 			const abort$ = aborted$.pipe(
 				take(1),
 				tap(() => {
-					const cancelEntry = createRelayOutboxEntry(
-						currentHost.site_id,
-						deps.siteId,
-						"cancel",
-						JSON.stringify({}),
-						timeoutMs,
-						currentOutboxId,
-					);
+					// 4D-D: cancel is a directed active request — route it through the same
+					// helper as the initial dispatch so it rides the durable spool when the
+					// hop advertises capability. The receiving 4D-A lane dispatches a durable
+					// cancel row through the handler map like any request.
 					try {
-						writeOutbox(deps.db, cancelEntry);
+						routeRelayRequest(deps.db, {
+							targetSiteId: currentHost.site_id,
+							sourceSiteId: deps.siteId,
+							kind: "cancel",
+							payload: JSON.stringify({}),
+							timeoutMs,
+							refId: currentOutboxId,
+							topologyRole: deps.topologyRole,
+						});
 					} catch (error) {
-						deps.logger.warn("Failed to write relay cancel outbox entry", {
+						deps.logger.warn("Failed to write relay cancel entry", {
 							refId: currentOutboxId,
 							error: error instanceof Error ? error.message : String(error),
 						});

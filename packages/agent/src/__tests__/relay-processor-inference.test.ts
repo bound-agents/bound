@@ -3,14 +3,19 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, insertInbox } from "@bound/core";
+import {
+	applySchema,
+	claimLocalDurableWork,
+	insertDurableWork,
+	insertInbox,
+	setDurableRelayEnabledForTesting,
+} from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
 import { splitInferenceRequest } from "../inference-request-parts";
 import { RelayProcessor } from "../relay-processor";
 import { waitFor } from "./helpers";
-
 class MockBackend implements LLMBackend {
 	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
 	private callCount = 0;
@@ -1502,5 +1507,161 @@ describe("RelayProcessor - executeInference", () => {
 				}
 			).n,
 		).toBe(1);
+	});
+
+	// 4D-D circle: a DURABLE cancel (arriving as a durable_work row post-spool-
+	// transfer) must abort a running inference stream. The legacy AC3.4 test above
+	// drives the same abort via a relay_inbox cancel row; this drives it through
+	// the 4D-A durable lane (durable row -> claimLocalDurableWork -> handler ->
+	// AbortController.abort()). Toggle hygiene is mandatory: two prior gate
+	// failures were cross-file BOUND_DURABLE_RELAY leaks, so the flag is set in
+	// this test and restored on the surrounding afterEach.
+	it("4D-D: a durable cancel row aborts a running inference stream and writes a cancel error", async () => {
+		setDurableRelayEnabledForTesting(true);
+
+		const mockBackend = new MockBackend();
+		// A stream that hangs long enough for the durable cancel to catch it
+		// mid-flight: first chunk lands, then a long delay before the next.
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "chunk1" };
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+			yield { type: "text" as const, content: "chunk2" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 10,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+
+		const backends = new Map<string, LLMBackend>();
+		backends.set("test-model", mockBackend);
+		const mockRouter = new ModelRouter(backends, "test-model");
+
+		const SELF = "target-site";
+		const processor = new RelayProcessor(
+			db,
+			SELF,
+			new Map(),
+			mockRouter,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const inferenceId = randomUUID();
+		// The inference request arrives on the legacy relay_inbox path (the stream
+		// itself is unchanged by 4D-D; only its cancel flips durable). This starts
+		// the stream and registers its AbortController under `inferenceId`.
+		const inboxEntry: RelayInboxEntry = {
+			id: inferenceId,
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: null,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "test-model",
+				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
+					kind: "inline" as const,
+					message: m,
+				})),
+				nowMs: 0,
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+		};
+		db.run(
+			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				inboxEntry.id,
+				inboxEntry.source_site_id,
+				inboxEntry.kind,
+				inboxEntry.ref_id,
+				inboxEntry.idempotency_key,
+				inboxEntry.stream_id,
+				inboxEntry.payload,
+				inboxEntry.expires_at,
+				inboxEntry.received_at,
+				inboxEntry.processed,
+			],
+		);
+
+		const handle = processor.start(10);
+		// Wait for the inference entry to be dispatched (fire-and-forget) so the
+		// stream is running and its AbortController is registered before the cancel.
+		await waitFor(
+			() =>
+				(
+					db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxEntry.id) as {
+						processed: number;
+					} | null
+				)?.processed === 1,
+			{ message: "4D-D: inference entry not dispatched" },
+		);
+
+		// The DURABLE cancel row, shaped as it would arrive on the target after the
+		// 4D-C producer flip + spool transfer: pending, self-targeted, kind cancel,
+		// ref_id pointing at the running inference request, production key
+		// construction (cancel:<rowId> when the producer minted no legacy key).
+		const cancelRowId = randomUUID();
+		insertDurableWork(db, {
+			id: cancelRowId,
+			target_site_id: SELF,
+			kind: "cancel",
+			payload: JSON.stringify({}),
+			idempotency_key: `cancel:${cancelRowId}`,
+			ref_id: inferenceId,
+			source_site: "requester-site",
+			expires_at: new Date(now.getTime() + 60000).toISOString(),
+			received_at: now.toISOString(),
+		});
+
+		// The 4D-A lane must claim + dispatch the durable cancel, firing the
+		// registered AbortController. The stream then terminates as cancelled and
+		// writes the same "cancelled by requester" error the legacy path writes.
+		await waitFor(
+			() =>
+				(
+					db
+						.query("SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'error' AND ref_id = ?")
+						.get(inferenceId) as { n: number } | null
+				)?.n > 0,
+			{ message: "4D-D: cancel error not written after durable cancel" },
+		);
+		handle.stop();
+
+		// (1) The running stream terminated as cancelled — same assertion strength
+		// as the legacy AC3.4 test.
+		const errorResponses = db
+			.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
+			.all("error", inferenceId) as RelayOutboxEntry[];
+		expect(errorResponses.length).toBeGreaterThan(0);
+		expect(JSON.parse(errorResponses[0].payload).error).toContain("cancelled by requester");
+
+		// (2) The durable cancel row was consumed (token-fenced ack), not left
+		// pending/processing and not dead-lettered.
+		const cancelRow = db
+			.query("SELECT claim_state FROM durable_work WHERE id = ?")
+			.get(cancelRowId) as { claim_state: string } | null;
+		expect(cancelRow?.claim_state).toBe("consumed");
+
+		// (3) No further durable cancel remains claimable for this target.
+		expect(claimLocalDurableWork(db, SELF, "cancel")).toBeNull();
+
+		// (4) The stream did not also complete normally — no stream_end slipped
+		// through alongside the cancel.
+		const streamEnds = db
+			.query("SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'stream_end' AND stream_id = ?")
+			.get(streamId) as { n: number };
+		expect(streamEnds.n).toBe(0);
 	});
 });
