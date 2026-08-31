@@ -6,6 +6,7 @@ import { request as httpsRequest } from "node:https";
 import {
 	DURABLE_INTAKE_ENABLED,
 	emitDurableWorkWritten,
+	hasDroppedLegacyRelayTables,
 	insertDurableWork,
 	insertInbox,
 	listActiveRssFeeds,
@@ -55,6 +56,8 @@ export interface RssItem {
 }
 
 /** Cap per-item summary text so a full-content feed can't bloat the wakeup. */
+const retiredLegacyIntakeWarnings = new WeakSet<Database>();
+
 const MAX_ITEM_SUMMARY_CHARS = 4096;
 
 /** Floor on per-feed cadence — protects feed hosts from misconfigured rows. */
@@ -582,7 +585,18 @@ export class RssPoller {
 						const payload = JSON.stringify({ feed: feed.name, url: feed.url, ...item });
 						const receivedAt = new Date(nowMs).toISOString();
 						const expiresAt = new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString();
-						const useDurable = DURABLE_INTAKE_ENABLED && !this.deps.insertInbox;
+						const forceDurable = hasDroppedLegacyRelayTables(this.deps.db);
+						if (
+							forceDurable &&
+							!DURABLE_INTAKE_ENABLED &&
+							!retiredLegacyIntakeWarnings.has(this.deps.db)
+						) {
+							retiredLegacyIntakeWarnings.add(this.deps.db);
+							this.deps.logger?.warn(
+								"[rss-poller] Legacy relay intake is retired; forcing durable intake despite BOUND_DURABLE_INTAKE=0.",
+							);
+						}
+						const useDurable = (DURABLE_INTAKE_ENABLED || forceDurable) && !this.deps.insertInbox;
 						const inserted = useDurable
 							? persistDurable(this.deps.db, {
 									id,

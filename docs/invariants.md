@@ -26,9 +26,11 @@ The narrow set of changelog-exempt writes is documented in the [appendix](#secti
 
 Synced tables use a `deleted = 0|1` column. Never physically `DELETE` rows — use `softDelete()`.
 
-### 3. Relay tables are local-only
+### 3. Durable work and relay telemetry are local-only
 
-`relay_outbox`, `relay_inbox`, `relay_cycles` do NOT use the change-log outbox. Use the dedicated CRUD helpers (`writeOutbox`, `insertInbox`, …) from `@bound/core`.
+`durable_work`, its transfer/claim/dead-letter records, and `relay_cycles` do NOT use the change-log outbox. Use the dedicated durable-work and relay CRUD helpers from `@bound/core`. `change_log` and `sync_state` remain replication state, not directed-work storage.
+
+`relay_outbox` and `relay_inbox` were the legacy directed-work tables. They are transitional: each host drains its own undelivered outbox rows onto the durable spool and retires (`DROP TABLE`) both tables once every live peer advertises work-spool support (R-DW14) and its own legacy tables are empty. A host that has dropped records the one-way fact in the local-only `local_flags` table (`relay_legacy_tables_dropped`), and every legacy code path early-returns on `hasDroppedLegacyRelayTables` rather than touching a table that no longer exists on that host. Hosts drop at different times because the tables are local-only; `relay_cycles` is retained as telemetry and is never dropped. The `DROP TABLE` runs against non-synced tables, so it does not route through the change-log outbox.
 
 ### 4. Column-name validation
 

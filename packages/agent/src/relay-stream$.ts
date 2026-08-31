@@ -4,6 +4,7 @@ import type { Database } from "bun:sqlite";
 import {
 	acknowledgeDurableWork,
 	claimDurableWorkByIds,
+	hasDroppedLegacyRelayTables,
 	markProcessed,
 	readDurableResponsesByStreamId,
 	readInboxByStreamId,
@@ -134,7 +135,12 @@ function createStreamReducer(
 		// re-fold is absorbed by the seq-dedup below (any seq < nextExpectedSeq is
 		// suppressed), so a late ack is harmless while an early ack would be lossy.
 		type UnionEntry = { id: string; kind: string; payload: string; settle: () => void };
-		const legacyRows = readInboxByStreamId(deps.db, streamId);
+		// Post-drop (slice 4E): relay_inbox is gone on this host, so read only the
+		// durable spool for stream chunks; the legacy read would throw on the
+		// missing table. A capability flip already forced spool-only delivery here.
+		const legacyRows = hasDroppedLegacyRelayTables(deps.db)
+			? []
+			: readInboxByStreamId(deps.db, streamId);
 		const unionEntries: UnionEntry[] = legacyRows.map((e) => ({
 			id: e.id,
 			kind: e.kind,

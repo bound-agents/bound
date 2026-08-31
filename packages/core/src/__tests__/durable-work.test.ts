@@ -15,6 +15,7 @@ import {
 } from "../durable-work";
 import {
 	countPendingIntakeDurableWork,
+	countPendingPeerTargetedDurableWork,
 	findDurableWorkByKindAndIdempotencyKeys,
 	listPendingIntakeDurableWork,
 	listPendingIntakeDurableWorkForRef,
@@ -68,6 +69,11 @@ describe("durable_work", () => {
 		expect(db.query("SELECT id FROM durable_work WHERE id = 'sender'").get()).toBeNull();
 		expect(claimLocalDurableWork(receiver, "peer")?.id).toBe("receiver");
 		receiver.close();
+	});
+	it("counts a transferring peer-targeted row as undrained", () => {
+		insertDurableWork(db, row("transfer", "peer"));
+		expect(beginDurableWorkTransfer(db, "transfer")).not.toBeNull();
+		expect(countPendingPeerTargetedDurableWork(db, "local")).toBe(1);
 	});
 	it("requires the consumer claim token for acknowledgement", () => {
 		insertDurableWork(db, row("a"));

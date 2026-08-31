@@ -4,6 +4,7 @@ import {
 	acknowledgeToolResultForCall,
 	enqueueClientToolCall,
 	findToolResultByThreadAndCallId,
+	hasDroppedLegacyRelayTables,
 	markProcessed,
 	readInboxByRefId,
 } from "@bound/core";
@@ -118,6 +119,9 @@ function waitForRemoteResult(
 	outboxId: string,
 ): Promise<AwaitableClientToolResult | null> {
 	const read = (): AwaitableClientToolResult | null | undefined => {
+		// Post-drop (slice 4E): relay_inbox is gone — client results arrive via the
+		// durable spool, so skip the legacy read (it would throw on the missing table).
+		if (hasDroppedLegacyRelayTables(deps.db)) return undefined;
 		const entry = readInboxByRefId(deps.db, outboxId);
 		if (!entry) return undefined;
 		markProcessed(deps.db, [entry.id]);

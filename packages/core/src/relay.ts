@@ -382,3 +382,136 @@ export function readInboxByStreamId(db: Database, streamId: string): RelayInboxE
 		)
 		.all(streamId) as RelayInboxEntry[];
 }
+
+// ── Legacy relay-table retirement (slice 4E) ─────────────────────────────
+//
+// The durable_work spool is the local-only work store; relay_outbox/relay_inbox
+// are transitional and dropped per-host once every live peer advertises spool
+// support (R-DW14) and this host's own legacy tables are empty. The drop is a
+// one-way, per-host event: a spoke that dropped records the fact in local_flags
+// so every legacy code path early-returns instead of touching a table that no
+// longer exists on THIS host. See
+// docs/design/specs/2026-08-31-durable-work-consolidation.md §7 and #253.
+
+/** local_flags key set once this host drops its legacy relay tables. */
+export const LEGACY_RELAY_DROPPED_FLAG = "relay_legacy_tables_dropped";
+
+/**
+ * Per-process memo of the one-way drop marker, keyed by db handle. The drop is
+ * irreversible, so once a given db reads the marker as set we can cache `true`
+ * forever for that handle and skip the local_flags PK lookup on the hot legacy
+ * paths that guard on it. Keyed by the Database object (not a process-global
+ * boolean) because a single process routinely holds many independent DBs
+ * (every in-memory test DB, spoke + hub in cluster tests); a global would leak
+ * one DB's retirement onto another. We only ever cache the `true` state — a
+ * handle absent from the map falls through to a live read, so a fresh DB is
+ * never wrongly reported retired. `dropLegacyRelayTables` primes this on the
+ * handle that performs the drop.
+ */
+const droppedMarkerCache = new WeakMap<Database, true>();
+
+/** Record that `db` has retired its legacy relay tables (one-way). */
+function markDroppedInCache(db: Database): void {
+	droppedMarkerCache.set(db, true);
+}
+
+/**
+ * Whether this host has retired its legacy relay tables. Reads local_flags —
+ * a non-synced, per-host table — so the answer reflects THIS host only. A
+ * dropped host must never touch relay_outbox/relay_inbox again; callers guard
+ * every legacy read/write on this. Cheap enough to call on hot legacy paths
+ * (memoized after the first `true`, else a single indexed PK lookup); returns
+ * false on a synthetic DB lacking the table. The memo only caches `true`, so a
+ * not-yet-dropped host keeps reading live until the drop lands.
+ */
+export function hasDroppedLegacyRelayTables(db: Database): boolean {
+	if (droppedMarkerCache.has(db)) return true;
+	try {
+		const row = db
+			.query("SELECT value FROM local_flags WHERE key = ?")
+			.get(LEGACY_RELAY_DROPPED_FLAG) as { value: string } | null;
+		const dropped = row?.value === "1";
+		if (dropped) markDroppedInCache(db);
+		return dropped;
+	} catch {
+		return false;
+	}
+}
+
+/** Count of rows remaining in a legacy relay table, or null if the table is absent (already dropped). */
+function countLegacyRelayRows(db: Database, table: "relay_outbox" | "relay_inbox"): number | null {
+	try {
+		const row = db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+			count: number;
+		} | null;
+		return row?.count ?? 0;
+	} catch {
+		return null; // table dropped
+	}
+}
+
+/** True IFF both legacy relay tables exist and hold zero rows (not merely zero undelivered/unprocessed). */
+export function legacyRelayTablesEmpty(db: Database): boolean {
+	const outbox = countLegacyRelayRows(db, "relay_outbox");
+	const inbox = countLegacyRelayRows(db, "relay_inbox");
+	// A dropped table (null) counts as "empty" — nothing left to observe.
+	return (outbox === null || outbox === 0) && (inbox === null || inbox === 0);
+}
+
+/**
+ * Physically drop this host's legacy relay tables and record the one-way marker,
+ * all under one BEGIN IMMEDIATE so a crash can never leave the tables dropped
+ * without the marker (which would let legacy paths hit a missing table) or the
+ * marker set with tables intact. `relay_outbox`/`relay_inbox` are local-only
+ * (invariant #3), so DROP TABLE has no sync impact and routes through the
+ * sanctioned raw-write bypass. `relay_cycles` is telemetry and is NOT dropped.
+ *
+ * TOCTOU guard (demolition permit): the emptiness gate in the caller runs
+ * OUTSIDE any transaction, so a legacy writer could insert between that check
+ * and the BEGIN IMMEDIATE write lock. This function RE-VERIFIES both tables
+ * hold zero rows AFTER the write lock is held and BEFORE the DROP statements; a
+ * non-empty recheck rolls back and returns false (no drop, no marker) so the
+ * would-be-destroyed row survives and the caller retries next pass. The drop is
+ * irreversible, so a false negative (skip a legitimate drop) is cheap while a
+ * false positive (destroy a live row) is unrecoverable.
+ *
+ * Idempotent: a second call is a no-op once the marker is set. Returns true if
+ * this call performed the drop.
+ */
+export function dropLegacyRelayTables(db: Database, reason: string): boolean {
+	if (!reason || reason.trim().length === 0) {
+		throw new Error("dropLegacyRelayTables: a non-empty reason is required");
+	}
+	if (hasDroppedLegacyRelayTables(db)) return false;
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		// Re-verify emptiness under the write lock — the outer gate is racy.
+		const outboxCount = (
+			db.query("SELECT COUNT(*) AS count FROM relay_outbox").get() as { count: number }
+		).count;
+		const inboxCount = (
+			db.query("SELECT COUNT(*) AS count FROM relay_inbox").get() as { count: number }
+		).count;
+		if (outboxCount > 0 || inboxCount > 0) {
+			// A row snuck in after the outer check. Abort the drop entirely.
+			db.exec("ROLLBACK");
+			return false;
+		}
+		db.run("DROP TABLE IF EXISTS relay_outbox");
+		db.run("DROP TABLE IF EXISTS relay_inbox");
+		db.run("INSERT OR REPLACE INTO local_flags (key, value, set_at) VALUES (?, '1', ?)", [
+			LEGACY_RELAY_DROPPED_FLAG,
+			new Date().toISOString(),
+		]);
+		db.exec("COMMIT");
+		markDroppedInCache(db);
+		return true;
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {
+			/* original error wins */
+		}
+		throw error;
+	}
+}

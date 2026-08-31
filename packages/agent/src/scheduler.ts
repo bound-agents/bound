@@ -5,6 +5,7 @@ import {
 	acknowledgeDurableWork,
 	countPendingIntakeDurableWork,
 	createChangeLogEntry,
+	hasDroppedLegacyRelayTables,
 	insertRow,
 	markProcessed,
 	resolveEffectiveModelHint,
@@ -480,12 +481,17 @@ function resetEventTask(
 		// A stray platform-MCP `intake` row sharing this thread_id would NOT
 		// survive a retry into the helper, so it is deliberately not counted
 		// (retrying on its presence would be a phantom wakeup).
-		const unprocessed = db
-			.query(
-				`SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN (${PASSIVE_INTAKE_KINDS.map(() => "?").join(", ")})`,
-			)
-			.get(task.thread_id, ...PASSIVE_INTAKE_KINDS) as { c: number } | null;
-		const pendingRelay = unprocessed?.c ?? 0;
+		// Post-drop (slice 4E): relay_inbox is gone on this host — the durable
+		// spool is the sole intake store, so skip the legacy read (it would throw).
+		const pendingRelay = hasDroppedLegacyRelayTables(db)
+			? 0
+			: ((
+					db
+						.query(
+							`SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN (${PASSIVE_INTAKE_KINDS.map(() => "?").join(", ")})`,
+						)
+						.get(task.thread_id, ...PASSIVE_INTAKE_KINDS) as { c: number } | null
+				)?.c ?? 0);
 		const pendingDurable = countPendingIntakeDurableWork(db, task.thread_id);
 		if (pendingRelay > 0 || pendingDurable > 0) {
 			const failures = current.consecutive_failures ?? 0;
@@ -1072,11 +1078,15 @@ export class Scheduler {
 
 							case "event": {
 								// R-LR3 design note: the relay_inbox SELECT lives inside the eviction transaction.
-								const unprocessed = this.ctx.db
-									.query<{ c: number }, [string, string]>(
-										"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
-									)
-									.get(task.thread_id ?? "", "webhook_intake");
+								// Post-drop (slice 4E): relay_inbox is gone — the durable spool is the
+								// sole intake store, so treat legacy as having nothing unprocessed.
+								const unprocessed = hasDroppedLegacyRelayTables(this.ctx.db)
+									? null
+									: this.ctx.db
+											.query<{ c: number }, [string, string]>(
+												"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ?",
+											)
+											.get(task.thread_id ?? "", "webhook_intake");
 								const hasUnprocessed = (unprocessed?.c ?? 0) > 0;
 								const underBackoffCap = newConsecutiveFailures < MAX_EVENT_TASK_FAILURE_BACKOFFS;
 								nextRunAtIso =

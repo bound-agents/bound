@@ -1073,3 +1073,70 @@ describe("handleWebhookRequest", () => {
 		expect(envelope.headers["x-slack-request-timestamp"]).toBe(timestamp);
 	});
 });
+
+describe("retired relay intake", () => {
+	let retiredDb: Database;
+	let retiredSiteId: string;
+	beforeEach(() => {
+		retiredDb = new Database(":memory:");
+		retiredSiteId = randomUUID();
+		applySchema(retiredDb);
+		retiredDb.run(
+			"INSERT INTO hosts (site_id, host_name, version, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+			[retiredSiteId, "test-host", "1.0.0", new Date().toISOString(), 0],
+		);
+	});
+	afterEach(() => setDurableIntakeEnabledForTesting(true));
+	test("forces durable intake when the rollback toggle is enabled", async () => {
+		const { dropLegacyRelayTables, hasDroppedLegacyRelayTables } = await import("@bound/core");
+		const secret = "retired-secret";
+		insertRow(
+			retiredDb,
+			"webhooks",
+			{
+				id: randomUUID(),
+				name: "retired-hook",
+				secret,
+				signature_format: "github",
+				description: null,
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			retiredSiteId,
+		);
+		expect(dropLegacyRelayTables(retiredDb, "test retirement")).toBe(true);
+		expect(hasDroppedLegacyRelayTables(retiredDb)).toBe(true);
+		setDurableIntakeEnabledForTesting(false);
+		const body = Buffer.from('{"event":"retired"}');
+		const warning = console.warn;
+		const warnings: unknown[][] = [];
+		console.warn = (...args: unknown[]) => warnings.push(args);
+		try {
+			const response = await handleWebhookRequest(
+				new Request("http://localhost/webhook/retired-hook", {
+					method: "POST",
+					headers: {
+						"X-Hub-Signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+					},
+					body,
+				}),
+				"retired-hook",
+				{ db: retiredDb, siteId: retiredSiteId, eventBus: new TypedEventEmitter() },
+			);
+			expect(response.status).toBe(202);
+		} finally {
+			console.warn = warning;
+			setDurableIntakeEnabledForTesting(true);
+		}
+		expect(
+			retiredDb
+				.query("SELECT COUNT(*) AS count FROM durable_work WHERE kind = 'webhook_intake'")
+				.get(),
+		).toEqual({ count: 1 });
+		expect(warnings).toHaveLength(1);
+		expect(String(warnings[0][0])).toContain("legacy_relay_intake_unavailable");
+	});
+});

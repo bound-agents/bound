@@ -78,14 +78,14 @@ describe("Phase 1 Integration", async () => {
 		expect(ctx.logger).toBeDefined();
 		expect(ctx.siteId).toBeDefined();
 
-		// Step 2: Verify database has all 21 tables
+		// Step 2: Verify database has all 22 tables
 		const tables = ctx.db
 			.query(
 				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(33); // + agents (#201) + local-only row_state_hashes cache = 32
+		expect(tables.length).toBe(34); // + agents (#201) + local-only row_state_hashes cache + local_flags = 34
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [

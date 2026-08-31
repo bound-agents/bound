@@ -4,6 +4,7 @@ import {
 	DURABLE_INTAKE_ENABLED,
 	findClusterConfigValueByKey,
 	findWebhookByName,
+	hasDroppedLegacyRelayTables,
 	insertDurableWork,
 	insertInbox,
 } from "@bound/core";
@@ -16,6 +17,8 @@ export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const webhookDeliveryCounter = counter("bound.web.webhook.deliveries", {
 	description: "Webhook delivery outcomes by HTTP status class",
 });
+const retiredLegacyIntakeWarnings = new WeakSet<Database>();
+
 const webhookDeliveryDuration = histogram("bound.web.webhook.delivery.duration", {
 	description: "Webhook intake latency",
 	unit: "ms",
@@ -229,19 +232,32 @@ async function handleWebhookRequestInner(
 		trace_context: null,
 	};
 
-	const inserted = DURABLE_INTAKE_ENABLED
-		? insertDurableWork(deps.db, {
-				id: inboxEntry.id,
-				target_site_id: deps.siteId,
-				kind: inboxEntry.kind,
-				payload: inboxEntry.payload,
-				idempotency_key: inboxEntry.idempotency_key,
-				expires_at: inboxEntry.expires_at,
-				ref_id: inboxEntry.ref_id,
-				source_site: deps.siteId,
-				received_at: inboxEntry.received_at,
-			})
-		: insertInbox(deps.db, inboxEntry);
+	const forceDurable = hasDroppedLegacyRelayTables(deps.db);
+	if (forceDurable && !DURABLE_INTAKE_ENABLED && !retiredLegacyIntakeWarnings.has(deps.db)) {
+		retiredLegacyIntakeWarnings.add(deps.db);
+		console.warn(
+			JSON.stringify({
+				event: "legacy_relay_intake_unavailable",
+				component: "webhook-handler",
+				message:
+					"Legacy relay intake is retired; forcing durable intake despite BOUND_DURABLE_INTAKE=0.",
+			}),
+		);
+	}
+	const inserted =
+		DURABLE_INTAKE_ENABLED || forceDurable
+			? insertDurableWork(deps.db, {
+					id: inboxEntry.id,
+					target_site_id: deps.siteId,
+					kind: inboxEntry.kind,
+					payload: inboxEntry.payload,
+					idempotency_key: inboxEntry.idempotency_key,
+					expires_at: inboxEntry.expires_at,
+					ref_id: inboxEntry.ref_id,
+					source_site: deps.siteId,
+					received_at: inboxEntry.received_at,
+				})
+			: insertInbox(deps.db, inboxEntry);
 	if (!inserted) {
 		return new Response("", { status: 202 });
 	}

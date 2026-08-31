@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { insertRow, updateRow } from "../change-log";
 import { createDatabase } from "../database";
+import { dropLegacyRelayTables, hasDroppedLegacyRelayTables } from "../relay";
 import { applySchema } from "../schema";
 
 describe("Database Schema", () => {
@@ -33,7 +34,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 21 tables + FTS5", () => {
+	it("applies schema successfully creating all 22 tables + FTS5", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -70,9 +71,9 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 25 base tables (including local-only row_state_hashes cache and durable_work) + FTS5 virtual table + 5 FTS5 shadow tables = 31
+		// 26 base tables (including local-only row_state_hashes cache, durable_work, and local_flags) + FTS5 virtual table + 5 FTS5 shadow tables = 32
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(26); // 25 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(27); // 26 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -263,8 +264,58 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 31 tables (25 base, including local-only durable_work and row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(31);
+		// Still exactly 32 tables (26 base, including local-only durable_work, local_flags, and row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(32);
+
+		db.close();
+	});
+
+	it("boot-after-drop does not recreate retired relay tables", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		// Retire the legacy relay tables (one-way drop + marker).
+		expect(dropLegacyRelayTables(db, "boot-after-drop test")).toBe(true);
+		expect(hasDroppedLegacyRelayTables(db)).toBe(true);
+
+		// Simulate a restart: applySchema runs again on the same DB.
+		applySchema(db);
+
+		// The retired tables must NOT be recreated.
+		const outbox = db
+			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_outbox'")
+			.get();
+		const inbox = db
+			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_inbox'")
+			.get();
+		expect(outbox).toBeNull();
+		expect(inbox).toBeNull();
+
+		// The marker survives and the guard still reads dropped.
+		expect(hasDroppedLegacyRelayTables(db)).toBe(true);
+
+		// relay_cycles (retained telemetry) still exists.
+		const cycles = db
+			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_cycles'")
+			.get();
+		expect(cycles).not.toBeNull();
+
+		db.close();
+	});
+
+	it("a fresh DB without the marker creates both relay tables", () => {
+		const db = createDatabase(dbPath);
+		applySchema(db);
+
+		expect(hasDroppedLegacyRelayTables(db)).toBe(false);
+		const outbox = db
+			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_outbox'")
+			.get();
+		const inbox = db
+			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_inbox'")
+			.get();
+		expect(outbox).not.toBeNull();
+		expect(inbox).not.toBeNull();
 
 		db.close();
 	});

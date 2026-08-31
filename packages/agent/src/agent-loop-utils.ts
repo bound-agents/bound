@@ -566,7 +566,10 @@ export async function waitForRelayInbox(
 	refId: string,
 	timeoutMs = 30000,
 ): Promise<{ id: string; kind: string } | null> {
-	const { readInboxByRefId } = await import("@bound/core");
+	const { readInboxByRefId, hasDroppedLegacyRelayTables } = await import("@bound/core");
+	// Post-drop (slice 4E): relay_inbox is gone here; the durable response path
+	// resolves the awaiter instead, so short-circuit rather than touch the table.
+	if (hasDroppedLegacyRelayTables(db)) return null;
 
 	return new Promise((resolve) => {
 		const timeoutId = setTimeout(() => {
