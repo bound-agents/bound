@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, insertInbox, insertRow } from "@bound/core";
+import { applySchema, insertDurableWork, insertInbox, insertRow } from "@bound/core";
 import { registerConnectorEventDelivery } from "@bound/platforms";
 import { type RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
 import { applyAdvisory, getPendingAdvisories } from "../advisories";
@@ -693,5 +693,106 @@ describe("webhook intake reconciler — non-triggers", () => {
 
 		expect(result.advisoriesRaised).toBe(0);
 		expect(result.deadLettered).toBe(0);
+	});
+});
+
+function insertDurableIntake(
+	db: Database,
+	opts: { id: string; refId: string; receivedAt: string; kind?: string },
+): void {
+	insertDurableWork(db, {
+		id: opts.id,
+		target_site_id: SITE,
+		kind: opts.kind ?? "webhook_intake",
+		payload: JSON.stringify({ body: '{"action":"opened"}' }),
+		idempotency_key: `durable:${opts.id}`,
+		ref_id: opts.refId,
+		source_site: "hub-site",
+		received_at: opts.receivedAt,
+	});
+}
+
+describe("webhook intake reconciler — durable work store", () => {
+	it("re-emits a stale durable intake row for a live binding with the normal connector payload", () => {
+		const db = makeDb();
+		insertWebhook(db, { threadId: "durable-live", name: "bound" });
+		insertDurableIntake(db, {
+			id: "durable-live-row",
+			refId: "durable-live",
+			receivedAt: minutesAgo(60),
+		});
+		const binding = db
+			.query("SELECT id, task_id FROM webhooks WHERE thread_id = ?")
+			.get("durable-live") as { id: string; task_id: string };
+		const emitted: Array<{ event: string; payload: unknown }> = [];
+		const result = reconcileStaleWebhookIntake(db, SITE, {
+			staleAfterMs: STALE_AFTER_MS,
+			now: NOW,
+			eventBus: {
+				emit: (event: string, payload: unknown) => emitted.push({ event, payload }),
+			} as TypedEventEmitter,
+		});
+
+		expect(result).toEqual({ advisoriesRaised: 0, redelivered: 1, deadLettered: 0 });
+		expect(emitted).toEqual([
+			{
+				event: "connector:event",
+				payload: {
+					trigger_key: "webhook:bound",
+					handle_id: binding.id,
+					task_id: binding.task_id,
+					batch_size: 1,
+				},
+			},
+		]);
+	});
+
+	it("dead-letters orphaned durable intake without an advisory and does not repeat it", () => {
+		const db = makeDb();
+		insertDurableIntake(db, {
+			id: "durable-orphan-row",
+			refId: "durable-orphan",
+			receivedAt: minutesAgo(60),
+		});
+		const first = reconcileStaleWebhookIntake(db, SITE, { staleAfterMs: STALE_AFTER_MS, now: NOW });
+		const second = reconcileStaleWebhookIntake(db, SITE, {
+			staleAfterMs: STALE_AFTER_MS,
+			now: NOW,
+		});
+
+		expect(first).toEqual({ advisoriesRaised: 0, redelivered: 0, deadLettered: 1 });
+		expect(second).toEqual({ advisoriesRaised: 0, redelivered: 0, deadLettered: 0 });
+		expect(getPendingAdvisories(db)).toEqual([]);
+		expect(
+			db
+				.query("SELECT claim_state, last_error FROM durable_work WHERE id = 'durable-orphan-row'")
+				.get(),
+		).toEqual({
+			claim_state: "dead_letter",
+			last_error: "orphaned webhook intake binding",
+		});
+	});
+
+	it("coalesces stale relay and durable rows into one recovery nudge with a combined batch count", () => {
+		const db = makeDb();
+		insertWebhook(db, { threadId: "mixed-live", name: "bound" });
+		insertIntake(db, { refId: "mixed-live", receivedAt: minutesAgo(60) });
+		insertDurableIntake(db, {
+			id: "mixed-durable-row",
+			refId: "mixed-live",
+			receivedAt: minutesAgo(45),
+		});
+		const emitted: Array<{ event: string; payload: { batch_size: number } }> = [];
+		const result = reconcileStaleWebhookIntake(db, SITE, {
+			staleAfterMs: STALE_AFTER_MS,
+			now: NOW,
+			eventBus: {
+				emit: (event: string, payload: { batch_size: number }) => emitted.push({ event, payload }),
+			} as TypedEventEmitter,
+		});
+
+		expect(result).toEqual({ advisoriesRaised: 0, redelivered: 1, deadLettered: 0 });
+		expect(emitted).toHaveLength(1);
+		expect(emitted[0]).toMatchObject({ event: "connector:event", payload: { batch_size: 2 } });
 	});
 });

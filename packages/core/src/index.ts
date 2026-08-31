@@ -126,6 +126,7 @@ export {
 export {
 	insertDurableWork,
 	claimLocalDurableWork,
+	claimDurableWorkByIds,
 	acknowledgeDurableWork,
 	beginDurableWorkTransfer,
 	acknowledgeDurableWorkTransfer,

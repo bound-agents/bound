@@ -1,26 +1,68 @@
 import type { Database } from "bun:sqlite";
-import { readUnprocessedInboxByRefId } from "@bound/core";
+import {
+	claimDurableWorkByIds,
+	listPendingIntakeDurableWorkForRef,
+	readUnprocessedInboxByRefId,
+} from "@bound/core";
+import type { DurableWorkRow } from "@bound/core";
 import { escapeXmlAttr } from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry";
 
+export interface DurableWakeupClaim {
+	/** The durable_work row id that was claimed for this wakeup. */
+	id: string;
+	/**
+	 * The fresh claim token minted for this row. The caller MUST pass
+	 * `(id, token)` to `acknowledgeDurableWork` after the wakeup messages are
+	 * durably persisted, so the row transitions `processing -> consumed` under
+	 * its own generation. On a persistence failure the caller does NOT ack; the
+	 * row stays `processing` and boot recovery resets it to `pending`.
+	 */
+	token: string;
+}
+
 export interface EventWakeupContent {
 	/**
 	 * The content string to use as the synthetic `retrieve_task` tool_result
-	 * body for an event-task wakeup. When inbox entries are folded in, this
-	 * carries the actual webhook envelope(s); otherwise it falls back to the
-	 * task's static payload (or a generic default).
+	 * body for an event-task wakeup. When intake entries are folded in, this
+	 * carries the actual webhook/connector/feed envelope(s); otherwise it falls
+	 * back to the task's static payload (or a generic default).
 	 */
 	content: string;
 	/**
-	 * Inbox entry IDs that were folded into `content`. Caller MUST pass these
-	 * to `markProcessed(db, ids)` once the wakeup messages have been durably
-	 * persisted, so the same envelopes don't reappear on the next wakeup.
-	 * Marking is left to the caller (rather than done eagerly here) so a
-	 * mid-write failure leaves the inbox unprocessed — redundant event on a
+	 * Legacy relay_inbox entry IDs that were folded into `content` (including
+	 * the relay-side id of any twin also present in durable_work). Caller MUST
+	 * pass these to `markProcessed(db, ids)` once the wakeup messages have been
+	 * durably persisted, so the same envelopes don't reappear on the next
+	 * wakeup. Marking is left to the caller (rather than done eagerly here) so a
+	 * mid-write failure leaves the inbox unprocessed — a redundant event on a
 	 * later run is strictly better than silently losing the payload.
 	 */
 	processedIds: string[];
+	/**
+	 * durable_work rows CLAIMED (pending -> processing) for this wakeup, each
+	 * with its own fence token. Caller acknowledges these (-> consumed) after
+	 * the same persistence point that gates `processedIds`. Empty when the
+	 * durable store held no pending intake rows for the thread.
+	 */
+	durableClaims: DurableWakeupClaim[];
+}
+
+/**
+ * A merged intake entry drawn from either store, carrying the fields the
+ * envelope renderer needs plus a discriminant so the caller can split the
+ * folded set back into relay ids to mark and durable claims to acknowledge.
+ */
+interface MergedIntakeEntry {
+	received_at: string;
+	kind: string;
+	source_site_id: string;
+	payload: string;
+	/** Relay-side row id, present for relay rows and for a relay twin of a durable row. */
+	relayId: string | null;
+	/** Durable row id, present only for a durable row. */
+	durableId: string | null;
 }
 
 const DEFAULT_FALLBACK = "Execute scheduled task.";
@@ -71,11 +113,14 @@ function inlineWebhookEnvelopeBody(rawPayload: string): string {
 }
 
 /**
- * Builds wakeup content for an event task, folding in any pending
- * relay_inbox envelopes for the task's thread (the path used by the
- * webhook intake pipeline in packages/web/src/server/webhook-handler.ts,
- * which writes envelopes keyed by `ref_id = webhook.thread_id` and
- * emits a `connector:event` to nudge the scheduler).
+ * Builds wakeup content for an event task, folding in pending passive-intake
+ * rows for the task's thread from BOTH durable stores: the legacy `relay_inbox`
+ * (webhook intake pipeline in packages/web/src/server/webhook-handler.ts and
+ * the connector/RSS pollers, which write envelopes keyed by
+ * `ref_id = thread_id` and emit a `connector:event`) and the new `durable_work`
+ * intake rows (4C-1). This is slice 4C-2: producers still write only to
+ * relay_inbox today, but the fold reads the union so 4C-3 can flip producers to
+ * durable_work without a scheduler change.
  *
  * Without this helper, scheduler.ts falls back to
  * `task.payload ?? "Execute scheduled task."`, which for webhook-
@@ -88,41 +133,123 @@ function inlineWebhookEnvelopeBody(rawPayload: string): string {
  * inbox — they have their own wakeup paths and shouldn't be hijacked
  * by stray intake entries that happen to share a thread_id.
  *
- * The inbox query filters on `kind="webhook_intake"` (a passive relay
- * kind owned by this consumer). Without the kind filter, stray rows
- * of other intake-shaped kinds sharing a `ref_id` could be opaquely
- * folded into the wakeup as if they were webhook envelopes — the
+ * Both reads scope to the passive intake kinds (webhook_intake,
+ * connector_intake, rss_intake) owned by this consumer. Without the kind
+ * filter, stray rows of other intake-shaped kinds sharing a `ref_id` could be
+ * opaquely folded into the wakeup as if they were event envelopes — the
  * payload schemas are not interchangeable.
+ *
+ * TWIN DEDUPE: during the 4C-3 producer flip a single event can momentarily
+ * exist in both stores under the same `(kind, idempotency_key)`. Such twins
+ * fold ONCE, preferring the durable row; the relay twin's id still enters the
+ * mark-processed set so it can never re-fold on a later wakeup.
+ *
+ * The claim is taken here (pending -> processing, one fresh token per row) so
+ * that folding and ownership are a single decision. The caller acknowledges
+ * (-> consumed) only after the wakeup messages persist; a mid-write failure
+ * leaves the rows `processing` for boot recovery to reset.
  */
-export function buildEventWakeupContent(db: Database, task: Task): EventWakeupContent {
+export function buildEventWakeupContent(
+	db: Database,
+	task: Task,
+	targetSiteId: string,
+): EventWakeupContent {
 	const fallback = task.payload ?? DEFAULT_FALLBACK;
 
 	if (task.type !== "event" || !task.thread_id) {
-		return { content: fallback, processedIds: [] };
+		return { content: fallback, processedIds: [], durableClaims: [] };
+	}
+	const threadId = task.thread_id;
+
+	// Legacy relay_inbox passive rows for this thread, across the three passive
+	// intake kinds. Reading each kind explicitly (rather than dropping the kind
+	// filter) keeps a stray platform-MCP `intake` row — whose payload schema is
+	// entirely different — from being folded as if it were an event envelope.
+	const relayRows = PASSIVE_INTAKE_KINDS.flatMap((kind) =>
+		readUnprocessedInboxByRefId(db, threadId, kind),
+	);
+
+	// Pending durable_work intake rows for this thread (4C-1 reader; already
+	// scoped to the passive intake kinds and ordered by received/created time).
+	const durableRows = listPendingIntakeDurableWorkForRef(db, threadId);
+
+	// TWIN DEDUPE: index durable rows by (kind, idempotency_key). A relay row
+	// whose key matches a durable row is a twin — we fold the durable copy and
+	// still mark the relay twin processed so it never re-folds.
+	const durableByKey = new Map<string, DurableWorkRow>();
+	for (const row of durableRows) {
+		durableByKey.set(`${row.kind}\u0000${row.idempotency_key}`, row);
 	}
 
-	// Three passive intake kinds fold into the wakeup: `webhook_intake` (raw HTTP
-	// envelopes from /webhook/:name), `connector_intake` (platform push-event
-	// batches from deliverBatch, e.g. Discord), and `rss_intake` (polled feed
-	// items from the leader-gated RSS poller). All are owned by this wakeup
-	// path, not the relay-processor. Reading each kind explicitly (rather than
-	// dropping the kind filter) keeps a stray platform-MCP `intake` row — whose
-	// payload schema is entirely different — from being folded as if it were an
-	// event envelope. Merge and order by received_at so multiple deliveries
-	// across kinds interleave oldest-first, matching single-kind behavior.
-	const entries = PASSIVE_INTAKE_KINDS.flatMap((kind) =>
-		readUnprocessedInboxByRefId(db, task.thread_id as string, kind),
-	).sort((a, b) => (a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0));
-	if (entries.length === 0) {
-		return { content: fallback, processedIds: [] };
+	const merged: MergedIntakeEntry[] = [];
+	const relayTwinIds: string[] = [];
+	for (const row of relayRows) {
+		const twin = durableByKey.get(`${row.kind}\u0000${row.idempotency_key}`);
+		if (twin) {
+			// The durable copy folds; the relay twin is still drained so it can
+			// never re-fold on a later wakeup.
+			relayTwinIds.push(row.id);
+			continue;
+		}
+		merged.push({
+			received_at: row.received_at,
+			kind: row.kind,
+			source_site_id: row.source_site_id,
+			payload: row.payload,
+			relayId: row.id,
+			durableId: null,
+		});
+	}
+	for (const row of durableRows) {
+		merged.push({
+			// received_at is nullable on durable_work; fall back to created_at so
+			// ordering stays total, matching the repository reader's COALESCE.
+			received_at: row.received_at ?? row.created_at,
+			kind: row.kind,
+			source_site_id: row.source_site ?? "",
+			payload: row.payload,
+			relayId: null,
+			durableId: row.id,
+		});
+	}
+
+	if (merged.length === 0) {
+		return { content: fallback, processedIds: [], durableClaims: [] };
+	}
+
+	// Order the union oldest-first by received time across both stores, so
+	// multiple deliveries interleave chronologically regardless of which store
+	// they landed in.
+	merged.sort((a, b) =>
+		a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0,
+	);
+
+	// Claim the durable rows we're about to fold (pending -> processing) under a
+	// fresh per-row token. Ordering is preserved: we already have the rows; the
+	// claim only stamps ownership. A row that lost its pending state between the
+	// list and the claim is dropped from the fold so we never present an event
+	// we can't acknowledge.
+	const durableIdsToClaim = merged
+		.map((entry) => entry.durableId)
+		.filter((id): id is string => id !== null);
+	const claimedRows = claimDurableWorkByIds(db, durableIdsToClaim, targetSiteId);
+	const claimTokenById = new Map(claimedRows.map((row) => [row.id, row.claim_token as string]));
+	const folded = merged.filter(
+		(entry) => entry.durableId === null || claimTokenById.has(entry.durableId),
+	);
+
+	if (folded.length === 0) {
+		// Every durable candidate slipped away and there were no relay rows; the
+		// relay twins (if any) still need draining.
+		return { content: fallback, processedIds: relayTwinIds, durableClaims: [] };
 	}
 
 	const triggerSpec = task.trigger_spec || "(unspecified)";
 
 	// Wrap the folded envelopes in a dedicated connector-specific XML envelope:
 	// a `<connector-events>` parent carrying the shared trigger + event count,
-	// with each inbox entry as its own `<event>` node. Per-event attributes are
-	// drawn straight from the immutable relay_inbox row (received time, relay
+	// with each intake entry as its own `<event>` node. Per-event attributes are
+	// drawn straight from the immutable intake row (received time, relay/durable
 	// kind, originating site), so the agent can reason over provenance without
 	// re-deriving it. This mirrors the structural shape of the per-user-message
 	// `<user-message>` envelope and the volatile-context `<volatile-context>`
@@ -133,7 +260,7 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 	// it's the #177-inlined webhook payload (typically JSON), meant to read
 	// directly, and escaping it would resurrect the double-escape noise #177
 	// removed. The body is a function of the row, so the wakeup stays stable.
-	const eventNodes = entries
+	const eventNodes = folded
 		.map((entry, i) => {
 			const attrs = [
 				`index="${i + 1}"`,
@@ -145,12 +272,26 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 		})
 		.join("\n");
 
-	const envelope = `<connector-events trigger="${escapeXmlAttr(triggerSpec)}" count="${entries.length}">\n${eventNodes}\n</connector-events>`;
+	const envelope = `<connector-events trigger="${escapeXmlAttr(triggerSpec)}" count="${folded.length}">\n${eventNodes}\n</connector-events>`;
 
 	const standing = task.payload ? `\n\nStanding task payload:\n${task.payload}` : "";
 
+	// Relay ids to mark processed: the relay rows we folded directly PLUS the
+	// relay twins we skipped in favor of their durable copy.
+	const processedIds = [
+		...folded.map((entry) => entry.relayId).filter((id): id is string => id !== null),
+		...relayTwinIds,
+	];
+	const durableClaims: DurableWakeupClaim[] = folded
+		.filter((entry) => entry.durableId !== null)
+		.map((entry) => ({
+			id: entry.durableId as string,
+			token: claimTokenById.get(entry.durableId as string) as string,
+		}));
+
 	return {
 		content: `${envelope}${standing}`,
-		processedIds: entries.map((e) => e.id),
+		processedIds,
+		durableClaims,
 	};
 }

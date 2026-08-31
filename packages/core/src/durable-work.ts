@@ -165,6 +165,59 @@ export function claimLocalDurableWork(
 	});
 }
 
+/**
+ * Claim a specific set of pending rows by id under one BEGIN IMMEDIATE, minting
+ * a fresh per-row token so each claimed generation is independently fenced —
+ * the same ownership discipline as {@link claimLocalDurableWork}, but for a
+ * caller that has already selected which rows to take (the scheduler's
+ * event-wakeup fold, which claims exactly the durable intake rows it folds).
+ * Ids that are missing or no longer pending are silently skipped; only rows
+ * still `pending` transition to `processing` and appear in the result.
+ */
+export function claimDurableWorkByIds(
+	db: Database,
+	ids: readonly string[],
+	targetSiteId: string,
+): DurableWorkRow[] {
+	if (ids.length === 0) return [];
+	return instrument("claim-by-ids", "any", () => {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			const placeholders = ids.map(() => "?").join(", ");
+			const pending = db
+				.query(
+					`SELECT * FROM durable_work WHERE target_site_id = ? AND claim_state = 'pending' AND id IN (${placeholders})`,
+				)
+				.all(targetSiteId, ...ids) as DurableWorkRow[];
+			const now = new Date().toISOString();
+			const claimed: DurableWorkRow[] = [];
+			for (const row of pending) {
+				const token = randomUUID();
+				db.run(
+					`UPDATE durable_work SET claim_state = 'processing', claim_token = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE id = ? AND claim_state = 'pending'`,
+					[token, now, row.id],
+				);
+				claimed.push({
+					...row,
+					claim_state: "processing",
+					claim_token: token,
+					claimed_at: now,
+					attempt_count: row.attempt_count + 1,
+				});
+			}
+			db.exec("COMMIT");
+			return claimed;
+		} catch (error) {
+			try {
+				db.exec("ROLLBACK");
+			} catch {
+				/* original error wins */
+			}
+			throw error;
+		}
+	});
+}
+
 /** A consumer may retire only its active claim generation. */
 export function acknowledgeDurableWork(db: Database, id: string, claimToken: string): boolean {
 	return instrument(

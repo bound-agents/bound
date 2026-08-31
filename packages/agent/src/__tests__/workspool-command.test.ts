@@ -5,6 +5,7 @@ import {
 	applySchema,
 	claimLocalDurableWork,
 	insertDurableWork,
+	listPendingIntakeDurableWorkForRef,
 } from "@bound/core";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
 import { createWorkspoolCommand } from "../workspool-command";
@@ -84,5 +85,44 @@ describe("workspool command", () => {
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain("not found or already consumed");
 		expect(claimLocalDurableWork(db, "local")).toBeNull();
+	});
+	it("redrives durable intake into the scheduler's pending fold order", async () => {
+		const db = new Database(":memory:");
+		applySchema(db);
+		insertDurableWork(db, {
+			id: "intake-later",
+			target_site_id: "local",
+			kind: "webhook_intake",
+			payload: "{}",
+			idempotency_key: "intake-later",
+			ref_id: "thread-intake",
+			source_site: "hub",
+			received_at: "2026-01-03T00:00:00.000Z",
+		});
+		insertDurableWork(db, {
+			id: "intake-dead",
+			target_site_id: "local",
+			kind: "webhook_intake",
+			payload: "{}",
+			idempotency_key: "intake-dead",
+			ref_id: "thread-intake",
+			source_site: "hub",
+			received_at: "2026-01-02T00:00:00.000Z",
+		});
+		db.run(
+			"UPDATE durable_work SET claim_state = 'dead_letter', dead_lettered_at = ? WHERE id = 'intake-dead'",
+			["2026-01-04T00:00:00.000Z"],
+		);
+
+		const result = await createWorkspoolCommand().handler(
+			{ action: "redrive", id: "intake-dead" },
+			context(db),
+		);
+
+		expect(result.exitCode).toBe(0);
+		expect(listPendingIntakeDurableWorkForRef(db, "thread-intake").map((row) => row.id)).toEqual([
+			"intake-dead",
+			"intake-later",
+		]);
 	});
 });

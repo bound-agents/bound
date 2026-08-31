@@ -1,6 +1,9 @@
 import type { Database } from "bun:sqlite";
 import {
+	deadLetterDurableWork,
+	findStalePendingIntakeDurableWork,
 	findStaleUnprocessedIntake,
+	listPendingIntakeDurableWork,
 	markProcessed,
 	readUnprocessedInboxByRefId,
 } from "@bound/core";
@@ -102,33 +105,55 @@ export function reconcileStaleWebhookIntake(
 	// handle reconciler still detects cancelled/deleted backing tasks; this
 	// sweep repairs only lost local event-bus wakeups for live bindings.
 	for (const sweep of PASSIVE_INTAKE_REGISTRY) {
-		const groups = findStaleUnprocessedIntake(db, sweep.kind, staleBeforeIso);
+		const staleGroups = new Map<string, { count: number; oldestReceivedAt: string }>();
+		for (const group of [
+			...findStaleUnprocessedIntake(db, sweep.kind, staleBeforeIso),
+			...findStalePendingIntakeDurableWork(db, sweep.kind, staleBeforeIso),
+		]) {
+			const existing = staleGroups.get(group.ref_id);
+			staleGroups.set(group.ref_id, {
+				count: (existing?.count ?? 0) + group.count,
+				oldestReceivedAt:
+					existing && existing.oldestReceivedAt < group.oldest_received_at
+						? existing.oldestReceivedAt
+						: group.oldest_received_at,
+			});
+		}
 
-		for (const group of groups) {
-			const liveBinding = sweep.findBinding(db, group.ref_id);
+		for (const [refId, group] of staleGroups) {
+			const liveBinding = sweep.findBinding(db, refId);
 
 			if (!liveBinding) {
-				// Orphaned: no handler can ever drain this. Dead-letter every unprocessed
-				// intake row for the ref_id (the whole binding is gone, not just the stale
-				// rows), which removes it from future sweeps and stops the advisory churn.
-				const orphaned = readUnprocessedInboxByRefId(db, group.ref_id, sweep.kind);
-				if (orphaned.length > 0) {
+				// An orphan cannot drain either store. Preserve the legacy relay disposition,
+				// but retain durable rows as workspool-redrivable dead letters.
+				const relayOrphans = readUnprocessedInboxByRefId(db, refId, sweep.kind);
+				if (relayOrphans.length > 0)
 					markProcessed(
 						db,
-						orphaned.map((row) => row.id),
+						relayOrphans.map((row) => row.id),
 					);
-					deadLettered += orphaned.length;
+				const durableOrphans = listPendingIntakeDurableWork(db, sweep.kind, refId);
+				for (const row of durableOrphans) {
+					deadLetterDurableWork(
+						db,
+						row.id,
+						`orphaned ${sweep.noun} intake binding`,
+						now.toISOString(),
+					);
+				}
+				const orphanedCount = relayOrphans.length + durableOrphans.length;
+				if (orphanedCount > 0) {
+					deadLettered += orphanedCount;
 					logger?.warn(`[relay] Dead-lettered orphaned ${sweep.noun} intake (no live binding)`, {
-						refId: group.ref_id,
-						rows: orphaned.length,
+						refId,
+						rows: orphanedCount,
 					});
 				}
 				continue;
 			}
 
-			// Recoverable: durable intake is the source of truth, not the original
-			// in-memory wakeup. Re-emit locally; scheduler claims and inbox processing
-			// make repeated nudges harmless.
+			// One nudge per binding. `batch_size` is the summed stale backlog across both
+			// stores, so the scheduler receives the same cardinality through the 4C bridge.
 			options.eventBus?.emit("connector:event", {
 				trigger_key: sweep.triggerKey(liveBinding),
 				handle_id: liveBinding.id,
@@ -140,29 +165,25 @@ export function reconcileStaleWebhookIntake(
 				continue;
 			}
 
-			// No event bus is only possible in a diagnostic caller; preserve the
-			// former advisory instead of silently losing visibility.
-			const title = sweep.titleFor(group.ref_id);
+			const title = sweep.titleFor(refId);
 			if (hasAdvisoryWithTitle(db, title)) continue;
-
-			const ageMs = now.getTime() - new Date(group.oldest_received_at).getTime();
+			const ageMs = now.getTime() - new Date(group.oldestReceivedAt).getTime();
 			const ageMinutes = Math.floor(ageMs / 60000);
-
 			createAdvisory(
 				db,
 				{
 					type: "general",
 					status: "proposed",
 					title,
-					detail: `${group.count} ${sweep.noun} event(s) for handler thread ${group.ref_id} (${sweep.noun} '${liveBinding.name}') have sat unprocessed in relay_inbox for ~${ageMinutes}m (oldest received ${group.oldest_received_at}). The ${sweep.noun} binding is live but its event handler is dark — cancelled, evicted-to-failed, or declined by an incapable host. The events are durable (7-day TTL) and reviving the handler drains the backlog.`,
-					action: `Revive the event handler for ${sweep.noun} '${liveBinding.name}' (thread ${group.ref_id}) — recreate its pending event task. Once a pending handler exists, the queued events drain on the next wakeup; no events are lost. (If the ${sweep.noun} itself should be retired, deregister it — that dead-letters the intake instead.)`,
+					detail: `${group.count} ${sweep.noun} event(s) for handler thread ${refId} (${sweep.noun} '${liveBinding.name}') have sat unprocessed in durable intake for ~${ageMinutes}m (oldest received ${group.oldestReceivedAt}). The ${sweep.noun} binding is live but its event handler is dark — cancelled, evicted-to-failed, or declined by an incapable host. The events are durable (7-day TTL) and reviving the handler drains the backlog.`,
+					action: `Revive the event handler for ${sweep.noun} '${liveBinding.name}' (thread ${refId}) — recreate its pending event task. Once a pending handler exists, the queued events drain on the next wakeup; no events are lost. (If the ${sweep.noun} itself should be retired, deregister it — that dead-letters the intake instead.)`,
 					impact: `Inbound ${sweep.noun} events for this live ${sweep.noun} go unanswered until the handler is revived.`,
 					evidence: JSON.stringify({
-						ref_id: group.ref_id,
+						ref_id: refId,
 						[sweep.noun]: liveBinding.name,
-						kind: group.kind,
+						kind: sweep.kind,
 						count: group.count,
-						oldest_received_at: group.oldest_received_at,
+						oldest_received_at: group.oldestReceivedAt,
 						stale_after_ms: staleAfterMs,
 					}),
 				},

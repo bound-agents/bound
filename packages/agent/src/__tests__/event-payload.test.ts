@@ -1,7 +1,7 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, insertInbox } from "@bound/core";
+import { applySchema, getDurableWork, insertDurableWork, insertInbox } from "@bound/core";
 import type { Task } from "@bound/shared";
 import { buildEventWakeupContent } from "../event-payload";
 
@@ -83,23 +83,69 @@ describe("buildEventWakeupContent", () => {
 		return id;
 	}
 
+	function insertDurableIntake(
+		threadId: string,
+		body: string,
+		receivedAt: string,
+		kind: "webhook_intake" | "connector_intake" | "rss_intake" = "webhook_intake",
+		idempotencyKey: string = randomUUID(),
+	): string {
+		const id = randomUUID();
+		insertDurableWork(db, {
+			id,
+			target_site_id: siteId,
+			kind,
+			payload: JSON.stringify(body),
+			idempotency_key: idempotencyKey,
+			ref_id: threadId,
+			source_site: siteId,
+			received_at: receivedAt,
+		});
+		return id;
+	}
+
+	// insertEnvelope with an explicit idempotency_key so twin dedupe can pair a
+	// relay row with a durable row on (kind, idempotency_key).
+	function insertEnvelopeKeyed(
+		threadId: string,
+		body: string,
+		receivedAt: string,
+		kind: "webhook_intake" | "connector_intake" | "rss_intake",
+		idempotencyKey: string,
+	): string {
+		const id = randomUUID();
+		insertInbox(db, {
+			id,
+			source_site_id: siteId,
+			kind,
+			ref_id: threadId,
+			idempotency_key: idempotencyKey,
+			stream_id: null,
+			payload: body,
+			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+			received_at: receivedAt,
+			processed: 0,
+		});
+		return id;
+	}
+
 	test("returns default fallback when task has no thread_id", () => {
 		const task = makeTask({ thread_id: null });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 		expect(result.content).toBe("Execute scheduled task.");
 		expect(result.processedIds).toEqual([]);
 	});
 
 	test("returns task.payload when task has no inbox entries", () => {
 		const task = makeTask({ payload: "Standing instruction" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 		expect(result.content).toBe("Standing instruction");
 		expect(result.processedIds).toEqual([]);
 	});
 
 	test("returns default fallback when task has no payload and no inbox entries", () => {
 		const task = makeTask({ payload: null });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 		expect(result.content).toBe("Execute scheduled task.");
 		expect(result.processedIds).toEqual([]);
 	});
@@ -116,7 +162,7 @@ describe("buildEventWakeupContent", () => {
 		const inboxId = insertEnvelope(threadId, envelopeJson, "2026-05-18T21:02:00Z");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		// The agent must see the trigger spec + delivery info + body. Body
 		// is a JSON string nested inside the envelope JSON, so its quotes
@@ -138,7 +184,7 @@ describe("buildEventWakeupContent", () => {
 		const id3 = insertEnvelope(threadId, "envelope-C", "2026-05-18T21:02:00Z");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("envelope-A");
 		expect(result.content).toContain("envelope-B");
@@ -155,7 +201,7 @@ describe("buildEventWakeupContent", () => {
 		const newId = insertEnvelope(threadId, "fresh-envelope", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("fresh-envelope");
 		expect(result.content).not.toContain("stale-envelope");
@@ -169,7 +215,7 @@ describe("buildEventWakeupContent", () => {
 		const myId = insertEnvelope(myThreadId, "my-envelope", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: myThreadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("my-envelope");
 		expect(result.content).not.toContain("wrong-thread-envelope");
@@ -181,7 +227,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "shouldnt-show", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ type: "cron", thread_id: threadId, payload: "cron payload" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toBe("cron payload");
 		expect(result.processedIds).toEqual([]);
@@ -192,7 +238,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "envelope-body", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId, payload: "Standing context" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("envelope-body");
 		expect(result.content).toContain("Standing context");
@@ -204,7 +250,7 @@ describe("buildEventWakeupContent", () => {
 		const id2 = insertEnvelope(threadId, "body-two", "2026-05-18T21:01:00Z");
 
 		const task = makeTask({ thread_id: threadId, trigger_spec: "connector:github" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		// Parent envelope carries the trigger + event count.
 		expect(result.content).toContain('<connector-events trigger="connector:github" count="2">');
@@ -230,7 +276,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "solo-body", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId, trigger_spec: "connector:stripe" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain('<connector-events trigger="connector:stripe" count="1">');
 		expect(result.content).toMatch(/<event index="1" received="2026-05-18T21:00:00Z"/);
@@ -243,7 +289,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "body", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId, trigger_spec: 'weird"&<spec>' });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		// The raw, unescaped trigger must never reach the attribute.
 		expect(result.content).not.toContain('trigger="weird"&<spec>"');
@@ -258,7 +304,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "envelope-body", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId, payload: "Standing context" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("Standing context");
 		// Standing payload sits after the closed envelope, not nested in it.
@@ -277,7 +323,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "real-webhook-payload", "2026-05-18T21:00:00Z", "webhook_intake");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("real-webhook-payload");
 		expect(result.content).not.toContain("platform-mcp-payload");
@@ -311,7 +357,7 @@ describe("buildEventWakeupContent", () => {
 			// The bare static payload that used to be all the model saw.
 			payload: JSON.stringify({ handle_id: "9380eb6c", server_name: "discord" }),
 		});
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		// The triggering message is now in the wakeup itself.
 		expect(result.content).toContain("testing receive");
@@ -337,7 +383,7 @@ describe("buildEventWakeupContent", () => {
 		);
 
 		const task = makeTask({ thread_id: threadId, trigger_spec: "connector:event:h1" });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("connector-body");
 		expect(result.content).toContain("webhook-body");
@@ -364,7 +410,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, envelope, "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		// The double-escaped form must NOT survive into the wakeup.
 		expect(result.content).not.toContain('\\"action\\"');
@@ -386,7 +432,7 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, envelope, "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("name=foo&value=bar");
 	});
@@ -396,8 +442,115 @@ describe("buildEventWakeupContent", () => {
 		insertEnvelope(threadId, "not json at all", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task);
+		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toContain("not json at all");
+	});
+
+	test("folds durable_work intake rows alongside relay rows, ordered oldest-first across stores", () => {
+		const threadId = randomUUID();
+		// Interleave relay and durable rows by received time.
+		insertEnvelope(threadId, "relay-oldest", "2026-08-31T00:00:00Z", "webhook_intake");
+		insertDurableIntake(threadId, "durable-middle", "2026-08-31T00:01:00Z", "connector_intake");
+		insertEnvelope(threadId, "relay-newest", "2026-08-31T00:02:00Z", "webhook_intake");
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task, siteId);
+
+		expect(result.content).toContain("relay-oldest");
+		expect(result.content).toContain("durable-middle");
+		expect(result.content).toContain("relay-newest");
+		expect(result.content.indexOf("relay-oldest")).toBeLessThan(
+			result.content.indexOf("durable-middle"),
+		);
+		expect(result.content.indexOf("durable-middle")).toBeLessThan(
+			result.content.indexOf("relay-newest"),
+		);
+		expect((result.content.match(/<event /g) || []).length).toBe(3);
+		// Two relay ids to mark, one durable claim to acknowledge.
+		expect(result.processedIds.length).toBe(2);
+		expect(result.durableClaims.length).toBe(1);
+		// The claimed durable row is now processing under the returned token.
+		const claimed = getDurableWork(db, result.durableClaims[0].id);
+		expect(claimed?.claim_state).toBe("processing");
+		expect(claimed?.claim_token).toBe(result.durableClaims[0].token);
+	});
+
+	test("folds only durable rows when relay store is empty", () => {
+		const threadId = randomUUID();
+		const durableId = insertDurableIntake(
+			threadId,
+			"durable-only-body",
+			"2026-08-31T00:00:00Z",
+			"rss_intake",
+		);
+
+		const task = makeTask({ thread_id: threadId, trigger_spec: "rss:example" });
+		const result = buildEventWakeupContent(db, task, siteId);
+
+		expect(result.content).toContain("durable-only-body");
+		expect(result.content).toContain('<connector-events trigger="rss:example" count="1">');
+		expect(result.processedIds).toEqual([]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([durableId]);
+	});
+
+	test("orders durable rows by received_at, falling back to created_at when null", () => {
+		const threadId = randomUUID();
+		insertDurableIntake(threadId, "durable-late", "2026-08-31T00:02:00Z", "webhook_intake");
+		// A durable row with no received_at falls back to created_at, which we pin
+		// earlier than the other rows so it sorts first.
+		const fallbackId = randomUUID();
+		insertDurableWork(db, {
+			id: fallbackId,
+			target_site_id: siteId,
+			kind: "webhook_intake",
+			payload: JSON.stringify("durable-fallback"),
+			idempotency_key: randomUUID(),
+			ref_id: threadId,
+			source_site: siteId,
+		});
+		db.run("UPDATE durable_work SET created_at = ? WHERE id = ?", [
+			"2026-08-31T00:00:00.000Z",
+			fallbackId,
+		]);
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task, siteId);
+
+		expect(result.content.indexOf("durable-fallback")).toBeLessThan(
+			result.content.indexOf("durable-late"),
+		);
+	});
+
+	test("twin dedupe: same (kind, idempotency_key) in both stores folds once, durable preferred", () => {
+		const threadId = randomUUID();
+		const sharedKey = "delivery-abc-123";
+		// A relay row and a durable row for the SAME event (identical kind + key).
+		const relayTwinId = insertEnvelopeKeyed(
+			threadId,
+			"relay-twin-body",
+			"2026-08-31T00:00:00Z",
+			"webhook_intake",
+			sharedKey,
+		);
+		const durableTwinId = insertDurableIntake(
+			threadId,
+			"durable-twin-body",
+			"2026-08-31T00:00:00Z",
+			"webhook_intake",
+			sharedKey,
+		);
+
+		const task = makeTask({ thread_id: threadId });
+		const result = buildEventWakeupContent(db, task, siteId);
+
+		// The event folds exactly ONCE, and it's the durable copy.
+		expect((result.content.match(/<event /g) || []).length).toBe(1);
+		expect(result.content).toContain("durable-twin-body");
+		expect(result.content).not.toContain("relay-twin-body");
+		// The durable row is the folded+claimed one.
+		expect(result.durableClaims.map((c) => c.id)).toEqual([durableTwinId]);
+		// The relay twin is still marked processed so it can never re-fold.
+		expect(result.processedIds).toContain(relayTwinId);
 	});
 });
