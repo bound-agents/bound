@@ -110,6 +110,15 @@ export type {
 } from "./relay-router";
 export { resolveHubSiteId, resolveTopologyRole } from "./topology";
 export type { TopologyRole } from "./topology";
+export {
+	runRelayRetirementPass,
+	drainLegacyRelayOutbox,
+	maybeDropLegacyRelayTables,
+	allLivePeersAdvertiseSpool,
+	legacyDrainIdempotencyKey,
+	DROP_LIVENESS_HORIZON_MS,
+} from "./relay-retirement";
+export type { RelayRetirementContext, DrainOutcome } from "./relay-retirement";
 
 // Export native tools
 export { createAgentTools } from "./tools/index";

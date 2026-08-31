@@ -95,7 +95,12 @@ export {
 	type StaleIntakeGroup,
 	PayloadTooLargeError,
 	setRelayOutboxEventBus,
+	LEGACY_RELAY_DROPPED_FLAG,
+	hasDroppedLegacyRelayTables,
+	legacyRelayTablesEmpty,
+	dropLegacyRelayTables,
 } from "./relay";
+export { countPendingPeerTargetedDurableWork } from "./repositories/durable-work";
 export {
 	enqueueMessage,
 	setDurableDispatchEnqueueEnabledForTesting,

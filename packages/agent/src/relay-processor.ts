@@ -11,6 +11,7 @@ import {
 	deadLetterClaimedDurableWork,
 	enqueueClientToolCall,
 	enqueueMessage,
+	hasDroppedLegacyRelayTables,
 	insertInbox,
 	markDelivered,
 	markProcessed,
@@ -84,6 +85,7 @@ import {
 	InferenceRequestPartAssembler,
 } from "./inference-request-parts.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
+import { runRelayRetirementPass } from "./relay-retirement.js";
 import {
 	resolveTopologyRole,
 	routeRelayRequest,
@@ -302,10 +304,15 @@ export class RelayProcessor {
 
 		const prune$ = pruneInterval$.pipe(
 			tap(() => {
-				try {
-					pruneRelayTables(this.db);
-				} catch (error) {
-					this.logger.error("Relay table prune failed", { error });
+				// Post-drop (slice 4E): relay_outbox/relay_inbox are gone — pruneRelayTables
+				// would throw "no such table" every 60s and log-spam forever. Skip entirely
+				// once retired; there is nothing left to prune (the spool self-prunes).
+				if (!hasDroppedLegacyRelayTables(this.db)) {
+					try {
+						pruneRelayTables(this.db);
+					} catch (error) {
+						this.logger.error("Relay table prune failed", { error });
+					}
 				}
 				// Catch-of-last-resort for the webhook intake pipeline. Runs against
 				// the LOCAL relay_inbox (invariant #3), so it sees intake on the host
@@ -345,6 +352,25 @@ export class RelayProcessor {
 				} catch (error) {
 					this.logger.error("Dark connector handle reconcile failed", { error });
 				}
+				// Legacy-relay-table retirement (slice 4E). Piggybacks the 60s prune
+				// cadence: this seam already owns the relay lifecycle, has DB +
+				// transport-adjacent access, and runs AFTER pruneRelayTables so the
+				// gate observes truly-empty tables (processed/delivered rows pruned
+				// first). One idempotent pass drains this host's undelivered legacy
+				// outbox onto the spool where the target resolves durable, then runs
+				// the gated drop. topologyRole is derived from the loaded sync config
+				// (mirrors the router's per-hop capability gate for a spoke).
+				try {
+					runRelayRetirementPass({
+						db: this.db,
+						localSiteId: this.siteId,
+						topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
+						logger: this.logger,
+						eventBus: this.eventBus,
+					});
+				} catch (error) {
+					this.logger.error("Relay retirement pass failed", { error });
+				}
 			}),
 		);
 
@@ -357,6 +383,14 @@ export class RelayProcessor {
 	}
 
 	private async processPendingEntries(): Promise<void> {
+		// Post-drop (slice 4E): this host retired its legacy relay tables, so the
+		// loopback + legacy inbox scan below would touch dropped tables. Skip the
+		// entire legacy pass and process only durable work — spool-only, forward-fix
+		// posture (the plan's rollback text: no compatibility path after a drop).
+		if (hasDroppedLegacyRelayTables(this.db)) {
+			await this.processPendingDurableWork();
+			return;
+		}
 		// Local loopback: deliver self-targeted outbox entries in single-host mode.
 		// In single-host setups (no sync hub configured), relay_outbox entries targeting
 		// this host are never delivered via the sync relay phase. We handle them here:
@@ -848,6 +882,9 @@ export class RelayProcessor {
 		if (part.request_id !== entry.ref_id) throw new Error("Multipart request_id/ref_id mismatch");
 		if (this.completedInferenceParts.has(part.request_id)) return null;
 
+		// Post-drop (slice 4E): relay_inbox is gone — multipart inference rides the
+		// durable spool now, so a legacy assembly read would throw. Nothing to assemble.
+		if (hasDroppedLegacyRelayTables(this.db)) return null;
 		const rows = this.db
 			.query(
 				"SELECT * FROM relay_inbox WHERE kind = 'inference_part' AND ref_id = ? ORDER BY received_at ASC, id ASC",
@@ -1641,7 +1678,17 @@ export class RelayProcessor {
 			if (bestHost) return bestHost;
 		}
 
-		// Tier 4: Least-loaded fallback — host with fewest pending relay_outbox entries
+		// Tier 4: Least-loaded fallback — host with fewest pending relay_outbox entries.
+		// Post-drop (slice 4E): relay_outbox is gone — depth is uniformly zero, so the
+		// JOIN would throw. Fall back to the first live host without the load ranking.
+		if (hasDroppedLegacyRelayTables(this.db)) {
+			const anyHost = this.db
+				.query<{ site_id: string }, []>(
+					"SELECT site_id FROM hosts WHERE deleted = 0 ORDER BY site_id ASC LIMIT 1",
+				)
+				.get();
+			return anyHost?.site_id ?? null;
+		}
 		const loaded = this.db
 			.query<{ site_id: string; depth: number }, []>(
 				`SELECT h.site_id, COUNT(o.id) AS depth

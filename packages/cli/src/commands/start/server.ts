@@ -38,6 +38,7 @@ import {
 	findThreadModelHintById,
 	findThreadUserAndInterfaceById,
 	findUnresolvedBackgroundPlaceholder,
+	hasDroppedLegacyRelayTables,
 	hasPendingClientToolCalls,
 	insertRow,
 	markProcessed,
@@ -151,7 +152,10 @@ export function createRemotePlatformRequest(
 		const entry = { id: routed.id };
 
 		const deadline = Date.now() + 15_000;
-		while (Date.now() < deadline) {
+		// Post-drop (slice 4E): relay_inbox is gone — platform results arrive via the
+		// durable spool, so never poll the legacy table (it would throw).
+		const inboxDropped = hasDroppedLegacyRelayTables(deps.db);
+		while (!inboxDropped && Date.now() < deadline) {
 			const response = readInboxByRefId(deps.db, entry.id);
 			if (response) {
 				markProcessed(deps.db, [response.id]);

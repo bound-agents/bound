@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
 	acknowledgeDurableWork,
 	claimDurableWorkByIds,
+	hasDroppedLegacyRelayTables,
 	markProcessed,
 	readDurableResponseByRefId,
 	readInboxByRefId,
@@ -120,7 +121,10 @@ function readUnionResponse(
 	deps: RelayWaitDeps,
 	refId: string,
 ): { id: string; kind: string; payload: string; settle: () => void } | null {
-	const legacy = readInboxByRefId(deps.db, refId);
+	// Post-drop (slice 4E): this host retired relay_inbox, so skip the legacy
+	// read entirely (it would throw on the missing table) and resolve from the
+	// durable spool only. A capability flip already forced spool-only here.
+	const legacy = hasDroppedLegacyRelayTables(deps.db) ? null : readInboxByRefId(deps.db, refId);
 	if (legacy) {
 		return {
 			id: legacy.id,

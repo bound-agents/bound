@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
 	DURABLE_INTAKE_ENABLED,
+	hasDroppedLegacyRelayTables,
 	insertDurableWork,
 	insertInbox,
 	insertRow,
@@ -29,6 +30,8 @@ import {
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
 import { isSubscriptionRejected } from "./subscription-errors.js";
+
+const retiredLegacyIntakeWarnings = new WeakSet<Database>();
 
 const mcpLifecycle = counter("bound.platform.mcp.lifecycle", {
 	description: "Platform MCP connection and subscription lifecycle outcomes",
@@ -805,7 +808,18 @@ export class PlatformMcpRegistry {
 				const idempotencyKey = `connector_intake:${subscription.handleId}:${event.eventId}`;
 				const payload = JSON.stringify([event.data]);
 				const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-				if (DURABLE_INTAKE_ENABLED) {
+				const forceDurable = hasDroppedLegacyRelayTables(this.deps.db);
+				if (
+					forceDurable &&
+					!DURABLE_INTAKE_ENABLED &&
+					!retiredLegacyIntakeWarnings.has(this.deps.db)
+				) {
+					retiredLegacyIntakeWarnings.add(this.deps.db);
+					this.deps.logger.warn(
+						"Legacy relay intake is retired; forcing durable intake despite BOUND_DURABLE_INTAKE=0.",
+					);
+				}
+				if (DURABLE_INTAKE_ENABLED || forceDurable) {
 					insertDurableWork(this.deps.db, {
 						id,
 						target_site_id: this.deps.siteId,

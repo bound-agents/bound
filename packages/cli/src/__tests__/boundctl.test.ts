@@ -336,6 +336,29 @@ describe("boundctl commands", () => {
 			db2.close();
 		});
 
+		it("does not recreate relay_outbox after legacy relay retirement", async () => {
+			const { dropLegacyRelayTables, hasDroppedLegacyRelayTables } = await import("@bound/core");
+			const dataDir = join(tempDir, "data");
+			const db = new Database(dbPath);
+			expect(dropLegacyRelayTables(db, "test retirement")).toBe(true);
+			expect(hasDroppedLegacyRelayTables(db)).toBe(true);
+			db.close();
+
+			await runSetHub({ hostName: "new-hub-host", configDir: dataDir });
+
+			const verify = new Database(dbPath);
+			expect(hasDroppedLegacyRelayTables(verify)).toBe(true);
+			expect(
+				verify
+					.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'relay_outbox'")
+					.get(),
+			).toBeNull();
+			expect(
+				verify.query("SELECT value FROM cluster_config WHERE key = 'cluster_hub'").get(),
+			).toEqual({ value: "new-hub-host" });
+			verify.close();
+		});
+
 		it("AC4.5: proceeds with hub switch on drain timeout", async () => {
 			const dataDir = join(tempDir, "data");
 

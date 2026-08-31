@@ -104,7 +104,7 @@ These rules exist because violating them has historically caused real production
 
 1. [Change-log outbox pattern](docs/invariants.md#1-change-log-outbox-pattern) — all writes to synced tables go through `insertRow()` / `updateRow()` / `softDelete()`, never raw SQL.
 2. [Soft deletes only](docs/invariants.md#2-soft-deletes-only) — flip `deleted = 0|1` via `softDelete()`; never physically `DELETE` a synced row.
-3. [Relay tables are local-only](docs/invariants.md#3-relay-tables-are-local-only) — `relay_outbox` / `relay_inbox` / `relay_cycles` use dedicated CRUD, not the outbox.
+3. [Durable work and relay telemetry are local-only](docs/invariants.md#3-durable-work-and-relay-telemetry-are-local-only) — `durable_work` / `relay_cycles` use dedicated CRUD, not the outbox; legacy `relay_outbox` / `relay_inbox` are transitional and dropped per-host after the 4E gate.
 4. [Column-name validation](docs/invariants.md#4-column-name-validation) — any interpolated column name passes through `validateColumnName()`; values stay parameterized.
 5. [OCC filesystem](docs/invariants.md#5-occ-filesystem) — compare hash-to-hash, persist inside `BEGIN IMMEDIATE`, emit `file:changed` only after commit.
 6. [Events after commit](docs/invariants.md#6-events-after-commit) — `file:changed` / `changelog:written` fire after `COMMIT`, never mid-transaction.

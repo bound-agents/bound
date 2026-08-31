@@ -155,3 +155,17 @@ export function countPendingIntakeDurableWork(db: Database, refId: string): numb
 			.get(refId, ...PASSIVE_INTAKE_KINDS) as { count: number }
 	).count;
 }
+
+/**
+ * Count peer-targeted rows that must drain before a hub switch: pending rows and
+ * transferring rows whose sender copies remain durable until receiver acknowledgement.
+ */
+export function countPendingPeerTargetedDurableWork(db: Database, ownSiteId: string): number {
+	return (
+		db
+			.query(
+				"SELECT COUNT(*) AS count FROM durable_work WHERE target_site_id != ? AND claim_state IN ('pending', 'transferring')",
+			)
+			.get(ownSiteId) as { count: number }
+	).count;
+}

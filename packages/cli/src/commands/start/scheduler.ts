@@ -17,6 +17,7 @@ import { resolveTopologyRole, routeRelayRequest, serializeRelayTraceCarrier } fr
 import {
 	type AppContext,
 	findFreshPlatformHost,
+	hasDroppedLegacyRelayTables,
 	markProcessed,
 	readInboxByRefId,
 } from "@bound/core";
@@ -134,7 +135,10 @@ export function initScheduler(
 
 					// Poll for response (synchronous context — tool execute awaits result)
 					const deadline = Date.now() + 15_000;
-					while (Date.now() < deadline) {
+					// Post-drop (slice 4E): relay_inbox is gone — remote results arrive via
+					// the durable spool, so never poll the legacy table (it would throw).
+					const inboxDropped = hasDroppedLegacyRelayTables(appContext.db);
+					while (!inboxDropped && Date.now() < deadline) {
 						const response = readInboxByRefId(appContext.db, entry.id);
 						if (response) {
 							markProcessed(appContext.db, [response.id]);

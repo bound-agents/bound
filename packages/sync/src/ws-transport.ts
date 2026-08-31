@@ -19,6 +19,7 @@ import {
 	getBackfillablePksSorted,
 	getCachedRowStateHashes,
 	getPkColumn as getPkColumnTyped,
+	hasDroppedLegacyRelayTables,
 	insertInbox,
 	markDelivered,
 	markDeliveredForTarget,
@@ -885,7 +886,15 @@ export class WsTransport {
 					// hub-originated entries are already in our own relay_outbox (we just
 					// wrote them). Without this guard the check always finds the entry we
 					// just inserted and silently skips routing.
-					if (entry.idempotency_key && sourceSiteId !== this.config.siteId) {
+					//
+					// Post-drop (slice 4E): relay_outbox is gone on a retired hub, so the
+					// dedup read would throw. Skip it — a retired hub routes everything
+					// durable, where the spool's (kind, idempotency_key) fence dedupes.
+					if (
+						entry.idempotency_key &&
+						sourceSiteId !== this.config.siteId &&
+						!hasDroppedLegacyRelayTables(this.config.db)
+					) {
 						const existing = this.config.db
 							.query("SELECT id FROM relay_outbox WHERE idempotency_key = ? AND target_site_id = ?")
 							.get(entry.idempotency_key, entry.target_site_id) as { id: string } | null;
@@ -948,6 +957,21 @@ export class WsTransport {
 
 					// Hub-local: insert into relay_inbox for RelayProcessor
 					if (entry.target_site_id === this.config.siteId) {
+						// Post-drop (slice 4E): this host retired relay_inbox. A legacy
+						// envelope bound for a dropped host can only arrive from a peer with
+						// a STALE hosts snapshot (an advertising peer sends spool-only). We
+						// cannot insert into the missing table, so REFUSE gracefully: do NOT
+						// ack (leave the id out of deliveredIds). The sender's existing
+						// retry/redelivery keeps the row until it re-reads our synced
+						// advertisement and re-sends over the spool. The failure mode is a
+						// bounded stall, never data loss (the sender's copy survives).
+						if (hasDroppedLegacyRelayTables(this.config.db)) {
+							this.config.logger?.warn(
+								"WsTransport refusing legacy inbound on a dropped host (stale-peer envelope); sender will retry over spool",
+								{ sourceSiteId, kind: entry.kind },
+							);
+							continue;
+						}
 						const inboxEntry: RelayInboxEntry = {
 							id: entry.id,
 							source_site_id: sourceSiteId,
@@ -1192,6 +1216,14 @@ export class WsTransport {
 					peerSiteId,
 				});
 				__replicationTerminal = ["skipped", 0];
+				return;
+			}
+
+			// Post-drop (slice 4E): relay_outbox is gone on this host, so there is no
+			// legacy outbox to drain — the spool drain (drainDurableWorkSpool) carries
+			// everything now. Skip rather than touch a dropped table.
+			if (hasDroppedLegacyRelayTables(this.config.db)) {
+				__replicationTerminal = ["empty", 0];
 				return;
 			}
 

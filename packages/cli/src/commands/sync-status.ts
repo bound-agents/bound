@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-import { getSiteId } from "@bound/core";
+import { getSiteId, hasDroppedLegacyRelayTables } from "@bound/core";
 import { openBoundDB } from "../lib/db";
 
 export interface SyncStatusArgs {
@@ -138,7 +138,21 @@ export async function runSyncStatus(args: SyncStatusArgs): Promise<void> {
 			console.log();
 		}
 
-		// Query relay status
+		// Query relay status. Post-drop (slice 4E): relay_outbox/relay_inbox are
+		// gone on a retired host — report the retired state and the spool as the sole
+		// store rather than throwing "no such table".
+		if (hasDroppedLegacyRelayTables(db)) {
+			const spool = db
+				.query(
+					"SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE consumed_at IS NULL) as pending FROM durable_work",
+				)
+				.get() as { total: number; pending: number } | null;
+			console.log("Relay: legacy relay tables retired (durable spool only)");
+			console.log(`  spool: ${spool?.pending ?? 0} pending, ${spool?.total ?? 0} total`);
+			console.log();
+			return;
+		}
+
 		const outboxPending = db
 			.query("SELECT COUNT(*) as count FROM relay_outbox WHERE delivered = 0")
 			.get() as RelayCountRow;

@@ -1,14 +1,7 @@
-import {
-	INTERRUPTED_TOOL_USE_SCAN_SQL,
-	findHostRowForChangeLog,
-	listInterruptedToolUseThreadIds,
-} from "@bound/core";
-import { findUserIdById } from "@bound/core";
 /**
  * Bootstrap phase: config loading, PID lockfile, AppContext creation,
  * Ed25519 keypair, user seeding, host registration, and crash recovery.
  */
-
 import { randomUUID } from "node:crypto";
 import {
 	copyFileSync,
@@ -20,7 +13,18 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { loadModelBackendsConfig, seedBundledSkills } from "@bound/agent";
+import {
+	loadModelBackendsConfig,
+	resolveTopologyRole,
+	runRelayRetirementPass,
+	seedBundledSkills,
+} from "@bound/agent";
+import {
+	INTERRUPTED_TOOL_USE_SCAN_SQL,
+	findHostRowForChangeLog,
+	listInterruptedToolUseThreadIds,
+} from "@bound/core";
+import { findUserIdById } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import {
 	createAppContext,
@@ -416,6 +420,31 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			appContext.logger.info(
 				`[recovery] Reset ${durableDispatchReset} in-flight durable dispatch(es) to pending`,
 			);
+		}
+
+		// Legacy-relay-table retirement (slice 4E). One startup pass BEFORE the
+		// relay processor's periodic cadence takes over: drain this host's
+		// undelivered legacy outbox onto the durable spool where the target
+		// resolves durable, then run the gated drop. Idempotent, so a boot with
+		// populated legacy tables is drained here and again on the 60s tick.
+		try {
+			const { drain, dropped } = runRelayRetirementPass({
+				db: appContext.db,
+				localSiteId: appContext.siteId,
+				topologyRole: resolveTopologyRole(appContext.optionalConfig),
+				logger: appContext.logger,
+				eventBus: appContext.eventBus,
+			});
+			if (drain.reenqueued > 0) {
+				appContext.logger.info(
+					`[recovery] Drained ${drain.reenqueued} legacy relay outbox row(s) onto the durable spool (${drain.leftLegacy} left legacy)`,
+				);
+			}
+			if (dropped) {
+				appContext.logger.warn("[recovery] Dropped legacy relay tables (one-way, 4E gate passed)");
+			}
+		} catch (error) {
+			appContext.logger.error("[recovery] Relay retirement pass failed", { error });
 		}
 
 		// Recovery for client_tool_call entries: reset to pending with claimed_by = NULL

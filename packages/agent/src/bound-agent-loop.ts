@@ -5,6 +5,7 @@ import {
 	enqueueToolResult,
 	findMessageById,
 	getLatestChangeLogHlcForRows,
+	hasDroppedLegacyRelayTables,
 	listLiveMessageProjectionByThreadNewestFirst,
 	markProcessed,
 	readInboxByRefId,
@@ -1737,11 +1738,16 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	): Observable<{ content: string; isError: boolean } | null> {
 		const db = this.ctx.db;
 		const eventBus = this.ctx.eventBus;
+		// Post-drop (slice 4E): relay_inbox is gone on this host — client results
+		// arrive via the durable spool, so never touch the legacy table (it would
+		// throw). A capability flip already forced spool-only delivery here.
+		const legacyRead = () =>
+			hasDroppedLegacyRelayTables(db) ? null : readInboxByRefId(db, outboxEntryId);
 		const response$ = merge(
-			defer(() => of(readInboxByRefId(db, outboxEntryId))),
+			defer(() => of(legacyRead())),
 			fromEventBus(eventBus, "relay:inbox").pipe(
 				filter((event) => event.ref_id === outboxEntryId),
-				map(() => readInboxByRefId(db, outboxEntryId)),
+				map(() => legacyRead()),
 			),
 		).pipe(
 			filter((entry): entry is NonNullable<typeof entry> => entry !== null && entry !== undefined),
