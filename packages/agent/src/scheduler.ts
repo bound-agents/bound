@@ -3,8 +3,10 @@ import type { AppContext } from "@bound/core";
 import {
 	HOST_HEARTBEAT_INTERVAL,
 	acknowledgeDurableWork,
+	claimLocalDurableWork,
 	countPendingIntakeDurableWork,
 	createChangeLogEntry,
+	deadLetterClaimedDurableWork,
 	hasDroppedLegacyRelayTables,
 	insertRow,
 	markProcessed,
@@ -804,6 +806,38 @@ export function formatIdleDuration(ms: number): string {
 	return `${minutes}m`;
 }
 
+/**
+ * Identity payload of a single deterministic task firing (slice 5A, R-DW15–21).
+ *
+ * A `task_fire` durable_work row carries ONLY the firing's identity — the
+ * `(task_id, scheduled_at)` pair that names one due instant of a synced
+ * schedule binding. It deliberately does not snapshot the binding: the `tasks`
+ * row is synced and locally readable, so the consumer reads the live row at
+ * claim time. A binding that was deleted, paused, re-armed, or already claimed
+ * elsewhere makes this firing STALE — the consumer no-ops it (structured log,
+ * not an error), never re-executing a moved-on binding.
+ *
+ * `scheduled_at` is the task's `next_run_at` at enqueue time — the same due
+ * instant `computeFiringKey` keys on — so a firing whose live `next_run_at` has
+ * advanced past it is detectably stale.
+ */
+export interface TaskFirePayload {
+	task_id: string;
+	scheduled_at: string;
+}
+
+/**
+ * Deterministic `(kind, idempotency_key)` fence for a task firing, matching the
+ * registry declaration in {@link DURABLE_WORK_REGISTRY} (`task_fire`). Two
+ * enqueues of the same `(task_id, scheduled_at)` collapse to one durable row.
+ */
+export function taskFireIdempotencyKey(payload: TaskFirePayload): string {
+	return `task-fire:${payload.task_id}:${payload.scheduled_at}`;
+}
+
+/** Attempt budget before an infrastructure-failing firing is dead-lettered. */
+const TASK_FIRE_MAX_ATTEMPTS = 3;
+
 interface SchedulerConfig {
 	pollInterval?: number;
 	syncEnabled?: boolean;
@@ -992,6 +1026,18 @@ export class Scheduler {
 
 			// Phase 3: Run
 			this.phase3Run();
+
+			// Slice 5A: task_fire consumer lane. A durable pass mirroring the relay
+			// processor's — claims pending task_fire rows targeted at this host,
+			// bridges the legacy CAS into runTask, and consumes the firing. In 5A no
+			// production code enqueues task_fire rows (the producer flip is 5B/5C),
+			// so this carries only test traffic; it is fire-and-forget on the tick
+			// cadence and never blocks the synchronous phases above.
+			void this.processPendingTaskFire().catch((error) => {
+				this.ctx.logger.error("[scheduler] task_fire consumer pass escaped", {
+					error: formatError(error),
+				});
+			});
 		} catch (error) {
 			const errorMsg = formatError(error);
 			this.ctx.logger.error("Scheduler tick failed", { error: errorMsg });
@@ -1222,6 +1268,220 @@ export class Scheduler {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Slice 5A consumer lane for `task_fire` durable-work rows.
+	 *
+	 * Mirrors the relay processor's `processPendingDurableWork`: claim a pending
+	 * row targeted at this host (local-exclusive, BEGIN IMMEDIATE), execute it,
+	 * then token-fenced ack. The execution bridge is deliberately minimal so
+	 * that {@link runTask} stays UNTOUCHED (5C refactors it): the consumer
+	 * validates the payload, re-reads the LIVE `tasks` binding, verifies the
+	 * firing is still due for the payload's `scheduled_at`, performs the legacy
+	 * `pending → claimed` CAS, and invokes `runTask`. The firing is consumed
+	 * only after `runTask` returns — its completion/failure write-backs ARE the
+	 * task outcome, so the firing was executed either way.
+	 *
+	 * Disposition matrix:
+	 *  - malformed payload (not `{task_id, scheduled_at}`) → token-fenced
+	 *    dead-letter (redrivable after a producer fix); mirrors 4D-A's
+	 *    null-source_site handling.
+	 *  - binding gone / paused / re-armed / claimed elsewhere / next_run_at moved
+	 *    / event task (next_run_at NULL) → STALE: consume as a no-op with a
+	 *    structured log, never an error, never re-executing a moved-on binding.
+	 *  - legacy `pending → claimed` CAS loses (a peer claimed first) → STALE:
+	 *    consume as a no-op.
+	 *  - infrastructure failure BEFORE `runTask` starts → leave the row
+	 *    `processing` (claim-owned) for boot recovery; only after the attempt
+	 *    budget is exhausted across reclaims do we token-fence it into a dead
+	 *    letter.
+	 */
+	async processPendingTaskFire(): Promise<void> {
+		let claimed: ReturnType<typeof claimLocalDurableWork> | undefined;
+		try {
+			claimed = claimLocalDurableWork(this.ctx.db, this.ctx.siteId, "task_fire");
+			if (!claimed) return;
+
+			const token = claimed.claim_token ?? "";
+
+			// Payload validation: malformed input is a producer defect, not an
+			// infrastructure failure — dead-letter it immediately (workspool-redrivable
+			// after a fix) rather than cycling forever or consuming it silently.
+			const parsedPayload = this.parseTaskFirePayload(claimed.payload);
+			if (!parsedPayload.payload) {
+				deadLetterClaimedDurableWork(
+					this.ctx.db,
+					claimed.id,
+					token,
+					`malformed task_fire payload: ${parsedPayload.error}`,
+				);
+				this.ctx.logger.warn("[scheduler] Dead-lettered malformed task_fire row", {
+					durableWorkId: claimed.id,
+				});
+				return;
+			}
+			const payload = parsedPayload.payload;
+
+			// Read the LIVE binding. The row is synced and locally readable; the
+			// payload carries identity only (R-DW15), so staleness is decided against
+			// the current row, never a snapshot.
+			const task = this.ctx.db
+				.query("SELECT * FROM tasks WHERE id = ? AND deleted = 0")
+				.get(payload.task_id) as Task | null;
+
+			const stale = this.classifyStaleFiring(task, payload);
+			if (stale) {
+				this.ctx.logger.info("[scheduler] task_fire is stale; consuming as no-op", {
+					durableWorkId: claimed.id,
+					taskId: payload.task_id,
+					scheduledAt: payload.scheduled_at,
+					reason: stale,
+				});
+				if (!acknowledgeDurableWork(this.ctx.db, claimed.id, token)) {
+					this.ctx.logger.warn("[scheduler] Lost task_fire claim before stale no-op ack", {
+						durableWorkId: claimed.id,
+					});
+				}
+				return;
+			}
+			// classifyStaleFiring returning null guarantees a live, due, scheduled task.
+			const dueTask = task as Task;
+
+			try {
+				// Legacy pending → claimed CAS (the phase1 shape). This is the exclusion
+				// point: if a peer already claimed/ran this firing, the CAS no-ops and we
+				// treat it as a stale firing rather than double-running. runTask's own
+				// claimed → running lease CAS then works unchanged.
+				const claimedAt = new Date().toISOString();
+				const bridged = this.ctx.db.transaction(() => {
+					const result = this.ctx.db
+						.query(
+							"UPDATE tasks SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ? AND status = 'pending'", // outbox-routed: explicit createChangeLogEntry follows the CAS UPDATE in this transaction (pending → claimed)
+						)
+						.run(this.ctx.siteId, claimedAt, dueTask.id);
+					if (result.changes > 0) {
+						return createChangeLogEntry(this.ctx.db, "tasks", dueTask.id, this.ctx.siteId, {
+							status: "claimed",
+							claimed_by: this.ctx.siteId,
+							claimed_at: claimedAt,
+							modified_at: new Date().toISOString(),
+						});
+					}
+					return null;
+				})();
+
+				if (!bridged) {
+					// CAS lost — a peer claimed the binding between our read and here.
+					// Stale firing: consume as a no-op.
+					this.ctx.logger.info(
+						"[scheduler] task_fire bridge CAS lost (binding claimed elsewhere); consuming as no-op",
+						{ durableWorkId: claimed.id, taskId: dueTask.id },
+					);
+					if (!acknowledgeDurableWork(this.ctx.db, claimed.id, token)) {
+						this.ctx.logger.warn("[scheduler] Lost task_fire claim before stale no-op ack", {
+							durableWorkId: claimed.id,
+						});
+					}
+					return;
+				}
+
+				// Bridge into the UNTOUCHED execution body. runTask launches the agent
+				// loop asynchronously (setImmediate); its completion/failure write-backs
+				// land the task outcome independently. We hand off with the freshly-
+				// claimed row snapshot so runTask's claimed → running lease CAS matches.
+				this.runTask({
+					...dueTask,
+					status: "claimed",
+					claimed_by: this.ctx.siteId,
+					claimed_at: claimedAt,
+				});
+
+				// Ack (→ consumed) after runTask RETURNS. runTask returns synchronously
+				// once it has committed the claimed → running CAS and scheduled the async
+				// loop; the firing is executed either way (its outcome is the task
+				// completion/failure write-back), so this consumes the firing.
+				if (!acknowledgeDurableWork(this.ctx.db, claimed.id, token)) {
+					this.ctx.logger.warn("[scheduler] Lost task_fire claim before acknowledgement", {
+						durableWorkId: claimed.id,
+					});
+				}
+			} catch (error) {
+				// Infrastructure failure before the firing was durably driven. Leave the
+				// row `processing` (claim-owned) so boot recovery reclaims it — NO
+				// consume, NO immediate dead-letter. Only after the attempt budget is
+				// exhausted across reclaims do we token-fence it into a dead letter.
+				this.ctx.logger.error("[scheduler] task_fire processing failed before completion", {
+					error: formatError(error),
+					durableWorkId: claimed.id,
+				});
+				if (claimed.attempt_count >= TASK_FIRE_MAX_ATTEMPTS) {
+					deadLetterClaimedDurableWork(this.ctx.db, claimed.id, token, formatError(error));
+				}
+			}
+		} catch (error) {
+			// Includes failures before the bridge (claim/payload/binding/staleness). A
+			// claimed row stays processing for recovery; do not consume it here.
+			this.ctx.logger.error("[scheduler] task_fire processing failed before completion", {
+				error: formatError(error),
+				durableWorkId: claimed?.id,
+			});
+			if (claimed && claimed.attempt_count >= TASK_FIRE_MAX_ATTEMPTS) {
+				deadLetterClaimedDurableWork(
+					this.ctx.db,
+					claimed.id,
+					claimed.claim_token ?? "",
+					formatError(error),
+				);
+			}
+		}
+	}
+
+	/** Parse and validate a task_fire payload, including scheduled_at timestamp syntax. */
+	private parseTaskFirePayload(raw: string): { payload: TaskFirePayload | null; error: string } {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return { payload: null, error: "payload is not valid JSON" };
+		}
+		if (typeof parsed !== "object" || parsed === null)
+			return { payload: null, error: "payload must be an object" };
+		const { task_id, scheduled_at } = parsed as Record<string, unknown>;
+		if (typeof task_id !== "string" || task_id.length === 0) {
+			return { payload: null, error: "task_id must be a non-empty string" };
+		}
+		if (typeof scheduled_at !== "string" || scheduled_at.length === 0) {
+			return { payload: null, error: "scheduled_at must be a non-empty string" };
+		}
+		if (Number.isNaN(Date.parse(scheduled_at))) {
+			return { payload: null, error: "scheduled_at must be a valid ISO-8601 timestamp" };
+		}
+		return { payload: { task_id, scheduled_at }, error: "" };
+	}
+
+	/**
+	 * Classify whether a firing is stale against its live binding. Returns a
+	 * reason string when stale (caller no-op-consumes) or null when the firing is
+	 * live, due, and safe to execute.
+	 */
+	private classifyStaleFiring(task: Task | null, payload: TaskFirePayload): string | null {
+		if (!task) return "binding_missing";
+		// Event tasks (next_run_at NULL) fire through onEvent, never this lane
+		// (R-DW18 preserves event semantics). Producers never mint task_fire rows
+		// for them; guard by payload/binding shape anyway.
+		if (task.next_run_at === null) return "event_task";
+		// The binding must still be pending to fire. A claimed/running/failed/
+		// completed row means another host (or a prior run) already owns this
+		// firing's instant.
+		if (task.status !== "pending") return "binding_not_pending";
+		// The live due instant must still match the firing we were minted for. A
+		// re-arm (cron/heartbeat advance, reschedule) moves next_run_at forward,
+		// making this firing a stale duplicate of a past instant.
+		if (new Date(task.next_run_at).toISOString() !== new Date(payload.scheduled_at).toISOString()) {
+			return "next_run_at_moved";
+		}
+		return null;
 	}
 
 	private phase3Run(): void {
