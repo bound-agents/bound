@@ -40,6 +40,7 @@ export interface DurableWorkRow {
 	ref_id: string | null;
 	source_site: string | null;
 	received_at: string | null;
+	stream_id: string | null;
 }
 
 export interface NewDurableWork {
@@ -52,6 +53,7 @@ export interface NewDurableWork {
 	ref_id?: string | null;
 	source_site?: string | null;
 	received_at?: string | null;
+	stream_id?: string | null;
 }
 
 export class InvalidDurableWorkRowError extends Error {
@@ -105,8 +107,8 @@ export function insertDurableWork(db: Database, row: NewDurableWork): boolean {
 		const now = new Date().toISOString();
 		const result = db.run(
 			`INSERT OR IGNORE INTO durable_work
-			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, ref_id, source_site, received_at)
-			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`,
+			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, ref_id, source_site, received_at, stream_id)
+			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)`,
 			[
 				row.id,
 				row.target_site_id,
@@ -118,6 +120,7 @@ export function insertDurableWork(db: Database, row: NewDurableWork): boolean {
 				row.ref_id ?? null,
 				row.source_site ?? null,
 				row.received_at ?? null,
+				row.stream_id ?? null,
 			],
 		);
 		return result.changes === 1;
@@ -313,6 +316,61 @@ export function deadLetterDurableWork(
 			db.run(
 				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
 		 last_error = ?, dead_lettered_at = ?, expires_at = ? WHERE id = ? AND claim_state != 'dead_letter'`,
+				[error, now, retention, id],
+			).changes === 1,
+	);
+}
+
+/**
+ * Token-fenced terminal transition for a claimed generation. Unlike
+ * {@link deadLetterDurableWork} (which updates by id alone), this requires the
+ * row to still be `processing` under the exact `claimToken` the caller minted,
+ * so a stale claimant that lost the row to boot recovery + reclaim cannot
+ * dead-letter a newer generation. Used by the relay consumer lane's terminal
+ * transitions.
+ */
+export function deadLetterClaimedDurableWork(
+	db: Database,
+	id: string,
+	claimToken: string,
+	error: string,
+	now = new Date().toISOString(),
+): boolean {
+	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
+	return instrument(
+		"dead-letter",
+		"unknown",
+		() =>
+			db.run(
+				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+		 last_error = ?, dead_lettered_at = ?, expires_at = ?
+		 WHERE id = ? AND claim_state = 'processing' AND claim_token = ?`,
+				[error, now, retention, id, claimToken],
+			).changes === 1,
+	);
+}
+
+/**
+ * Fence a *pending* row into a dead letter — the disposition the intake
+ * reconciler needs for orphaned passive intake, where no claim generation
+ * exists. Requiring `claim_state = 'pending'` keeps a concurrent claim from
+ * being clobbered mid-flight while preserving the reconciler's semantics.
+ */
+export function deadLetterPendingDurableWork(
+	db: Database,
+	id: string,
+	error: string,
+	now = new Date().toISOString(),
+): boolean {
+	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
+	return instrument(
+		"dead-letter",
+		"unknown",
+		() =>
+			db.run(
+				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+		 last_error = ?, dead_lettered_at = ?, expires_at = ?
+		 WHERE id = ? AND claim_state = 'pending'`,
 				[error, now, retention, id],
 			).changes === 1,
 	);

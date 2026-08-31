@@ -6,7 +6,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import {
 	createDatabase,
 	enqueueNotification,
 	insertRow,
+	setDurableDispatchEnqueueEnabledForTesting,
 } from "@bound/core";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { formatNotification } from "../commands/start/server";
@@ -35,12 +36,18 @@ describe("Notification message insertion", () => {
 	});
 
 	beforeEach(() => {
+		// These tests exercise the retired dispatch_queue retry path.
+		setDurableDispatchEnqueueEnabledForTesting(false);
 		siteId = randomUUID();
 		db.run("DELETE FROM dispatch_queue");
 		db.run("DELETE FROM messages");
 		db.run("DELETE FROM threads");
 		db.run("DELETE FROM users");
 		db.run("DELETE FROM change_log");
+	});
+
+	afterEach(() => {
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	afterAll(async () => {

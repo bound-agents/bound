@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
-	deadLetterDurableWork,
+	deadLetterPendingDurableWork,
 	findStalePendingIntakeDurableWork,
 	findStaleUnprocessedIntake,
 	listPendingIntakeDurableWork,
@@ -134,7 +134,7 @@ export function reconcileStaleWebhookIntake(
 					);
 				const durableOrphans = listPendingIntakeDurableWork(db, sweep.kind, refId);
 				for (const row of durableOrphans) {
-					deadLetterDurableWork(
+					deadLetterPendingDurableWork(
 						db,
 						row.id,
 						`orphaned ${sweep.noun} intake binding`,

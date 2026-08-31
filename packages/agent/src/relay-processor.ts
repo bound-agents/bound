@@ -4,8 +4,11 @@ import {
 	type AppContext,
 	type ThreadExecutor,
 	acknowledgeBatch,
+	acknowledgeDurableWork,
 	acknowledgeToolResultForCall,
+	claimLocalDurableWork,
 	claimPending,
+	deadLetterClaimedDurableWork,
 	enqueueClientToolCall,
 	enqueueMessage,
 	insertInbox,
@@ -37,6 +40,7 @@ import type {
 	TypedEventEmitter,
 } from "@bound/shared";
 import {
+	RELAY_KIND_REGISTRY,
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
@@ -75,6 +79,7 @@ import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
 import { reconcileDarkConnectorHandles } from "./connector-handle-reconciler.js";
 import { resolveSegments } from "./delegation-segments.js";
+import { DURABLE_WORK_REGISTRY } from "./durable-work-registry.js";
 import {
 	type InferenceRequestPart,
 	InferenceRequestPartAssembler,
@@ -108,6 +113,7 @@ import { deliverNotificationWakeup } from "./wakeup-routing.js";
 import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const DURABLE_RELAY_MAX_ATTEMPTS = 3;
 
 /** Allow event handlers to claim pre-existing durable intake after daemon startup. */
 export const INTAKE_RECONCILIATION_STARTUP_GRACE_MS = 20 * 60 * 1000;
@@ -386,6 +392,8 @@ export class RelayProcessor {
 			);
 		}
 
+		await this.processPendingDurableWork();
+
 		const entries = readUnprocessed(this.db);
 		if (entries.length === 0) return;
 
@@ -406,6 +414,132 @@ export class RelayProcessor {
 		for (const entry of entries) {
 			if (entry.kind === "cancel") continue;
 			await this.processEntry(entry);
+		}
+	}
+
+	/**
+	 * 4D-A consumer lane. The registry supplies the eligible relay kinds; rows
+	 * remain local workspool entries until their handler outcome is durably
+	 * reflected in the existing relay_outbox response path.
+	 */
+	private async processPendingDurableWork(): Promise<void> {
+		for (const registration of DURABLE_WORK_REGISTRY) {
+			const relayKind = RELAY_KIND_REGISTRY[registration.kind as keyof typeof RELAY_KIND_REGISTRY];
+			if (registration.consumer !== "relay" || !relayKind || relayKind.dispatch === "response")
+				continue;
+
+			const claimed = claimLocalDurableWork(this.db, this.siteId, registration.kind);
+			if (!claimed) continue;
+			const handler = this.handlerMap[claimed.kind as HandledRequestKind];
+			if (!handler) {
+				const message = `No active relay handler for durable kind ${claimed.kind}`;
+				if (claimed.attempt_count >= DURABLE_RELAY_MAX_ATTEMPTS) {
+					deadLetterClaimedDurableWork(this.db, claimed.id, claimed.claim_token ?? "", message);
+				} else {
+					this.logger.warn(message, {
+						durableWorkId: claimed.id,
+						attemptCount: claimed.attempt_count,
+					});
+				}
+				continue;
+			}
+
+			// Objection 4: a kind whose handler writes a response over the outbox
+			// (sync dispatch) requires a source_site to address that response. A row
+			// missing it is malformed producer input, not an infrastructure failure —
+			// token-fenced dead-letter it immediately (workspool-redrivable after a
+			// producer fix) rather than consuming it responseless or cycling forever.
+			const writesResponse = relayKind.dispatch === "sync";
+			if (writesResponse && !claimed.source_site) {
+				deadLetterClaimedDurableWork(
+					this.db,
+					claimed.id,
+					claimed.claim_token ?? "",
+					`durable ${claimed.kind} row missing source_site; response cannot be addressed`,
+				);
+				this.logger.warn("Dead-lettered durable relay row missing source_site", {
+					durableWorkId: claimed.id,
+					kind: claimed.kind,
+				});
+				continue;
+			}
+
+			const entry: RelayInboxEntry = {
+				id: claimed.id,
+				source_site_id: claimed.source_site ?? "",
+				kind: claimed.kind as RelayInboxEntry["kind"],
+				ref_id: claimed.ref_id,
+				stream_id: claimed.stream_id,
+				idempotency_key: claimed.idempotency_key,
+				payload: claimed.payload,
+				expires_at: claimed.expires_at ?? new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				received_at: claimed.received_at ?? claimed.created_at,
+				processed: 0,
+				trace_context: null,
+			};
+			try {
+				// dispatchActiveEntry is the shared core: it owns handler dispatch,
+				// idempotency-cache fencing, error responses, and result correlation.
+				// Unlike processActiveEntry (the legacy wrapper), it PROPAGATES
+				// pre/post-dispatch infrastructure failures — handler error-outcomes
+				// are still written and consumed inside it.
+				await this.dispatchDurableEntry(entry);
+				if (
+					!claimed.claim_token ||
+					!acknowledgeDurableWork(this.db, claimed.id, claimed.claim_token)
+				) {
+					this.logger.warn("Lost durable relay claim before acknowledgement", {
+						durableWorkId: claimed.id,
+					});
+				}
+			} catch (error) {
+				// Infrastructure failure: nothing was durably dispatched. Leave the row
+				// `processing` (claim-owned) so boot recovery reclaims it — NO consume,
+				// NO immediate dead-letter. Only after the attempt budget is exhausted
+				// across successive reclaims do we token-fence it into a dead letter.
+				this.logger.error("Durable relay processing failed before dispatch completion", {
+					error,
+					durableWorkId: claimed.id,
+				});
+				if (claimed.attempt_count >= DURABLE_RELAY_MAX_ATTEMPTS) {
+					deadLetterClaimedDurableWork(
+						this.db,
+						claimed.id,
+						claimed.claim_token ?? "",
+						String(error),
+					);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Wrap {@link dispatchActiveEntry} in the same receive span the legacy
+	 * `processEntry` opens, but WITHOUT its swallow: infrastructure failures
+	 * propagate to the durable caller. Response/passive kinds never reach here
+	 * (the registry filter in {@link processPendingDurableWork} excludes them).
+	 */
+	private async dispatchDurableEntry(entry: RelayInboxEntry): Promise<void> {
+		const parentContext = extractTraceContext(parseTraceCarrier(entry.trace_context));
+		const span = getTracer().startSpan(
+			"relay.request.receive",
+			{
+				attributes: {
+					"relay.kind": entry.kind,
+					"relay.request.id": entry.id,
+					"relay.source.site_id": entry.source_site_id,
+					"relay.durable": true,
+					...(entry.stream_id ? { "relay.stream.id": entry.stream_id } : {}),
+				},
+			},
+			parentContext,
+		);
+		try {
+			await context.with(trace.setSpan(parentContext, span), () =>
+				this.dispatchActiveEntry(entry, span),
+			);
+		} finally {
+			span.end();
 		}
 	}
 
@@ -444,11 +578,41 @@ export class RelayProcessor {
 		}
 	}
 
+	/**
+	 * Legacy relay-inbox lane. Infrastructure failures are swallowed here: the
+	 * row is logged and marked processed so the inbox never wedges. The durable
+	 * consumer lane needs the opposite contract, so the dispatch core lives in
+	 * {@link dispatchActiveEntry}; only this legacy wrapper swallows.
+	 */
 	private async processActiveEntry(
 		entry: RelayInboxEntry,
 		receiveSpan: import("@opentelemetry/api").Span,
 	): Promise<void> {
 		try {
+			await this.dispatchActiveEntry(entry, receiveSpan);
+		} catch (error) {
+			receiveSpan.recordException(error instanceof Error ? error : new Error(String(error)));
+			receiveSpan.setStatus({
+				code: SpanStatusCode.ERROR,
+				message: error instanceof Error ? error.message : String(error),
+			});
+			this.logger.error("Error processing relay entry", { error, entryId: entry.id });
+			markProcessed(this.db, [entry.id]);
+		}
+	}
+
+	/**
+	 * Dispatch core shared by the legacy and durable lanes. Handler-produced
+	 * error responses are outcomes — written, cached, and marked processed here.
+	 * Pre/post-dispatch INFRASTRUCTURE failures (a failed `writeResponse`, a
+	 * malformed row that can't be adapted) propagate to the caller so the durable
+	 * lane can keep the row `processing` instead of acking it consumed.
+	 */
+	private async dispatchActiveEntry(
+		entry: RelayInboxEntry,
+		receiveSpan: import("@opentelemetry/api").Span,
+	): Promise<void> {
+		{
 			// Authorization keys on the authenticated delivering peer, not on
 			// entry.source_site_id (#50, R-SR1/R-SR2/R-SR7). The frame that produced
 			// this inbox row was decoded under a keyring peer's per-peer key at the
@@ -587,14 +751,6 @@ export class RelayProcessor {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
-		} catch (error) {
-			receiveSpan.recordException(error instanceof Error ? error : new Error(String(error)));
-			receiveSpan.setStatus({
-				code: SpanStatusCode.ERROR,
-				message: error instanceof Error ? error.message : String(error),
-			});
-			this.logger.error("Error processing relay entry", { error, entryId: entry.id });
-			markProcessed(this.db, [entry.id]);
 		}
 	}
 

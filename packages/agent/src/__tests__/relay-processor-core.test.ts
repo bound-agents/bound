@@ -3,7 +3,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, insertInbox, readUnprocessed } from "@bound/core";
+import {
+	applySchema,
+	getDurableWork,
+	insertInbox,
+	listDeadLetterDurableWork,
+	readUnprocessed,
+	resetProcessingDurableWork,
+} from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -1576,6 +1583,390 @@ describe("RelayProcessor", () => {
 				.query("SELECT processed FROM relay_inbox WHERE id = ?")
 				.get("passive-row") as { processed: number } | null;
 			expect(passive?.processed).toBe(0);
+		});
+	});
+});
+
+describe("durable active relay lane", () => {
+	it("claims an active durable tool_call, writes its legacy response, and consumes the work", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+			 VALUES (?, ?, 'tool_call', ?, 'durable-tool', 'pending', 0, ?, ?, 'requester-site', ?)`,
+			[
+				"durable-request",
+				"target-site",
+				JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }),
+				now,
+				new Date(Date.now() + 60_000).toISOString(),
+				now,
+			],
+		);
+		await (processor as any).processPendingEntries();
+		expect(
+			db.query("SELECT claim_state FROM durable_work WHERE id = ?").get("durable-request"),
+		).toEqual({ claim_state: "consumed" });
+		expect(
+			db
+				.query("SELECT kind, ref_id, target_site_id FROM relay_outbox WHERE ref_id = ?")
+				.get("durable-request"),
+		).toEqual({ kind: "result", ref_id: "durable-request", target_site_id: "requester-site" });
+	});
+
+	it("writes an error response and consumes a durable request whose handler fails", async () => {
+		const failingClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		failingClient.callTool = async () => {
+			throw new Error("durable handler failure");
+		};
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", failingClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES (?, ?, 'tool_call', ?, 'durable-fail', 'pending', 0, ?, 'requester-site')`,
+			[
+				"durable-failure",
+				"target-site",
+				JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }),
+				now,
+			],
+		);
+		await (processor as any).processPendingEntries();
+		expect(
+			db.query("SELECT claim_state FROM durable_work WHERE id = ?").get("durable-failure"),
+		).toEqual({ claim_state: "consumed" });
+		expect(
+			db
+				.query("SELECT kind, ref_id, payload FROM relay_outbox WHERE ref_id = ?")
+				.get("durable-failure"),
+		).toMatchObject({ kind: "error", ref_id: "durable-failure" });
+	});
+
+	it("leaves passive and response durable rows for their later owners", async () => {
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		for (const kind of ["webhook_intake", "result"]) {
+			db.run(
+				`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at) VALUES (?, ?, ?, '{}', ?, 'pending', 0, ?)`,
+				[kind, "target-site", kind, `leave-${kind}`, now],
+			);
+		}
+		await (processor as any).processPendingEntries();
+		expect(
+			db.query("SELECT claim_state FROM durable_work WHERE id = 'webhook_intake'").get(),
+		).toEqual({ claim_state: "pending" });
+		expect(db.query("SELECT claim_state FROM durable_work WHERE id = 'result'").get()).toEqual({
+			claim_state: "pending",
+		});
+	});
+
+	it("reclaims boot-recovered durable work", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, claim_token, attempt_count, created_at, source_site) VALUES ('recovered', 'target-site', 'tool_call', ?, 'recovered-key', 'processing', 'abandoned', 1, ?, 'requester-site')`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
+		await (processor as any).processPendingEntries();
+		expect(
+			db.query("SELECT claim_state, attempt_count FROM durable_work WHERE id = 'recovered'").get(),
+		).toEqual({ claim_state: "consumed", attempt_count: 2 });
+	});
+
+	// Objection 5(a): a pre-dispatch infrastructure failure (handler removed from
+	// the map after claim eligibility) must propagate, NOT consume, NOT dead-letter.
+	it("leaves the durable row processing on an infrastructure failure below the attempt budget", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		// Force an infrastructure failure AFTER dispatch begins: writeResponse throws.
+		(processor as any).writeResponse = () => {
+			throw new Error("outbox write failed");
+		};
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('infra', 'target-site', 'tool_call', ?, 'infra-key', 'pending', 0, ?, 'requester-site')`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "infra")).toMatchObject({
+			claim_state: "processing",
+			attempt_count: 1,
+		});
+		expect(db.query("SELECT COUNT(*) AS n FROM relay_outbox WHERE ref_id = 'infra'").get()).toEqual(
+			{
+				n: 0,
+			},
+		);
+		expect(listDeadLetterDurableWork(db, "tool_call")).toHaveLength(0);
+	});
+
+	// Objection 5(b): attempts 1→2→3 across resetProcessingDurableWork reclaims;
+	// the third failure dead-letters. attempt_count increments once per claim.
+	it("dead-letters after the attempt budget is exhausted across reclaims", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		(processor as any).writeResponse = () => {
+			throw new Error("outbox write failed");
+		};
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('retry', 'target-site', 'tool_call', ?, 'retry-key', 'pending', 0, ?, 'requester-site')`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		// Attempt 1: claim increments to 1, fails, stays processing (1 < 3).
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "retry")).toMatchObject({
+			claim_state: "processing",
+			attempt_count: 1,
+		});
+		// Attempt 2: boot recovery reclaims, increments to 2, fails, stays processing.
+		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "retry")).toMatchObject({
+			claim_state: "processing",
+			attempt_count: 2,
+		});
+		// Attempt 3: reclaim, increments to 3, fails, budget exhausted → dead-letter.
+		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "retry")).toMatchObject({
+			claim_state: "dead_letter",
+			attempt_count: 3,
+		});
+	});
+
+	// Objection 5(c): a stale claimant's dead-letter is token-fenced — after a
+	// boot-reset + reclaim mints a new generation, the old token cannot terminate
+	// the row, and the new generation is unaffected.
+	it("rejects a stale-token dead-letter and leaves the new generation intact", async () => {
+		const { claimLocalDurableWork, deadLetterClaimedDurableWork } = require("@bound/core");
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('fenced', 'target-site', 'tool_call', '{}', 'fenced-key', 'pending', 0, ?, 'requester-site')`,
+			[now],
+		);
+		const first = claimLocalDurableWork(db, "target-site", "tool_call");
+		expect(first?.claim_token).toBeTruthy();
+		const staleToken = first.claim_token as string;
+		// Boot recovery releases the abandoned generation, a new claim mints a fresh token.
+		expect(resetProcessingDurableWork(db, "target-site")).toBe(1);
+		const second = claimLocalDurableWork(db, "target-site", "tool_call");
+		expect(second?.claim_token).toBeTruthy();
+		expect(second.claim_token).not.toBe(staleToken);
+		// The stale claimant's dead-letter attempt must fail the token fence.
+		expect(deadLetterClaimedDurableWork(db, "fenced", staleToken, "stale")).toBe(false);
+		expect(getDurableWork(db, "fenced")).toMatchObject({
+			claim_state: "processing",
+			claim_token: second.claim_token,
+		});
+		// The live generation can still terminate it.
+		expect(deadLetterClaimedDurableWork(db, "fenced", second.claim_token, "terminal")).toBe(true);
+	});
+
+	// Objection 5(d): a twin arriving once via relay_inbox and once via durable_work
+	// under one idempotency_key must execute the handler ONCE — the shared
+	// idempotency cache is the fence across both lanes.
+	it("executes a handler once across the relay_inbox and durable_work twins sharing an idempotency key", async () => {
+		let calls = 0;
+		const countingClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		countingClient.callTool = async () => {
+			calls += 1;
+			return { content: JSON.stringify({ ok: true }), isError: false };
+		};
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", countingClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		const payload = JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } });
+		insertInbox(db, {
+			id: "twin-inbox",
+			source_site_id: "requester-site",
+			kind: "tool_call",
+			ref_id: null,
+			stream_id: null,
+			idempotency_key: "twin-key",
+			payload,
+			expires_at: new Date(Date.now() + 60_000).toISOString(),
+			received_at: now,
+			trace_context: null,
+		});
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('twin-durable', 'target-site', 'tool_call', ?, 'twin-key', 'pending', 0, ?, 'requester-site')`,
+			[payload, now],
+		);
+		await (processor as any).processPendingEntries();
+		expect(calls).toBe(1);
+	});
+
+	// Objection 5(e): a dispatch_message durable row is a dispatch-consumer kind;
+	// the relay lane never claims it — it remains pending for its own consumer.
+	it("leaves a dispatch_message durable row pending (relay lane skips dispatch-consumer kinds)", async () => {
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at) VALUES ('dispatch', 'target-site', 'dispatch_message', '{}', 'dispatch-key', 'pending', 0, ?)`,
+			[now],
+		);
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "dispatch")).toMatchObject({
+			claim_state: "pending",
+			attempt_count: 0,
+		});
+	});
+
+	// Objection 5(f): a row targeted at another site is never claimed by this site.
+	it("leaves a durable row targeted at another site pending", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('other', 'other-site', 'tool_call', ?, 'other-key', 'pending', 0, ?, 'requester-site')`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "other")).toMatchObject({ claim_state: "pending", attempt_count: 0 });
+	});
+
+	// Objection 5(g): a response-requiring kind with null source_site is malformed
+	// input — fenced dead-letter with an explanatory last_error, never consumed.
+	it("dead-letters a response-requiring durable row missing source_site", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		// tool_call is sync dispatch → writes a response → requires source_site.
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at) VALUES ('nosrc', 'target-site', 'tool_call', ?, 'nosrc-key', 'pending', 0, ?)`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		await (processor as any).processPendingEntries();
+		const row = getDurableWork(db, "nosrc");
+		expect(row).toMatchObject({ claim_state: "dead_letter" });
+		expect(row?.last_error).toContain("source_site");
+		expect(db.query("SELECT COUNT(*) AS n FROM relay_outbox WHERE ref_id = 'nosrc'").get()).toEqual(
+			{
+				n: 0,
+			},
+		);
+	});
+
+	// Objection 5(h): a durable row carrying stream_id round-trips it onto the
+	// response row via writeResponse's requestEntry.stream_id copy.
+	it("round-trips stream_id from the durable row onto the response", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site, stream_id) VALUES ('streamed', 'target-site', 'tool_call', ?, 'streamed-key', 'pending', 0, ?, 'requester-site', 'stream-42')`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		await (processor as any).processPendingEntries();
+		expect(getDurableWork(db, "streamed")).toMatchObject({ claim_state: "consumed" });
+		expect(db.query("SELECT stream_id FROM relay_outbox WHERE ref_id = 'streamed'").get()).toEqual({
+			stream_id: "stream-42",
 		});
 	});
 });
