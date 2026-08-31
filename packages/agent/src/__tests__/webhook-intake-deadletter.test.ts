@@ -372,6 +372,225 @@ it("re-emits stale RSS intake with its feed trigger and binding identity", () =>
 	]);
 });
 
+it("re-emits stale connector intake with its per-handle trigger and binding identity", () => {
+	const db = makeDb();
+	const threadId = randomUUID();
+	const taskId = randomUUID();
+	const handleId = randomUUID();
+	const now = new Date().toISOString();
+	insertRow(
+		db,
+		"connector_handles",
+		{
+			id: handleId,
+			server_name: "discord",
+			event_name: "interaction.received",
+			event_args: "{}",
+			delivery_mode: "push",
+			cursor: null,
+			task_id: taskId,
+			created_at: now,
+			modified_at: now,
+			deleted: 0,
+		},
+		SITE,
+	);
+	db.run(
+		`INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at, run_count, max_runs, requires, model_hint, no_history, inject_mode, depends_on, require_success, alert_threshold, consecutive_failures, event_depth, no_quiescence, heartbeat_at, result, error, created_at, created_by, modified_at, deleted) VALUES (?, 'event', 'pending', ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, 0, 'results', NULL, 0, 5, 0, 0, 0, NULL, NULL, NULL, ?, 'system', ?, 0)`,
+		[taskId, `connector:event:${handleId}`, threadId, now, now],
+	);
+	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+	const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+	const eventBus = {
+		emit: (event: string, payload: Record<string, unknown>) => emitted.push({ event, payload }),
+	} as TypedEventEmitter;
+
+	const result = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+		eventBus,
+	});
+
+	expect(result.redelivered).toBe(1);
+	expect(emitted).toEqual([
+		{
+			event: "connector:event",
+			payload: {
+				trigger_key: `connector:event:${handleId}`,
+				handle_id: handleId,
+				task_id: taskId,
+				batch_size: 1,
+			},
+		},
+	]);
+
+	db.run("UPDATE relay_inbox SET processed = 1 WHERE ref_id = ? AND kind = 'connector_intake'", [
+		threadId,
+	]);
+	const afterProcessing = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+		eventBus,
+	});
+	expect(afterProcessing.redelivered).toBe(0);
+	expect(emitted).toHaveLength(1);
+});
+
+it("dead-letters stale connector intake when its live handle backs a cancelled task", () => {
+	const db = makeDb();
+	const threadId = randomUUID();
+	const taskId = randomUUID();
+	const handleId = randomUUID();
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at, run_count, max_runs, requires, model_hint, no_history, inject_mode, depends_on, require_success, alert_threshold, consecutive_failures, event_depth, no_quiescence, heartbeat_at, result, error, created_at, created_by, modified_at, deleted) VALUES (?, 'event', 'cancelled', ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, 0, 'results', NULL, 0, 5, 0, 0, 0, NULL, NULL, NULL, ?, 'system', ?, 0)`,
+		[taskId, `connector:event:${handleId}`, threadId, now, now],
+	);
+	insertRow(
+		db,
+		"connector_handles",
+		{
+			id: handleId,
+			server_name: "discord",
+			event_name: "interaction.received",
+			event_args: "{}",
+			delivery_mode: "push",
+			cursor: null,
+			task_id: taskId,
+			created_at: now,
+			modified_at: now,
+			deleted: 0,
+		},
+		SITE,
+	);
+	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+	const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
+	const eventBus = {
+		emit: (event: string, payload: Record<string, unknown>) => emitted.push({ event, payload }),
+	} as TypedEventEmitter;
+
+	const first = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+		eventBus,
+	});
+	const second = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+		eventBus,
+	});
+
+	expect(first.deadLettered).toBe(1);
+	expect(second.deadLettered).toBe(0);
+	expect(first.redelivered).toBe(0);
+	expect(second.redelivered).toBe(0);
+	expect(emitted).toEqual([]);
+	expect(
+		(
+			db
+				.query("SELECT processed FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
+				.get(threadId) as { processed: number }
+		).processed,
+	).toBe(1);
+});
+
+it("dead-letters stale connector intake when its live handle backs a soft-deleted task", () => {
+	const db = makeDb();
+	const threadId = randomUUID();
+	const taskId = randomUUID();
+	const handleId = randomUUID();
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO tasks (id, type, status, trigger_spec, payload, thread_id, claimed_by, claimed_at, lease_id, next_run_at, last_run_at, run_count, max_runs, requires, model_hint, no_history, inject_mode, depends_on, require_success, alert_threshold, consecutive_failures, event_depth, no_quiescence, heartbeat_at, result, error, created_at, created_by, modified_at, deleted) VALUES (?, 'event', 'pending', ?, NULL, ?, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, 0, 'results', NULL, 0, 5, 0, 0, 0, NULL, NULL, NULL, ?, 'system', ?, 1)`,
+		[taskId, `connector:event:${handleId}`, threadId, now, now],
+	);
+	insertRow(
+		db,
+		"connector_handles",
+		{
+			id: handleId,
+			server_name: "discord",
+			event_name: "interaction.received",
+			event_args: "{}",
+			delivery_mode: "push",
+			cursor: null,
+			task_id: taskId,
+			created_at: now,
+			modified_at: now,
+			deleted: 0,
+		},
+		SITE,
+	);
+	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+	const emitted: unknown[] = [];
+	const eventBus = {
+		emit: (_event: string, payload: unknown) => emitted.push(payload),
+	} as TypedEventEmitter;
+
+	const first = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+		eventBus,
+	});
+	const second = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+		eventBus,
+	});
+
+	expect(first.deadLettered).toBe(1);
+	expect(second.deadLettered).toBe(0);
+	expect(first.redelivered).toBe(0);
+	expect(second.redelivered).toBe(0);
+	expect(emitted).toEqual([]);
+	expect(
+		(
+			db
+				.query("SELECT processed FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
+				.get(threadId) as { processed: number }
+		).processed,
+	).toBe(1);
+});
+
+it("dead-letters stale connector intake after its handle is soft-deleted", () => {
+	const db = makeDb();
+	const threadId = randomUUID();
+	const now = new Date().toISOString();
+	insertRow(
+		db,
+		"connector_handles",
+		{
+			id: randomUUID(),
+			server_name: "discord",
+			event_name: "interaction.received",
+			event_args: "{}",
+			delivery_mode: "push",
+			cursor: null,
+			task_id: randomUUID(),
+			created_at: now,
+			modified_at: now,
+			deleted: 1,
+		},
+		SITE,
+	);
+	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+
+	const result = reconcileStaleWebhookIntake(db, SITE, {
+		staleAfterMs: STALE_AFTER_MS,
+		now: NOW,
+	});
+
+	expect(result.deadLettered).toBe(1);
+	expect(getPendingAdvisories(db)).toEqual([]);
+	expect(
+		(
+			db
+				.query("SELECT processed FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
+				.get(threadId) as { processed: number }
+		).processed,
+	).toBe(1);
+});
+
 describe("webhook intake reconciler — orphaned (no live binding)", () => {
 	it("dead-letters intake whose webhook was deregistered, raising no advisory", () => {
 		const db = makeDb();

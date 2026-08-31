@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import {
+	findActiveConnectorHandleByThreadId,
 	findActiveRssFeedByThreadId,
 	findActiveWebhookByThreadId,
 	findStaleUnprocessedIntake,
@@ -104,9 +105,10 @@ export function reconcileStaleWebhookIntake(
 	// source. Webhooks and RSS feeds share the binding shape (row + thread +
 	// event task) and the drain contract (ref_id = binding.thread_id), so the
 	// recoverable/orphaned classification is identical — only the binding
-	// lookup and the operator-facing wording differ. `connector_intake` is
-	// deliberately NOT swept here: connector handles have their own reconciler
-	// (connector-handle-reconciler.ts) keyed on handle liveness.
+	// lookup, trigger construction, and operator-facing wording differ.
+	// `connector_intake` is also local durable intake. The separate connector
+	// handle reconciler still detects cancelled/deleted backing tasks; this
+	// sweep repairs only lost local event-bus wakeups for live bindings.
 	for (const sweep of INTAKE_SWEEPS) {
 		const groups = findStaleUnprocessedIntake(db, sweep.kind, staleBeforeIso);
 
@@ -136,7 +138,7 @@ export function reconcileStaleWebhookIntake(
 			// in-memory wakeup. Re-emit locally; scheduler claims and inbox processing
 			// make repeated nudges harmless.
 			options.eventBus?.emit("connector:event", {
-				trigger_key: `${sweep.triggerPrefix}:${liveBinding.name}`,
+				trigger_key: sweep.triggerKey(liveBinding),
 				handle_id: liveBinding.id,
 				task_id: liveBinding.task_id,
 				batch_size: group.count,
@@ -189,14 +191,14 @@ export function reconcileStaleWebhookIntake(
  * has an applied/dismissed one.
  */
 interface IntakeSweep {
-	kind: "webhook_intake" | "rss_intake";
-	/** Operator-facing noun used in advisory prose ("webhook" / "RSS feed"). */
+	kind: "webhook_intake" | "rss_intake" | "connector_intake";
+	/** Operator-facing noun used in advisory prose ("webhook" / "RSS feed" / "connector"). */
 	noun: string;
 	findBinding: (
 		db: Database,
 		threadId: string,
 	) => { id: string; name: string; task_id: string } | null;
-	triggerPrefix: "webhook" | "rss";
+	triggerKey: (binding: { id: string; name: string; task_id: string }) => string;
 	titleFor: (refId: string) => string;
 }
 
@@ -205,14 +207,21 @@ const INTAKE_SWEEPS: IntakeSweep[] = [
 		kind: WEBHOOK_INTAKE_KIND,
 		noun: "webhook",
 		findBinding: findActiveWebhookByThreadId,
-		triggerPrefix: "webhook",
+		triggerKey: (binding) => `webhook:${binding.name}`,
 		titleFor: (refId) => `Webhook intake not draining: handler thread ${refId} is dark`,
 	},
 	{
 		kind: RSS_INTAKE_KIND,
 		noun: "RSS feed",
 		findBinding: findActiveRssFeedByThreadId,
-		triggerPrefix: "rss",
+		triggerKey: (binding) => `rss:${binding.name}`,
 		titleFor: (refId) => `RSS intake not draining: handler thread ${refId} is dark`,
+	},
+	{
+		kind: "connector_intake",
+		noun: "connector",
+		findBinding: findActiveConnectorHandleByThreadId,
+		triggerKey: (binding) => `connector:event:${binding.id}`,
+		titleFor: (refId) => `Connector intake not draining: handler thread ${refId} is dark`,
 	},
 ];

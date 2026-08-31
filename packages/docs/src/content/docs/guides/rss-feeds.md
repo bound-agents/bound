@@ -115,7 +115,7 @@ Only the elected RSS leader polls feeds. Bound stores up to 500 seen item identi
 synchronized feed row so that a replacement leader can continue without replaying recent
 items. This bounded history is not a general exactly-once guarantee.
 
-After a 15-minute grace window, every host reconciles its own local RSS and webhook intake. A live feed binding is re-emitted locally as an event wakeup; repeated emissions are safe because the scheduler claims the task once and only marks intake processed after its wakeup is durable. A deleted feed’s orphaned intake is dead-lettered. Diagnostic reconciliation without an event bus raises an advisory instead.
+After a 15-minute grace window, every host reconciles its own local RSS, webhook, and connector intake. A live binding is re-emitted locally as an event wakeup; repeated emissions are safe because the scheduler claims the task once and only marks intake processed after its wakeup is durable. A deleted feed or connector handle’s orphaned intake is dead-lettered. This local recovery is not leader-gated: a host that has since lost connector leadership can still drain connector intake it accepted. Diagnostic reconciliation without an event bus raises an advisory instead.
 
 `relay_inbox` is local to the host that accepted the item. If an RSS leader dies permanently after advancing the synchronized seen cursor, a successor cannot read that leader’s local inbox rows. A synced pending-delivery ledger would be required to close that residual cross-host loss window.
 
