@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import type { LLMMessage } from "@bound/llm";
 import type { LoopToolExecutionBatch, ParsedResponse } from "@bound/loop";
 import { AuxAgentLoop } from "../aux-agent-loop";
 import type { BoundPreparedFrame } from "../bound-agent-loop";
@@ -9,6 +10,13 @@ class TestAuxAgentLoop extends AuxAgentLoop {
 			{} as ParsedResponse,
 			{ messages: [] } as unknown as BoundPreparedFrame,
 			batch,
+		);
+	}
+
+	placeCacheMarkerForRequest(messages: LLMMessage[], cacheCapable: boolean) {
+		return this.prepareAuxCacheMarker(
+			messages,
+			cacheCapable ? ({ cache: true } as never) : undefined,
 		);
 	}
 }
@@ -42,5 +50,27 @@ describe("AuxAgentLoop context rebuild", () => {
 		});
 
 		expect(decision).toEqual({ action: "retry", rebuildFrame: true });
+	});
+
+	it("places and records a cache marker for a cache-capable aux request frame", () => {
+		const messages: LLMMessage[] = [
+			{ role: "user", content: "inspect the prompt cache path" },
+			{ role: "assistant", content: "I will inspect it." },
+			{ role: "user", content: "report the result" },
+		];
+
+		const placement = makeLoop().placeCacheMarkerForRequest(messages, true);
+
+		expect(messages.some((message) => message.role === "cache")).toBe(true);
+		expect(placement.placed).toBe(true);
+	});
+
+	it("does not place a marker when the aux backend cannot cache", () => {
+		const messages: LLMMessage[] = [{ role: "user", content: "hello" }];
+
+		const placement = makeLoop().placeCacheMarkerForRequest(messages, false);
+
+		expect(messages.some((message) => message.role === "cache")).toBe(false);
+		expect(placement.placed).toBe(false);
 	});
 });
