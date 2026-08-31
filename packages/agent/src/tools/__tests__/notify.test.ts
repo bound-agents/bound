@@ -65,6 +65,7 @@ describe("notify tool", () => {
 
 	afterEach(() => {
 		db.close();
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	it("enqueues notification for valid thread_id", async () => {

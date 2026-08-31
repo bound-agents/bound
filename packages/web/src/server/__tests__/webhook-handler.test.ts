@@ -1,9 +1,8 @@
 import Database from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { applySchema } from "@bound/core";
-import { insertRow } from "@bound/core";
+import { applySchema, insertRow, setDurableIntakeEnabledForTesting } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "../webhook-handler.js";
 
@@ -13,6 +12,7 @@ describe("handleWebhookRequest", () => {
 	let eventBus: TypedEventEmitter;
 
 	beforeEach(() => {
+		setDurableIntakeEnabledForTesting(false);
 		db = new Database(":memory:");
 		siteId = randomUUID();
 		eventBus = new TypedEventEmitter();
@@ -24,6 +24,10 @@ describe("handleWebhookRequest", () => {
 			 VALUES (?, ?, ?, ?, ?)`,
 			[siteId, "test-host", "1.0.0", new Date().toISOString(), 0],
 		);
+	});
+
+	afterEach(() => {
+		setDurableIntakeEnabledForTesting(true);
 	});
 
 	// ──────────────────────────────────────────────────────────────────
@@ -92,6 +96,69 @@ describe("handleWebhookRequest", () => {
 		const payload = JSON.parse(entry.payload);
 		expect(payload.method).toBe("POST");
 		expect(payload.path).toBe("/webhook/test_webhook");
+	});
+
+	describe("durable intake default", () => {
+		beforeEach(() => setDurableIntakeEnabledForTesting(true));
+		afterEach(() => setDurableIntakeEnabledForTesting(true));
+
+		test("writes one webhook row with the delivery key and no relay twin", async () => {
+			const webhookId = randomUUID();
+			const threadId = randomUUID();
+			const secret = "durable-secret";
+			insertRow(
+				db,
+				"webhooks",
+				{
+					id: webhookId,
+					name: "durable-hook",
+					secret,
+					signature_format: "github",
+					description: null,
+					task_id: randomUUID(),
+					thread_id: threadId,
+					created_at: new Date().toISOString(),
+					modified_at: new Date().toISOString(),
+					deleted: 0,
+				},
+				siteId,
+			);
+			const deliver = () => {
+				const body = Buffer.from('{"event":"durable"}');
+				return handleWebhookRequest(
+					new Request("http://localhost/webhook/durable-hook", {
+						method: "POST",
+						headers: {
+							"X-Hub-Signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
+							"X-GitHub-Delivery": "delivery-verbatim",
+							"Content-Type": "application/json",
+						},
+						body,
+					}),
+					"durable-hook",
+					{ db, siteId, eventBus },
+				);
+			};
+			expect((await deliver()).status).toBe(202);
+			expect((await deliver()).status).toBe(202);
+			const rows = db
+				.query(
+					"SELECT idempotency_key, ref_id, source_site, received_at, expires_at, kind FROM durable_work",
+				)
+				.all() as Array<Record<string, string>>;
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({
+				kind: "webhook_intake",
+				idempotency_key: "github-delivery-verbatim",
+				ref_id: threadId,
+				source_site: siteId,
+			});
+			expect(rows[0].received_at).toEqual(expect.any(String));
+			expect(Date.parse(rows[0].expires_at) - Date.parse(rows[0].received_at)).toBeGreaterThan(
+				6 * 24 * 60 * 60 * 1000,
+			);
+			expect(db.query("SELECT COUNT(*) AS count FROM relay_inbox").get()).toEqual({ count: 0 });
+		});
 	});
 
 	// ──────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import Database from "bun:sqlite";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { applySchema, insertRow } from "@bound/core";
+import { applySchema, insertRow, setDurableIntakeEnabledForTesting } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -54,6 +54,7 @@ describe("Connector Handle Lifecycle", () => {
 	let _client: Client;
 
 	beforeEach(async () => {
+		setDurableIntakeEnabledForTesting(true);
 		// Setup database
 		const dbPath = ":memory:";
 		db = new Database(dbPath);
@@ -105,6 +106,9 @@ describe("Connector Handle Lifecycle", () => {
 		}));
 	});
 
+	afterEach(() => {
+		setDurableIntakeEnabledForTesting(true);
+	});
 	describe("AC1.2: Event persisted as developer-role message", () => {
 		it("delivers event batch as developer-role message in task thread", async () => {
 			// Setup: Create task with thread
@@ -178,18 +182,18 @@ describe("Connector Handle Lifecycle", () => {
 			// Give time for async operations
 			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			// Verify the batch landed as a passive connector_intake relay row —
-			// the leader-local delivery vehicle. The scheduler folds it into the
-			// event task's wakeup tool_result via buildEventWakeupContent; no
-			// separate developer-role message is written (single delivery
-			// vehicle per branch). relay_inbox is local-only (invariant #3), so
-			// there is no changelog entry to assert.
+			// Verify the batch landed as a passive connector_intake durable_work row —
+			// the leader-local delivery vehicle under BOUND_DURABLE_INTAKE (the 4C-3
+			// default). The scheduler folds it into the event task's wakeup
+			// tool_result via buildEventWakeupContent; no separate developer-role
+			// message is written (single delivery vehicle per branch). durable_work
+			// is local-only, so there is no changelog entry to assert.
 			const intakeRows = db
-				.query("SELECT * FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
+				.query("SELECT * FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake'")
 				.all(threadId) as any[];
 
 			expect(intakeRows.length).toBe(1);
-			expect(intakeRows[0].processed).toBe(0);
+			expect(intakeRows[0].claim_state).toBe("pending");
 			expect(intakeRows[0].payload).toContain("data");
 
 			// No developer-role message in the leader-local branch — the folded
@@ -292,7 +296,7 @@ describe("Connector Handle Lifecycle", () => {
 			// Verify only one developer message was created
 			const messages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId) as never[];
 
@@ -371,7 +375,7 @@ describe("Connector Handle Lifecycle", () => {
 			// Verify message was created
 			const messages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId) as any[];
 
@@ -471,7 +475,7 @@ describe("Connector Handle Lifecycle", () => {
 
 			const messages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId) as any[];
 			expect(messages.length).toBe(1);
@@ -565,7 +569,7 @@ describe("Connector Handle Lifecycle", () => {
 
 			const rows = db
 				.query(
-					"SELECT payload FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' ORDER BY received_at",
+					"SELECT payload FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' ORDER BY received_at",
 				)
 				.all(threadId) as Array<{ payload: string }>;
 
@@ -741,7 +745,7 @@ describe("Connector Handle Lifecycle", () => {
 			// Verify no message was created
 			const messages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId) as any[];
 
@@ -847,7 +851,7 @@ describe("Connector Handle Lifecycle", () => {
 			// Verify message was created in the thread
 			const messages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId) as any[];
 
@@ -982,13 +986,13 @@ describe("Connector Handle Lifecycle", () => {
 			// Get messages from both threads
 			const pushMessages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadIdPush) as any[];
 
 			const pollMessages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadIdPoll) as any[];
 
@@ -1215,13 +1219,13 @@ describe("Connector Handle Lifecycle", () => {
 			// Verify messages were created in both threads
 			const messages1 = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId1) as any[];
 
 			const messages2 = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId2) as any[];
 
@@ -1333,7 +1337,7 @@ describe("Connector Handle Lifecycle", () => {
 			// crash-replay dedupe via idempotency key is exact).
 			const messages = db
 				.query(
-					"SELECT id, payload AS content FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake' AND processed = 0",
+					"SELECT id, payload AS content FROM durable_work WHERE ref_id = ? AND kind = 'connector_intake' AND claim_state = 'pending'",
 				)
 				.all(threadId) as any[];
 

@@ -48,3 +48,5 @@ When a passive intake binding has been removed, its durable intake rows become d
 ## Roll back new dispatch enqueues
 
 Set `BOUND_DURABLE_DISPATCH=0` (or `false`) before starting Bound to route new dispatch wakeups back to the legacy `dispatch_queue` during a recovery rollback. Durable rows already written remain readable and are drained first; do not delete them to make the rollback take effect. Remove the variable or set any other value to return new enqueues to durable work.
+
+Set `BOUND_DURABLE_INTAKE=0` (or `false`) before startup to route webhook, RSS, and connector intake back to legacy `relay_inbox` writes. Existing durable intake rows remain readable during the transition; remove the variable or set any other value to restore durable intake writes.

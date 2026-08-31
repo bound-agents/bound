@@ -12,7 +12,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,6 +56,10 @@ describe("Dispatch Queue Wiring", () => {
 		db.run("DELETE FROM threads");
 		db.run("DELETE FROM users");
 		setDurableDispatchEnqueueEnabledForTesting(false);
+	});
+
+	afterEach(() => {
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	afterAll(async () => {

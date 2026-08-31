@@ -1,6 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { findClusterConfigValueByKey, findWebhookByName, insertInbox } from "@bound/core";
+import {
+	DURABLE_INTAKE_ENABLED,
+	findClusterConfigValueByKey,
+	findWebhookByName,
+	insertDurableWork,
+	insertInbox,
+} from "@bound/core";
 import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, counter, histogram } from "@bound/shared";
 import type { TypedEventEmitter, Webhook } from "@bound/shared";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
@@ -223,7 +229,19 @@ async function handleWebhookRequestInner(
 		trace_context: null,
 	};
 
-	const inserted = insertInbox(deps.db, inboxEntry);
+	const inserted = DURABLE_INTAKE_ENABLED
+		? insertDurableWork(deps.db, {
+				id: inboxEntry.id,
+				target_site_id: deps.siteId,
+				kind: inboxEntry.kind,
+				payload: inboxEntry.payload,
+				idempotency_key: inboxEntry.idempotency_key,
+				expires_at: inboxEntry.expires_at,
+				ref_id: inboxEntry.ref_id,
+				source_site: deps.siteId,
+				received_at: inboxEntry.received_at,
+			})
+		: insertInbox(deps.db, inboxEntry);
 	if (!inserted) {
 		return new Response("", { status: 202 });
 	}
