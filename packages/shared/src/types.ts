@@ -210,6 +210,7 @@ export interface Host extends SoftDeletable {
 	mcp_tools: string | null;
 	mcp_tool_annotations: string | null;
 	mcp_capabilities: string | null;
+	work_spool_capable: number;
 	models: string | null;
 	online_at: string | null;
 	modified_at: string;

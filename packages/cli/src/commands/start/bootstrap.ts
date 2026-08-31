@@ -329,7 +329,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		if (existingHost) {
 			withChangeLog(appContext.db, appContext.siteId, () => {
 				appContext.db.run(
-					"UPDATE hosts SET host_name = ?, commit_hash = ?, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
+					"UPDATE hosts SET host_name = ?, commit_hash = ?, work_spool_capable = 1, online_at = ?, modified_at = ? WHERE site_id = ?", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
 					[appContext.hostName, COMMIT_HASH, now, now, appContext.siteId],
 				);
 				const updatedRow = findHostRowForChangeLog<Record<string, unknown>>(
@@ -351,13 +351,14 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 				site_id: appContext.siteId,
 				host_name: appContext.hostName,
 				commit_hash: COMMIT_HASH,
+				work_spool_capable: 1,
 				online_at: now,
 				modified_at: now,
 				deleted: 0,
 			};
 			withChangeLog(appContext.db, appContext.siteId, () => {
 				appContext.db.run(
-					"INSERT INTO hosts (site_id, host_name, commit_hash, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
+					"INSERT INTO hosts (site_id, host_name, commit_hash, work_spool_capable, online_at, modified_at, deleted) VALUES (?, ?, ?, 1, ?, ?, 0)", // outbox-routed: withChangeLog(db, siteId, callback) emits the changelog entry
 					[appContext.siteId, appContext.hostName, COMMIT_HASH, now, now],
 				);
 				return {

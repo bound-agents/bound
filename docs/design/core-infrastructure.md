@@ -540,11 +540,11 @@ Index: unique on `path` where `deleted = 0`.
 **`hosts`**
 ```sql
 site_id TEXT PRIMARY KEY, host_name TEXT NOT NULL, version TEXT, sync_url TEXT,
-mcp_servers TEXT, mcp_tools TEXT, models TEXT,
-online_at TEXT, modified_at TEXT NOT NULL,
-platforms TEXT, deleted INTEGER DEFAULT 0
+mcp_servers TEXT, mcp_tools TEXT, mcp_tool_annotations TEXT, mcp_capabilities TEXT,
+work_spool_capable INTEGER NOT NULL DEFAULT 0, models TEXT, commit_hash TEXT,
+online_at TEXT, modified_at TEXT NOT NULL, platforms TEXT, deleted INTEGER DEFAULT 0
 ```
-JSON-encoded arrays/objects stored as TEXT in `mcp_servers`, `mcp_tools`, `models`, and `platforms`. `platforms` is a JSON array of platform names for which this host is the leader (e.g. `["discord"]`).
+JSON-encoded arrays/objects stored as TEXT in `mcp_servers`, `mcp_tools`, `mcp_capabilities`, `models`, and `platforms`. `work_spool_capable` is the synced R-DW14 binary capability advertisement; it says the peer can speak the spool protocol, not that its local spool is empty. `platforms` is a JSON array of platform names for which this host is the leader (e.g. `["discord"]`).
 
 **`cluster_config`**
 ```sql

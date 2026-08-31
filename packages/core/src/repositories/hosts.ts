@@ -372,3 +372,13 @@ export function listHostSiteIdNameAndModels(
 export function findHostRowForChangeLog<T>(db: Database, siteId: string): T | null {
 	return db.query("SELECT * FROM hosts WHERE site_id = ?").get(siteId) as T | null;
 }
+
+/** R-DW14 capability finder. A missing/legacy advertisement is conservatively false. */
+export function findHostWorkSpoolCapabilityById(
+	db: Database,
+	siteId: string,
+): { work_spool_capable: number } | null {
+	return db
+		.query("SELECT work_spool_capable FROM hosts WHERE site_id = ? AND deleted = 0")
+		.get(siteId) as { work_spool_capable: number } | null;
+}

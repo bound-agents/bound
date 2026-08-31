@@ -45,7 +45,7 @@ export interface CoreTelemetry {
 		record(value: number, attributes?: Record<string, string>): void;
 	};
 	startSpan(
-		name: "changelog.transaction" | "relay_outbox.operation",
+		name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
 		attributes?: Record<string, string | number | boolean>,
 	): SpanLike;
 }
@@ -69,16 +69,16 @@ export function setCoreTelemetry(value?: CoreTelemetry): void {
 }
 
 export function withCoreSpan<T>(
-	name: "changelog.transaction" | "relay_outbox.operation",
+	name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
 	fn: (span: SpanLike) => T,
 ): T;
 export function withCoreSpan<T>(
-	name: "changelog.transaction" | "relay_outbox.operation",
+	name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
 	attributes: Record<string, string | number | boolean>,
 	fn: (span: SpanLike) => T,
 ): T;
 export function withCoreSpan<T>(
-	name: "changelog.transaction" | "relay_outbox.operation",
+	name: "changelog.transaction" | "relay_outbox.operation" | "durable_work.operation",
 	attributesOrFn: Record<string, string | number | boolean> | ((span: SpanLike) => T),
 	maybeFn?: (span: SpanLike) => T,
 ): T {

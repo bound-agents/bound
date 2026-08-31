@@ -370,6 +370,7 @@ export function applySchema(db: Database): void {
 			mcp_tools    TEXT,
 			mcp_tool_annotations TEXT,
 			mcp_capabilities TEXT,
+			work_spool_capable INTEGER NOT NULL DEFAULT 0,
 			models       TEXT,
 			online_at    TEXT,
 			modified_at  TEXT NOT NULL,
@@ -699,6 +700,33 @@ export function applySchema(db: Database): void {
 		WHERE idempotency_key IS NOT NULL
 	`);
 
+	// durable_work (non-replicated, local-only): the additive per-host spool.
+	// It intentionally has no change-log integration; see R-DW19.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS durable_work (
+			id TEXT PRIMARY KEY,
+			target_site_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'dead_letter')),
+			claim_token TEXT,
+			claimed_at TEXT,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			created_at TEXT NOT NULL,
+			expires_at TEXT,
+			dead_lettered_at TEXT
+		) STRICT
+	`);
+	db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_work_kind_key
+		ON durable_work(kind, idempotency_key)`);
+	db.run(`CREATE INDEX IF NOT EXISTS idx_durable_work_claimable
+		ON durable_work(target_site_id, claim_state, created_at)
+		WHERE claim_state = 'pending'`);
+	db.run(`CREATE INDEX IF NOT EXISTS idx_durable_work_expiry
+		ON durable_work(expires_at) WHERE expires_at IS NOT NULL`);
+
 	// 20. relay_cycles (non-replicated, local-only)
 	db.run(`
 		CREATE TABLE IF NOT EXISTS relay_cycles (
@@ -846,6 +874,10 @@ export function applySchema(db: Database): void {
 	} catch {
 		/* already dropped, or column does not exist on fresh install */
 	}
+
+	// R-DW14: synced binary capability, not local spool state. Existing hosts
+	// gain the conservative false value until their next startup registration.
+	ensureColumn(db, "hosts", "work_spool_capable", "INTEGER NOT NULL DEFAULT 0");
 
 	// Add platforms column to hosts
 	try {

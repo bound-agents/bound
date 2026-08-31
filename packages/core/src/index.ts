@@ -121,6 +121,24 @@ export {
 	resolveDeferredToolResult,
 	type DispatchEntry,
 } from "./dispatch";
+export {
+	insertDurableWork,
+	claimLocalDurableWork,
+	acknowledgeDurableWork,
+	beginDurableWorkTransfer,
+	acknowledgeDurableWorkTransfer,
+	resetProcessingDurableWork,
+	deadLetterExpiredDurableWork,
+	deadLetterDurableWork,
+	pruneExpiredDeadLetters,
+	validateDurableWork,
+	InvalidDurableWorkRowError,
+	type DurableWorkRow,
+	type NewDurableWork,
+	type DurableWorkClaimState,
+	type WorkClaimDiscipline,
+	type WorkRetirementRule,
+} from "./durable-work";
 export { ThreadExecutor, type ExecutorRunResult, type ExecutorOptions } from "./thread-executor";
 export {
 	HOST_HEARTBEAT_INTERVAL,
