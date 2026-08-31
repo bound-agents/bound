@@ -571,6 +571,170 @@ describe("WsSyncClient", () => {
 		});
 	});
 
+	describe("backpressure latch self-heal (#253 spool-transfer wedge)", () => {
+		// Live incident: one backpressure blip on the spoke ws-client latched
+		// sendState="pressured" permanently. The sendFrame closure short-circuited on
+		// that state WITHOUT re-polling bufferedAmount, and the ONLY reset was
+		// handleOpen() (a fresh connection). Every SPOOL_TRANSFER was refused silently,
+		// so peer-targeted durable rows cycled pending→transferring→rollback and
+		// dead-lettered. The server side self-heals on Bun's drain() event; the client
+		// has no drain event, so the latch must become advisory: any send re-polls the
+		// live buffer, and the liveness timer proactively clears a stale latch and
+		// re-drives the durable-work spool.
+		interface FakeWs {
+			readyState: number;
+			bufferedAmount: number;
+			sent: Buffer[];
+			send: (b: Buffer) => void;
+		}
+
+		function fakeWs(bufferedAmount: number): FakeWs {
+			const sent: Buffer[] = [];
+			return {
+				readyState: WebSocket.OPEN,
+				bufferedAmount,
+				sent,
+				send(b: Buffer) {
+					sent.push(b);
+				},
+			};
+		}
+
+		interface Internal {
+			ws: FakeWs | null;
+			sendState: "ready" | "pressured";
+			send(frame: Uint8Array): boolean;
+			recoverFromBackpressure(): void;
+		}
+
+		function makeClient(backpressureLimit: number): { client: WsSyncClient; internal: Internal } {
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				backpressureLimit,
+			});
+			clients.push(client);
+			return { client, internal: client as unknown as Internal };
+		}
+
+		const FRAME = new Uint8Array([1, 2, 3, 4]);
+
+		it("latches pressured when the live buffer is over the limit and refuses the send", () => {
+			const { internal } = makeClient(100);
+			internal.ws = fakeWs(200); // over the 100-byte limit
+
+			expect(internal.send(FRAME)).toBe(false);
+			expect(internal.sendState).toBe("pressured");
+			expect(internal.ws?.sent).toHaveLength(0);
+		});
+
+		it("self-heals: a later send re-polls the drained buffer, flips to ready, and ships the frame", () => {
+			const { internal } = makeClient(100);
+			internal.ws = fakeWs(200);
+			expect(internal.send(FRAME)).toBe(false);
+			expect(internal.sendState).toBe("pressured");
+
+			// The buffer drains below the limit. WITHOUT a reconnect, the next send must
+			// re-poll the live buffer, clear the latch, and actually ship the frame —
+			// mirroring the server's drain() self-heal. Pre-fix this stays refused forever.
+			if (internal.ws) internal.ws.bufferedAmount = 10;
+			expect(internal.send(FRAME)).toBe(true);
+			expect(internal.sendState).toBe("ready");
+			expect(internal.ws?.sent).toHaveLength(1);
+		});
+
+		it("keeps refusing while the buffer is genuinely still full (no false self-heal)", () => {
+			const { internal } = makeClient(100);
+			internal.ws = fakeWs(200);
+			expect(internal.send(FRAME)).toBe(false);
+			expect(internal.sendState).toBe("pressured");
+
+			// Still over the limit — the backpressure protection must hold.
+			expect(internal.send(FRAME)).toBe(false);
+			expect(internal.sendState).toBe("pressured");
+			expect(internal.ws?.sent).toHaveLength(0);
+		});
+
+		it("recoverFromBackpressure flips a stale latch to ready and re-drives the durable-work spool", () => {
+			const drained: string[] = [];
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				backpressureLimit: 100,
+				wsTransport: {
+					addPeer: () => {},
+					removePeer: () => {},
+					handleChangelogPush: () => {},
+					handleChangelogAck: () => {},
+					drainChangelog: () => {},
+					handleRelayDeliver: () => {},
+					handleRelayAck: () => {},
+					drainRelayOutbox: () => {},
+					handleSpoolTransfer: () => {},
+					handleSpoolTransferAck: () => {},
+					drainDurableWorkSpool: (peerSiteId: string) => {
+						drained.push(peerSiteId);
+					},
+					applySnapshotChunk: () => 0,
+					applyColumnChunk: () => {},
+				},
+			});
+			clients.push(client);
+			const internal = client as unknown as Internal;
+			internal.ws = fakeWs(10); // buffer already drained
+			internal.sendState = "pressured"; // but the latch is stale
+
+			internal.recoverFromBackpressure();
+
+			expect(internal.sendState).toBe("ready");
+			expect(drained).toEqual([hubSiteId]);
+		});
+
+		it("recoverFromBackpressure is a no-op while the buffer is still over the limit", () => {
+			const drained: string[] = [];
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				backpressureLimit: 100,
+				wsTransport: {
+					addPeer: () => {},
+					removePeer: () => {},
+					handleChangelogPush: () => {},
+					handleChangelogAck: () => {},
+					drainChangelog: () => {},
+					handleRelayDeliver: () => {},
+					handleRelayAck: () => {},
+					drainRelayOutbox: () => {},
+					handleSpoolTransfer: () => {},
+					handleSpoolTransferAck: () => {},
+					drainDurableWorkSpool: (peerSiteId: string) => {
+						drained.push(peerSiteId);
+					},
+					applySnapshotChunk: () => 0,
+					applyColumnChunk: () => {},
+				},
+			});
+			clients.push(client);
+			const internal = client as unknown as Internal;
+			internal.ws = fakeWs(200); // still over the limit
+			internal.sendState = "pressured";
+
+			internal.recoverFromBackpressure();
+
+			expect(internal.sendState).toBe("pressured");
+			expect(drained).toEqual([]);
+		});
+	});
+
 	describe("config validation", () => {
 		it("requires hubUrl configuration", () => {
 			const client = new WsSyncClient({
