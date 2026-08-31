@@ -364,6 +364,36 @@ export function beginDurableWorkTransfer(db: Database, id: string): string | nul
 	});
 }
 
+/**
+ * Roll a begun-but-unsent transfer back to `pending` under its exact generation
+ * token. A peer-targeted row flips `pending -> transferring` before the
+ * `SPOOL_TRANSFER` frame is handed to the socket; if that send is refused (a
+ * backpressured channel returns false) the frame never goes out, yet the row
+ * would otherwise sit `transferring` with no in-flight frame and no retry until
+ * the next reconnect — which never comes on a persistently-connected sender.
+ * Reverting to `pending` under the (id, transferring, token) fence keeps the row
+ * reclaimable by the next drain or written-push WITHOUT charging an attempt (the
+ * transfer was never attempted on the wire). The token fence makes the rollback
+ * safe against a racing ack: a late ack for this exact generation retires the
+ * row first, so the rollback then matches nothing and is a no-op. Returns true
+ * iff the row was still transferring under `token` and was reverted.
+ */
+export function rollbackUnsentDurableWorkTransfer(
+	db: Database,
+	id: string,
+	token: string,
+): boolean {
+	return instrument(
+		"transfer-rollback",
+		"unknown",
+		() =>
+			db.run(
+				"UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL WHERE id = ? AND claim_state = 'transferring' AND claim_token = ?",
+				[id, token],
+			).changes === 1,
+	);
+}
+
 /** Transfer acknowledgement retires only the sender copy; receiver consumption is separate. */
 export function acknowledgeDurableWorkTransfer(
 	db: Database,

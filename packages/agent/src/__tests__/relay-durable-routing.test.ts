@@ -265,15 +265,66 @@ describe("routeRelayRequest write behavior", () => {
 			sourceSiteId: LOCAL,
 			kind: "tool_call",
 			payload: JSON.stringify({ kind: "tool_call", toolName: "x", args: {} }),
-			timeoutMs: -1, // already expired
+			timeoutMs: 300_000,
 			topologyRole: "hub",
 		});
 		expect(routed.path).toBe("durable");
+		// The request rode the registry-clamped RPC TTL, so it is not born expired
+		// (#253 TTL reconciliation). Age it past its terminal deadline to exercise the
+		// expiry path: dead-letter it, and confirm the 4D-A claim lane skips it.
+		db.run("UPDATE durable_work SET expires_at = ? WHERE id = ?", [
+			new Date(Date.now() - 1000).toISOString(),
+			routed.id,
+		]);
 		const dead = deadLetterExpiredDurableWork(db);
 		expect(dead).toBe(1);
 		expect(durableRows()[0].claim_state).toBe("dead_letter");
 		// The 4D-A claim lane must NOT pick up a dead-lettered row.
 		expect(claimLocalDurableWork(db, TARGET, "tool_call")).toBeNull();
+	});
+
+	// TTL reconciliation (#253): the durable-work registry declares the RPC-class
+	// TTL (RPC_REQUEST_TTL_MS = 300s) as the intended expiry for request kinds
+	// (durable-work-registry.ts: "carry an RPC-class TTL so the expiry sweep
+	// dead-letters a stale request"). But callers pass a raw request timeoutMs — a
+	// platform request rides a short client-tool timeout (~15s). A 15s terminal TTL
+	// under the 30s transfer window is self-defeating: the row is terminally expired
+	// before it is transfer-stale, so no transfer retry can ever fire (the live
+	// incident). Clamp expires_at UP to at least the registry ttlMs so the terminal
+	// deadline always sits well beyond the transfer window (R-DW10/11/12).
+	it("(f) clamps a short request timeout up to the registry RPC-class TTL", () => {
+		setHostCapability(TARGET, true);
+		const before = Date.now();
+		const routed = routeRelayRequest(db, {
+			targetSiteId: TARGET,
+			sourceSiteId: LOCAL,
+			kind: "tool_call",
+			payload: JSON.stringify({ kind: "tool_call", toolName: "x", args: {} }),
+			timeoutMs: 15_000, // shorter than the 300s registry TTL and the 30s transfer window
+			topologyRole: "hub",
+		});
+		expect(routed.path).toBe("durable");
+		const expiresAt = Date.parse(durableRows()[0].expires_at as string);
+		// At least the 300s registry TTL beyond the write instant — never the 15s the
+		// caller passed. Generous lower bound accounts for test execution slack.
+		expect(expiresAt - before).toBeGreaterThanOrEqual(4 * 60 * 1000);
+	});
+
+	// A caller timeout LONGER than the registry TTL is honored as-is — the clamp is a
+	// floor, not a ceiling. A caller that wants a longer live window keeps it.
+	it("(f) leaves a request timeout longer than the registry TTL untouched", () => {
+		setHostCapability(TARGET, true);
+		const before = Date.now();
+		routeRelayRequest(db, {
+			targetSiteId: TARGET,
+			sourceSiteId: LOCAL,
+			kind: "tool_call",
+			payload: JSON.stringify({ kind: "tool_call", toolName: "x", args: {} }),
+			timeoutMs: 20 * 60 * 1000, // 20min, well over the 300s floor
+			topologyRole: "hub",
+		});
+		const expiresAt = Date.parse(durableRows()[0].expires_at as string);
+		expect(expiresAt - before).toBeGreaterThanOrEqual(19 * 60 * 1000);
 	});
 });
 

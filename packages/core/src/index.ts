@@ -136,6 +136,7 @@ export {
 	releaseDurableWorkClaim,
 	beginDurableWorkTransfer,
 	acknowledgeDurableWorkTransfer,
+	rollbackUnsentDurableWorkTransfer,
 	resetProcessingDurableWork,
 	resetTransferringLocalDurableWork,
 	sweepStaleTransferringDurableWork,
