@@ -188,10 +188,33 @@ export class WsSyncClient {
 			return false;
 		}
 
-		// Check backpressure
-		if (this.ws.bufferedAmount > (this.config.backpressureLimit ?? 2097152)) {
-			this.sendState = "pressured";
+		// Backpressure gate. The client has no `drain` event (unlike the server side,
+		// which resets sendState from Bun's drain(ws) — see ws-server.ts), so the latch
+		// must be ADVISORY: re-poll the live buffer on every send. If it is over the
+		// limit, latch pressured and refuse; if it has fallen back to/under the limit,
+		// clear a stale latch and proceed. Without this re-poll a single blip set
+		// sendState="pressured" until the next reconnect, silently refusing every
+		// SPOOL_TRANSFER forever (#253 incident).
+		const limit = this.config.backpressureLimit ?? 2097152;
+		if (this.ws.bufferedAmount > limit) {
+			if (this.sendState !== "pressured") {
+				this.sendState = "pressured";
+				this.config.logger?.warn("WsSyncClient: send backpressured — latching pressured", {
+					peerSiteId: this.config.hubSiteId,
+					bufferedAmount: this.ws.bufferedAmount,
+					backpressureLimit: limit,
+				});
+			}
 			return false;
+		}
+		if (this.sendState === "pressured") {
+			// The buffer drained below the limit without a reconnect — clear the latch.
+			this.sendState = "ready";
+			this.config.logger?.warn("WsSyncClient: backpressure cleared — pressured→ready", {
+				peerSiteId: this.config.hubSiteId,
+				bufferedAmount: this.ws.bufferedAmount,
+				backpressureLimit: limit,
+			});
 		}
 
 		try {
@@ -205,6 +228,34 @@ export class WsSyncClient {
 			});
 			return false;
 		}
+	}
+
+	/**
+	 * Proactive backpressure recovery. The client has no `drain` event, so a latched
+	 * `pressured` state can outlive the buffer pressure that set it if no organic
+	 * write happens to re-poll (the send-path self-heal only fires when something
+	 * tries to send). Called from the liveness timer: if the latch is stale (the live
+	 * buffer is at/under the limit), flip back to `ready` and re-drive the
+	 * durable-work spool toward the hub so parked peer-targeted rows re-send at once
+	 * instead of waiting for the next organic write or the 30s transfer sweep.
+	 * Mirrors the semantics of the server's drain() handler. A genuinely full buffer
+	 * is left latched — the backpressure protection still holds.
+	 */
+	private recoverFromBackpressure(): void {
+		if (this.sendState !== "pressured") return;
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+		const limit = this.config.backpressureLimit ?? 2097152;
+		if (this.ws.bufferedAmount > limit) return; // still genuinely full — keep refusing
+
+		this.sendState = "ready";
+		this.config.logger?.warn("WsSyncClient: backpressure recovered — pressured→ready", {
+			peerSiteId: this.config.hubSiteId,
+			bufferedAmount: this.ws.bufferedAmount,
+			backpressureLimit: limit,
+		});
+		// Re-drive the spool so rows parked while latched re-send now, not on the next
+		// organic write or reconnect.
+		this.config.wsTransport?.drainDurableWorkSpool(this.config.hubSiteId);
 	}
 
 	/**
@@ -676,6 +727,11 @@ export class WsSyncClient {
 		this.lastReceivedAt = Date.now();
 		this.livenessTimer = setInterval(() => {
 			if (!this.connected) return;
+			// Proactive backpressure recovery: the client has no drain event, so a
+			// latched `pressured` state can outlive its cause. Re-poll here so parked
+			// durable-work rows re-send within a check interval rather than waiting for
+			// the next organic write or the 30s transfer sweep.
+			this.recoverFromBackpressure();
 			const idleMs = Date.now() - this.lastReceivedAt;
 			if (idleMs >= timeoutMs) {
 				this.config.logger?.warn(
