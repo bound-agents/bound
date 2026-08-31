@@ -1399,9 +1399,10 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 | `resource_read` | `executeResourceRead()` | Reads MCP resource |
 | `prompt_invoke` | `executePromptInvoke()` | Invokes MCP prompt |
 | `cache_warm` | `executeCacheWarm()` | Warms the file cache for requested paths. |
-| `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries |
-| `client_tool` | (client dispatch) | Request: relays a client (WS) tool call to the session host, which enqueues it into its local WS dispatch and returns a `client_result`. |
+| `inference` | `executeInference()` | Runs local `LLMBackend.chat()`, writes streaming `stream_chunk`/`stream_end` outbox entries. Its request fence is `inference-stream:${stream_id}`. |
+| `client_tool` | (client dispatch) | Request: relays a client (WS) tool call to the session host, which enqueues it into its local WS dispatch and returns a `client_result`. Its request fence is `client-tool:${thread_id}:${call_id}`. |
 | `client_result` | (client dispatch) | Response: carries the result/error of a relayed `client_tool` call back to the loop host. `enqueueToolResult` is idempotent on `(thread_id, call_id)`. |
+| `notify_wakeup` | (session wakeup) | Routes a notification to the live session host. Producer-minted notifications use `notify:${notification_id}`; legacy senders without an ID retain unkeyed, duplicate-accepting delivery. |
 | `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a five-tier algorithm (platform affinity → thread affinity → model match → tool match → least-loaded fallback); the selected host then runs the loop locally (no `process` entry). |
 | `platform_request` | `executePlatformRequest()` | Proxies an MCP platform request (e.g. `events/list`) to the connector running on this host and returns the result — the relay side of `PlatformMcpRegistry`'s `remotePlatformRequest`. |
 | `webhook_intake` | (none — passive) | Not dispatched by the relay-processor: it is a durable mailbox row written by `/webhook/:name` and drained by the scheduler's event-task wakeup. |

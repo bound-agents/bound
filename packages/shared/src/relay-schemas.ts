@@ -39,6 +39,8 @@ export const cancelPayloadSchema = z.object({
 export const notifyWakeupPayloadSchema = z.object({
 	thread_id: z.string().min(1),
 	payload: z.record(z.string(), z.unknown()),
+	notification_id: z.string().min(1).optional(),
+	idempotency_key: z.string().min(1).optional(),
 });
 
 export const clientToolPayloadSchema = z.object({

@@ -261,7 +261,7 @@ export function createRelayStream$(
 							serializedPayload,
 							perHostTimeoutMs,
 							undefined,
-							undefined,
+							`inference-stream:${streamId}`,
 							streamId,
 							traceContext ? JSON.stringify(traceContext) : undefined,
 						),

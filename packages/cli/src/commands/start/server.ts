@@ -1167,6 +1167,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				task_id: task.id,
 				task_name: task.name,
 				result: result ?? "completed",
+				notification_id: randomUUID(),
 			};
 
 			// Route through the session-host resolver (#91 under unified
