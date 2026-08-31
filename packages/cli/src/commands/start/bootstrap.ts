@@ -33,6 +33,7 @@ import {
 	normalizeEdgeRelations,
 	resetProcessing,
 	resetProcessingDurableWork,
+	resetTransferringLocalDurableWork,
 	updateRow,
 	withChangeLog,
 } from "@bound/core";
@@ -419,6 +420,17 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		if (durableDispatchReset > 0) {
 			appContext.logger.info(
 				`[recovery] Reset ${durableDispatchReset} in-flight durable dispatch(es) to pending`,
+			);
+		}
+
+		// A LOCAL_WORK_TARGET row can never legitimately be `transferring` — the
+		// spool excludes the sentinel — so any such row was hijacked by the
+		// pre-fix spool push and is a stranded wakeup. Reset it so the local
+		// consumer claims it.
+		const hijackedLocalReset = resetTransferringLocalDurableWork(appContext.db);
+		if (hijackedLocalReset > 0) {
+			appContext.logger.warn(
+				`[recovery] Reset ${hijackedLocalReset} local-targeted durable row(s) stranded in 'transferring' to pending`,
 			);
 		}
 

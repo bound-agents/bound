@@ -35,6 +35,15 @@ export function setDurableRelayEnabledForTesting(enabled: boolean): void {
 	DURABLE_RELAY_ENABLED = enabled;
 }
 
+/**
+ * Sentinel `target_site_id` for rows consumed in-process by the owning host
+ * (dispatch wakeups). It is NOT a peer site id: a row targeted `local` must
+ * never enter the spool-transfer path — it has no meaning on any other host,
+ * and shipping it away strands the wakeup it carries (the thread never wakes).
+ * Every peer-transfer selector and the transport push listener exclude it.
+ */
+export const LOCAL_WORK_TARGET = "local";
+
 export type DurableWorkClaimState =
 	| "pending"
 	| "processing"
@@ -385,6 +394,28 @@ export function resetProcessingDurableWork(db: Database, targetSiteId: string): 
 	);
 }
 
+/**
+ * Boot recovery for rows a buggy spool push hijacked: a {@link LOCAL_WORK_TARGET}
+ * row is consumed in-process only and can never legitimately be `transferring`
+ * (peer transfer excludes the sentinel), so any such row is a stranded wakeup —
+ * reset it to `pending` so the local consumer claims it. Distinct from
+ * {@link resetProcessingDurableWork}: `transferring` is deliberately preserved
+ * across boots for real peer-targeted rows (the sender resumes with its retained
+ * token), which is exactly why hijacked local rows would otherwise stay wedged
+ * forever.
+ */
+export function resetTransferringLocalDurableWork(db: Database): number {
+	return instrument(
+		"restart-recovery-local-transfer",
+		"any",
+		() =>
+			db.run(
+				"UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL WHERE target_site_id = ? AND claim_state = 'transferring'",
+				[LOCAL_WORK_TARGET],
+			).changes,
+	);
+}
+
 /** Expiry and terminal failure are preserved as seven-day dead-letter rows, never silently discarded. */
 export function deadLetterExpiredDurableWork(db: Database, now = new Date().toISOString()): number {
 	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -531,8 +562,9 @@ export function redriveDeadLetterDurableWork(
 /**
  * Peer-targeted pending rows the local host must drain over the spool. Excludes
  * the owning host's own local-consumer rows (those are claimed in-process, never
- * transferred). Ordered oldest-first for a stable reconnect drain, mirroring
- * {@link readUndelivered} for the relay outbox.
+ * transferred) and the {@link LOCAL_WORK_TARGET} sentinel (dispatch wakeups,
+ * likewise in-process-only). Ordered oldest-first for a stable reconnect drain,
+ * mirroring {@link readUndelivered} for the relay outbox.
  */
 export function readPendingPeerTargetedDurableWork(
 	db: Database,
@@ -542,15 +574,15 @@ export function readPendingPeerTargetedDurableWork(
 	if (targetSiteId) {
 		return db
 			.query(
-				`SELECT * FROM durable_work WHERE claim_state = 'pending' AND target_site_id = ? AND target_site_id != ? ORDER BY created_at`,
+				`SELECT * FROM durable_work WHERE claim_state = 'pending' AND target_site_id = ? AND target_site_id != ? AND target_site_id != ? ORDER BY created_at`,
 			)
-			.all(targetSiteId, ownSiteId) as DurableWorkRow[];
+			.all(targetSiteId, ownSiteId, LOCAL_WORK_TARGET) as DurableWorkRow[];
 	}
 	return db
 		.query(
-			`SELECT * FROM durable_work WHERE claim_state = 'pending' AND target_site_id != ? ORDER BY created_at`,
+			`SELECT * FROM durable_work WHERE claim_state = 'pending' AND target_site_id != ? AND target_site_id != ? ORDER BY created_at`,
 		)
-		.all(ownSiteId) as DurableWorkRow[];
+		.all(ownSiteId, LOCAL_WORK_TARGET) as DurableWorkRow[];
 }
 
 /**
@@ -566,11 +598,13 @@ export function readTransferringDurableWork(db: Database, targetSiteId?: string)
 	if (targetSiteId) {
 		return db
 			.query(
-				`SELECT * FROM durable_work WHERE claim_state = 'transferring' AND target_site_id = ? ORDER BY created_at`,
+				`SELECT * FROM durable_work WHERE claim_state = 'transferring' AND target_site_id = ? AND target_site_id != ? ORDER BY created_at`,
 			)
-			.all(targetSiteId) as DurableWorkRow[];
+			.all(targetSiteId, LOCAL_WORK_TARGET) as DurableWorkRow[];
 	}
 	return db
-		.query(`SELECT * FROM durable_work WHERE claim_state = 'transferring' ORDER BY created_at`)
-		.all() as DurableWorkRow[];
+		.query(
+			`SELECT * FROM durable_work WHERE claim_state = 'transferring' AND target_site_id != ? ORDER BY created_at`,
+		)
+		.all(LOCAL_WORK_TARGET) as DurableWorkRow[];
 }

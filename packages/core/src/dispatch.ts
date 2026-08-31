@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TypedEventEmitter } from "@bound/shared";
 import { readMessageMetadata, updateRow } from "./change-log";
-import { acknowledgeDurableWork, insertDurableWork } from "./durable-work";
+import { LOCAL_WORK_TARGET, acknowledgeDurableWork, insertDurableWork } from "./durable-work";
 import { countBackgroundToolCallsByThread } from "./repositories/messages";
 
 /** Set BOUND_DURABLE_DISPATCH=0 or false before startup to route new enqueues to legacy dispatch_queue. */
@@ -43,7 +43,7 @@ function enqueueDurableDispatch(
 ): void {
 	insertDurableWork(db, {
 		id: randomUUID(),
-		target_site_id: "local",
+		target_site_id: LOCAL_WORK_TARGET,
 		kind: "dispatch_message",
 		payload: JSON.stringify({
 			message_id: messageId,
@@ -273,7 +273,7 @@ export function claimPending(db: Database, threadId: string, claimedBy: string):
 			.query(
 				`SELECT * FROM durable_work WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ? ORDER BY created_at`,
 			)
-			.all("local", threadId) as Array<{
+			.all(LOCAL_WORK_TARGET, threadId) as Array<{
 			id: string;
 			payload: string;
 			claim_token: string | null;
@@ -313,7 +313,7 @@ export function claimPending(db: Database, threadId: string, claimedBy: string):
 				 WHERE target_site_id = ? AND kind = 'dispatch_message'
 				   AND json_extract(payload, '$.thread_id') = ?`,
 			)
-			.all("local", threadId) as Array<{ payload: string }>;
+			.all(LOCAL_WORK_TARGET, threadId) as Array<{ payload: string }>;
 		const fenced = new Set(
 			durableFenceRows.map(({ payload }) => {
 				const entry = JSON.parse(payload) as Pick<
@@ -424,12 +424,12 @@ export function resetProcessingDurableDispatchForThread(db: Database, threadId: 
 		.prepare(
 			`UPDATE durable_work
 			 SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL
-			 WHERE target_site_id = 'local'
+			 WHERE target_site_id = ?
 			   AND kind = 'dispatch_message'
 			   AND claim_state = 'processing'
 			   AND json_extract(payload, '$.thread_id') = ?`,
 		)
-		.run(threadId) as { changes: number };
+		.run(LOCAL_WORK_TARGET, threadId) as { changes: number };
 	return row.changes;
 }
 
@@ -449,9 +449,9 @@ export function hasPending(db: Database, threadId: string): boolean {
 		.get(threadId, CLIENT_TOOL_CALL) as { c: number };
 	const durable = db
 		.prepare(
-			`SELECT COUNT(*) as c FROM durable_work WHERE target_site_id = 'local' AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ?`,
+			`SELECT COUNT(*) as c FROM durable_work WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ?`,
 		)
-		.get(threadId) as { c: number };
+		.get(LOCAL_WORK_TARGET, threadId) as { c: number };
 	return row.c + durable.c > 0;
 }
 

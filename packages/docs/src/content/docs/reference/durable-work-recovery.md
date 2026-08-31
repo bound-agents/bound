@@ -45,6 +45,8 @@ A `not found or already consumed` result is a safe no-op. Consumption retires th
 
 When a passive intake binding has been removed, its durable intake rows become dead letters instead of being discarded. They remain visible to `workspool` and can be redriven after the binding is restored; legacy relay-inbox rows remain mark-processed and retired.
 
+Rows targeted `local` (dispatch wakeups) are consumed in-process by the owning host and are never spool-transferred to a peer. Startup recovery resets any `local`-targeted row found in `transferring` back to `pending` — that state is unreachable through the spool protocol, so such a row is a stranded wakeup, and the reset logs one `[recovery]` warning with the row count. Peer-targeted `transferring` rows are deliberately left untouched at boot; the sender resumes them with its retained token on reconnect.
+
 ## Roll back new dispatch enqueues
 
 Set `BOUND_DURABLE_DISPATCH=0` (or `false`) before starting Bound to route new dispatch wakeups back to the legacy `dispatch_queue` during a recovery rollback. Durable rows already written remain readable and are drained first; do not delete them to make the rollback take effect. Remove the variable or set any other value to return new enqueues to durable work.

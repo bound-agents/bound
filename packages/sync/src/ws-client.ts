@@ -13,6 +13,8 @@ import type {
 	SnapshotBeginPayload,
 	SnapshotChunkPayload,
 	SnapshotEndPayload,
+	SpoolTransferAckPayload,
+	SpoolTransferPayload,
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame, encodeFrame } from "./ws-frames.js";
 
@@ -35,6 +37,12 @@ export interface WsClientConfig {
 		handleRelayDeliver: (sourceSiteId: string, payload: RelayDeliverPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayOutbox: (peerSiteId: string) => void;
+		/** Receive a hub→spoke durable-work spool transfer (R-DW10). */
+		handleSpoolTransfer: (sourceSiteId: string, payload: SpoolTransferPayload) => void;
+		/** Retire sender copies the hub acknowledged as durable (R-DW10). */
+		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
+		/** Reconnect drain of pending/transferring peer-targeted spool rows toward the hub. */
+		drainDurableWorkSpool: (peerSiteId: string) => void;
 		/** Apply a snapshot chunk to the local DB (spoke-side). */
 		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
 		/** Apply a column chunk for sub-row seeding of oversized rows. */
@@ -293,6 +301,10 @@ export class WsSyncClient {
 			this.config.wsTransport.addPeer(this.config.hubSiteId, sendFrame, this.symmetricKey);
 			this.config.wsTransport.drainChangelog(this.config.hubSiteId);
 			this.config.wsTransport.drainRelayOutbox(this.config.hubSiteId);
+			// Resume in-flight spool transfers (retained token) and begin pending
+			// peer-targeted ones (R-DW10) — the push path only covers rows written
+			// while connected; reconnect must drain what accumulated while dark.
+			this.config.wsTransport.drainDurableWorkSpool(this.config.hubSiteId);
 		}
 
 		if (this.config.wsTransport) {
@@ -395,6 +407,19 @@ export class WsSyncClient {
 						);
 					} else if (decodedFrame.type === WsMessageType.RELAY_SEND) {
 						this.config.logger?.warn("WsSyncClient: received relay_send from hub (unexpected)", {});
+					} else if (decodedFrame.type === WsMessageType.SPOOL_TRANSFER) {
+						// Hub→spoke durable-work spool delivery (R-DW10): without this
+						// dispatch, spool responses targeted at this spoke are silently
+						// dropped and the hub's sender copies stay transferring forever.
+						this.config.wsTransport.handleSpoolTransfer(
+							this.config.hubSiteId,
+							decodedFrame.payload as SpoolTransferPayload,
+						);
+					} else if (decodedFrame.type === WsMessageType.SPOOL_TRANSFER_ACK) {
+						this.config.wsTransport.handleSpoolTransferAck(
+							this.config.hubSiteId,
+							decodedFrame.payload as SpoolTransferAckPayload,
+						);
 					}
 				}
 

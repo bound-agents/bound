@@ -644,4 +644,68 @@ describe("spool transfer (4D-B)", () => {
 			hub.stop();
 		});
 	});
+
+	describe("(g) LOCAL_WORK_TARGET sentinel is never spool-transferred", () => {
+		let spoke: Node;
+
+		beforeEach(() => {
+			spoke = createNode("spoke");
+		});
+		afterEach(() => {
+			spoke.stop();
+		});
+
+		it("push path leaves a local-targeted row pending even with a capable hub connected", () => {
+			// Regression: a spoke routes every peer-targeted row to its hub
+			// (resolveSpoolNextHop), and 'local' !== siteId, so before the sentinel
+			// guard the dispatch wakeup was begun (transferring) and shipped to the
+			// hub — permanently stranding the thread wakeup it carried.
+			setPeerCapability(spoke.db, "hub", true);
+			connect(spoke, "hub");
+
+			seedPendingRow(spoke, {
+				id: "wakeup-1",
+				target_site_id: "local",
+				kind: "dispatch_message",
+				payload: JSON.stringify({
+					message_id: "m-1",
+					thread_id: "t-1",
+					event_type: "user_message",
+					event_payload: null,
+				}),
+			});
+
+			expect(rowState(spoke.db, "wakeup-1")?.claim_state).toBe("pending");
+			expect(decodeSpoolFrames(spoke)).toHaveLength(0);
+		});
+
+		it("reconnect drain skips local-targeted rows", () => {
+			setPeerCapability(spoke.db, "hub", true);
+
+			// Insert without the push bus, then connect + drain (the offline-accumulation path).
+			seedPendingRow(
+				spoke,
+				{ id: "wakeup-2", target_site_id: "local", kind: "dispatch_message" },
+				false,
+			);
+			seedPendingRow(
+				spoke,
+				{ id: "real-peer-row", target_site_id: "hub", kind: "tool_call" },
+				false,
+			);
+
+			connect(spoke, "hub");
+			spoke.transport.drainDurableWorkSpool("hub");
+
+			// Only the genuinely peer-targeted row transfers.
+			expect(rowState(spoke.db, "wakeup-2")?.claim_state).toBe("pending");
+			expect(rowState(spoke.db, "real-peer-row")?.claim_state).toBe("transferring");
+			const frames = decodeSpoolFrames(spoke);
+			expect(frames).toHaveLength(1);
+			const transfer = payloadOf(
+				frames.find((f) => f.type === WsMessageType.SPOOL_TRANSFER),
+			) as SpoolTransferPayload;
+			expect(transfer.entries.map((e) => e.id)).toEqual(["real-peer-row"]);
+		});
+	});
 });

@@ -1,6 +1,7 @@
 import type { Database, Statement } from "bun:sqlite";
 import {
 	type DurableWorkRow,
+	LOCAL_WORK_TARGET,
 	acknowledgeDurableWorkTransfer,
 	beginDurableWorkTransfer,
 	findChangeLogEntryByHlc,
@@ -416,8 +417,12 @@ export class WsTransport {
 		// Sender push path for the durable-work spool (R-DW10/R-DW11): on a new
 		// peer-targeted row, transfer it if the target advertises spool support.
 		// Runs on hubs too, so a hub buffering a forwarded row drains it onward.
+		// LOCAL_WORK_TARGET rows (dispatch wakeups) are in-process-only and must
+		// never transfer — the sentinel is not a peer site id, and shipping such
+		// a row away strands the wakeup it carries.
 		this.durableWorkWrittenListener = (event) => {
 			if (event.target_site_id === this.config.siteId) return;
+			if (event.target_site_id === LOCAL_WORK_TARGET) return;
 			this.sendDurableWorkToPeer(event.target_site_id, event.id);
 		};
 
@@ -1457,6 +1462,9 @@ export class WsTransport {
 	 * reconnect drain retries once the next hop is connected and advertising.
 	 */
 	private sendDurableWorkToPeer(targetSiteId: string, id: string): void {
+		// Defense-in-depth: the written-listener already filters the sentinel,
+		// but no caller may ever transfer an in-process-only row.
+		if (targetSiteId === LOCAL_WORK_TARGET) return;
 		const nextHop = this.resolveSpoolNextHop(targetSiteId);
 		if (!nextHop) return;
 		const capability = findHostWorkSpoolCapabilityById(this.config.db, nextHop);
