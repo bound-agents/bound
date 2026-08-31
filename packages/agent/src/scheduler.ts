@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import {
 	HOST_HEARTBEAT_INTERVAL,
+	acknowledgeDurableWork,
+	countPendingIntakeDurableWork,
 	createChangeLogEntry,
 	insertRow,
 	markProcessed,
@@ -457,23 +459,23 @@ function resetEventTask(
 	const isCompletion = context === "completion" || context === "template completion";
 	let nextRunAt: string | null = null;
 	if (task.thread_id) {
-		// Re-arm if the inbox has unprocessed foldable envelopes for this
-		// thread. markProcessed (below, post-wakeup-insert) drains the inbox
-		// BEFORE the agent loop runs, so an unprocessed row here can only be
-		// (a) an event that arrived MID-RUN — onEvent's CAS claim fails while
-		// the task is claimed/running, so without this re-arm the event
-		// strands until the next event happens to fire — or (b) a wakeup that
-		// failed before markProcessed, where the retry replays the actual
-		// payload.
+		// Re-arm if EITHER store has pending foldable intake for this thread.
+		// markProcessed / acknowledgeDurableWork (below, post-wakeup-insert) drain
+		// what this run folded BEFORE the agent loop runs, so a pending row here
+		// can only be (a) an event that arrived MID-RUN — onEvent's CAS claim
+		// fails while the task is claimed/running, so without this re-arm the
+		// event strands until the next event happens to fire — or (b) a wakeup
+		// that failed before draining, where the retry replays the actual payload.
 		//
 		// Kinds match buildEventWakeupContent's readers exactly: webhook_intake,
-		// connector_intake, AND rss_intake all fold into the wakeup. Since the
-		// single-delivery-vehicle change, connector_intake rows are the ONLY
+		// connector_intake, AND rss_intake all fold into the wakeup, from both the
+		// legacy relay_inbox and the new durable_work intake store (4C-2). Since
+		// the single-delivery-vehicle change, connector_intake rows are the ONLY
 		// leader-local record of a platform event, so missing them here loses
 		// events outright (observed: Discord messages during an active loop
 		// produced no response). The completion path runs this check too —
 		// completing the CURRENT wakeup says nothing about rows that arrived
-		// after its fold drained the inbox.
+		// after its fold drained the stores.
 		//
 		// A stray platform-MCP `intake` row sharing this thread_id would NOT
 		// survive a retry into the helper, so it is deliberately not counted
@@ -483,7 +485,9 @@ function resetEventTask(
 				`SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN (${PASSIVE_INTAKE_KINDS.map(() => "?").join(", ")})`,
 			)
 			.get(task.thread_id, ...PASSIVE_INTAKE_KINDS) as { c: number } | null;
-		if (unprocessed && unprocessed.c > 0) {
+		const pendingRelay = unprocessed?.c ?? 0;
+		const pendingDurable = countPendingIntakeDurableWork(db, task.thread_id);
+		if (pendingRelay > 0 || pendingDurable > 0) {
 			const failures = current.consecutive_failures ?? 0;
 			if (isCompletion) {
 				// Success path with pending rows: immediate re-arm — this is a
@@ -1443,6 +1447,7 @@ export class Scheduler {
 				const toolResultMessageId = firingIds?.toolResultMessageId ?? randomUUID();
 				let taskContent: string;
 				let inboxIdsToMarkProcessed: string[] = [];
+				let durableClaimsToAck: { id: string; token: string }[] = [];
 				if (task.type === "heartbeat") {
 					taskContent = buildHeartbeatContext(this.ctx.db, task.last_run_at, {
 						siteId: this.ctx.siteId,
@@ -1457,17 +1462,23 @@ export class Scheduler {
 					// the agent would just see "Execute scheduled task." with no
 					// clue what fired the trigger, and would have to reconstruct
 					// the event by hand from external state (GitHub, etc.).
-					// Helper returns processedIds for post-insert draining
-					// (below).
-					const eventResult = buildEventWakeupContent(this.ctx.db, task);
+					// Helper reads BOTH stores (relay_inbox + durable_work intake),
+					// merges oldest-first, dedupes twins, and CLAIMS the durable rows
+					// it folds. It returns relay ids to markProcessed and durable
+					// claims to acknowledge, both drained post-persist (below).
+					const eventResult = buildEventWakeupContent(this.ctx.db, task, this.ctx.siteId);
 					// `next_run_at` on an event task is the mid-run re-arm path. The
-					// inbox is local-only, but the re-armed task row syncs; a peer can
-					// therefore claim this firing without the envelope that caused it.
-					// Do not persist a synthetic wakeup or invoke the loop without a
-					// locally foldable envelope. Resetting returns the listener to its
-					// normal pending state; the host holding the inbox row will still
-					// consume it on its own re-arm.
-					if ((task.run_count ?? 0) > 0 && eventResult.processedIds.length === 0) {
+					// relay inbox is local-only, but the re-armed task row syncs; a peer
+					// can therefore claim this firing without the envelope that caused
+					// it. Do not persist a synthetic wakeup or invoke the loop without a
+					// locally foldable envelope from EITHER store. Resetting returns the
+					// listener to its normal pending state; the host holding the rows
+					// will still consume them on its own re-arm.
+					if (
+						(task.run_count ?? 0) > 0 &&
+						eventResult.processedIds.length === 0 &&
+						eventResult.durableClaims.length === 0
+					) {
 						this.ctx.logger.info(
 							"[scheduler] Skipping re-armed event task with no local inbox payload",
 							{
@@ -1481,6 +1492,7 @@ export class Scheduler {
 					}
 					taskContent = eventResult.content;
 					inboxIdsToMarkProcessed = eventResult.processedIds;
+					durableClaimsToAck = eventResult.durableClaims;
 				} else {
 					taskContent = task.payload ?? "Execute scheduled task.";
 				}
@@ -1576,6 +1588,16 @@ export class Scheduler {
 				// event on a later run is strictly better than silent loss).
 				if (inboxIdsToMarkProcessed.length > 0) {
 					markProcessed(this.ctx.db, inboxIdsToMarkProcessed);
+				}
+
+				// Acknowledge (-> consumed) the durable_work intake rows we claimed
+				// and folded, under the same post-persist gate as markProcessed. On a
+				// persistence failure we NEVER reach here, so the rows stay
+				// `processing` and boot recovery (resetProcessingDurableWork) returns
+				// them to `pending` for a redundant re-fold — never a silent loss.
+				// Token-fenced: only our own claim generation is retired.
+				for (const claim of durableClaimsToAck) {
+					acknowledgeDurableWork(this.ctx.db, claim.id, claim.token);
 				}
 
 				// Inject quiescence note for scheduled tasks when system is idle

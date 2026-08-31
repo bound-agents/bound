@@ -14,7 +14,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoopConfig, AgentLoopResult } from "@bound/agent";
-import { applyMetricsSchema, applySchema, createDatabase, recordTurn } from "@bound/core";
+import {
+	applyMetricsSchema,
+	applySchema,
+	createDatabase,
+	getDurableWork,
+	insertDurableWork,
+	recordTurn,
+	resetProcessingDurableWork,
+} from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Task } from "@bound/shared";
@@ -2527,6 +2535,133 @@ describe("Scheduler features", () => {
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
 			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+		});
+
+		// 4C-2: the fold consumes durable_work intake rows too. These tests
+		// exercise the scheduler's claim -> persist -> acknowledge path and the
+		// re-arm gate over the durable store.
+		function insertDurableIntakeRow(threadId: string, body: string): string {
+			const id = randomUUID();
+			insertDurableWork(db, {
+				id,
+				target_site_id: siteId,
+				kind: "connector_intake",
+				payload: JSON.stringify(body),
+				idempotency_key: `durable-${randomUUID()}`,
+				ref_id: threadId,
+				source_site: siteId,
+				received_at: new Date().toISOString(),
+			});
+			return id;
+		}
+
+		it("acknowledges (-> consumed) a folded durable intake row after the wakeup persists", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			insertEventTask(taskId, { triggerSpec: "connector:event:durable-ack" });
+			db.run("UPDATE tasks SET thread_id = ? WHERE id = ?", [threadId, taskId]);
+			const durableId = insertDurableIntakeRow(threadId, "durable-ack-body");
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, makeAgentLoopFactory() as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(() => getDurableWork(db, durableId)?.claim_state === "consumed", {
+				timeoutMs: 5000,
+				message: "durable intake row was not consumed after wakeup persisted",
+			});
+			stop();
+
+			const row = getDurableWork(db, durableId);
+			expect(row?.claim_state).toBe("consumed");
+			expect(row?.consumed_at).toEqual(expect.any(String));
+			// The folded body reached the synthetic tool_result message.
+			const toolResult = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' ORDER BY created_at DESC LIMIT 1",
+				)
+				.get(threadId) as { content: string } | null;
+			expect(toolResult?.content).toContain("durable-ack-body");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM durable_work WHERE ref_id = ?", [threadId]);
+			db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
+		});
+
+		it("leaves a claimed durable row processing on persistence failure, and boot recovery re-folds it", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			insertEventTask(taskId, { triggerSpec: "connector:event:durable-crash" });
+			db.run("UPDATE tasks SET thread_id = ? WHERE id = ?", [threadId, taskId]);
+			const durableId = insertDurableIntakeRow(threadId, "durable-crash-body");
+
+			// Simulate a persistence failure DURING the wakeup by making the
+			// messages insert throw once the fold has already claimed the row.
+			// We model the crash by manually driving fold + claim, then NOT
+			// acknowledging (as the scheduler would skip ack on a mid-write
+			// failure), then running boot recovery.
+			const { buildEventWakeupContent } = await import("../event-payload");
+			const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as Task;
+			const folded = buildEventWakeupContent(db, task, siteId);
+			expect(folded.durableClaims.map((c) => c.id)).toEqual([durableId]);
+			// Row is now processing (claimed) but NOT consumed — persistence failed
+			// before ack, so the scheduler never called acknowledgeDurableWork.
+			expect(getDurableWork(db, durableId)?.claim_state).toBe("processing");
+
+			// Boot recovery resets abandoned processing rows to pending.
+			expect(resetProcessingDurableWork(db, siteId)).toBeGreaterThanOrEqual(1);
+			expect(getDurableWork(db, durableId)?.claim_state).toBe("pending");
+
+			// A re-fold now succeeds and re-claims the row.
+			const refold = buildEventWakeupContent(db, task, siteId);
+			expect(refold.durableClaims.map((c) => c.id)).toEqual([durableId]);
+			expect(refold.content).toContain("durable-crash-body");
+			expect(getDurableWork(db, durableId)?.claim_state).toBe("processing");
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM durable_work WHERE ref_id = ?", [threadId]);
+		});
+
+		it("re-arms a completed event task when only durable intake rows remain", async () => {
+			const taskId = randomUUID();
+			const threadId = randomUUID();
+			insertEventTask(taskId, { triggerSpec: "connector:event:durable-rearm" });
+			db.run("UPDATE tasks SET thread_id = ? WHERE id = ?", [threadId, taskId]);
+
+			// A durable intake row arrives MID-RUN (after the fold drained the
+			// stores), so completion must still re-arm off the durable store alone.
+			const midRunFactory = () => ({
+				run: async (): Promise<AgentLoopResult> => {
+					insertDurableIntakeRow(threadId, "durable-midrun-body");
+					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+				},
+			});
+
+			const ctx = makeCtx();
+			const scheduler = new Scheduler(ctx as any, midRunFactory as any);
+			const { stop } = scheduler.start(10);
+
+			await waitFor(
+				() => {
+					const t = db
+						.query("SELECT status, run_count, next_run_at FROM tasks WHERE id = ?")
+						.get(taskId) as {
+						status: string;
+						run_count: number;
+						next_run_at: string | null;
+					} | null;
+					return t?.status === "pending" && t.run_count > 0 && t.next_run_at !== null;
+				},
+				{
+					timeoutMs: 5000,
+					message: "completed event task was not re-armed despite pending durable intake",
+				},
+			);
+			stop();
+
+			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
+			db.run("DELETE FROM durable_work WHERE ref_id = ?", [threadId]);
+			db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
 		});
 
 		it("resets event task to pending after successful completion", async () => {

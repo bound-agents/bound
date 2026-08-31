@@ -5,6 +5,7 @@ import {
 	acknowledgeDurableWork,
 	acknowledgeDurableWorkTransfer,
 	beginDurableWorkTransfer,
+	claimDurableWorkByIds,
 	claimLocalDurableWork,
 	deadLetterExpiredDurableWork,
 	insertDurableWork,
@@ -213,5 +214,54 @@ describe("durable_work intake reads", () => {
 			]).map((entry) => entry.id),
 		).toEqual(["late"]);
 		expect(countPendingIntakeDurableWork(db, "thread-1")).toBe(3);
+	});
+
+	it("claims specific pending rows by id, fencing each with a fresh token", () => {
+		insertDurableWork(db, { ...row("a"), kind: "webhook_intake", ref_id: "thread-1" });
+		insertDurableWork(db, { ...row("b"), kind: "connector_intake", ref_id: "thread-1" });
+		insertDurableWork(db, { ...row("c"), kind: "rss_intake", ref_id: "thread-1" });
+
+		const claimed = claimDurableWorkByIds(db, ["a", "c"], "local");
+		expect(claimed.map((entry) => entry.id).sort()).toEqual(["a", "c"]);
+		for (const entry of claimed) {
+			expect(entry.claim_state).toBe("processing");
+			expect(entry.claim_token).toEqual(expect.any(String));
+		}
+		// A different fresh token per row keeps generations independent.
+		expect(claimed[0].claim_token).not.toBe(claimed[1].claim_token);
+
+		// The unclaimed row stays pending; the claimed rows can be acknowledged
+		// only with their own token.
+		expect(db.query("SELECT claim_state FROM durable_work WHERE id = 'b'").get()).toEqual({
+			claim_state: "pending",
+		});
+		const a = claimed.find((entry) => entry.id === "a");
+		if (!a?.claim_token) throw new Error("expected claim token for a");
+		expect(acknowledgeDurableWork(db, "a", "wrong")).toBe(false);
+		expect(acknowledgeDurableWork(db, "a", a.claim_token)).toBe(true);
+	});
+
+	it("only claims rows still pending, skipping already-claimed or missing ids", () => {
+		insertDurableWork(db, { ...row("a"), kind: "webhook_intake", ref_id: "thread-1" });
+		insertDurableWork(db, { ...row("b"), kind: "webhook_intake", ref_id: "thread-1" });
+		// Pre-claim b so it is no longer pending.
+		claimDurableWorkByIds(db, ["b"], "local");
+
+		const claimed = claimDurableWorkByIds(db, ["a", "b", "missing"], "local");
+		expect(claimed.map((entry) => entry.id)).toEqual(["a"]);
+	});
+
+	it("returns an empty array for an empty id list", () => {
+		expect(claimDurableWorkByIds(db, [], "local")).toEqual([]);
+	});
+
+	it("resetProcessingDurableWork returns claimed-by-ids rows to pending on boot", () => {
+		insertDurableWork(db, { ...row("a"), kind: "webhook_intake", ref_id: "thread-1" });
+		const claimed = claimDurableWorkByIds(db, ["a"], "local");
+		expect(claimed[0].claim_state).toBe("processing");
+		expect(resetProcessingDurableWork(db, "local")).toBe(1);
+		expect(db.query("SELECT claim_state FROM durable_work WHERE id = 'a'").get()).toEqual({
+			claim_state: "pending",
+		});
 	});
 });

@@ -30,6 +30,36 @@ export function listDeadLetterDurableWork(db: Database, kind: string): DurableWo
 
 const PASSIVE_INTAKE_KINDS = ["webhook_intake", "rss_intake", "connector_intake"] as const;
 
+export interface StalePendingIntakeDurableWorkGroup {
+	ref_id: string;
+	kind: string;
+	count: number;
+	oldest_received_at: string;
+}
+
+/**
+ * Finds pending passive-intake durable work older than the recovery threshold,
+ * grouped by the binding thread. `received_at` is the source-event timestamp;
+ * pre-provenance rows use `created_at` as their recovery age.
+ */
+export function findStalePendingIntakeDurableWork(
+	db: Database,
+	kind: string,
+	staleBeforeIso: string,
+): StalePendingIntakeDurableWorkGroup[] {
+	return db
+		.query(
+			`SELECT ref_id, kind, COUNT(*) AS count,
+			        MIN(COALESCE(received_at, created_at)) AS oldest_received_at
+			 FROM durable_work
+			 WHERE claim_state = 'pending' AND kind = ? AND ref_id IS NOT NULL
+			   AND COALESCE(received_at, created_at) < ?
+			 GROUP BY ref_id
+			 ORDER BY oldest_received_at ASC`,
+		)
+		.all(kind, staleBeforeIso) as StalePendingIntakeDurableWorkGroup[];
+}
+
 export function listPendingIntakeDurableWork(
 	db: Database,
 	kind: string,
