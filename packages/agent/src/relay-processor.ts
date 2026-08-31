@@ -30,7 +30,6 @@ import type {
 	RelayConfig,
 	RelayInboxEntry,
 	RelayOutboxEntry,
-	RelayPassiveKind,
 	ResourceReadPayload,
 	ResultPayload,
 	SerializedSpan,
@@ -38,7 +37,6 @@ import type {
 	TypedEventEmitter,
 } from "@bound/shared";
 import {
-	RELAY_PASSIVE_KINDS,
 	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
@@ -101,6 +99,7 @@ function parseTraceCarrier(raw: string | null | undefined): Record<string, strin
 	}
 	return null;
 }
+import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry.js";
 import { buildMCPDispatchRegistry, formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
 import { fromEventBus } from "./rx-utils.js";
@@ -132,7 +131,10 @@ type RelayEntryHandler = (entry: RelayInboxEntry) => Promise<string | null>;
  *   relay-processor must NOT touch them. See RELAY_KIND_REGISTRY in
  *   @bound/shared types.ts for the dispatch-mode contract.
  */
-type HandledRequestKind = Exclude<RelayRequestKind, "cancel" | RelayPassiveKind>;
+type HandledRequestKind = Exclude<
+	RelayRequestKind,
+	"cancel" | (typeof PASSIVE_INTAKE_KINDS)[number]
+>;
 
 /**
  * Thrown by handlers when payload parsing fails and the handler has already
@@ -408,7 +410,7 @@ export class RelayProcessor {
 	}
 
 	private static readonly RESPONSE_KIND_SET = new Set<string>(RELAY_RESPONSE_KINDS);
-	private static readonly PASSIVE_KIND_SET = new Set<string>(RELAY_PASSIVE_KINDS);
+	private static readonly PASSIVE_KIND_SET = new Set<string>(PASSIVE_INTAKE_KINDS);
 
 	private async processEntry(entry: RelayInboxEntry): Promise<void> {
 		// Response and passive rows are mailbox traffic, not active request work.

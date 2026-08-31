@@ -19,6 +19,7 @@ import type { MainAgentLoop } from "./agent-loop";
 import { buildConsolidationContext } from "./consolidation-context";
 import { buildEventWakeupContent } from "./event-payload";
 import { buildHeartbeatContext } from "./heartbeat-context";
+import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry";
 import {
 	recordAgentOperationalMetric,
 	recordSchedulerClaimDelay,
@@ -479,9 +480,9 @@ function resetEventTask(
 		// (retrying on its presence would be a phantom wakeup).
 		const unprocessed = db
 			.query(
-				"SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN ('webhook_intake', 'connector_intake', 'rss_intake')",
+				`SELECT COUNT(*) as c FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind IN (${PASSIVE_INTAKE_KINDS.map(() => "?").join(", ")})`,
 			)
-			.get(task.thread_id) as { c: number } | null;
+			.get(task.thread_id, ...PASSIVE_INTAKE_KINDS) as { c: number } | null;
 		if (unprocessed && unprocessed.c > 0) {
 			const failures = current.consecutive_failures ?? 0;
 			if (isCompletion) {

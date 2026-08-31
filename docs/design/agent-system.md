@@ -1405,7 +1405,7 @@ When a tool call targets a remote host (detected via `isRelayRequest()` in the M
 | `notify_wakeup` | (session wakeup) | Routes a notification to the live session host. Producer-minted notifications use `notify:${notification_id}`; legacy senders without an ID retain unkeyed, duplicate-accepting delivery. |
 | `intake` | `handleIntake()` | Routes inbound platform messages to the appropriate spoke via a five-tier algorithm (platform affinity → thread affinity → model match → tool match → least-loaded fallback); the selected host then runs the loop locally (no `process` entry). |
 | `platform_request` | `executePlatformRequest()` | Proxies an MCP platform request (e.g. `events/list`) to the connector running on this host and returns the result — the relay side of `PlatformMcpRegistry`'s `remotePlatformRequest`. |
-| `webhook_intake` | (none — passive) | Not dispatched by the relay-processor: it is a durable mailbox row written by `/webhook/:name` and drained by the scheduler's event-task wakeup. |
+| `webhook_intake`, `rss_intake`, `connector_intake` | (none — passive) | Scheduler-owned durable mailbox rows. `PASSIVE_INTAKE_REGISTRY` is the sole intake-kind registration and derives relay exclusion, event-wakeup folding, and stale-row recovery. |
 
 The `process` relay kind is **removed** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD13): there is no whole-loop delegation. The loop always runs on the trigger host, which relays only inference (as segments) and tool calls.
 
