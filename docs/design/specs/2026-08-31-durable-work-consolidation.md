@@ -25,7 +25,7 @@ This RFC collapses local delivery storage, then separates synced schedule defini
 
 ### 2.1 In scope
 
-This RFC defines the durable-work data model, its consumer registration model, directed spool transfer, migration from the existing local tables, and the final split between task bindings and task firings.
+This RFC defines the durable-work data model, its consumer registration model, directed spool transfer, and the split between task bindings and task firings.
 
 ### 2.2 Non-goals
 
@@ -33,7 +33,7 @@ This RFC defines the durable-work data model, its consumer registration model, d
 - This RFC does **not** add direct spoke-to-spoke transport. Relay remains the existing authenticated transport path.
 - This RFC does **not** promise distributed exactly-once execution. Cross-host work remains at-least-once at the transport boundary; idempotent consumers are required.
 - This RFC does **not** change the connector, RSS, webhook, or client-session binding tables. Their cursors and `next_run_at` values are watermarks, not queues.
-- The #219 permanently-dead-leader residual is deferred. A synced pending-delivery ledger is described in §9, but is not part of this migration.
+- The #219 permanently-dead-leader residual is deferred. A synced pending-delivery ledger is described in §8, but is not part of this architecture.
 
 ## 3. End State
 
@@ -57,7 +57,7 @@ type DurableWorkRow = {
   id: string;
   target_site_id: string;           // this host or a named peer
   kind: string;
-  idempotency_key: string | null; // null permitted only for migration-fenced legacy rows
+  idempotency_key: string;
   created_at: string;
   expires_at: string | null;
   claim_state: "pending" | "processing" | "transferring" | "dead_letter";
@@ -81,7 +81,7 @@ This is the existing relay `delivered`/`processed` double acknowledgement, state
 1. **transfer acknowledgement:** retire the sender copy when the receiver copy is durable;
 2. **consumption acknowledgement:** retire the receiver copy when its consumer has durably accepted it.
 
-A lost acknowledgement can repeat a transfer. The destination’s `(kind, idempotency_key)` fence, or the transfer identity for legacy rows, makes this safe.
+A lost acknowledgement can repeat a transfer. The destination’s `(kind, idempotency_key)` fence makes this safe.
 
 ### 3.3 Passive intake becomes ordinary work
 
@@ -130,51 +130,45 @@ The current end state has one local work backing and the change-log cursor imple
 
 **R-DW4.** A definition shall declare claim discipline, retirement rule, backing, idempotency construction, TTL/dead-letter policy, payload validation, and consumer registration.
 
-**R-DW5.** A new work kind shall provide a non-null deterministic idempotency key before it can be registered. A migration adapter may admit legacy rows with null keys only while legacy tables exist; it shall fence such rows by immutable source table plus row ID/transfer identity and shall never emit a newly-created null key.
+**R-DW5.** Every work row shall have a non-null deterministic idempotency key. A work kind shall provide that key before it can be registered, and schema and runtime validation shall reject an inserted row without one.
 
-**R-DW5a.** The consolidated-table definitions for client tools, inference streams, and notifications shall use these binding idempotency constructions: client tools `client-tool:<threadId>:<callId>`; inference streams `inference-stream:<streamId>`; notifications `notify:<notificationId>`, where `notificationId` is a producer-minted UUID minted once at creation and carried across retries. Migration to the work table shall not change these identities: a row migrated or dual-written from a legacy table shall carry the same key it would have had, so the fence holds across the migration boundary.
+**R-DW6.** The consolidated-table definitions for client tools, inference streams, and notifications shall use these binding idempotency constructions: client tools `client-tool:<threadId>:<callId>`; inference streams `inference-stream:<streamId>`; notifications `notify:<notificationId>`, where `notificationId` is a producer-minted UUID minted once at creation and carried across retries.
 
 ### 5.2 Claims, retirement, and recovery
 
-**R-DW6.** While a local-targeted row is claimed, the system shall perform selection and transition under `BEGIN IMMEDIATE`; at most one local consumer may own a successful claim generation.
+**R-DW7.** While a local-targeted row is claimed, the system shall perform selection and transition under `BEGIN IMMEDIATE`; at most one local consumer may own a successful claim generation.
 
-**R-DW7.** The system shall support `local-exclusive`, `optimistic-lease`, and `none` claim disciplines. `optimistic-lease` shall require settle-delay LWW-loss abort, lease expiry, host/heartbeat eviction, and consumer idempotency.
+**R-DW8.** The system shall support `local-exclusive`, `optimistic-lease`, and `none` claim disciplines. `optimistic-lease` shall require settle-delay LWW-loss abort, lease expiry, host/heartbeat eviction, and consumer idempotency.
 
-**R-DW8.** The system shall support `single-ack` and `all-subscriber-cursors-past` retirement rules. A single-ack row shall retire only after its registered consumer durably accepts it. A cursor-retained row shall retire only after all registered subscriber cursors have passed it.
+**R-DW9.** The system shall support `single-ack` and `all-subscriber-cursors-past` retirement rules. A single-ack row shall retire only after its registered consumer durably accepts it. A cursor-retained row shall retire only after all registered subscriber cursors have passed it.
 
-**R-DW9.** On process boot, local rows stranded in `processing` without a live claim generation shall be reset to `pending` according to their definition. The existing `dispatch_queue` `processing → pending` reset is generalized; no kind may rely on process memory to complete recovery.
+**R-DW10.** On process boot, local rows stranded in `processing` without a live claim generation shall be reset to `pending` according to their definition. The existing `dispatch_queue` `processing → pending` reset is generalized; no kind may rely on process memory to complete recovery.
 
-**R-DW10.** A peer-targeted row shall not retire on the sender until the receiver has durably inserted or deduplicated its destination copy and sent a transfer acknowledgement. The receiver shall not retire the destination copy until its consumer acknowledgement.
+**R-DW11.** A peer-targeted row shall not retire on the sender until the receiver has durably inserted or deduplicated its destination copy and sent a transfer acknowledgement. The receiver shall not retire the destination copy until its consumer acknowledgement.
 
-**R-DW11.** Every kind shall define a finite TTL or an explicit no-expiry rationale, retry policy, and terminal dead-letter representation. Expiry and terminal retry failure shall preserve enough payload, key, timestamps, and error context for operator diagnosis; they shall not silently discard work. Dead-lettered work rows shall have a seven-day TTL, matching intake `expires_at` retention.
+**R-DW12.** Every kind shall define a finite TTL or an explicit no-expiry rationale, retry policy, and terminal dead-letter representation. Expiry and terminal retry failure shall preserve enough payload, key, timestamps, and error context for operator diagnosis; they shall not silently discard work. Dead-lettered work rows shall have a seven-day TTL, matching intake `expires_at` retention.
 
-### 5.3 Streams and compatibility
+### 5.3 Streams and transport
 
-**R-DW12.** Stream chunks shall be ordinary kind-scoped rows with a short TTL. The stream consumer shall deduplicate and order chunks by the existing monotonic sequence semantics; transfer duplication or reordering shall not produce a duplicate visible chunk.
+**R-DW13.** Stream chunks shall be ordinary kind-scoped rows with a short TTL. The stream consumer shall deduplicate and order chunks by the existing monotonic sequence semantics; transfer duplication or reordering shall not produce a duplicate visible chunk.
 
-**R-DW13.** Migration shall be ordering-invariant across the live cluster. The explicit synced work-spool capability bit means only that its advertising binary speaks the spool protocol; release N shall advertise it unconditionally at startup. Send-path selection is per peer pair: a host shall send spool transfer to a peer that advertises the bit and legacy envelopes to a peer that does not, while retaining the corresponding readers during release N. This static capability gate, not a time-based mixed-version support policy, prevents an arbitrary deployment order from stranding or misrouting work.
-
-**R-DW14.** Each release-N host shall, at startup and periodically thereafter, drain its own local legacy tables: it shall re-enqueue or bridge its own `relay_outbox` rows through the spool path and consume its own `relay_inbox` rows through their normal consumers. Legacy relay and dispatch rows with null idempotency keys shall remain deliverable only through the R-DW5/R-DW14 migration fence while that host’s bridge readers exist, using a derived identity fence. Schema/runtime validation shall reject null keys for every newly inserted work row; a migration-fenced legacy row is the sole exception. This local drain is self-contained, so a host that was offline during a cluster-wide transition catches up when it returns.
-
-**R-DW15.** In release N, each host shall drop only its own local `relay_outbox` and `relay_inbox` tables, and only when (a) it observes every live peer advertising the R-DW23 capability and (b) its own legacy tables are empty after the R-DW14 local drain. Hosts may drop at different times; that is safe because the tables are local-only. Release N+1 shall delete the legacy writers, readers, and bridge/dual-read code, but shall refuse to start if either legacy table exists with rows on that host, with a clear error to run release N first or export and drain the rows. No calendar support horizon or rollback-compatibility window shall retain the legacy tables or bridge code.
+**R-DW14.** Work-spool support shall be advertised by an explicit synced feature bit following the `hosts.models`, `hosts.platforms`, and `hosts.mcp_capabilities` pattern. The bit means only “this binary speaks the spool protocol”; it does not attest to the state of any local work table. `hosts.version` shall not be used: it has no writer and gates no behavior. Transport shall send spool transfers only to peers that advertise the bit.
 
 ### 5.4 Scheduler split
 
-**R-DW16.** `tasks` shall remain a synced schedule and binding table: trigger definition, binding identity, dependency edges, `next_run_at` watermark, status/results, and peer-liveness/heartbeat observations shall continue to replicate through the change-log outbox.
+**R-DW15.** `tasks` shall remain a synced schedule and binding table: trigger definition, binding identity, dependency edges, `next_run_at` watermark, status/results, and peer-liveness/heartbeat observations shall continue to replicate through the change-log outbox.
 
-**R-DW17.** When a task becomes due, only its rendezvous-selected host shall enqueue the deterministic firing artifact as a local work row. The local work claim, not a synced task-row CAS, shall serialize actual execution on that host.
+**R-DW16.** When a task becomes due, only its rendezvous-selected host shall enqueue the deterministic firing artifact as a local work row. The local work claim, not a synced task-row CAS, shall serialize actual execution on that host.
 
-**R-DW18.** The scheduler shall preserve its existing cross-host safeguards: rendezvous host selection; the settle delay and LWW-loser abort described in `scheduler.ts:42–53` and `1328–1337`; lease/heartbeat-based peer eviction; and deterministic firing artifacts whose LWW collision behavior is described near `scheduler.ts:1427–1435`.
+**R-DW17.** The scheduler shall preserve its existing cross-host safeguards: rendezvous host selection; the settle delay and LWW-loser abort described in `scheduler.ts:42–53` and `1328–1337`; lease/heartbeat-based peer eviction; and deterministic firing artifacts whose LWW collision behavior is described near `scheduler.ts:1427–1435`.
 
-**R-DW19.** An event task shall remain a persistent listener. After completion it shall return to pending with `next_run_at = NULL`; it shall re-arm immediately only when registered unconsumed intake work arrived during the run, and shall not gain a periodic fallback wakeup. Retry remains bounded and contingent on retained unconsumed work.
+**R-DW18.** An event task shall remain a persistent listener. After completion it shall return to pending with `next_run_at = NULL`; it shall re-arm immediately only when registered unconsumed intake work arrived during the run, and shall not gain a periodic fallback wakeup. Retry remains bounded and contingent on retained unconsumed work.
 
-**R-DW20.** Synced schedule writes shall obey invariant #1’s change-log outbox and invariant #20’s no-foreign-key rule. The local work table, transfer acknowledgements, boot recovery, and dead-letter transitions shall be local-only dedicated CRUD operations.
+**R-DW19.** Synced schedule writes shall obey invariant #1’s change-log outbox and invariant #20’s no-foreign-key rule. The local work table, transfer acknowledgements, boot recovery, and dead-letter transitions shall be local-only dedicated CRUD operations.
 
-**R-DW21.** The sandbox-shell command framework shall expose an uncommon, operator-grade command to list dead-lettered and stale work rows and re-drive selected rows through the normal delivery path. A re-drive shall retain and traverse the ordinary idempotency/transfer fences, so re-driving an already-consumed row is a no-op. Slice 4B shall add the command and a bound-reference skill runbook describing when and how to use it. Slice 4B is the first slice with live work-table rows, so the command exercises local claim and recovery through the real lifecycle before passive and relay kinds migrate.
+**R-DW20.** The sandbox-shell command framework shall expose an uncommon, operator-grade command to list dead-lettered and stale work rows and re-drive selected rows through the normal delivery path. A re-drive shall retain and traverse the ordinary idempotency/transfer fences, so re-driving an already-consumed row is a no-op. A bound-reference skill runbook shall describe when and how to use the command.
 
-**R-DW22.** A task-fire idempotency identity shall be exactly `(task_id, scheduled_at)`, where `scheduled_at` is the binding’s `next_run_at` planned instant. It shall not include `modified_at`, `run_count`, or another generation component: concurrent claimants agree on `task_id` and `scheduled_at` despite LWW replica divergence, while generation components can diverge and defeat rendezvous deduplication. A generation component becomes required only if catch-up/backfill semantics permit the same planned instant to fire again.
-
-**R-DW23.** Work-spool support shall be advertised by an explicit synced feature bit following the `hosts.models`, `hosts.platforms`, and `hosts.mcp_capabilities` pattern. Release N shall advertise it unconditionally at startup. The bit means only “this binary speaks the spool protocol”; it does not attest that this host has drained or dropped its local legacy tables. `hosts.version` shall not be used: it has no writer and gates no behavior. The static capability enables R-DW13’s per-pair send-path selection; R-DW15’s dynamic drain and drop conditions remain per host.
+**R-DW21.** A task-fire idempotency identity shall be exactly `(task_id, scheduled_at)`, where `scheduled_at` is the binding’s `next_run_at` planned instant. It shall not include `modified_at`, `run_count`, or another generation component: concurrent claimants agree on `task_id` and `scheduled_at` despite LWW replica divergence, while generation components can diverge and defeat rendezvous deduplication. A generation component becomes required only if catch-up/backfill semantics permit the same planned instant to fire again.
 
 ## 6. Task Firing
 
@@ -203,63 +197,21 @@ After migration it shall be replaced by:
 
 The before/after deliberately does not classify a table by its historical `relay_*` name. It preserves the local-only constraint while making the transport/spool boundary clear.
 
-## 8. Migration Slices and Rollback
-
-Every slice must leave the preceding production path runnable and must be independently testable.
-
-### Slice 4A — Local work foundation and registry expansion
-
-Add the local table, dedicated CRUD, state-machine transition guards, row validator, observability vocabulary, the synced work-spool capability bit, and a registry that can describe every existing work kind. Keep all production writes on legacy tables. Add parity tests for claims, restart recovery, transfer dedup, expiry, capability advertisement, and registry completeness.
-
-**Rollback:** stop selecting the new table; the table is additive and can remain unused. No legacy producer or consumer changed.
-
-### Slice 4B — `dispatch_queue` kinds
-
-Move local thread-message dispatch to `durable_work` with `local-exclusive` plus single-ack. New code dual-reads both sources and bridges any legacy row through a derived legacy identity. Add the operator-grade sandbox-shell redrive command and the bound-reference runbook required by R-DW21.
-
-**Rollback:** route new enqueues back to `dispatch_queue`; dual-read drains work-table dispatch rows until empty. Do not drop either table.
-
-### Slice 4C — Passive intake kinds
-
-Move webhook, RSS, and connector intake rows to the work table using the existing registry as the authoritative declarations. The scheduler’s folding, completion re-arm, stale sweep, deleted-binding handling, and duplicate wakeup behavior operate through registered kinds. New receivers bridge legacy inbox passive rows.
-
-**Rollback:** restore legacy intake insertion while retaining dual reads; work-table rows are drained through the same scheduler consumer. Existing binding/cursor state remains untouched.
-
-### Slice 4D — Active relay RPC and streaming
-
-Move directed requests, results, errors, client tool calls, inference requests, stream chunks, and stream ends to spool transfer. Implement transfer acknowledgement before sender retirement; apply kind-scoped TTLs and stream sequence dedup. Release N advertises spool support at startup and chooses the send path per destination peer: spool transfer to an advertising peer, legacy envelopes to a non-advertising peer. Each host retains bridge readers while it locally drains its own `relay_outbox`/`relay_inbox` rows idempotently.
-
-**Rollback:** retain the per-pair send-path selection and local bridge readers during release N. After a host has dropped its own legacy tables, forward-fix from backup or migration tooling; do not reintroduce a long-lived compatibility path.
-
-### Slice 4E — Retire relay storage
-
-Release N is the ordering-invariant migration release: every host advertises spool support at startup, sends spool transfer to advertising peers and legacy envelopes to non-advertising peers, and drains its own local legacy tables at startup and periodically. A host drops only its own `relay_outbox` and `relay_inbox` after every live peer advertises support and that host’s own tables are empty after drain. Different hosts may drop at different times; the tables are local-only. `relay_cycles` remains telemetry. Release N+1 deletes the legacy writers, readers, and bridge/dual-read code and refuses startup if either legacy table still has rows locally, directing the operator to run release N first or export and drain the rows. Update invariant #3 to the text in §7.
-
-**Rollback:** the state gates, rather than a release horizon, prevent unsafe drops. After the spool-only flip or drop, forward-fix from backup/migration tooling; do not preserve an older binary as a compatibility path.
-
-### Slice 5 — Split task firings from bindings
-
-After Slices 4A–4E establish the local execution primitive, change `tasks` to schedule/binding semantics and enqueue deterministic local `task_fire` rows on the rendezvous winner. Preserve all scheduler mechanics listed in R-DW18 and event semantics in R-DW19.
-
-**Rollback:** retain the legacy scheduler firing path behind a release-scoped compatibility switch until dual execution comparison proves that the same deterministic artifact would be selected. Disable new firing creation, drain or deterministically reconcile unclaimed `task_fire` rows, and resume legacy claiming. Never run both execution paths for the same artifact without the shared idempotency fence.
-
-Migration order is: establish the primitive; migrate the single-host client; migrate registered passive consumers; migrate transfer and streams; remove superseded tables; then move the scheduler, whose semantics depend on every earlier property.
-
-## 9. Deferred Synced Pending-Delivery Ledger
+## 8. Deferred Synced Pending-Delivery Ledger
 
 The #219 residual remains: after a synced RSS cursor advances, a permanently dead accepting host can leave its local intake row unreachable. This is a durability-boundary decision, not a cleanup item.
 
-If required later, it fits this design without a new queue species: a work definition with `backing: synced`, `claimDiscipline: optimistic-lease`, `retirementRule: single-ack`, recipient/binding routing metadata, and an idempotent intake consumer. It would use the same registry, expiry/dead-letter vocabulary, recovery sweep, and test matrix. It must separately solve broadcast replication cost and min-peer-watermark retention; it is therefore explicitly excluded from the local-spool migration.
+If required later, it fits this design without a new queue species: a work definition with `backing: synced`, `claimDiscipline: optimistic-lease`, `retirementRule: single-ack`, recipient/binding routing metadata, and an idempotent intake consumer. It would use the same registry, expiry/dead-letter vocabulary, recovery sweep, and test matrix. It must separately solve broadcast replication cost and min-peer-watermark retention; it is therefore explicitly excluded from this architecture.
 
-## 10. Acceptance Criteria
+## 9. Acceptance Criteria
 
 - A registry-completeness test fails if any work kind is not consumed, recovered, and observed through its declaration.
 - Local claim tests prove one execution across concurrent claimers and `processing → pending` restart recovery.
 - Transfer tests prove sender retirement only after durable receiver insert, receiver retirement only after consumption, and duplicate/lost acknowledgements are harmless.
-- Rolling-deployment integration tests cover arbitrary host upgrade order for dispatch, intake, RPC, and streaming; they prove per-pair spool/legacy send-path selection, per-host local draining, and destructive drop only after every live peer advertises support and the dropping host’s own legacy tables are empty. They include a host that was offline through the cluster transition and prove it drains before dropping on return.
+- Transport tests prove spool transfers are sent only to peers that advertise work-spool support.
 - Stream tests prove duplicate/reordered chunk rows do not duplicate visible output and expire according to their kind policy.
 - Scheduler tests preserve rendezvous selection, settle-loss abort, stale lease/heartbeat eviction, deterministic artifact identity, cron rescheduling, and event mid-run re-arm without periodic spin.
-- No new work insert accepts a null idempotency key; migration tests demonstrate legacy null-key fencing.
+- Work-row validation tests reject a null idempotency key.
 - Redrive tests prove selected dead-lettered/stale rows re-enter the ordinary path and that re-driving an already-consumed row is a no-op under the same idempotency fences.
-- The sandbox-shell redrive command and its bound-reference runbook ship together in Slice 4B.
+- The sandbox-shell redrive command and its bound-reference runbook are available together.
 - Architecture and invariant documentation describe two stores and the revised invariant #3.
