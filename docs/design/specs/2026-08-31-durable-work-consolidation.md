@@ -146,17 +146,17 @@ The current end state has one local work backing and the change-log cursor imple
 
 **R-DW10.** A peer-targeted row shall not retire on the sender until the receiver has durably inserted or deduplicated its destination copy and sent a transfer acknowledgement. The receiver shall not retire the destination copy until its consumer acknowledgement.
 
-**R-DW11.** Every kind shall define a finite TTL or an explicit no-expiry rationale, retry policy, and terminal dead-letter representation. Expiry and terminal retry failure shall preserve enough payload, key, timestamps, and error context for operator diagnosis; they shall not silently discard work.
+**R-DW11.** Every kind shall define a finite TTL or an explicit no-expiry rationale, retry policy, and terminal dead-letter representation. Expiry and terminal retry failure shall preserve enough payload, key, timestamps, and error context for operator diagnosis; they shall not silently discard work. Dead-lettered work rows shall have a seven-day TTL, matching intake `expires_at` retention.
 
 ### 5.3 Streams and compatibility
 
 **R-DW12.** Stream chunks shall be ordinary kind-scoped rows with a short TTL. The stream consumer shall deduplicate and order chunks by the existing monotonic sequence semantics; transfer duplication or reordering shall not produce a duplicate visible chunk.
 
-**R-DW13.** Migration shall support a mixed-version cluster. For each moved local table, new hosts shall dual-read the legacy table and the work table until all active hosts advertise a version that understands the work-table protocol. New hosts shall write the work table as authoritative and bridge legacy-origin rows into it idempotently. A flag day is rejected because an offline laptop can otherwise strand pre-upgrade relay rows or become unable to receive traffic from a new peer.
+**R-DW13.** Migration shall be ordering-invariant across the live cluster. The explicit synced work-spool capability bit means only that its advertising binary speaks the spool protocol; release N shall advertise it unconditionally at startup. Send-path selection is per peer pair: a host shall send spool transfer to a peer that advertises the bit and legacy envelopes to a peer that does not, while retaining the corresponding readers during release N. This static capability gate, not a time-based mixed-version support policy, prevents an arbitrary deployment order from stranding or misrouting work.
 
-**R-DW14.** Legacy relay and dispatch rows with null idempotency keys shall remain deliverable only through the R-DW5/R-DW14 migration fence during the bridge period, using a derived identity fence. Once their source tables are empty and all supported hosts understand mandatory keys, schema/runtime validation shall reject null keys for every newly inserted work row.
+**R-DW14.** Each release-N host shall, at startup and periodically thereafter, drain its own local legacy tables: it shall re-enqueue or bridge its own `relay_outbox` rows through the spool path and consume its own `relay_inbox` rows through their normal consumers. Legacy relay and dispatch rows with null idempotency keys shall remain deliverable only through the R-DW5/R-DW14 migration fence while that host’s bridge readers exist, using a derived identity fence. Schema/runtime validation shall reject null keys for every newly inserted work row; a migration-fenced legacy row is the sole exception. This local drain is self-contained, so a host that was offline during a cluster-wide transition catches up when it returns.
 
-**R-DW15.** A destructive drop of a legacy table shall occur only after its bridge reader has observed it empty, all supported peers advertise the compatible work protocol, and an upgrade rollback no longer requires its rows.
+**R-DW15.** In release N, each host shall drop only its own local `relay_outbox` and `relay_inbox` tables, and only when (a) it observes every live peer advertising the R-DW23 capability and (b) its own legacy tables are empty after the R-DW14 local drain. Hosts may drop at different times; that is safe because the tables are local-only. Release N+1 shall delete the legacy writers, readers, and bridge/dual-read code, but shall refuse to start if either legacy table exists with rows on that host, with a clear error to run release N first or export and drain the rows. No calendar support horizon or rollback-compatibility window shall retain the legacy tables or bridge code.
 
 ### 5.4 Scheduler split
 
@@ -170,6 +170,12 @@ The current end state has one local work backing and the change-log cursor imple
 
 **R-DW20.** Synced schedule writes shall obey invariant #1’s change-log outbox and invariant #20’s no-foreign-key rule. The local work table, transfer acknowledgements, boot recovery, and dead-letter transitions shall be local-only dedicated CRUD operations.
 
+**R-DW21.** The sandbox-shell command framework shall expose an uncommon, operator-grade command to list dead-lettered and stale work rows and re-drive selected rows through the normal delivery path. A re-drive shall retain and traverse the ordinary idempotency/transfer fences, so re-driving an already-consumed row is a no-op. The same migration slice shall add a bound-reference skill runbook describing when and how to use the command.
+
+**R-DW22.** A task-fire idempotency identity shall be exactly `(task_id, scheduled_at)`, where `scheduled_at` is the binding’s `next_run_at` planned instant. It shall not include `modified_at`, `run_count`, or another generation component. A generation component becomes required only if catch-up/backfill semantics permit the same planned instant to fire again.
+
+**R-DW23.** Work-spool support shall be advertised by an explicit synced feature bit following the `hosts.models`, `hosts.platforms`, and `hosts.mcp_capabilities` pattern. Release N shall advertise it unconditionally at startup. The bit means only “this binary speaks the spool protocol”; it does not attest that this host has drained or dropped its local legacy tables. `hosts.version` shall not be used: it has no writer and gates no behavior. The static capability enables R-DW13’s per-pair send-path selection; R-DW15’s dynamic drain and drop conditions remain per host.
+
 ## 6. Task Firing: Decision C
 
 `tasks` currently looks like a synced queue because it carries status, claim, lease, and heartbeat fields. Its claim is not cluster mutual exclusion: two partitioned SQLite replicas can each win local CAS. `scheduler.ts` documents the later re-read as a heuristic, not consensus. The actual duplicate mitigation is rendezvous selection plus deterministic artifacts whose LWW resolution collapses equivalent state.
@@ -178,7 +184,7 @@ Decision C makes that boundary explicit. A task row is a replicated definition a
 
 1. Each host evaluates due bindings from its synced `tasks` replica.
 2. It computes the existing rendezvous winner.
-3. Only the winner creates the deterministic firing artifact and enqueues a local `task_fire` work row.
+3. Only the winner creates the deterministic `(task_id, scheduled_at)` firing artifact and enqueues a local `task_fire` work row.
 4. `BEGIN IMMEDIATE` claims that local row and the worker runs the task.
 5. Completion, retry, cron advance, event reset, results, and peer-eviction observations update the synced binding using the existing guarded semantics.
 6. If the winner dies, another host obtains the same definition through sync, recomputes the artifact, and recovers by the existing rendezvous/settle/idempotency mechanisms.
@@ -203,13 +209,13 @@ Every slice must leave the preceding production path runnable and must be indepe
 
 ### Slice 4A — Local work foundation and registry expansion
 
-Add the local table, dedicated CRUD, state-machine transition guards, row validator, observability vocabulary, and a registry that can describe every existing work kind. Keep all production writes on legacy tables. Add parity tests for claims, restart recovery, transfer dedup, expiry, and registry completeness.
+Add the local table, dedicated CRUD, state-machine transition guards, row validator, observability vocabulary, the synced work-spool capability bit, and a registry that can describe every existing work kind. Keep all production writes on legacy tables. Add parity tests for claims, restart recovery, transfer dedup, expiry, capability advertisement, and registry completeness.
 
 **Rollback:** stop selecting the new table; the table is additive and can remain unused. No legacy producer or consumer changed.
 
 ### Slice 4B — `dispatch_queue` kinds
 
-Move local thread-message dispatch to `durable_work` with `local-exclusive` plus single-ack. New code dual-reads both sources and bridges any legacy row through a derived legacy identity. This is first because it has one host, no relay transfer, and directly proves claim/recovery behavior.
+Move local thread-message dispatch to `durable_work` with `local-exclusive` plus single-ack. New code dual-reads both sources and bridges any legacy row through a derived legacy identity. Add the operator-grade sandbox-shell redrive command and the bound-reference runbook required by R-DW21. This is the right slice because it is the first slice with live work-table rows and validates local claim/recovery behavior without relay-transfer complexity; the command can therefore exercise the real lifecycle before passive and relay kinds migrate.
 
 **Rollback:** route new enqueues back to `dispatch_queue`; dual-read drains work-table dispatch rows until empty. Do not drop either table.
 
@@ -221,15 +227,15 @@ Move webhook, RSS, and connector intake rows to the work table using the existin
 
 ### Slice 4D — Active relay RPC and streaming
 
-Move directed requests, results, errors, client tool calls, inference requests, stream chunks, and stream ends to spool transfer. Implement transfer acknowledgement before sender retirement; apply kind-scoped TTLs and stream sequence dedup. During mixed versions, a new host dual-reads both stores and bridges legacy `relay_outbox`/`relay_inbox` rows. New-to-new traffic uses the new protocol; new-to-old traffic retains the legacy envelope until capability negotiation says otherwise.
+Move directed requests, results, errors, client tool calls, inference requests, stream chunks, and stream ends to spool transfer. Implement transfer acknowledgement before sender retirement; apply kind-scoped TTLs and stream sequence dedup. Release N advertises spool support at startup and chooses the send path per destination peer: spool transfer to an advertising peer, legacy envelopes to a non-advertising peer. Each host retains bridge readers while it locally drains its own `relay_outbox`/`relay_inbox` rows idempotently.
 
-**Rollback:** capability negotiation selects the old relay envelope for every peer; bridge readers drain new rows, so an already-created new row is not discarded. This is why table-by-table flag days are unsafe.
+**Rollback:** retain the per-pair send-path selection and local bridge readers during release N. After a host has dropped its own legacy tables, forward-fix from backup or migration tooling; do not reintroduce a long-lived compatibility path.
 
 ### Slice 4E — Retire relay storage
 
-After every supported host advertises work-spool support, bridge readers observe no legacy rows, and rollback support has expired, delete relay-table writers/readers and then drop `relay_outbox` and `relay_inbox`. `relay_cycles` remains telemetry. Update invariant #3 to the text in §7.
+Release N is the ordering-invariant migration release: every host advertises spool support at startup, sends spool transfer to advertising peers and legacy envelopes to non-advertising peers, and drains its own local legacy tables at startup and periodically. A host drops only its own `relay_outbox` and `relay_inbox` after every live peer advertises support and that host’s own tables are empty after drain. Different hosts may drop at different times; the tables are local-only. `relay_cycles` remains telemetry. Release N+1 deletes the legacy writers, readers, and bridge/dual-read code and refuses startup if either legacy table still has rows locally, directing the operator to run release N first or export and drain the rows. Update invariant #3 to the text in §7.
 
-**Rollback:** before the destructive compatibility horizon, retain a release capable of re-enabling bridge readers. After the drop, rollback means forward-fixing from backup/migration tooling, not pretending an older binary can safely recreate a discarded local spool.
+**Rollback:** the state gates, rather than a release horizon, prevent unsafe drops. After the spool-only flip or drop, forward-fix from backup/migration tooling; do not preserve an older binary as a compatibility path.
 
 ### Slice 5 — Split task firings from bindings
 
@@ -250,15 +256,20 @@ If required later, it fits this design without a new queue species: a work defin
 - A registry-completeness test fails if any work kind is not consumed, recovered, and observed through its declaration.
 - Local claim tests prove one execution across concurrent claimers and `processing → pending` restart recovery.
 - Transfer tests prove sender retirement only after durable receiver insert, receiver retirement only after consumption, and duplicate/lost acknowledgements are harmless.
-- Mixed-version integration tests cover old→new, new→old, and offline-peer catch-up for dispatch, intake, RPC, and streaming.
+- Rolling-deployment integration tests cover arbitrary host upgrade order for dispatch, intake, RPC, and streaming; they prove per-pair spool/legacy send-path selection, per-host local draining, and destructive drop only after every live peer advertises support and the dropping host’s own legacy tables are empty. They include a host that was offline through the cluster transition and prove it drains before dropping on return.
 - Stream tests prove duplicate/reordered chunk rows do not duplicate visible output and expire according to their kind policy.
 - Scheduler tests preserve rendezvous selection, settle-loss abort, stale lease/heartbeat eviction, deterministic artifact identity, cron rescheduling, and event mid-run re-arm without periodic spin.
 - No new work insert accepts a null idempotency key; migration tests demonstrate legacy null-key fencing.
+- Redrive tests prove selected dead-lettered/stale rows re-enter the ordinary path and that re-driving an already-consumed row is a no-op under the same idempotency fences.
+- The sandbox-shell redrive command and its bound-reference runbook ship together in Slice 4B.
 - Architecture and invariant documentation describe two stores and the revised invariant #3.
 
-## 11. Open Questions for Operator Review
+## 11. Resolved Decisions
 
-1. **Retention of dead letters:** should dead-letter payloads remain in the local database until explicit operator purge, or have a long bounded retention TTL (for example 30 days)? The answer affects disk bounds and post-incident evidence.
-2. **Compatibility horizon:** what minimum released-version window must the dual-read/legacy-envelope bridge support before destructive relay-table removal? This determines when Slice 4E is permitted.
-3. **Task firing identity:** should the deterministic task-fire key be derived solely from `(task_id, scheduled_at)` or include a schedule generation/version to make edited schedules unambiguous during a partition? The existing scheduler behavior must be preserved either way; the key choice needs an explicit compatibility decision.
-4. **Transport capability advertisement:** should spool-transfer capability be carried in the existing host metadata/version field or as an explicit synced feature bit? The latter is clearer during rolling upgrades; the former may avoid schema surface.
+1. **Dead-letter retention and redrive (Q1):** dead-lettered work rows retain a seven-day TTL, matching intake `expires_at`. The operator can list dead-lettered/stale rows and re-drive selected rows through a deliberately uncommon sandbox-shell command; the command uses the normal delivery path and its idempotency fences, so an already-consumed row remains a no-op. Slice 4B ships the command and its bound-reference runbook because it is the first slice with live `durable_work` rows and can validate the lifecycle without relay-transfer complexity.
+
+2. **Compatibility horizon (Q2):** there is no multi-release support horizon. The cluster is operator-controlled and can be fully deployed whenever ordering is known or the rollout is ordering-invariant; legacy tables and code paths should be removed as soon as state permits. Release N advertises spool support unconditionally, sends spool traffic to advertising peers and legacy envelopes to non-advertising peers, and drains each host’s own legacy tables. Each host drops only its own relay tables after all live peers advertise support and its own tables are empty after drain; hosts may do so at different times. Release N+1 deletes bridge/dual-read code and refuses startup if local legacy tables still contain rows, directing the operator to run release N first or export and drain them. These per-host gates are the enforcement, not a calendar policy.
+
+3. **Task-fire identity (Q3):** the identity is `(task_id, scheduled_at)` alone, with `scheduled_at` equal to `next_run_at`. Concurrent racers can agree on those values despite LWW divergence; adding `modified_at` or `run_count` could mint divergent keys and defeat rendezvous deduplication. An edit that leaves `next_run_at` identical still correctly permits one firing at that instant under either schedule meaning. A generation component is necessary only if future catch-up/backfill semantics allow planned-instant re-fires.
+
+4. **Capability advertisement (Q4):** use an explicit synced feature bit, following the existing `hosts.models`, `hosts.platforms`, and `hosts.mcp_capabilities` pattern. `hosts.version` has no writer and gates nothing. The bit says only that a binary speaks spool: it selects the send path per peer, while all-live-peer capability plus local drain gates only that host’s destructive local-table drop.
