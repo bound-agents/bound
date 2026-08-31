@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { readUnprocessedInboxByRefId } from "@bound/core";
 import { escapeXmlAttr } from "@bound/shared";
 import type { Task } from "@bound/shared";
+import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry";
 
 export interface EventWakeupContent {
 	/**
@@ -109,11 +110,9 @@ export function buildEventWakeupContent(db: Database, task: Task): EventWakeupCo
 	// payload schema is entirely different — from being folded as if it were an
 	// event envelope. Merge and order by received_at so multiple deliveries
 	// across kinds interleave oldest-first, matching single-kind behavior.
-	const entries = [
-		...readUnprocessedInboxByRefId(db, task.thread_id, "webhook_intake"),
-		...readUnprocessedInboxByRefId(db, task.thread_id, "connector_intake"),
-		...readUnprocessedInboxByRefId(db, task.thread_id, "rss_intake"),
-	].sort((a, b) => (a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0));
+	const entries = PASSIVE_INTAKE_KINDS.flatMap((kind) =>
+		readUnprocessedInboxByRefId(db, task.thread_id as string, kind),
+	).sort((a, b) => (a.received_at < b.received_at ? -1 : a.received_at > b.received_at ? 1 : 0));
 	if (entries.length === 0) {
 		return { content: fallback, processedIds: [] };
 	}

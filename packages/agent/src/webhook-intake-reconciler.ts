@@ -1,26 +1,18 @@
 import type { Database } from "bun:sqlite";
 import {
-	findActiveConnectorHandleByThreadId,
-	findActiveRssFeedByThreadId,
-	findActiveWebhookByThreadId,
 	findStaleUnprocessedIntake,
 	markProcessed,
 	readUnprocessedInboxByRefId,
 } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { createAdvisory, hasAdvisoryWithTitle } from "./advisories";
+import { PASSIVE_INTAKE_REGISTRY } from "./intake-kind-registry";
 
 /** Logger surface this module needs — the relay-processor passes its own. */
 interface ReconcilerLogger {
 	info: (msg: string, meta?: Record<string, unknown>) => void;
 	warn: (msg: string, meta?: Record<string, unknown>) => void;
 }
-
-/** Relay kind the webhook intake pipeline writes (see web/src/server/webhook-handler.ts). */
-const WEBHOOK_INTAKE_KIND = "webhook_intake";
-
-/** Relay kind the leader-gated RSS poller writes (see platforms/src/rss-poller.ts). */
-const RSS_INTAKE_KIND = "rss_intake";
 
 /**
  * Default staleness window. A healthy event handler drains its intake the moment
@@ -109,7 +101,7 @@ export function reconcileStaleWebhookIntake(
 	// `connector_intake` is also local durable intake. The separate connector
 	// handle reconciler still detects cancelled/deleted backing tasks; this
 	// sweep repairs only lost local event-bus wakeups for live bindings.
-	for (const sweep of INTAKE_SWEEPS) {
+	for (const sweep of PASSIVE_INTAKE_REGISTRY) {
 		const groups = findStaleUnprocessedIntake(db, sweep.kind, staleBeforeIso);
 
 		for (const group of groups) {
@@ -182,46 +174,3 @@ export function reconcileStaleWebhookIntake(
 
 	return { advisoriesRaised, redelivered, deadLettered };
 }
-
-/**
- * One sweep config per passive intake kind owned by an external-source
- * binding. The webhook `titleFor` string is byte-identical to the pre-RSS
- * version — it is the advisory dedup key across all non-deleted statuses,
- * so changing it would re-raise an advisory for every binding that already
- * has an applied/dismissed one.
- */
-interface IntakeSweep {
-	kind: "webhook_intake" | "rss_intake" | "connector_intake";
-	/** Operator-facing noun used in advisory prose ("webhook" / "RSS feed" / "connector"). */
-	noun: string;
-	findBinding: (
-		db: Database,
-		threadId: string,
-	) => { id: string; name: string; task_id: string } | null;
-	triggerKey: (binding: { id: string; name: string; task_id: string }) => string;
-	titleFor: (refId: string) => string;
-}
-
-const INTAKE_SWEEPS: IntakeSweep[] = [
-	{
-		kind: WEBHOOK_INTAKE_KIND,
-		noun: "webhook",
-		findBinding: findActiveWebhookByThreadId,
-		triggerKey: (binding) => `webhook:${binding.name}`,
-		titleFor: (refId) => `Webhook intake not draining: handler thread ${refId} is dark`,
-	},
-	{
-		kind: RSS_INTAKE_KIND,
-		noun: "RSS feed",
-		findBinding: findActiveRssFeedByThreadId,
-		triggerKey: (binding) => `rss:${binding.name}`,
-		titleFor: (refId) => `RSS intake not draining: handler thread ${refId} is dark`,
-	},
-	{
-		kind: "connector_intake",
-		noun: "connector",
-		findBinding: findActiveConnectorHandleByThreadId,
-		triggerKey: (binding) => `connector:event:${binding.id}`,
-		titleFor: (refId) => `Connector intake not draining: handler thread ${refId} is dark`,
-	},
-];
