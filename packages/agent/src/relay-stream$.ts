@@ -36,8 +36,9 @@ import {
 } from "rxjs";
 import type { Observable } from "rxjs";
 import { splitInferenceRequest } from "./inference-request-parts";
-import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
+import { type EligibleHost, createRelayOutboxEntry, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
+import type { TopologyRole } from "./topology";
 
 export interface RelayStreamDeps {
 	db: Database;
@@ -45,6 +46,8 @@ export interface RelayStreamDeps {
 	siteId: string;
 	logger: Logger;
 	maxPayloadBytes?: number;
+	/** Cluster role, for the durable-relay spoke hub-hop capability gate. */
+	topologyRole?: TopologyRole;
 }
 
 export interface RelayStreamOptions {
@@ -239,35 +242,43 @@ export function createRelayStream$(
 				serializedBytes <= maxPayloadBytes
 					? null
 					: splitInferenceRequest(serializedPayload, requestId, maxPayloadBytes);
-			const outboxEntries = requestParts
-				? requestParts.map((part) =>
-						createRelayOutboxEntry(
-							host.site_id,
-							deps.siteId,
-							"inference_part",
-							JSON.stringify(part),
-							perHostTimeoutMs,
-							requestId,
-							`inference-part:${requestId}:${part.index}`,
-							streamId,
-							traceContext ? JSON.stringify(traceContext) : undefined,
-						),
-					)
-				: [
-						createRelayOutboxEntry(
-							host.site_id,
-							deps.siteId,
-							"inference",
-							serializedPayload,
-							perHostTimeoutMs,
-							undefined,
-							`inference-stream:${streamId}`,
-							streamId,
-							traceContext ? JSON.stringify(traceContext) : undefined,
-						),
-					];
-			for (const entry of outboxEntries) writeOutbox(deps.db, entry, maxPayloadBytes);
-			const outboxEntry = outboxEntries[0];
+			// Multi-part inference REQUESTs (payload exceeds the transport ceiling)
+			// stay 100% legacy: inference_part reassembly rides relay_outbox untouched
+			// this slice. Only the single-part `inference` REQUEST row flips to the
+			// durable spool when toggle + per-hop capability permit; its stream chunks
+			// still ride back legacy by stream_id.
+			let outboxEntry: { id: string };
+			if (requestParts) {
+				const partEntries = requestParts.map((part) =>
+					createRelayOutboxEntry(
+						host.site_id,
+						deps.siteId,
+						"inference_part",
+						JSON.stringify(part),
+						perHostTimeoutMs,
+						requestId,
+						`inference-part:${requestId}:${part.index}`,
+						streamId,
+						traceContext ? JSON.stringify(traceContext) : undefined,
+					),
+				);
+				for (const entry of partEntries) writeOutbox(deps.db, entry, maxPayloadBytes);
+				outboxEntry = partEntries[0];
+			} else {
+				outboxEntry = routeRelayRequest(deps.db, {
+					targetSiteId: host.site_id,
+					sourceSiteId: deps.siteId,
+					kind: "inference",
+					payload: serializedPayload,
+					timeoutMs: perHostTimeoutMs,
+					// Verbatim #254 key: inference-stream:<streamId>.
+					idempotencyKey: `inference-stream:${streamId}`,
+					streamId,
+					traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
+					topologyRole: deps.topologyRole,
+					maxPayloadBytes,
+				});
+			}
 			const logicalRequestId = requestParts ? requestId : outboxEntry.id;
 
 			deps.logger.info("RELAY_STREAM: connecting", {

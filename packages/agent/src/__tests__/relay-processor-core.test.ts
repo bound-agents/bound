@@ -8,8 +8,10 @@ import {
 	getDurableWork,
 	insertInbox,
 	listDeadLetterDurableWork,
+	readInboxByRefId,
 	readUnprocessed,
 	resetProcessingDurableWork,
+	setDurableRelayEnabledForTesting,
 } from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
@@ -26,6 +28,7 @@ import type {
 import type { SchedulerAction, SchedulerLike } from "rxjs";
 import type { MCPClient } from "../mcp-client";
 import { INTAKE_RECONCILIATION_STARTUP_GRACE_MS, RelayProcessor } from "../relay-processor";
+import { routeRelayRequest } from "../relay-router";
 import { sleep, waitFor } from "./helpers";
 
 // Mock MCPClient for testing
@@ -1623,6 +1626,90 @@ describe("durable active relay lane", () => {
 				.query("SELECT kind, ref_id, target_site_id FROM relay_outbox WHERE ref_id = ?")
 				.get("durable-request"),
 		).toEqual({ kind: "result", ref_id: "durable-request", target_site_id: "requester-site" });
+	});
+
+	it("(f/§7) end-to-end: routeRelayRequest producer → 4D-A dispatch → legacy response the requester awaits on", async () => {
+		// Requester side: mark the target capable and route a durable tool_call to it.
+		setDurableRelayEnabledForTesting(true);
+		const nowIso = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES ('target-site', 'target-site', '0', ?, ?, 1, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 1, deleted = 0`,
+			[nowIso, nowIso],
+		);
+		const routed = routeRelayRequest(db, {
+			targetSiteId: "target-site",
+			sourceSiteId: "requester-site",
+			kind: "tool_call",
+			payload: JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }),
+			timeoutMs: 60_000,
+			topologyRole: "hub",
+		});
+		expect(routed.path).toBe("durable");
+		// The requester awaits on the durable row id; give the row its source so the
+		// 4D-A lane knows where to write the response back.
+		db.run("UPDATE durable_work SET source_site = 'requester-site' WHERE id = ?", [routed.id]);
+
+		// Target side: the 4D-A lane claims, dispatches, and writes the legacy response.
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		await (processor as any).processPendingEntries();
+
+		// The durable request was consumed.
+		expect(db.query("SELECT claim_state FROM durable_work WHERE id = ?").get(routed.id)).toEqual({
+			claim_state: "consumed",
+		});
+
+		// The response rode back legacy with ref_id = the durable row id — exactly the
+		// correlation id the requester awaits via readInboxByRefId. Move it into the
+		// inbox (the sync transport does this on delivery) and prove the await resolves.
+		const outboxResponse = db
+			.query(
+				"SELECT id, source_site_id, target_site_id, kind, ref_id, payload FROM relay_outbox WHERE ref_id = ?",
+			)
+			.get(routed.id) as {
+			id: string;
+			source_site_id: string;
+			target_site_id: string;
+			kind: string;
+			ref_id: string;
+			payload: string;
+		} | null;
+		if (!outboxResponse) throw new Error("expected a legacy response row for the durable request");
+		expect(outboxResponse).toMatchObject({
+			kind: "result",
+			ref_id: routed.id,
+			target_site_id: "requester-site",
+		});
+		if (!outboxResponse) throw new Error("expected a relay_outbox response row");
+		insertInbox(db, {
+			id: outboxResponse.id,
+			source_site_id: outboxResponse.source_site_id,
+			target_site_id: outboxResponse.target_site_id,
+			kind: outboxResponse.kind,
+			ref_id: outboxResponse.ref_id,
+			idempotency_key: null,
+			stream_id: null,
+			payload: outboxResponse.payload,
+			created_at: new Date().toISOString(),
+			expires_at: new Date(Date.now() + 60_000).toISOString(),
+			received_at: new Date().toISOString(),
+			trace_context: null,
+		});
+		const awaited = readInboxByRefId(db, routed.id);
+		expect(awaited?.kind).toBe("result");
+		expect(awaited?.ref_id).toBe(routed.id);
 	});
 
 	it("writes an error response and consumes a durable request whose handler fails", async () => {

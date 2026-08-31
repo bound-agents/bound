@@ -96,6 +96,16 @@ export interface PlatformMcpRegistryDeps {
 	eventBus: TypedEventEmitter;
 	logger: Logger;
 	hubSiteId?: string;
+	/** Active remote-request router supplied by @bound/agent to keep package dependencies acyclic. */
+	routeRelayRequest?: (params: {
+		targetSiteId: string;
+		sourceSiteId: string;
+		kind: "intake";
+		payload: string;
+		timeoutMs: number;
+		idempotencyKey: string;
+		traceContext?: string;
+	}) => { inserted: boolean };
 	/** Test-only override for the initial poll delay. Production uses two seconds. */
 	pollIntervalSeconds?: number;
 }
@@ -724,26 +734,40 @@ export class PlatformMcpRegistry {
 			// event is dropped here before it can duplicate the message.
 			for (const event of newEvents) {
 				const messageId = randomUUID();
-				const inserted = writeOutbox(this.deps.db, {
-					id: randomUUID(),
-					source_site_id: this.deps.siteId,
-					target_site_id: this.deps.hubSiteId,
-					kind: "intake",
-					ref_id: null,
-					idempotency_key: `intake:${subscription.serverName}:${event.eventId}`,
-					stream_id: null,
-					payload: JSON.stringify({
-						platform: subscription.serverName,
-						platform_event_id: event.eventId,
-						thread_id: subscription.threadId,
-						message_id: messageId,
-						content: JSON.stringify([event.data]),
-						attachments: [],
-					}),
-					created_at: now,
-					expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-					trace_context: serializedTraceContext,
+				const idempotencyKey = `intake:${subscription.serverName}:${event.eventId}`;
+				const payload = JSON.stringify({
+					platform: subscription.serverName,
+					platform_event_id: event.eventId,
+					thread_id: subscription.threadId,
+					message_id: messageId,
+					content: JSON.stringify([event.data]),
+					attachments: [],
 				});
+				// Agent wiring supplies the capability-gated durable router. Keep the
+				// fallback for standalone registries/tests that predate 4D-C.
+				const inserted = this.deps.routeRelayRequest
+					? this.deps.routeRelayRequest({
+							targetSiteId: this.deps.hubSiteId,
+							sourceSiteId: this.deps.siteId,
+							kind: "intake",
+							payload,
+							timeoutMs: 5 * 60_000,
+							idempotencyKey,
+							traceContext: serializedTraceContext ?? undefined,
+						}).inserted
+					: writeOutbox(this.deps.db, {
+							id: randomUUID(),
+							source_site_id: this.deps.siteId,
+							target_site_id: this.deps.hubSiteId,
+							kind: "intake",
+							ref_id: null,
+							idempotency_key: idempotencyKey,
+							stream_id: null,
+							payload,
+							created_at: now,
+							expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+							trace_context: serializedTraceContext,
+						});
 				if (!inserted) continue;
 				insertRow(
 					this.deps.db,

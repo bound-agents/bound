@@ -23,14 +23,17 @@ import {
 	timeout,
 } from "rxjs";
 import { buildCommandOutput } from "./agent-loop-utils";
-import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
+import { type EligibleHost, createRelayOutboxEntry, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
+import type { TopologyRole } from "./topology";
 
 export interface RelayWaitDeps {
 	db: Database;
 	eventBus: TypedEventEmitter;
 	siteId: string;
 	logger: Logger;
+	/** Cluster role, for the durable-relay spoke hub-hop capability gate. */
+	topologyRole?: TopologyRole;
 }
 
 export interface RelayWaitParams {
@@ -110,16 +113,18 @@ export function createRelayWait$(
 					toolName: params.toolName,
 					args: params.toolInput,
 				});
-				const newEntry = createRelayOutboxEntry(
-					currentHost.site_id,
-					deps.siteId,
-					"tool_call",
-					toolPayload,
-					timeoutMs,
-				);
 				try {
-					writeOutbox(deps.db, newEntry);
-					currentOutboxId = newEntry.id;
+					const routed = routeRelayRequest(deps.db, {
+						targetSiteId: currentHost.site_id,
+						sourceSiteId: deps.siteId,
+						kind: "tool_call",
+						payload: toolPayload,
+						timeoutMs,
+						// Legacy carried no key here; the minted row id is a deterministic,
+						// redelivery-stable key (R-DW5/6).
+						topologyRole: deps.topologyRole,
+					});
+					currentOutboxId = routed.id;
 				} catch (error) {
 					deps.logger.warn("Failed to write relay outbox entry for failover host", {
 						host: currentHost.host_name,

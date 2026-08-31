@@ -59,3 +59,38 @@ describe("passive intake durable work registrations", () => {
 		}
 	});
 });
+
+describe("RPC relay request durable work TTL (4D-C)", () => {
+	it("gives active RPC request kinds an RPC-class TTL, not the 7-day intake TTL", () => {
+		// A durable RPC request must expire on the relay-timeout class so the sweep
+		// dead-letters a stale request before the 4D-A lane dispatches it.
+		for (const kind of [
+			"tool_call",
+			"client_tool",
+			"notify_wakeup",
+			"inference",
+			"platform_request",
+			"intake",
+			"resource_read",
+			"prompt_invoke",
+			"cache_warm",
+		]) {
+			const entry = DURABLE_WORK_REGISTRY.find((candidate) => candidate.kind === kind);
+			expect(entry?.ttlMs).toBe(5 * 60 * 1000);
+		}
+	});
+
+	it("keeps the 5-minute window on stream response kinds", () => {
+		for (const kind of ["stream_chunk", "stream_end"]) {
+			const entry = DURABLE_WORK_REGISTRY.find((candidate) => candidate.kind === kind);
+			expect(entry?.ttlMs).toBe(5 * 60 * 1000);
+		}
+	});
+
+	it("keeps the 7-day window on passive intake kinds", () => {
+		for (const kind of ["webhook_intake", "rss_intake", "connector_intake"]) {
+			const entry = DURABLE_WORK_REGISTRY.find((candidate) => candidate.kind === kind);
+			expect(entry?.ttlMs).toBe(7 * 24 * 60 * 60 * 1000);
+		}
+	});
+});

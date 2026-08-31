@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getPeerSiteId } from "@bound/core";
+import type { SyncConfig } from "@bound/shared";
 
 /** Cluster topology role of a host: the hub (others connect to it) or a spoke. */
 export type TopologyRole = "hub" | "spoke";
@@ -37,4 +38,20 @@ export function resolveHubSiteId(
 	if (topologyRole === "hub") return localSiteId;
 
 	return getPeerSiteId(db);
+}
+
+/**
+ * Derive this host's topology role from its loaded optional config, matching
+ * the expression used in context assembly (`syncConfig?.hub ? "spoke" : "hub"`):
+ * a host that names a hub URL in `sync.json` is a spoke; otherwise it is the
+ * hub (or a standalone node, which behaves as a hub for routing purposes).
+ * Returns `undefined` when sync config is absent or failed to load.
+ */
+export function resolveTopologyRole(optionalConfig: {
+	sync?: { ok: boolean; value?: unknown };
+}): TopologyRole | undefined {
+	const syncResult = optionalConfig?.sync;
+	if (!syncResult?.ok) return undefined;
+	const syncConfig = syncResult.value as SyncConfig | undefined;
+	return syncConfig?.hub ? "spoke" : "hub";
 }

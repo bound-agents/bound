@@ -85,7 +85,11 @@ import {
 	InferenceRequestPartAssembler,
 } from "./inference-request-parts.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
-import { serializeRelayTraceCarrier } from "./relay-router.js";
+import {
+	resolveTopologyRole,
+	routeRelayRequest,
+	serializeRelayTraceCarrier,
+} from "./relay-router.js";
 
 /** Parse a serialized relay carrier without trusting its shape. */
 function parseTraceCarrier(raw: string | null | undefined): Record<string, string> | null {
@@ -922,18 +926,16 @@ export class RelayProcessor {
 				});
 			});
 		} else {
-			writeOutbox(this.db, {
-				id: randomUUID(),
-				source_site_id: entry.source_site_id,
-				target_site_id: targetSiteId,
+			routeRelayRequest(this.db, {
+				targetSiteId,
+				sourceSiteId: entry.source_site_id ?? this.siteId,
 				kind: "intake",
-				ref_id: entry.id,
-				idempotency_key: idempotencyKey,
-				stream_id: null,
 				payload: entry.payload,
-				created_at: new Date().toISOString(),
-				expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-				trace_context: serializeRelayTraceCarrier(injectTraceContext()),
+				timeoutMs: 5 * 60 * 1000,
+				refId: entry.id,
+				idempotencyKey,
+				traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
+				topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 			});
 		}
 

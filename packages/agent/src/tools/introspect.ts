@@ -83,13 +83,20 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 				// THIS host would mint a second, detached loop when the session lives
 				// elsewhere. The response comes back via synced messages metadata, so
 				// the polling below works regardless of which host runs the loop.
-				routeNotificationWakeup(ctx.db, ctx.eventBus, ctx.siteId, input.thread_id, {
-					type: "introspect",
-					correlation_id: correlationId,
-					source_thread: ctx.threadId ?? null,
-					content: input.message,
-					notification_id: randomUUID(),
-				});
+				routeNotificationWakeup(
+					ctx.db,
+					ctx.eventBus,
+					ctx.siteId,
+					input.thread_id,
+					{
+						type: "introspect",
+						correlation_id: correlationId,
+						source_thread: ctx.threadId ?? null,
+						content: input.message,
+						notification_id: randomUUID(),
+					},
+					ctx.topologyRole,
+				);
 
 				// Setup polling
 				const timeout = input.timeout ?? DEFAULT_TIMEOUT_MS;

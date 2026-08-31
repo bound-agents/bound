@@ -25,6 +25,16 @@ export function setDurableIntakeEnabledForTesting(enabled: boolean): void {
 	DURABLE_INTAKE_ENABLED = enabled;
 }
 
+/** Set BOUND_DURABLE_RELAY=0 or false before startup to restore legacy relay_outbox writes for all active non-stream RPC. */
+export let DURABLE_RELAY_ENABLED = !["0", "false"].includes(
+	process.env.BOUND_DURABLE_RELAY?.toLowerCase() ?? "",
+);
+
+/** Test seam for exercising the relay rollback route without changing production defaults. */
+export function setDurableRelayEnabledForTesting(enabled: boolean): void {
+	DURABLE_RELAY_ENABLED = enabled;
+}
+
 export type DurableWorkClaimState =
 	| "pending"
 	| "processing"

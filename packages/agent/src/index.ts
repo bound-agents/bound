@@ -97,7 +97,19 @@ export { Scheduler } from "./scheduler";
 // Export relay processor
 export { RelayProcessor } from "./relay-processor";
 export type { ClientToolResolver } from "./relay-processor";
-export { createRelayOutboxEntry, serializeRelayTraceCarrier } from "./relay-router";
+export {
+	createRelayOutboxEntry,
+	serializeRelayTraceCarrier,
+	routeRelayRequest,
+	shouldRouteRelayDurable,
+} from "./relay-router";
+export type {
+	RouteRelayRequestParams,
+	RouteRelayRequestResult,
+	RelayDurableRoutingContext,
+} from "./relay-router";
+export { resolveHubSiteId, resolveTopologyRole } from "./topology";
+export type { TopologyRole } from "./topology";
 
 // Export native tools
 export { createAgentTools } from "./tools/index";

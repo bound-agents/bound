@@ -74,6 +74,8 @@ export interface WebServerConfig {
 	 * (OpenAI Responses-API-compatible inference over HTTP).
 	 */
 	modelRouter?: ModelRouter | null;
+	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
+	topologyRole?: "hub" | "spoke";
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -165,6 +167,7 @@ export async function createWebServer(
 		clusterFs: config.clusterFs,
 		mcpConfig: config.mcpConfig,
 		modelRouter: config.modelRouter,
+		topologyRole: config.topologyRole,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

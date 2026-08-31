@@ -8,11 +8,12 @@ import {
 	HandleMessageTracker,
 	WARM_POKE_MARKER,
 	WARM_POKE_MAX_OUTPUT_TOKENS,
-	createRelayOutboxEntry,
 	generateThreadTitle,
 	getClientSessions,
 	isWarmPokeNotificationPayload,
+	resolveTopologyRole,
 	routeNotificationWakeup,
+	routeRelayRequest,
 	runIntrospectResponseStamp,
 	selectWarmPokeTargets,
 	serializeRelayTraceCarrier,
@@ -45,7 +46,6 @@ import {
 	softDelete,
 	updateRow,
 	writeMessageMetadata,
-	writeOutbox,
 } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import type { PlatformMcpRegistry, PlatformRegisteredTool } from "@bound/platforms";
@@ -113,7 +113,7 @@ function injectRelayTraceCarrier(): Record<string, string> | null {
  * from real DB state) so they keep the simpler `[notification]` shape.
  */
 export function createRemotePlatformRequest(
-	deps: Pick<AppContext, "db" | "siteId" | "eventBus">,
+	deps: Pick<AppContext, "db" | "siteId" | "eventBus" | "optionalConfig">,
 ): NonNullable<ConnectorToolContext["remotePlatformRequest"]> {
 	return async (
 		serverName: string,
@@ -131,23 +131,24 @@ export function createRemotePlatformRequest(
 			);
 		}
 
-		const entry = createRelayOutboxEntry(
+		const routed = routeRelayRequest(deps.db, {
 			targetSiteId,
-			deps.siteId,
-			"platform_request",
-			JSON.stringify({
+			sourceSiteId: deps.siteId,
+			kind: "platform_request",
+			payload: JSON.stringify({
 				server_name: serverName,
 				method,
 				params,
 				timeout_ms: 15_000,
 			}),
-			15_000,
-			undefined,
-			undefined,
-			undefined,
-			serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
-		);
-		writeOutbox(deps.db, entry, undefined, deps.eventBus);
+			timeoutMs: 15_000,
+			// Legacy carried no key here; the minted row id is a deterministic,
+			// redelivery-stable key (R-DW5/6).
+			traceContext: serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
+			topologyRole: resolveTopologyRole(deps.optionalConfig),
+			eventBus: deps.eventBus,
+		});
+		const entry = { id: routed.id };
 
 		const deadline = Date.now() + 15_000;
 		while (Date.now() < deadline) {
@@ -516,6 +517,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			handleMessageTracker,
 			clusterFs: clusterFsObj?.fs ?? null,
 			modelRouter,
+			topologyRole: resolveTopologyRole(appContext.optionalConfig),
 		});
 		await webServer.start();
 
@@ -1187,6 +1189,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				appContext.siteId,
 				task.thread_id,
 				notificationPayload,
+				resolveTopologyRole(appContext.optionalConfig),
 			);
 		});
 
@@ -1383,6 +1386,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			eventBus: appContext.eventBus,
 			logger: appContext.logger,
 			hubSiteId,
+			routeRelayRequest: (params) =>
+				routeRelayRequest(appContext.db, {
+					...params,
+					topologyRole: resolveTopologyRole(appContext.optionalConfig),
+					eventBus: appContext.eventBus,
+				}),
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");
 

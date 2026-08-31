@@ -6,7 +6,6 @@ import {
 	findToolResultByThreadAndCallId,
 	markProcessed,
 	readInboxByRefId,
-	writeOutbox,
 } from "@bound/core";
 import {
 	type ClientToolPayload,
@@ -19,7 +18,7 @@ import {
 import { injectTraceContext } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 import { resolveClientSessionHost } from "./delegation";
-import { createRelayOutboxEntry } from "./relay-router";
+import { type TopologyRole, routeRelayRequest } from "./relay-router";
 
 const POLL_MS = 100;
 
@@ -34,6 +33,8 @@ export interface AwaitableClientToolDeps {
 	connectionId?: string;
 	timeoutMs: number;
 	signal?: AbortSignal;
+	/** Cluster role, for the durable-relay spoke hub-hop capability gate. */
+	topologyRole?: TopologyRole;
 }
 
 export interface AwaitableClientToolResult {
@@ -213,17 +214,18 @@ export async function dispatchAwaitableClientTool(
 	};
 	const dispatchContext = context.active();
 	const traceContext = context.with(dispatchContext, () => injectTraceContext());
-	const outbox = createRelayOutboxEntry(
-		sessionHost.site_id,
-		deps.siteId,
-		"client_tool",
-		JSON.stringify(payload),
-		deps.timeoutMs,
-		undefined,
-		undefined,
-		undefined,
-		traceContext ? JSON.stringify(traceContext) : undefined,
+	const routed = context.with(dispatchContext, () =>
+		routeRelayRequest(deps.db, {
+			targetSiteId: sessionHost.site_id,
+			sourceSiteId: deps.siteId,
+			kind: "client_tool",
+			payload: JSON.stringify(payload),
+			timeoutMs: deps.timeoutMs,
+			// Legacy carried no key here; the minted row id is a deterministic,
+			// redelivery-stable key (R-DW5/6).
+			traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
+			topologyRole: deps.topologyRole,
+		}),
 	);
-	context.with(dispatchContext, () => writeOutbox(deps.db, outbox));
-	return waitForRemoteResult(deps, outbox.id);
+	return waitForRemoteResult(deps, routed.id);
 }

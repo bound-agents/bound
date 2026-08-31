@@ -144,6 +144,8 @@ export {
 	validateDurableWork,
 	DURABLE_INTAKE_ENABLED,
 	setDurableIntakeEnabledForTesting,
+	DURABLE_RELAY_ENABLED,
+	setDurableRelayEnabledForTesting,
 	InvalidDurableWorkRowError,
 	type DurableWorkRow,
 	type NewDurableWork,
