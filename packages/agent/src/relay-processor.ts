@@ -18,7 +18,6 @@ import {
 	readUndelivered,
 	readUnprocessed,
 	recordRelayCycle,
-	writeOutbox,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import { LLMError, type ModelRouter } from "@bound/llm";
@@ -88,6 +87,7 @@ import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
 import {
 	resolveTopologyRole,
 	routeRelayRequest,
+	routeRelayResponse,
 	serializeRelayTraceCarrier,
 } from "./relay-router.js";
 
@@ -434,6 +434,30 @@ export class RelayProcessor {
 
 			const claimed = claimLocalDurableWork(this.db, this.siteId, registration.kind);
 			if (!claimed) continue;
+
+			// Cancel is deliberately excluded from HandledRequestKind (its abort logic
+			// runs in the first pass of processPendingEntries, not via a handler). A
+			// cancel routed durable (4D-D) arrives here as a claimed row, so it must
+			// fire the same abort the legacy relay_inbox first pass fires — otherwise
+			// the row falls through to the `!handler` branch below and dead-letters
+			// without ever stopping the running stream. Mirror the legacy abort, then
+			// consume the row (token-fenced ack) since the cancel is fully handled.
+			if (claimed.kind === "cancel") {
+				if (claimed.ref_id) {
+					this.pendingCancels.add(claimed.ref_id);
+					this.activeInferenceStreams.get(claimed.ref_id)?.abort();
+				}
+				if (
+					!claimed.claim_token ||
+					!acknowledgeDurableWork(this.db, claimed.id, claimed.claim_token)
+				) {
+					this.logger.warn("Lost durable relay claim before cancel acknowledgement", {
+						durableWorkId: claimed.id,
+					});
+				}
+				continue;
+			}
+
 			const handler = this.handlerMap[claimed.kind as HandledRequestKind];
 			if (!handler) {
 				const message = `No active relay handler for durable kind ${claimed.kind}`;
@@ -1201,19 +1225,18 @@ export class RelayProcessor {
 			return;
 		}
 		const resultPayload: ClientResultPayload = { call_id: callId, content, is_error: isError };
-		const now = new Date();
-		writeOutbox(this.db, {
-			id: randomUUID(),
-			source_site_id: this.siteId,
-			target_site_id: targetSiteId,
+		// 4D-D: client_result rides the same response transport. Key `response:<reqId>`.
+		routeRelayResponse(this.db, {
+			targetSiteId,
+			sourceSiteId: this.siteId,
 			kind: "client_result",
-			ref_id: entry.id,
-			idempotency_key: null,
-			stream_id: entry.stream_id ?? null,
+			refId: entry.id,
+			idempotencyKey: `response:${entry.id}`,
+			streamId: entry.stream_id ?? undefined,
 			payload: JSON.stringify(resultPayload),
-			created_at: now.toISOString(),
-			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-			trace_context: serializeRelayTraceCarrier(injectTraceContext()),
+			timeoutMs: 5 * 60 * 1000,
+			traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
+			topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 		});
 	}
 
@@ -1417,23 +1440,28 @@ export class RelayProcessor {
 		kind: "result" | "error",
 		payload: string,
 	): void {
-		const now = new Date();
 		const targetSiteId = requestEntry.source_site_id;
 		if (!targetSiteId) {
 			throw new Error("Request entry has no source_site_id");
 		}
-		writeOutbox(this.db, {
-			id: randomUUID(),
-			source_site_id: this.siteId,
-			target_site_id: targetSiteId,
+		// 4D-D: responses ride the same RPC transport as requests. routeRelayResponse
+		// flips to the durable spool when the toggle is on AND every hop to the
+		// requester advertises capability; otherwise legacy relay_outbox, byte-
+		// identical to before. The durable dedup key is `response:<requestId>` — one
+		// request yields exactly one response outcome (result XOR error), so a
+		// redelivered transfer of the SAME row is fenced by (kind, idempotency_key).
+		routeRelayResponse(this.db, {
+			targetSiteId,
+			sourceSiteId: this.siteId,
 			kind,
-			ref_id: requestEntry.id,
-			idempotency_key: null,
-			stream_id: requestEntry.stream_id ?? null,
+			refId: requestEntry.id,
+			idempotencyKey: `response:${requestEntry.id}`,
+			streamId: requestEntry.stream_id ?? undefined,
 			payload,
-			created_at: now.toISOString(),
-			expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-			trace_context: serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)),
+			timeoutMs: 5 * 60 * 1000,
+			traceContext:
+				serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)) ?? undefined,
+			topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 		});
 	}
 
@@ -1446,21 +1474,23 @@ export class RelayProcessor {
 	): void {
 		if (!requestEntry.source_site_id) return;
 		const chunkPayload: StreamChunkPayload = { chunks, seq };
-		const now = new Date();
-		const outboxEntry: Omit<RelayOutboxEntry, "delivered"> = {
-			id: randomUUID(),
-			source_site_id: this.siteId,
-			target_site_id: requestEntry.source_site_id,
+		// 4D-D: chunk rows are seq-scoped (stream:<streamId>:<seq>) so distinct seqs
+		// coexist while a redelivered chunk transfer dedupes on the fence. Chunk rows
+		// are kind-scoped short-TTL (5min registry class); the consumer
+		// (relay-stream$) folds the durable union into its seq-dedup loop.
+		routeRelayResponse(this.db, {
+			targetSiteId: requestEntry.source_site_id,
+			sourceSiteId: this.siteId,
 			kind,
-			ref_id: requestEntry.id,
-			idempotency_key: null,
-			stream_id: streamId,
+			refId: requestEntry.id,
+			idempotencyKey: `stream:${streamId}:${seq}`,
+			streamId,
 			payload: JSON.stringify(chunkPayload),
-			created_at: now.toISOString(),
-			expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(), // 10 min expiry for chunks
-			trace_context: serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)),
-		};
-		writeOutbox(this.db, outboxEntry);
+			timeoutMs: 10 * 60 * 1000, // 10 min expiry for chunks
+			traceContext:
+				serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)) ?? undefined,
+			topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
+		});
 	}
 
 	private pruneIdempotencyCache(): void {
@@ -2108,19 +2138,20 @@ export class RelayProcessor {
 			// Write trace_data response if spans were collected (AC5.3)
 			if (collectedSpans.length > 0) {
 				if (entry.source_site_id) {
-					const now = new Date();
-					writeOutbox(this.db, {
-						id: randomUUID(),
-						source_site_id: this.siteId,
-						target_site_id: entry.source_site_id,
+					// 4D-D: trace_data rides the same response transport. Key `response:<reqId>`
+					// — one trace_data per request, redelivered transfer fenced.
+					routeRelayResponse(this.db, {
+						targetSiteId: entry.source_site_id,
+						sourceSiteId: this.siteId,
 						kind: "trace_data",
-						ref_id: entry.id,
-						idempotency_key: null,
-						stream_id: entry.stream_id ?? null,
+						refId: entry.id,
+						idempotencyKey: `response:${entry.id}`,
+						streamId: entry.stream_id ?? undefined,
 						payload: JSON.stringify(collectedSpans),
-						created_at: now.toISOString(),
-						expires_at: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
-						trace_context: serializeRelayTraceCarrier(parseTraceCarrier(entry.trace_context)),
+						timeoutMs: 5 * 60 * 1000,
+						traceContext:
+							serializeRelayTraceCarrier(parseTraceCarrier(entry.trace_context)) ?? undefined,
+						topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 					});
 				}
 			}

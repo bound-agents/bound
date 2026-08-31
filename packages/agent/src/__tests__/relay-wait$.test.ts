@@ -3,7 +3,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test"
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase, writeOutbox } from "@bound/core";
+import {
+	acknowledgeDurableWork,
+	applyMetricsSchema,
+	applySchema,
+	claimDurableWorkByIds,
+	createDatabase,
+	resetProcessingDurableWork,
+	writeOutbox,
+} from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Subject, firstValueFrom } from "rxjs";
 import { type EligibleHost, createRelayOutboxEntry } from "../relay-router";
@@ -547,5 +555,165 @@ describe("createRelayWait$", () => {
 		// Should get timeout message, not "not-timed-out" default
 		expect(result.content).toContain("Timeout");
 		expect(result.content).toContain("2 eligible host(s)");
+	});
+
+	describe("4D-D union-await (durable response rows)", () => {
+		// The awaiter reads the UNION of legacy inbox response rows and pending
+		// durable response rows targeted at self, consuming durable rows exactly-once
+		// via the token-fenced claim/ack lifecycle.
+		function insertDurableResponse(opts: {
+			id: string;
+			kind: string;
+			refId: string;
+			payload: unknown;
+		}): void {
+			const now = new Date().toISOString();
+			db.prepare(`
+				INSERT INTO durable_work
+				(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, ref_id, source_site)
+				VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+			`).run(
+				opts.id,
+				siteId,
+				opts.kind,
+				JSON.stringify(opts.payload),
+				`response:${opts.refId}`,
+				now,
+				opts.refId,
+				"host-0",
+			);
+		}
+
+		function durableRowState(id: string): string | undefined {
+			return (
+				db.prepare("SELECT claim_state FROM durable_work WHERE id = ?").get(id) as {
+					claim_state: string;
+				} | null
+			)?.claim_state;
+		}
+
+		it("resolves the awaiter from a durable result row and consumes it", async () => {
+			const { params, outboxEntryId } = createHostsAndParams();
+			const aborted$ = new Subject<void>();
+			const promise = firstValueFrom(
+				createRelayWait$(
+					{
+						db,
+						eventBus,
+						siteId,
+						logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+					},
+					params,
+					aborted$,
+				),
+				{ defaultValue: { content: "cancelled", retriable: false } },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			insertDurableResponse({
+				id: "dur-result-1",
+				kind: "result",
+				refId: outboxEntryId,
+				payload: { stdout: "Durable output", stderr: "", exit_code: 0, execution_ms: 1 },
+			});
+			eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
+
+			const result = await promise;
+			expect(result.content).toContain("Durable output");
+			expect(durableRowState("dur-result-1")).toBe("consumed");
+		});
+
+		it("does not double-resolve when a duplicate durable row is present (exactly-once consume)", async () => {
+			const { params, outboxEntryId } = createHostsAndParams();
+			const aborted$ = new Subject<void>();
+			const promise = firstValueFrom(
+				createRelayWait$(
+					{
+						db,
+						eventBus,
+						siteId,
+						logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+					},
+					params,
+					aborted$,
+				),
+				{ defaultValue: { content: "cancelled", retriable: false } },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			// One logical response, one row (a redelivered transfer is fenced upstream to
+			// the SAME row). The awaiter must resolve once and consume it.
+			insertDurableResponse({
+				id: "dur-result-2",
+				kind: "result",
+				refId: outboxEntryId,
+				payload: { stdout: "Once", stderr: "", exit_code: 0, execution_ms: 1 },
+			});
+			eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
+
+			const result = await promise;
+			expect(result.content).toContain("Once");
+			expect(durableRowState("dur-result-2")).toBe("consumed");
+		});
+
+		it("acks a durable response only AFTER delivery, and a crash before ack boot-resets it (no silent loss)", async () => {
+			// OBJECTION 1 crash-window: the required order is claim → deliver → ack.
+			// readUnionResponse claims the durable row, but the ack is deferred until the
+			// awaiter has RECEIVED the value. This test proves the ordering two ways.
+			const { params, outboxEntryId } = createHostsAndParams();
+			const aborted$ = new Subject<void>();
+
+			// (a) Happy path: on resolution the row is consumed (settle ran post-delivery).
+			const promise = firstValueFrom(
+				createRelayWait$(
+					{
+						db,
+						eventBus,
+						siteId,
+						logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {} },
+					},
+					params,
+					aborted$,
+				),
+				{ defaultValue: { content: "cancelled", retriable: false } },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			insertDurableResponse({
+				id: "dur-crash-1",
+				kind: "result",
+				refId: outboxEntryId,
+				payload: { stdout: "Delivered", stderr: "", exit_code: 0, execution_ms: 1 },
+			});
+			eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
+			const result = await promise;
+			// The value reached the awaiter...
+			expect(result.content).toContain("Delivered");
+			// ...and only THEN was the row acked to consumed.
+			expect(durableRowState("dur-crash-1")).toBe("consumed");
+
+			// (b) Crash window: simulate a crash between delivery and ack. A durable row
+			// left in 'processing' (claimed, delivery underway, ack lost) is recovered by
+			// boot reset back to 'pending' — it is NOT silently consumed, so a later
+			// consumer (or the awaiter's own take(1)-completed re-read that finds no
+			// subscriber) can still see it. This proves the row survives a mid-delivery
+			// crash rather than being retired before the awaiter received the value.
+			insertDurableResponse({
+				id: "dur-crash-2",
+				kind: "result",
+				refId: "ref-unattended",
+				payload: { stdout: "Unattended", stderr: "", exit_code: 0, execution_ms: 1 },
+			});
+			// Claim it (delivery would happen now) but DO NOT ack — the crash point.
+			const claimed = claimDurableWorkByIds(db, ["dur-crash-2"], siteId);
+			expect(claimed[0]?.claim_state).toBe("processing");
+			// Boot recovery resets processing → pending on this host.
+			resetProcessingDurableWork(db, siteId);
+			expect(durableRowState("dur-crash-2")).toBe("pending");
+			// A stale ack under the now-invalid token is rejected (token fence): the row
+			// stays pending/recoverable, never silently consumed by a lost-race claimant.
+			const staleToken = claimed[0]?.claim_token ?? "";
+			expect(acknowledgeDurableWork(db, "dur-crash-2", staleToken)).toBe(false);
+			expect(durableRowState("dur-crash-2")).toBe("pending");
+		});
 	});
 });

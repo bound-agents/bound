@@ -11,7 +11,7 @@ import {
 	deadLetterExpiredDurableWork,
 	setDurableRelayEnabledForTesting,
 } from "@bound/core";
-import { routeRelayRequest, shouldRouteRelayDurable } from "../relay-router";
+import { routeRelayRequest, routeRelayResponse, shouldRouteRelayDurable } from "../relay-router";
 
 let db: Database;
 
@@ -274,5 +274,100 @@ describe("routeRelayRequest write behavior", () => {
 		expect(durableRows()[0].claim_state).toBe("dead_letter");
 		// The 4D-A claim lane must NOT pick up a dead-lettered row.
 		expect(claimLocalDurableWork(db, TARGET, "tool_call")).toBeNull();
+	});
+});
+
+describe("routeRelayResponse write behavior", () => {
+	const LOCAL = "responder-site";
+	const REQUESTER = "requester-site";
+
+	function durableRows(): Array<Record<string, unknown>> {
+		return db.query("SELECT * FROM durable_work").all() as Array<Record<string, unknown>>;
+	}
+	function outboxRows(): Array<Record<string, unknown>> {
+		return db.query("SELECT * FROM relay_outbox").all() as Array<Record<string, unknown>>;
+	}
+
+	it("(a) toggle on + capable requester writes a durable response row keyed response:<refId>", () => {
+		setHostCapability(REQUESTER, true);
+		const routed = routeRelayResponse(db, {
+			targetSiteId: REQUESTER,
+			sourceSiteId: LOCAL,
+			kind: "result",
+			payload: JSON.stringify({ stdout: "ok", stderr: "", exit_code: 0 }),
+			timeoutMs: 300_000,
+			refId: "req-abc",
+			idempotencyKey: "response:req-abc",
+			topologyRole: "hub",
+		});
+		expect(routed.path).toBe("durable");
+		expect(routed.inserted).toBe(true);
+		expect(outboxRows()).toHaveLength(0);
+		const rows = durableRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0].target_site_id).toBe(REQUESTER);
+		expect(rows[0].ref_id).toBe("req-abc");
+		expect(rows[0].idempotency_key).toBe("response:req-abc");
+		expect(rows[0].kind).toBe("result");
+	});
+
+	it("(e) toggle off writes a legacy relay_outbox response row with a null idempotency_key", () => {
+		setDurableRelayEnabledForTesting(false);
+		setHostCapability(REQUESTER, true);
+		const routed = routeRelayResponse(db, {
+			targetSiteId: REQUESTER,
+			sourceSiteId: LOCAL,
+			kind: "result",
+			payload: JSON.stringify({ stdout: "ok", stderr: "", exit_code: 0 }),
+			timeoutMs: 300_000,
+			refId: "req-abc",
+			idempotencyKey: "response:req-abc",
+			topologyRole: "hub",
+		});
+		expect(routed.path).toBe("legacy");
+		expect(durableRows()).toHaveLength(0);
+		const rows = outboxRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0].ref_id).toBe("req-abc");
+		expect(rows[0].idempotency_key).toBeNull();
+	});
+
+	it("(a) a redelivered response transfer is fenced by (kind, idempotency_key)", () => {
+		setHostCapability(REQUESTER, true);
+		const params = {
+			targetSiteId: REQUESTER,
+			sourceSiteId: LOCAL,
+			kind: "result" as const,
+			payload: JSON.stringify({ stdout: "ok", stderr: "", exit_code: 0 }),
+			timeoutMs: 300_000,
+			refId: "req-abc",
+			idempotencyKey: "response:req-abc",
+			topologyRole: "hub" as const,
+		};
+		const first = routeRelayResponse(db, params);
+		const second = routeRelayResponse(db, params);
+		expect(first.inserted).toBe(true);
+		expect(second.inserted).toBe(false); // fence held — no second row
+		expect(durableRows()).toHaveLength(1);
+	});
+
+	it("stream chunk keys are seq-scoped so distinct seqs coexist but a redelivered seq is fenced", () => {
+		setHostCapability(REQUESTER, true);
+		const chunk = (seq: number) =>
+			routeRelayResponse(db, {
+				targetSiteId: REQUESTER,
+				sourceSiteId: LOCAL,
+				kind: "stream_chunk",
+				payload: JSON.stringify({ chunks: [], seq }),
+				timeoutMs: 300_000,
+				refId: "req-abc",
+				idempotencyKey: `stream:stream-1:${seq}`,
+				streamId: "stream-1",
+				topologyRole: "hub",
+			});
+		chunk(0);
+		chunk(1);
+		expect(chunk(0).inserted).toBe(false); // redelivered seq 0 fenced
+		expect(durableRows()).toHaveLength(2);
 	});
 });

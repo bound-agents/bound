@@ -564,3 +564,93 @@ export function routeRelayRequest(
 	const inserted = writeOutbox(db, entry, params.maxPayloadBytes, params.eventBus);
 	return { path: "legacy", id: entry.id, inserted };
 }
+
+/** Parameters for routing one relay RESPONSE (result/error/chunk/etc.) back to a requester. */
+export interface RouteRelayResponseParams {
+	/** The original requester — the site that awaits this response. */
+	targetSiteId: string;
+	/** This host (the responder). */
+	sourceSiteId: string;
+	/** A `dispatch: "response"` kind (result, error, client_result, stream_chunk, stream_end, trace_data). */
+	kind: RelayKind;
+	payload: string;
+	timeoutMs: number;
+	/** Correlation ref: the request's row id. Required — the awaiter reads by this. */
+	refId: string;
+	/**
+	 * Deterministic, redelivery-stable dedup key. Scalar responses pass
+	 * `response:<refId>`; stream chunks pass `stream:<streamId>:<seq>`. On the
+	 * durable path this is the `(kind, idempotency_key)` fence, so a redelivered
+	 * SPOOL_TRANSFER of the identical response row is idempotent (INSERT OR
+	 * IGNORE). One request yields exactly one response outcome (a handler writes
+	 * result XOR error, never both), so `result`/`error` never both land — the
+	 * fence exists to absorb a re-shipped copy of the SAME row, not to collide
+	 * two distinct outcomes.
+	 */
+	idempotencyKey: string;
+	streamId?: string;
+	traceContext?: string;
+	/** Cluster role, for the spoke hub-hop capability gate. */
+	topologyRole: TopologyRole | undefined;
+	eventBus?: TypedEventEmitter;
+	maxPayloadBytes?: number;
+}
+
+/**
+ * Route one relay RESPONSE back to the awaiting requester over the durable work
+ * spool or the legacy relay outbox, per {@link shouldRouteRelayDurable} applied
+ * to the RESPONSE's destination (the original requester's site). Responses are
+ * the other half of the same RPC transport as {@link routeRelayRequest}: the
+ * same per-hop capability gate decides durable-vs-legacy per destination, and
+ * the same toggle governs both. Returns the written row's id and whether it was
+ * newly inserted (false = the durable fence already held a copy — a redelivered
+ * response).
+ *
+ * On the durable path the response is inserted peer-targeted + PENDING; 4D-B's
+ * transfer ships it to the requester, whose union-await
+ * ({@link readDurableResponseByRefId} / {@link readDurableResponsesByStreamId})
+ * claims + delivers + acks it. The 4D-A relay-processor lane deliberately does
+ * NOT claim response kinds; the awaiter is the sole response consumer.
+ */
+export function routeRelayResponse(
+	db: Database,
+	params: RouteRelayResponseParams,
+): RouteRelayRequestResult {
+	const durable = shouldRouteRelayDurable(db, {
+		targetSiteId: params.targetSiteId,
+		localSiteId: params.sourceSiteId,
+		topologyRole: params.topologyRole,
+	});
+
+	if (durable) {
+		const id = crypto.randomUUID();
+		const now = new Date();
+		const inserted = insertDurableWork(db, {
+			id,
+			target_site_id: params.targetSiteId,
+			kind: params.kind,
+			payload: params.payload,
+			idempotency_key: params.idempotencyKey,
+			expires_at: new Date(now.getTime() + params.timeoutMs).toISOString(),
+			ref_id: params.refId,
+			stream_id: params.streamId ?? null,
+		});
+		return { path: "durable", id, inserted };
+	}
+
+	const entry = createRelayOutboxEntry(
+		params.targetSiteId,
+		params.sourceSiteId,
+		params.kind,
+		params.payload,
+		params.timeoutMs,
+		params.refId,
+		// Legacy responses carried a null idempotency_key; preserve that on the
+		// legacy path (the durable fence key is a durable-path-only concept).
+		undefined,
+		params.streamId,
+		params.traceContext,
+	);
+	const inserted = writeOutbox(db, entry, params.maxPayloadBytes, params.eventBus);
+	return { path: "legacy", id: entry.id, inserted };
+}
