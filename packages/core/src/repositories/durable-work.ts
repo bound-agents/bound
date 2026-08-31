@@ -1,6 +1,10 @@
 import type { Database } from "bun:sqlite";
 import { RELAY_RESPONSE_KINDS } from "@bound/shared";
-import type { DurableWorkInspectionRow, DurableWorkRow } from "../durable-work";
+import {
+	type DurableWorkInspectionRow,
+	type DurableWorkRow,
+	LOCAL_WORK_TARGET,
+} from "../durable-work";
 
 export function listDurableWorkForInspection(
 	db: Database,
@@ -159,13 +163,15 @@ export function countPendingIntakeDurableWork(db: Database, refId: string): numb
 /**
  * Count peer-targeted rows that must drain before a hub switch: pending rows and
  * transferring rows whose sender copies remain durable until receiver acknowledgement.
+ * Excludes LOCAL_WORK_TARGET sentinel rows (in-process dispatch wakeups) — they
+ * never transfer, so they must not block a hub switch.
  */
 export function countPendingPeerTargetedDurableWork(db: Database, ownSiteId: string): number {
 	return (
 		db
 			.query(
-				"SELECT COUNT(*) AS count FROM durable_work WHERE target_site_id != ? AND claim_state IN ('pending', 'transferring')",
+				"SELECT COUNT(*) AS count FROM durable_work WHERE target_site_id != ? AND target_site_id != ? AND claim_state IN ('pending', 'transferring')",
 			)
-			.get(ownSiteId) as { count: number }
+			.get(ownSiteId, LOCAL_WORK_TARGET) as { count: number }
 	).count;
 }

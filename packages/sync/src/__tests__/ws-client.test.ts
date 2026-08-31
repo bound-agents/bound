@@ -491,6 +491,86 @@ describe("WsSyncClient", () => {
 		});
 	});
 
+	describe("spool frame dispatch (R-DW10)", () => {
+		// Regression: ws-client silently dropped SPOOL_TRANSFER and
+		// SPOOL_TRANSFER_ACK frames — hub→spoke spool deliveries never arrived,
+		// and hub acks never retired the spoke's transferring sender copies.
+		function createClientWithTransport() {
+			const calls: Array<{ method: string; sourceSiteId: string; payload: unknown }> = [];
+			const wsTransport = {
+				addPeer: () => {},
+				removePeer: () => {},
+				handleChangelogPush: () => {},
+				handleChangelogAck: () => {},
+				drainChangelog: () => {},
+				handleRelayDeliver: () => {},
+				handleRelayAck: () => {},
+				drainRelayOutbox: () => {},
+				handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => {
+					calls.push({ method: "handleSpoolTransfer", sourceSiteId, payload });
+				},
+				handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => {
+					calls.push({ method: "handleSpoolTransferAck", sourceSiteId, payload });
+				},
+				drainDurableWorkSpool: () => {},
+				applySnapshotChunk: () => 0,
+				applyColumnChunk: () => {},
+			};
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				wsTransport,
+			});
+			clients.push(client);
+			const symmetricKey = new Uint8Array(32).fill(9);
+			const internal = client as unknown as {
+				symmetricKey: Uint8Array | null;
+				handleMessage: (event: MessageEvent) => void;
+			};
+			internal.symmetricKey = symmetricKey;
+			return { client, internal, calls, symmetricKey };
+		}
+
+		it("routes SPOOL_TRANSFER to wsTransport.handleSpoolTransfer with the hub as source", () => {
+			const { internal, calls, symmetricKey } = createClientWithTransport();
+			const payload = {
+				entries: [
+					{
+						id: "w-1",
+						target_site_id: spokeSiteId,
+						source_site: hubSiteId,
+						kind: "result",
+						payload: { ok: true },
+						idempotency_key: "response:req-1",
+						ref_id: "req-1",
+						stream_id: null,
+						expires_at: null,
+						received_at: null,
+						token: "tok-1",
+					},
+				],
+			};
+			const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, symmetricKey);
+			internal.handleMessage({ data: frame } as unknown as MessageEvent);
+
+			expect(calls).toEqual([{ method: "handleSpoolTransfer", sourceSiteId: hubSiteId, payload }]);
+		});
+
+		it("routes SPOOL_TRANSFER_ACK to wsTransport.handleSpoolTransferAck", () => {
+			const { internal, calls, symmetricKey } = createClientWithTransport();
+			const payload = { entries: [{ id: "w-1", token: "tok-1" }] };
+			const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER_ACK, payload, symmetricKey);
+			internal.handleMessage({ data: frame } as unknown as MessageEvent);
+
+			expect(calls).toEqual([
+				{ method: "handleSpoolTransferAck", sourceSiteId: hubSiteId, payload },
+			]);
+		});
+	});
+
 	describe("config validation", () => {
 		it("requires hubUrl configuration", () => {
 			const client = new WsSyncClient({

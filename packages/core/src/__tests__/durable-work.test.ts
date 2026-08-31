@@ -11,7 +11,10 @@ import {
 	insertDurableWork,
 	pruneConsumedDurableWork,
 	pruneExpiredDeadLetters,
+	readPendingPeerTargetedDurableWork,
+	readTransferringDurableWork,
 	resetProcessingDurableWork,
+	resetTransferringLocalDurableWork,
 } from "../durable-work";
 import {
 	countPendingIntakeDurableWork,
@@ -269,5 +272,47 @@ describe("durable_work intake reads", () => {
 		expect(db.query("SELECT claim_state FROM durable_work WHERE id = 'a'").get()).toEqual({
 			claim_state: "pending",
 		});
+	});
+});
+
+describe("durable_work LOCAL_WORK_TARGET sentinel", () => {
+	it("peer-transfer selectors exclude local-targeted rows", () => {
+		insertDurableWork(db, { ...row("local-row", "local") });
+		insertDurableWork(db, { ...row("peer-row", "peer-site") });
+
+		const pending = readPendingPeerTargetedDurableWork(db, "own-site");
+		expect(pending.map((r) => r.id)).toEqual(["peer-row"]);
+
+		// Even asked for explicitly, the sentinel never reads as peer-targeted.
+		expect(readPendingPeerTargetedDurableWork(db, "own-site", "local")).toEqual([]);
+
+		beginDurableWorkTransfer(db, "local-row");
+		beginDurableWorkTransfer(db, "peer-row");
+		expect(readTransferringDurableWork(db).map((r) => r.id)).toEqual(["peer-row"]);
+		expect(readTransferringDurableWork(db, "local")).toEqual([]);
+	});
+
+	it("local-targeted rows do not count toward the hub-switch drain gate", () => {
+		insertDurableWork(db, { ...row("local-row", "local") });
+		insertDurableWork(db, { ...row("peer-row", "peer-site") });
+		expect(countPendingPeerTargetedDurableWork(db, "own-site")).toBe(1);
+	});
+
+	it("resetTransferringLocalDurableWork recovers hijacked local rows to pending on boot", () => {
+		insertDurableWork(db, { ...row("hijacked", "local") });
+		insertDurableWork(db, { ...row("real-transfer", "peer-site") });
+		beginDurableWorkTransfer(db, "hijacked");
+		beginDurableWorkTransfer(db, "real-transfer");
+
+		expect(resetTransferringLocalDurableWork(db)).toBe(1);
+
+		// The hijacked wakeup is claimable again; the genuine peer transfer keeps
+		// its retained token so the sender resumes it on reconnect.
+		expect(db.query("SELECT claim_state FROM durable_work WHERE id = 'hijacked'").get()).toEqual({
+			claim_state: "pending",
+		});
+		expect(
+			db.query("SELECT claim_state FROM durable_work WHERE id = 'real-transfer'").get(),
+		).toEqual({ claim_state: "transferring" });
 	});
 });
