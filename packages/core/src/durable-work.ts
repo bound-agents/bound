@@ -313,6 +313,36 @@ export function acknowledgeDurableWork(db: Database, id: string, claimToken: str
 	);
 }
 
+/**
+ * Release a consumer's active claim back to `pending` WITHOUT consuming the row,
+ * for a *retryable* disposition — the firing was neither executed nor failed, so
+ * it must remain claimable next tick rather than being retired to `consumed`
+ * (whose `(kind, idempotency_key)` fence would block a re-enqueue of the same
+ * key) or dead-lettered. Token-fenced: only the live claim generation may
+ * release, so a stale token (a peer reclaimed, boot recovery already reset it)
+ * is a no-op.
+ *
+ * Decrements `attempt_count` by one so the release is *attempt-neutral*: the
+ * claim path ({@link claimLocalDurableWork} / {@link claimDurableWorkByIds})
+ * increments `attempt_count` on every claim, and a retryable release means the
+ * attempt did not consume budget (e.g. a daily-budget deferral that will re-run
+ * once budget clears, or a crash-window firing waiting on peer eviction).
+ * Without the decrement, repeated releases across ticks would march the row
+ * toward the attempt-N dead-letter budget for reasons that are not failures.
+ * `MAX(attempt_count - 1, 0)` guards against underflow.
+ */
+export function releaseDurableWorkClaim(db: Database, id: string, claimToken: string): boolean {
+	return instrument(
+		"release-claim",
+		"unknown",
+		() =>
+			db.run(
+				"UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL, attempt_count = MAX(attempt_count - 1, 0) WHERE id = ? AND claim_state = 'processing' AND claim_token = ?",
+				[id, claimToken],
+			).changes === 1,
+	);
+}
+
 /** Sender-side handoff begins before network transfer; it remains durable until receiver acknowledgement. */
 export function beginDurableWorkTransfer(db: Database, id: string): string | null {
 	return instrument("transfer-begin", "unknown", () => {

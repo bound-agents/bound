@@ -133,6 +133,7 @@ export {
 	claimLocalDurableWork,
 	claimDurableWorkByIds,
 	acknowledgeDurableWork,
+	releaseDurableWorkClaim,
 	beginDurableWorkTransfer,
 	acknowledgeDurableWorkTransfer,
 	resetProcessingDurableWork,
