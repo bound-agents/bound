@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { trace } from "@opentelemetry/api";
 import { withCoreSpan } from "./telemetry";
 
-export type DurableWorkClaimState = "pending" | "processing" | "transferring" | "dead_letter";
+export type DurableWorkClaimState =
+	| "pending"
+	| "processing"
+	| "transferring"
+	| "consumed"
+	| "dead_letter";
 export type WorkClaimDiscipline = "local-exclusive" | "optimistic-lease" | "none";
 export type WorkRetirementRule = "single-ack" | "all-subscriber-cursors-past";
 
@@ -21,6 +26,7 @@ export interface DurableWorkRow {
 	created_at: string;
 	expires_at: string | null;
 	dead_lettered_at: string | null;
+	consumed_at: string | null;
 }
 
 export interface NewDurableWork {
@@ -157,8 +163,8 @@ export function acknowledgeDurableWork(db: Database, id: string, claimToken: str
 		"unknown",
 		() =>
 			db.run(
-				"DELETE FROM durable_work WHERE id = ? AND claim_state = 'processing' AND claim_token = ?",
-				[id, claimToken],
+				"UPDATE durable_work SET claim_state = 'consumed', consumed_at = ?, claim_token = NULL, claimed_at = NULL WHERE id = ? AND claim_state = 'processing' AND claim_token = ?",
+				[new Date().toISOString(), id, claimToken],
 			).changes === 1,
 	);
 }
@@ -240,6 +246,19 @@ export function deadLetterDurableWork(
 	);
 }
 
+/** Retain consumed idempotency fences for the same one-hour window as legacy dispatch acknowledgements. */
+export function pruneConsumedDurableWork(db: Database, cutoff: string): number {
+	return instrument(
+		"consumed-prune",
+		"any",
+		() =>
+			db.run(
+				"DELETE FROM durable_work WHERE claim_state = 'consumed' AND consumed_at IS NOT NULL AND consumed_at < ?",
+				[cutoff],
+			).changes,
+	);
+}
+
 export function pruneExpiredDeadLetters(db: Database, now = new Date().toISOString()): number {
 	return instrument(
 		"dead-letter-prune",
@@ -249,5 +268,33 @@ export function pruneExpiredDeadLetters(db: Database, now = new Date().toISOStri
 				"DELETE FROM durable_work WHERE claim_state = 'dead_letter' AND expires_at IS NOT NULL AND expires_at <= ?",
 				[now],
 			).changes,
+	);
+}
+
+export interface DurableWorkInspectionRow extends DurableWorkRow {
+	age_ms: number;
+}
+
+/**
+ * Reopen a dead letter without changing its delivery identity. The existing
+ * `(kind, idempotency_key)` row remains the fence; a retired row is absent and
+ * therefore cannot be resurrected by this operation.
+ */
+export function redriveDeadLetterDurableWork(
+	db: Database,
+	id: string,
+	expiresAt: string | null,
+): boolean {
+	return instrument(
+		"redrive",
+		"unknown",
+		() =>
+			db.run(
+				`UPDATE durable_work
+			 SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL,
+			     dead_lettered_at = NULL, expires_at = ?
+			 WHERE id = ? AND claim_state = 'dead_letter'`,
+				[expiresAt, id],
+			).changes === 1,
 	);
 }

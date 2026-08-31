@@ -8,6 +8,7 @@ import {
 	claimLocalDurableWork,
 	deadLetterExpiredDurableWork,
 	insertDurableWork,
+	pruneConsumedDurableWork,
 	pruneExpiredDeadLetters,
 	resetProcessingDurableWork,
 } from "../durable-work";
@@ -67,6 +68,13 @@ describe("durable_work", () => {
 		if (!claim?.claim_token) throw new Error("expected claim token");
 		expect(acknowledgeDurableWork(db, "a", "wrong")).toBe(false);
 		expect(acknowledgeDurableWork(db, "a", claim.claim_token)).toBe(true);
+		expect(
+			db.query("SELECT claim_state, consumed_at FROM durable_work WHERE id = 'a'").get(),
+		).toEqual({
+			claim_state: "consumed",
+			consumed_at: expect.any(String),
+		});
+		expect(pruneConsumedDurableWork(db, "9999-01-01T00:00:00.000Z")).toBe(1);
 	});
 	it("expires into a retained dead letter then prunes after the seven-day TTL", () => {
 		const expired = "2026-01-01T00:00:00.000Z";
@@ -77,5 +85,36 @@ describe("durable_work", () => {
 		).toEqual({ claim_state: "dead_letter", last_error: "expired" });
 		expect(pruneExpiredDeadLetters(db, "2026-01-07T00:00:00.000Z")).toBe(0);
 		expect(pruneExpiredDeadLetters(db, "2026-01-08T00:00:00.001Z")).toBe(1);
+	});
+});
+
+describe("durable_work upgrade", () => {
+	it("rebuilds a 4A durable_work table, preserves rows, and permits consumed acknowledgements", () => {
+		const legacy = new Database(":memory:");
+		legacy.exec(`CREATE TABLE durable_work (
+			id TEXT PRIMARY KEY, target_site_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'dead_letter')),
+			claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+			created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT
+		) STRICT`);
+		legacy.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, created_at)
+			VALUES ('4a-row', 'local', 'client_tool', '{}', '4a-key', ?)`,
+			[new Date().toISOString()],
+		);
+
+		applySchema(legacy);
+		expect(legacy.query("PRAGMA table_info(durable_work)").all()).toContainEqual(
+			expect.objectContaining({ name: "consumed_at" }),
+		);
+		const claim = claimLocalDurableWork(legacy, "local");
+		expect(claim?.id).toBe("4a-row");
+		expect(acknowledgeDurableWork(legacy, "4a-row", claim?.claim_token ?? "")).toBe(true);
+		expect(legacy.query("SELECT id, claim_state FROM durable_work").get()).toEqual({
+			id: "4a-row",
+			claim_state: "consumed",
+		});
+		legacy.close();
 	});
 });

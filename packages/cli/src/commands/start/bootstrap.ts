@@ -28,6 +28,7 @@ import {
 	insertRow,
 	normalizeEdgeRelations,
 	resetProcessing,
+	resetProcessingDurableWork,
 	updateRow,
 	withChangeLog,
 } from "@bound/core";
@@ -408,6 +409,13 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		const dispatchReset = resetProcessing(appContext.db);
 		if (dispatchReset > 0) {
 			appContext.logger.info(`[recovery] Reset ${dispatchReset} in-flight dispatch(es) to pending`);
+		}
+
+		const durableDispatchReset = resetProcessingDurableWork(appContext.db, "local");
+		if (durableDispatchReset > 0) {
+			appContext.logger.info(
+				`[recovery] Reset ${durableDispatchReset} in-flight durable dispatch(es) to pending`,
+			);
 		}
 
 		// Recovery for client_tool_call entries: reset to pending with claimed_by = NULL

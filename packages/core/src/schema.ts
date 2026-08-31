@@ -168,6 +168,49 @@ function ensureColumn(db: Database, table: string, column: string, type = "TEXT"
 	db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
+/**
+ * Rebuild the local durable spool when upgrading from the 4A shape. SQLite
+ * cannot alter a CHECK constraint, so adding `consumed` needs a table swap.
+ */
+function migrateDurableWorkForConsumedState(db: Database): void {
+	const columns = db.query("PRAGMA table_info(durable_work)").all() as Array<{ name: string }>;
+	if (columns.length === 0 || columns.some((column) => column.name === "consumed_at")) return;
+
+	db.exec("BEGIN");
+	try {
+		db.exec(`CREATE TABLE durable_work_new (
+			id TEXT PRIMARY KEY,
+			target_site_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
+			claim_token TEXT,
+			claimed_at TEXT,
+			attempt_count INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			created_at TEXT NOT NULL,
+			expires_at TEXT,
+			dead_lettered_at TEXT,
+			consumed_at TEXT
+		) STRICT`);
+		db.exec(`INSERT INTO durable_work_new (
+			id, target_site_id, kind, payload, idempotency_key, claim_state,
+			claim_token, claimed_at, attempt_count, last_error, created_at, expires_at, dead_lettered_at
+		) SELECT id, target_site_id, kind, payload, idempotency_key, claim_state,
+			claim_token, claimed_at, attempt_count, last_error, created_at, expires_at, dead_lettered_at
+			FROM durable_work`);
+		db.exec("DROP TABLE durable_work");
+		db.exec("ALTER TABLE durable_work_new RENAME TO durable_work");
+		db.exec("COMMIT");
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {}
+		throw error;
+	}
+}
+
 export function installRowHashInvalidationTriggers(db: Database): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS row_state_hashes (
@@ -700,6 +743,8 @@ export function applySchema(db: Database): void {
 		WHERE idempotency_key IS NOT NULL
 	`);
 
+	migrateDurableWorkForConsumedState(db);
+
 	// durable_work (non-replicated, local-only): the additive per-host spool.
 	// It intentionally has no change-log integration; see R-DW19.
 	db.run(`
@@ -709,14 +754,15 @@ export function applySchema(db: Database): void {
 			kind TEXT NOT NULL,
 			payload TEXT NOT NULL,
 			idempotency_key TEXT NOT NULL,
-			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'dead_letter')),
+			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
 			claim_token TEXT,
 			claimed_at TEXT,
 			attempt_count INTEGER NOT NULL DEFAULT 0,
 			last_error TEXT,
 			created_at TEXT NOT NULL,
 			expires_at TEXT,
-			dead_lettered_at TEXT
+			dead_lettered_at TEXT,
+			consumed_at TEXT
 		) STRICT
 	`);
 	db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_work_kind_key

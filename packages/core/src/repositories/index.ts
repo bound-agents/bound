@@ -41,6 +41,7 @@ export * from "./rss-feeds";
 export * from "./change-log";
 export * from "./host-meta";
 export * from "./sync-state";
+export * from "./durable-work";
 
 export * from "./queries/attached-session-hosts";
 export * from "./queries/client-sessions-with-host";

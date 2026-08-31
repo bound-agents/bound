@@ -2027,11 +2027,11 @@ export class RelayProcessor {
 					try {
 						const result = await this.runLocalLoop(req, localCtx, shouldYield);
 						if (result.yielded) return { yielded: true };
-						acknowledgeBatch(this.db, claimedIds);
+						acknowledgeBatch(this.db, claimed);
 						return result;
 					} catch (error) {
 						try {
-							acknowledgeBatch(this.db, claimedIds);
+							acknowledgeBatch(this.db, claimed);
 						} catch (ackError) {
 							this.logger.warn("Failed to acknowledge batch after error", {
 								claimedIds: claimedIds.length,

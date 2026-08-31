@@ -43,7 +43,7 @@ afterEach(() => {
 function drainOnce(threadId: string): string[] {
 	const claimed = claimPending(db, threadId, siteId);
 	const ids = claimed.map((e) => e.message_id);
-	if (ids.length > 0) acknowledgeBatch(db, ids);
+	if (claimed.length > 0) acknowledgeBatch(db, claimed);
 	return ids;
 }
 
@@ -332,11 +332,13 @@ describe("ThreadExecutor", () => {
 					}),
 			);
 
-			// The processing entry should have been reset to pending.
-			const row = db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
-				status: string;
-			};
-			expect(row.status).toBe("pending");
+			// The processing durable dispatch entry should have been reset to pending.
+			const row = db
+				.query(
+					"SELECT claim_state FROM durable_work WHERE kind = 'dispatch_message' AND json_extract(payload, '$.message_id') = ?",
+				)
+				.get(msgId) as { claim_state: string };
+			expect(row.claim_state).toBe("pending");
 			resolveRun?.({});
 		});
 	});

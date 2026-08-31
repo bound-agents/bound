@@ -666,7 +666,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							`Error: auxiliary agent identity ${agentId} not found for background invocation`,
 							true,
 						);
-						acknowledgeBatch(appContext.db, claimedIds);
+						acknowledgeBatch(appContext.db, claimed);
 						return { claimedIds };
 					}
 					const threadInfo = findThreadUserAndInterfaceById(appContext.db, thread_id);
@@ -714,7 +714,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 							"Error: this host's agent loop factory cannot construct auxiliary loops",
 							true,
 						);
-						acknowledgeBatch(appContext.db, claimedIds);
+						acknowledgeBatch(appContext.db, claimed);
 						return { claimedIds };
 					}
 
@@ -743,7 +743,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						result.error ? `Auxiliary agent errand failed: ${result.error}` : result.summary,
 						!!result.error,
 					);
-					acknowledgeBatch(appContext.db, claimedIds);
+					acknowledgeBatch(appContext.db, claimed);
 					return { claimedIds };
 				} catch (error) {
 					finishParent(
@@ -751,7 +751,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						true,
 					);
 					try {
-						acknowledgeBatch(appContext.db, claimedIds);
+						acknowledgeBatch(appContext.db, claimed);
 					} catch {
 						// claimed entries reset via executor error path
 					}
@@ -1055,13 +1055,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						}
 
 						// Acknowledge the batch we just processed
-						acknowledgeBatch(appContext.db, claimedIds);
+						acknowledgeBatch(appContext.db, claimed);
 						handleMessageTracker.maybeCloseTurnIfIdle(appContext.db, thread_id, "ok");
 						return { claimedIds };
 					} catch (error) {
 						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
 						try {
-							acknowledgeBatch(appContext.db, claimedIds);
+							acknowledgeBatch(appContext.db, claimed);
 						} catch (ackError) {
 							appContext.logger.error("Failed to acknowledge message batch", {
 								error: ackError instanceof Error ? ackError.message : String(ackError),
@@ -1193,8 +1193,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Recover: dispatch any threads that have pending entries (from crash recovery)
 		const pendingThreads = appContext.db
-			.prepare(`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'`)
-			.all() as Array<{ thread_id: string }>;
+			.prepare(`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'
+				UNION SELECT DISTINCT json_extract(payload, '$.thread_id') AS thread_id FROM durable_work
+				WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending'`)
+			.all("local") as Array<{ thread_id: string }>;
 		for (const { thread_id } of pendingThreads) {
 			appContext.logger.info(`[recovery] Re-dispatching pending messages for thread ${thread_id}`);
 			handleThread(thread_id).catch((err) =>

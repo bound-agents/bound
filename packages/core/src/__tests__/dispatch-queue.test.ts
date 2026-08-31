@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,7 @@ import {
 	resetProcessing,
 	resetProcessingForThread,
 	resolveDeferredToolResult,
+	setDurableDispatchEnqueueEnabledForTesting,
 	updateClaimedBy,
 } from "../dispatch";
 import { insertInbox } from "../relay";
@@ -37,6 +39,7 @@ beforeEach(() => {
 	dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
 	db = createDatabase(dbPath);
 	applySchema(db);
+	setDurableDispatchEnqueueEnabledForTesting(false);
 });
 
 afterEach(() => {
@@ -1607,5 +1610,130 @@ describe("acknowledgeToolResultForCall", () => {
 			.query("SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?")
 			.get(threadId, CLIENT_TOOL_CALL) as { status: string };
 		expect(ct.status).toBe("pending");
+	});
+});
+
+describe("durable dispatch", () => {
+	beforeEach(() => setDurableDispatchEnqueueEnabledForTesting(true));
+
+	it("uses durable_work and preserves the consumed idempotency fence", () => {
+		const threadId = randomUUID();
+		const messageId = randomUUID();
+		enqueueMessage(db, messageId, threadId);
+		expect(db.query("SELECT COUNT(*) AS c FROM dispatch_queue").get()).toEqual({ c: 0 });
+		const claimed = claimPending(db, threadId, "host-1");
+		expect(claimed).toHaveLength(1);
+		acknowledgeBatch(db, claimed);
+		expect(db.query("SELECT claim_state FROM durable_work").get()).toEqual({
+			claim_state: "consumed",
+		});
+		enqueueMessage(db, messageId, threadId);
+		expect(db.query("SELECT COUNT(*) AS c FROM durable_work").get()).toEqual({ c: 1 });
+	});
+
+	it("does not double-deliver a legacy row fenced by a durable row", () => {
+		const threadId = randomUUID();
+		const messageId = randomUUID();
+		enqueueMessage(db, messageId, threadId);
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at) VALUES (?, ?, 'pending', ?, ?)",
+			[messageId, threadId, now, now],
+		);
+		expect(claimPending(db, threadId, "host-1").map((entry) => entry.message_id)).toEqual([
+			messageId,
+		]);
+	});
+});
+
+// Bridge fences must cover the durable row's entire retained lifecycle: a
+// legacy twin is acknowledged rather than left claimable after suppression.
+describe("durable dispatch bridge fences", () => {
+	beforeEach(() => setDurableDispatchEnqueueEnabledForTesting(true));
+
+	for (const [eventType, key, payload] of [
+		["user_message", "message-id", null],
+		["notification", "notification-id", JSON.stringify({ type: "test" })],
+		[TOOL_RESULT, "tool-result-id", JSON.stringify({ call_id: "call-id" })],
+	] as const) {
+		for (const durableState of ["processing", "consumed"] as const) {
+			it(`suppresses a pending legacy ${eventType} twin when durable is ${durableState}`, () => {
+				const threadId = randomUUID();
+				const durableMessageId = eventType === TOOL_RESULT ? randomUUID() : key;
+				const identity = eventType === TOOL_RESULT ? `tool-result:${threadId}:call-id` : key;
+				db.run(
+					`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at)
+					 VALUES (?, 'local', 'dispatch_message', ?, ?, ?, 0, ?)`,
+					[
+						randomUUID(),
+						JSON.stringify({
+							message_id: durableMessageId,
+							thread_id: threadId,
+							event_type: eventType,
+							event_payload: payload,
+						}),
+						identity,
+						durableState,
+						new Date().toISOString(),
+					],
+				);
+				db.run(
+					`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
+					 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
+					[key, threadId, eventType, payload, new Date().toISOString(), new Date().toISOString()],
+				);
+				expect(claimPending(db, threadId, "host-1")).toEqual([]);
+				expect(db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(key)).toEqual(
+					{ status: "acknowledged" },
+				);
+				expect(claimPending(db, threadId, "host-2")).toEqual([]);
+			});
+		}
+	}
+
+	it("BOUND_DURABLE_DISPATCH=0 routes new enqueues to legacy while the dual reader drains durable rows", () => {
+		const script = `import { Database } from "bun:sqlite";
+import { applySchema } from "./packages/core/src/schema";
+import { insertDurableWork } from "./packages/core/src/durable-work";
+import { claimPending, enqueueMessage } from "./packages/core/src/dispatch";
+const db = new Database(":memory:"); applySchema(db);
+insertDurableWork(db, { id: "durable", target_site_id: "local", kind: "dispatch_message", payload: JSON.stringify({ message_id: "durable-message", thread_id: "thread", event_type: "user_message", event_payload: null }), idempotency_key: "durable-message" });
+enqueueMessage(db, "legacy-message", "thread");
+console.log(JSON.stringify({ legacy: db.query("SELECT COUNT(*) AS c FROM dispatch_queue").get(), claimed: claimPending(db, "thread", "host").map((entry) => entry.message_id).sort() }));`;
+		const output = execFileSync("bun", ["-e", script], {
+			cwd: process.cwd(),
+			env: { ...process.env, BOUND_DURABLE_DISPATCH: "0" },
+			encoding: "utf8",
+		});
+		expect(JSON.parse(output.trim())).toEqual({
+			legacy: { c: 1 },
+			claimed: ["durable-message", "legacy-message"],
+		});
+	});
+
+	it("uses R-DW6 dispatch identities without a dispatch namespace", () => {
+		const threadId = randomUUID();
+		enqueueMessage(db, "message-id", threadId);
+		enqueueNotification(db, threadId, { type: "notification" });
+		enqueueToolResult(db, threadId, "call-id");
+		const keys = (
+			db
+				.query("SELECT idempotency_key FROM durable_work ORDER BY kind, idempotency_key")
+				.all() as Array<{ idempotency_key: string }>
+		).map((row) => row.idempotency_key);
+		expect(keys).toContain("message-id");
+		expect(keys).toContain(`tool-result:${threadId}:call-id`);
+		expect(keys.some((key) => key.startsWith("notify:"))).toBe(true);
+		expect(keys.some((key) => key.startsWith("dispatch:"))).toBe(false);
+	});
+
+	it("uses relay notification identities verbatim so duplicate dispatch wakeups share one durable row", () => {
+		const threadId = randomUUID();
+		const identity = `notify:${randomUUID()}`;
+		enqueueNotification(db, threadId, { type: "relay-notify" }, identity);
+		enqueueNotification(db, threadId, { type: "dispatch-notify" }, identity);
+		expect(db.query("SELECT idempotency_key FROM durable_work").all()).toEqual([
+			{ idempotency_key: identity },
+		]);
 	});
 });

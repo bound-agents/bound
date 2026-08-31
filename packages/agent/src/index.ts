@@ -191,3 +191,4 @@ export {
 	DURABLE_WORK_KINDS,
 	type DurableWorkRegistration,
 } from "./durable-work-registry";
+export { createWorkspoolCommand } from "./workspool-command";

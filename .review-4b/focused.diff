@@ -1,0 +1,1649 @@
+diff --git a/packages/agent/src/__tests__/handle-message-tracker.integration.test.ts b/packages/agent/src/__tests__/handle-message-tracker.integration.test.ts
+index 507923c4..4688c8b9 100644
+--- a/packages/agent/src/__tests__/handle-message-tracker.integration.test.ts
++++ b/packages/agent/src/__tests__/handle-message-tracker.integration.test.ts
+@@ -65,146 +65,140 @@ describe("HandleMessageTracker.maybeCloseTurnIfIdle (dispatch_queue integration)
+ 
+ 	it("closes the turn when the dispatch_queue has no pending or processing rows", () => {
+ 		tracker.openTurn(threadId);
+ 		const closed = tracker.maybeCloseTurnIfIdle(db, threadId);
+ 		expect(closed).toBe(true);
+ 		expect(tracker.listOpenTurns()).toEqual([]);
+ 	});
+ 
+ 	it("keeps the turn open while a user_message row is pending", () => {
+ 		tracker.openTurn(threadId);
+ 		const messageId = randomUUID();
+ 		// Insert a real `messages` row so enqueueMessage's FK-friendly insert lands.
+ 		db.prepare(
+ 			`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+ 			 VALUES (?, ?, 'user', 'hi', ?, ?, ?, 0)`,
+ 		).run(messageId, threadId, new Date().toISOString(), new Date().toISOString(), siteId);
+ 		enqueueMessage(db, messageId, threadId);
+ 
+ 		const closed = tracker.maybeCloseTurnIfIdle(db, threadId);
+ 		expect(closed).toBe(false);
+ 		expect(tracker.listOpenTurns()).toEqual([threadId]);
+ 	});
+ 
+ 	it("keeps the turn open while a client_tool_call is pending (regression: don't fragment traces)", () => {
+ 		tracker.openTurn(threadId);
+ 		// Simulate the agent loop enqueueing a client tool dispatch. The
+ 		// resulting dispatch_queue row sits in `pending` until the WS handler
+ 		// receives the tool result and calls acknowledgeClientToolCall. Our
+ 		// close probe MUST treat that row as "work in flight."
+ 		enqueueClientToolCall(
+ 			db,
+ 			threadId,
+ 			{
+ 				call_id: "call-1",
+ 				tool_name: "boundless_bash",
+ 				arguments: { cmd: "ls" },
+ 			},
+ 			"conn-1",
+ 		);
+ 
+ 		const closed = tracker.maybeCloseTurnIfIdle(db, threadId);
+ 		expect(closed).toBe(false);
+ 		expect(tracker.listOpenTurns()).toEqual([threadId]);
+ 	});
+ 
+ 	it("keeps the turn open while a notification row is pending", () => {
+ 		tracker.openTurn(threadId);
+ 		enqueueNotification(db, threadId, { type: "task_complete", task_name: "x" });
+ 
+ 		const closed = tracker.maybeCloseTurnIfIdle(db, threadId);
+ 		expect(closed).toBe(false);
+ 	});
+ 
+ 	it("simulates the full client tool round-trip and only closes on the resumed handler's terminal turn", () => {
+ 		// Open turn at the start of handler #1.
+ 		tracker.openTurn(threadId);
+ 
+ 		// Handler #1 claims the user message and runs the agent loop. The
+ 		// agent dispatches a client tool — we simulate that via
+ 		// enqueueClientToolCall.
+ 		const userMsgId = randomUUID();
+ 		db.prepare(
+ 			`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+ 			 VALUES (?, ?, 'user', 'hi', ?, ?, ?, 0)`,
+ 		).run(userMsgId, threadId, new Date().toISOString(), new Date().toISOString(), siteId);
+ 		enqueueMessage(db, userMsgId, threadId);
+ 		const claimed1 = claimPending(db, threadId, siteId);
+ 		expect(claimed1.length).toBe(1);
+ 		expect(claimed1[0]?.event_type).toBe("user_message");
+ 
+ 		const ctcId = enqueueClientToolCall(
+ 			db,
+ 			threadId,
+ 			{ call_id: "call-1", tool_name: "boundless_bash", arguments: {} },
+ 			"conn-1",
+ 		);
+ 
+ 		// Handler #1 finishes: agent loop returned, batch acknowledged. The
+ 		// close probe runs and MUST keep the turn open because the client
+ 		// tool dispatch is still in flight.
+-		acknowledgeBatch(
+-			db,
+-			claimed1.map((c) => c.message_id),
+-		);
++		acknowledgeBatch(db, claimed1);
+ 		expect(tracker.maybeCloseTurnIfIdle(db, threadId)).toBe(false);
+ 		expect(tracker.listOpenTurns()).toEqual([threadId]);
+ 
+ 		// WS handler receives the tool result: it acknowledges the client
+ 		// tool call entry and enqueues a tool_result row that drives the
+ 		// resume.
+ 		acknowledgeClientToolCall(db, ctcId);
+ 		enqueueToolResult(db, threadId, "call-1");
+ 
+ 		// Handler #2 claims the tool_result row, runs the agent loop's final
+ 		// turn, acknowledges the batch.
+ 		const claimed2 = claimPending(db, threadId, siteId);
+ 		expect(claimed2.length).toBe(1);
+ 		expect(claimed2[0]?.event_type).toBe("tool_result");
+-		acknowledgeBatch(
+-			db,
+-			claimed2.map((c) => c.message_id),
+-		);
++		acknowledgeBatch(db, claimed2);
+ 
+ 		// Now the dispatch_queue is fully drained — turn closes.
+ 		expect(tracker.maybeCloseTurnIfIdle(db, threadId)).toBe(true);
+ 		expect(tracker.listOpenTurns()).toEqual([]);
+ 	});
+ 
+ 	it("error close paths through maybeCloseTurnIfIdle propagate status and reason", () => {
+ 		tracker.openTurn(threadId);
+ 		const closed = tracker.maybeCloseTurnIfIdle(db, threadId, "error", "loop_failed");
+ 		expect(closed).toBe(true);
+ 		const span = exporter.getFinishedSpans().find((s) => s.name === "agent.handle-message");
+ 		expect(span?.status.code).toBe(2); // ERROR
+ 		expect(span?.status.message).toBe("loop_failed");
+ 		expect(span?.attributes["error.reason"]).toBe("loop_failed");
+ 	});
+ 
+ 	it("is a no-op when no turn is open for the thread", () => {
+ 		// Pre-condition: dispatch_queue is empty.
+ 		const closed = tracker.maybeCloseTurnIfIdle(db, threadId);
+ 		// Returns true (idle), but no span is emitted because nothing was open.
+ 		expect(closed).toBe(true);
+ 		expect(tracker.listOpenTurns()).toEqual([]);
+ 	});
+ 
+ 	it("does not close turns for OTHER threads when scoped to one thread", () => {
+ 		const otherThread = "thread-other";
+ 		tracker.openTurn(threadId);
+ 		tracker.openTurn(otherThread);
+ 
+ 		// `otherThread` has a pending user_message; thread-1 is idle.
+ 		const otherMsgId = randomUUID();
+ 		db.prepare(
+ 			`INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted)
+ 			 VALUES (?, ?, 'user', 'hi', ?, ?, ?, 0)`,
+ 		).run(otherMsgId, otherThread, new Date().toISOString(), new Date().toISOString(), siteId);
+ 		enqueueMessage(db, otherMsgId, otherThread);
+ 
+ 		expect(tracker.maybeCloseTurnIfIdle(db, threadId)).toBe(true);
+ 		expect(tracker.listOpenTurns()).toEqual([otherThread]);
+ 
+ 		expect(tracker.maybeCloseTurnIfIdle(db, otherThread)).toBe(false);
+ 		expect(tracker.listOpenTurns()).toEqual([otherThread]);
+ 	});
+ });
+diff --git a/packages/agent/src/__tests__/wakeup-routing.test.ts b/packages/agent/src/__tests__/wakeup-routing.test.ts
+index bd1910d8..bfa3f99f 100644
+--- a/packages/agent/src/__tests__/wakeup-routing.test.ts
++++ b/packages/agent/src/__tests__/wakeup-routing.test.ts
+@@ -1,114 +1,116 @@
+ import Database from "bun:sqlite";
+ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+ import { randomUUID } from "node:crypto";
+ import { applySchema } from "@bound/core";
+ import { TypedEventEmitter } from "@bound/shared";
+ import { deliverNotificationWakeup, routeNotificationWakeup } from "../wakeup-routing";
+ import type { NotifyWakeupPayload } from "../wakeup-routing";
+ 
+ /**
+  * Wakeup routing (#91 regression under unified delegation): dispatch_queue is
+  * local-only, so a notify/introspect wakeup enqueued on host A runs a loop on
+  * host A even when the thread's live boundless session (and typically its
+  * active loop) is on host B — two hosts, two loops, one thread, no cross-host
+  * lock. The router sends the WAKEUP to the session host over the relay
+  * (kind "notify_wakeup") instead of delegating the loop, so exactly one host
+  * ever wakes the thread. No live remote session → current local behavior.
+  */
+ 
+ function insertHost(db: Database, siteId: string, hostName: string, modifiedAt: string) {
+ 	db.prepare(
+ 		"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+ 	).run(siteId, hostName, modifiedAt, modifiedAt);
+ }
+ 
+ function insertSession(db: Database, threadId: string, siteId: string) {
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+ 		"INSERT INTO client_sessions (id, connection_id, thread_id, site_id, created_at, deleted, modified_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
+ 	).run(`conn-${siteId}::${threadId}`, `conn-${siteId}`, threadId, siteId, now, now);
+ }
+ 
+ function getDispatchRows(db: Database, threadId: string): Array<{ event_payload: string }> {
+ 	return db
+-		.prepare("SELECT event_payload FROM dispatch_queue WHERE thread_id = ?")
++		.prepare(
++			"SELECT json_extract(payload, '$.event_payload') AS event_payload FROM durable_work WHERE kind = 'dispatch_message' AND json_extract(payload, '$.thread_id') = ?",
++		)
+ 		.all(threadId) as Array<{ event_payload: string }>;
+ }
+ 
+ function getOutboxRows(db: Database): Array<{
+ 	kind: string;
+ 	target_site_id: string;
+ 	payload: string;
+ 	idempotency_key: string | null;
+ }> {
+ 	return db
+ 		.prepare("SELECT kind, target_site_id, payload, idempotency_key FROM relay_outbox")
+ 		.all() as Array<{
+ 		kind: string;
+ 		target_site_id: string;
+ 		payload: string;
+ 		idempotency_key: string | null;
+ 	}>;
+ }
+ 
+ describe("routeNotificationWakeup", () => {
+ 	let db: Database;
+ 	let eventBus: TypedEventEmitter;
+ 	let notifyEvents: Array<{ thread_id: string }>;
+ 	const localSite = "local-site";
+ 	const threadId = "thread-1";
+ 	const payload = { type: "proactive", content: "hello", source_thread: null };
+ 
+ 	beforeEach(() => {
+ 		db = new Database(":memory:");
+ 		applySchema(db);
+ 		eventBus = new TypedEventEmitter();
+ 		notifyEvents = [];
+ 		eventBus.on("notify:enqueued", (e: { thread_id: string }) => notifyEvents.push(e));
+ 	});
+ 
+ 	afterEach(() => {
+ 		db.close();
+ 	});
+ 
+ 	it("enqueues locally when the thread has no client session", () => {
+ 		const result = routeNotificationWakeup(db, eventBus, localSite, threadId, payload);
+ 		expect(result.delivery).toBe("local");
+ 		expect(getDispatchRows(db, threadId)).toHaveLength(1);
+ 		expect(getOutboxRows(db)).toHaveLength(0);
+ 		expect(notifyEvents).toEqual([{ thread_id: threadId }]);
+ 	});
+ 
+ 	it("enqueues locally when the live session is on THIS host", () => {
+ 		insertHost(db, localSite, "local-host", new Date().toISOString());
+ 		insertSession(db, threadId, localSite);
+ 		const result = routeNotificationWakeup(db, eventBus, localSite, threadId, payload);
+ 		expect(result.delivery).toBe("local");
+ 		expect(getDispatchRows(db, threadId)).toHaveLength(1);
+ 		expect(getOutboxRows(db)).toHaveLength(0);
+ 	});
+ 
+ 	it("relays the wakeup to a live remote session host instead of enqueueing locally", () => {
+ 		insertHost(db, "remote-site", "remote-host", new Date().toISOString());
+ 		insertSession(db, threadId, "remote-site");
+ 
+ 		const result = routeNotificationWakeup(db, eventBus, localSite, threadId, payload);
+ 
+ 		expect(result.delivery).toBe("relayed");
+ 		expect(result.targetHostName).toBe("remote-host");
+ 		// The whole point: NO local loop wakeup.
+ 		expect(getDispatchRows(db, threadId)).toHaveLength(0);
+ 		expect(notifyEvents).toHaveLength(0);
+ 
+ 		const outbox = getOutboxRows(db);
+ 		expect(outbox).toHaveLength(1);
+ 		expect(outbox[0]?.kind).toBe("notify_wakeup");
+ 		expect(outbox[0]?.target_site_id).toBe("remote-site");
+ 		const shipped = JSON.parse(outbox[0]?.payload ?? "{}") as {
+ 			thread_id: string;
+ 			payload: Record<string, unknown>;
+ 		};
+ 		expect(shipped.thread_id).toBe(threadId);
+ 		expect(shipped.payload).toEqual(payload);
+ 	});
+ 
+diff --git a/packages/agent/src/durable-work-registry.ts b/packages/agent/src/durable-work-registry.ts
+index 1ea595a0..38ce6da6 100644
+--- a/packages/agent/src/durable-work-registry.ts
++++ b/packages/agent/src/durable-work-registry.ts
+@@ -1,51 +1,54 @@
+ import type { WorkClaimDiscipline, WorkRetirementRule } from "@bound/core";
+ import { RELAY_KINDS, RELAY_KIND_REGISTRY, type RelayKind } from "@bound/shared";
+ 
+ export interface DurableWorkRegistration {
+ 	kind: string;
+ 	claimDiscipline: WorkClaimDiscipline;
+ 	retirementRule: WorkRetirementRule;
+ 	backing: "local" | "synced";
+ 	ttlMs: number | null;
+ 	deadLetterPolicy: "retain-7d";
+ 	idempotencyKey: (identity: Record<string, string>) => string;
+ 	consumer: "relay" | "scheduler" | "dispatch" | "task";
++	/** dispatch subtypes carried in the durable payload; client_tool_call remains legacy-resident in 4B-1. */
++	subtypes?: readonly string[];
+ }
+ 
+ const relayRegistration = (kind: RelayKind): DurableWorkRegistration => ({
+ 	kind,
+ 	claimDiscipline: "local-exclusive",
+ 	retirementRule: "single-ack",
+ 	backing: "local",
+ 	ttlMs: kind === "stream_chunk" || kind === "stream_end" ? 5 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000,
+ 	deadLetterPolicy: "retain-7d",
+ 	idempotencyKey: (identity) => identity.idempotency_key ?? `${kind}:${identity.id}`,
+ 	consumer: RELAY_KIND_REGISTRY[kind].dispatch === "passive" ? "scheduler" : "relay",
+ });
+ 
+ /** Additive declaration only in 4A: production continues to use legacy tables. */
+ export const DURABLE_WORK_REGISTRY: readonly DurableWorkRegistration[] = [
+ 	...RELAY_KINDS.map(relayRegistration),
+ 	{
+ 		kind: "dispatch_message",
+ 		claimDiscipline: "local-exclusive",
+ 		retirementRule: "single-ack",
+ 		backing: "local",
+ 		ttlMs: null,
+ 		deadLetterPolicy: "retain-7d",
+ 		idempotencyKey: (identity) => `dispatch:${identity.message_id}`,
+ 		consumer: "dispatch",
++		subtypes: ["user_message", "notification", "tool_result"],
+ 	},
+ 	{
+ 		kind: "task_fire",
+ 		claimDiscipline: "local-exclusive",
+ 		retirementRule: "single-ack",
+ 		backing: "local",
+ 		ttlMs: null,
+ 		deadLetterPolicy: "retain-7d",
+ 		idempotencyKey: (identity) => `task-fire:${identity.task_id}:${identity.scheduled_at}`,
+ 		consumer: "task",
+ 	},
+ ] as const;
+ 
+ export const DURABLE_WORK_KINDS = DURABLE_WORK_REGISTRY.map((registration) => registration.kind);
+diff --git a/packages/core/src/__tests__/dispatch-queue.test.ts b/packages/core/src/__tests__/dispatch-queue.test.ts
+index 5427ed0e..5c5f06e9 100644
+--- a/packages/core/src/__tests__/dispatch-queue.test.ts
++++ b/packages/core/src/__tests__/dispatch-queue.test.ts
+@@ -1,119 +1,122 @@
+ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
++import { execFileSync } from "node:child_process";
+ import { randomBytes, randomUUID } from "node:crypto";
+ import { unlinkSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+ import { createDatabase } from "../database";
+ import {
+ 	CLIENT_TOOL_CALL,
+ 	TOOL_RESULT,
+ 	acknowledgeBatch,
+ 	acknowledgeClientToolCall,
+ 	acknowledgeToolResultForCall,
+ 	cancelClientToolCalls,
+ 	claimPending,
+ 	enqueueClientToolCall,
+ 	enqueueMessage,
+ 	enqueueNotification,
+ 	enqueueToolResult,
+ 	expireClientToolCalls,
+ 	expireClientToolCallsForConnection,
+ 	getPendingClientToolCalls,
+ 	hasPending,
+ 	hasPendingClientToolCalls,
+ 	pruneAcknowledged,
+ 	resetProcessing,
+ 	resetProcessingForThread,
+ 	resolveDeferredToolResult,
++	setDurableDispatchEnqueueEnabledForTesting,
+ 	updateClaimedBy,
+ } from "../dispatch";
+ import { insertInbox } from "../relay";
+ import { findBackgroundPlaceholderDeliveryState } from "../repositories/messages";
+ import { applySchema } from "../schema";
+ let db: ReturnType<typeof createDatabase>;
+ let dbPath: string;
+ 
+ beforeEach(() => {
+ 	dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
+ 	db = createDatabase(dbPath);
+ 	applySchema(db);
++	setDurableDispatchEnqueueEnabledForTesting(false);
+ });
+ 
+ afterEach(() => {
+ 	db.close();
+ 	try {
+ 		unlinkSync(dbPath);
+ 	} catch {
+ 		/* ignore */
+ 	}
+ });
+ 
+ describe("dispatch_queue schema", () => {
+ 	it("dispatch_queue table exists after applySchema", () => {
+ 		const tables = db
+ 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_queue'")
+ 			.all() as Array<{ name: string }>;
+ 		expect(tables).toHaveLength(1);
+ 	});
+ 
+ 	it("supports INSERT and SELECT on dispatch_queue", () => {
+ 		const msgId = randomUUID();
+ 		const threadId = randomUUID();
+ 		const now = new Date().toISOString();
+ 		db.run(
+ 			"INSERT INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at) VALUES (?, ?, 'pending', ?, ?)",
+ 			[msgId, threadId, now, now],
+ 		);
+ 
+ 		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
+ 			message_id: string;
+ 			status: string;
+ 		} | null;
+ 		expect(row).not.toBeNull();
+ 		expect(row?.status).toBe("pending");
+ 	});
+ });
+ 
+ describe("relay inbox idempotency fence", () => {
+ 	it("accepts legacy null keys but drops a repeated sender-derived key through insertInbox", () => {
+ 		const now = new Date().toISOString();
+ 		const entry = (id: string, idempotencyKey: string | null) => ({
+ 			id,
+ 			source_site_id: "sender",
+ 			kind: "client_tool" as const,
+ 			ref_id: null,
+ 			idempotency_key: idempotencyKey,
+ 			stream_id: null,
+ 			payload: "{}",
+ 			expires_at: now,
+ 			received_at: now,
+ 			processed: 0,
+ 			trace_context: null,
+ 		});
+ 		expect(insertInbox(db, entry("legacy-1", null))).toBe(true);
+ 		expect(insertInbox(db, entry("legacy-2", null))).toBe(true);
+ 		expect(insertInbox(db, entry("keyed-1", "client-tool:thread:call"))).toBe(true);
+ 		expect(insertInbox(db, entry("keyed-2", "client-tool:thread:call"))).toBe(false);
+ 		expect(db.query("SELECT COUNT(*) AS n FROM relay_inbox").get()).toEqual({ n: 3 });
+ 	});
+ });
+ 
+ describe("enqueueMessage", () => {
+ 	it("inserts a pending entry into dispatch_queue", () => {
+ 		const msgId = randomUUID();
+ 		const threadId = randomUUID();
+ 
+ 		enqueueMessage(db, msgId, threadId);
+ 
+ 		const row = db.query("SELECT * FROM dispatch_queue WHERE message_id = ?").get(msgId) as {
+ 			message_id: string;
+ 			thread_id: string;
+ 			status: string;
+ 		} | null;
+ 		expect(row).not.toBeNull();
+ 		expect(row?.thread_id).toBe(threadId);
+ 		expect(row?.status).toBe("pending");
+ 	});
+ 
+ 	it("is idempotent — duplicate message_id does not throw", () => {
+ 		const msgId = randomUUID();
+@@ -1532,80 +1535,205 @@ describe("acknowledgeToolResultForCall", () => {
+ 	it("leaves other call_ids on the same thread untouched", () => {
+ 		const threadId = randomUUID();
+ 		enqueueToolResult(db, threadId, "call-1");
+ 		enqueueToolResult(db, threadId, "call-2");
+ 
+ 		acknowledgeToolResultForCall(db, threadId, "call-1");
+ 
+ 		const rows = db
+ 			.query(
+ 				"SELECT event_payload, status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?",
+ 			)
+ 			.all(threadId, TOOL_RESULT) as Array<{ event_payload: string; status: string }>;
+ 		const byCall = new Map(
+ 			rows.map((r) => [(JSON.parse(r.event_payload) as { call_id: string }).call_id, r.status]),
+ 		);
+ 		expect(byCall.get("call-1")).toBe("acknowledged");
+ 		expect(byCall.get("call-2")).toBe("pending");
+ 	});
+ 
+ 	it("scopes to the owning thread", () => {
+ 		const threadA = randomUUID();
+ 		const threadB = randomUUID();
+ 		enqueueToolResult(db, threadA, "call-1");
+ 		enqueueToolResult(db, threadB, "call-1");
+ 
+ 		acknowledgeToolResultForCall(db, threadA, "call-1");
+ 
+ 		expect(statusesFor(threadA)).toEqual(["acknowledged"]);
+ 		expect(statusesFor(threadB)).toEqual(["pending"]);
+ 	});
+ 
+ 	// The inline resolver calls this unconditionally, including on paths where no
+ 	// entry was ever queued (e.g. no live session), so it must not throw.
+ 	it("is a no-op when no matching entry exists", () => {
+ 		const threadId = randomUUID();
+ 		expect(() => acknowledgeToolResultForCall(db, threadId, "never")).not.toThrow();
+ 		expect(statusesFor(threadId)).toEqual([]);
+ 	});
+ 
+ 	it("is idempotent on repeat calls", () => {
+ 		const threadId = randomUUID();
+ 		enqueueToolResult(db, threadId, "call-1");
+ 
+ 		acknowledgeToolResultForCall(db, threadId, "call-1");
+ 		acknowledgeToolResultForCall(db, threadId, "call-1");
+ 
+ 		expect(statusesFor(threadId)).toEqual(["acknowledged"]);
+ 	});
+ 
+ 	// Acknowledging clears the in-flight guard, so a later turn reusing the same
+ 	// call_id enqueues a fresh row rather than colliding with the closed one.
+ 	it("frees the call_id for a later turn to re-enqueue", () => {
+ 		const threadId = randomUUID();
+ 		const first = enqueueToolResult(db, threadId, "call_1");
+ 		acknowledgeToolResultForCall(db, threadId, "call_1");
+ 
+ 		const second = enqueueToolResult(db, threadId, "call_1");
+ 
+ 		expect(second).not.toBe(first);
+ 		expect(statusesFor(threadId).sort()).toEqual(["acknowledged", "pending"]);
+ 	});
+ 
+ 	it("does not touch client_tool_call entries for the same thread", () => {
+ 		const threadId = randomUUID();
+ 		enqueueClientToolCall(
+ 			db,
+ 			threadId,
+ 			{ call_id: "call-1", tool_name: "boundless_read", arguments: {} },
+ 			"conn-1",
+ 		);
+ 		enqueueToolResult(db, threadId, "call-1");
+ 
+ 		acknowledgeToolResultForCall(db, threadId, "call-1");
+ 
+ 		const ct = db
+ 			.query("SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = ?")
+ 			.get(threadId, CLIENT_TOOL_CALL) as { status: string };
+ 		expect(ct.status).toBe("pending");
+ 	});
+ });
++
++describe("durable dispatch", () => {
++	beforeEach(() => setDurableDispatchEnqueueEnabledForTesting(true));
++
++	it("uses durable_work and preserves the consumed idempotency fence", () => {
++		const threadId = randomUUID();
++		const messageId = randomUUID();
++		enqueueMessage(db, messageId, threadId);
++		expect(db.query("SELECT COUNT(*) AS c FROM dispatch_queue").get()).toEqual({ c: 0 });
++		const claimed = claimPending(db, threadId, "host-1");
++		expect(claimed).toHaveLength(1);
++		acknowledgeBatch(db, claimed);
++		expect(db.query("SELECT claim_state FROM durable_work").get()).toEqual({
++			claim_state: "consumed",
++		});
++		enqueueMessage(db, messageId, threadId);
++		expect(db.query("SELECT COUNT(*) AS c FROM durable_work").get()).toEqual({ c: 1 });
++	});
++
++	it("does not double-deliver a legacy row fenced by a durable row", () => {
++		const threadId = randomUUID();
++		const messageId = randomUUID();
++		enqueueMessage(db, messageId, threadId);
++		const now = new Date().toISOString();
++		db.run(
++			"INSERT INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at) VALUES (?, ?, 'pending', ?, ?)",
++			[messageId, threadId, now, now],
++		);
++		expect(claimPending(db, threadId, "host-1").map((entry) => entry.message_id)).toEqual([
++			messageId,
++		]);
++	});
++});
++
++// Bridge fences must cover the durable row's entire retained lifecycle: a
++// legacy twin is acknowledged rather than left claimable after suppression.
++describe("durable dispatch bridge fences", () => {
++	beforeEach(() => setDurableDispatchEnqueueEnabledForTesting(true));
++
++	for (const [eventType, key, payload] of [
++		["user_message", "message-id", null],
++		["notification", "notification-id", JSON.stringify({ type: "test" })],
++		[TOOL_RESULT, "tool-result-id", JSON.stringify({ call_id: "call-id" })],
++	] as const) {
++		for (const durableState of ["processing", "consumed"] as const) {
++			it(`suppresses a pending legacy ${eventType} twin when durable is ${durableState}`, () => {
++				const threadId = randomUUID();
++				const durableMessageId = eventType === TOOL_RESULT ? randomUUID() : key;
++				const identity = eventType === TOOL_RESULT ? `tool-result:${threadId}:call-id` : key;
++				db.run(
++					`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at)
++					 VALUES (?, 'local', 'dispatch_message', ?, ?, ?, 0, ?)`,
++					[
++						randomUUID(),
++						JSON.stringify({
++							message_id: durableMessageId,
++							thread_id: threadId,
++							event_type: eventType,
++							event_payload: payload,
++						}),
++						identity,
++						durableState,
++						new Date().toISOString(),
++					],
++				);
++				db.run(
++					`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
++					 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
++					[key, threadId, eventType, payload, new Date().toISOString(), new Date().toISOString()],
++				);
++				expect(claimPending(db, threadId, "host-1")).toEqual([]);
++				expect(db.query("SELECT status FROM dispatch_queue WHERE message_id = ?").get(key)).toEqual(
++					{ status: "acknowledged" },
++				);
++				expect(claimPending(db, threadId, "host-2")).toEqual([]);
++			});
++		}
++	}
++
++	it("BOUND_DURABLE_DISPATCH=0 routes new enqueues to legacy while the dual reader drains durable rows", () => {
++		const script = `import { Database } from "bun:sqlite";
++import { applySchema } from "./packages/core/src/schema";
++import { insertDurableWork } from "./packages/core/src/durable-work";
++import { claimPending, enqueueMessage } from "./packages/core/src/dispatch";
++const db = new Database(":memory:"); applySchema(db);
++insertDurableWork(db, { id: "durable", target_site_id: "local", kind: "dispatch_message", payload: JSON.stringify({ message_id: "durable-message", thread_id: "thread", event_type: "user_message", event_payload: null }), idempotency_key: "durable-message" });
++enqueueMessage(db, "legacy-message", "thread");
++console.log(JSON.stringify({ legacy: db.query("SELECT COUNT(*) AS c FROM dispatch_queue").get(), claimed: claimPending(db, "thread", "host").map((entry) => entry.message_id).sort() }));`;
++		const output = execFileSync("bun", ["-e", script], {
++			cwd: process.cwd(),
++			env: { ...process.env, BOUND_DURABLE_DISPATCH: "0" },
++			encoding: "utf8",
++		});
++		expect(JSON.parse(output.trim())).toEqual({
++			legacy: { c: 1 },
++			claimed: ["durable-message", "legacy-message"],
++		});
++	});
++
++	it("uses R-DW6 dispatch identities without a dispatch namespace", () => {
++		const threadId = randomUUID();
++		enqueueMessage(db, "message-id", threadId);
++		enqueueNotification(db, threadId, { type: "notification" });
++		enqueueToolResult(db, threadId, "call-id");
++		const keys = (
++			db
++				.query("SELECT idempotency_key FROM durable_work ORDER BY kind, idempotency_key")
++				.all() as Array<{ idempotency_key: string }>
++		).map((row) => row.idempotency_key);
++		expect(keys).toContain("message-id");
++		expect(keys).toContain(`tool-result:${threadId}:call-id`);
++		expect(keys.some((key) => key.startsWith("notify:"))).toBe(true);
++		expect(keys.some((key) => key.startsWith("dispatch:"))).toBe(false);
++	});
++
++	it("uses relay notification identities verbatim so duplicate dispatch wakeups share one durable row", () => {
++		const threadId = randomUUID();
++		const identity = `notify:${randomUUID()}`;
++		enqueueNotification(db, threadId, { type: "relay-notify" }, identity);
++		enqueueNotification(db, threadId, { type: "dispatch-notify" }, identity);
++		expect(db.query("SELECT idempotency_key FROM durable_work").all()).toEqual([
++			{ idempotency_key: identity },
++		]);
++	});
++});
+diff --git a/packages/core/src/dispatch.ts b/packages/core/src/dispatch.ts
+index 0e1f0519..5c19715c 100644
+--- a/packages/core/src/dispatch.ts
++++ b/packages/core/src/dispatch.ts
+@@ -1,391 +1,535 @@
+ import type { Database } from "bun:sqlite";
+ import { randomUUID } from "node:crypto";
+ import type { TypedEventEmitter } from "@bound/shared";
+ import { readMessageMetadata, updateRow } from "./change-log";
++import { acknowledgeDurableWork, insertDurableWork } from "./durable-work";
+ import { countBackgroundToolCallsByThread } from "./repositories/messages";
+ 
++/** Set BOUND_DURABLE_DISPATCH=0 or false before startup to route new enqueues to legacy dispatch_queue. */
++export let DURABLE_DISPATCH_ENQUEUE_ENABLED = !["0", "false"].includes(
++	process.env.BOUND_DURABLE_DISPATCH?.toLowerCase() ?? "",
++);
++
++/** Test seam for exercising the rollback route without changing production defaults. */
++export function setDurableDispatchEnqueueEnabledForTesting(enabled: boolean): void {
++	DURABLE_DISPATCH_ENQUEUE_ENABLED = enabled;
++}
++
+ export interface DispatchEntry {
+ 	message_id: string;
+ 	thread_id: string;
+ 	status: string;
+ 	claimed_by: string | null;
+ 	event_type: string;
+ 	event_payload: string | null;
+ 	created_at: string;
+ 	modified_at: string;
++	durable_work_id?: string;
++	durable_claim_token?: string | null;
+ }
+ 
+ // Event type constants
+ export const CLIENT_TOOL_CALL = "client_tool_call";
+ export const TOOL_RESULT = "tool_result";
+ 
+-/**
+- * Enqueue a user message for dispatch. Idempotent — duplicate message_id is ignored.
+- */
++/** Dispatch wakeups share one durable kind; the event type stays in the payload. */
++function enqueueDurableDispatch(
++	db: Database,
++	threadId: string,
++	messageId: string,
++	eventType: string,
++	eventPayload: string | null,
++	idempotencyKey: string,
++): void {
++	insertDurableWork(db, {
++		id: randomUUID(),
++		target_site_id: "local",
++		kind: "dispatch_message",
++		payload: JSON.stringify({
++			message_id: messageId,
++			thread_id: threadId,
++			event_type: eventType,
++			event_payload: eventPayload,
++		}),
++		idempotency_key: idempotencyKey,
++	});
++}
++
++/** Enqueue a user message for dispatch. Idempotent on its message id. */
+ export function enqueueMessage(db: Database, messageId: string, threadId: string): void {
++	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
++		enqueueDurableDispatch(db, threadId, messageId, "user_message", null, messageId);
++		return;
++	}
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+-		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at)
+-		 VALUES (?, ?, 'pending', ?, ?)`,
++		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, created_at, modified_at) VALUES (?, ?, 'pending', ?, ?)`,
+ 	).run(messageId, threadId, now, now);
+ }
+ 
+-/**
+- * Enqueue a notification for dispatch. Notifications are non-user events
+- * (task completions, advisories, etc.) that trigger agent inference.
+- * Returns the generated entry ID.
+- */
++/** Enqueue a notification for dispatch. */
+ export function enqueueNotification(
+ 	db: Database,
+ 	threadId: string,
+ 	payload: Record<string, unknown>,
+ 	idempotencyKey?: string,
+ ): string {
+-	// Relay producers provide a stable key so an at-least-once delivery maps to
+-	// the same local queue row. Local notifications deliberately retain their
+-	// historical fresh-ID behaviour.
+ 	const entryId = idempotencyKey ?? randomUUID();
++	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
++		enqueueDurableDispatch(
++			db,
++			threadId,
++			entryId,
++			"notification",
++			JSON.stringify(payload),
++			idempotencyKey ?? `notify:${entryId}`,
++		);
++		return entryId;
++	}
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+-		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
+-		 VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
++		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at) VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
+ 	).run(entryId, threadId, JSON.stringify(payload), now, now);
+ 	return entryId;
+ }
+ 
+ /**
+  * Enqueue a client tool call for dispatch. The call waits on the client to execute and return a result.
+  * Returns the generated entry ID.
+  */
+ export function enqueueClientToolCall(
+ 	db: Database,
+ 	threadId: string,
+ 	payload: { call_id: string; tool_name: string; arguments: Record<string, unknown> },
+ 	connectionId: string,
+ ): string {
+ 	const messageId = randomUUID();
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+ 		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at)
+ 		 VALUES (?, ?, 'pending', ?, ?, ?, ?, ?)`,
+ 	).run(messageId, threadId, CLIENT_TOOL_CALL, JSON.stringify(payload), connectionId, now, now);
+ 	return messageId;
+ }
+ 
+ /**
+  * Enqueue a tool result entry to trigger agent loop resume.
+  *
+  * IDEMPOTENT on `(thread_id, call_id)` (R-UD9) WHILE THE RE-DRIVE IS IN FLIGHT:
+  * re-driving the same tool result — e.g. a relayed `client_result` retried after
+  * a held/duplicated delivery — is a no-op that returns the EXISTING entry's id
+  * rather than inserting a second row. Without this guard a relay retry would
+  * double-enqueue and risk double-execution / a duplicate tool-result row.
+  *
+  * The dedup is scoped to rows still `pending`/`processing`. `call_id` is only
+  * unique within one turn, NOT across a thread's lifetime — clients (boundless)
+  * reuse `call_1, call_2, …` every turn. A guard that also matched already-
+  * `acknowledged` rows would drop a legitimate NEW turn's re-drive for a reused
+  * call_id, so the loop never gets its wakeup and the thread stalls one message
+  * per turn (this was a real regression). Once the prior re-drive is
+  * consumed (acknowledged), the same call_id is free to enqueue a fresh row; a
+  * genuine retry arrives while the original is still in flight and is deduped.
+  * The match is scoped to the canonical `{"call_id":"…"}` payload this function
+  * writes, so it is stable across calls.
+  *
+  * Returns the (existing or newly-created) entry id.
+  */
+ export function enqueueToolResult(db: Database, threadId: string, callId: string): string {
+ 	const payload = JSON.stringify({ call_id: callId });
++	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
++		const messageId = randomUUID();
++		enqueueDurableDispatch(
++			db,
++			threadId,
++			messageId,
++			TOOL_RESULT,
++			payload,
++			`tool-result:${threadId}:${callId}`,
++		);
++		const existing = db
++			.query(
++				"SELECT payload FROM durable_work WHERE kind = 'dispatch_message' AND idempotency_key = ?",
++			)
++			.get(`tool-result:${threadId}:${callId}`) as { payload: string } | null;
++		return existing
++			? (JSON.parse(existing.payload) as { message_id: string }).message_id
++			: messageId;
++	}
+ 	const existing = db
+ 		.prepare(
+ 			`SELECT message_id FROM dispatch_queue
+ 			 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
+ 			   AND status IN ('pending', 'processing')
+ 			 LIMIT 1`,
+ 		)
+ 		.get(threadId, TOOL_RESULT, payload) as { message_id: string } | null;
+ 	if (existing) {
+ 		// Already enqueued for this (thread_id, call_id) — re-drive is a no-op.
+ 		return existing.message_id;
+ 	}
+ 
+ 	const messageId = randomUUID();
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+ 		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
+ 		 VALUES (?, ?, 'pending', ?, ?, ?, ?)`,
+ 	).run(messageId, threadId, TOOL_RESULT, payload, now, now);
+ 	return messageId;
+ }
+ 
+ /**
+  * Resolve a deferred tool result by updating the placeholder tool_result message
+  * with the real content and re-waking the loop via `enqueueToolResult`.
+  *
+  * The placeholder was written by the loop when the tool returned a
+  * `DeferredToolResult`. This function finds it by `(thread_id, tool_name=callId,
+  * role='tool_result')`, updates the content, clears the `background` marker so
+  * the row stops counting as in-flight, and enqueues a dispatch entry to re-wake
+  * the loop.
+  *
+  * If the placeholder is not found (race: background work completed before the
+  * loop persisted the placeholder), this is a no-op beyond the enqueue — the
+  * loop will write the placeholder on its current iteration and the model will
+  * see it then.
+  *
+  * Pass `eventBus` to push the recomputed in-flight count to subscribers
+  * (`background:count`). The count is always re-derived from `messages`, never
+  * decremented, so a client that missed a frame resyncs rather than drifting.
+  */
+ export function resolveDeferredToolResult(
+ 	db: Database,
+ 	threadId: string,
+ 	callId: string,
+ 	content: string,
+ 	isError: boolean,
+ 	siteId: string,
+ 	eventBus?: TypedEventEmitter,
+ ): void {
+ 	const row = db
+ 		.prepare(
+ 			`SELECT id FROM messages
+ 			 WHERE thread_id = ? AND tool_name = ? AND role = 'tool_result' AND deleted = 0
+ 			 ORDER BY created_at DESC LIMIT 1`,
+ 		)
+ 		.get(threadId, callId) as { id: string } | null;
+ 
+ 	if (row) {
+ 		// Drop the `background` key rather than setting it false: the in-flight
+ 		// query counts rows that CARRY the marker, and writeMessageMetadata merges
+ 		// (so it could never remove a key). Stamp `background_delivered` in its
+ 		// place so delivery is durable on the row itself — the dispatcher's
+ 		// clobber guard keys on proof-of-delivery, not on the in-flight marker
+ 		// having been present (#220: a placeholder that missed its stamp must
+ 		// still be resolvable). Any sibling metadata is preserved.
+ 		const { background: _wasBackground, ...rest } = readMessageMetadata(db, row.id) ?? {};
+ 		const remaining = JSON.stringify({ ...rest, background_delivered: true });
+ 
+ 		updateRow(
+ 			db,
+ 			"messages",
+ 			row.id,
+ 			{
+ 				content,
+ 				exit_code: isError ? 1 : 0,
+ 				metadata: remaining,
+ 			},
+ 			siteId,
+ 		);
+ 	}
+ 
+ 	enqueueToolResult(db, threadId, callId);
+ 
+ 	if (eventBus) {
+ 		eventBus.emit("background:count", {
+ 			thread_id: threadId,
+ 			count: countBackgroundToolCallsByThread(db, threadId),
+ 		});
+ 	}
+ }
+ 
+ /**
+  * Mark a single client tool call entry as acknowledged.
+  */
+ export function acknowledgeClientToolCall(db: Database, entryId: string): void {
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+ 		`UPDATE dispatch_queue
+ 		 SET status = 'acknowledged', modified_at = ?
+ 		 WHERE message_id = ?`,
+ 	).run(now, entryId);
+ }
+ 
+ /**
+  * Claim all pending messages for a thread. Returns the claimed entries and marks
+  * them as 'processing' with the given host site ID.
+  * Skips client_tool_call entries — they wait for client execution.
+  */
+ export function claimPending(db: Database, threadId: string, claimedBy: string): DispatchEntry[] {
+ 	const now = new Date().toISOString();
+-
+-	// Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races
+-	// in multi-process deployments. IMMEDIATE acquires a write lock before the
+-	// SELECT, so no other process can claim the same entries concurrently.
+ 	db.exec("BEGIN IMMEDIATE");
+ 	try {
++		// Durable first: this establishes the new-store fence before legacy rows are considered.
++		const durable = db
++			.query(
++				`SELECT * FROM durable_work WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ? ORDER BY created_at`,
++			)
++			.all("local", threadId) as Array<{
++			id: string;
++			payload: string;
++			claim_token: string | null;
++			created_at: string;
++		}>;
++		const entries: DispatchEntry[] = [];
++		for (const row of durable) {
++			const token = randomUUID();
++			db.prepare(
++				"UPDATE durable_work SET claim_state = 'processing', claim_token = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE id = ? AND claim_state = 'pending'",
++			).run(token, now, row.id);
++			const payload = JSON.parse(row.payload) as Pick<
++				DispatchEntry,
++				"message_id" | "thread_id" | "event_type" | "event_payload"
++			>;
++			entries.push({
++				...payload,
++				status: "processing",
++				claimed_by: claimedBy,
++				created_at: row.created_at,
++				modified_at: now,
++				durable_work_id: row.id,
++				durable_claim_token: token,
++			});
++		}
+ 		const pending = db
+ 			.prepare(
+-				`SELECT * FROM dispatch_queue
+-				 WHERE thread_id = ? AND status = 'pending' AND event_type != ?
+-				 ORDER BY created_at ASC`,
++				`SELECT * FROM dispatch_queue WHERE thread_id = ? AND status = 'pending' AND event_type != ? ORDER BY created_at ASC`,
+ 			)
+ 			.all(threadId, CLIENT_TOOL_CALL) as DispatchEntry[];
+-
+-		if (pending.length === 0) {
+-			db.exec("COMMIT");
+-			return [];
++		// Every durable state remains a bridge fence. In particular, allowing a
++		// legacy twin after a durable dead letter would silently bypass the durable
++		// failure decision; consumed rows retain the same fence during their TTL.
++		const durableFenceRows = db
++			.query(
++				`SELECT payload FROM durable_work
++				 WHERE target_site_id = ? AND kind = 'dispatch_message'
++				   AND json_extract(payload, '$.thread_id') = ?`,
++			)
++			.all("local", threadId) as Array<{ payload: string }>;
++		const fenced = new Set(
++			durableFenceRows.map(({ payload }) => {
++				const entry = JSON.parse(payload) as Pick<
++					DispatchEntry,
++					"message_id" | "thread_id" | "event_type" | "event_payload"
++				>;
++				return entry.event_type === "tool_result"
++					? `tool-result:${entry.thread_id}:${JSON.parse(entry.event_payload ?? "{}").call_id}`
++					: entry.message_id;
++			}),
++		);
++		const legacy = pending.filter((entry) => {
++			const identity =
++				entry.event_type === "tool_result"
++					? `tool-result:${entry.thread_id}:${JSON.parse(entry.event_payload ?? "{}").call_id}`
++					: entry.message_id;
++			return !fenced.has(identity);
++		});
++		const suppressed = pending.filter((entry) => !legacy.includes(entry));
++		if (suppressed.length) {
++			const ids = suppressed.map((row) => row.message_id);
++			db.prepare(
++				`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${ids.map(() => "?").join(",")})`,
++			).run(now, ...ids);
++		}
++		if (legacy.length) {
++			const ids = legacy.map((r) => r.message_id);
++			const placeholders = ids.map(() => "?").join(",");
++			db.prepare(
++				`UPDATE dispatch_queue SET status = 'processing', claimed_by = ?, modified_at = ? WHERE message_id IN (${placeholders})`,
++			).run(claimedBy, now, ...ids);
+ 		}
+-
+-		const ids = pending.map((r) => r.message_id);
+-		const placeholders = ids.map(() => "?").join(",");
+-		db.prepare(
+-			`UPDATE dispatch_queue
+-			 SET status = 'processing', claimed_by = ?, modified_at = ?
+-			 WHERE message_id IN (${placeholders})`,
+-		).run(claimedBy, now, ...ids);
+-
+ 		db.exec("COMMIT");
+-		return pending;
++		return [...entries, ...legacy];
+ 	} catch (error) {
+ 		try {
+ 			db.exec("ROLLBACK");
+-		} catch {
+-			// ROLLBACK may fail if transaction was already rolled back
+-		}
++		} catch {}
+ 		throw error;
+ 	}
+ }
+ 
+ /**
+  * Mark a batch of message IDs as acknowledged (dispatch complete).
+  */
+-export function acknowledgeBatch(db: Database, messageIds: string[]): void {
+-	if (messageIds.length === 0) return;
+-	const now = new Date().toISOString();
+-	const placeholders = messageIds.map(() => "?").join(",");
+-	db.prepare(
+-		`UPDATE dispatch_queue
+-		 SET status = 'acknowledged', modified_at = ?
+-		 WHERE message_id IN (${placeholders})`,
+-	).run(now, ...messageIds);
++export function acknowledgeBatch(db: Database, entries: DispatchEntry[] | string[]): void {
++	if (entries.length > 0 && typeof entries[0] === "string") {
++		const now = new Date().toISOString();
++		const ids = entries as string[];
++		const placeholders = ids.map(() => "?").join(",");
++		db.prepare(
++			`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${placeholders})`,
++		).run(now, ...ids);
++		return;
++	}
++	const dispatchEntries = entries as DispatchEntry[];
++	const legacyIds = dispatchEntries
++		.filter((entry) => !entry.durable_work_id)
++		.map((entry) => entry.message_id);
++	if (legacyIds.length) {
++		const now = new Date().toISOString();
++		const placeholders = legacyIds.map(() => "?").join(",");
++		db.prepare(
++			`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${placeholders})`,
++		).run(now, ...legacyIds);
++	}
++	for (const entry of dispatchEntries)
++		if (entry.durable_work_id && entry.durable_claim_token)
++			acknowledgeDurableWork(db, entry.durable_work_id, entry.durable_claim_token);
+ }
+ 
+ /**
+  * Reset all 'processing' entries back to 'pending'. Used at startup to recover
+  * from interrupted inference. Returns the number of entries reset.
+  * Excludes client_tool_call entries — they're handled separately.
+  */
+ export function resetProcessing(db: Database): number {
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+ 		`UPDATE dispatch_queue
+ 		 SET status = 'pending', claimed_by = NULL, modified_at = ?
+ 		 WHERE status = 'processing' AND event_type != ?`,
+ 	).run(now, CLIENT_TOOL_CALL);
+ 	const row = db.query("SELECT changes() as c").get() as { c: number } | null;
+ 	return row?.c ?? 0;
+ }
+ 
+ /**
+  * Reset 'processing' entries for a specific thread back to 'pending'.
+  * Used when the drain loop yields cooperatively — only resets the yielding
+  * thread's messages, not other threads' in-flight work.
+  * Excludes client_tool_call entries — they're handled separately.
+  */
+ export function resetProcessingForThread(db: Database, threadId: string): number {
+ 	const now = new Date().toISOString();
+ 	db.prepare(
+ 		`UPDATE dispatch_queue
+ 		 SET status = 'pending', claimed_by = NULL, modified_at = ?
+ 		 WHERE status = 'processing' AND thread_id = ? AND event_type != ?`,
+ 	).run(now, threadId, CLIENT_TOOL_CALL);
+ 	const row = db.query("SELECT changes() as c").get() as { c: number } | null;
+ 	return row?.c ?? 0;
+ }
+ 
++/** Release only this thread's abandoned durable dispatch claims after a yielded or failed loop. */
++export function resetProcessingDurableDispatchForThread(db: Database, threadId: string): number {
++	const row = db
++		.prepare(
++			`UPDATE durable_work
++			 SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL
++			 WHERE target_site_id = 'local'
++			   AND kind = 'dispatch_message'
++			   AND claim_state = 'processing'
++			   AND json_extract(payload, '$.thread_id') = ?`,
++		)
++		.run(threadId) as { changes: number };
++	return row.changes;
++}
++
+ /**
+  * Check if a thread has any pending (unclaimed) messages in the dispatch queue
+  * that the executor should drain. Excludes client_tool_call entries — those are
+  * waiting for client execution, not executor work, and would otherwise cause the
+  * drain loop to spin (claimPending skips them, but the loop re-enters while
+  * hasPending still reports true). See hasPendingClientToolCalls for the client
+  * side of the queue.
+  */
+ export function hasPending(db: Database, threadId: string): boolean {
+ 	const row = db
+ 		.prepare(
+-			`SELECT COUNT(*) as c FROM dispatch_queue
+-			 WHERE thread_id = ? AND status = 'pending' AND event_type != ?`,
++			`SELECT COUNT(*) as c FROM dispatch_queue WHERE thread_id = ? AND status = 'pending' AND event_type != ?`,
+ 		)
+ 		.get(threadId, CLIENT_TOOL_CALL) as { c: number };
+-	return row.c > 0;
++	const durable = db
++		.prepare(
++			`SELECT COUNT(*) as c FROM durable_work WHERE target_site_id = 'local' AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ?`,
++		)
++		.get(threadId) as { c: number };
++	return row.c + durable.c > 0;
+ }
+ 
+ /**
+  * Check if a thread has any unresolved client tool calls (pending or processing).
+  */
+ export function hasPendingClientToolCalls(db: Database, threadId: string): boolean {
+ 	const row = db
+ 		.prepare(
+ 			`SELECT COUNT(*) as c FROM dispatch_queue
+ 			 WHERE thread_id = ? AND event_type = ? AND status IN ('pending', 'processing')`,
+ 		)
+ 		.get(threadId, CLIENT_TOOL_CALL) as { c: number };
+ 	return row.c > 0;
+ }
+ 
+ /**
+  * True if a connection is holding any in-flight (pending|processing) client
+  * tool call. Used by the WS liveness sweep to scope its blast radius: a
+  * connection is only force-closed when it has an actual wedged call to free,
+  * so a silent-but-idle client (nothing outstanding) is never disturbed.
+  */
+ export function hasInFlightClientToolCallsForConnection(
+ 	db: Database,
+ 	connectionId: string,
+ ): boolean {
+ 	const row = db
+ 		.prepare(
+ 			`SELECT COUNT(*) as c FROM dispatch_queue
+ 			 WHERE claimed_by = ? AND event_type = ? AND status IN ('pending', 'processing')`,
+ 		)
+ 		.get(connectionId, CLIENT_TOOL_CALL) as { c: number };
+ 	return row.c > 0;
+ }
+ 
+ /**
+  * Get all pending/processing client tool calls for a thread.
+  * Returns the entries (event_payload is JSON-encoded).
+  */
+ export function getPendingClientToolCalls(db: Database, threadId: string): DispatchEntry[] {
+ 	return db
+ 		.prepare(
+ 			`SELECT * FROM dispatch_queue
+ 			 WHERE thread_id = ? AND event_type = ? AND status IN ('pending', 'processing')
+ 			 ORDER BY created_at ASC`,
+ 		)
+ 		.all(threadId, CLIENT_TOOL_CALL) as DispatchEntry[];
+ }
+ 
+ /**
+  * Expire stale client tool calls that exceeded TTL.
+  * Returns the list of expired entries.
+  * Atomic SELECT + UPDATE inside BEGIN IMMEDIATE to prevent TOCTOU races.
+  *
+  * `excludeThreadIds` skips entries whose thread is in the set. The TTL clock
+  * starts at enqueue and does not reset, so a call that legitimately holds for a
+  * passenger — a human deliberating at a permission gate, a slow local exec —
+  * burns the same window as a genuinely stuck call. The expiry scan passes the
+  * threads that still have a live client session here so those calls aren't
+  * reaped out from under a connected client; a dead connection has no entry in
+  * the set and expires as before. Liveness is defined in `delegation.ts`
+  * (`getClientSessions`), which lives above `core` in the dep graph, so the
+  * caller resolves the set and hands it down rather than core reaching up for it.
+  */
+ export function expireClientToolCalls(
+ 	db: Database,
+ 	ttlMs: number,
+ 	threadId?: string,
+ 	excludeThreadIds?: readonly string[],
+ ): DispatchEntry[] {
+ 	const now = new Date().toISOString();
+ 	const cutoff = new Date(Date.now() - ttlMs).toISOString();
+ 
+ 	const conditions = ["event_type = ?", "status IN ('pending', 'processing')", "created_at < ?"];
+ 	const params: string[] = [CLIENT_TOOL_CALL, cutoff];
+ 	if (threadId) {
+ 		conditions.push("thread_id = ?");
+ 		params.push(threadId);
+ 	}
+ 	const excluded = excludeThreadIds?.filter((t) => t.length > 0) ?? [];
+ 	if (excluded.length > 0) {
+diff --git a/packages/core/src/schema.ts b/packages/core/src/schema.ts
+index cdb1efb2..81300e9d 100644
+--- a/packages/core/src/schema.ts
++++ b/packages/core/src/schema.ts
+@@ -91,160 +91,203 @@ function migrateSyncStateToHlc(db: Database): void {
+ 		name: string;
+ 		type: string;
+ 	}>;
+ 	if (cols.length === 0) return; // Table doesn't exist yet
+ 
+ 	const lastReceivedCol = cols.find((c) => c.name === "last_received");
+ 	if (!lastReceivedCol) return;
+ 	if (lastReceivedCol.type === "TEXT") return; // Already migrated
+ 
+ 	db.exec("BEGIN");
+ 	try {
+ 		db.exec(`
+ 			CREATE TABLE sync_state_v2 (
+ 				peer_site_id  TEXT PRIMARY KEY,
+ 				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+ 				last_sent     TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+ 				last_sync_at  TEXT,
+ 				sync_errors   INTEGER DEFAULT 0
+ 			) STRICT
+ 		`);
+ 
+ 		// For each peer, try to find the HLC for their cursor position.
+ 		// Since we just migrated change_log, the new hlc column is available.
+ 		const peers = db
+ 			.query(
+ 				"SELECT peer_site_id, last_received, last_sent, last_sync_at, sync_errors FROM sync_state",
+ 			)
+ 			.all() as Array<{
+ 			peer_site_id: string;
+ 			last_received: number;
+ 			last_sent: number;
+ 			last_sync_at: string | null;
+ 			sync_errors: number;
+ 		}>;
+ 
+ 		const insertPeer = db.prepare(
+ 			"INSERT INTO sync_state_v2 (peer_site_id, last_received, last_sent, last_sync_at, sync_errors) VALUES (?, ?, ?, ?, ?)",
+ 		);
+ 
+ 		for (const peer of peers) {
+ 			// After migration, seq N maps to the Nth entry. Use HLC_ZERO as safe default.
+ 			insertPeer.run(peer.peer_site_id, HLC_ZERO, HLC_ZERO, peer.last_sync_at, peer.sync_errors);
+ 		}
+ 
+ 		db.exec("DROP TABLE sync_state");
+ 		db.exec("ALTER TABLE sync_state_v2 RENAME TO sync_state");
+ 
+ 		db.exec("COMMIT");
+ 	} catch (error) {
+ 		try {
+ 			db.exec("ROLLBACK");
+ 		} catch {
+ 			// ROLLBACK failed
+ 		}
+ 		throw error;
+ 	}
+ }
+ 
+ /**
+  * Add a column to an existing table if it is absent.
+  *
+  * `CREATE TABLE IF NOT EXISTS` is a no-op on an existing database, so a column
+  * declared inline in the CREATE never materializes on an upgrade path. Any index
+  * or trigger created later in `applySchema` that references such a column then
+  * fails with "no such column" â on existing installs only, while fresh installs
+  * stay green. #201 hit exactly that: `agent_id` was declared inline on
+  * semantic_memory / memory_edges / threads and the composite unique indexes
+  * referencing it are created immediately after the CREATE, ~500 lines before the
+  * ALTER migration block near the end of this function.
+  *
+  * Detect via PRAGMA table_info rather than try/catch so a genuine failure still
+  * throws instead of being swallowed as "already exists".
+  */
+ function ensureColumn(db: Database, table: string, column: string, type = "TEXT"): void {
+ 	const cols = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+ 	if (cols.length === 0) return; // table doesn't exist yet â CREATE will carry the column
+ 	if (cols.some((c) => c.name === column)) return;
+ 	db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+ }
+ 
++/**
++ * Rebuild the local durable spool when upgrading from the 4A shape. SQLite
++ * cannot alter a CHECK constraint, so adding `consumed` needs a table swap.
++ */
++function migrateDurableWorkForConsumedState(db: Database): void {
++	const columns = db.query("PRAGMA table_info(durable_work)").all() as Array<{ name: string }>;
++	if (columns.length === 0 || columns.some((column) => column.name === "consumed_at")) return;
++
++	db.exec("BEGIN");
++	try {
++		db.exec(`CREATE TABLE durable_work_new (
++			id TEXT PRIMARY KEY,
++			target_site_id TEXT NOT NULL,
++			kind TEXT NOT NULL,
++			payload TEXT NOT NULL,
++			idempotency_key TEXT NOT NULL,
++			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
++			claim_token TEXT,
++			claimed_at TEXT,
++			attempt_count INTEGER NOT NULL DEFAULT 0,
++			last_error TEXT,
++			created_at TEXT NOT NULL,
++			expires_at TEXT,
++			dead_lettered_at TEXT,
++			consumed_at TEXT
++		) STRICT`);
++		db.exec(`INSERT INTO durable_work_new (
++			id, target_site_id, kind, payload, idempotency_key, claim_state,
++			claim_token, claimed_at, attempt_count, last_error, created_at, expires_at, dead_lettered_at
++		) SELECT id, target_site_id, kind, payload, idempotency_key, claim_state,
++			claim_token, claimed_at, attempt_count, last_error, created_at, expires_at, dead_lettered_at
++			FROM durable_work`);
++		db.exec("DROP TABLE durable_work");
++		db.exec("ALTER TABLE durable_work_new RENAME TO durable_work");
++		db.exec("COMMIT");
++	} catch (error) {
++		try {
++			db.exec("ROLLBACK");
++		} catch {}
++		throw error;
++	}
++}
++
+ export function installRowHashInvalidationTriggers(db: Database): void {
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS row_state_hashes (
+ 			table_name TEXT NOT NULL, pk TEXT NOT NULL, state_hash TEXT NOT NULL, hashed_at TEXT NOT NULL,
+ 			PRIMARY KEY (table_name, pk)
+ 		) STRICT, WITHOUT ROWID
+ 	`);
+ 	for (const table of SYNCED_TABLE_NAMES) {
+ 		const exists = db
+ 			.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+ 			.get(table);
+ 		if (!exists) continue;
+ 		validateColumnName(table);
+ 		const pk = getPkColumn(table);
+ 		validateColumnName(pk);
+ 		for (const [operation, reference] of [
+ 			["insert", "NEW"],
+ 			["update", "NEW"],
+ 			["delete", "OLD"],
+ 		] as const) {
+ 			db.run(
+ 				`CREATE TRIGGER IF NOT EXISTS rsh_inv_${table}_${operation} AFTER ${operation.toUpperCase()} ON ${table} BEGIN DELETE FROM row_state_hashes WHERE table_name = '${table}' AND pk = ${reference}.${pk}; END`,
+ 			);
+ 		}
+ 	}
+ }
+ 
+ export function applySchema(db: Database): void {
+ 	// 1. users
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS users (
+ 			id            TEXT PRIMARY KEY,
+ 			display_name  TEXT NOT NULL,
+ 			platform_ids  TEXT,
+ 			first_seen_at TEXT NOT NULL,
+ 			modified_at   TEXT NOT NULL,
+ 			deleted       INTEGER DEFAULT 0
+ 		) STRICT
+ 	`);
+ 
+ 	// 2. threads
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS threads (
+ 			id               TEXT PRIMARY KEY,
+ 			user_id          TEXT NOT NULL,
+ 			interface        TEXT NOT NULL,
+ 			host_origin      TEXT NOT NULL,
+ 			color            INTEGER DEFAULT 0,
+ 			title            TEXT,
+ 			summary          TEXT,
+ 			summary_through  TEXT,
+ 			summary_model_id TEXT,
+ 			extracted_through TEXT,
+ 			created_at       TEXT NOT NULL,
+ 			last_message_at  TEXT NOT NULL,
+ 			modified_at      TEXT NOT NULL,
+ 			deleted          INTEGER DEFAULT 0,
+ 			agent_id         TEXT, -- #201: NULL = main agent; non-null = aux identity
+ 			parent_thread_id TEXT  -- #201: dispatching parent thread for aux conversations
+ 		) STRICT
+ 	`);
+ 
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_threads_user ON threads(user_id, last_message_at)
+ 		WHERE deleted = 0
+ 	`);
+ 
+ 	// 3. messages
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS messages (
+ 			id          TEXT PRIMARY KEY,
+ 			thread_id   TEXT NOT NULL,
+ 			role        TEXT NOT NULL,
+ 			content     TEXT NOT NULL,
+ 			model_id    TEXT,
+ 			tool_name   TEXT,
+ 			created_at  TEXT NOT NULL,
+ 			modified_at TEXT,
+ 			host_origin TEXT NOT NULL,
+ 			deleted     INTEGER DEFAULT 0
+@@ -623,177 +666,180 @@ export function applySchema(db: Database): void {
+ 	`);
+ 
+ 	// last_confirmed column migration (idempotent â ignore if column already
+ 	// exists). Distinct from last_sent (optimistic) and last_received (inbound):
+ 	// last_confirmed is the peer-acknowledged watermark, advanced ONLY on
+ 	// changelog_ack, and is the sole anchor authority for delegation range
+ 	// segments (R-UD7/R-UD11). See docs/design/specs/2026-06-29-unified-delegation.md.
+ 	try {
+ 		db.run(
+ 			"ALTER TABLE sync_state ADD COLUMN last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000'",
+ 		);
+ 	} catch {
+ 		/* already exists */
+ 	}
+ 
+ 	// 17. host_meta (non-replicated, local-only)
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS host_meta (
+ 			key   TEXT PRIMARY KEY,
+ 			value TEXT NOT NULL
+ 		) STRICT
+ 	`);
+ 
+ 	// 18. relay_outbox (non-replicated, local-only)
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS relay_outbox (
+ 			id              TEXT PRIMARY KEY,
+ 			source_site_id  TEXT,
+ 			target_site_id  TEXT NOT NULL,
+ 			kind            TEXT NOT NULL,
+ 			ref_id          TEXT,
+ 			idempotency_key TEXT,
+ 			payload         TEXT NOT NULL,
+ 			created_at      TEXT NOT NULL,
+ 			expires_at      TEXT NOT NULL,
+ 			delivered       INTEGER DEFAULT 0
+ 		) STRICT
+ 	`);
+ 
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_relay_outbox_target
+ 		ON relay_outbox(target_site_id, delivered)
+ 		WHERE delivered = 0
+ 	`);
+ 
+ 	// 19. relay_inbox (non-replicated, local-only)
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS relay_inbox (
+ 			id              TEXT PRIMARY KEY,
+ 			source_site_id  TEXT NOT NULL,
+ 			kind            TEXT NOT NULL,
+ 			ref_id          TEXT,
+ 			idempotency_key TEXT,
+ 			payload         TEXT NOT NULL,
+ 			expires_at      TEXT NOT NULL,
+ 			received_at     TEXT NOT NULL,
+ 			processed       INTEGER DEFAULT 0
+ 		) STRICT
+ 	`);
+ 
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_relay_inbox_unprocessed
+ 		ON relay_inbox(processed)
+ 		WHERE processed = 0
+ 	`);
+ 
+ 	// Event-task wakeups drain inbox entries by (ref_id, kind) in receive
+ 	// order. This avoids scanning every unprocessed relay row as backlog grows.
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_relay_inbox_ref_unprocessed_received
+ 		ON relay_inbox(ref_id, kind, received_at)
+ 		WHERE processed = 0
+ 	`);
+ 
+ 	db.run(`
+ 		CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_inbox_idempotency
+ 		ON relay_inbox(idempotency_key)
+ 		WHERE idempotency_key IS NOT NULL
+ 	`);
+ 
++	migrateDurableWorkForConsumedState(db);
++
+ 	// durable_work (non-replicated, local-only): the additive per-host spool.
+ 	// It intentionally has no change-log integration; see R-DW19.
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS durable_work (
+ 			id TEXT PRIMARY KEY,
+ 			target_site_id TEXT NOT NULL,
+ 			kind TEXT NOT NULL,
+ 			payload TEXT NOT NULL,
+ 			idempotency_key TEXT NOT NULL,
+-			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'dead_letter')),
++			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
+ 			claim_token TEXT,
+ 			claimed_at TEXT,
+ 			attempt_count INTEGER NOT NULL DEFAULT 0,
+ 			last_error TEXT,
+ 			created_at TEXT NOT NULL,
+ 			expires_at TEXT,
+-			dead_lettered_at TEXT
++			dead_lettered_at TEXT,
++			consumed_at TEXT
+ 		) STRICT
+ 	`);
+ 	db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_work_kind_key
+ 		ON durable_work(kind, idempotency_key)`);
+ 	db.run(`CREATE INDEX IF NOT EXISTS idx_durable_work_claimable
+ 		ON durable_work(target_site_id, claim_state, created_at)
+ 		WHERE claim_state = 'pending'`);
+ 	db.run(`CREATE INDEX IF NOT EXISTS idx_durable_work_expiry
+ 		ON durable_work(expires_at) WHERE expires_at IS NOT NULL`);
+ 
+ 	// 20. relay_cycles (non-replicated, local-only)
+ 	db.run(`
+ 		CREATE TABLE IF NOT EXISTS relay_cycles (
+ 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+ 			direction TEXT NOT NULL,
+ 			peer_site_id TEXT NOT NULL,
+ 			kind TEXT NOT NULL,
+ 			delivery_method TEXT NOT NULL,
+ 			latency_ms INTEGER,
+ 			expired INTEGER NOT NULL DEFAULT 0,
+ 			success INTEGER NOT NULL DEFAULT 0,
+ 			created_at TEXT NOT NULL
+ 		) STRICT
+ 	`);
+ 
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_relay_cycles_created
+ 		ON relay_cycles(created_at)
+ 	`);
+ 
+ 	// stream_id column migrations (idempotent â ignore if column already exists)
+ 	try {
+ 		db.run("ALTER TABLE relay_outbox ADD COLUMN stream_id TEXT");
+ 	} catch {
+ 		/* already exists */
+ 	}
+ 	try {
+ 		db.run("ALTER TABLE relay_inbox  ADD COLUMN stream_id TEXT");
+ 	} catch {
+ 		/* already exists */
+ 	}
+ 	try {
+ 		db.run("ALTER TABLE relay_cycles ADD COLUMN stream_id TEXT");
+ 	} catch {
+ 		/* already exists */
+ 	}
+ 
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_relay_outbox_stream
+ 		ON relay_outbox(stream_id)
+ 		WHERE stream_id IS NOT NULL
+ 	`);
+ 
+ 	db.run(`
+ 		CREATE INDEX IF NOT EXISTS idx_relay_inbox_stream
+ 		ON relay_inbox(stream_id, processed)
+ 		WHERE stream_id IS NOT NULL AND processed = 0
+ 	`);
+ 
+ 	// trace_context column migrations for OpenTelemetry trace propagation (idempotent)
+ 	try {
+ 		db.run("ALTER TABLE relay_outbox ADD COLUMN trace_context TEXT");
+ 	} catch {
+ 		/* already exists */
+ 	}
+ 	try {
+ 		db.run("ALTER TABLE relay_inbox ADD COLUMN trace_context TEXT");
+ 	} catch {
+ 		/* already exists */
+ 	}
+ 
+ 	// ââ Platform connector migrations (Phase 1) ââââââââââââââââââââââââââââââ
+ 
+ 	// #93: link an advisory to the thread it originated from so the web UI can
+ 	// navigate operators straight to the source conversation. Idempotent â older
+ 	// databases gain the column on next startup; existing rows default to NULL.
+ 	try {
+ 		db.run("ALTER TABLE advisories ADD COLUMN thread_id TEXT");
+ 	} catch {
+ 		/* already exists */

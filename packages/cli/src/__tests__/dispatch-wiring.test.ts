@@ -30,6 +30,7 @@ import {
 	hasPendingClientToolCalls,
 	insertRow,
 	resetProcessing,
+	setDurableDispatchEnqueueEnabledForTesting,
 } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
@@ -54,6 +55,7 @@ describe("Dispatch Queue Wiring", () => {
 		db.run("DELETE FROM messages");
 		db.run("DELETE FROM threads");
 		db.run("DELETE FROM users");
+		setDurableDispatchEnqueueEnabledForTesting(false);
 	});
 
 	afterAll(async () => {
