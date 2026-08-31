@@ -136,6 +136,8 @@ export {
 	pruneExpiredDeadLetters,
 	pruneConsumedDurableWork,
 	validateDurableWork,
+	DURABLE_INTAKE_ENABLED,
+	setDurableIntakeEnabledForTesting,
 	InvalidDurableWorkRowError,
 	type DurableWorkRow,
 	type NewDurableWork,

@@ -1,7 +1,12 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { applySchema, insertRow } from "@bound/core";
+import {
+	applySchema,
+	type insertDurableWork,
+	insertRow,
+	setDurableIntakeEnabledForTesting,
+} from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { RssPoller, fetchValidatedUrl, parseFeed } from "../rss-poller.js";
 
@@ -125,7 +130,25 @@ describe("RssPoller", () => {
 			.all() as Array<{ ref_id: string; kind: string; payload: string }>;
 	}
 
+	function durableRows(): Array<{
+		ref_id: string;
+		kind: string;
+		payload: string;
+		idempotency_key: string;
+		source_site: string;
+		received_at: string;
+		expires_at: string;
+		claim_state: string;
+	}> {
+		return db
+			.query(
+				"SELECT ref_id, kind, payload, idempotency_key, source_site, received_at, expires_at, claim_state FROM durable_work ORDER BY received_at ASC",
+			)
+			.all() as ReturnType<typeof durableRows>;
+	}
+
 	beforeEach(() => {
+		setDurableIntakeEnabledForTesting(false);
 		db = new Database(":memory:");
 		applySchema(db);
 		siteId = `test-site-${randomBytes(4).toString("hex")}`;
@@ -139,6 +162,7 @@ describe("RssPoller", () => {
 	});
 
 	afterEach(() => {
+		setDurableIntakeEnabledForTesting(true);
 		db.close();
 	});
 
@@ -552,5 +576,104 @@ describe("RssPoller", () => {
 		const cursor = JSON.parse(row.seen_guids) as string[];
 		expect(cursor.filter((g) => g === "guid-dup").length).toBe(1);
 		expect(cursor.length).toBe(2);
+	});
+
+	describe("durable intake ON", () => {
+		beforeEach(() => setDurableIntakeEnabledForTesting(true));
+		afterEach(() => setDurableIntakeEnabledForTesting(true));
+
+		it("writes rss_intake durable_work rows keyed rss-<name>-<guid> and no relay twin", async () => {
+			const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
+			const poller = new RssPoller({
+				...pollerDeps,
+				db,
+				siteId,
+				eventBus,
+				fetchImpl: fetchReturning(RSS_DOC),
+			});
+
+			await poller.tick();
+
+			const rows = durableRows();
+			expect(rows.length).toBe(1);
+			expect(rows[0].kind).toBe("rss_intake");
+			expect(rows[0].idempotency_key).toBe("rss-test-feed-https://example.com/2");
+			expect(rows[0].ref_id).toBe(feed.thread_id);
+			expect(rows[0].source_site).toBe(siteId);
+			expect(rows[0].received_at).toEqual(expect.any(String));
+			expect(rows[0].claim_state).toBe("pending");
+			expect(Date.parse(rows[0].expires_at) - Date.parse(rows[0].received_at)).toBeGreaterThan(
+				6 * 24 * 60 * 60 * 1000,
+			);
+			const payload = JSON.parse(rows[0].payload) as Record<string, unknown>;
+			expect(payload.feed).toBe("test-feed");
+			expect(payload.guid).toBe("https://example.com/2");
+			// No legacy twin.
+			expect(inboxRows()).toEqual([]);
+
+			// Second poll with the same document: guid skip preserved, no new rows.
+			await poller.tick();
+			expect(durableRows().length).toBe(1);
+		});
+
+		it("preserves distinct GUIDs that differ after a 512-character common prefix", async () => {
+			const sharedGuidPrefix = "a".repeat(513);
+			const firstGuid = `${sharedGuidPrefix}-first`;
+			const secondGuid = `${sharedGuidPrefix}-second`;
+			const doc = `<rss><channel>
+			<item><title>first</title><guid>${firstGuid}</guid></item>
+			<item><title>second</title><guid>${secondGuid}</guid></item>
+		</channel></rss>`;
+			const feed = seedFeed({ seen_guids: JSON.stringify([]) });
+			const poller = new RssPoller({
+				...pollerDeps,
+				db,
+				siteId,
+				eventBus,
+				fetchImpl: fetchReturning(doc),
+			});
+
+			await poller.tick();
+
+			const rows = durableRows();
+			expect(rows).toHaveLength(2);
+			expect(rows.map((row) => row.idempotency_key)).toEqual(
+				expect.arrayContaining([`rss-test-feed-${firstGuid}`, `rss-test-feed-${secondGuid}`]),
+			);
+			const row = db.query("SELECT seen_guids FROM rss_feeds WHERE id = ?").get(feed.id) as {
+				seen_guids: string;
+			};
+			expect(JSON.parse(row.seen_guids)).toEqual(expect.arrayContaining([firstGuid, secondGuid]));
+		});
+
+		it("a durable insert failure leaves seen_guids unadvanced", async () => {
+			const feed = seedFeed({ seen_guids: JSON.stringify([]) });
+			let durableAttempts = 0;
+			const poller = new RssPoller({
+				...pollerDeps,
+				db,
+				siteId,
+				eventBus,
+				fetchImpl: fetchReturning(RSS_DOC),
+				// Force the durable intake write to throw, mirroring the legacy
+				// #219 rollback test. The intake write and the seen_guids cursor
+				// advance share one transaction, so a failed intake must not
+				// consume GUIDs.
+				insertDurableWork: (() => {
+					durableAttempts++;
+					throw new Error("durable intake write failed");
+				}) as typeof insertDurableWork,
+			});
+
+			await expect(poller.tick()).rejects.toThrow("durable intake write failed");
+			expect(durableAttempts).toBeGreaterThan(0);
+			// No durable rows, no legacy rows, and the cursor stayed empty.
+			expect(durableRows()).toEqual([]);
+			expect(inboxRows()).toEqual([]);
+			const row = db.query("SELECT seen_guids FROM rss_feeds WHERE id = ?").get(feed.id) as {
+				seen_guids: string;
+			};
+			expect(JSON.parse(row.seen_guids)).toEqual([]);
+		});
 	});
 });

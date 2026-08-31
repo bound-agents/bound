@@ -46,6 +46,7 @@ describe("Native Aux Tool (invoke slice)", () => {
 
 	afterEach(() => {
 		db.close();
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	describe("invoke validation", () => {
@@ -432,6 +433,8 @@ describe("invoke with background: true", () => {
 	let ctx: ToolContext;
 
 	beforeEach(() => {
+		// Background queue assertions inspect the legacy dispatch bridge directly.
+		setDurableDispatchEnqueueEnabledForTesting(false);
 		db = new Database(":memory:");
 		applySchema(db);
 		db.run(
@@ -449,6 +452,7 @@ describe("invoke with background: true", () => {
 
 	afterEach(() => {
 		db.close();
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	it("returns a DeferredToolResult rather than the aux summary", async () => {

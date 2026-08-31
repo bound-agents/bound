@@ -1,6 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { insertInbox, insertRow, listFreshRemotePlatforms, writeOutbox } from "@bound/core";
+import {
+	DURABLE_INTAKE_ENABLED,
+	insertDurableWork,
+	insertInbox,
+	insertRow,
+	listFreshRemotePlatforms,
+	writeOutbox,
+} from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import {
 	type Logger,
@@ -770,19 +777,37 @@ export class PlatformMcpRegistry {
 			// tool_result is a synced messages row, so cross-host history is
 			// preserved without a separate developer message.
 			for (const event of newEvents) {
-				insertInbox(this.deps.db, {
-					id: randomUUID(),
-					source_site_id: this.deps.siteId,
-					kind: "connector_intake" as const,
-					ref_id: subscription.threadId,
-					idempotency_key: `connector_intake:${subscription.handleId}:${event.eventId}`,
-					stream_id: null,
-					payload: JSON.stringify([event.data]),
-					expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-					received_at: now,
-					processed: 0,
-					trace_context: serializedTraceContext,
-				});
+				const id = randomUUID();
+				const idempotencyKey = `connector_intake:${subscription.handleId}:${event.eventId}`;
+				const payload = JSON.stringify([event.data]);
+				const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+				if (DURABLE_INTAKE_ENABLED) {
+					insertDurableWork(this.deps.db, {
+						id,
+						target_site_id: this.deps.siteId,
+						kind: "connector_intake",
+						payload,
+						idempotency_key: idempotencyKey,
+						expires_at: expiresAt,
+						ref_id: subscription.threadId,
+						source_site: this.deps.siteId,
+						received_at: now,
+					});
+				} else {
+					insertInbox(this.deps.db, {
+						id,
+						source_site_id: this.deps.siteId,
+						kind: "connector_intake" as const,
+						ref_id: subscription.threadId,
+						idempotency_key: idempotencyKey,
+						stream_id: null,
+						payload,
+						expires_at: expiresAt,
+						received_at: now,
+						processed: 0,
+						trace_context: serializedTraceContext,
+					});
+				}
 			}
 		}
 

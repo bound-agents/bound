@@ -67,6 +67,7 @@ describe("introspect tool", () => {
 
 	afterEach(() => {
 		db.close();
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	describe("AC1.1: Valid thread_id and message accepted", () => {

@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { insertInbox, listActiveRssFeeds, updateRow } from "@bound/core";
+import {
+	DURABLE_INTAKE_ENABLED,
+	insertDurableWork,
+	insertInbox,
+	listActiveRssFeeds,
+	updateRow,
+} from "@bound/core";
 import {
 	RSS_SEEN_GUIDS_CAP,
 	counter,
@@ -349,6 +355,8 @@ export interface RssPollerDeps {
 	traceContext?: () => Record<string, string> | null;
 	/** Injectable only for failure-path tests. */
 	insertInbox?: typeof insertInbox;
+	/** Injectable only for durable failure-path tests (mirrors the legacy insertInbox seam). */
+	insertDurableWork?: typeof insertDurableWork;
 }
 
 interface FeedRuntimeState {
@@ -555,22 +563,41 @@ export class RssPoller {
 			const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
 			const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
 			const persistIntake = this.deps.insertInbox ?? insertInbox;
+			const persistDurable = this.deps.insertDurableWork ?? insertDurableWork;
 			const persistTransaction = this.deps.db.transaction(() => {
 				if (!isFirstPoll) {
 					for (const item of fresh) {
-						const inserted = persistIntake(this.deps.db, {
-							id: randomUUID(),
-							source_site_id: this.deps.siteId,
-							kind: "rss_intake",
-							ref_id: feed.thread_id,
-							idempotency_key: `rss-${feed.name}-${item.guid}`.slice(0, 512),
-							stream_id: null,
-							payload: JSON.stringify({ feed: feed.name, url: feed.url, ...item }),
-							expires_at: new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString(),
-							received_at: new Date(nowMs).toISOString(),
-							processed: 0,
-							trace_context: serializedTraceContext,
-						});
+						const id = randomUUID();
+						const idempotencyKey = `rss-${feed.name}-${item.guid}`;
+						const payload = JSON.stringify({ feed: feed.name, url: feed.url, ...item });
+						const receivedAt = new Date(nowMs).toISOString();
+						const expiresAt = new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString();
+						const inserted =
+							DURABLE_INTAKE_ENABLED && !this.deps.insertInbox
+								? persistDurable(this.deps.db, {
+										id,
+										target_site_id: this.deps.siteId,
+										kind: "rss_intake",
+										payload,
+										idempotency_key: idempotencyKey,
+										expires_at: expiresAt,
+										ref_id: feed.thread_id,
+										source_site: this.deps.siteId,
+										received_at: receivedAt,
+									})
+								: persistIntake(this.deps.db, {
+										id,
+										source_site_id: this.deps.siteId,
+										kind: "rss_intake",
+										ref_id: feed.thread_id,
+										idempotency_key: idempotencyKey,
+										stream_id: null,
+										payload,
+										expires_at: expiresAt,
+										received_at: receivedAt,
+										processed: 0,
+										trace_context: serializedTraceContext,
+									});
 						if (inserted) delivered++;
 					}
 				}

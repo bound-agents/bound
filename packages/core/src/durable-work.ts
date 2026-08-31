@@ -3,6 +3,16 @@ import { randomUUID } from "node:crypto";
 import { trace } from "@opentelemetry/api";
 import { withCoreSpan } from "./telemetry";
 
+/** Set BOUND_DURABLE_INTAKE=0 or false before startup to restore legacy relay-inbox intake writes. */
+export let DURABLE_INTAKE_ENABLED = !["0", "false"].includes(
+	process.env.BOUND_DURABLE_INTAKE?.toLowerCase() ?? "",
+);
+
+/** Test seam for exercising the intake rollback route without changing production defaults. */
+export function setDurableIntakeEnabledForTesting(enabled: boolean): void {
+	DURABLE_INTAKE_ENABLED = enabled;
+}
+
 export type DurableWorkClaimState =
 	| "pending"
 	| "processing"

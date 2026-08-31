@@ -1,5 +1,5 @@
 import Database from "bun:sqlite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
 	applyMetricsSchema,
@@ -89,6 +89,10 @@ describe("introspect tool integration", () => {
 			},
 			threadId: callerThreadId,
 		};
+	});
+
+	afterEach(() => {
+		setDurableDispatchEnqueueEnabledForTesting(true);
 	});
 
 	afterAll(() => {
