@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema } from "@bound/core";
+import { applySchema, insertInbox } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
@@ -1442,5 +1442,65 @@ describe("RelayProcessor - executeInference", () => {
 		if (doneChunk?.type === "done") {
 			expect(doneChunk.cost_usd).toBe(0);
 		}
+	});
+
+	it("drops duplicate inference relay delivery before the processor executes a second stream", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("deduplicated inference");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const streamId = randomUUID();
+		const now = new Date();
+		const makeEntry = (id: string): RelayInboxEntry => ({
+			id,
+			source_site_id: "requester-site",
+			kind: "inference",
+			ref_id: null,
+			idempotency_key: `inference-stream:${streamId}`,
+			stream_id: streamId,
+			payload: JSON.stringify({
+				model: "test-model",
+				segments: [{ kind: "inline", message: { role: "user", content: "Hello" } }],
+				nowMs: 0,
+				timeout_ms: 5000,
+			}),
+			expires_at: new Date(now.getTime() + 60_000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+			trace_context: null,
+		});
+
+		expect(insertInbox(db, makeEntry("inbox-inference-dedup-1"))).toBe(true);
+		expect(insertInbox(db, makeEntry("inbox-inference-dedup-2"))).toBe(false);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number }
+				).n === 1,
+			{ message: "inference stream did not complete exactly once" },
+		);
+		handle.stop();
+
+		expect(backend.capturedParams).toHaveLength(1);
+		expect(
+			(
+				db.query("SELECT COUNT(*) AS n FROM relay_inbox WHERE kind = 'inference'").get() as {
+					n: number;
+				}
+			).n,
+		).toBe(1);
 	});
 });

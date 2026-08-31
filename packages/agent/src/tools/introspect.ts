@@ -88,6 +88,7 @@ export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
 					correlation_id: correlationId,
 					source_thread: ctx.threadId ?? null,
 					content: input.message,
+					notification_id: randomUUID(),
 				});
 
 				// Setup polling

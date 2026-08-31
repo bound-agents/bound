@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { findLiveThreadById } from "@bound/core";
 import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
@@ -58,6 +59,7 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 					type: "proactive",
 					source_thread: ctx.threadId ?? null,
 					content: message.trim(),
+					notification_id: randomUUID(),
 				});
 				const warning = clientSessionWakeupWarning(ctx.db, thread.id);
 				const confirmation =

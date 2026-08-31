@@ -39,11 +39,15 @@ export function enqueueNotification(
 	db: Database,
 	threadId: string,
 	payload: Record<string, unknown>,
+	idempotencyKey?: string,
 ): string {
-	const entryId = randomUUID();
+	// Relay producers provide a stable key so an at-least-once delivery maps to
+	// the same local queue row. Local notifications deliberately retain their
+	// historical fresh-ID behaviour.
+	const entryId = idempotencyKey ?? randomUUID();
 	const now = new Date().toISOString();
 	db.prepare(
-		`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
+		`INSERT OR IGNORE INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, created_at, modified_at)
 		 VALUES (?, ?, 'pending', 'notification', ?, ?, ?)`,
 	).run(entryId, threadId, JSON.stringify(payload), now, now);
 	return entryId;

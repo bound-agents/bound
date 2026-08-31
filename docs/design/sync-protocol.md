@@ -504,7 +504,7 @@ type RelayAckPayload = { ids: string[] };
 - Hub's own `site_id` — insert into the hub's `relay_inbox` for local processing.
 - Another spoke — if that spoke is currently connected, send a `RELAY_DELIVER` to it immediately; otherwise write an entry into the hub's `relay_outbox` targeting the spoke, to be drained when it reconnects.
 
-`RELAY_DELIVER` is the hub → spoke direction. The receiving spoke inserts the entries into its own `relay_inbox` and emits a `relay:inbox` event. `RELAY_ACK` carries a list of delivered entry IDs and causes `markDelivered` to run on the outbox.
+`RELAY_DELIVER` is the hub → spoke direction. The receiving spoke inserts the entries into its own `relay_inbox` and emits a `relay:inbox` event. Delivery is at-least-once until `RELAY_ACK`, so senders attach deterministic `idempotency_key` values for side-effecting work; the receiving partial unique index admits legacy `NULL` keys unchanged but collapses repeated keyed deliveries. `RELAY_ACK` carries a list of delivered entry IDs and causes `markDelivered` to run on the outbox.
 
 ### `DRAIN_COMPLETE`
 

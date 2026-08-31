@@ -1658,7 +1658,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			JSON.stringify(payload),
 			timeoutMs,
 			undefined,
-			undefined,
+			`client-tool:${this.config.threadId}:${toolCall.id}`,
 			undefined,
 			traceCarrier ? JSON.stringify(traceCarrier) : undefined,
 		);

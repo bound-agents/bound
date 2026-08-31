@@ -46,6 +46,10 @@ export interface WakeupRoutingResult {
 export interface NotifyWakeupPayload {
 	thread_id: string;
 	payload: Record<string, unknown>;
+	/** Stable producer-minted ID; absent on legacy senders. */
+	notification_id?: string;
+	/** Sender-derived key, retained through the local dispatch fence. */
+	idempotency_key?: string;
 }
 
 const NOTIFY_WAKEUP_TTL_MS = 5 * 60 * 1000;
@@ -60,7 +64,19 @@ export function routeNotificationWakeup(
 	const sessionHost = resolveClientSessionHost(db, threadId, localSiteId);
 
 	if (sessionHost) {
-		const wire: NotifyWakeupPayload = { thread_id: threadId, payload };
+		// Legacy senders did not carry an identity. Leave those unkeyed so their
+		// historical random dispatch IDs (and accepted duplicate deliveries) remain.
+		const notificationId =
+			typeof payload.notification_id === "string" && payload.notification_id.length > 0
+				? payload.notification_id
+				: undefined;
+		const idempotencyKey = notificationId ? `notify:${notificationId}` : undefined;
+		const wire: NotifyWakeupPayload = {
+			thread_id: threadId,
+			payload,
+			notification_id: notificationId,
+			idempotency_key: idempotencyKey,
+		};
 		writeOutbox(
 			db,
 			{
@@ -69,7 +85,7 @@ export function routeNotificationWakeup(
 				target_site_id: sessionHost.site_id,
 				kind: "notify_wakeup",
 				ref_id: null,
-				idempotency_key: null,
+				idempotency_key: idempotencyKey ?? null,
 				stream_id: null,
 				payload: JSON.stringify(wire),
 				created_at: new Date().toISOString(),
@@ -101,6 +117,6 @@ export function deliverNotificationWakeup(
 	eventBus: TypedEventEmitter,
 	wire: NotifyWakeupPayload,
 ): void {
-	enqueueNotification(db, wire.thread_id, wire.payload);
+	enqueueNotification(db, wire.thread_id, wire.payload, wire.idempotency_key);
 	eventBus.emit("notify:enqueued", { thread_id: wire.thread_id });
 }

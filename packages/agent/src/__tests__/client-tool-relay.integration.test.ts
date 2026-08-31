@@ -4,6 +4,7 @@ import {
 	applyMetricsSchema,
 	applySchema,
 	enqueueToolResult,
+	insertInbox,
 	insertRow,
 	readUnprocessed,
 } from "@bound/core";
@@ -471,5 +472,64 @@ describe("RelayProcessor.handleClientTool (consumer / session host)", () => {
 		expect(payload.content).toContain("result-once");
 		// All inbox entries drained.
 		expect(readUnprocessed(db).length).toBe(0);
+	});
+
+	it("drops duplicate client_tool relay delivery before the session handler executes", async () => {
+		const threadId = "thread-client-tool-dedup";
+		const callId = "call-client-tool-dedup";
+		const processor = makeProcessor(db, makeWsRegistry(new Set([`${threadId}::boundless_read`])));
+		const now = new Date();
+		const payload: ClientToolPayload = {
+			thread_id: threadId,
+			call_id: callId,
+			tool_name: "boundless_read",
+			args: { path: "/etc/hosts" },
+			timeout_ms: 5000,
+		};
+		const makeEntry = (id: string): RelayInboxEntry => ({
+			id,
+			source_site_id: PRODUCER,
+			kind: "client_tool",
+			ref_id: null,
+			idempotency_key: `client-tool:${threadId}:${callId}`,
+			stream_id: null,
+			payload: JSON.stringify(payload),
+			expires_at: new Date(now.getTime() + 60_000).toISOString(),
+			received_at: now.toISOString(),
+			processed: 0,
+			trace_context: null,
+		});
+
+		const first = makeEntry("inbox-client-tool-dedup-1");
+		expect(insertInbox(db, first)).toBe(true);
+		expect(insertInbox(db, makeEntry("inbox-client-tool-dedup-2"))).toBe(false);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM dispatch_queue WHERE thread_id = ? AND event_type = 'client_tool_call'",
+						)
+						.get(threadId) as { n: number }
+				).n === 1,
+			{ message: "client tool handler did not execute exactly once" },
+		);
+		simulateClientToolResult(db, threadId, callId, "deduplicated", false);
+		await waitFor(() => readClientResults(db, first.id).length === 1, {
+			message: "client result not relayed",
+		});
+		handle.stop();
+
+		expect(
+			(
+				db
+					.query(
+						"SELECT COUNT(*) AS n FROM dispatch_queue WHERE thread_id = ? AND event_type = 'client_tool_call'",
+					)
+					.get(threadId) as { n: number }
+			).n,
+		).toBe(1);
 	});
 });

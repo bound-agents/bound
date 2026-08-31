@@ -811,6 +811,7 @@ export class RelayProcessor {
 		deliverNotificationWakeup(this.db, this.eventBus, {
 			thread_id: payload.thread_id,
 			payload: payload.payload,
+			idempotency_key: entry.idempotency_key ?? payload.idempotency_key,
 		});
 		return null;
 	}
