@@ -186,3 +186,8 @@ export type { BuiltInTool, BuiltInToolResult } from "./built-in-tools";
 
 // Export introspect post-loop hook
 export { runIntrospectResponseStamp } from "./tools/introspect";
+export {
+	DURABLE_WORK_REGISTRY,
+	DURABLE_WORK_KINDS,
+	type DurableWorkRegistration,
+} from "./durable-work-registry";

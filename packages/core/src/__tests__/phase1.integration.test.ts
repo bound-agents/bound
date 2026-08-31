@@ -85,7 +85,7 @@ describe("Phase 1 Integration", async () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(32); // + agents (#201) + local-only row_state_hashes cache = 32
+		expect(tables.length).toBe(33); // + agents (#201) + local-only row_state_hashes cache = 32
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
