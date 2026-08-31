@@ -8,9 +8,11 @@ import {
 	createChangeLogEntry,
 	deadLetterClaimedDurableWork,
 	hasDroppedLegacyRelayTables,
+	insertDurableWork,
 	insertRow,
 	listHostsWithLiveness,
 	markProcessed,
+	releaseDurableWorkClaim,
 	resolveEffectiveModelHint,
 	updateRow,
 	updateRowIf,
@@ -75,19 +77,23 @@ const LEASE_VERIFY_SETTLE_MS = (() => {
 })();
 
 /**
- * Producer mode for task_fire durable-work rows (slice 5B, R-DW15–R-DW21).
+ * Producer mode for task_fire durable-work rows (slices 5B/5C, R-DW15–R-DW21).
  *
  * Three states, read once from `BOUND_TASK_FIRE_MODE` at module init and
  * overridable in tests via {@link setTaskFireModeForTesting}:
- *  - `"legacy"`   — byte-identical to pre-5B behaviour: the phase-1 CAS + run,
- *    no comparison computation, no telemetry. The rollback posture.
- *  - `"compare"`  — DEFAULT. The legacy path still executes; in addition the
- *    scheduler computes the would-be durable enqueue decision and emits a
+ *  - `"legacy"`   — byte-identical to pre-slice behaviour: the phase-1
+ *    pending→claimed CAS + run, no comparison computation, no telemetry. A
+ *    rollback posture.
+ *  - `"compare"`  — the legacy path still executes; in addition the scheduler
+ *    computes the would-be durable enqueue decision and emits a
  *    `task_fire_comparison` telemetry record. NO durable_work row is inserted
- *    — comparison mode never runs two execution paths for one artifact.
- *  - `"durable"`  — accepted so a premature flip is safe, but durable task
- *    firing does not arrive until a later release: it warns once per process
- *    then behaves exactly as `"compare"`.
+ *    — comparison mode never runs two execution paths for one artifact. The
+ *    dual-execution proof the migration plan requires; a rollback posture.
+ *  - `"durable"` — DEFAULT (slice 5C). The rendezvous winner ENQUEUES a
+ *    `task_fire` durable_work row instead of performing the legacy CAS; the
+ *    same-tick consumer lane ({@link processPendingTaskFire}) claims it and
+ *    bridges the legacy CAS into runTask. The comparison record still fires
+ *    (now carrying `enqueue_inserted`) so drift stays observable.
  *
  * Follows the BOUND_DURABLE_* toggle pattern (packages/core/src/durable-work.ts)
  * as a three-state string rather than a boolean. Lives at scheduler module
@@ -101,22 +107,34 @@ function parseTaskFireMode(raw: string | undefined): TaskFireMode {
 			return "legacy";
 		case "durable":
 			return "durable";
-		default:
-			// Unset, "compare", or any unrecognized value defaults to compare — the
-			// safe migration-window posture (legacy still runs; no durable rows).
+		case "compare":
 			return "compare";
+		default:
+			// Unset or unrecognized defaults to durable — the end-state execution
+			// path (slice 5C). "legacy" and "compare" remain explicit rollback
+			// postures.
+			return "durable";
 	}
 }
 
 let TASK_FIRE_MODE: TaskFireMode = parseTaskFireMode(process.env.BOUND_TASK_FIRE_MODE);
-/** Process-wide one-shot latch for the unavailable durable task_fire producer warning. */
-let warnedDurableTaskFireUnavailable = false;
 
-/** Test seam: override the task_fire producer mode and reset its warning latch. */
+/** Test seam: override the task_fire producer mode. */
 export function setTaskFireModeForTesting(mode: TaskFireMode | undefined): void {
 	TASK_FIRE_MODE = mode ?? parseTaskFireMode(process.env.BOUND_TASK_FIRE_MODE);
-	warnedDurableTaskFireUnavailable = false;
 }
+
+/**
+ * TTL for an enqueued `task_fire` durable_work row (slice 5C). The registry
+ * declares `ttlMs: null` for `task_fire`, so the producer picks the window at
+ * enqueue time. The consumer lane runs on the SAME tick that enqueues (after
+ * phase-3), so a firing is normally claimed within one {@link POLL_INTERVAL};
+ * this window is the RPC-request class (5 min, matching the registry's
+ * RPC_REQUEST_TTL_MS) — far larger than the tick cadence, with headroom for a
+ * briefly-stalled scheduler. A firing not claimed within it dead-letters into
+ * workspool-redrivable state, the right failure surface for a wedged scheduler.
+ */
+const TASK_FIRE_TTL_MS = 5 * 60 * 1000;
 
 /** OTel counter for task_fire comparison records (slice 5B dual-execution proof). */
 const taskFireComparisonCounter = counter("bound.scheduler.task_fire.comparison", {
@@ -1304,7 +1322,19 @@ export class Scheduler {
 				this.ctx.siteId,
 			);
 			let legacyClaimWon = false;
-			if (legacyDispatched) {
+			let enqueueInserted = false;
+			if (TASK_FIRE_MODE === "durable") {
+				// Slice 5C: the rendezvous winner ENQUEUES a task_fire durable_work
+				// row instead of performing the legacy pending→claimed CAS. The
+				// same-tick consumer lane (processPendingTaskFire, after phase-3)
+				// claims the row and bridges the legacy CAS into runTask, so the
+				// synced tasks row lifecycle is UNCHANGED (R-DW17 by construction).
+				// The INSERT OR IGNORE fence on (kind, idempotency_key) dedupes
+				// re-enqueues across ticks while next_run_at is unchanged.
+				if (legacyDispatched) {
+					enqueueInserted = this.enqueueTaskFire(task);
+				}
+			} else if (legacyDispatched) {
 				const claimedAt = new Date().toISOString();
 				// CAS: only claim if still pending (prevents duplicate scheduling from other hosts)
 				const txFn = this.ctx.db.transaction(() => {
@@ -1341,19 +1371,19 @@ export class Scheduler {
 				}
 			}
 
-			// Slice 5B: task_fire PRODUCER in comparison mode. The legacy CAS above
-			// ran EXACTLY as at HEAD; here we additionally record the would-be durable
-			// enqueue decision. In "compare"/"durable" mode NO durable_work row is
-			// inserted — the migration plan forbids running both execution paths for
-			// one artifact without the shared idempotency fence, so the dual-execution
-			// proof is a comparison, not a second execution. "legacy" mode skips this
-			// entirely (the rollback posture, byte-identical to HEAD).
-			this.recordTaskFireComparison(task, legacyDispatched, legacyClaimWon);
+			// Slices 5B/5C: task_fire comparison record. In "legacy" mode this is a
+			// no-op (rollback posture, byte-identical to pre-slice). In "compare" the
+			// legacy CAS above ran exactly as at HEAD and NO row was enqueued
+			// (enqueue_inserted=false). In "durable" the enqueue above replaced the
+			// legacy CAS and enqueue_inserted reflects the fence result. decision_match
+			// stays legacy_dispatched===would_enqueue — both derive from the single
+			// shouldDispatchHere evaluation, so drift from this gate is detectable.
+			this.recordTaskFireComparison(task, legacyDispatched, legacyClaimWon, enqueueInserted);
 		}
 	}
 
 	/**
-	 * Emit the slice-5B task_fire comparison record for one due scheduled firing.
+	 * Emit the slices-5B/5C task_fire comparison record for one due scheduled firing.
 	 *
 	 * `would_enqueue` is the rendezvous winner result — the SAME value the legacy
 	 * gate used ({@link shouldDispatchHere}'s output, threaded in as
@@ -1368,9 +1398,9 @@ export class Scheduler {
 		task: Task,
 		legacyDispatched: boolean,
 		legacyClaimWon: boolean,
+		enqueueInserted: boolean,
 	): void {
 		if (TASK_FIRE_MODE === "legacy") return;
-		if (TASK_FIRE_MODE === "durable") this.warnDurableTaskFireUnavailable();
 
 		// Phase-1 already filtered to next_run_at non-null, but keep the guard so a
 		// future caller can't slip an event firing into the comparison lane.
@@ -1399,6 +1429,9 @@ export class Scheduler {
 			legacy_dispatched: legacyDispatched,
 			legacy_claim_won: legacyClaimWon,
 			would_enqueue: wouldEnqueue,
+			// Slice 5C: the fence result of the real enqueue in durable mode; always
+			// false in compare mode (nothing is enqueued there).
+			enqueue_inserted: enqueueInserted,
 			candidate_count: candidateCount,
 			decision_match: decisionMatch,
 		});
@@ -1408,14 +1441,28 @@ export class Scheduler {
 		});
 	}
 
-	/** Warn once per process that a premature `durable` flip degrades to compare. */
-	private warnDurableTaskFireUnavailable(): void {
-		if (warnedDurableTaskFireUnavailable) return;
-		warnedDurableTaskFireUnavailable = true;
-		this.ctx.logger.warn(
-			"[scheduler] BOUND_TASK_FIRE_MODE=durable set, but durable task firing arrives in a later release; behaving as compare",
-			{ event: "task_fire_durable_mode_unavailable" },
-		);
+	/**
+	 * Slice 5C: enqueue a `task_fire` durable_work row for a due scheduled firing
+	 * the rendezvous named this host to win. Identity-only payload (R-DW15); the
+	 * (kind, idempotency_key) fence collapses re-enqueues across ticks while the
+	 * binding's `next_run_at` is unchanged. Returns the fence result (true = a new
+	 * row became durable, false = deduped by a prior tick's enqueue).
+	 *
+	 * Event tasks never reach here — phase-1 scans `next_run_at IS NOT NULL`
+	 * (R-DW18) — but the null guard defends the payload shape anyway.
+	 */
+	private enqueueTaskFire(task: Task): boolean {
+		const scheduledAt = task.next_run_at;
+		if (scheduledAt === null) return false;
+		const payload: TaskFirePayload = { task_id: task.id, scheduled_at: scheduledAt };
+		return insertDurableWork(this.ctx.db, {
+			id: randomUUID(),
+			target_site_id: this.ctx.siteId,
+			kind: "task_fire",
+			payload: JSON.stringify(payload),
+			idempotency_key: taskFireIdempotencyKey(payload),
+			expires_at: new Date(Date.now() + TASK_FIRE_TTL_MS).toISOString(),
+		});
 	}
 
 	/**
@@ -1501,6 +1548,42 @@ export class Scheduler {
 
 			const stale = this.classifyStaleFiring(task, payload);
 			if (stale) {
+				// Self-vs-peer disposition for a non-pending binding. The default stale
+				// disposition is to CONSUME (the firing is superseded — a peer owns the
+				// instant, or the binding moved on). But the crash window is the
+				// exception: the bridge's pending→claimed CAS committed, then this host
+				// crashed before runTask; boot recovery reset the FIRING to pending, but
+				// the BINDING is stuck `claimed`/`running` owned by THIS host until
+				// phase-0 eviction resets it. Consuming here (plus the fence) would block
+				// the post-eviction re-enqueue exactly as the budget case does. So when
+				// the binding is claimed/running by THIS host, RELEASE the firing back to
+				// pending (attempt-neutral): it retries next tick, and once phase-0
+				// eviction resets the binding to pending the bridge CAS succeeds and it
+				// executes — convergence without waiting out the fence. A peer-owned
+				// binding stays a consume (the firing is genuinely superseded there).
+				const selfOwnedCrashWindow =
+					stale === "binding_not_pending" &&
+					task !== null &&
+					(task.status === "claimed" || task.status === "running") &&
+					task.claimed_by === this.ctx.siteId;
+				if (selfOwnedCrashWindow) {
+					this.ctx.logger.info(
+						"[scheduler] task_fire binding is self-claimed (crash window); releasing firing to retry after eviction",
+						{
+							durableWorkId: claimed.id,
+							taskId: payload.task_id,
+							scheduledAt: payload.scheduled_at,
+							bindingStatus: task.status,
+						},
+					);
+					if (!releaseDurableWorkClaim(this.ctx.db, claimed.id, token)) {
+						this.ctx.logger.warn(
+							"[scheduler] Lost task_fire claim before self-crash-window release",
+							{ durableWorkId: claimed.id },
+						);
+					}
+					return;
+				}
 				this.ctx.logger.info("[scheduler] task_fire is stale; consuming as no-op", {
 					durableWorkId: claimed.id,
 					taskId: payload.task_id,
@@ -1555,16 +1638,53 @@ export class Scheduler {
 					return;
 				}
 
-				// Bridge into the UNTOUCHED execution body. runTask launches the agent
-				// loop asynchronously (setImmediate); its completion/failure write-backs
-				// land the task outcome independently. We hand off with the freshly-
-				// claimed row snapshot so runTask's claimed → running lease CAS matches.
-				this.runTask({
+				const claimedTask: Task = {
 					...dueTask,
 					status: "claimed",
 					claimed_by: this.ctx.siteId,
 					claimed_at: claimedAt,
-				});
+				};
+
+				// Daily-budget gate (R-U35), preserved from phase-3 (R-DW17): an
+				// autonomous task over budget must NOT run. In legacy/compare mode this
+				// gate lives in phase3Run, which releases the claim back to pending; the
+				// durable bridge reaches runTask by a different path, so it must apply
+				// the same check. Release the freshly-claimed binding to pending (as
+				// phase-3 does) and RELEASE the firing's claim back to pending (NOT
+				// consume): budget deferral does not advance next_run_at, so the next
+				// tick's producer re-mints the identical key task-fire:<id>:<instant>.
+				// A consumed row's (kind, idempotency_key) fence would deduplicate that
+				// re-enqueue and strand the task until the fence prunes (~1h). Releasing
+				// leaves the SAME row claimable next tick: it re-claims, re-checks
+				// budget, and releases again until budget clears — a cheap retry loop
+				// with correct convergence and no fence collision. The release is
+				// attempt-neutral (decrements attempt_count) so repeated deferrals never
+				// march the row toward the attempt-budget dead-letter.
+				if (this.shouldSkipDueToBudget(claimedTask)) {
+					this.ctx.logger.warn("[scheduler] Skipping autonomous task_fire due to daily budget", {
+						taskId: dueTask.id,
+						durableWorkId: claimed.id,
+					});
+					updateRow(
+						this.ctx.db,
+						"tasks",
+						dueTask.id,
+						{ status: "pending", claimed_by: null, claimed_at: null },
+						this.ctx.siteId,
+					);
+					if (!releaseDurableWorkClaim(this.ctx.db, claimed.id, token)) {
+						this.ctx.logger.warn("[scheduler] Lost task_fire claim before budget-skip release", {
+							durableWorkId: claimed.id,
+						});
+					}
+					return;
+				}
+
+				// Bridge into the UNTOUCHED execution body. runTask launches the agent
+				// loop asynchronously (setImmediate); its completion/failure write-backs
+				// land the task outcome independently. We hand off with the freshly-
+				// claimed row snapshot so runTask's claimed → running lease CAS matches.
+				this.runTask(claimedTask);
 
 				// Ack (→ consumed) after runTask RETURNS. runTask returns synchronously
 				// once it has committed the claimed → running CAS and scheduled the async
