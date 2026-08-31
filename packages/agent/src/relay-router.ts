@@ -9,7 +9,36 @@ import {
 import type { CapabilityRequirements } from "@bound/llm";
 import type { TypedEventEmitter } from "@bound/shared";
 import type { HostModelEntry, RelayKind, RelayOutboxEntry } from "@bound/shared";
+import { DURABLE_WORK_REGISTRY } from "./durable-work-registry";
 import { type TopologyRole, resolveHubSiteId, resolveTopologyRole } from "./topology";
+
+/**
+ * Registry-declared TTL floor per kind. The durable-work registry is the
+ * authority for each kind's terminal TTL (R-DW12): RPC request kinds declare
+ * the RPC-class 300s window so the expiry sweep dead-letters a stale request
+ * before it dispatches. Callers pass a raw request `timeoutMs` — a platform or
+ * client-tool request rides a SHORT timeout (~15s). A terminal TTL shorter than
+ * the 30s transfer-stale window is self-defeating: the row expires before it is
+ * ever transfer-stale, so no transfer retry can fire and no live-work recovery
+ * is reachable (the #253 incident). Clamping the caller's `timeoutMs` UP to at
+ * least the registry ttlMs restores the declared TTL as the floor while leaving
+ * a longer caller window (e.g. a 20-min inference) untouched — it is a floor,
+ * not a ceiling. A kind with a null registry TTL (dispatch_message, task_fire)
+ * or no registration keeps the caller's value verbatim.
+ */
+const REGISTRY_TTL_MS_BY_KIND: ReadonlyMap<string, number> = new Map(
+	DURABLE_WORK_REGISTRY.flatMap((r) => (r.ttlMs != null ? [[r.kind, r.ttlMs] as const] : [])),
+);
+
+/**
+ * The terminal `expires_at` for a durable request/response row, clamped so the
+ * row's live window is never shorter than its kind's registry-declared TTL. See
+ * {@link REGISTRY_TTL_MS_BY_KIND}.
+ */
+function durableExpiresAt(kind: string, now: Date, timeoutMs: number): string {
+	const floorMs = REGISTRY_TTL_MS_BY_KIND.get(kind) ?? 0;
+	return new Date(now.getTime() + Math.max(timeoutMs, floorMs)).toISOString();
+}
 
 export { resolveTopologyRole };
 export type { TopologyRole };
@@ -543,7 +572,7 @@ export function routeRelayRequest(
 			// Verbatim key when the legacy row carries one; otherwise the row id
 			// itself is a deterministic, redelivery-stable key (R-DW5/6).
 			idempotency_key: params.idempotencyKey ?? id,
-			expires_at: new Date(now.getTime() + params.timeoutMs).toISOString(),
+			expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
 			ref_id: params.refId ?? null,
 			stream_id: params.streamId ?? null,
 		});
@@ -631,7 +660,7 @@ export function routeRelayResponse(
 			kind: params.kind,
 			payload: params.payload,
 			idempotency_key: params.idempotencyKey,
-			expires_at: new Date(now.getTime() + params.timeoutMs).toISOString(),
+			expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
 			ref_id: params.refId,
 			stream_id: params.streamId ?? null,
 		});

@@ -5,6 +5,7 @@ import {
 	LOCAL_WORK_TARGET,
 	acknowledgeDurableWorkTransfer,
 	beginDurableWorkTransfer,
+	deadLetterExpiredDurableWork,
 	findChangeLogEntryByHlc,
 	findConnectorHandleForSyncNotification,
 	findHostWorkSpoolCapabilityById,
@@ -13,6 +14,7 @@ import {
 	insertDurableWork,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
+	rollbackUnsentDurableWorkTransfer,
 	sweepStaleTransferringDurableWork,
 } from "@bound/core";
 import {
@@ -1512,7 +1514,19 @@ export class WsTransport {
 		// The row was SELECTed as pending before the begin, so carry the freshly-
 		// minted generation token onto it — sendSpoolTransfer ships row.claim_token
 		// as the wire token the receiver echoes back for end-to-end fencing.
-		this.sendSpoolTransfer(nextHop, [{ ...row, claim_state: "transferring", claim_token: token }]);
+		//
+		// FLIP-ONLY-WHEN-SENDABLE (#253 Defect B): the row is already `transferring`,
+		// but the frame may not have reached the socket — a live-but-backpressured
+		// channel refuses the send (sendFrame returns false). Leaving the row
+		// transferring with no in-flight frame strands it until a reconnect that never
+		// comes on a persistently-connected sender, so roll the begun-but-unsent
+		// generation back to pending under its token. The next written-push or drain
+		// retries; no attempt is charged (nothing went over the wire). A racing ack
+		// that retired this generation first makes the rollback a no-op via the fence.
+		const sent = this.sendSpoolTransfer(nextHop, [
+			{ ...row, claim_state: "transferring", claim_token: token },
+		]);
+		if (!sent) rollbackUnsentDurableWorkTransfer(this.config.db, row.id, token);
 	}
 
 	/**
@@ -1587,12 +1601,25 @@ export class WsTransport {
 
 		const batchSize = 100;
 		for (let i = 0; i < all.length; i += batchSize) {
-			const sent = this.sendSpoolTransfer(peerSiteId, all.slice(i, i + batchSize));
+			const batch = all.slice(i, i + batchSize);
+			const sent = this.sendSpoolTransfer(peerSiteId, batch);
 			if (!sent) {
 				this.config.logger?.warn("WsTransport spool drain backpressured", {
 					peerSiteId,
 					batchIndex: i / batchSize,
 				});
+				// FLIP-ONLY-WHEN-SENDABLE (#253 Defect B): roll the rows this drain just
+				// BEGAN (not the pre-existing transferring resends, which retain their
+				// generation for the next reconnect) back to pending under their tokens,
+				// so a refused batch leaves nothing stranded transferring with no frame on
+				// the wire. Rows already transferring at entry keep their state — they had
+				// a prior in-flight generation and their recovery is the reconnect/sweep
+				// path, not this drain. The begun set carries a non-null claim_token.
+				for (const row of batch) {
+					if (begun.some((b) => b.id === row.id) && row.claim_token) {
+						rollbackUnsentDurableWorkTransfer(this.config.db, row.id, row.claim_token);
+					}
+				}
 				break;
 			}
 		}
@@ -1612,15 +1639,36 @@ export class WsTransport {
 	 * whenever a peer (re)connects. Idempotent: with nothing stale it re-drives
 	 * connected peers, which is itself a no-op when their spools are empty.
 	 *
-	 * Staleness is keyed on the TRANSFER clock (`claimed_at` + the transfer
-	 * timeout), never on the terminal `expires_at`. A `processing` row is NOT swept
-	 * here: an expired `processing` row does not prove its consumer died (the token
-	 * fence protects the row, not the consumer's external side effects), so
-	 * returning it to `pending` could double-execute. Processing recovery stays
-	 * scoped to boot/generation liveness per R-DW10; a genuinely wedged processing
-	 * row is investigated and redriven by id, not auto-swept.
+	 * Staleness for the TRANSFER sweep is keyed on the TRANSFER clock (`claimed_at`
+	 * + the transfer timeout), never on the terminal `expires_at`. A `processing`
+	 * row is NOT transfer-swept here: an expired `processing` row does not prove its
+	 * consumer died (the token fence protects the row, not the consumer's external
+	 * side effects), so returning it to `pending` could double-execute. Processing
+	 * recovery stays scoped to boot/generation liveness per R-DW10; a genuinely
+	 * wedged processing row is investigated and redriven by id, not auto-swept.
+	 *
+	 * TERMINAL EXPIRY (R-DW12) runs FIRST, and unconditionally. A short-TTL kind
+	 * (platform_request sets `expires_at = created_at + request timeoutMs`, ~15s)
+	 * that wedges at `transferring` is terminally expired LONG before it is 30s
+	 * transfer-stale, so the transfer sweep's `expires_at > now` guard excludes it
+	 * from BOTH branches forever. `deadLetterExpiredDurableWork` is that row's only
+	 * owner: it dead-letters every non-`dead_letter` row past `expires_at` (a
+	 * transferring row whose deadline lapsed, a pending row never sent, or a
+	 * processing row whose consumer deadline passed) into a seven-day,
+	 * workspool-redrivable dead letter. This is the principled home for the call —
+	 * the periodic sweep is the running-process RECOVERY leg (the pruning loop is
+	 * retention/vacuum, which must not also make terminal-lifecycle decisions), and
+	 * terminal expiry is the recovery leg's natural companion: an expired row can
+	 * never be recovered, only preserved. Without it the incident's short-TTL rows
+	 * are excluded by the transfer sweep and orphaned by the prune loop.
 	 */
 	sweepAndRedriveStaleDurableWork(now = new Date().toISOString()): void {
+		// Terminal expiry first (R-DW12): dead-letter every non-`dead_letter` row past
+		// its `expires_at`, in any state, so a short-TTL row the transfer sweep can
+		// never reach (expired before it is transfer-stale) still lands in a
+		// workspool-redrivable dead letter. Runs unconditionally — its eligibility is
+		// disjoint from the transfer sweep's.
+		deadLetterExpiredDurableWork(this.config.db, now);
 		const reclaimed = sweepStaleTransferringDurableWork(
 			this.config.db,
 			DURABLE_WORK_MAX_ATTEMPTS,

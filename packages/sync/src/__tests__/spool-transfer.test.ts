@@ -146,6 +146,23 @@ function connect(node: Node, peerSiteId: string): void {
 	);
 }
 
+/**
+ * Register `peer` as a connected peer whose frame send is REFUSED (returns
+ * false) — the real ws-client sendFrame returns false when its send buffer is
+ * `pressured`. Models a live-but-backpressured channel: the peer is in the
+ * connection map, but the SPOOL_TRANSFER frame never actually goes out.
+ */
+function connectRefusing(node: Node, peerSiteId: string): void {
+	node.transport.addPeer(
+		peerSiteId,
+		(frame) => {
+			node.sent.push(frame);
+			return false;
+		},
+		KEY,
+	);
+}
+
 /** Decode the frames a node captured, filtered to the two spool frame types. */
 function decodeSpoolFrames(
 	node: Node,
@@ -707,6 +724,106 @@ describe("spool transfer (4D-B)", () => {
 			expect(rowState(sender.db, "fresh-1")?.claim_token).toBe(tokenBefore ?? "");
 			expect(rowState(sender.db, "fresh-1")?.attempt_count).toBe(0);
 			expect(decodeSpoolFrames(sender)).toHaveLength(0);
+		});
+
+		// Defect A (#253, live incident): a short-TTL kind (platform_request sets
+		// expires_at = created_at + request timeoutMs, ~15s) wedges at transferring
+		// on a dropped ack and can NEVER be reclaimed by the transfer sweep: the row
+		// is terminally expired (past expires_at) before it is 30s transfer-stale, so
+		// sweepStaleTransferringDurableWork's (expires_at IS NULL OR expires_at > now)
+		// guard excludes it from BOTH branches. The periodic path must ALSO run the
+		// terminal-expiry dead-letter so an expired transferring row lands in a
+		// workspool-redrivable dead_letter within one sweep tick.
+		it("dead-letters an expired transferring row within one sweep tick (short TTL < transfer window)", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+
+			// A 15s-TTL row began transferring 20s ago: past its terminal expiry, but
+			// only 20s transfer-stale (< the 30s transfer window). The transfer sweep
+			// can never touch it; terminal expiry must.
+			const now = Date.now();
+			seedPendingRow(
+				sender,
+				{
+					id: "short-ttl-1",
+					target_site_id: "receiver",
+					source_site: "sender",
+					expires_at: new Date(now - 5_000).toISOString(),
+				},
+				false,
+			);
+			sender.db.run(
+				"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'short-ttl-1'",
+				[new Date(now - 20_000).toISOString()],
+			);
+
+			sender.transport.sweepAndRedriveStaleDurableWork(new Date(now).toISOString());
+
+			const swept = sender.db
+				.query(
+					"SELECT claim_state, last_error, dead_lettered_at FROM durable_work WHERE id = 'short-ttl-1'",
+				)
+				.get() as {
+				claim_state: string;
+				last_error: string | null;
+				dead_lettered_at: string | null;
+			};
+			expect(swept.claim_state).toBe("dead_letter");
+			expect(swept.dead_lettered_at).toBeTruthy();
+		});
+	});
+
+	describe("(i) flip-only-when-sendable (Defect B, #253)", () => {
+		let sender: Node;
+
+		beforeEach(() => {
+			sender = createNode("sender");
+		});
+		afterEach(() => {
+			sender.stop();
+		});
+
+		// Defect B (#253, live incident): rows flip pending -> transferring ~3ms
+		// after insert (the durable_work:written push ran and beginDurableWorkTransfer
+		// succeeded), then sit transferring forever with NO ack and NO in-flight
+		// frame. Root cause: sendDurableWorkToPeer flips the row THEN calls
+		// sendSpoolTransfer, but ignores its boolean return. When the channel is live
+		// but backpressured (ws-client sendFrame returns false on a pressured buffer),
+		// the frame never goes out yet the row stays transferring, and the reconnect
+		// drain never fires on a healthy link. The invariant: a row must not be left
+		// transferring when its frame did not go out — it stays pending for the next
+		// drain/sweep to retry.
+		it("leaves the row pending when the SPOOL_TRANSFER send is refused (backpressure)", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connectRefusing(sender, "receiver");
+
+			seedPendingRow(sender, {
+				id: "backpressured-1",
+				target_site_id: "receiver",
+				source_site: "sender",
+			});
+
+			// The send was refused, so the row must remain reclaimable pending — never
+			// stranded transferring with no frame on the wire.
+			expect(rowState(sender.db, "backpressured-1")?.claim_state).toBe("pending");
+			expect(rowState(sender.db, "backpressured-1")?.claim_token).toBeNull();
+		});
+
+		// The reconnect drain has the same flip-then-ignore pattern. A refused batch
+		// must leave its rows pending too, so the next drain/sweep retries them.
+		it("leaves drained rows pending when the drain send is refused", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connectRefusing(sender, "receiver");
+
+			seedPendingRow(
+				sender,
+				{ id: "drain-bp-1", target_site_id: "receiver", source_site: "sender" },
+				false,
+			);
+			sender.transport.drainDurableWorkSpool("receiver");
+
+			expect(rowState(sender.db, "drain-bp-1")?.claim_state).toBe("pending");
+			expect(rowState(sender.db, "drain-bp-1")?.claim_token).toBeNull();
 		});
 	});
 
