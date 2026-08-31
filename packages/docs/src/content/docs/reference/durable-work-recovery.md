@@ -19,7 +19,7 @@ Set the stale threshold in milliseconds when investigating a crash or stalled co
 workspool list --stale-ms 300000
 ```
 
-Each result includes the row ID, kind, age, idempotency key, claim state, attempt count, last error, and a bounded payload preview. `list` never changes a row.
+Each result includes the row ID, kind, age, idempotency key, claim state, attempt count, last error, and a bounded payload preview. `list` surfaces dead-lettered rows, stale `pending`/`processing` rows older than the threshold, and `transferring` rows that have been transferring longer than the stale threshold — a wedged spool transfer whose acknowledgement never returned. `list` never changes a row.
 
 Redrive one dead letter by ID:
 
@@ -33,7 +33,7 @@ Redrive every dead letter of one registered kind:
 workspool redrive --kind client_tool --all-dead-lettered
 ```
 
-A redrive returns the dead letter to `pending`, clears its claim generation, preserves its attempt count, and resets its expiry from the registered kind TTL. It does not directly invoke a handler: the normal consumer claims the row. Rows without a registered kind are rejected because their expiry cannot be determined.
+A redrive returns the row to `pending` and clears its claim generation. A **dead letter** keeps its attempt count and resets its expiry from the registered kind TTL; a redrive does not directly invoke a handler, the normal consumer claims the row, and rows without a registered kind are rejected because their expiry cannot be determined. A **stale `transferring`** row (a wedged spool transfer) is reclaimed the same way but **charges one attempt** and **respects the attempt cap** — a row already at the cap is dead-lettered (transfer-retry exhausted) rather than re-pended, so a row the receiver keeps failing to acknowledge marches toward its dead-letter cap instead of looping; no registered-kind gate applies because the row already carries the RPC TTL its producer set. Once `pending`, the sender's spool push and the next drain re-send it to the target.
 
 ## Operations runbook
 
@@ -46,6 +46,8 @@ A `not found or already consumed` result is a safe no-op. Consumption retires th
 When a passive intake binding has been removed, its durable intake rows become dead letters instead of being discarded. They remain visible to `workspool` and can be redriven after the binding is restored; legacy relay-inbox rows remain mark-processed and retired.
 
 Rows targeted `local` (dispatch wakeups) are consumed in-process by the owning host and are never spool-transferred to a peer. Startup recovery resets any `local`-targeted row found in `transferring` back to `pending` — that state is unreachable through the spool protocol, so such a row is a stranded wakeup, and the reset logs one `[recovery]` warning with the row count. Peer-targeted `transferring` rows are deliberately left untouched at boot; the sender resumes them with its retained token on reconnect.
+
+A peer-targeted row can still wedge at `transferring` while the process keeps running: the `SPOOL_TRANSFER` shipped but no `SPOOL_TRANSFER_ACK` returned, and the reconnect drain only re-sends on a fresh connection, so a persistently-connected sender whose ack was dropped has no automatic retry. Two recovery legs close this. The sync transport runs a periodic sweep (every 30 seconds, and again whenever a peer (re)connects) that reclaims a `transferring` row whose transfer has been outstanding past the 30-second transfer window — measured from `claimed_at`, not the work's own TTL — back to `pending`, charging one attempt, then re-drives every live peer, so the stall clears within a sweep interval without a reconnect. A row at the shared attempt cap dead-letters instead of requeueing, and a row past its terminal `expires_at` is excluded from the sweep entirely: terminal expiry belongs to the expiry dead-letter path alone. Stale `processing` rows are never swept automatically — the owning consumer may still be executing, and reclaiming the row would run the work twice; boot recovery covers dead consumers, and a genuinely wedged processing row is an investigate-first decision followed by `workspool redrive --id`. When you need to act before the sweep, `workspool list` shows wedged transferring rows by `claimed_at` age and `workspool redrive --id ROW_ID` reclaims one immediately, charging an attempt and observing the same cap.
 
 ## Roll back new dispatch enqueues
 

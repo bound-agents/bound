@@ -15,6 +15,7 @@ import {
 	readTransferringDurableWork,
 	resetProcessingDurableWork,
 	resetTransferringLocalDurableWork,
+	sweepStaleTransferringDurableWork,
 } from "../durable-work";
 import {
 	countPendingIntakeDurableWork,
@@ -38,6 +39,15 @@ const row = (id: string, target = "local", expires_at: string | null = null) => 
 	idempotency_key: `key:${id}`,
 	expires_at,
 });
+const rowState = (db: Database, id: string) =>
+	db.query("SELECT * FROM durable_work WHERE id = ?").get(id) as {
+		claim_state: string;
+		claim_token: string | null;
+		attempt_count: number;
+	} | null;
+// The relay attempt cap (DURABLE_RELAY_MAX_ATTEMPTS in @bound/agent) the sweep
+// enforces sender-side; core is registry-agnostic so the caller supplies it.
+const DEFAULT_ATTEMPT_CAP = 3;
 
 describe("durable_work", () => {
 	it("rejects missing deterministic idempotency keys", () => {
@@ -101,6 +111,109 @@ describe("durable_work", () => {
 		).toEqual({ claim_state: "dead_letter", last_error: "expired" });
 		expect(pruneExpiredDeadLetters(db, "2026-01-07T00:00:00.000Z")).toBe(0);
 		expect(pruneExpiredDeadLetters(db, "2026-01-08T00:00:00.001Z")).toBe(1);
+	});
+
+	it("sweeps a transferring row whose transfer timeout lapsed back to pending, charging an attempt", () => {
+		// A peer-targeted row began transferring but its SPOOL_TRANSFER_ACK never
+		// returned. Staleness is keyed on the transfer clock (claimed_at + the
+		// transfer timeout), NOT on expires_at (that is the terminal TTL owned by
+		// deadLetterExpiredDurableWork). A dropped ack must be retried while the work
+		// is still LIVE, long before its terminal deadline. Nothing else reclaims a
+		// peer-targeted 'transferring' row (boot recovery preserves it), so this sweep
+		// is the sole running-process recovery path: return it to 'pending' so the
+		// drain re-sends it, charging one attempt so a poisoned row eventually caps.
+		const farFuture = "2027-01-01T00:00:00.000Z";
+		insertDurableWork(db, row("stuck", "peer", farFuture));
+		const claimedAt = "2026-01-01T00:00:00.000Z";
+		db.run(
+			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'stuck'",
+			[claimedAt],
+		);
+
+		// Within the transfer timeout window (claimed_at + 30s) is a no-op: a
+		// slow-but-live ack must not be raced.
+		expect(
+			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:00:20.000Z"),
+		).toBe(0);
+		expect(rowState(db, "stuck")?.claim_state).toBe("transferring");
+
+		// Past the transfer timeout: reclaimed to pending, token cleared, attempt charged.
+		expect(
+			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:01:00.000Z"),
+		).toBe(1);
+		const reclaimed = rowState(db, "stuck");
+		expect(reclaimed?.claim_state).toBe("pending");
+		expect(reclaimed?.claim_token).toBeNull();
+		expect(reclaimed?.attempt_count).toBe(1);
+	});
+
+	it("dead-letters a stale transferring row at the attempt cap instead of re-pending it", () => {
+		// Objection 3: the runbook promise 'marches toward dead letter' must be true.
+		// A row that has already been re-sent to its cap and still never acked is
+		// poisoned; the sweep dead-letters it (with a transfer-exhaustion last_error)
+		// rather than re-pending it a fourth time.
+		const farFuture = "2027-01-01T00:00:00.000Z";
+		insertDurableWork(db, row("poisoned", "peer", farFuture));
+		const claimedAt = "2026-01-01T00:00:00.000Z";
+		db.run(
+			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ?, attempt_count = ? WHERE id = 'poisoned'",
+			[claimedAt, DEFAULT_ATTEMPT_CAP],
+		);
+
+		expect(
+			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:01:00.000Z"),
+		).toBe(1);
+		const dead = db
+			.query("SELECT claim_state, last_error FROM durable_work WHERE id = 'poisoned'")
+			.get() as { claim_state: string; last_error: string | null };
+		expect(dead.claim_state).toBe("dead_letter");
+		expect(dead.last_error).toContain("transfer");
+	});
+
+	it("never requeues a transferring row already past its terminal expiry — dead-letter owns it", () => {
+		// Objection 1: a row past terminal expires_at must NOT be requeued by the
+		// transfer sweep; deadLetterExpiredDurableWork owns terminal expiry. The two
+		// sweeps must not race over the same row.
+		const pastTerminal = "2026-01-01T00:00:00.000Z";
+		insertDurableWork(db, row("expired", "peer", pastTerminal));
+		db.run(
+			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'expired'",
+			["2025-12-31T00:00:00.000Z"],
+		);
+
+		// now is well past both the transfer timeout AND the terminal expiry, yet the
+		// transfer sweep leaves the row untouched: it is not re-pended.
+		expect(
+			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-06-01T00:00:00.000Z"),
+		).toBe(0);
+		expect(rowState(db, "expired")?.claim_state).toBe("transferring");
+		// The terminal sweep is what dead-letters it.
+		expect(deadLetterExpiredDurableWork(db, "2026-06-01T00:00:00.000Z")).toBe(1);
+		expect(rowState(db, "expired")?.claim_state).toBe("dead_letter");
+	});
+
+	it("sweeps a transferring row with a null expires_at once its transfer timeout lapses", () => {
+		// dispatch_message / task_fire carry no terminal TTL (ttlMs=null), but they
+		// still transfer peer-to-peer and can wedge on a dropped ack. With staleness
+		// keyed on claimed_at (not expires_at), a null terminal TTL no longer blocks
+		// recovery — there is no terminal deadline to defer to, so the transfer clock
+		// is the only clock. It is still gated by the transfer timeout, not by age.
+		insertDurableWork(db, row("forever", "peer", null));
+		db.run(
+			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'forever'",
+			["2026-01-01T00:00:00.000Z"],
+		);
+
+		// Within the transfer window: untouched.
+		expect(
+			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:00:10.000Z"),
+		).toBe(0);
+		expect(rowState(db, "forever")?.claim_state).toBe("transferring");
+		// Past the transfer window: reclaimed.
+		expect(
+			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:01:00.000Z"),
+		).toBe(1);
+		expect(rowState(db, "forever")?.claim_state).toBe("pending");
 	});
 });
 

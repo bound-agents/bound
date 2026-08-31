@@ -125,4 +125,60 @@ describe("workspool command", () => {
 			"intake-later",
 		]);
 	});
+
+	it("lists a stale transferring row so the operator sees a wedged spool transfer", async () => {
+		const db = new Database(":memory:");
+		applySchema(db);
+		// A peer-targeted row that has been transferring past the stale threshold
+		// (the #253 incident). Staleness is keyed on claimed_at age, not expires_at.
+		insertDurableWork(db, {
+			id: "wedged",
+			target_site_id: "peer",
+			kind: "platform_request",
+			payload: "{}",
+			idempotency_key: "wedged",
+			expires_at: "2027-01-01T00:00:00.000Z",
+		});
+		db.run(
+			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = '2020-01-01T00:00:00.000Z' WHERE id = 'wedged'",
+		);
+
+		const result = await createWorkspoolCommand().handler({ action: "list" }, context(db));
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("wedged");
+		expect(result.stdout).toContain("transferring");
+		// Listing never mutates.
+		expect(db.query("SELECT claim_state FROM durable_work WHERE id = 'wedged'").get()).toEqual({
+			claim_state: "transferring",
+		});
+	});
+
+	it("redrives a stale transferring row back to pending, charging an attempt", async () => {
+		const db = new Database(":memory:");
+		applySchema(db);
+		insertDurableWork(db, {
+			id: "wedged",
+			target_site_id: "peer",
+			kind: "platform_request",
+			payload: "{}",
+			idempotency_key: "wedged",
+			expires_at: "2027-01-01T00:00:00.000Z",
+		});
+		db.run(
+			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = '2020-01-01T00:00:00.000Z' WHERE id = 'wedged'",
+		);
+
+		const result = await createWorkspoolCommand().handler(
+			{ action: "redrive", id: "wedged" },
+			context(db),
+		);
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain("redriven");
+		const row = db
+			.query("SELECT claim_state, claim_token, attempt_count FROM durable_work WHERE id = 'wedged'")
+			.get() as { claim_state: string; claim_token: string | null; attempt_count: number };
+		expect(row.claim_state).toBe("pending");
+		expect(row.claim_token).toBeNull();
+		expect(row.attempt_count).toBe(1);
+	});
 });
