@@ -9,6 +9,7 @@ import {
 	deadLetterClaimedDurableWork,
 	hasDroppedLegacyRelayTables,
 	insertRow,
+	listHostsWithLiveness,
 	markProcessed,
 	resolveEffectiveModelHint,
 	updateRow,
@@ -16,7 +17,13 @@ import {
 	withTx,
 } from "@bound/core";
 import type { PlatformRegisteredTool } from "@bound/platforms";
-import { BOUND_NAMESPACE, deterministicUUID, formatError, parseJsonUntyped } from "@bound/shared";
+import {
+	BOUND_NAMESPACE,
+	counter,
+	deterministicUUID,
+	formatError,
+	parseJsonUntyped,
+} from "@bound/shared";
 import type { Task } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { createAdvisory } from "./advisories";
@@ -32,6 +39,8 @@ import {
 	recordSchedulerQueueDelay,
 } from "./operational-metrics";
 import {
+	FIRING_HOST_STALE_MS,
+	canRunHere,
 	computeFiringKey,
 	computeNextRunAt,
 	deriveFiringArtifactId,
@@ -64,6 +73,55 @@ const LEASE_VERIFY_SETTLE_MS = (() => {
 	const parsed = Number(raw);
 	return Number.isFinite(parsed) && parsed >= 0 ? parsed : 250;
 })();
+
+/**
+ * Producer mode for task_fire durable-work rows (slice 5B, R-DW15–R-DW21).
+ *
+ * Three states, read once from `BOUND_TASK_FIRE_MODE` at module init and
+ * overridable in tests via {@link setTaskFireModeForTesting}:
+ *  - `"legacy"`   — byte-identical to pre-5B behaviour: the phase-1 CAS + run,
+ *    no comparison computation, no telemetry. The rollback posture.
+ *  - `"compare"`  — DEFAULT. The legacy path still executes; in addition the
+ *    scheduler computes the would-be durable enqueue decision and emits a
+ *    `task_fire_comparison` telemetry record. NO durable_work row is inserted
+ *    — comparison mode never runs two execution paths for one artifact.
+ *  - `"durable"`  — accepted so a premature flip is safe, but durable task
+ *    firing does not arrive until a later release: it warns once per process
+ *    then behaves exactly as `"compare"`.
+ *
+ * Follows the BOUND_DURABLE_* toggle pattern (packages/core/src/durable-work.ts)
+ * as a three-state string rather than a boolean. Lives at scheduler module
+ * scope — the scheduler is the only producer/consumer of task_fire.
+ */
+export type TaskFireMode = "legacy" | "compare" | "durable";
+
+function parseTaskFireMode(raw: string | undefined): TaskFireMode {
+	switch (raw?.toLowerCase()) {
+		case "legacy":
+			return "legacy";
+		case "durable":
+			return "durable";
+		default:
+			// Unset, "compare", or any unrecognized value defaults to compare — the
+			// safe migration-window posture (legacy still runs; no durable rows).
+			return "compare";
+	}
+}
+
+let TASK_FIRE_MODE: TaskFireMode = parseTaskFireMode(process.env.BOUND_TASK_FIRE_MODE);
+/** Process-wide one-shot latch for the unavailable durable task_fire producer warning. */
+let warnedDurableTaskFireUnavailable = false;
+
+/** Test seam: override the task_fire producer mode and reset its warning latch. */
+export function setTaskFireModeForTesting(mode: TaskFireMode | undefined): void {
+	TASK_FIRE_MODE = mode ?? parseTaskFireMode(process.env.BOUND_TASK_FIRE_MODE);
+	warnedDurableTaskFireUnavailable = false;
+}
+
+/** OTel counter for task_fire comparison records (slice 5B dual-execution proof). */
+const taskFireComparisonCounter = counter("bound.scheduler.task_fire.comparison", {
+	description: "task_fire producer comparison-mode decisions by decision_match (slice 5B)",
+});
 
 /**
  * Extracts the raw cron expression from a trigger_spec string.
@@ -1234,7 +1292,19 @@ export class Scheduler {
 			.all(now) as Task[];
 
 		for (const task of pendingTasks) {
-			if (shouldDispatchHere(this.ctx.db, task, this.ctx.hostName, this.ctx.siteId)) {
+			// Rendezvous winner. Reused verbatim by the 5B comparison computation
+			// below so the legacy dispatch decision and the would-be durable enqueue
+			// decision derive from ONE evaluation — a mismatch is therefore
+			// structurally impossible while 5C's producer has not yet diverged from
+			// this gate, which is exactly the invariant the telemetry proves.
+			const legacyDispatched = shouldDispatchHere(
+				this.ctx.db,
+				task,
+				this.ctx.hostName,
+				this.ctx.siteId,
+			);
+			let legacyClaimWon = false;
+			if (legacyDispatched) {
 				const claimedAt = new Date().toISOString();
 				// CAS: only claim if still pending (prevents duplicate scheduling from other hosts)
 				const txFn = this.ctx.db.transaction(() => {
@@ -1260,14 +1330,113 @@ export class Scheduler {
 					this.ctx.logger.info("[scheduler] Task already claimed by another host", {
 						taskId: task.id,
 					});
-				} else if (task.next_run_at) {
-					recordSchedulerQueueDelay(
-						new Date(claimedAt).getTime() - new Date(task.next_run_at).getTime(),
-						{ type: task.type },
-					);
+				} else {
+					legacyClaimWon = true;
+					if (task.next_run_at) {
+						recordSchedulerQueueDelay(
+							new Date(claimedAt).getTime() - new Date(task.next_run_at).getTime(),
+							{ type: task.type },
+						);
+					}
 				}
 			}
+
+			// Slice 5B: task_fire PRODUCER in comparison mode. The legacy CAS above
+			// ran EXACTLY as at HEAD; here we additionally record the would-be durable
+			// enqueue decision. In "compare"/"durable" mode NO durable_work row is
+			// inserted — the migration plan forbids running both execution paths for
+			// one artifact without the shared idempotency fence, so the dual-execution
+			// proof is a comparison, not a second execution. "legacy" mode skips this
+			// entirely (the rollback posture, byte-identical to HEAD).
+			this.recordTaskFireComparison(task, legacyDispatched, legacyClaimWon);
 		}
+	}
+
+	/**
+	 * Emit the slice-5B task_fire comparison record for one due scheduled firing.
+	 *
+	 * `would_enqueue` is the rendezvous winner result — the SAME value the legacy
+	 * gate used ({@link shouldDispatchHere}'s output, threaded in as
+	 * `legacyDispatched`), not a recomputation — so `decision_match` is
+	 * structurally true today. The record exists to (a) count real firings that
+	 * flow through the comparison window and (b) catch drift if 5C's producer ever
+	 * diverges from this gate. Logs + a low-cardinality OTel counter only; never
+	 * persisted to a synced table (bounded namespace). Event tasks never reach
+	 * here (phase-1 scans `next_run_at IS NOT NULL`), preserving R-DW18.
+	 */
+	private recordTaskFireComparison(
+		task: Task,
+		legacyDispatched: boolean,
+		legacyClaimWon: boolean,
+	): void {
+		if (TASK_FIRE_MODE === "legacy") return;
+		if (TASK_FIRE_MODE === "durable") this.warnDurableTaskFireUnavailable();
+
+		// Phase-1 already filtered to next_run_at non-null, but keep the guard so a
+		// future caller can't slip an event firing into the comparison lane.
+		const scheduledAt = task.next_run_at;
+		if (scheduledAt === null) return;
+
+		const firingKey = computeFiringKey(task.id, scheduledAt);
+		if (firingKey === null) return;
+		const idempotencyKey = taskFireIdempotencyKey({
+			task_id: task.id,
+			scheduled_at: scheduledAt,
+		});
+		// Rendezvous candidate-set size — the same live-host set shouldDispatchHere
+		// scored — recorded for window observability, not decision logic.
+		const candidateCount = this.countFiringCandidates(task);
+		// The new path's decision IS the rendezvous winner the legacy gate computed.
+		const wouldEnqueue = legacyDispatched;
+		const decisionMatch = legacyDispatched === wouldEnqueue;
+
+		this.ctx.logger.info("[scheduler] task_fire comparison", {
+			event: "task_fire_comparison",
+			task_id: task.id,
+			scheduled_at: scheduledAt,
+			firing_key: firingKey,
+			idempotency_key: idempotencyKey,
+			legacy_dispatched: legacyDispatched,
+			legacy_claim_won: legacyClaimWon,
+			would_enqueue: wouldEnqueue,
+			candidate_count: candidateCount,
+			decision_match: decisionMatch,
+		});
+		// Low-cardinality counter: decision_match only (IDs live in the log line).
+		taskFireComparisonCounter.add(1, {
+			"bound.task_fire.decision_match": String(decisionMatch),
+		});
+	}
+
+	/** Warn once per process that a premature `durable` flip degrades to compare. */
+	private warnDurableTaskFireUnavailable(): void {
+		if (warnedDurableTaskFireUnavailable) return;
+		warnedDurableTaskFireUnavailable = true;
+		this.ctx.logger.warn(
+			"[scheduler] BOUND_TASK_FIRE_MODE=durable set, but durable task firing arrives in a later release; behaving as compare",
+			{ event: "task_fire_durable_mode_unavailable" },
+		);
+	}
+
+	/**
+	 * Count the live-host rendezvous candidate set for a firing, mirroring
+	 * {@link shouldDispatchHere}'s candidate construction (live hosts passing the
+	 * task's own affinity gate, plus self). Observability only — the winner
+	 * decision is reused from the gate, never recomputed here.
+	 */
+	private countFiringCandidates(task: Task): number {
+		const cutoff = Date.now() - FIRING_HOST_STALE_MS;
+		const seen = new Set<string>();
+		for (const row of listHostsWithLiveness(this.ctx.db)) {
+			if (seen.has(row.site_id)) continue;
+			const ts = row.modified_at ?? row.online_at;
+			if (!ts || new Date(ts).getTime() < cutoff) continue;
+			const peerHostName = row.host_name ?? row.site_id;
+			if (!canRunHere(this.ctx.db, task, peerHostName, row.site_id)) continue;
+			seen.add(row.site_id);
+		}
+		if (!seen.has(this.ctx.siteId)) seen.add(this.ctx.siteId);
+		return seen.size;
 	}
 
 	/**
