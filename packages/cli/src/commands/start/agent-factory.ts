@@ -308,6 +308,7 @@ export function createAgentLoopFactory(
 						connectionId: parent.connectionId,
 						timeoutMs,
 						signal,
+						topologyRole,
 					}),
 				getToolRegistry: () => {
 					if (!auxToolRegistry) throw new Error("aux tool registry accessed before construction");
@@ -583,6 +584,7 @@ export function createAgentLoopFactory(
 					connectionId: config.connectionId,
 					timeoutMs,
 					signal,
+					topologyRole,
 				}),
 			getToolRegistry: () => {
 				if (!toolRegistry) throw new Error("tool registry accessed before construction");

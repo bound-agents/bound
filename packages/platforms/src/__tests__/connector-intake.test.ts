@@ -206,3 +206,157 @@ describe("connector intake producer flip (deliverBatch, leader-local)", () => {
 		});
 	});
 });
+
+describe("connector intake producer flip (deliverBatch, spoke leader)", () => {
+	let db: Database.Database;
+	let siteId: string;
+	let registry: PlatformMcpRegistry;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		applySchema(db);
+		siteId = `spoke-${randomBytes(4).toString("hex")}`;
+		db.prepare("INSERT INTO host_meta (key, value) VALUES (?, ?)").run("site_id", siteId);
+	});
+	afterEach(async () => {
+		await registry.shutdown();
+		db.close();
+	});
+
+	function setup(insert: (key: string, payload: string) => boolean) {
+		registry = new PlatformMcpRegistry({
+			db,
+			siteId,
+			hubSiteId: "hub",
+			eventBus: new SimpleEventBus() as unknown as TypedEventEmitter,
+			logger: mockLogger,
+			pollIntervalSeconds: 0.001,
+			routeRelayRequest: (params) => ({ inserted: insert(params.idempotencyKey, params.payload) }),
+		});
+		const threadId = "spoke-thread";
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"threads",
+			{
+				id: threadId,
+				user_id: "u",
+				interface: "mcp",
+				host_origin: siteId,
+				summary: null,
+				last_message_at: now,
+				created_at: now,
+				deleted: 0,
+				modified_at: now,
+			},
+			siteId,
+		);
+		const taskId = "spoke-task";
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId,
+				type: "event",
+				status: "pending",
+				trigger_spec: `connector:event:${taskId}`,
+				thread_id: threadId,
+				created_at: now,
+				deleted: 0,
+				modified_at: now,
+			},
+			siteId,
+		);
+		const handleId = createConnectorHandle(db, siteId, {
+			serverName: "discord",
+			eventName: "x",
+			eventArgs: {},
+			deliveryMode: "poll",
+			taskId,
+		});
+		return {
+			threadId,
+			taskId,
+			handleId,
+			deliver: registry as unknown as {
+				deliverBatch: (s: ActiveSubscription, e: McpEvent[]) => void;
+			},
+		};
+	}
+
+	it("routes capable spoke intake durably and gates a replayed developer message on inserted", () => {
+		const { threadId, taskId, handleId, deliver } = setup((key, payload) => {
+			const result = db.run(
+				"INSERT OR IGNORE INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at) VALUES (?, 'hub', 'intake', ?, ?, 'pending', 0, ?)",
+				[randomBytes(8).toString("hex"), payload, key, new Date().toISOString()],
+			);
+			return result.changes === 1;
+		});
+		const sub: ActiveSubscription = {
+			handleId,
+			serverName: "discord",
+			eventName: "x",
+			params: {},
+			taskId,
+			threadId,
+			buffer: [],
+			flushTimer: null,
+			deduplicationSet: new Set(),
+		};
+		const event = makeSpokeEvent("event-1");
+		deliver.deliverBatch(sub, [event]);
+		// Clear only the in-memory early dedupe: persistence's idempotency fence must
+		// still gate the dependent message on a crash/replay.
+		sub.deduplicationSet.clear();
+		deliver.deliverBatch(sub, [event]);
+		expect(db.query("SELECT idempotency_key FROM durable_work").all()).toEqual([
+			{ idempotency_key: "intake:discord:event-1" },
+		]);
+		expect(db.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1 });
+		expect(db.query("SELECT COUNT(*) AS count FROM relay_outbox").get()).toEqual({ count: 0 });
+	});
+
+	it("preserves legacy outbox and message gating when the router selects legacy", () => {
+		const { threadId, taskId, handleId, deliver } = setup((key, payload) => {
+			const result = db.run(
+				"INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered) VALUES (?, ?, 'hub', 'intake', NULL, ?, NULL, ?, ?, ?, 0)",
+				[
+					randomBytes(8).toString("hex"),
+					siteId,
+					key,
+					payload,
+					new Date().toISOString(),
+					new Date(Date.now() + 300000).toISOString(),
+				],
+			);
+			return result.changes === 1;
+		});
+		const sub: ActiveSubscription = {
+			handleId,
+			serverName: "discord",
+			eventName: "x",
+			params: {},
+			taskId,
+			threadId,
+			buffer: [],
+			flushTimer: null,
+			deduplicationSet: new Set(),
+		};
+		deliver.deliverBatch(sub, [makeSpokeEvent("event-2")]);
+		expect(db.query("SELECT idempotency_key FROM relay_outbox").all()).toEqual([
+			{ idempotency_key: "intake:discord:event-2" },
+		]);
+		expect(db.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1 });
+		expect(db.query("SELECT COUNT(*) AS count FROM durable_work").get()).toEqual({ count: 0 });
+	});
+});
+
+function makeSpokeEvent(eventId: string): McpEvent {
+	return {
+		eventId,
+		name: "x",
+		timestamp: new Date().toISOString(),
+		data: { eventId },
+		cursor: eventId,
+	};
+}

@@ -94,6 +94,8 @@ export interface WebAppConfig {
 	 * context assembly).
 	 */
 	modelRouter?: ModelRouter | null;
+	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
+	topologyRole?: "hub" | "spoke";
 }
 
 export interface SyncAppConfig {

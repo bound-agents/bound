@@ -75,6 +75,8 @@ export interface RoutesConfig {
 	 * for direct LLM inference over HTTP (no agent loop, no context assembly).
 	 */
 	modelRouter?: ModelRouter | null;
+	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
+	topologyRole?: "hub" | "spoke";
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -94,6 +96,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		clusterFs,
 		mcpConfig,
 		modelRouter,
+		topologyRole,
 	} = config;
 
 	// The threads route only needs the default model id
@@ -140,6 +143,13 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		metrics: createMetricsRoutes(db, backendPricing),
 		sandbox: createSandboxRoutes(clusterFs ?? null),
 		persona: createPersonaRoutes(db),
-		responses: createResponsesRoutes(db, modelRouter ?? null, eventBus, siteId),
+		responses: createResponsesRoutes(
+			db,
+			modelRouter ?? null,
+			eventBus,
+			siteId,
+			undefined,
+			topologyRole,
+		),
 	};
 }

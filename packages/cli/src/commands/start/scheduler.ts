@@ -13,13 +13,12 @@ import {
 } from "@bound/agent";
 import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
-import { createRelayOutboxEntry, serializeRelayTraceCarrier } from "@bound/agent";
+import { resolveTopologyRole, routeRelayRequest, serializeRelayTraceCarrier } from "@bound/agent";
 import {
 	type AppContext,
 	findFreshPlatformHost,
 	markProcessed,
 	readInboxByRefId,
-	writeOutbox,
 } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import {
@@ -113,24 +112,25 @@ export function initScheduler(
 						);
 					}
 
-					// Write platform_request relay outbox entry
-					const entry = createRelayOutboxEntry(
+					// platform_request relay request (durable-or-legacy per toggle+capability)
+					const routed = routeRelayRequest(appContext.db, {
 						targetSiteId,
-						appContext.siteId,
-						"platform_request",
-						JSON.stringify({
+						sourceSiteId: appContext.siteId,
+						kind: "platform_request",
+						payload: JSON.stringify({
 							server_name: serverName,
 							method,
 							params,
 							timeout_ms: 15_000,
 						}),
-						15_000,
-						undefined,
-						undefined,
-						undefined,
-						serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
-					);
-					writeOutbox(appContext.db, entry, undefined, appContext.eventBus);
+						timeoutMs: 15_000,
+						// Legacy carried no key here; the minted row id is a deterministic,
+						// redelivery-stable key (R-DW5/6).
+						traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
+						topologyRole: resolveTopologyRole(appContext.optionalConfig),
+						eventBus: appContext.eventBus,
+					});
+					const entry = { id: routed.id };
 
 					// Poll for response (synchronous context — tool execute awaits result)
 					const deadline = Date.now() + 15_000;

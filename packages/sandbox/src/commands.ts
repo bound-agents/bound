@@ -68,6 +68,9 @@ export interface CommandContext {
 	mcpClients?: Map<string, unknown>;
 	modelRouter?: unknown; // ModelRouter from @bound/llm, optional for backward compatibility
 	fs?: IFileSystem;
+	/** Cluster role ("hub"|"spoke"), for durable-relay routing. Optional: absent
+	 * on synthetic contexts, where relay routing falls back to legacy. */
+	topologyRole?: "hub" | "spoke";
 }
 
 export interface CommandDefinition {

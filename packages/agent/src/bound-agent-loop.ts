@@ -13,7 +13,6 @@ import {
 	recordTurnRelayMetrics,
 	resolveRelayConfig,
 	updateRow,
-	writeOutbox,
 } from "@bound/core";
 import type {
 	ChatParams,
@@ -107,7 +106,7 @@ import {
 	waitForModelResolution,
 } from "./model-resolution";
 import { createRelayBackend } from "./relay-backend";
-import { type EligibleHost, createRelayOutboxEntry } from "./relay-router";
+import { type EligibleHost, resolveTopologyRole, routeRelayRequest } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
 import { fromEventBus } from "./rx-utils";
@@ -714,6 +713,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					siteId: this.ctx.siteId,
 					logger: this.ctx.logger,
 					maxPayloadBytes: this.relayConfig.max_payload_bytes,
+					topologyRole: resolveTopologyRole(this.ctx.optionalConfig),
 				},
 				inferencePayload,
 				resolution.hosts,
@@ -1313,6 +1313,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 											eventBus: this.ctx.eventBus,
 											siteId: this.ctx.siteId,
 											logger: this.ctx.logger,
+											topologyRole: resolveTopologyRole(this.ctx.optionalConfig),
 										},
 										{
 											outboxEntryId: dispatchResult.outboxEntryId,
@@ -1651,21 +1652,24 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			args: toolCall.input,
 			timeout_ms: timeoutMs,
 		};
-		const outboxEntry = createRelayOutboxEntry(
-			sessionHost.site_id,
-			this.ctx.siteId,
-			"client_tool",
-			JSON.stringify(payload),
-			timeoutMs,
-			undefined,
-			`client-tool:${this.config.threadId}:${toolCall.id}`,
-			undefined,
-			traceCarrier ? JSON.stringify(traceCarrier) : undefined,
-		);
+		const clientToolKey = `client-tool:${this.config.threadId}:${toolCall.id}`;
+		let awaitId: string;
 		try {
-			context.with(dispatchCtx, () => writeOutbox(this.ctx.db, outboxEntry));
+			const routed = context.with(dispatchCtx, () =>
+				routeRelayRequest(this.ctx.db, {
+					targetSiteId: sessionHost.site_id,
+					sourceSiteId: this.ctx.siteId,
+					kind: "client_tool",
+					payload: JSON.stringify(payload),
+					timeoutMs,
+					idempotencyKey: clientToolKey,
+					traceContext: traceCarrier ? JSON.stringify(traceCarrier) : undefined,
+					topologyRole: resolveTopologyRole(this.ctx.optionalConfig),
+				}),
+			);
+			awaitId = routed.id;
 		} catch (error) {
-			this.ctx.logger.error("[agent-loop] Failed to write client_tool relay outbox entry", {
+			this.ctx.logger.error("[agent-loop] Failed to write client_tool relay request", {
 				tool: toolCall.name,
 				callId: toolCall.id,
 				host: sessionHost.host_name,
@@ -1682,7 +1686,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			tool: toolCall.name,
 			callId: toolCall.id,
 			host: sessionHost.host_name,
-			outboxEntryId: outboxEntry.id,
+			outboxEntryId: awaitId,
 		});
 
 		const previousRelayState = this.enterPhaseOverlay("RELAY_WAIT");
@@ -1695,10 +1699,9 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		}, 100);
 		let resolved: { content: string; isError: boolean } | null;
 		try {
-			resolved = await firstValueFrom(
-				this.createClientResultWait$(outboxEntry.id, timeoutMs, aborted$),
-				{ defaultValue: null },
-			);
+			resolved = await firstValueFrom(this.createClientResultWait$(awaitId, timeoutMs, aborted$), {
+				defaultValue: null,
+			});
 		} finally {
 			clearInterval(abortCheck);
 			this.restorePhase(previousRelayState);
@@ -1887,6 +1890,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 						eventBus: this.ctx.eventBus,
 						siteId: this.ctx.siteId,
 						logger: this.ctx.logger,
+						topologyRole: resolveTopologyRole(this.ctx.optionalConfig),
 					},
 					resolution.hosts,
 					resolution.modelId,

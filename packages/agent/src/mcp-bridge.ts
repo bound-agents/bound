@@ -10,7 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 
-import { updateRow, writeOutbox } from "@bound/core";
+import { updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { loopContextStorage } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
@@ -18,7 +18,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 import { coerceArgsFromSchema } from "./mcp-arg-coercion";
 import type { MCPClient } from "./mcp-client";
-import { type EligibleHost, createRelayOutboxEntry, findEligibleHosts } from "./relay-router";
+import { type EligibleHost, findEligibleHosts, routeRelayRequest } from "./relay-router";
 import { persistBinaryResource } from "./tool-result-images";
 
 /**
@@ -900,14 +900,16 @@ export function generateRemoteMCPProxyCommands(
 					timeout_ms: 30_000,
 				});
 
-				const outboxEntry = createRelayOutboxEntry(
-					targetHost.site_id,
-					ctx.siteId,
-					"tool_call",
+				const routed = routeRelayRequest(ctx.db, {
+					targetSiteId: targetHost.site_id,
+					sourceSiteId: ctx.siteId,
+					kind: "tool_call",
 					payload,
-					30_000, // 30s timeout
-				);
-				writeOutbox(ctx.db, outboxEntry);
+					timeoutMs: 30_000, // 30s timeout
+					// Legacy carried no key here; the minted row id is a deterministic,
+					// redelivery-stable key (R-DW5/6).
+					topologyRole: ctx.topologyRole,
+				});
 
 				// Resolve target host's annotations for the dispatched subcommand
 				// so the agent retry policy can consult them. Maps MCP-spec wire
@@ -932,7 +934,7 @@ export function generateRemoteMCPProxyCommands(
 				// loopContextStorage so the agent loop can retrieve it after
 				// sandbox.exec returns.
 				const result: RelayToolCallRequest = {
-					outboxEntryId: outboxEntry.id,
+					outboxEntryId: routed.id,
 					targetSiteId: targetHost.site_id,
 					targetHostName: targetHost.host_name,
 					toolName: serverName,

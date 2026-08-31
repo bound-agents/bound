@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
-import { enqueueNotification, writeOutbox } from "@bound/core";
+import { enqueueNotification } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { resolveClientSessionHost } from "./delegation";
+import { routeRelayRequest } from "./relay-router";
+import type { TopologyRole } from "./topology";
 
 /**
  * Route a notify/introspect wakeup to the host that should run the woken
@@ -60,6 +61,7 @@ export function routeNotificationWakeup(
 	localSiteId: string,
 	threadId: string,
 	payload: Record<string, unknown>,
+	topologyRole?: TopologyRole,
 ): WakeupRoutingResult {
 	const sessionHost = resolveClientSessionHost(db, threadId, localSiteId);
 
@@ -77,24 +79,19 @@ export function routeNotificationWakeup(
 			notification_id: notificationId,
 			idempotency_key: idempotencyKey,
 		};
-		writeOutbox(
-			db,
-			{
-				id: randomUUID(),
-				source_site_id: localSiteId,
-				target_site_id: sessionHost.site_id,
-				kind: "notify_wakeup",
-				ref_id: null,
-				idempotency_key: idempotencyKey ?? null,
-				stream_id: null,
-				payload: JSON.stringify(wire),
-				created_at: new Date().toISOString(),
-				expires_at: new Date(Date.now() + NOTIFY_WAKEUP_TTL_MS).toISOString(),
-				trace_context: null,
-			},
-			undefined,
+		routeRelayRequest(db, {
+			targetSiteId: sessionHost.site_id,
+			sourceSiteId: localSiteId,
+			kind: "notify_wakeup",
+			payload: JSON.stringify(wire),
+			timeoutMs: NOTIFY_WAKEUP_TTL_MS,
+			// Verbatim key when the sender carried an identity (notify:<id>);
+			// legacy unkeyed senders keep their historical random dispatch id on
+			// the legacy path and, on the durable path, the minted row id.
+			idempotencyKey,
+			topologyRole,
 			eventBus,
-		);
+		});
 		return {
 			delivery: "relayed",
 			targetSiteId: sessionHost.site_id,

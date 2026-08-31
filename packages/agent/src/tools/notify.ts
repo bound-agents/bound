@@ -55,12 +55,19 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 				// Route the wakeup to the host holding the thread's live WS session
 				// (#91 under unified delegation): a local enqueue on THIS host would
 				// mint a second, detached loop when the session lives elsewhere.
-				const routed = routeNotificationWakeup(ctx.db, ctx.eventBus, ctx.siteId, thread.id, {
-					type: "proactive",
-					source_thread: ctx.threadId ?? null,
-					content: message.trim(),
-					notification_id: randomUUID(),
-				});
+				const routed = routeNotificationWakeup(
+					ctx.db,
+					ctx.eventBus,
+					ctx.siteId,
+					thread.id,
+					{
+						type: "proactive",
+						source_thread: ctx.threadId ?? null,
+						content: message.trim(),
+						notification_id: randomUUID(),
+					},
+					ctx.topologyRole,
+				);
 				const warning = clientSessionWakeupWarning(ctx.db, thread.id);
 				const confirmation =
 					routed.delivery === "relayed"

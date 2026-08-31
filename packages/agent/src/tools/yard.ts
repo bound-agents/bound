@@ -665,6 +665,7 @@ function createYardHost(
 										eventBus: ctx.eventBus,
 										siteId: ctx.siteId,
 										logger: ctx.logger,
+										topologyRole: ctx.topologyRole,
 									},
 									resolution.hosts,
 									resolution.modelId,

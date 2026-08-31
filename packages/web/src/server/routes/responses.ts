@@ -70,6 +70,7 @@ export function createResponsesRoutes(
 	eventBus: TypedEventEmitter,
 	siteId: string,
 	logger?: Logger,
+	topologyRole?: "hub" | "spoke",
 ) {
 	const app = new Hono();
 	const log = logger ?? createLogger("web", "responses");
@@ -202,7 +203,7 @@ export function createResponsesRoutes(
 				hosts: resolution.hosts.map((h) => h.host_name),
 			});
 			return createRelayInferenceStream(
-				{ db, eventBus, siteId, logger: log },
+				{ db, eventBus, siteId, logger: log, topologyRole },
 				payload,
 				resolution.hosts,
 				c.req.raw.signal,

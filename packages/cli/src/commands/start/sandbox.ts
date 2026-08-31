@@ -2,7 +2,11 @@
  * Sandbox subsystem: ClusterFs creation, command registry, VFS hydration.
  */
 
-import { createWorkspoolCommand, generateRemoteMCPProxyCommands } from "@bound/agent";
+import {
+	createWorkspoolCommand,
+	generateRemoteMCPProxyCommands,
+	resolveTopologyRole,
+} from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { CommandDefinition } from "@bound/sandbox";
@@ -25,6 +29,7 @@ export interface SandboxResult {
 		logger: AppContext["logger"];
 		mcpClients: Map<string, MCPClient>;
 		fs: ClusterFsResult["fs"];
+		topologyRole?: "hub" | "spoke";
 	} | null;
 }
 
@@ -57,6 +62,7 @@ export async function initSandbox(
 			logger: appContext.logger,
 			mcpClients: mcpClientsMap,
 			fs: clusterFs,
+			topologyRole: resolveTopologyRole(appContext.optionalConfig),
 		};
 		// Discover remote MCP servers from the hosts table and create proxy commands
 		// that relay tool calls to the remote host via the sync outbox.

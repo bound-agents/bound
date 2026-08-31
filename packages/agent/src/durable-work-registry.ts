@@ -20,12 +20,27 @@ export interface DurableWorkRegistration {
 	subtypes?: readonly DurableWorkSubtype[];
 }
 
+/**
+ * RPC request kinds carry an RPC-class TTL so the expiry sweep dead-letters a
+ * stale request BEFORE the 4D-A lane can dispatch it — an expired durable
+ * request must never execute. The value mirrors today's legacy relay_outbox
+ * `expires_at` class for each kind (bounded by the relay inference timeout,
+ * ~300s), NOT the 7-day intake TTL. Stream response kinds keep their 5-minute
+ * window; passive intake kinds (webhook/rss/connector) keep 7 days.
+ */
+const RPC_REQUEST_TTL_MS = 5 * 60 * 1000; // 300s — relay inference-timeout class
+
 const relayRegistration = (kind: RelayKind): DurableWorkRegistration => ({
 	kind,
 	claimDiscipline: "local-exclusive",
 	retirementRule: "single-ack",
 	backing: "local",
-	ttlMs: kind === "stream_chunk" || kind === "stream_end" ? 5 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000,
+	ttlMs:
+		kind === "stream_chunk" || kind === "stream_end"
+			? 5 * 60 * 1000
+			: kind === "webhook_intake" || kind === "rss_intake" || kind === "connector_intake"
+				? 7 * 24 * 60 * 60 * 1000
+				: RPC_REQUEST_TTL_MS,
 	deadLetterPolicy: "retain-7d",
 	idempotencyKey: (identity) => identity.idempotency_key ?? `${kind}:${identity.id}`,
 	consumer: RELAY_KIND_REGISTRY[kind].dispatch === "passive" ? "scheduler" : "relay",
