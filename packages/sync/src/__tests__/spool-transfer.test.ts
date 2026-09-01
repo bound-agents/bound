@@ -1357,10 +1357,18 @@ describe("spool transfer (4D-B)", () => {
 			expect(received[0].context).toMatchObject({ sourceSiteId: "sender", entryCount: 2 });
 		});
 
-		it("stays silent on an empty batch (early return, no received-info log)", () => {
+		it("names an empty batch (entryCount 0) then returns without inserting (#253)", () => {
 			connect(receiver, "sender");
 			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", { entries: [] }));
-			expect(infoLogs(receiver, "WsTransport spool received")).toHaveLength(0);
+			// Canary #2: the received-info now fires ABOVE the empty-guard so an empty
+			// batch names itself instead of returning silently.
+			const received = infoLogs(receiver, "WsTransport spool received");
+			expect(received).toHaveLength(1);
+			expect(received[0].context).toMatchObject({ sourceSiteId: "sender", entryCount: 0 });
+			// Behavior unchanged: nothing inserted, no ack frame emitted.
+			expect(
+				decodeSpoolFrames(receiver).find((f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK),
+			).toBeUndefined();
 		});
 
 		it("RETHROWS a genuine local storage failure so the ws-server dispatch catch closes the connection", () => {
