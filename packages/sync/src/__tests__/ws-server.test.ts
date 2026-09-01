@@ -620,6 +620,91 @@ describe("createWsHandlers", async () => {
 			expect(closedWithCode).toBe(1003);
 		});
 
+		it("logs a 'spool frame received' canary for a spool-typed raw frame before decode (#253)", () => {
+			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
+			const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const logger = {
+				debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
+				info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
+				warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
+				error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+			};
+			const handlers = createWsHandlers({
+				connectionManager: manager,
+				keyring,
+				keyManager,
+				logger: logger as any,
+			});
+
+			const symmetricKey = new Uint8Array(32).fill(7);
+			const mockWs = {
+				data: {
+					siteId: "spoke-site",
+					symmetricKey,
+					sendState: "ready",
+					pendingDrain: null,
+				},
+				close: () => {},
+			} as any;
+
+			// A well-formed SPOOL_TRANSFER_ACK frame (0x41 plaintext type byte at offset 0).
+			const frame = encodeFrame(
+				WsMessageType.SPOOL_TRANSFER_ACK,
+				{ entries: [{ id: "w-1", token: "tok-1" }] },
+				symmetricKey,
+			);
+			handlers.websocket.message?.(mockWs, frame);
+
+			const recv = logs.find(
+				(e) => e.level === "info" && e.msg === "WsServer spool frame received",
+			);
+			expect(recv).toBeDefined();
+			const meta = recv?.meta as Record<string, unknown>;
+			expect(meta.siteId).toBe("spoke-site");
+			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
+			expect(meta.frameBytes).toBe(frame.length);
+		});
+
+		it("decode-fail warn carries frameTypeByte and frameSize (#253)", () => {
+			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
+			const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const logger = {
+				debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
+				info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
+				warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
+				error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+			};
+			const handlers = createWsHandlers({
+				connectionManager: manager,
+				keyring,
+				keyManager,
+				logger: logger as any,
+			});
+
+			const mockWs = {
+				data: {
+					siteId: "spoke-site",
+					symmetricKey: new Uint8Array(32).fill(7),
+					sendState: "ready",
+					pendingDrain: null,
+				},
+				close: () => {},
+			} as any;
+
+			// Undecryptable garbage with a SPOOL_TRANSFER type byte at offset 0.
+			const garbage = new Uint8Array(60).fill(0);
+			garbage[0] = WsMessageType.SPOOL_TRANSFER;
+			handlers.websocket.message?.(mockWs, garbage);
+
+			const warn = logs.find((e) => e.level === "warn" && e.msg === "WS frame decode failed");
+			expect(warn).toBeDefined();
+			const meta = warn?.meta as Record<string, unknown>;
+			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER);
+			expect(meta.frameSize).toBe(60);
+		});
+
 		it("websocket drain handler sets ready state and calls pending drain", () => {
 			const manager = new WsConnectionManager();
 			const { keyring, keyManager } = createMockKeyringAndManager();

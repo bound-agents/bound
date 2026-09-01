@@ -172,6 +172,15 @@ interface PeerConnection {
 	ping: () => void;
 	symmetricKey: Uint8Array;
 	peerSiteId: string;
+	/** Identity of the socket owner behind this peer's sendFrame closure (#253
+	 * spool-wedge canary). On a spoke this is the WsSyncClient.instanceId whose
+	 * live socket the closure writes into; on a hub it is the ServerWebSocket
+	 * connection id. Logged alongside "WsTransport spool send" so a shipped frame
+	 * directly names which client instance's socket it entered — comparable
+	 * against that instance's "WsSyncClient socket open" log to catch a closure
+	 * bound to a dead/stale socket object. Optional: legacy addPeer call sites and
+	 * tests that omit it read undefined. */
+	ownerId?: string;
 }
 
 /**
@@ -314,6 +323,7 @@ export class WsTransport {
 		sendFrame: (frame: Uint8Array) => boolean,
 		symmetricKey: Uint8Array,
 		ping?: () => void,
+		ownerId?: string,
 	): void {
 		const replacesExistingPeer = this.peerConnections.has(peerSiteId);
 		this.peerConnections.set(peerSiteId, {
@@ -321,9 +331,10 @@ export class WsTransport {
 			sendFrame,
 			ping: ping ?? (() => {}),
 			symmetricKey,
+			ownerId,
 		});
 		if (!replacesExistingPeer) recordActiveConnection("server", 1);
-		this.config.logger?.debug("WsTransport peer added", { peerSiteId });
+		this.config.logger?.debug("WsTransport peer added", { peerSiteId, ownerId });
 	}
 
 	/**
@@ -1566,6 +1577,7 @@ export class WsTransport {
 		// sent — the caller only reaches here with a non-empty batch.
 		this.config.logger?.info("WsTransport spool send", {
 			peerSiteId,
+			ownerId: peer.ownerId,
 			entryCount: rows.length,
 			frameBytes: frame.byteLength,
 			sent,

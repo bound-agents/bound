@@ -30,6 +30,18 @@ export enum WsMessageType {
 	ERROR = 0xff,
 }
 
+/**
+ * True if a raw frame's leading type byte is a durable-work spool-family frame
+ * (SPOOL_TRANSFER 0x40 or SPOOL_TRANSFER_ACK 0x41). `encodeFrame` writes the type
+ * byte PLAINTEXT at offset 0, so this survives encryption and decode failure — it
+ * is safe to test against `frame[0]` on both the send and raw-receive paths before
+ * `decodeFrame` runs. Single source of truth for the #253 spool-wedge canaries so
+ * both ends agree on which bytes are worth a per-frame log.
+ */
+export function isSpoolFrameByte(byte: number | undefined): boolean {
+	return byte === WsMessageType.SPOOL_TRANSFER || byte === WsMessageType.SPOOL_TRANSFER_ACK;
+}
+
 // Payload types for each message kind
 
 export type ChangelogPushPayload = {

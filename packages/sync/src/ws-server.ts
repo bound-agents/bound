@@ -14,7 +14,7 @@ import type {
 	SpoolTransferAckPayload,
 	SpoolTransferPayload,
 } from "./ws-frames.js";
-import { WsMessageType, decodeFrame } from "./ws-frames.js";
+import { WsMessageType, decodeFrame, isSpoolFrameByte } from "./ws-frames.js";
 
 const AUTH_FAILURE_BODY = "Unauthorized";
 const AUTH_REPLAY_WINDOW_MS = 5 * 60 * 1000;
@@ -209,6 +209,7 @@ export interface WsServerConfig {
 			sendFrame: (frame: Uint8Array) => boolean,
 			symmetricKey: Uint8Array,
 			ping?: () => void,
+			ownerId?: string,
 		) => void;
 		removePeer: (peerSiteId: string) => void;
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
@@ -334,7 +335,13 @@ export function createWsHandlers(config: WsServerConfig): {
 						/* best effort — older Bun builds may lack .ping() */
 					}
 				};
-				config.wsTransport.addPeer(ws.data.siteId, sendFrame, ws.data.symmetricKey, ping);
+				config.wsTransport.addPeer(
+					ws.data.siteId,
+					sendFrame,
+					ws.data.symmetricKey,
+					ping,
+					ws.data.siteId,
+				);
 
 				// Seed new peers with a full DB snapshot before the normal
 				// changelog drain (which only contains entries newer than
@@ -364,12 +371,28 @@ export function createWsHandlers(config: WsServerConfig): {
 				size: frame.length,
 			});
 
+			// #253 spool-wedge canary: one info per spool-family raw frame BEFORE decodeFrame,
+			// so a frame that reaches the hub's message() handler is logged even if decode
+			// later fails. frame[0] is the PLAINTEXT type byte (encodeFrame offset 0). Only
+			// spool-family (SPOOL_TRANSFER / SPOOL_TRANSFER_ACK) is logged — changelog is
+			// high-volume. Silence here for a spoke-logged sent=true frame means the bytes
+			// never reached this handler (wire/proxy drop or a write into a different socket).
+			if (isSpoolFrameByte(frame[0])) {
+				logger?.info("WsServer spool frame received", {
+					siteId: ws.data.siteId,
+					frameTypeByte: frame[0],
+					frameBytes: frame.length,
+				});
+			}
+
 			// Decode frame
 			const decodeResult = decodeFrame(frame, ws.data.symmetricKey);
 			if (!decodeResult.ok) {
 				logger?.warn("WS frame decode failed", {
 					siteId: ws.data.siteId,
 					error: decodeResult.error,
+					frameTypeByte: frame[0],
+					frameSize: frame.length,
 				});
 				return;
 			}
