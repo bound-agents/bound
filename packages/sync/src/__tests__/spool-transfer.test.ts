@@ -23,7 +23,7 @@ function createDb(): Database {
 			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
 			claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
 			created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT,
-			ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT
+			ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT, reclassify_count INTEGER NOT NULL DEFAULT 0
 		) STRICT;
 		CREATE TABLE hosts (
 			site_id TEXT PRIMARY KEY, host_name TEXT NOT NULL, version TEXT NOT NULL,
@@ -957,6 +957,74 @@ describe("spool transfer (4D-B)", () => {
 				frames.find((f) => f.type === WsMessageType.SPOOL_TRANSFER),
 			) as SpoolTransferPayload;
 			expect(transfer.entries.map((e) => e.id)).toEqual(["real-peer-row"]);
+		});
+	});
+
+	describe("(j) reconnect auto-redrive of dead-socket dead letters (#253)", () => {
+		let sender: Node;
+
+		const TRANSFER_EXHAUSTED = "transfer retries exhausted (no SPOOL_TRANSFER_ACK)";
+
+		beforeEach(() => {
+			sender = createNode("sender");
+		});
+		afterEach(() => {
+			sender.stop();
+		});
+
+		// Seed a dead letter directly (no push bus): the dead-but-OPEN socket race
+		// (detector loses to the sweep's attempt cap under an unlucky phase) leaves rows
+		// dead-lettered with the transfer-exhaustion last_error. Reconnect must recover
+		// exactly those, targeted at the reconnected peer, dead-lettered recently.
+		function seedDeadLetter(
+			id: string,
+			target: string,
+			lastError: string,
+			deadLetteredAt: string,
+		): void {
+			seedPendingRow(sender, { id, target_site_id: target }, false);
+			sender.db.run(
+				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+				 last_error = ?, dead_lettered_at = ?, attempt_count = 3 WHERE id = ?`,
+				[lastError, deadLetteredAt, id],
+			);
+		}
+
+		it("returns ONLY the recent transfer-exhausted dead letters targeted at the reconnected peer to pending, and re-sends them", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			const now = new Date();
+			const recent = new Date(now.getTime() - 5 * 60 * 1000).toISOString(); // 5 min ago
+			const old = new Date(now.getTime() - 30 * 60 * 1000).toISOString(); // 30 min ago
+
+			// (1) recent + this peer + transfer-exhausted → reclassified + re-sent.
+			seedDeadLetter("recent-peer", "receiver", TRANSFER_EXHAUSTED, recent);
+			// (2) old (outside the 15-min window) → untouched.
+			seedDeadLetter("old-peer", "receiver", TRANSFER_EXHAUSTED, old);
+			// (3) recent + this peer but a DIFFERENT last_error (real terminal expiry) → untouched.
+			seedDeadLetter("recent-expired", "receiver", "expired", recent);
+			// (4) recent + transfer-exhausted but a DIFFERENT target peer → untouched.
+			seedDeadLetter("recent-otherpeer", "elsewhere", TRANSFER_EXHAUSTED, recent);
+
+			// Reconnect: peer connects, drain runs. The auto-redrive leg fires BEFORE the
+			// recovery drain, so the reclassified row is picked up as pending in the same
+			// pass and shipped.
+			connect(sender, "receiver");
+			sender.transport.drainDurableWorkSpool("receiver");
+
+			// Exactly the one eligible row was recovered — reset to a fresh generation and
+			// then begun as a transfer on the live channel.
+			expect(rowState(sender.db, "recent-peer")?.claim_state).toBe("transferring");
+
+			// The three ineligible rows stay dead-lettered — real dead letters, untouched.
+			expect(rowState(sender.db, "old-peer")?.claim_state).toBe("dead_letter");
+			expect(rowState(sender.db, "recent-expired")?.claim_state).toBe("dead_letter");
+			expect(rowState(sender.db, "recent-otherpeer")?.claim_state).toBe("dead_letter");
+
+			// And only that row went out on the wire.
+			const transferred = decodeSpoolFrames(sender)
+				.filter((f) => f.type === WsMessageType.SPOOL_TRANSFER)
+				.flatMap((f) => (f.payload as SpoolTransferPayload).entries.map((e) => e.id));
+			expect(transferred).toEqual(["recent-peer"]);
 		});
 	});
 });

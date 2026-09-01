@@ -192,5 +192,8 @@ export * from "./repositories";
 export {
 	redriveDeadLetterDurableWork,
 	redriveTransferringDurableWork,
+	reclassifyTransferExhaustedDeadLetters,
+	TRANSFER_EXHAUSTED_LAST_ERROR,
+	TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET,
 	type DurableWorkInspectionRow,
 } from "./durable-work";

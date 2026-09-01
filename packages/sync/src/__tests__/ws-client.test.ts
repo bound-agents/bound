@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KeyringConfig } from "@bound/shared";
+import type { KeyringConfig, Logger } from "@bound/shared";
 import { deriveSiteId, ensureKeypair, exportPublicKey, generateKeypair } from "../crypto.js";
 import { KeyManager } from "../key-manager.js";
 import { WsSyncClient } from "../ws-client.js";
@@ -732,6 +732,244 @@ describe("WsSyncClient", () => {
 
 			expect(internal.sendState).toBe("pressured");
 			expect(drained).toEqual([]);
+		});
+	});
+
+	describe("dead-but-OPEN socket detection (#253 spool-transfer wedge, third leg)", () => {
+		// Live incident: 908 platform_request rows dead-lettered on the spoke, zero
+		// consumed. A socket can read OPEN per readyState yet be dead over TCP: Bun's
+		// CLIENT WebSocket.send() does not throw and returns undefined — the frame is
+		// queued into bufferedAmount. That queueing is NOT itself a failure signal: a
+		// HEALTHY socket over a slow WAN (or buffering under TLS) may also grow
+		// bufferedAmount transiently when the kernel can't synchronously accept the
+		// frame; those bytes still deliver. So send() carries NO per-frame delivery
+		// signal and MUST report success on any queued-but-not-thrown write — treating a
+		// single-send buffer delta as a refusal is a livelock (every transfer that
+		// briefly queues rolls its row back to pending and invalidates the generation,
+		// so no row ever holds a transferring token long enough for its ack to retire
+		// it). The dead-socket signal is PERSISTENCE, not a single delta: a buffer that
+		// stays non-zero and non-decreasing across consecutive liveness ticks while
+		// nothing is backpressured is a socket that claims OPEN but never flushes.
+		interface FakeWs {
+			readyState: number;
+			bufferedAmount: number;
+			sent: Buffer[];
+			send: (b: Buffer) => void;
+			close: () => void;
+			closeCount: number;
+		}
+
+		// A socket whose send() queues bytes into a monotonically-growing buffer that
+		// never drains — the dead-but-OPEN case. send() returns undefined (Bun's real
+		// client contract), so only cross-tick buffer PERSISTENCE betrays the non-flush.
+		function deadButOpenWs(): FakeWs {
+			const sent: Buffer[] = [];
+			return {
+				readyState: WebSocket.OPEN,
+				bufferedAmount: 0,
+				sent,
+				closeCount: 0,
+				send(b: Buffer) {
+					sent.push(b);
+					// Queued, not flushed — the buffer grows by the frame size.
+					this.bufferedAmount += b.byteLength;
+				},
+				close() {
+					this.closeCount += 1;
+				},
+			};
+		}
+
+		// A healthy socket: send() flushes synchronously, bufferedAmount stays 0.
+		function healthyWs(): FakeWs {
+			const sent: Buffer[] = [];
+			return {
+				readyState: WebSocket.OPEN,
+				bufferedAmount: 0,
+				sent,
+				closeCount: 0,
+				send(b: Buffer) {
+					sent.push(b);
+					// Flushed synchronously — no accumulation.
+				},
+				close() {
+					this.closeCount += 1;
+				},
+			};
+		}
+
+		// A healthy-but-slow socket: send() queues the frame (bufferedAmount grows), but
+		// the kernel drains it between ticks. The bytes DO deliver — this is not a dead
+		// socket and must never be force-closed or reported as a send failure.
+		function healthyButSlowWs(): FakeWs {
+			const sent: Buffer[] = [];
+			return {
+				readyState: WebSocket.OPEN,
+				bufferedAmount: 0,
+				sent,
+				closeCount: 0,
+				send(b: Buffer) {
+					sent.push(b);
+					// Queued this instant — the kernel hasn't synchronously accepted it.
+					this.bufferedAmount += b.byteLength;
+				},
+				close() {
+					this.closeCount += 1;
+				},
+			};
+		}
+
+		interface Internal {
+			ws: FakeWs | null;
+			sendState: "ready" | "pressured";
+			send(frame: Uint8Array): boolean;
+			checkDeadButOpenSocket(): void;
+		}
+
+		function makeClient(backpressureLimit: number, logger?: Logger): Internal {
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				backpressureLimit,
+				logger,
+			});
+			clients.push(client);
+			return client as unknown as Internal;
+		}
+
+		const FRAME = new Uint8Array([1, 2, 3, 4]);
+
+		it("send() returns TRUE when a healthy socket queues then drains the frame — no per-send refusal (anti-livelock)", () => {
+			// The invariant the reworked send() must hold: a queued-but-not-thrown write is
+			// a success, because the bytes may genuinely deliver. If send() returned false
+			// on the queue delta, the caller would roll the transferring row back to pending
+			// and invalidate its token every time the buffer momentarily grew — a livelock.
+			const internal = makeClient(2_097_152);
+			const ws = healthyButSlowWs();
+			internal.ws = ws;
+
+			expect(internal.send(FRAME)).toBe(true);
+			expect(ws.sent).toHaveLength(1);
+			// The frame was queued (buffer grew) but send() still reports success.
+			expect(ws.bufferedAmount).toBeGreaterThan(0);
+			expect(ws.closeCount).toBe(0);
+		});
+
+		it("send() returns TRUE when a healthy socket flushes the frame synchronously", () => {
+			const internal = makeClient(2_097_152);
+			internal.ws = healthyWs();
+
+			expect(internal.send(FRAME)).toBe(true);
+			expect(internal.ws?.sent).toHaveLength(1);
+			expect(internal.ws?.bufferedAmount).toBe(0);
+		});
+
+		it("send() returns FALSE only on the pre-existing conditions (socket not OPEN)", () => {
+			const internal = makeClient(2_097_152);
+			const ws = healthyWs();
+			ws.readyState = WebSocket.CLOSING;
+			internal.ws = ws;
+
+			expect(internal.send(FRAME)).toBe(false);
+			// A non-OPEN socket is never handed the frame at all.
+			expect(ws.sent).toHaveLength(0);
+		});
+
+		it("checkDeadButOpenSocket force-closes a dead-but-OPEN socket whose buffer is stuck across two ticks, warning exactly once per episode", () => {
+			// A capturing logger proves the episode emits EXACTLY one structured warn, not
+			// just that it force-closed: the detector must not log on every tick while the
+			// buffer stays stuck, only on the force-close that ends the episode.
+			const warns: Array<{ message: string; context?: Record<string, unknown> }> = [];
+			const logger: Logger = {
+				debug: () => {},
+				info: () => {},
+				warn: (message, context) => warns.push({ message, context }),
+				error: () => {},
+			};
+			const internal = makeClient(2_097_152, logger);
+			const ws = deadButOpenWs();
+			internal.ws = ws;
+
+			// A frame was queued into the buffer and never flushed. sendState stays ready
+			// (the latch is orthogonal — a dead socket's tiny buffer is under the limit).
+			ws.bufferedAmount = 1024;
+
+			// First detector tick: records the stuck buffer, does NOT yet force-close
+			// (two consecutive non-decreasing observations required — conservative) and does
+			// NOT warn.
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(0);
+			expect(warns).toHaveLength(0);
+
+			// Second tick: buffer unchanged (or grown) and still OPEN → force-close so the
+			// reconnect path re-establishes a live channel and re-drives the spool, warning
+			// exactly once with the structured stuck-buffer context.
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(1);
+			expect(warns).toHaveLength(1);
+			expect(warns[0]?.message).toContain("dead-but-OPEN socket");
+			expect(warns[0]?.context).toMatchObject({
+				peerSiteId: hubSiteId,
+				bufferedAmount: 1024,
+				priorBufferedAmount: 1024,
+			});
+
+			// The episode is over: the sample was reset on force-close, so a fresh stuck
+			// buffer needs two more ticks before the next warn — no per-tick warn spam.
+			ws.readyState = WebSocket.OPEN;
+			ws.bufferedAmount = 2048;
+			internal.checkDeadButOpenSocket();
+			expect(warns).toHaveLength(1);
+		});
+
+		it("checkDeadButOpenSocket does NOT force-close when the buffer drains between ticks (healthy-but-slow)", () => {
+			const internal = makeClient(2_097_152);
+			const ws = deadButOpenWs();
+			internal.ws = ws;
+			ws.bufferedAmount = 1024;
+
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(0);
+
+			// The socket is flushing after all — buffer fell. Not a dead socket; leave it,
+			// and the drain resets the sample so a later re-grow starts a fresh two-tick
+			// window rather than tripping immediately.
+			ws.bufferedAmount = 0;
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(0);
+
+			// Re-grow after the drain: one observation, still no close (fresh window).
+			ws.bufferedAmount = 2048;
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(0);
+		});
+
+		it("checkDeadButOpenSocket does NOT force-close a healthy idle socket (buffer at 0)", () => {
+			const internal = makeClient(2_097_152);
+			const ws = healthyWs();
+			internal.ws = ws;
+
+			internal.checkDeadButOpenSocket();
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(0);
+		});
+
+		it("checkDeadButOpenSocket does NOT force-close while genuinely backpressured (latch engaged)", () => {
+			// A full buffer over the limit is genuine backpressure, handled by the latch —
+			// not a dead socket. The dead-socket detector must stay out of that regime so
+			// it never force-closes a socket that is simply slow under load.
+			const internal = makeClient(1024);
+			const ws = deadButOpenWs();
+			internal.ws = ws;
+			internal.sendState = "pressured";
+			ws.bufferedAmount = 4096; // over the limit → latch territory
+
+			internal.checkDeadButOpenSocket();
+			internal.checkDeadButOpenSocket();
+			expect(ws.closeCount).toBe(0);
 		});
 	});
 

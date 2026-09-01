@@ -801,6 +801,11 @@ export function applySchema(db: Database): void {
 	ensureColumn(db, "durable_work", "source_site");
 	ensureColumn(db, "durable_work", "received_at");
 	ensureColumn(db, "durable_work", "stream_id");
+	// #253 reconnect auto-redrive budget: a persistent per-row cap on how many times
+	// a transfer-exhausted dead letter may be reclassified back to pending, so the
+	// reconnect leg cannot resurrect the same row forever. Local-only, added via
+	// ensureColumn like the durable_work columns above.
+	ensureColumn(db, "durable_work", "reclassify_count", "INTEGER NOT NULL DEFAULT 0");
 
 	db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_work_kind_key
 		ON durable_work(kind, idempotency_key)`);
