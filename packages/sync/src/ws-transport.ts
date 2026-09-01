@@ -1559,7 +1559,27 @@ export class WsTransport {
 			})),
 		};
 		const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, peer.symmetricKey);
-		return peer.sendFrame(frame);
+		const sent = peer.sendFrame(frame);
+		// #253 send-path observability: one info per batch send attempt so a wedge can be
+		// diagnosed as spoke-send vs hub-drop from the logs alone. Quiet when nothing is
+		// sent — the caller only reaches here with a non-empty batch.
+		this.config.logger?.info("WsTransport spool send", {
+			peerSiteId,
+			entryCount: rows.length,
+			frameBytes: frame.byteLength,
+			sent,
+		});
+		if (!sent) {
+			// A refused frame is the line that settles spoke-send vs hub-drop on the next
+			// restart: the frame never left this host. (The peer's live bufferedAmount is not
+			// reachable from the transport's PeerConnection handle, which carries only the
+			// boolean-returning sendFrame; the refusal itself is the signal.)
+			this.config.logger?.warn("WsTransport spool send refused", {
+				peerSiteId,
+				entryCount: rows.length,
+			});
+		}
+		return sent;
 	}
 
 	/**
@@ -1571,7 +1591,7 @@ export class WsTransport {
 	 * final destination equals the peer route to it. Batched 100/frame, mirroring
 	 * {@link drainRelayOutbox}. Runs on both spokes and hubs.
 	 */
-	drainDurableWorkSpool(peerSiteId: string): void {
+	drainDurableWorkSpool(peerSiteId: string, reason: "reconnect" | "sweep" = "sweep"): void {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) return;
 
@@ -1588,16 +1608,28 @@ export class WsTransport {
 		// dead letters (expiry, consumer failures, older exhaustion) are untouched and
 		// stay a workspool-redrive decision. Runs before the drain so a reclassified row
 		// is picked up as pending in the same pass.
-		const redriven = reclassifyTransferExhaustedDeadLetters(
-			this.config.db,
-			peerSiteId,
-			WsTransport.DEAD_SOCKET_REDRIVE_WINDOW_MS,
-		);
-		if (redriven > 0) {
-			this.config.logger?.info(
-				"WsTransport reconnect auto-redrive: returned transfer-exhausted dead letters to pending",
-				{ peerSiteId, count: redriven },
+		//
+		// GATED TO GENUINE RECONNECTS (#253): the reclassify budget (reclassify_count,
+		// capped at three) is the auto-redrive's terminal deadline. The periodic sweep
+		// calls this drain on EVERY 30s tick for each live peer, so running the
+		// reclassify here would burn all three budgeted redrives in ~90s against a
+		// persistently-connected peer that never actually dropped — dead-lettering the
+		// row for good long before any operator could triage it. Only a fresh peer
+		// connection (ws-client handleOpen / ws-server open) is a genuine reconnect that
+		// proves the prior channel was dead; the sweep re-drives transferring/pending
+		// rows but must NOT reclassify dead letters.
+		if (reason === "reconnect") {
+			const redriven = reclassifyTransferExhaustedDeadLetters(
+				this.config.db,
+				peerSiteId,
+				WsTransport.DEAD_SOCKET_REDRIVE_WINDOW_MS,
 			);
+			if (redriven > 0) {
+				this.config.logger?.info(
+					"WsTransport reconnect auto-redrive: returned transfer-exhausted dead letters to pending",
+					{ peerSiteId, count: redriven },
+				);
+			}
 		}
 
 		// Recovery first: re-send rows already transferring whose next hop is this
@@ -1622,6 +1654,9 @@ export class WsTransport {
 		const all = [...transferring, ...begun];
 		if (all.length === 0) return;
 
+		let sentCount = 0;
+		let rolledBack = 0;
+
 		const batchSize = 100;
 		for (let i = 0; i < all.length; i += batchSize) {
 			const batch = all.slice(i, i + batchSize);
@@ -1641,11 +1676,26 @@ export class WsTransport {
 				for (const row of batch) {
 					if (begun.some((b) => b.id === row.id) && row.claim_token) {
 						rollbackUnsentDurableWorkTransfer(this.config.db, row.id, row.claim_token);
+						rolledBack++;
 					}
 				}
 				break;
 			}
+			sentCount += batch.length;
 		}
+
+		// #253 send-path observability: one info per completed drain that shipped work.
+		// Quiet when the spool was empty (early return above). `begun` counts pending
+		// rows this pass flipped to transferring; `sent` counts rows whose batch reached
+		// the socket; `rolledBack` counts begun rows re-pended after a refused batch.
+		this.config.logger?.info("WsTransport spool drain", {
+			peerSiteId,
+			reason,
+			begun: begun.length,
+			transferringResends: transferring.length,
+			sent: sentCount,
+			rolledBack,
+		});
 	}
 
 	/**
@@ -1789,9 +1839,16 @@ export class WsTransport {
 	 */
 	handleSpoolTransferAck(_sourceSiteId: string, payload: SpoolTransferAckPayload): void {
 		if (!payload.entries || payload.entries.length === 0) return;
+		let retired = 0;
 		for (const entry of payload.entries) {
 			if (!entry.token) continue;
-			acknowledgeDurableWorkTransfer(this.config.db, entry.id, entry.token);
+			if (acknowledgeDurableWorkTransfer(this.config.db, entry.id, entry.token)) retired++;
+		}
+		// #253 send-path observability: one info when acks actually retire rows, so an ack
+		// arriving is visible in the logs. Quiet when the fence rejected every echoed token
+		// (a stale ack for a re-begun generation) — nothing was retired, nothing to report.
+		if (retired > 0) {
+			this.config.logger?.info("WsTransport spool ack", { retired });
 		}
 	}
 

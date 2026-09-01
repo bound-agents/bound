@@ -219,7 +219,7 @@ export interface WsServerConfig {
 		drainRelayInbox: (spokesSiteId: string) => void;
 		handleSpoolTransfer: (sourceSiteId: string, payload: SpoolTransferPayload) => void;
 		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
-		drainDurableWorkSpool: (peerSiteId: string) => void;
+		drainDurableWorkSpool: (peerSiteId: string, reason?: "reconnect" | "sweep") => void;
 		/** Seed a newly-connected peer with a full DB snapshot. */
 		seedNewPeer: (peerSiteId: string) => void;
 		/** Called when a spoke acks the final snapshot. Triggers changelog drain. */
@@ -343,7 +343,7 @@ export function createWsHandlers(config: WsServerConfig): {
 
 				config.wsTransport.drainChangelog(ws.data.siteId);
 				config.wsTransport.drainRelayInbox(ws.data.siteId);
-				config.wsTransport.drainDurableWorkSpool(ws.data.siteId);
+				config.wsTransport.drainDurableWorkSpool(ws.data.siteId, "reconnect");
 			}
 		},
 

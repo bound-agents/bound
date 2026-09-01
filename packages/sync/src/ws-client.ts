@@ -55,7 +55,7 @@ export interface WsClientConfig {
 		/** Retire sender copies the hub acknowledged as durable (R-DW10). */
 		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
 		/** Reconnect drain of pending/transferring peer-targeted spool rows toward the hub. */
-		drainDurableWorkSpool: (peerSiteId: string) => void;
+		drainDurableWorkSpool: (peerSiteId: string, reason?: "reconnect" | "sweep") => void;
 		/** Apply a snapshot chunk to the local DB (spoke-side). */
 		applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) => number;
 		/** Apply a column chunk for sub-row seeding of oversized rows. */
@@ -473,7 +473,7 @@ export class WsSyncClient {
 			// Resume in-flight spool transfers (retained token) and begin pending
 			// peer-targeted ones (R-DW10) — the push path only covers rows written
 			// while connected; reconnect must drain what accumulated while dark.
-			this.config.wsTransport.drainDurableWorkSpool(this.config.hubSiteId);
+			this.config.wsTransport.drainDurableWorkSpool(this.config.hubSiteId, "reconnect");
 		}
 
 		if (this.config.wsTransport) {
