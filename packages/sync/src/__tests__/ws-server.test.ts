@@ -664,6 +664,79 @@ describe("createWsHandlers", async () => {
 			expect(meta.siteId).toBe("spoke-site");
 			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
 			expect(meta.frameBytes).toBe(frame.length);
+
+			// Canary #2: the decode-outcome line fires for the same frame, reports ok:true,
+			// names the decoded type, and confirms a transport is wired in scope.
+			const outcome = logs.find(
+				(e) => e.level === "info" && e.msg === "WsServer spool decode outcome",
+			);
+			expect(outcome).toBeDefined();
+			const outMeta = outcome?.meta as Record<string, unknown>;
+			expect(outMeta.siteId).toBe("spoke-site");
+			expect(outMeta.ok).toBe(true);
+			expect(outMeta.decodedType).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
+			expect(outMeta.error).toBeNull();
+			// No transport was configured on this handler, so hasWsTransport is false —
+			// which also means a valid spool frame with no transport does NOT hit the
+			// fell-off-chain warn (that branch lives inside the `if (config.wsTransport)`).
+			expect(outMeta.hasWsTransport).toBe(false);
+			expect(
+				logs.some(
+					(e) => e.level === "warn" && e.msg === "WsServer spool frame fell off dispatch chain",
+				),
+			).toBe(false);
+		});
+
+		it("a valid spool frame with a transport dispatches to its handler and does NOT fall off the chain (#253)", () => {
+			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
+			const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const logger = {
+				debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
+				info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
+				warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
+				error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+			};
+			let dispatchedType: number | null = null;
+			const wsTransport = {
+				handleSpoolTransferAck: () => {
+					dispatchedType = WsMessageType.SPOOL_TRANSFER_ACK;
+				},
+			} as any;
+			const handlers = createWsHandlers({
+				connectionManager: manager,
+				keyring,
+				keyManager,
+				logger: logger as any,
+				wsTransport,
+			});
+
+			const symmetricKey = new Uint8Array(32).fill(7);
+			const mockWs = {
+				data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
+				close: () => {},
+			} as any;
+
+			const frame = encodeFrame(
+				WsMessageType.SPOOL_TRANSFER_ACK,
+				{ entries: [{ id: "w-1", token: "tok-1" }] },
+				symmetricKey,
+			);
+			handlers.websocket.message?.(mockWs, frame);
+
+			// The frame reached its dispatch branch — the type IS frame[0], so a
+			// spool-family byte always decodes to a matching branch; the fell-off-chain
+			// else-if is unreachable via a well-formed encodeFrame frame and stays quiet.
+			expect(dispatchedType).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
+			const outcome = logs.find(
+				(e) => e.level === "info" && e.msg === "WsServer spool decode outcome",
+			);
+			expect((outcome?.meta as Record<string, unknown>).hasWsTransport).toBe(true);
+			expect(
+				logs.some(
+					(e) => e.level === "warn" && e.msg === "WsServer spool frame fell off dispatch chain",
+				),
+			).toBe(false);
 		});
 
 		it("decode-fail warn carries frameTypeByte and frameSize (#253)", () => {

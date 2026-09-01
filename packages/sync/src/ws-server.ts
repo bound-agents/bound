@@ -387,6 +387,22 @@ export function createWsHandlers(config: WsServerConfig): {
 
 			// Decode frame
 			const decodeResult = decodeFrame(frame, ws.data.symmetricKey);
+
+			// #253 spool-wedge canary #2: for spool-family frames only, one info naming
+			// the decode outcome BEFORE the !ok gate below — proves whether decode
+			// succeeds, what type it yields, and whether a transport is wired to receive
+			// it. Silence of this line for a received spool frame means decodeFrame threw
+			// or returned without reaching here; a decoded type that matches no dispatch
+			// branch is caught by the fell-off-chain warn below.
+			if (isSpoolFrameByte(frame[0])) {
+				logger?.info("WsServer spool decode outcome", {
+					siteId: ws.data.siteId,
+					ok: decodeResult.ok,
+					decodedType: decodeResult.ok ? decodeResult.value.type : null,
+					error: decodeResult.ok ? null : decodeResult.error,
+					hasWsTransport: Boolean(config.wsTransport),
+				});
+			}
 			if (!decodeResult.ok) {
 				logger?.warn("WS frame decode failed", {
 					siteId: ws.data.siteId,
@@ -441,6 +457,16 @@ export function createWsHandlers(config: WsServerConfig): {
 							ws.data.siteId,
 							decodedFrame.payload as SpoolTransferAckPayload,
 						);
+					} else if (isSpoolFrameByte(frame[0])) {
+						// #253 spool-wedge canary #2: a spool-family raw frame whose decoded
+						// type matched NO branch above. Narrowly scoped to spool bytes so the
+						// dispatch chain stays behavior-identical for every other frame type
+						// (unknown non-spool types still fall through with no side effect).
+						logger?.warn("WsServer spool frame fell off dispatch chain", {
+							siteId: ws.data.siteId,
+							decodedType: decodedFrame.type,
+							frameTypeByte: frame[0],
+						});
 					}
 				} catch (error) {
 					logger?.error("WS transport frame dispatch failed", {

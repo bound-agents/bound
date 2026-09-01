@@ -1786,15 +1786,16 @@ export class WsTransport {
 	 * final destination when that peer is connected and advertising.
 	 */
 	handleSpoolTransfer(sourceSiteId: string, payload: SpoolTransferPayload): void {
-		if (!payload.entries || payload.entries.length === 0) return;
-
-		// Receive-path observability: one line per batch so a wedge is visible from
-		// logs alone (before this the receive side was entirely silent, which is why
-		// every incident layer needed a live deploy to diagnose).
+		// Receive-path observability: one line per batch BEFORE the empty-entries
+		// guard so an empty batch names itself (entryCount 0) instead of returning
+		// silently — a wedge is then visible from logs alone (before this the receive
+		// side was entirely silent, which is why every incident layer needed a live
+		// deploy to diagnose).
 		this.config.logger?.info("WsTransport spool received", {
 			sourceSiteId,
-			entryCount: payload.entries.length,
+			entryCount: payload.entries?.length ?? 0,
 		});
+		if (!payload.entries || payload.entries.length === 0) return;
 
 		const acked: Array<{ id: string; token: string }> = [];
 		for (const entry of payload.entries) {
@@ -1894,7 +1895,15 @@ export class WsTransport {
 	 * defeating the fence end-to-end.
 	 */
 	handleSpoolTransferAck(_sourceSiteId: string, payload: SpoolTransferAckPayload): void {
-		if (!payload.entries || payload.entries.length === 0) return;
+		// #253 send-path observability: name an empty ack batch too, so a batch that
+		// arrives and retires nothing because it carried no entries is visible instead
+		// of returning silently. Log then return — the guard's behavior is unchanged.
+		if (!payload.entries || payload.entries.length === 0) {
+			this.config.logger?.debug("WsTransport spool ack received (empty)", {
+				sourceSiteId: _sourceSiteId,
+			});
+			return;
+		}
 		let retired = 0;
 		for (const entry of payload.entries) {
 			if (!entry.token) continue;
