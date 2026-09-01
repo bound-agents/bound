@@ -2,6 +2,7 @@ import type { Database, Statement } from "bun:sqlite";
 import {
 	DURABLE_WORK_MAX_ATTEMPTS,
 	type DurableWorkRow,
+	InvalidDurableWorkRowError,
 	LOCAL_WORK_TARGET,
 	acknowledgeDurableWorkTransfer,
 	beginDurableWorkTransfer,
@@ -1775,22 +1776,65 @@ export class WsTransport {
 	handleSpoolTransfer(sourceSiteId: string, payload: SpoolTransferPayload): void {
 		if (!payload.entries || payload.entries.length === 0) return;
 
+		// Receive-path observability: one line per batch so a wedge is visible from
+		// logs alone (before this the receive side was entirely silent, which is why
+		// every incident layer needed a live deploy to diagnose).
+		this.config.logger?.info("WsTransport spool received", {
+			sourceSiteId,
+			entryCount: payload.entries.length,
+		});
+
 		const acked: Array<{ id: string; token: string }> = [];
 		for (const entry of payload.entries) {
 			// INSERT OR IGNORE: a new row returns true; a duplicate under the fence
 			// returns false. Both mean the id is now durable here, so both ack.
-			insertDurableWork(this.config.db, {
-				id: entry.id,
-				target_site_id: entry.target_site_id,
-				kind: entry.kind,
-				payload: JSON.stringify(entry.payload),
-				idempotency_key: entry.idempotency_key,
-				expires_at: entry.expires_at ?? null,
-				ref_id: entry.ref_id ?? null,
-				source_site: entry.source_site ?? null,
-				received_at: entry.received_at ?? null,
-				stream_id: entry.stream_id ?? null,
-			});
+			//
+			// A validation failure here (InvalidDurableWorkRowError) is malformed peer
+			// INPUT — a falsy identity field, or a payload that decoded to undefined /
+			// non-JSON on the wire. That is the peer's fault, not a local storage or
+			// invariant breach, so it must NOT escape to the ws-server dispatch catch
+			// that closes on local dispatch failure (ws.close(1011)) — closing the
+			// connection on a poison entry aborts the batch, drops every sibling ack,
+			// and the spoke re-sends the identical batch forever. So we guard per entry:
+			// skip the poison, DON'T ack it, and continue. With no ack the sender's own
+			// retry-to-cap / transfer-exhaustion dead-letter machinery gives a genuinely
+			// malformed row the correct disposition, while the good siblings insert and
+			// ack normally.
+			//
+			// EVERY OTHER error is a genuine LOCAL fault — the insert failed past
+			// validation inside the SQLite write itself (disk full, corruption, schema
+			// drift, closed database, constraint failure). Those are local storage /
+			// invariant failures and MUST propagate to the dispatch catch, whose
+			// ws.close(1011) is the correct policy for local faults: a hub with a broken
+			// DB should sever the connection, not warn once per entry per retry forever
+			// while the sender keeps re-sending.
+			try {
+				insertDurableWork(this.config.db, {
+					id: entry.id,
+					target_site_id: entry.target_site_id,
+					kind: entry.kind,
+					payload: JSON.stringify(entry.payload),
+					idempotency_key: entry.idempotency_key,
+					expires_at: entry.expires_at ?? null,
+					ref_id: entry.ref_id ?? null,
+					source_site: entry.source_site ?? null,
+					received_at: entry.received_at ?? null,
+					stream_id: entry.stream_id ?? null,
+				});
+			} catch (error) {
+				if (!(error instanceof InvalidDurableWorkRowError)) {
+					// Local storage / invariant fault — let it escape to the ws-server
+					// dispatch catch that closes on local dispatch failure.
+					throw error;
+				}
+				this.config.logger?.warn("WsTransport spool insert failed", {
+					sourceSiteId,
+					id: entry.id,
+					kind: entry.kind,
+					error_class: error.constructor.name,
+				});
+				continue;
+			}
 			// Echo the sender's transfer-generation token verbatim so the sender
 			// retires EXACTLY the generation it shipped (see handleSpoolTransferAck).
 			// The token is opaque to this receiver — it never inspects or trusts it,

@@ -1221,4 +1221,181 @@ describe("spool transfer (4D-B)", () => {
 			expect(acks[0].context).toMatchObject({ retired: 1 });
 		});
 	});
+
+	describe("(m) poison-entry resilience: one malformed entry never blocks siblings or the connection (#253)", () => {
+		let sender: Node;
+		let receiver: Node;
+
+		beforeEach(() => {
+			sender = createNode("sender");
+			receiver = createNode("receiver");
+		});
+		afterEach(() => {
+			sender.stop();
+			receiver.stop();
+		});
+
+		/** Build a SPOOL_TRANSFER entry with sane defaults, overridable per field. */
+		function entry(
+			over: Partial<SpoolTransferPayload["entries"][number]> & { id: string },
+		): SpoolTransferPayload["entries"][number] {
+			return {
+				id: over.id,
+				target_site_id: over.target_site_id ?? "receiver",
+				source_site: over.source_site ?? "sender",
+				kind: over.kind ?? "tool_call",
+				payload: "payload" in over ? over.payload : { hello: over.id },
+				idempotency_key: over.idempotency_key ?? `key-${over.id}`,
+				ref_id: over.ref_id ?? null,
+				stream_id: over.stream_id ?? null,
+				expires_at: over.expires_at ?? null,
+				received_at: over.received_at ?? null,
+				token: over.token ?? `token-${over.id}`,
+			};
+		}
+
+		function warns(node: Node, message: string): LogRecord[] {
+			return node.logs.filter((l) => l.level === "warn" && l.message === message);
+		}
+		function infoLogs(node: Node, message: string): LogRecord[] {
+			return node.logs.filter((l) => l.level === "info" && l.message === message);
+		}
+
+		it("inserts+acks the valid siblings, skips the poison entry, warns, and never throws", () => {
+			connect(receiver, "sender");
+			// A batch of N valid entries with one malformed entry (payload undefined →
+			// JSON.stringify(undefined) === undefined → validateDurableWork throws)
+			// wedged in the middle, so we prove the loop does not abort at the poison.
+			const payload: SpoolTransferPayload = {
+				entries: [
+					entry({ id: "good-1" }),
+					entry({ id: "good-2" }),
+					entry({ id: "poison", payload: undefined }),
+					entry({ id: "good-3" }),
+					entry({ id: "good-4" }),
+				],
+			};
+
+			// The connection-killing ws-server catch would fire if this threw.
+			expect(() =>
+				act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload)),
+			).not.toThrow();
+
+			// All four good entries are durable on the receiver.
+			for (const id of ["good-1", "good-2", "good-3", "good-4"]) {
+				expect(rowState(receiver.db, id)).not.toBeNull();
+			}
+			// The poison entry is NOT inserted.
+			expect(rowState(receiver.db, "poison")).toBeNull();
+
+			// The ack lists exactly the four good ids — the poison id is absent, so the
+			// sender's normal retry/dead-letter machinery handles it.
+			const ack = payloadOf(
+				decodeSpoolFrames(receiver).find((f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK),
+			) as SpoolTransferAckPayload;
+			expect(ack.entries.map((e) => e.id).sort()).toEqual(["good-1", "good-2", "good-3", "good-4"]);
+			expect(ack.entries.some((e) => e.id === "poison")).toBe(false);
+
+			// Exactly one structured warn for the poison entry, with the right context.
+			const insertWarns = warns(receiver, "WsTransport spool insert failed");
+			expect(insertWarns).toHaveLength(1);
+			expect(insertWarns[0].context).toMatchObject({
+				sourceSiteId: "sender",
+				id: "poison",
+				kind: "tool_call",
+				error_class: "InvalidDurableWorkRowError",
+			});
+		});
+
+		it("skips an entry with an empty idempotency_key too (any validation failure is a poison)", () => {
+			connect(receiver, "sender");
+			const payload: SpoolTransferPayload = {
+				entries: [entry({ id: "ok" }), entry({ id: "bad", idempotency_key: "" })],
+			};
+
+			expect(() =>
+				act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload)),
+			).not.toThrow();
+
+			expect(rowState(receiver.db, "ok")).not.toBeNull();
+			expect(rowState(receiver.db, "bad")).toBeNull();
+			const ack = payloadOf(
+				decodeSpoolFrames(receiver).find((f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK),
+			) as SpoolTransferAckPayload;
+			expect(ack.entries.map((e) => e.id)).toEqual(["ok"]);
+			expect(warns(receiver, "WsTransport spool insert failed")).toHaveLength(1);
+		});
+
+		it("an all-valid batch still inserts and acks every entry (no regression)", () => {
+			connect(receiver, "sender");
+			const payload: SpoolTransferPayload = {
+				entries: [entry({ id: "a" }), entry({ id: "b" }), entry({ id: "c" })],
+			};
+
+			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload));
+
+			for (const id of ["a", "b", "c"]) {
+				expect(rowState(receiver.db, id)).not.toBeNull();
+			}
+			const ack = payloadOf(
+				decodeSpoolFrames(receiver).find((f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK),
+			) as SpoolTransferAckPayload;
+			expect(ack.entries.map((e) => e.id).sort()).toEqual(["a", "b", "c"]);
+			expect(warns(receiver, "WsTransport spool insert failed")).toHaveLength(0);
+		});
+
+		it("logs one received-info line with the batch entry count at the top of the handler", () => {
+			connect(receiver, "sender");
+			const payload: SpoolTransferPayload = {
+				entries: [entry({ id: "r1" }), entry({ id: "r2" })],
+			};
+
+			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload));
+
+			const received = infoLogs(receiver, "WsTransport spool received");
+			expect(received).toHaveLength(1);
+			expect(received[0].context).toMatchObject({ sourceSiteId: "sender", entryCount: 2 });
+		});
+
+		it("stays silent on an empty batch (early return, no received-info log)", () => {
+			connect(receiver, "sender");
+			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", { entries: [] }));
+			expect(infoLogs(receiver, "WsTransport spool received")).toHaveLength(0);
+		});
+
+		it("RETHROWS a genuine local storage failure so the ws-server dispatch catch closes the connection", () => {
+			connect(receiver, "sender");
+			// Induce a real SQLite fault inside the insert (not a validation failure):
+			// drop the durable_work table so the INSERT hits "no such table". This is a
+			// local storage/invariant breach — corruption, drift, disk failure all land
+			// here — and MUST escape handleSpoolTransfer so the dispatch catch that
+			// closes on local dispatch failure (ws.close(1011)) fires, rather than being
+			// swallowed as a peer-input poison. The valid entries are NOT a poison.
+			receiver.db.run("DROP TABLE durable_work");
+			const payload: SpoolTransferPayload = {
+				entries: [entry({ id: "local-fault" })],
+			};
+
+			expect(() =>
+				act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload)),
+			).toThrow();
+			// The escaping error is NOT classified as a recoverable poison, so no
+			// per-entry skip-warn is emitted for it.
+			expect(warns(receiver, "WsTransport spool insert failed")).toHaveLength(0);
+		});
+
+		it("rethrows the local fault even when a valid sibling precedes it in the batch", () => {
+			connect(receiver, "sender");
+			receiver.db.run("DROP TABLE durable_work");
+			// Both entries are structurally valid; the first insert already fails on the
+			// missing table, and that local fault must escape immediately — the loop must
+			// not swallow-and-continue past a storage failure.
+			const payload: SpoolTransferPayload = {
+				entries: [entry({ id: "s1" }), entry({ id: "s2" })],
+			};
+			expect(() =>
+				act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload)),
+			).toThrow();
+		});
+	});
 });
