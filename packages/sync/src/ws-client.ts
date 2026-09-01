@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { randomBytes } from "node:crypto";
 import type { Logger } from "@bound/shared";
 import type { KeyManager } from "./key-manager.js";
 import { incrementSyncErrors, resetSyncErrors } from "./peer-cursor.js";
@@ -16,7 +17,7 @@ import type {
 	SpoolTransferAckPayload,
 	SpoolTransferPayload,
 } from "./ws-frames.js";
-import { WsMessageType, decodeFrame, encodeFrame } from "./ws-frames.js";
+import { WsMessageType, decodeFrame, encodeFrame, isSpoolFrameByte } from "./ws-frames.js";
 
 /**
  * Dead-but-OPEN socket detector cadence (#253, third leg). Aligned with the 30s
@@ -42,6 +43,8 @@ export interface WsClientConfig {
 			peerSiteId: string,
 			sendFrame: (frame: Uint8Array) => boolean,
 			symmetricKey: Uint8Array,
+			ping?: () => void,
+			ownerId?: string,
 		) => void;
 		removePeer: (peerSiteId: string) => void;
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
@@ -108,6 +111,17 @@ export class WsSyncClient {
 	private hasOpenedOnce = false;
 	private connectionHealthy = false;
 	private stopped = false;
+
+	/** Stable per-WsSyncClient identity (#253 spool-wedge canary). 8 hex chars minted
+	 *  once at construction so every log this instance emits can be tied back to a
+	 *  single object — distinguishing frames written into THIS live socket from ones
+	 *  written into a stale closure bound to a superseded instance. Passed as the
+	 *  peer's ownerId at addPeer time so "WsTransport spool send" names the instance. */
+	readonly instanceId: string = randomBytes(4).toString("hex");
+	/** Incremented at the top of every handleOpen (#253). A given instanceId can open
+	 *  more than one socket over its lifetime (reconnects); the generation disambiguates
+	 *  which physical socket a spool write entered. */
+	private socketGeneration = 0;
 
 	/** Snapshot seeding state (spoke-side): tracks the current snapshot_hlc. */
 	private snapshotHlc: string | null = null;
@@ -259,7 +273,28 @@ export class WsSyncClient {
 			// OPEN per readyState but dead over TCP is caught out-of-band by
 			// checkDeadButOpenSocket on its own dead-socket cadence (buffer non-decreasing
 			// across two ticks → force-close → reconnect → re-drain), not per frame here.
+			// #253 spool-wedge canary: one info per spool-family write (SPOOL_TRANSFER /
+			// SPOOL_TRANSFER_ACK, ~2/min at production cadence — no spam). Binds the frame
+			// to THIS instance's live socket (instanceId + socketGeneration) and captures
+			// bufferedAmount across the send so a frame parked in the buffer vs. flushed is
+			// visible. Non-spool frames (changelog, high-volume) are NOT logged here — the
+			// handleOpen instanceId log plus changelog's working ACKs already bind the live
+			// socket. frame[0] is the PLAINTEXT type byte written at encodeFrame offset 0.
+			const isSpool = isSpoolFrameByte(frame[0]);
+			const bufferedBefore = isSpool ? this.ws.bufferedAmount : 0;
 			this.ws.send(buffer);
+			if (isSpool) {
+				this.config.logger?.info("WsSyncClient spool frame write", {
+					instanceId: this.instanceId,
+					socketGeneration: this.socketGeneration,
+					peerSiteId: this.config.hubSiteId,
+					frameTypeByte: frame[0],
+					frameBytes: frame.length,
+					readyState: this.ws.readyState,
+					bufferedBefore,
+					bufferedAfter: this.ws.bufferedAmount,
+				});
+			}
 			return true;
 		} catch (error) {
 			this.config.logger?.error("WsSyncClient: send() failed", {
@@ -448,7 +483,12 @@ export class WsSyncClient {
 	}
 
 	private handleOpen(): void {
-		this.config.logger?.debug("WsSyncClient: connection opened");
+		this.socketGeneration += 1;
+		this.config.logger?.info("WsSyncClient socket open", {
+			instanceId: this.instanceId,
+			socketGeneration: this.socketGeneration,
+			peerSiteId: this.config.hubSiteId,
+		});
 
 		// The handshake completed — disarm the deadline before it can tear down
 		// a socket that is now healthy.
@@ -467,7 +507,13 @@ export class WsSyncClient {
 				return this.send(frame);
 			};
 
-			this.config.wsTransport.addPeer(this.config.hubSiteId, sendFrame, this.symmetricKey);
+			this.config.wsTransport.addPeer(
+				this.config.hubSiteId,
+				sendFrame,
+				this.symmetricKey,
+				undefined,
+				this.instanceId,
+			);
 			this.config.wsTransport.drainChangelog(this.config.hubSiteId);
 			this.config.wsTransport.drainRelayOutbox(this.config.hubSiteId);
 			// Resume in-flight spool transfers (retained token) and begin pending
@@ -549,6 +595,8 @@ export class WsSyncClient {
 				if (!decodeResult.ok) {
 					this.config.logger?.warn("WsSyncClient: frame decode failed", {
 						error: decodeResult.error,
+						frameTypeByte: data[0],
+						frameSize: data.length,
 					});
 					return;
 				}

@@ -571,6 +571,160 @@ describe("WsSyncClient", () => {
 		});
 	});
 
+	describe("spool-wedge canary instrumentation (#253)", () => {
+		// Logging-only #253 canaries: the spoke's send path must name which client
+		// instance's live socket a spool frame entered, so a shipped-but-vanished frame
+		// can be attributed to a stale/dead socket object vs. a wire drop from the logs
+		// alone. These assert the identity fields are present, not any routing change.
+		interface FakeWs {
+			readyState: number;
+			bufferedAmount: number;
+			sent: Buffer[];
+			send: (b: Buffer) => void;
+		}
+		function fakeWs(): FakeWs {
+			const sent: Buffer[] = [];
+			return {
+				readyState: WebSocket.OPEN,
+				bufferedAmount: 0,
+				sent,
+				send(b: Buffer) {
+					sent.push(b);
+				},
+			};
+		}
+		function captureLogger(entries: Array<{ level: string; msg: string; meta?: unknown }>): Logger {
+			const push = (level: string) => (msg: string, meta?: unknown) =>
+				entries.push({ level, msg, meta });
+			return {
+				debug: push("debug"),
+				info: push("info"),
+				warn: push("warn"),
+				error: push("error"),
+			} as unknown as Logger;
+		}
+
+		it("logs one 'spool frame write' with instance identity when a spool-family frame is sent", () => {
+			const entries: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				logger: captureLogger(entries),
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				ws: FakeWs | null;
+				socketGeneration: number;
+				send(frame: Uint8Array): boolean;
+			};
+			internal.ws = fakeWs();
+			internal.socketGeneration = 3;
+
+			// SPOOL_TRANSFER (0x40) as the leading plaintext type byte.
+			const spoolFrame = new Uint8Array([WsMessageType.SPOOL_TRANSFER, 9, 9, 9]);
+			expect(internal.send(spoolFrame)).toBe(true);
+
+			const writeLogs = entries.filter(
+				(e) => e.level === "info" && e.msg === "WsSyncClient spool frame write",
+			);
+			expect(writeLogs).toHaveLength(1);
+			const meta = writeLogs[0]?.meta as Record<string, unknown>;
+			expect(meta.instanceId).toBe(client.instanceId);
+			expect(client.instanceId).toMatch(/^[0-9a-f]{8}$/);
+			expect(meta.socketGeneration).toBe(3);
+			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER);
+			expect(meta.frameBytes).toBe(4);
+			expect(meta.readyState).toBe(WebSocket.OPEN);
+			expect(meta).toHaveProperty("bufferedBefore");
+			expect(meta).toHaveProperty("bufferedAfter");
+		});
+
+		it("does NOT log a per-frame write line for non-spool (changelog) frames", () => {
+			const entries: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				logger: captureLogger(entries),
+			});
+			clients.push(client);
+			const internal = client as unknown as { ws: FakeWs | null; send(frame: Uint8Array): boolean };
+			internal.ws = fakeWs();
+
+			// CHANGELOG_PUSH is not spool-family — its type byte differs from 0x40/0x41.
+			const changelogFrame = new Uint8Array([WsMessageType.CHANGELOG_PUSH, 1, 2, 3]);
+			expect(internal.send(changelogFrame)).toBe(true);
+
+			expect(entries.filter((e) => e.msg === "WsSyncClient spool frame write")).toHaveLength(0);
+		});
+
+		it("decode-fail warn carries frameTypeByte and frameSize", () => {
+			const entries: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				logger: captureLogger(entries),
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				symmetricKey: Uint8Array | null;
+				handleMessage: (event: MessageEvent) => void;
+			};
+			internal.symmetricKey = new Uint8Array(32).fill(9);
+
+			// A spool-typed frame whose body is undecryptable garbage (< min size / bad tag)
+			// with the plaintext type byte intact at offset 0.
+			const garbage = new Uint8Array(60).fill(0);
+			garbage[0] = WsMessageType.SPOOL_TRANSFER;
+			internal.handleMessage({ data: garbage } as unknown as MessageEvent);
+
+			const warn = entries.find(
+				(e) => e.level === "warn" && e.msg === "WsSyncClient: frame decode failed",
+			);
+			expect(warn).toBeDefined();
+			const meta = warn?.meta as Record<string, unknown>;
+			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER);
+			expect(meta.frameSize).toBe(60);
+		});
+
+		it("handleOpen logs a 'socket open' line with instanceId and an incremented generation", () => {
+			const entries: Array<{ level: string; msg: string; meta?: unknown }> = [];
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				logger: captureLogger(entries),
+			});
+			clients.push(client);
+			const internal = client as unknown as {
+				symmetricKey: Uint8Array | null;
+				handleOpen: () => void;
+			};
+			// No wsTransport wired — handleOpen still runs its identity log and timers.
+			internal.symmetricKey = new Uint8Array(32).fill(9);
+			internal.handleOpen();
+
+			const openLog = entries.find(
+				(e) => e.level === "info" && e.msg === "WsSyncClient socket open",
+			);
+			expect(openLog).toBeDefined();
+			const meta = openLog?.meta as Record<string, unknown>;
+			expect(meta.instanceId).toBe(client.instanceId);
+			expect(meta.socketGeneration).toBe(1);
+			expect(meta.peerSiteId).toBe(hubSiteId);
+		});
+	});
+
 	describe("backpressure latch self-heal (#253 spool-transfer wedge)", () => {
 		// Live incident: one backpressure blip on the spoke ws-client latched
 		// sendState="pressured" permanently. The sendFrame closure short-circuited on
