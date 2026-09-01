@@ -87,12 +87,19 @@ function rowState(db: Database, id: string): DurableWorkRow | null {
  * frames its transport tries to send so the harness can deliver them by hand,
  * giving deterministic control over ack drops and reconnect ordering.
  */
+interface LogRecord {
+	level: "debug" | "info" | "warn" | "error";
+	message: string;
+	context?: Record<string, unknown>;
+}
+
 interface Node {
 	siteId: string;
 	db: Database;
 	transport: WsTransport;
 	bus: TypedEventEmitter;
 	sent: Uint8Array[];
+	logs: LogRecord[];
 	stop: () => void;
 }
 
@@ -100,7 +107,18 @@ function createNode(siteId: string, isHub = false): Node {
 	const db = createDb();
 	const bus = new TypedEventEmitter();
 	const sent: Uint8Array[] = [];
-	const transport = new WsTransport({ db, siteId, eventBus: bus, isHub });
+	const logs: LogRecord[] = [];
+	const record =
+		(level: LogRecord["level"]) => (message: string, context?: Record<string, unknown>) =>
+			logs.push({ level, message, context });
+	const logger = {
+		debug: record("debug"),
+		info: record("info"),
+		warn: record("warn"),
+		error: record("error"),
+		isLevelEnabled: () => true,
+	};
+	const transport = new WsTransport({ db, siteId, eventBus: bus, isHub, logger });
 	// The durable_work:written push path is driven per-insert via seedPendingRow,
 	// which points the module-level bus at the target node just for that insert.
 	transport.start();
@@ -110,6 +128,7 @@ function createNode(siteId: string, isHub = false): Node {
 		transport,
 		bus,
 		sent,
+		logs,
 		stop: () => {
 			transport.stop();
 			db.close();
@@ -1009,7 +1028,7 @@ describe("spool transfer (4D-B)", () => {
 			// recovery drain, so the reclassified row is picked up as pending in the same
 			// pass and shipped.
 			connect(sender, "receiver");
-			sender.transport.drainDurableWorkSpool("receiver");
+			sender.transport.drainDurableWorkSpool("receiver", "reconnect");
 
 			// Exactly the one eligible row was recovered — reset to a fresh generation and
 			// then begun as a transfer on the live channel.
@@ -1025,6 +1044,181 @@ describe("spool transfer (4D-B)", () => {
 				.filter((f) => f.type === WsMessageType.SPOOL_TRANSFER)
 				.flatMap((f) => (f.payload as SpoolTransferPayload).entries.map((e) => e.id));
 			expect(transferred).toEqual(["recent-peer"]);
+		});
+	});
+
+	describe("(k) reclassify is gated to genuine reconnects, not the periodic sweep (#253)", () => {
+		let sender: Node;
+
+		const TRANSFER_EXHAUSTED = "transfer retries exhausted (no SPOOL_TRANSFER_ACK)";
+
+		beforeEach(() => {
+			sender = createNode("sender");
+		});
+		afterEach(() => {
+			sender.stop();
+		});
+
+		// Seed a dead letter that WOULD qualify for reconnect auto-redrive: recent,
+		// this peer, transfer-exhausted last_error. reclassify_count starts at 0.
+		function seedQualifyingDeadLetter(id: string, target: string): void {
+			const recent = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+			seedPendingRow(sender, { id, target_site_id: target }, false);
+			sender.db.run(
+				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+				 last_error = ?, dead_lettered_at = ?, attempt_count = 3, reclassify_count = 0 WHERE id = ?`,
+				[TRANSFER_EXHAUSTED, recent, id],
+			);
+		}
+
+		it("the periodic sweep does NOT reclassify a qualifying dead letter (persistently-connected peer)", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+			seedQualifyingDeadLetter("wedged-1", "receiver");
+
+			// A stale transferring row so the sweep actually reaches the per-peer drain
+			// (drainDurableWorkSpool runs only when the reclaim freed something). This is
+			// where the reclassify used to fire on every 30s tick against a live peer.
+			seedPendingRow(sender, { id: "stale-tx", target_site_id: "receiver" }, false);
+			sender.db.run(
+				"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'stale-tx'",
+				[new Date(Date.now() - 120_000).toISOString()],
+			);
+
+			const before = rowState(sender.db, "wedged-1");
+			expect(before?.claim_state).toBe("dead_letter");
+			expect(before?.reclassify_count).toBe(0);
+
+			// A sweep tick against the already-connected peer. This is NOT a reconnect —
+			// it fires every 30s and must not burn the reclassify budget on a live peer.
+			sender.transport.sweepAndRedriveStaleDurableWork();
+
+			const after = rowState(sender.db, "wedged-1");
+			expect(after?.claim_state).toBe("dead_letter");
+			expect(after?.reclassify_count).toBe(0);
+		});
+
+		it("a genuine reconnect DOES reclassify the same qualifying dead letter", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			seedQualifyingDeadLetter("wedged-2", "receiver");
+
+			// Reconnect path: the peer (re)connects and the drain runs with reconnect intent.
+			connect(sender, "receiver");
+			sender.transport.drainDurableWorkSpool("receiver", "reconnect");
+
+			// Reclassified to pending, then re-begun as a transfer on the live channel.
+			expect(rowState(sender.db, "wedged-2")?.claim_state).toBe("transferring");
+		});
+	});
+
+	describe("(l) spool send-path observability (#253)", () => {
+		let sender: Node;
+		let receiver: Node;
+
+		beforeEach(() => {
+			sender = createNode("sender");
+			receiver = createNode("receiver");
+		});
+		afterEach(() => {
+			sender.stop();
+			receiver.stop();
+		});
+
+		function infoLogs(node: Node, message: string): LogRecord[] {
+			return node.logs.filter((l) => l.level === "info" && l.message === message);
+		}
+
+		it("logs one send attempt per batch with peer, entry count, frame bytes, and send result", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+			seedPendingRow(sender, { id: "obs-1", target_site_id: "receiver", source_site: "sender" });
+
+			const sends = infoLogs(sender, "WsTransport spool send");
+			expect(sends).toHaveLength(1);
+			expect(sends[0].context).toMatchObject({
+				peerSiteId: "receiver",
+				entryCount: 1,
+				sent: true,
+			});
+			expect(typeof sends[0].context?.frameBytes).toBe("number");
+			expect(sends[0].context?.frameBytes as number).toBeGreaterThan(0);
+		});
+
+		it("logs one drain summary per completed drain when work was in flight", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+			seedPendingRow(
+				sender,
+				{ id: "obs-drain-1", target_site_id: "receiver", source_site: "sender" },
+				false,
+			);
+			sender.logs.length = 0;
+
+			sender.transport.drainDurableWorkSpool("receiver", "reconnect");
+
+			const drains = infoLogs(sender, "WsTransport spool drain");
+			expect(drains).toHaveLength(1);
+			expect(drains[0].context).toMatchObject({
+				peerSiteId: "receiver",
+				begun: 1,
+				sent: 1,
+				rolledBack: 0,
+			});
+		});
+
+		it("stays quiet when there is nothing to send", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+			sender.logs.length = 0;
+
+			// Drain with an empty spool: no send, no drain summary.
+			sender.transport.drainDurableWorkSpool("receiver", "reconnect");
+
+			expect(infoLogs(sender, "WsTransport spool send")).toHaveLength(0);
+			expect(infoLogs(sender, "WsTransport spool drain")).toHaveLength(0);
+		});
+
+		it("logs a warn with peer when a send is refused (backpressured channel)", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connectRefusing(sender, "receiver");
+			seedPendingRow(sender, {
+				id: "obs-refused",
+				target_site_id: "receiver",
+				source_site: "sender",
+			});
+
+			const warns = sender.logs.filter(
+				(l) => l.level === "warn" && l.message === "WsTransport spool send refused",
+			);
+			expect(warns).toHaveLength(1);
+			expect(warns[0].context).toMatchObject({ peerSiteId: "receiver" });
+		});
+
+		it("logs one ack summary when acks retire rows", () => {
+			setPeerCapability(sender.db, "receiver", true);
+			connect(sender, "receiver");
+			connect(receiver, "sender");
+			seedPendingRow(sender, {
+				id: "obs-ack-1",
+				target_site_id: "receiver",
+				source_site: "sender",
+			});
+
+			// Receiver durably accepts and emits the ack.
+			const transfer = payloadOf(
+				decodeSpoolFrames(sender).find((f) => f.type === WsMessageType.SPOOL_TRANSFER),
+			) as SpoolTransferPayload;
+			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", transfer));
+			const ack = payloadOf(
+				decodeSpoolFrames(receiver).find((f) => f.type === WsMessageType.SPOOL_TRANSFER_ACK),
+			) as SpoolTransferAckPayload;
+			sender.logs.length = 0;
+
+			sender.transport.handleSpoolTransferAck("receiver", ack);
+
+			const acks = infoLogs(sender, "WsTransport spool ack");
+			expect(acks).toHaveLength(1);
+			expect(acks[0].context).toMatchObject({ retired: 1 });
 		});
 	});
 });
