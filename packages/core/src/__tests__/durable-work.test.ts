@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
 	InvalidDurableWorkRowError,
+	TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET,
 	acknowledgeDurableWork,
 	acknowledgeDurableWorkTransfer,
 	beginDurableWorkTransfer,
@@ -13,6 +14,7 @@ import {
 	pruneExpiredDeadLetters,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
+	reclassifyTransferExhaustedDeadLetters,
 	resetProcessingDurableWork,
 	resetTransferringLocalDurableWork,
 	sweepStaleTransferringDurableWork,
@@ -214,6 +216,83 @@ describe("durable_work", () => {
 			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:01:00.000Z"),
 		).toBe(1);
 		expect(rowState(db, "forever")?.claim_state).toBe("pending");
+	});
+
+	it("reclassifies exactly the recent transfer-exhausted dead letters targeted at the reconnected peer", () => {
+		// #253 blocking objection: the 30s dead-socket detector bounds the phantom-
+		// success window but cannot provably beat the sweep's 3-attempt dead-letter cap
+		// under independent timer phases. A row that dead-lettered via that race is
+		// recoverable on reconnect: reclassifyTransferExhaustedDeadLetters returns rows
+		// that (a) dead-lettered with the transfer-exhaustion last_error, (b) target the
+		// reconnected peer, and (c) dead-lettered inside a bounded recent window — back
+		// to pending with attempt_count reset. It must touch NOTHING else.
+		const TRANSFER_EXHAUSTED = "transfer retries exhausted (no SPOOL_TRANSFER_ACK)";
+		const now = "2026-01-01T00:20:00.000Z";
+		const recent = "2026-01-01T00:15:00.000Z"; // 5 min ago — inside the 15-min window
+		const old = "2026-01-01T00:00:00.000Z"; // 20 min ago — outside the window
+		const seed = (
+			id: string,
+			target: string,
+			lastError: string,
+			deadLetteredAt: string,
+			attempt: number,
+			reclassifyCount = 0,
+		) => {
+			insertDurableWork(db, row(id, target, "2027-01-01T00:00:00.000Z"));
+			db.run(
+				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+				 last_error = ?, dead_lettered_at = ?, attempt_count = ?, reclassify_count = ? WHERE id = ?`,
+				[lastError, deadLetteredAt, attempt, reclassifyCount, id],
+			);
+		};
+		// (1) recent + peer-targeted + transfer-exhausted → reclassified.
+		seed("recent-peer", "peerA", TRANSFER_EXHAUSTED, recent, 3);
+		// (2) old (outside window) → untouched.
+		seed("old-peer", "peerA", TRANSFER_EXHAUSTED, old, 3);
+		// (3) recent + peerA but a DIFFERENT last_error (real terminal expiry) → untouched.
+		seed("recent-expired", "peerA", "expired", recent, 3);
+		// (4) recent + transfer-exhausted but a DIFFERENT target peer → untouched.
+		seed("recent-otherpeer", "peerB", TRANSFER_EXHAUSTED, recent, 3);
+		// (5) recent + peer-targeted + transfer-exhausted but already at the reclassify
+		// budget → NOT reclassified (the per-row budget is exhausted; it stays a
+		// dead_letter for operator workspool redrive).
+		seed(
+			"recent-peer-budget",
+			"peerA",
+			TRANSFER_EXHAUSTED,
+			recent,
+			3,
+			TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET,
+		);
+
+		const windowMs = 15 * 60 * 1000;
+		expect(reclassifyTransferExhaustedDeadLetters(db, "peerA", windowMs, now)).toBe(1);
+
+		const reclassified = rowState(db, "recent-peer");
+		expect(reclassified?.claim_state).toBe("pending");
+		expect(reclassified?.claim_token).toBeNull();
+		expect(reclassified?.attempt_count).toBe(0);
+		const full = db
+			.query(
+				"SELECT dead_lettered_at, last_error, claimed_at FROM durable_work WHERE id = 'recent-peer'",
+			)
+			.get() as {
+			dead_lettered_at: string | null;
+			last_error: string | null;
+			claimed_at: string | null;
+		};
+		expect(full.dead_lettered_at).toBeNull();
+		expect(full.last_error).toBeNull();
+		expect(full.claimed_at).toBeNull();
+
+		// The three ineligible rows stay dead-lettered.
+		expect(rowState(db, "old-peer")?.claim_state).toBe("dead_letter");
+		expect(rowState(db, "recent-expired")?.claim_state).toBe("dead_letter");
+		expect(rowState(db, "recent-otherpeer")?.claim_state).toBe("dead_letter");
+		expect(rowState(db, "recent-peer-budget")?.claim_state).toBe("dead_letter");
+
+		// Idempotent: a second run finds nothing eligible.
+		expect(reclassifyTransferExhaustedDeadLetters(db, "peerA", windowMs, now)).toBe(0);
 	});
 });
 

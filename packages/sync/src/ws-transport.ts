@@ -14,6 +14,7 @@ import {
 	insertDurableWork,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
+	reclassifyTransferExhaustedDeadLetters,
 	rollbackUnsentDurableWorkTransfer,
 	sweepStaleTransferringDurableWork,
 } from "@bound/core";
@@ -1577,6 +1578,28 @@ export class WsTransport {
 		const capability = findHostWorkSpoolCapabilityById(this.config.db, peerSiteId);
 		if (!capability?.work_spool_capable) return;
 
+		// #253 reconnect auto-redrive (BEFORE draining): the client dead-socket
+		// detector force-closes an OPEN-but-dead socket so this reconnect fires, but it
+		// cannot be made provably faster than the 30s transfer sweep's 3-attempt cap
+		// under independent timer phases — a row near the cap when the socket silently
+		// died can be re-pended onto it and dead-lettered before the detector's second
+		// observation. Return exactly those dead letters (transfer-exhausted last_error,
+		// this peer, recent) to pending so this fresh live channel re-drives them; real
+		// dead letters (expiry, consumer failures, older exhaustion) are untouched and
+		// stay a workspool-redrive decision. Runs before the drain so a reclassified row
+		// is picked up as pending in the same pass.
+		const redriven = reclassifyTransferExhaustedDeadLetters(
+			this.config.db,
+			peerSiteId,
+			WsTransport.DEAD_SOCKET_REDRIVE_WINDOW_MS,
+		);
+		if (redriven > 0) {
+			this.config.logger?.info(
+				"WsTransport reconnect auto-redrive: returned transfer-exhausted dead letters to pending",
+				{ peerSiteId, count: redriven },
+			);
+		}
+
 		// Recovery first: re-send rows already transferring whose next hop is this
 		// peer. The retained token stays valid (beginDurableWorkTransfer is not
 		// re-run), and the receiver's fence makes the redelivery idempotent. Boot
@@ -2860,6 +2883,17 @@ export class WsTransport {
 		}
 		this.config.logger?.info("[reseed] All synced tables cleared");
 	}
+	/**
+	 * Recent window for the #253 reconnect auto-redrive leg. On reconnect,
+	 * {@link reclassifyTransferExhaustedDeadLetters} returns transfer-exhausted dead
+	 * letters targeted at the reconnected peer to `pending` only if they were
+	 * dead-lettered within this window. Sized to cover the dead-but-OPEN socket's
+	 * worst-case lifetime (the 300s receive-liveness ceiling before the idle
+	 * watchdog forces reconnect) plus the ~60s dead-socket-detector latency plus
+	 * sweep/reconnect/drain slack — while staying short enough that a dead letter an
+	 * operator triaged more than 15 minutes ago is never silently resurrected.
+	 */
+	private static readonly DEAD_SOCKET_REDRIVE_WINDOW_MS = 15 * 60 * 1000;
 	private static readonly BACKFILL_COOLDOWN_MS = 5 * 60 * 1000;
 	private backfillRunning = false;
 	private lastBackfillAt = 0;

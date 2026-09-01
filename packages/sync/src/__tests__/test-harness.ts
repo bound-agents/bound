@@ -306,7 +306,7 @@ const FULL_SCHEMA = `
 		claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
 		claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
 		created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT,
-		ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT
+		ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT, reclassify_count INTEGER NOT NULL DEFAULT 0
 	) STRICT;
 
 	CREATE TABLE dispatch_queue (

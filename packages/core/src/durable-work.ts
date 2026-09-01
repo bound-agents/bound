@@ -511,11 +511,11 @@ export function sweepStaleTransferringDurableWork(
 		// and NOT already past terminal expiry (that is the terminal sweep's row).
 		const deadLettered = db.run(
 			`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = 'transfer retries exhausted (no SPOOL_TRANSFER_ACK)', dead_lettered_at = ?, expires_at = ?
+		 last_error = ?, dead_lettered_at = ?, expires_at = ?
 		 WHERE claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?
 		   AND (expires_at IS NULL OR expires_at > ?)
 		   AND attempt_count >= ?`,
-			[now, retention, staleBefore, now, maxAttempts],
+			[TRANSFER_EXHAUSTED_LAST_ERROR, now, retention, staleBefore, now, maxAttempts],
 		).changes;
 		const rePended = db.run(
 			`UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL,
@@ -642,9 +642,9 @@ export function redriveTransferringDurableWork(
 		if (
 			db.run(
 				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = 'transfer retries exhausted (no SPOOL_TRANSFER_ACK)', dead_lettered_at = ?, expires_at = ?
+		 last_error = ?, dead_lettered_at = ?, expires_at = ?
 		 WHERE id = ? AND claim_state = 'transferring' AND attempt_count >= ?`,
-				[now, retention, id, maxAttempts],
+				[TRANSFER_EXHAUSTED_LAST_ERROR, now, retention, id, maxAttempts],
 			).changes === 1
 		)
 			return true;
@@ -656,6 +656,105 @@ export function redriveTransferringDurableWork(
 				[id, maxAttempts],
 			).changes === 1
 		);
+	});
+}
+
+/**
+ * The literal `last_error` a transfer-exhausted dead letter carries. Both
+ * {@link sweepStaleTransferringDurableWork} and
+ * {@link redriveTransferringDurableWork} stamp exactly this string when a row hits
+ * the attempt cap on the sender transfer path, so it is the single discriminator
+ * that separates a dead letter caused by a dropped `SPOOL_TRANSFER_ACK` from a
+ * real terminal failure (expiry, a consumer error). Kept as an exported constant
+ * so the reconnect auto-redrive leg cannot drift from the writers.
+ */
+export const TRANSFER_EXHAUSTED_LAST_ERROR = "transfer retries exhausted (no SPOOL_TRANSFER_ACK)";
+
+/**
+ * How many times {@link reclassifyTransferExhaustedDeadLetters} may return a single
+ * row to `pending` across its dead-letter → reclassify → dead-letter cycles before
+ * it stays dead-lettered for good. The reconnect auto-redrive leg resets
+ * `attempt_count` on every reclassification (a dead socket measured the channel,
+ * not the work), so the sweep's attempt cap can never terminate a genuinely stuck
+ * row — and each fresh dead-letter refreshes `dead_lettered_at`, sliding the
+ * recent-window fence forward forever. This budget is the terminal deadline the row
+ * loses when it is dead-lettered: after this many auto-redrives the row belongs to
+ * operator `workspool redrive`, not another automatic cycle. Small on purpose — a
+ * transfer that fails this many times across independently-detected dead sockets is
+ * not a transient blip.
+ */
+export const TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET = 3;
+
+/**
+ * Reconnect auto-redrive for the dead-but-OPEN socket failure mode (#253). The
+ * client-side dead-socket detector (`checkDeadButOpenSocket` in ws-client)
+ * force-closes a socket that reads OPEN but never flushes, so the reconnect path
+ * re-establishes a live channel — but it cannot be made *provably* faster than the
+ * 30s transfer sweep's 3-attempt dead-letter cap under independent timer phases. A
+ * row already near the cap when the socket silently dies can be re-pended onto the
+ * dead socket and charged to the cap by the next sweep before the detector's
+ * second observation lands, dead-lettering it with
+ * {@link TRANSFER_EXHAUSTED_LAST_ERROR}. Reconnect does not otherwise recover dead
+ * letters — `drainDurableWorkSpool` reads only `transferring` + `pending`.
+ *
+ * This closes that window: on reconnect to a peer, BEFORE draining, return to
+ * `pending` exactly the dead letters this failure mode produced —
+ * `claim_state = 'dead_letter'` AND `last_error = TRANSFER_EXHAUSTED_LAST_ERROR`
+ * AND `target_site_id = peerSiteId` AND `dead_lettered_at` inside a bounded recent
+ * window (`recentWindowMs`, measured back from `now`). The window and the
+ * transfer-exhaustion `last_error` together fence this to rows that (a) failed on a
+ * channel the reconnect just proved was dead and (b) failed recently enough that no
+ * operator has triaged them; dead letters from terminal expiry, consumer failures,
+ * or older transfer exhaustion are left untouched — those are real and belong to
+ * `workspool redrive`.
+ *
+ * ATTEMPT COUNT IS RESET TO 0. The prior attempts were charged by the transfer
+ * sweep against a channel now known to have been dead: they measured the socket,
+ * not the work. Nothing crossed the wire on any of them (a dead socket queues and
+ * never flushes), so there is no evidence the payload is poisoned, and a fresh live
+ * channel deserves a fresh cap.
+ *
+ * A SEPARATE, PERSISTENT BUDGET BOUNDS THE RECLASSIFICATION ITSELF. Resetting
+ * `attempt_count` means the sweep budget cannot terminate a genuinely poisoned row
+ * across reclassify cycles — a row that dead-letters, is re-pended here, and
+ * dead-letters again refreshes its own `dead_lettered_at`, so the recent-window
+ * fence slides forward indefinitely and the ~90s sweep cost only rate-limits the
+ * loop, never ends it. So the reset carries its own accounting: the same UPDATE
+ * increments a persistent `reclassify_count` column, and the selector requires
+ * `reclassify_count < {@link TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET}`. After that many
+ * reconnect reclassifications the row stays `dead_letter` for operator `workspool
+ * redrive` and is never auto-resurrected again. `reclassify_count` persists across
+ * the row's own dead-letter → reclassify → dead-letter cycles (it is never reset
+ * here), so it is the terminal deadline the row lost when it was dead-lettered.
+ *
+ * BUDGET ACCOUNTING IS PER-RECONNECT, NOT PER-PASS. Within one reconnect pass this
+ * is a single UPDATE, so it is idempotent — a second call in the same pass finds
+ * the row already `pending` (not `dead_letter`) and charges nothing. Each
+ * SUBSEQUENT reconnect that re-reclassifies the same row (it dead-lettered again in
+ * between) charges 1, marching it toward the budget.
+ *
+ * Same fencing discipline as the other transitions: a single state-gated UPDATE
+ * that clears `claim_token`, `claimed_at`, `dead_lettered_at`, and `last_error`
+ * atomically, so a reclassified row is indistinguishable from a fresh pending row
+ * and carries no stale generation. Returns the count returned to `pending`.
+ */
+export function reclassifyTransferExhaustedDeadLetters(
+	db: Database,
+	peerSiteId: string,
+	recentWindowMs: number,
+	now = new Date().toISOString(),
+): number {
+	return instrument("reclassify-transfer-exhausted", "any", () => {
+		const horizon = new Date(Date.parse(now) - recentWindowMs).toISOString();
+		return db.run(
+			`UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL,
+		 dead_lettered_at = NULL, last_error = NULL, attempt_count = 0,
+		 reclassify_count = reclassify_count + 1
+		 WHERE claim_state = 'dead_letter' AND last_error = ? AND target_site_id = ?
+		   AND dead_lettered_at IS NOT NULL AND dead_lettered_at >= ?
+		   AND reclassify_count < ?`,
+			[TRANSFER_EXHAUSTED_LAST_ERROR, peerSiteId, horizon, TRANSFER_EXHAUSTED_RECLASSIFY_BUDGET],
+		).changes;
 	});
 }
 

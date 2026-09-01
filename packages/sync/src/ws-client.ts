@@ -18,6 +18,19 @@ import type {
 } from "./ws-frames.js";
 import { WsMessageType, decodeFrame, encodeFrame } from "./ws-frames.js";
 
+/**
+ * Dead-but-OPEN socket detector cadence (#253, third leg). Aligned with the 30s
+ * durable-work transfer sweep so two consecutive stuck-buffer observations (~60s)
+ * force-close and reconnect, BOUNDING the phantom-success window rather than
+ * out-racing the sweep's 3-attempt dead-letter cap: the two timers run on
+ * independent phases, so a row near the cap when the socket silently dies can still
+ * dead-letter before the second observation lands. The reconnect's budgeted
+ * auto-redrive leg (reclassifyTransferExhaustedDeadLetters) recovers that residue.
+ * Deliberately faster than the 60s receive-liveness cadence, which would only fire
+ * at ~120s. See checkDeadButOpenSocket for the full rationale.
+ */
+const DEAD_SOCKET_CHECK_INTERVAL_MS = 30_000;
+
 export interface WsClientConfig {
 	hubUrl: string; // e.g., "https://polaris.karashiiro.moe"
 	privateKey: CryptoKey;
@@ -114,6 +127,20 @@ export class WsSyncClient {
 	 *  though the TCP connection (kept alive by pings) looks fine. */
 	private lastReceivedAt = 0;
 	private livenessTimer: Timer | null = null;
+	/** Dedicated dead-socket detector timer (#253, third leg). Runs on its own
+	 *  30s cadence — see checkDeadButOpenSocket for why it is NOT folded into the
+	 *  60s receive-liveness cadence (its ~60s detection BOUNDS the phantom-success
+	 *  window against the 30s transfer sweep's 3-attempt dead-letter cap; it does not
+	 *  provably out-race it, so the budgeted reconnect auto-redrive recovers the
+	 *  residue). */
+	private deadSocketTimer: Timer | null = null;
+
+	/** Dead-but-OPEN detection (#253, third leg): the bufferedAmount seen at the
+	 *  previous dead-socket check while the socket was OPEN and sendState ready. A
+	 *  buffer that is non-zero and non-decreasing across two consecutive checks means
+	 *  frames are parked in a socket that claims OPEN but never flushes — force-close
+	 *  so the reconnect path re-establishes a live channel. null = no prior sample. */
+	private lastStuckBufferedAmount: number | null = null;
 
 	/** Handshake deadline: armed when a socket is created, cleared on the first
 	 *  `open` or `close`. If it fires, the socket reached neither — a half-open
@@ -220,6 +247,18 @@ export class WsSyncClient {
 		try {
 			// Convert Uint8Array to Buffer for compatibility
 			const buffer = Buffer.from(frame);
+			// Bun's CLIENT WebSocket has no per-frame delivery signal: send() does not
+			// throw and returns undefined whether the frame flushed synchronously or was
+			// queued into bufferedAmount for later transmission — and a queued frame on a
+			// HEALTHY socket (slow WAN, TLS buffering, a kernel that can't synchronously
+			// accept the write) still genuinely delivers. So a queued-but-not-thrown write
+			// MUST report success: treating a single-send bufferedAmount delta as a refusal
+			// livelocks the spool (every transfer that briefly queues rolls its row back to
+			// pending and invalidates the generation token, so no row ever holds a
+			// transferring token long enough for its ack to retire it). A socket that is
+			// OPEN per readyState but dead over TCP is caught out-of-band by
+			// checkDeadButOpenSocket on its own dead-socket cadence (buffer non-decreasing
+			// across two ticks → force-close → reconnect → re-drain), not per frame here.
 			this.ws.send(buffer);
 			return true;
 		} catch (error) {
@@ -259,6 +298,84 @@ export class WsSyncClient {
 	}
 
 	/**
+	 * Dead-but-OPEN socket detector (#253, third leg). A socket can read `OPEN` per
+	 * `readyState` yet be dead over TCP: Bun's client `send()` neither throws nor
+	 * flushes — the frame is queued into `bufferedAmount` and never leaves. With no
+	 * per-frame delivery signal (see `send()`), a queued write reports success, so a
+	 * peer-targeted durable-work row flips to `transferring` and waits for an ack that
+	 * never comes. The 30s transfer sweep then reclaims the row to `pending`, charges
+	 * an attempt, re-drives — which queues another dead frame — and marches
+	 * `attempt_count` to the cap (3), dead-lettering every peer-targeted row (the #253
+	 * incident: 908 platform_request rows dead-lettered, zero consumed).
+	 *
+	 * The signal that distinguishes a dead socket from a merely slow one is
+	 * PERSISTENCE, never a single-send delta: a healthy socket over a slow WAN can
+	 * grow `bufferedAmount` transiently and still deliver. A buffer that is non-zero
+	 * and has NOT drained across two consecutive detector ticks — while nothing is
+	 * backpressured — is a socket that claims OPEN but is not flushing. Force-close it
+	 * so `handleClose → removePeer → reconnect → handleOpen → addPeer +
+	 * drainDurableWorkSpool` re-establishes a live channel and re-drives the spool.
+	 *
+	 * CADENCE (bounding the phantom-success window). This runs on its OWN timer at
+	 * `DEAD_SOCKET_CHECK_INTERVAL_MS` (30s), aligned with the transfer sweep — NOT on
+	 * the receive-liveness cadence (min(receiveTimeoutMs/2, 60s) = 60s by default,
+	 * which would only force-close ~120s in, long after the sweep dead-letters at ~90s
+	 * = three 30s attempts). Two 30s ticks = detection at ~60s = two sweep attempts,
+	 * one under the cap. But the detector and the sweep run on INDEPENDENT phases: a
+	 * row already near the cap when the socket silently dies can be re-driven onto the
+	 * dead socket and dead-lettered by the sweep's next attempt before the detector's
+	 * second observation lands. So this bounds — does not eliminate — the window in
+	 * which a row can dead-letter from this failure mode. The residue is recovered on
+	 * reconnect by reclassifyTransferExhaustedDeadLetters (in ws-transport's spool
+	 * drain), which returns exactly those transfer-exhausted dead letters to `pending`
+	 * under a per-row budget; past the budget the row is left for `workspool redrive`.
+	 * We do NOT raise the global attempt cap to buy time; we detect faster and recover
+	 * on reconnect instead.
+	 *
+	 * Conservative and orthogonal to the backpressure latch: only fires when the
+	 * socket is OPEN, `sendState` is `ready` (a genuinely full over-limit buffer is the
+	 * latch's regime, left alone here), and the buffer is non-zero and unchanged-or-
+	 * grown since the prior tick. A draining buffer resets the sample so a later
+	 * re-grow starts a fresh two-tick window rather than tripping immediately.
+	 */
+	private checkDeadButOpenSocket(): void {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			this.lastStuckBufferedAmount = null;
+			return;
+		}
+		// Only the `ready` regime with a non-zero buffer is a candidate. A latched
+		// `pressured` socket is genuine backpressure (buffer over the limit) — the
+		// latch owns it; a zero buffer is a healthy idle socket.
+		if (this.sendState !== "ready" || this.ws.bufferedAmount <= 0) {
+			this.lastStuckBufferedAmount = null;
+			return;
+		}
+		const buffered = this.ws.bufferedAmount;
+		if (this.lastStuckBufferedAmount !== null && buffered >= this.lastStuckBufferedAmount) {
+			// Second consecutive non-decreasing observation — the socket is parking
+			// frames and not flushing. Force-close so the reconnect path re-drives.
+			this.config.logger?.warn(
+				"WsSyncClient: dead-but-OPEN socket — buffer stuck across two ticks, forcing reconnect",
+				{
+					peerSiteId: this.config.hubSiteId,
+					bufferedAmount: buffered,
+					priorBufferedAmount: this.lastStuckBufferedAmount,
+				},
+			);
+			this.lastStuckBufferedAmount = null;
+			try {
+				this.ws.close();
+			} catch {
+				// best effort — handleClose fires the reconnect regardless
+			}
+			return;
+		}
+		// First observation of a non-zero buffer (or it grew after a drain reset the
+		// sample) — record it and wait one more tick before acting.
+		this.lastStuckBufferedAmount = buffered;
+	}
+
+	/**
 	 * Close the connection and stop reconnection attempts.
 	 */
 	close(): void {
@@ -266,6 +383,7 @@ export class WsSyncClient {
 		this.stopBackfillTimer();
 		this.stopReconnectBackfillTimer();
 		this.stopLivenessTimer();
+		this.stopDeadSocketTimer();
 		this.stopHandshakeTimer();
 		this.finishHandshake("failed", new Error("client closed during handshake"));
 		if (this.reconnectTimer) {
@@ -390,6 +508,7 @@ export class WsSyncClient {
 
 		this.startBackfillTimer();
 		this.startLivenessTimer();
+		this.startDeadSocketTimer();
 		this.onConnected?.();
 	}
 
@@ -566,6 +685,7 @@ export class WsSyncClient {
 		this.stopBackfillTimer();
 		this.stopReconnectBackfillTimer();
 		this.stopLivenessTimer();
+		this.stopDeadSocketTimer();
 		// A close observed before the handshake landed is already a full teardown;
 		// disarm the deadline so it can't fire against the next socket.
 		this.stopHandshakeTimer();
@@ -758,6 +878,31 @@ export class WsSyncClient {
 			clearInterval(this.livenessTimer);
 			this.livenessTimer = null;
 		}
+	}
+
+	/**
+	 * Dead-but-OPEN socket detector, on its OWN 30s cadence (see
+	 * checkDeadButOpenSocket for the full rationale). Kept separate from the 60s
+	 * receive-liveness timer so ~60s detection bounds the phantom-success window
+	 * against the 30s transfer sweep's 3-attempt cap: two 30s ticks (~60s) force-close
+	 * and reconnect early, but independent timer phases mean rows can still dead-letter
+	 * mid-window; the reconnect's budgeted auto-redrive leg recovers that residue.
+	 */
+	private startDeadSocketTimer(): void {
+		this.stopDeadSocketTimer();
+		this.lastStuckBufferedAmount = null;
+		this.deadSocketTimer = setInterval(() => {
+			if (!this.connected) return;
+			this.checkDeadButOpenSocket();
+		}, DEAD_SOCKET_CHECK_INTERVAL_MS);
+	}
+
+	private stopDeadSocketTimer(): void {
+		if (this.deadSocketTimer) {
+			clearInterval(this.deadSocketTimer);
+			this.deadSocketTimer = null;
+		}
+		this.lastStuckBufferedAmount = null;
 	}
 
 	/**
