@@ -218,7 +218,11 @@ export interface WsServerConfig {
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayInbox: (spokesSiteId: string) => void;
-		handleSpoolTransfer: (sourceSiteId: string, payload: SpoolTransferPayload) => void;
+		handleSpoolTransfer: (
+			sourceSiteId: string,
+			payload: SpoolTransferPayload,
+			senderIsOriginator?: boolean,
+		) => void;
 		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
 		drainDurableWorkSpool: (peerSiteId: string, reason?: "reconnect" | "sweep") => void;
 		/** Seed a newly-connected peer with a full DB snapshot. */
@@ -451,6 +455,10 @@ export function createWsHandlers(config: WsServerConfig): {
 						config.wsTransport.handleSpoolTransfer(
 							ws.data.siteId,
 							decodedFrame.payload as SpoolTransferPayload,
+							// Hub receiving on an authenticated inbound spoke connection: the
+							// frame sender is provably first-hop (spokes never forward), so a
+							// MISSING source_site may be backfilled with it (#253).
+							true,
 						);
 					} else if (decodedFrame.type === WsMessageType.SPOOL_TRANSFER_ACK) {
 						config.wsTransport.handleSpoolTransferAck(

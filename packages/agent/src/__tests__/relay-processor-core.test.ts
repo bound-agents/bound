@@ -2030,6 +2030,37 @@ describe("durable active relay lane", () => {
 		);
 	});
 
+	// #253 positive path: a platform_request row WITH source_site (the incident's
+	// actual kind, now stamped by the producer) passes the sync-dispatch guard — it
+	// is NOT dead-lettered for a missing return address. With no platform registry
+	// wired, dispatch fails and the row stays `processing` (reclaim, not immediate
+	// dead-letter), which alone proves the guard let it through: had the guard
+	// fired, the row would be dead_letter with a "source_site" last_error.
+	it("lets a platform_request row WITH source_site past the missing-source_site guard", async () => {
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site) VALUES ('plreq', 'target-site', 'platform_request', ?, 'plreq-key', 'pending', 0, ?, ?, 'requester-site')`,
+			[
+				JSON.stringify({ server_name: "discord", method: "tools/list", params: {} }),
+				now,
+				new Date(Date.now() + 300_000).toISOString(),
+			],
+		);
+		await (processor as any).processPendingEntries();
+		const row = getDurableWork(db, "plreq");
+		// Not dead-lettered for the source_site reason — the guard passed it through.
+		expect(row?.claim_state).not.toBe("dead_letter");
+		expect(row?.last_error ?? "").not.toContain("source_site");
+	});
+
 	// Objection 5(h): a durable row carrying stream_id round-trips it onto the
 	// response row via writeResponse's requestEntry.stream_id copy.
 	it("round-trips stream_id from the durable row onto the response", async () => {
