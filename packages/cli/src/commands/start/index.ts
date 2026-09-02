@@ -26,6 +26,7 @@ import { initScheduler, setupGracefulShutdown } from "./scheduler.js";
 import { initServer } from "./server.js";
 import { initSync } from "./sync.js";
 import { initTelemetry, setTelemetrySiteId } from "./telemetry.js";
+import { createWsTransportHolderStubs, wireWsTransportHolder } from "./wire-ws-transport-holder.js";
 
 export async function runStart(args: StartArgs): Promise<void> {
 	// Phase 0: Telemetry (must be first so all subsequent operations are traced)
@@ -94,21 +95,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformMcpRegistry: null,
 					handleMessageTracker: new HandleMessageTracker({ watchdogIntervalMs: 0 }),
-					wsTransportHolder: {
-						addPeer: () => {},
-						removePeer: () => {},
-						handleChangelogPush: () => {},
-						handleChangelogAck: () => {},
-						drainChangelog: () => {},
-						handleRelaySend: () => {},
-						handleRelayAck: () => {},
-						drainRelayInbox: () => {},
-						seedNewPeer: () => {},
-						handleSnapshotAck: () => {},
-						continueSnapshotSeed: () => {},
-						applySnapshotChunk: () => 0,
-						handleReseedRequest: () => {},
-					},
+					// Single-host fallback (no model router / no sync): the holder is never
+					// wired — initSync returns wsTransport: undefined by design — so these
+					// stubs are live forever. Benign mode keeps the pre-#253 semantics
+					// (log-once-at-debug, neutral return) so reachable single-host paths
+					// like POST /consistency stay working instead of 500ing on a throw.
+					wsTransportHolder: createWsTransportHolderStubs(appContext.logger, { unwired: "benign" }),
 				};
 
 	// Phase 5b: Register SIGHUP handler for config hot-reload (after sync init for wsClient reference)
@@ -184,29 +176,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 	wsClient = syncResult.wsClient;
 	const { pruningHandle, wsTransport } = syncResult;
 
-	// Wire WsTransport into the sync server's deferred holder (for hub-side frame dispatch)
+	// Wire WsTransport into the sync server's deferred holder (for hub-side frame
+	// dispatch). `wireWsTransportHolder` copies the real instance's methods on and
+	// asserts every required method was wired — a hub that can't receive a
+	// spool/changelog/relay/snapshot frame throws at startup rather than silently
+	// booting half-wired (the #253 spool wedge, where the copy list had drifted).
 	if (wsTransport && serverResult.wsTransportHolder) {
-		Object.assign(serverResult.wsTransportHolder, {
-			addPeer: wsTransport.addPeer.bind(wsTransport),
-			removePeer: wsTransport.removePeer.bind(wsTransport),
-			handleChangelogPush: wsTransport.handleChangelogPush.bind(wsTransport),
-			handleChangelogAck: wsTransport.handleChangelogAck.bind(wsTransport),
-			drainChangelog: wsTransport.drainChangelog.bind(wsTransport),
-			handleRelaySend: wsTransport.handleRelaySend.bind(wsTransport),
-			handleRelayAck: wsTransport.handleRelayAck.bind(wsTransport),
-			drainRelayInbox: wsTransport.drainRelayInbox.bind(wsTransport),
-			seedNewPeer: wsTransport.seedNewPeer.bind(wsTransport),
-			handleSnapshotAck: wsTransport.handleSnapshotAck.bind(wsTransport),
-			continueSnapshotSeed: wsTransport.continueSnapshotSeed.bind(wsTransport),
-			applySnapshotChunk: wsTransport.applySnapshotChunk.bind(wsTransport),
-			handleReseedRequest: wsTransport.handleReseedRequest.bind(wsTransport),
-			handleConsistencyRequest: wsTransport.handleConsistencyRequest.bind(wsTransport),
-			requestConsistency: wsTransport.requestConsistency.bind(wsTransport),
-			handleRowPullRequest: wsTransport.handleRowPullRequest.bind(wsTransport),
-			handleRowPullAck: wsTransport.handleRowPullAck.bind(wsTransport),
-			continueRowPull: wsTransport.continueRowPull.bind(wsTransport),
-			continueConsistencyStream: wsTransport.continueConsistencyStream.bind(wsTransport),
-		});
+		wireWsTransportHolder(serverResult.wsTransportHolder, wsTransport);
 	}
 
 	// Phase 9: Host heartbeat, cron seeding, scheduler
