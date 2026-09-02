@@ -80,6 +80,7 @@ import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 import type { AgentLoopFactory } from "./agent-factory.js";
 import { resolvePlatformToolsForThread } from "./platform-tools.js";
+import { createWsTransportHolderStubs } from "./wire-ws-transport-holder.js";
 export type { AgentLoopFactory } from "./agent-factory.js";
 
 const getTracer = () => trace.getTracer("bound.web");
@@ -404,31 +405,14 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	// `packages/agent/src/handle-message-tracker.ts` and the integration test
 	// `handle-message-tracker.integration.test.ts` for the lifecycle contract.
 
-	// Mutable holder for wsTransport (populated in Phase 8 after sync init)
-	const wsTransportHolder: ServerResult["wsTransportHolder"] = {
-		addPeer: () => {},
-		removePeer: () => {},
-		handleChangelogPush: () => {},
-		handleChangelogAck: () => {},
-		drainChangelog: () => {},
-		handleRelaySend: () => {},
-		handleRelayAck: () => {},
-		drainRelayInbox: () => {},
-		handleSpoolTransfer: () => {},
-		handleSpoolTransferAck: () => {},
-		drainDurableWorkSpool: () => {},
-		seedNewPeer: () => {},
-		handleSnapshotAck: () => {},
-		continueSnapshotSeed: () => {},
-		applySnapshotChunk: () => 0,
-		handleReseedRequest: () => {},
-		handleConsistencyRequest: () => {},
-		requestConsistency: async () => new Map(),
-		handleRowPullRequest: () => {},
-		handleRowPullAck: () => {},
-		continueRowPull: () => {},
-		continueConsistencyStream: () => {},
-	};
+	// Mutable holder for wsTransport (populated in Phase 8 after sync init).
+	// Seeded with marker-tagged placeholders that log + throw if invoked before
+	// wiring — a visible-at-runtime default over the former silent no-ops that hid
+	// the #253 spool wedge. `wireWsTransportHolder` (index.ts) copies the real
+	// instance's methods on and asserts none is left at a placeholder.
+	const wsTransportHolder: ServerResult["wsTransportHolder"] = createWsTransportHolderStubs(
+		appContext.logger,
+	);
 
 	// Wire the executor into the relay processor for Discord/platform process relays.
 	relayProcessor.setThreadExecutor(threadExecutor);
