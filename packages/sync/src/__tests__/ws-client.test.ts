@@ -506,8 +506,12 @@ describe("WsSyncClient", () => {
 				handleRelayDeliver: () => {},
 				handleRelayAck: () => {},
 				drainRelayOutbox: () => {},
-				handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => {
-					calls.push({ method: "handleSpoolTransfer", sourceSiteId, payload });
+				handleSpoolTransfer: (
+					sourceSiteId: string,
+					payload: unknown,
+					senderIsOriginator?: unknown,
+				) => {
+					calls.push({ method: "handleSpoolTransfer", sourceSiteId, payload, senderIsOriginator });
 				},
 				handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => {
 					calls.push({ method: "handleSpoolTransferAck", sourceSiteId, payload });
@@ -556,7 +560,17 @@ describe("WsSyncClient", () => {
 			const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, symmetricKey);
 			internal.handleMessage({ data: frame } as unknown as MessageEvent);
 
-			expect(calls).toEqual([{ method: "handleSpoolTransfer", sourceSiteId: hubSiteId, payload }]);
+			// The client path must NOT claim sender-is-originator: a hub-delivered row
+			// may be a FORWARDED multi-hop request whose true origin is upstream of the
+			// hub, so a missing source_site must not be backfilled with the hub
+			// (#253). ws-client.ts:636 calls handleSpoolTransfer with only two args, so
+			// the captured third argument must be absent/false. This assertion breaks
+			// if someone adds `true` at the client call site.
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.method).toBe("handleSpoolTransfer");
+			expect(calls[0]?.sourceSiteId).toBe(hubSiteId);
+			expect(calls[0]?.payload).toEqual(payload);
+			expect((calls[0] as { senderIsOriginator?: unknown }).senderIsOriginator).toBeFalsy();
 		});
 
 		it("routes SPOOL_TRANSFER_ACK to wsTransport.handleSpoolTransferAck", () => {

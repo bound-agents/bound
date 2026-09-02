@@ -1785,7 +1785,19 @@ export class WsTransport {
 	 * response-kind hub buffering). The hub's own sender-drain forwards it to the
 	 * final destination when that peer is connected and advertising.
 	 */
-	handleSpoolTransfer(sourceSiteId: string, payload: SpoolTransferPayload): void {
+	/**
+	 * @param senderIsOriginator when the frame sender is provably the row's
+	 *   originator (a hub receiving on an authenticated inbound spoke connection:
+	 *   spokes never forward, so the sender IS the origin). Only then may a MISSING
+	 *   source_site be backfilled with the sender. False on the ws-client path (a
+	 *   spoke receiving from the hub), where the row may be a hub-forwarded
+	 *   multi-hop request whose true origin is upstream of the sender.
+	 */
+	handleSpoolTransfer(
+		sourceSiteId: string,
+		payload: SpoolTransferPayload,
+		senderIsOriginator = false,
+	): void {
 		// Receive-path observability: one line per batch BEFORE the empty-entries
 		// guard so an empty batch names itself (entryCount 0) instead of returning
 		// silently — a wedge is then visible from logs alone (before this the receive
@@ -1822,6 +1834,30 @@ export class WsTransport {
 			// DB should sever the connection, not warn once per entry per retry forever
 			// while the sender keeps re-sending.
 			try {
+				// Version-skew safety net (#253): an old spoke that predates the
+				// producer source_site fix ships REQUEST rows with source_site absent;
+				// a new hub would then dead-letter them at the sync-dispatch guard
+				// ("response cannot be addressed"). Backfill a MISSING source_site with
+				// the authenticated frame sender ONLY when that sender is provably the
+				// originator (senderIsOriginator) — a hub receiving on an inbound spoke
+				// connection, which is always first-hop because spokes never forward.
+				// On the spoke→hub path the sender IS the origin, so the stamp is
+				// correct. On the hub→spoke path (senderIsOriginator=false) the row may
+				// be a hub-FORWARDED multi-hop request (old spoke A → old hub B → new
+				// spoke C): stamping source_site=B there would misaddress C's response
+				// to the forwarder B instead of the real requester A, so we leave a
+				// blank row blank (it dead-letters exactly as it does pre-fix until the
+				// origin spoke upgrades). The backfill is also absent-only: a present
+				// source_site (a producer-stamped origin) is never overwritten.
+				const backfillMissing = senderIsOriginator && !entry.source_site;
+				const backfilledSourceSite = backfillMissing ? sourceSiteId : (entry.source_site ?? null);
+				if (backfillMissing) {
+					this.config.logger?.info("WsTransport backfilled missing source_site", {
+						sourceSiteId,
+						id: entry.id,
+						kind: entry.kind,
+					});
+				}
 				insertDurableWork(this.config.db, {
 					id: entry.id,
 					target_site_id: entry.target_site_id,
@@ -1830,7 +1866,7 @@ export class WsTransport {
 					idempotency_key: entry.idempotency_key,
 					expires_at: entry.expires_at ?? null,
 					ref_id: entry.ref_id ?? null,
-					source_site: entry.source_site ?? null,
+					source_site: backfilledSourceSite,
 					received_at: entry.received_at ?? null,
 					stream_id: entry.stream_id ?? null,
 				});

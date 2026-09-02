@@ -302,6 +302,98 @@ describe("spool transfer (4D-B)", () => {
 			// Sender copy retired (deleted) after transfer ack.
 			expect(rowState(sender.db, "row-1")).toBeNull();
 		});
+
+		// #253 version-skew net, HUB SIDE (senderIsOriginator=true): an old spoke
+		// that predates the producer source_site fix ships a REQUEST entry with
+		// source_site absent. The hub receives it on the authenticated inbound spoke
+		// connection — spokes never forward, so the frame sender IS the originator —
+		// and backfills it so the sync-dispatch guard does not dead-letter it
+		// ("response cannot be addressed").
+		it("backfills a MISSING source_site when the sender is the originator (hub-side first-hop)", () => {
+			const payload: SpoolTransferPayload = {
+				entries: [
+					{
+						id: "row-skew",
+						target_site_id: "receiver",
+						kind: "platform_request",
+						payload: { server_name: "discord", method: "tools/list", params: {} },
+						idempotency_key: "key-row-skew",
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						ref_id: null,
+						source_site: null,
+						received_at: null,
+						stream_id: null,
+						token: "tok-skew",
+					},
+				],
+			};
+			receiver.transport.handleSpoolTransfer("sender", payload, true);
+			expect(rowState(receiver.db, "row-skew")?.source_site).toBe("sender");
+			expect(
+				receiver.logs.some((l) => l.message === "WsTransport backfilled missing source_site"),
+			).toBe(true);
+		});
+
+		// The A→B→C misaddressing the reviewer flagged: old spoke A creates a blank
+		// request for spoke C; old hub B forwards it unchanged; new spoke C receives
+		// it FROM B (senderIsOriginator=false, spoke-side receipt). C must NOT stamp
+		// source_site=B — that would make C's writeResponse target the forwarder B
+		// instead of the real requester A. On the spoke path the blank row is left
+		// blank (and dead-letters as it does pre-fix) rather than misaddressed.
+		it("does NOT backfill on a forwarder-relayed transfer (spoke-side, senderIsOriginator=false)", () => {
+			const payload: SpoolTransferPayload = {
+				entries: [
+					{
+						id: "row-abc",
+						target_site_id: "receiver",
+						kind: "platform_request",
+						payload: { server_name: "discord", method: "tools/list", params: {} },
+						idempotency_key: "key-row-abc",
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						ref_id: null,
+						source_site: null,
+						received_at: null,
+						stream_id: null,
+						token: "tok-abc",
+					},
+				],
+			};
+			// "sender" here models forwarder hub B; the row is still blank on arrival.
+			receiver.transport.handleSpoolTransfer("sender", payload, false);
+			expect(rowState(receiver.db, "row-abc")?.source_site).toBeNull();
+			expect(
+				receiver.logs.some((l) => l.message === "WsTransport backfilled missing source_site"),
+			).toBe(false);
+		});
+
+		// The backfill is absent-only regardless of role: a row that ARRIVES with
+		// source_site set (a multi-hop origin already stamped by the producer) keeps
+		// that value — the direct sender must never overwrite a legitimate origin,
+		// even on the first-hop hub path where backfill is otherwise permitted.
+		it("does NOT overwrite a present source_site even when senderIsOriginator=true", () => {
+			const payload: SpoolTransferPayload = {
+				entries: [
+					{
+						id: "row-fwd",
+						target_site_id: "receiver",
+						kind: "platform_request",
+						payload: { server_name: "discord", method: "tools/list", params: {} },
+						idempotency_key: "key-row-fwd",
+						expires_at: new Date(Date.now() + 60_000).toISOString(),
+						ref_id: null,
+						source_site: "origin-spoke",
+						received_at: null,
+						stream_id: null,
+						token: "tok-fwd",
+					},
+				],
+			};
+			receiver.transport.handleSpoolTransfer("sender", payload, true);
+			expect(rowState(receiver.db, "row-fwd")?.source_site).toBe("origin-spoke");
+			expect(
+				receiver.logs.some((l) => l.message === "WsTransport backfilled missing source_site"),
+			).toBe(false);
+		});
 	});
 
 	describe("(b) redelivery after a dropped ack", () => {

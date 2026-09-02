@@ -54,7 +54,11 @@ export interface WsClientConfig {
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		drainRelayOutbox: (peerSiteId: string) => void;
 		/** Receive a hub→spoke durable-work spool transfer (R-DW10). */
-		handleSpoolTransfer: (sourceSiteId: string, payload: SpoolTransferPayload) => void;
+		handleSpoolTransfer: (
+			sourceSiteId: string,
+			payload: SpoolTransferPayload,
+			senderIsOriginator?: boolean,
+		) => void;
 		/** Retire sender copies the hub acknowledged as durable (R-DW10). */
 		handleSpoolTransferAck: (sourceSiteId: string, payload: SpoolTransferAckPayload) => void;
 		/** Reconnect drain of pending/transferring peer-targeted spool rows toward the hub. */
@@ -629,6 +633,10 @@ export class WsSyncClient {
 						// Hub→spoke durable-work spool delivery (R-DW10): without this
 						// dispatch, spool responses targeted at this spoke are silently
 						// dropped and the hub's sender copies stay transferring forever.
+						// senderIsOriginator defaults to false: a hub-delivered row may be a
+						// FORWARDED multi-hop request whose true origin is upstream of the
+						// hub, so a missing source_site must NOT be backfilled with the hub
+						// (that would misaddress the response to the forwarder, #253).
 						this.config.wsTransport.handleSpoolTransfer(
 							this.config.hubSiteId,
 							decodedFrame.payload as SpoolTransferPayload,

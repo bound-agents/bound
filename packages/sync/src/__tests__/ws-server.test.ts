@@ -739,6 +739,69 @@ describe("createWsHandlers", async () => {
 			).toBe(false);
 		});
 
+		it("dispatches a decoded SPOOL_TRANSFER through the server with senderIsOriginator=true (hub inbound is first-hop, #253)", () => {
+			// Guards ws-server.ts:461. The hub receiving a SPOOL_TRANSFER on an
+			// authenticated inbound spoke connection is provably first-hop (spokes
+			// never forward), so the server MUST pass senderIsOriginator=true so
+			// handleSpoolTransfer may backfill a missing source_site. If someone
+			// deletes the literal `true` at the call site, the third argument becomes
+			// undefined and this assertion fails — restoring the legacy first-hop
+			// "response cannot be addressed" dead-letter.
+			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
+			let captured: { sourceSiteId: string; payload: unknown; senderIsOriginator: unknown } | null =
+				null;
+			const wsTransport = {
+				handleSpoolTransfer: (
+					sourceSiteId: string,
+					payload: unknown,
+					senderIsOriginator?: unknown,
+				) => {
+					captured = { sourceSiteId, payload, senderIsOriginator };
+				},
+			} as any;
+			const handlers = createWsHandlers({
+				connectionManager: manager,
+				keyring,
+				keyManager,
+				wsTransport,
+			});
+
+			const symmetricKey = new Uint8Array(32).fill(7);
+			const mockWs = {
+				data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
+				close: () => {},
+			} as any;
+
+			const payload = {
+				entries: [
+					{
+						id: "w-1",
+						target_site_id: "receiver",
+						source_site: null,
+						kind: "platform_request",
+						payload: { server_name: "discord", method: "tools/list", params: {} },
+						idempotency_key: "key-w-1",
+						ref_id: null,
+						stream_id: null,
+						expires_at: null,
+						received_at: null,
+						token: "tok-1",
+					},
+				],
+			};
+			const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, symmetricKey);
+			handlers.websocket.message?.(mockWs, frame);
+
+			expect(captured).not.toBeNull();
+			expect(captured?.sourceSiteId).toBe("spoke-site");
+			expect(captured?.payload).toEqual(payload);
+			// The third argument must be the literal `true` — not merely truthy, and
+			// never absent. This is the assertion that breaks if ws-server.ts:461
+			// loses its `true`.
+			expect(captured?.senderIsOriginator).toBe(true);
+		});
+
 		it("decode-fail warn carries frameTypeByte and frameSize (#253)", () => {
 			const manager = new WsConnectionManager();
 			const { keyring, keyManager } = createMockKeyringAndManager();

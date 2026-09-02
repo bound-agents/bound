@@ -575,6 +575,11 @@ export function routeRelayRequest(
 			expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
 			ref_id: params.refId ?? null,
 			stream_id: params.streamId ?? null,
+			// Stamp the originating site so the target's durable relay lane can
+			// address the response back. A dispatch:"sync" request whose source_site
+			// is absent is dead-lettered at the hub guard (#253); every RPC request
+			// kind routes through here, so this is the one stamp that covers them all.
+			source_site: params.sourceSiteId,
 		});
 		return { path: "durable", id, inserted };
 	}
@@ -663,6 +668,10 @@ export function routeRelayResponse(
 			expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
 			ref_id: params.refId,
 			stream_id: params.streamId ?? null,
+			// Stamp the responder's own site as origin (parity with the request path);
+			// responses correlate by ref_id and never hit the sync-dispatch guard, but
+			// the row still carries an unambiguous origin (#253).
+			source_site: params.sourceSiteId,
 		});
 		return { path: "durable", id, inserted };
 	}

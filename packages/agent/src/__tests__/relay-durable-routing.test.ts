@@ -200,6 +200,30 @@ describe("routeRelayRequest write behavior", () => {
 		expect(rows[0].claim_state).toBe("pending");
 	});
 
+	// #253 final defect: the hub's durable relay lane dead-letters a dispatch:"sync"
+	// request whose source_site is absent ("response cannot be addressed"). The
+	// producer must stamp the originating site so the response has a return address.
+	it("(g) stamps source_site with the producing site's id on the durable request row", () => {
+		setHostCapability(TARGET, true);
+		const routed = routeRelayRequest(db, {
+			targetSiteId: TARGET,
+			sourceSiteId: LOCAL,
+			kind: "platform_request",
+			payload: JSON.stringify({
+				server_name: "discord",
+				method: "tools/list",
+				params: {},
+				timeout_ms: 15_000,
+			}),
+			timeoutMs: 15_000,
+			topologyRole: "spoke",
+		});
+		expect(routed.path).toBe("durable");
+		const rows = durableRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0].source_site).toBe(LOCAL);
+	});
+
 	it("(d) client_tool key rides verbatim on the durable row", () => {
 		setHostCapability(TARGET, true);
 		const key = "client-tool:thread-1:call-9";
@@ -360,6 +384,24 @@ describe("routeRelayResponse write behavior", () => {
 		expect(rows[0].ref_id).toBe("req-abc");
 		expect(rows[0].idempotency_key).toBe("response:req-abc");
 		expect(rows[0].kind).toBe("result");
+	});
+
+	// #253: a response row is correlated by ref_id and never hits the sync-dispatch
+	// guard, but the producer must still stamp its own site as source_site so the
+	// row carries an unambiguous origin (parity with the request path).
+	it("(g) stamps source_site with the responding site's id on the durable response row", () => {
+		setHostCapability(REQUESTER, true);
+		routeRelayResponse(db, {
+			targetSiteId: REQUESTER,
+			sourceSiteId: LOCAL,
+			kind: "result",
+			payload: JSON.stringify({ stdout: "ok", stderr: "", exit_code: 0 }),
+			timeoutMs: 300_000,
+			refId: "req-abc",
+			idempotencyKey: "response:req-abc",
+			topologyRole: "hub",
+		});
+		expect(durableRows()[0].source_site).toBe(LOCAL);
 	});
 
 	it("(e) toggle off writes a legacy relay_outbox response row with a null idempotency_key", () => {
