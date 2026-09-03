@@ -1,13 +1,5 @@
 import type { Database } from "bun:sqlite";
-import {
-	acknowledgeDurableWork,
-	claimDurableWorkByIds,
-	hasDroppedLegacyRelayTables,
-	markProcessed,
-	readDurableResponseByRefId,
-	readInboxByRefId,
-	recordTurnRelayMetrics,
-} from "@bound/core";
+import { recordTurnRelayMetrics } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { errorPayloadSchema, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 import type { Logger } from "@bound/shared";
@@ -31,6 +23,7 @@ import {
 	timeout,
 } from "rxjs";
 import { buildCommandOutput } from "./agent-loop-utils";
+import { type UnionResponseEntry, readUnionResponseEntry } from "./relay-await-helpers";
 import { type EligibleHost, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
 import type { TopologyRole } from "./topology";
@@ -102,54 +95,19 @@ function formatResponseText(response: { kind: string; payload: string }): RelayW
 }
 
 /**
- * 4D-D union-await read for one awaiting request. Returns the winning response
- * as a `{ id, kind, payload, settle }` shape: `settle()` retires the row — a
- * legacy relay_inbox row is `markProcessed`; a durable response row was claimed
- * under a fresh token here and `settle()` acks it to `consumed`, so the
- * token-fenced lifecycle makes delivery exactly-once even if a redelivered
- * transfer produced a second (fenced-away) copy. CRITICAL ORDER (claim → deliver
- * → ack): the claim happens now, but `settle()` is deferred by the Rx pipeline
- * until AFTER the awaiter has received the value (post `take(1)` emission). A
- * crash between delivery and ack boot-resets the durable row to pending; the
- * later duplicate has no subscriber (take(1) completed) and ages out via its
- * 300s TTL → dead_letter → prune — at-least-once with bounded residue, never
- * silent loss. Legacy is checked first so an in-flight capability flip that split
- * a request/response across stores still resolves. Returns null when neither
- * store has a response yet.
+ * 4D-D union-await read for one awaiting request. Thin adapter over the shared
+ * {@link readUnionResponseEntry} primitive: the exactly-once claim → deliver →
+ * ack lifecycle (with legacy-first ordering, deferred settle, and token fence)
+ * lives there and is shared with the two CLI remotePlatformRequest awaiters so
+ * no call site hand-rolls its own poll loop. CRITICAL ORDER (claim → deliver →
+ * ack): `settle()` is deferred by the Rx pipeline until AFTER the awaiter has
+ * received the value (post `take(1)` emission); a crash between delivery and
+ * ack boot-resets the durable row to pending and the later duplicate ages out
+ * via its 300s TTL → dead_letter → prune — at-least-once with bounded residue,
+ * never silent loss.
  */
-function readUnionResponse(
-	deps: RelayWaitDeps,
-	refId: string,
-): { id: string; kind: string; payload: string; settle: () => void } | null {
-	// Post-drop (slice 4E): this host retired relay_inbox, so skip the legacy
-	// read entirely (it would throw on the missing table) and resolve from the
-	// durable spool only. A capability flip already forced spool-only here.
-	const legacy = hasDroppedLegacyRelayTables(deps.db) ? null : readInboxByRefId(deps.db, refId);
-	if (legacy) {
-		return {
-			id: legacy.id,
-			kind: legacy.kind,
-			payload: legacy.payload,
-			// Legacy symmetry: mark-processed is deferred to settle() so it fires
-			// only AFTER delivery, matching the durable branch's ack ordering.
-			settle: () => markProcessed(deps.db, [legacy.id]),
-		};
-	}
-	const durable = readDurableResponseByRefId(deps.db, refId, deps.siteId);
-	if (!durable) return null;
-	const claimed = claimDurableWorkByIds(deps.db, [durable.id], deps.siteId);
-	const row = claimed[0];
-	// Lost the claim race (another reader took it) — treat as not-yet-available;
-	// the winning reader delivers it.
-	if (!row || !row.claim_token) return null;
-	const token = row.claim_token;
-	return {
-		id: row.id,
-		kind: row.kind,
-		payload: row.payload,
-		// Deferred token-fenced ack: fires only after the awaiter receives the value.
-		settle: () => acknowledgeDurableWork(deps.db, row.id, token),
-	};
+function readUnionResponse(deps: RelayWaitDeps, refId: string): UnionResponseEntry | null {
+	return readUnionResponseEntry(deps.db, refId, deps.siteId);
 }
 
 export function createRelayWait$(

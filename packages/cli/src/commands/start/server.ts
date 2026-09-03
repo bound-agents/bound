@@ -18,6 +18,7 @@ import {
 	selectWarmPokeTargets,
 	serializeRelayTraceCarrier,
 } from "@bound/agent";
+import { awaitPlatformRequestResponse } from "@bound/agent";
 import type { ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
@@ -38,11 +39,8 @@ import {
 	findThreadModelHintById,
 	findThreadUserAndInterfaceById,
 	findUnresolvedBackgroundPlaceholder,
-	hasDroppedLegacyRelayTables,
 	hasPendingClientToolCalls,
 	insertRow,
-	markProcessed,
-	readInboxByRefId,
 	resolveDeferredToolResult,
 	softDelete,
 	updateRow,
@@ -71,8 +69,6 @@ import {
 	formatError,
 	injectTraceContext,
 	isUserFacingInterface,
-	parseJsonSafe,
-	resultPayloadSchema,
 } from "@bound/shared";
 import type { KeyManager, RelayExecutor } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
@@ -152,31 +148,14 @@ export function createRemotePlatformRequest(
 		});
 		const entry = { id: routed.id };
 
-		const deadline = Date.now() + 15_000;
-		// Post-drop (slice 4E): relay_inbox is gone — platform results arrive via the
-		// durable spool, so never poll the legacy table (it would throw).
-		const inboxDropped = hasDroppedLegacyRelayTables(deps.db);
-		while (!inboxDropped && Date.now() < deadline) {
-			const response = readInboxByRefId(deps.db, entry.id);
-			if (response) {
-				markProcessed(deps.db, [response.id]);
-				if (response.kind === "error") {
-					const errPayload = JSON.parse(response.payload) as { error?: string };
-					throw new Error(errPayload.error ?? response.payload);
-				}
-				const parsed = parseJsonSafe(
-					resultPayloadSchema,
-					response.payload,
-					"platform_request result",
-				);
-				if (!parsed.ok) {
-					throw new Error(`Invalid platform_request response: ${parsed.error}`);
-				}
-				return JSON.parse(parsed.value.stdout);
-			}
-			await new Promise((r) => setTimeout(r, 200));
-		}
-		throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
+		// 4D-D union await: resolves whether the response arrived over the legacy
+		// relay_inbox (pre-drop) or the durable spool (post-4E). The shared helper
+		// consumes a durable row exactly-once via the token-fenced claim → deliver →
+		// ack lifecycle.
+		return await awaitPlatformRequestResponse({ db: deps.db, siteId: deps.siteId }, entry.id, {
+			deadline: Date.now() + 15_000,
+			targetSiteId,
+		});
 	};
 }
 

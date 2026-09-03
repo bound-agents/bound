@@ -29,6 +29,12 @@ export {
 	type RelayWaitParams,
 	type RelayWaitOptions,
 } from "./relay-wait$.js";
+export {
+	awaitPlatformRequestResponse,
+	readUnionResponseEntry,
+	type PlatformResponseAwaitDeps,
+	type UnionResponseEntry,
+} from "./relay-await-helpers.js";
 
 // Export model resolution
 export {
