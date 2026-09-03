@@ -2352,8 +2352,8 @@ describe("MainAgentLoop", () => {
 			const now = new Date().toISOString();
 			db.run(
 				`INSERT OR REPLACE INTO hosts
-				 (site_id, host_name, sync_url, models, mcp_tools, platforms, online_at, modified_at, deleted)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+				 (site_id, host_name, sync_url, models, mcp_tools, platforms, work_spool_capable, online_at, modified_at, deleted)
+				 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0)`,
 				[
 					siteId,
 					"remote-hub",

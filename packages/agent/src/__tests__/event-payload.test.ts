@@ -1,15 +1,29 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, getDurableWork, insertDurableWork, insertInbox } from "@bound/core";
+import { applySchema, getDurableWork, insertDurableWork } from "@bound/core";
 import type { Task } from "@bound/shared";
 import { buildEventWakeupContent } from "../event-payload";
+
+function isValidJson(s: string): boolean {
+	try {
+		JSON.parse(s);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Reproduces an observed bug: webhook fires for a thread and the task
  * wakes up with developer="[Task wakeup] Scheduled event task X triggered."
- * and tool_result body="Execute scheduled task." — the relay_inbox envelope
+ * and tool_result body="Execute scheduled task." — the intake envelope
  * written by webhook-handler.ts never reaches the agent context.
+ *
+ * Post-N+1 the passive-intake path is durable-only: producers write a
+ * durable_work row (kind webhook_intake/connector_intake/rss_intake) and
+ * buildEventWakeupContent folds pending durable rows for the thread,
+ * claiming each (pending -> processing) and returning them in durableClaims.
  */
 describe("buildEventWakeupContent", () => {
 	let db: Database;
@@ -65,20 +79,22 @@ describe("buildEventWakeupContent", () => {
 		threadId: string,
 		body: string,
 		receivedAt: string,
-		kind: "webhook_intake" | "intake" | "connector_intake" = "webhook_intake",
+		kind: "webhook_intake" | "connector_intake" | "rss_intake" = "webhook_intake",
+		idempotencyKey: string = randomUUID(),
 	): string {
 		const id = randomUUID();
-		insertInbox(db, {
+		insertDurableWork(db, {
 			id,
-			source_site_id: siteId,
+			target_site_id: siteId,
 			kind,
+			// durable_work requires a valid-JSON payload. Envelope-shaped tests pass
+			// an already-JSON string (stored verbatim); bare-string tests get JSON-encoded
+			// so the row validates while inlineWebhookEnvelopeBody still renders them.
+			payload: isValidJson(body) ? body : JSON.stringify(body),
+			idempotency_key: idempotencyKey,
 			ref_id: threadId,
-			idempotency_key: randomUUID(),
-			stream_id: null,
-			payload: body,
-			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+			source_site: siteId,
 			received_at: receivedAt,
-			processed: 0,
 		});
 		return id;
 	}
@@ -90,43 +106,7 @@ describe("buildEventWakeupContent", () => {
 		kind: "webhook_intake" | "connector_intake" | "rss_intake" = "webhook_intake",
 		idempotencyKey: string = randomUUID(),
 	): string {
-		const id = randomUUID();
-		insertDurableWork(db, {
-			id,
-			target_site_id: siteId,
-			kind,
-			payload: JSON.stringify(body),
-			idempotency_key: idempotencyKey,
-			ref_id: threadId,
-			source_site: siteId,
-			received_at: receivedAt,
-		});
-		return id;
-	}
-
-	// insertEnvelope with an explicit idempotency_key so twin dedupe can pair a
-	// relay row with a durable row on (kind, idempotency_key).
-	function insertEnvelopeKeyed(
-		threadId: string,
-		body: string,
-		receivedAt: string,
-		kind: "webhook_intake" | "connector_intake" | "rss_intake",
-		idempotencyKey: string,
-	): string {
-		const id = randomUUID();
-		insertInbox(db, {
-			id,
-			source_site_id: siteId,
-			kind,
-			ref_id: threadId,
-			idempotency_key: idempotencyKey,
-			stream_id: null,
-			payload: body,
-			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
-			received_at: receivedAt,
-			processed: 0,
-		});
-		return id;
+		return insertEnvelope(threadId, body, receivedAt, kind, idempotencyKey);
 	}
 
 	test("returns default fallback when task has no thread_id", () => {
@@ -174,7 +154,7 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("opened");
 		expect(result.content).toContain("number");
 		expect(result.content).toContain("42");
-		expect(result.processedIds).toEqual([inboxId]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([inboxId]);
 	});
 
 	test("orders multiple envelopes by received_at (oldest first)", () => {
@@ -191,13 +171,14 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("envelope-C");
 		expect(result.content.indexOf("envelope-A")).toBeLessThan(result.content.indexOf("envelope-B"));
 		expect(result.content.indexOf("envelope-B")).toBeLessThan(result.content.indexOf("envelope-C"));
-		expect(result.processedIds).toEqual([id1, id2, id3]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([id1, id2, id3]);
 	});
 
-	test("ignores already-processed entries", () => {
+	test("ignores already-claimed entries", () => {
 		const threadId = randomUUID();
-		insertEnvelope(threadId, "stale-envelope", "2026-05-18T20:00:00Z");
-		db.run("UPDATE relay_inbox SET processed = 1 WHERE ref_id = ?", [threadId]);
+		const staleId = insertEnvelope(threadId, "stale-envelope", "2026-05-18T20:00:00Z");
+		// A row already claimed (processing) by an earlier wakeup is not re-folded.
+		db.run("UPDATE durable_work SET claim_state = 'processing' WHERE id = ?", [staleId]);
 		const newId = insertEnvelope(threadId, "fresh-envelope", "2026-05-18T21:00:00Z");
 
 		const task = makeTask({ thread_id: threadId });
@@ -205,7 +186,7 @@ describe("buildEventWakeupContent", () => {
 
 		expect(result.content).toContain("fresh-envelope");
 		expect(result.content).not.toContain("stale-envelope");
-		expect(result.processedIds).toEqual([newId]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([newId]);
 	});
 
 	test("does not fetch entries for other threads", () => {
@@ -219,7 +200,7 @@ describe("buildEventWakeupContent", () => {
 
 		expect(result.content).toContain("my-envelope");
 		expect(result.content).not.toContain("wrong-thread-envelope");
-		expect(result.processedIds).toEqual([myId]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([myId]);
 	});
 
 	test("non-event task types ignore the inbox path", () => {
@@ -230,7 +211,7 @@ describe("buildEventWakeupContent", () => {
 		const result = buildEventWakeupContent(db, task, siteId);
 
 		expect(result.content).toBe("cron payload");
-		expect(result.processedIds).toEqual([]);
+		expect(result.durableClaims).toEqual([]);
 	});
 
 	test("preserves task.payload as standing context when also folding envelopes", () => {
@@ -268,7 +249,7 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("body-one");
 		expect(result.content).toContain("body-two");
 		expect(result.content.indexOf("body-one")).toBeLessThan(result.content.indexOf("body-two"));
-		expect(result.processedIds).toEqual([id1, id2]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([id1, id2]);
 	});
 
 	test('wraps a single envelope with count=1 and one <event index="1"> node', () => {
@@ -327,10 +308,9 @@ describe("buildEventWakeupContent", () => {
 
 		expect(result.content).toContain("real-webhook-payload");
 		expect(result.content).not.toContain("platform-mcp-payload");
-		// processedIds is exclusively the webhook_intake row id; the stray
-		// intake row stays processed=0 for the relay-processor to handle on
-		// its own dispatch path.
-		expect(result.processedIds.length).toBe(1);
+		// durableClaims holds exactly the webhook_intake row; the stray intake row
+		// stays pending for the relay-processor to handle on its own dispatch path.
+		expect(result.durableClaims.length).toBe(1);
 	});
 
 	test("folds a connector_intake row into the wakeup (Discord push events)", () => {
@@ -363,7 +343,7 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("testing receive");
 		expect(result.content).toContain("connector:event:9380eb6c");
 		expect(result.content).toContain("karashiiro");
-		expect(result.processedIds).toEqual([inboxId]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([inboxId]);
 	});
 
 	test("folds webhook_intake and connector_intake together, ignoring stray intake rows", () => {
@@ -391,7 +371,7 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content.indexOf("connector-body")).toBeLessThan(
 			result.content.indexOf("webhook-body"),
 		);
-		expect(result.processedIds).toEqual([connectorId, webhookId]);
+		expect(result.durableClaims.map((c) => c.id)).toEqual([connectorId, webhookId]);
 	});
 
 	test("inlines a JSON request body so the envelope isn't double-escaped (#177)", () => {
@@ -447,30 +427,30 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content).toContain("not json at all");
 	});
 
-	test("folds durable_work intake rows alongside relay rows, ordered oldest-first across stores", () => {
+	test("folds multiple durable_work intake rows, ordered oldest-first", () => {
 		const threadId = randomUUID();
-		// Interleave relay and durable rows by received time.
-		insertEnvelope(threadId, "relay-oldest", "2026-08-31T00:00:00Z", "webhook_intake");
+		// Interleave durable rows by received time.
+		insertEnvelope(threadId, "durable-oldest", "2026-08-31T00:00:00Z", "webhook_intake");
 		insertDurableIntake(threadId, "durable-middle", "2026-08-31T00:01:00Z", "connector_intake");
-		insertEnvelope(threadId, "relay-newest", "2026-08-31T00:02:00Z", "webhook_intake");
+		insertEnvelope(threadId, "durable-newest", "2026-08-31T00:02:00Z", "webhook_intake");
 
 		const task = makeTask({ thread_id: threadId });
 		const result = buildEventWakeupContent(db, task, siteId);
 
-		expect(result.content).toContain("relay-oldest");
+		expect(result.content).toContain("durable-oldest");
 		expect(result.content).toContain("durable-middle");
-		expect(result.content).toContain("relay-newest");
-		expect(result.content.indexOf("relay-oldest")).toBeLessThan(
+		expect(result.content).toContain("durable-newest");
+		expect(result.content.indexOf("durable-oldest")).toBeLessThan(
 			result.content.indexOf("durable-middle"),
 		);
 		expect(result.content.indexOf("durable-middle")).toBeLessThan(
-			result.content.indexOf("relay-newest"),
+			result.content.indexOf("durable-newest"),
 		);
 		expect((result.content.match(/<event /g) || []).length).toBe(3);
-		// Two relay ids to mark, one durable claim to acknowledge.
-		expect(result.processedIds.length).toBe(2);
-		expect(result.durableClaims.length).toBe(1);
-		// The claimed durable row is now processing under the returned token.
+		// All three durable rows are claimed for acknowledgement.
+		expect(result.processedIds.length).toBe(0);
+		expect(result.durableClaims.length).toBe(3);
+		// The claimed durable rows are now processing under the returned token.
 		const claimed = getDurableWork(db, result.durableClaims[0].id);
 		expect(claimed?.claim_state).toBe("processing");
 		expect(claimed?.claim_token).toBe(result.durableClaims[0].token);
@@ -490,7 +470,7 @@ describe("buildEventWakeupContent", () => {
 
 		expect(result.content).toContain("durable-only-body");
 		expect(result.content).toContain('<connector-events trigger="rss:example" count="1">');
-		expect(result.processedIds).toEqual([]);
+		expect(result.durableClaims.length).toBe(1);
 		expect(result.durableClaims.map((c) => c.id)).toEqual([durableId]);
 	});
 
@@ -520,37 +500,5 @@ describe("buildEventWakeupContent", () => {
 		expect(result.content.indexOf("durable-fallback")).toBeLessThan(
 			result.content.indexOf("durable-late"),
 		);
-	});
-
-	test("twin dedupe: same (kind, idempotency_key) in both stores folds once, durable preferred", () => {
-		const threadId = randomUUID();
-		const sharedKey = "delivery-abc-123";
-		// A relay row and a durable row for the SAME event (identical kind + key).
-		const relayTwinId = insertEnvelopeKeyed(
-			threadId,
-			"relay-twin-body",
-			"2026-08-31T00:00:00Z",
-			"webhook_intake",
-			sharedKey,
-		);
-		const durableTwinId = insertDurableIntake(
-			threadId,
-			"durable-twin-body",
-			"2026-08-31T00:00:00Z",
-			"webhook_intake",
-			sharedKey,
-		);
-
-		const task = makeTask({ thread_id: threadId });
-		const result = buildEventWakeupContent(db, task, siteId);
-
-		// The event folds exactly ONCE, and it's the durable copy.
-		expect((result.content.match(/<event /g) || []).length).toBe(1);
-		expect(result.content).toContain("durable-twin-body");
-		expect(result.content).not.toContain("relay-twin-body");
-		// The durable row is the folded+claimed one.
-		expect(result.durableClaims.map((c) => c.id)).toEqual([durableTwinId]);
-		// The relay twin is still marked processed so it can never re-fold.
-		expect(result.processedIds).toContain(relayTwinId);
 	});
 });

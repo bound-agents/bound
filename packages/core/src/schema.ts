@@ -2,7 +2,6 @@ import type { Database } from "bun:sqlite";
 import { HLC_ZERO } from "@bound/shared";
 import { SYNCED_TABLE_NAMES, getPkColumn, validateColumnName } from "./change-log.js";
 import { CANONICAL_RELATIONS } from "./memory-relations";
-import { hasDroppedLegacyRelayTables } from "./relay";
 
 /**
  * Migrate change_log from seq INTEGER PK to hlc TEXT PK.
@@ -703,73 +702,38 @@ export function applySchema(db: Database): void {
 			value      TEXT NOT NULL,
 			set_at     TEXT NOT NULL
 		) STRICT
-	`);
+`);
 
-	// 18-19. relay_outbox / relay_inbox (non-replicated, local-only). Slice 4E:
-	// once this host retires its legacy relay tables (one-way local_flags marker,
-	// set inside dropLegacyRelayTables), a restart must NOT resurrect them — the
-	// durable_work spool is the sole store post-drop. The marker is read from the
-	// SAME db, and local_flags is created above (§17b) so the read sees the table.
-	// relay_cycles (§20, retained telemetry) is created unconditionally below.
-	const legacyRelayRetired = hasDroppedLegacyRelayTables(db);
-	if (!legacyRelayRetired) {
-		// 18. relay_outbox (non-replicated, local-only)
-		db.run(`
-		CREATE TABLE IF NOT EXISTS relay_outbox (
-			id              TEXT PRIMARY KEY,
-			source_site_id  TEXT,
-			target_site_id  TEXT NOT NULL,
-			kind            TEXT NOT NULL,
-			ref_id          TEXT,
-			idempotency_key TEXT,
-			payload         TEXT NOT NULL,
-			created_at      TEXT NOT NULL,
-			expires_at      TEXT NOT NULL,
-			delivered       INTEGER DEFAULT 0
-		) STRICT
-	`);
-
-		db.run(`
-		CREATE INDEX IF NOT EXISTS idx_relay_outbox_target
-		ON relay_outbox(target_site_id, delivered)
-		WHERE delivered = 0
-	`);
-
-		// 19. relay_inbox (non-replicated, local-only)
-		db.run(`
-		CREATE TABLE IF NOT EXISTS relay_inbox (
-			id              TEXT PRIMARY KEY,
-			source_site_id  TEXT NOT NULL,
-			kind            TEXT NOT NULL,
-			ref_id          TEXT,
-			idempotency_key TEXT,
-			payload         TEXT NOT NULL,
-			expires_at      TEXT NOT NULL,
-			received_at     TEXT NOT NULL,
-			processed       INTEGER DEFAULT 0
-		) STRICT
-	`);
-
-		db.run(`
-		CREATE INDEX IF NOT EXISTS idx_relay_inbox_unprocessed
-		ON relay_inbox(processed)
-		WHERE processed = 0
-	`);
-
-		// Event-task wakeups drain inbox entries by (ref_id, kind) in receive
-		// order. This avoids scanning every unprocessed relay row as backlog grows.
-		db.run(`
-		CREATE INDEX IF NOT EXISTS idx_relay_inbox_ref_unprocessed_received
-		ON relay_inbox(ref_id, kind, received_at)
-		WHERE processed = 0
-	`);
-
-		db.run(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_inbox_idempotency
-		ON relay_inbox(idempotency_key)
-		WHERE idempotency_key IS NOT NULL
-	`);
+	// Release N+1 startup refusal: a host reaching this binary with a legacy
+	// relay table that still holds rows skipped the release-N drain-and-drop
+	// migration (slice 4E). Refuse to start rather than silently strand that
+	// undelivered work — the legacy tables and their CRUD no longer exist on
+	// N+1, so those rows would never be delivered. Probe sqlite_master raw so
+	// this check has no dependency on the (deleted) row types. Empty-but-present
+	// tables are a host that reached the gate but crashed before the DROP: drop
+	// them here for cleanliness. `table` is a compile-time literal, not user
+	// input, so interpolating it into COUNT(*) is safe (invariant #4).
+	for (const table of ["relay_outbox", "relay_inbox"] as const) {
+		const exists = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+		if (!exists) continue; // already dropped (4E) — the healthy N→N+1 path
+		const { count } = db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+			count: number;
+		};
+		if (count > 0) {
+			throw new Error(
+				`Refusing to start: legacy relay table "${table}" still holds ${count} row(s). This host skipped the release-N drain-and-drop migration. Roll back to the release-N binary (the first version shipping legacy-relay drain-and-drop, i.e. hasDroppedLegacyRelayTables / commit 5aaecbd3) and let it drain and drop the legacy relay tables before upgrading to this release.`,
+			);
+		}
+		// Table exists but empty (reached the 4E gate, crashed before the DROP, or a
+		// stale schema left it behind): drop it. N+1 never creates these tables, so
+		// there is no create block to contend with.
+		db.run(`DROP TABLE IF EXISTS ${table}`);
 	}
+
+	// relay_outbox / relay_inbox were retired at release N+1 — never created here.
+	// The durable_work spool (below) is the sole store; the startup refusal above
+	// guards a host that reached this binary with populated legacy tables.
+	// relay_cycles (retained telemetry) is created unconditionally below.
 
 	migrateDurableWorkForConsumedState(db);
 
@@ -835,55 +799,19 @@ export function applySchema(db: Database): void {
 		ON relay_cycles(created_at)
 	`);
 
-	// stream_id column migrations (idempotent — ignore if column already exists).
-	// Slice 4E: skip the relay_outbox/relay_inbox ALTERs + stream indexes on a
-	// retired host (the tables are gone); relay_cycles is retained and always runs.
-	if (!legacyRelayRetired) {
-		try {
-			db.run("ALTER TABLE relay_outbox ADD COLUMN stream_id TEXT");
-		} catch {
-			/* already exists */
-		}
-		try {
-			db.run("ALTER TABLE relay_inbox  ADD COLUMN stream_id TEXT");
-		} catch {
-			/* already exists */
-		}
-	}
+	// stream_id column migration (idempotent — ignore if column already exists).
+	// relay_outbox/relay_inbox were retired at release N+1; relay_cycles is
+	// retained telemetry and always migrated.
 	try {
 		db.run("ALTER TABLE relay_cycles ADD COLUMN stream_id TEXT");
 	} catch {
 		/* already exists */
 	}
 
-	if (!legacyRelayRetired) {
-		db.run(`
-			CREATE INDEX IF NOT EXISTS idx_relay_outbox_stream
-			ON relay_outbox(stream_id)
-			WHERE stream_id IS NOT NULL
-		`);
+	// relay_outbox/relay_inbox stream indexes were retired at release N+1.
 
-		db.run(`
-			CREATE INDEX IF NOT EXISTS idx_relay_inbox_stream
-			ON relay_inbox(stream_id, processed)
-			WHERE stream_id IS NOT NULL AND processed = 0
-		`);
-	}
-
-	// trace_context column migrations for OpenTelemetry trace propagation (idempotent).
-	// Slice 4E: skip on a retired host (the tables are gone).
-	if (!legacyRelayRetired) {
-		try {
-			db.run("ALTER TABLE relay_outbox ADD COLUMN trace_context TEXT");
-		} catch {
-			/* already exists */
-		}
-		try {
-			db.run("ALTER TABLE relay_inbox ADD COLUMN trace_context TEXT");
-		} catch {
-			/* already exists */
-		}
-	}
+	// trace_context column migrations for the legacy relay tables were retired at
+	// release N+1 (the tables no longer exist).
 
 	// ââ Platform connector migrations (Phase 1) ââââââââââââââââââââââââââââââ
 
@@ -1082,36 +1010,8 @@ export function applySchema(db: Database): void {
 	// legitimate retries (e.g., filing the same Discord message again later).
 	// Drop the old over-broad index (no delivered filter) if it exists, then
 	// clean up pre-existing undelivered duplicates before creating the new one.
-	// Slice 4E: skip on a retired host — the tables are gone.
-	if (!legacyRelayRetired) {
-		try {
-			db.run("DROP INDEX IF EXISTS idx_relay_outbox_idempotency");
-			db.run(`
-				DELETE FROM relay_outbox WHERE rowid NOT IN (
-					SELECT MIN(rowid) FROM relay_outbox
-					WHERE idempotency_key IS NOT NULL AND delivered = 0
-					GROUP BY idempotency_key, target_site_id
-				) AND idempotency_key IS NOT NULL AND delivered = 0
-			`);
-			db.run(`
-				CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_outbox_idempotency
-				ON relay_outbox(idempotency_key, target_site_id)
-				WHERE idempotency_key IS NOT NULL AND delivered = 0
-			`);
-		} catch {
-			/* index already exists or other non-fatal schema issue */
-		}
-
-		// Performance indexes for relay table cleanup (pruneRelayTables scans 88K+ rows)
-		db.run(`
-			CREATE INDEX IF NOT EXISTS idx_relay_outbox_cleanup
-			ON relay_outbox(delivered, created_at) WHERE delivered = 1
-		`);
-		db.run(`
-			CREATE INDEX IF NOT EXISTS idx_relay_inbox_cleanup
-			ON relay_inbox(processed, received_at) WHERE processed = 1
-		`);
-	}
+	// The relay_outbox idempotency-index rebuild and the relay_outbox/relay_inbox
+	// cleanup indexes were retired at release N+1 (the tables no longer exist).
 
 	// exit_code column on messages (tool_result exit status for UI error styling)
 	try {

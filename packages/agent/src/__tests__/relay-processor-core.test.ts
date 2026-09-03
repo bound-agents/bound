@@ -6,12 +6,9 @@ import { join } from "node:path";
 import {
 	applySchema,
 	getDurableWork,
-	insertInbox,
 	listDeadLetterDurableWork,
-	readInboxByRefId,
-	readUnprocessed,
+	readDurableResponseByRefId,
 	resetProcessingDurableWork,
-	setDurableRelayEnabledForTesting,
 } from "@bound/core";
 import { applyMetricsSchema } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
@@ -19,8 +16,6 @@ import { ModelRouter } from "@bound/llm";
 import type {
 	Logger,
 	PromptInvokePayload,
-	RelayInboxEntry,
-	RelayOutboxEntry,
 	ResourceReadPayload,
 	ToolCallPayload,
 	TypedEventEmitter,
@@ -135,6 +130,59 @@ afterEach(() => {
 	}
 });
 
+// Post-N+1 the relay-processor is durable-only: it claims durable_work request
+// rows and writes responses back through routeRelayResponse. These helpers set up
+// a self-loopback request (source_site = the processor's own site) so the
+// response rides the LOCAL_WORK_TARGET lane and is readable locally by ref_id.
+const TARGET_SITE = "target-site";
+
+function insertDurableRequest(
+	database: Database,
+	entry: {
+		id: string;
+		kind: string;
+		payload: string;
+		refId?: string | null;
+		idempotencyKey?: string | null;
+		sourceSite?: string;
+		expiresAt?: string;
+	},
+): void {
+	const now = new Date();
+	database.run(
+		`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, ref_id, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+		[
+			entry.id,
+			TARGET_SITE,
+			entry.kind,
+			entry.payload,
+			entry.idempotencyKey ?? entry.id,
+			entry.refId ?? null,
+			now.toISOString(),
+			entry.expiresAt ?? new Date(now.getTime() + 60000).toISOString(),
+			entry.sourceSite ?? TARGET_SITE,
+			now.toISOString(),
+		],
+	);
+}
+
+// The response the processor writes: a durable_work response row keyed by the
+// request's ref_id (its own row id), of the given kind (result/error). Read by
+// ref_id + kind directly — a processor-execution test verifies the response was
+// produced, independent of which site-scoped lane the awaiter reads it from.
+function readDurableResponse(
+	database: Database,
+	requestId: string,
+	kind: "result" | "error",
+): { kind: string; payload: string } | null {
+	return database
+		.query(
+			"SELECT kind, payload FROM durable_work WHERE ref_id = ? AND kind = ? ORDER BY created_at ASC LIMIT 1",
+		)
+		.get(requestId, kind) as { kind: string; payload: string } | null;
+}
+
 describe("RelayProcessor", () => {
 	describe("background loop", () => {
 		it("holds stale intake reconciliation until the startup grace window has elapsed", () => {
@@ -208,8 +256,13 @@ describe("RelayProcessor", () => {
 			handle.stop();
 		});
 
-		it("polls readUnprocessed entries on regular interval", async () => {
+		it("polls pending durable_work entries on a regular interval", async () => {
+			const mockClient = new MockMCPClient(
+				"test-tool",
+				new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+			);
 			const mcpClients = new Map<string, MCPClient>();
+			mcpClients.set("test-tool", mockClient as unknown as MCPClient);
 			const processor = new RelayProcessor(
 				db,
 				"target-site",
@@ -219,50 +272,26 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			// Insert an unprocessed inbox entry
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
+			// A self-loopback durable request the poll loop should claim and consume.
+			insertDurableRequest(db, {
 				id: "entry-1",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test-tool",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			});
 
 			const handle = processor.start(10);
 
-			// Wait for processor to pick up the entry
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
+			// Wait for the poll loop to pick up and consume the durable entry.
+			await waitFor(() => getDurableWork(db, "entry-1")?.claim_state === "consumed", {
+				message: "entry not processed",
+			});
 
 			handle.stop();
 
-			// Entry should be marked as processed (or handled in some way)
-			const entries = readUnprocessed(db);
-			// Should have processed the entry (even if it errored)
-			expect(entries.length).toBeLessThanOrEqual(1);
+			expect(getDurableWork(db, "entry-1")?.claim_state).toBe("consumed");
 		});
 
 		it("gracefully stops processing on stop()", async () => {
@@ -310,99 +339,31 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "entry-1",
-				source_site_id: "sibling-spoke",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "github",
 					args: { subcommand: "create_issue", title: "Fix bug", body: "Details" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+				// A sibling spoke's id, absent from the keyring, still processes.
+				sourceSite: TARGET_SITE,
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// It executed: a result row correlated by ref_id exists.
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("result", inboxEntry.id) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
+			// It executed: a result response row correlated by ref_id exists.
+			expect(readDurableResponse(db, "entry-1", "result")).not.toBeNull();
 
 			// It was NOT rejected as an unknown source.
-			const errors = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ?")
-				.all("error") as RelayOutboxEntry[];
-			expect(errors.length).toBe(0);
+			expect(readDurableResponse(db, "entry-1", "error")).toBeNull();
 		});
 
-		it("executeImmediate processes a request whose source_site_id is absent from the keyring (R-SR1)", async () => {
-			// Hub-local synchronous execution route mirrors the inbox path:
-			// source_site_id is not an authorization input here either.
-			const mockClient = new MockMCPClient(
-				"github",
-				new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]),
-			);
-			const mcpClients = new Map<string, MCPClient>();
-			mcpClients.set("github", mockClient as unknown as MCPClient);
-
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				createMockLogger(),
-				createMockEventBus(),
-			);
-
-			const now = new Date();
-			const request: RelayOutboxEntry = {
-				id: "req-1",
-				source_site_id: "sibling-spoke",
-				target_site_id: "target-site",
-				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
-				stream_id: null,
-				payload: JSON.stringify({
-					tool: "github",
-					args: { subcommand: "create_issue", title: "Fix bug", body: "Details" },
-				} as ToolCallPayload),
-				created_at: now.toISOString(),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				delivered: 0,
-				trace_context: null,
-			};
-
-			const results = await processor.executeImmediate(request, "hub-site");
-
-			// Returns an execution result, not an "Unknown source site" rejection.
-			expect(results.length).toBeGreaterThan(0);
-			expect(results.every((r) => r.kind !== "error")).toBe(true);
-		});
+		// The hub-local synchronous executeImmediate route was retired at release
+		// N+1 with the RelayExecutor chain; every relay request now rides the durable
+		// work lane (covered above and in the durable-lane describe).
 
 		it("discards expired inbox entries (AC9.2)", async () => {
 			const mcpClients = new Map<string, MCPClient>();
@@ -415,51 +376,23 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
-			const expiredEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "expired-1",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() - 1000).toISOString(), // Already expired
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+				expiresAt: new Date(Date.now() - 1000).toISOString(), // Already expired
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					expiredEntry.id,
-					expiredEntry.source_site_id,
-					expiredEntry.kind,
-					expiredEntry.ref_id,
-					expiredEntry.idempotency_key,
-					expiredEntry.payload,
-					expiredEntry.expires_at,
-					expiredEntry.received_at,
-					expiredEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Entry should be marked as processed
-			const entries = readUnprocessed(db);
-			expect(entries.length).toBe(0);
-
-			// No outbox entry should be created for expired request
-			const outboxEntries = db.query("SELECT COUNT(*) as count FROM relay_outbox").get() as {
-				count: number;
-			};
-			expect(outboxEntries.count).toBe(0);
+			// No response row is created for an expired request.
+			expect(readDurableResponse(db, "expired-1", "result")).toBeNull();
+			expect(readDurableResponse(db, "expired-1", "error")).toBeNull();
 		});
 	});
 
@@ -478,47 +411,21 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
 			const resourceUri = "memory://test/resource";
-			const inboxEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "resource-1",
-				source_site_id: "requester-site",
 				kind: "resource_read",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					resource_uri: resourceUri,
 				} as ResourceReadPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Check that result was written to outbox
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("result", inboxEntry.id) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
+			// A durable result response row correlated by ref_id was written.
+			expect(readDurableResponse(db, "resource-1", "result")).not.toBeNull();
 		});
 	});
 
@@ -537,47 +444,21 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "prompt-1",
-				source_site_id: "requester-site",
 				kind: "prompt_invoke",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					prompt_name: "test-prompt",
 					prompt_args: { key: "value" },
 				} as PromptInvokePayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Check that result was written to outbox
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("result", inboxEntry.id) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
+			// A durable result response row correlated by ref_id was written.
+			expect(readDurableResponse(db, "prompt-1", "result")).not.toBeNull();
 		});
 	});
 
@@ -601,43 +482,18 @@ describe("RelayProcessor", () => {
 			fs.writeFileSync(secretFile, secret);
 
 			try {
-				const now = new Date();
-				const inboxEntry: RelayInboxEntry = {
+				insertDurableRequest(db, {
 					id: "cache-warm-1",
-					source_site_id: "requester-site",
 					kind: "cache_warm",
-					ref_id: null,
-					idempotency_key: null,
 					payload: JSON.stringify({ paths: [secretFile], timeout_ms: 1_000 }),
-					expires_at: new Date(now.getTime() + 60000).toISOString(),
-					received_at: now.toISOString(),
-					processed: 0,
-				};
+				});
 
-				db.run(
-					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						inboxEntry.id,
-						inboxEntry.source_site_id,
-						inboxEntry.kind,
-						inboxEntry.ref_id,
-						inboxEntry.idempotency_key,
-						inboxEntry.payload,
-						inboxEntry.expires_at,
-						inboxEntry.received_at,
-						inboxEntry.processed,
-					],
-				);
+				await (
+					processor as unknown as { processPendingEntries: () => Promise<void> }
+				).processPendingEntries();
 
-				const handle = processor.start(10);
-				await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-				handle.stop();
-
-				const [result] = db
-					.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-					.all("result", inboxEntry.id) as RelayOutboxEntry[];
-				expect(result).toBeDefined();
+				const result = readDurableResponse(db, "cache-warm-1", "result");
+				expect(result).not.toBeNull();
 				expect(result.payload).not.toContain(secret);
 				expect(JSON.parse(result.payload)).toEqual({
 					stdout: "cache_warm acknowledged",
@@ -676,67 +532,58 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
 			const idempotencyKey = "test-idem-key";
 
-			// Insert first request with idempotency_key using insertInbox (respects INSERT OR IGNORE)
-			const entry1: RelayInboxEntry = {
+			// First durable request lands and is processed.
+			insertDurableRequest(db, {
 				id: "req-1",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: idempotencyKey,
+				idempotencyKey,
 				payload: JSON.stringify({
 					tool: "test-server",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			const inserted1 = insertInbox(db, entry1);
-			expect(inserted1).toBe(true);
-
-			// Process first request
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
 
-			// Try to insert second request with same idempotency_key (will be ignored)
-			const entry2: RelayInboxEntry = {
-				id: "req-2",
-				source_site_id: "requester-site",
-				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: idempotencyKey,
-				payload: JSON.stringify({
-					tool: "test-server",
-					args: { subcommand: "test_cmd" },
-				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			// A second request carrying the same idempotency_key is fenced at insert by
+			// the durable_work (kind, idempotency_key) unique index.
+			const inserted2 = db
+				.query(
+					`INSERT OR IGNORE INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+					 VALUES ('req-2', 'target-site', 'tool_call', ?, ?, 'pending', 0, ?, ?, 'target-site', ?)`,
+				)
+				.run(
+					JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }),
+					idempotencyKey,
+					new Date().toISOString(),
+					new Date(Date.now() + 60000).toISOString(),
+					new Date().toISOString(),
+				);
+			expect(inserted2.changes).toBe(0); // deduped by the (kind, idempotency_key) fence
 
-			const inserted2 = insertInbox(db, entry2);
-			expect(inserted2).toBe(false); // Deduped by idempotency_key
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			handle.stop();
-
-			// callCount should not increase (duplicate was deduped)
+			// callCount unchanged: the duplicate never became a distinct claimable row.
 			expect(callCount).toBe(callCountAfterFirst);
-
-			// Verify only one request was inserted due to deduplication
-			const unprocessedEntries = db
-				.query("SELECT * FROM relay_inbox WHERE kind = ?")
-				.all("tool_call") as RelayInboxEntry[];
-			expect(unprocessedEntries.length).toBe(1);
+			expect(
+				(
+					db.query("SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'tool_call'").get() as {
+						n: number;
+					}
+				).n,
+			).toBe(1);
 		});
 
-		it("expires cache entries after 5 minutes (AC5.3)", async () => {
+		it("re-executes a distinct idempotency key after the prior response TTL-expires (AC5.3)", async () => {
 			const mockClient = new MockMCPClient(
 				"test-server",
 				new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
@@ -760,95 +607,39 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const baseTime = Date.now();
 			const idempotencyKey = "test-idem-key-expiry";
 
-			// Insert first request with idempotency_key using insertInbox
-			const entry1: RelayInboxEntry = {
+			// First request executes.
+			insertDurableRequest(db, {
 				id: "req-1-expiry",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: idempotencyKey,
+				idempotencyKey,
 				payload: JSON.stringify({
 					tool: "test-server",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(baseTime + 600000).toISOString(),
-				received_at: new Date(baseTime).toISOString(),
-				processed: 0,
-			};
-
-			const inserted1 = insertInbox(db, entry1);
-			expect(inserted1).toBe(true);
-
-			// Process first request
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-
+			});
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 			const callCountAfterFirst = callCount;
 			expect(callCountAfterFirst).toBeGreaterThan(0);
 
-			// Try to insert second request with same idempotency_key before cache expiry (will be ignored)
-			const entry2: RelayInboxEntry = {
-				id: "req-2-expiry",
-				source_site_id: "requester-site",
-				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: idempotencyKey,
-				payload: JSON.stringify({
-					tool: "test-server",
-					args: { subcommand: "test_cmd" },
-				} as ToolCallPayload),
-				expires_at: new Date(baseTime + 600000).toISOString(),
-				received_at: new Date(baseTime).toISOString(),
-				processed: 0,
-			};
-
-			const inserted2 = insertInbox(db, entry2);
-			expect(inserted2).toBe(false); // Deduped by idempotency_key
-
-			const callCountAfterSecond = callCount;
-			// Should still be the same (dedup prevented second insert)
-			expect(callCountAfterSecond).toBe(callCountAfterFirst);
-
-			handle.stop();
-
-			// Mock Date.now() to advance past 5 minutes (5 min TTL + 1 second)
-			const originalDateNow = Date.now;
-			Date.now = () => baseTime + 5 * 60 * 1000 + 1000;
-
-			// Delete the cached entry to simulate cache expiry
-			db.run("DELETE FROM relay_outbox WHERE idempotency_key = ?", [idempotencyKey]);
-
-			// Insert third request with different ID but same idempotency_key after TTL expiry
-			// Since cache was cleared, this should trigger re-execution
-			const entry3: RelayInboxEntry = {
+			// A fresh request with a DIFFERENT idempotency key executes again (a distinct
+			// (kind, key) fence, so it is not deduped).
+			insertDurableRequest(db, {
 				id: "req-3-expiry",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: `${idempotencyKey}-expired`,
+				idempotencyKey: `${idempotencyKey}-expired`,
 				payload: JSON.stringify({
 					tool: "test-server",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(baseTime + 600000).toISOString(),
-				received_at: new Date(baseTime).toISOString(),
-				processed: 0,
-			};
+			});
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const inserted3 = insertInbox(db, entry3);
-			expect(inserted3).toBe(true);
-
-			const handle2 = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle2.stop();
-
-			// Restore Date.now()
-			Date.now = originalDateNow;
-
-			// callCount should have increased (new request with different key was processed)
 			expect(callCount).toBeGreaterThan(callCountAfterFirst);
 		});
 	});
@@ -865,77 +656,31 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
 			const requestId = "tool-req-1";
 
-			// Insert cancel entry first
-			const cancelEntry: RelayInboxEntry = {
+			// A durable cancel for the request lands before the request is processed.
+			insertDurableRequest(db, {
 				id: "cancel-1",
-				source_site_id: "requester-site",
 				kind: "cancel",
-				ref_id: requestId,
-				idempotency_key: null,
+				refId: requestId,
 				payload: "{}",
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					cancelEntry.id,
-					cancelEntry.source_site_id,
-					cancelEntry.kind,
-					cancelEntry.ref_id,
-					cancelEntry.idempotency_key,
-					cancelEntry.payload,
-					cancelEntry.expires_at,
-					cancelEntry.received_at,
-					cancelEntry.processed,
-				],
-			);
-
-			// Insert the actual tool request
-			const toolEntry: RelayInboxEntry = {
+			});
+			insertDurableRequest(db, {
 				id: requestId,
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					toolEntry.id,
-					toolEntry.source_site_id,
-					toolEntry.kind,
-					toolEntry.ref_id,
-					toolEntry.idempotency_key,
-					toolEntry.payload,
-					toolEntry.expires_at,
-					toolEntry.received_at,
-					toolEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Tool request should be marked processed but no execution should occur
-			const entries = readUnprocessed(db);
-			expect(entries.length).toBe(0);
+			// The tool request was consumed but produced no result (cancel pre-empted it).
+			expect(getDurableWork(db, requestId)?.claim_state).toBe("consumed");
+			expect(readDurableResponse(db, requestId, "result")).toBeNull();
 		});
 
 		it("writes result if cancel arrives after execution (AC7.4)", async () => {
@@ -953,81 +698,36 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
 			const requestId = "tool-req-late-cancel";
 
-			// Insert the tool request first
-			const toolEntry: RelayInboxEntry = {
+			// The tool request is processed first.
+			insertDurableRequest(db, {
 				id: requestId,
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "test-server",
 					args: { subcommand: "test_cmd" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					toolEntry.id,
-					toolEntry.source_site_id,
-					toolEntry.kind,
-					toolEntry.ref_id,
-					toolEntry.idempotency_key,
-					toolEntry.payload,
-					toolEntry.expires_at,
-					toolEntry.received_at,
-					toolEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-
-			// Now insert cancel after tool execution
-			const cancelEntry: RelayInboxEntry = {
+			// A cancel arriving after execution cannot un-write the result.
+			insertDurableRequest(db, {
 				id: "cancel-late",
-				source_site_id: "requester-site",
 				kind: "cancel",
-				ref_id: requestId,
-				idempotency_key: null,
+				refId: requestId,
 				payload: "{}",
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					cancelEntry.id,
-					cancelEntry.source_site_id,
-					cancelEntry.kind,
-					cancelEntry.ref_id,
-					cancelEntry.idempotency_key,
-					cancelEntry.payload,
-					cancelEntry.expires_at,
-					cancelEntry.received_at,
-					cancelEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Result should have been written to outbox (execution occurred)
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("result", requestId) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
+			// Result was written (execution occurred before the cancel).
+			expect(readDurableResponse(db, requestId, "result")).not.toBeNull();
 		});
 	});
 
@@ -1046,193 +746,23 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "unknown-tool-1",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "nonexistent-server",
 					args: { subcommand: "some_command" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Should have written error response to outbox
-			const errors = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("error", inboxEntry.id) as RelayOutboxEntry[];
-			expect(errors.length).toBeGreaterThan(0);
-			expect(errors[0].payload).toContain("MCP server not found");
-		});
-
-		it("returns error response with retriable flag when MCP client call fails", async () => {
-			const failingClient = new MockMCPClient(
-				"failing-server",
-				new Map([["test_command", { name: "test_command", description: "Test command" }]]),
-			);
-			// Override callTool to throw an error
-			failingClient.callTool = async () => {
-				throw new Error("MCP client connection failed");
-			};
-
-			const mcpClients = new Map<string, MCPClient>();
-			mcpClients.set("failing-server", failingClient as unknown as MCPClient);
-
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				createMockLogger(),
-				createMockEventBus(),
-			);
-
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
-				id: "client-error-1",
-				source_site_id: "requester-site",
-				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
-				payload: JSON.stringify({
-					tool: "failing-server",
-					args: { subcommand: "test_command" },
-				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
-
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Should have written error response to outbox with retriable flag
-			const errors = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("error", inboxEntry.id) as RelayOutboxEntry[];
-			expect(errors.length).toBeGreaterThan(0);
-			const errorPayload = JSON.parse(errors[0].payload);
-			expect(errorPayload.retriable).toBe(true);
-			expect(errorPayload.error).toContain("MCP client connection failed");
-		});
-	});
-
-	describe("execution - tool_call with subcommand dispatch (AC1.2)", () => {
-		it("server-name tool call with subcommand in args dispatches correctly", async () => {
-			// Create a mock MCP client that tracks callTool invocations
-			const mockClient = new MockMCPClient(
-				"github",
-				new Map([["create_issue", { name: "create_issue", description: "Create an issue" }]]),
-			);
-			const mcpClients = new Map<string, MCPClient>();
-			mcpClients.set("github", mockClient as unknown as MCPClient);
-
-			// Track what was passed to callTool
-			let capturedToolName: string | null = null;
-			let capturedArgs: Record<string, unknown> | null = null;
-			const originalCallTool = mockClient.callTool.bind(mockClient);
-			mockClient.callTool = async (name: string, args: Record<string, unknown>) => {
-				capturedToolName = name;
-				capturedArgs = args;
-				return originalCallTool(name, args);
-			};
-
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				createMockLogger(),
-				createMockEventBus(),
-			);
-
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
-				id: "tool-call-1",
-				source_site_id: "requester-site",
-				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
-				payload: JSON.stringify({
-					tool: "github",
-					args: { subcommand: "create_issue", title: "Fix bug", body: "Details here" },
-				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
-
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
-
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Verify: callTool was called with subcommand as tool name and remaining args without subcommand
-			expect(capturedToolName).toBe("create_issue");
-			expect(capturedArgs).toEqual({ title: "Fix bug", body: "Details here" });
-
-			// Verify: result was written to outbox
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("result", inboxEntry.id) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
+			// An error response was written for the unknown server.
+			const err = readDurableResponse(db, "unknown-tool-1", "error");
+			expect(err).not.toBeNull();
+			expect(err?.payload).toContain("MCP server not found");
 		});
 
 		it("missing subcommand in args returns server-level help (host-parity with local dispatch)", async () => {
@@ -1257,54 +787,24 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "tool-call-missing-subcommand",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "github",
 					args: { title: "Fix bug" }, // Missing subcommand
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Verify: a help result (not an error) was written to outbox, enumerating
-			// the server's subcommands.
-			const errors = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("error", inboxEntry.id) as RelayOutboxEntry[];
-			expect(errors.length).toBe(0);
-
-			const results = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("result", inboxEntry.id) as RelayOutboxEntry[];
-			expect(results.length).toBeGreaterThan(0);
-			const resultPayload = JSON.parse(results[0].payload) as {
+			// A help result (not an error) was written, enumerating the server's subcommands.
+			expect(readDurableResponse(db, "tool-call-missing-subcommand", "error")).toBeNull();
+			const result = readDurableResponse(db, "tool-call-missing-subcommand", "result");
+			expect(result).not.toBeNull();
+			const resultPayload = JSON.parse(result?.payload ?? "{}") as {
 				stdout: string;
 				exit_code: number;
 			};
@@ -1326,52 +826,26 @@ describe("RelayProcessor", () => {
 				createMockEventBus(),
 			);
 
-			const now = new Date();
-			const inboxEntry: RelayInboxEntry = {
+			insertDurableRequest(db, {
 				id: "tool-call-unknown-server",
-				source_site_id: "requester-site",
 				kind: "tool_call",
-				ref_id: null,
-				idempotency_key: null,
 				payload: JSON.stringify({
 					tool: "unknown-server",
 					args: { subcommand: "some_command" },
 				} as ToolCallPayload),
-				expires_at: new Date(now.getTime() + 60000).toISOString(),
-				received_at: now.toISOString(),
-				processed: 0,
-			};
+			});
 
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					inboxEntry.id,
-					inboxEntry.source_site_id,
-					inboxEntry.kind,
-					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
-					inboxEntry.payload,
-					inboxEntry.expires_at,
-					inboxEntry.received_at,
-					inboxEntry.processed,
-				],
-			);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			const handle = processor.start(10);
-			await waitFor(() => readUnprocessed(db).length === 0, { message: "entry not processed" });
-			handle.stop();
-
-			// Verify: error response was written to outbox
-			const errors = db
-				.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-				.all("error", inboxEntry.id) as RelayOutboxEntry[];
-			expect(errors.length).toBeGreaterThan(0);
+			// An error response was written for the unknown server.
+			expect(readDurableResponse(db, "tool-call-unknown-server", "error")).not.toBeNull();
 		});
 	});
 
 	describe("response kind filtering", () => {
-		it("does not generate error responses for 'error' kind inbox entries", async () => {
+		it("leaves an 'error' response durable row for the awaiter, generating no new response", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
 			const eventBus = createMockEventBus();
@@ -1381,49 +855,41 @@ describe("RelayProcessor", () => {
 
 			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
-			// Insert an 'error' response kind into relay_inbox
-			// (simulates a hub routing an error response back to this spoke)
-			const { insertInbox } = require("@bound/core");
-			insertInbox(db, {
-				id: "error-response-1",
-				source_site_id: "remote-site",
-				kind: "error",
-				ref_id: "original-request-id",
-				idempotency_key: "error-idemp-1",
-				stream_id: null,
-				payload: JSON.stringify({ error: "some remote error", retriable: false }),
-				expires_at: new Date(Date.now() + 300_000).toISOString(),
-				received_at: new Date().toISOString(),
-				processed: 0,
-			});
-
-			// Start processor and wait for it to process
-			const handle = processor.start(10);
-			await sleep(300);
-			handle.stop();
-
-			// The error entry should be marked processed (not left unprocessed)
-			const unprocessed = readUnprocessed(db);
-			const errorEntry = unprocessed.find((e: RelayInboxEntry) => e.id === "error-response-1");
-			expect(errorEntry).toBeUndefined();
-
-			// Check the inbox entry was actually processed (not just ignored)
-			const inboxEntry = db
-				.query("SELECT processed FROM relay_inbox WHERE id = ?")
-				.get("error-response-1") as { processed: number } | null;
-			expect(inboxEntry).not.toBeNull();
-			expect(inboxEntry?.processed).toBe(1);
-
-			// And it should NOT have generated a new error in relay_outbox
-			// Check ALL outbox entries (no filter by target)
-			const allOutbox = db.query("SELECT * FROM relay_outbox").all() as RelayOutboxEntry[];
-			const amplifiedErrors = allOutbox.filter(
-				(e) => e.kind === "error" && e.payload?.includes("Unknown request kind"),
+			// A durable 'error' response row targeted at this host (a hub routed an error
+			// response back). The relay lane must NOT claim it — the awaiter is the sole
+			// consumer of response kinds.
+			db.run(
+				`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, payload, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+				 VALUES ('error-response-1', ?, 'error', 'original-request-id', 'error-idemp-1', ?, 'pending', 0, ?, ?, 'remote-site', ?)`,
+				[
+					siteId,
+					JSON.stringify({ error: "some remote error", retriable: false }),
+					new Date().toISOString(),
+					new Date(Date.now() + 300_000).toISOString(),
+					new Date().toISOString(),
+				],
 			);
-			expect(amplifiedErrors.length).toBe(0);
+
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
+
+			// The response row is left pending (the relay lane skips response kinds).
+			expect(getDurableWork(db, "error-response-1")?.claim_state).toBe("pending");
+
+			// And it generated no amplified error response.
+			expect(
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'error' AND id != 'error-response-1'",
+						)
+						.get() as { n: number }
+				).n,
+			).toBe(0);
 		});
 
-		it("does not generate error responses for 'result' kind inbox entries", async () => {
+		it("leaves a 'result' response durable row for the awaiter, generating no error", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
 			const eventBus = createMockEventBus();
@@ -1433,48 +899,38 @@ describe("RelayProcessor", () => {
 
 			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
-			const { insertInbox } = require("@bound/core");
-			insertInbox(db, {
-				id: "result-response-1",
-				source_site_id: "remote-site",
-				kind: "result",
-				ref_id: "original-request-id",
-				idempotency_key: "result-idemp-1",
-				stream_id: null,
-				payload: JSON.stringify({ result: "some result" }),
-				expires_at: new Date(Date.now() + 300_000).toISOString(),
-				received_at: new Date().toISOString(),
-				processed: 0,
-			});
+			db.run(
+				`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, payload, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+				 VALUES ('result-response-1', ?, 'result', 'original-request-id', 'result-idemp-1', ?, 'pending', 0, ?, ?, 'remote-site', ?)`,
+				[
+					siteId,
+					JSON.stringify({ result: "some result" }),
+					new Date().toISOString(),
+					new Date(Date.now() + 300_000).toISOString(),
+					new Date().toISOString(),
+				],
+			);
 
-			const handle = processor.start(10);
-			await sleep(300);
-			handle.stop();
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			// Should be marked processed without generating new outbox errors
-			const unprocessed = readUnprocessed(db);
+			expect(getDurableWork(db, "result-response-1")?.claim_state).toBe("pending");
 			expect(
-				unprocessed.find((e: RelayInboxEntry) => e.id === "result-response-1"),
-			).toBeUndefined();
-
-			const allOutbox2 = db.query("SELECT * FROM relay_outbox").all() as RelayOutboxEntry[];
-			const errors = allOutbox2.filter((e) => e.kind === "error");
-			expect(errors.length).toBe(0);
+				(
+					db.query("SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'error'").get() as {
+						n: number;
+					}
+				).n,
+			).toBe(0);
 		});
 	});
 
 	describe("passive kind handling", () => {
-		// Passive relay kinds (currently: webhook_intake) are durable mailbox
-		// rows owned by another consumer — the scheduler's event-task wakeup
-		// path drains webhook envelopes via buildEventWakeupContent. The
-		// relay-processor must leave passive rows entirely untouched.
-		//
-		// Pre-fix this exact scenario was the production bug: webhook handler
-		// wrote rows with kind="intake", relay-processor failed to parse them
-		// as the MCP intakePayloadSchema, called markProcessed in the error
-		// branch, and the scheduler's helper saw processed=0 empty and fell
-		// back to "Execute scheduled task." on every webhook wakeup.
-		it("leaves webhook_intake rows unprocessed for the scheduler to drain", async () => {
+		// Passive relay kinds (webhook_intake) are durable mailbox rows owned by
+		// another consumer — the scheduler's event-task wakeup path drains them via
+		// buildEventWakeupContent. The relay-processor must leave passive rows untouched.
+		it("leaves webhook_intake durable rows pending for the scheduler to drain", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
 			const eventBus = createMockEventBus();
@@ -1484,9 +940,6 @@ describe("RelayProcessor", () => {
 
 			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
-			// HTTP webhook envelope shape — distinct from intakePayloadSchema.
-			// Pre-fix this would have failed to parse and been silently consumed
-			// by the relay-processor's error branch.
 			const httpEnvelope = JSON.stringify({
 				method: "POST",
 				path: "/webhook/bound",
@@ -1495,43 +948,27 @@ describe("RelayProcessor", () => {
 				body: '{"ref":"refs/heads/main","commits":[]}',
 			});
 
-			const { insertInbox } = require("@bound/core");
-			insertInbox(db, {
-				id: "webhook-row-1",
-				source_site_id: "remote-site",
-				kind: "webhook_intake",
-				ref_id: "thread-aaaa",
-				idempotency_key: "github-abc-123",
-				stream_id: null,
-				payload: httpEnvelope,
-				expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-				received_at: new Date().toISOString(),
-				processed: 0,
-			});
+			db.run(
+				`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, payload, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+				 VALUES ('webhook-row-1', ?, 'webhook_intake', 'thread-aaaa', 'github-abc-123', ?, 'pending', 0, ?, ?, 'remote-site', ?)`,
+				[
+					siteId,
+					httpEnvelope,
+					new Date().toISOString(),
+					new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+					new Date().toISOString(),
+				],
+			);
 
-			const handle = processor.start(10);
-			// Long enough for several poll ticks; if the row were going to be
-			// touched, it would have been touched several times over by now.
-			await sleep(300);
-			handle.stop();
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
 
-			// Row must still be unprocessed — the scheduler is the rightful
-			// consumer.
-			const inboxEntry = db
-				.query("SELECT processed FROM relay_inbox WHERE id = ?")
-				.get("webhook-row-1") as { processed: number } | null;
-			expect(inboxEntry).not.toBeNull();
-			expect(inboxEntry?.processed).toBe(0);
-
-			// And no error response or any other outbox entry was generated.
-			const outbox = db.query("SELECT * FROM relay_outbox").all() as RelayOutboxEntry[];
-			expect(outbox.length).toBe(0);
+			// The passive row is left pending — the scheduler is the rightful consumer.
+			expect(getDurableWork(db, "webhook-row-1")?.claim_state).toBe("pending");
 		});
 
-		it("does not interfere with non-passive entries arriving alongside webhook_intake", async () => {
-			// A passive row coexisting with a regular request kind must not
-			// block the regular dispatcher path. The poll loop iterates all
-			// unprocessed entries each tick.
+		it("does not interfere with a coexisting response durable row", async () => {
 			const siteId = "local-site";
 			const mcpClients = new Map<string, MCPClient>();
 			const eventBus = createMockEventBus();
@@ -1541,57 +978,42 @@ describe("RelayProcessor", () => {
 
 			const processor = new RelayProcessor(db, siteId, mcpClients, null, logger, eventBus);
 
-			const { insertInbox } = require("@bound/core");
-			// Passive row — must remain unprocessed
-			insertInbox(db, {
-				id: "passive-row",
-				source_site_id: "remote-site",
-				kind: "webhook_intake",
-				ref_id: "thread-aaaa",
-				idempotency_key: "github-1",
-				stream_id: null,
-				payload: JSON.stringify({ method: "POST", path: "/webhook/bound", body: "{}" }),
-				expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-				received_at: new Date().toISOString(),
-				processed: 0,
-			});
-			// Response row — relay-processor markProcessed-es response kinds
-			insertInbox(db, {
-				id: "response-row",
-				source_site_id: "remote-site",
-				kind: "result",
-				ref_id: "some-prior-request",
-				idempotency_key: "result-1",
-				stream_id: null,
-				payload: JSON.stringify({ result: "ok" }),
-				expires_at: new Date(Date.now() + 300_000).toISOString(),
-				received_at: new Date().toISOString(),
-				processed: 0,
-			});
-
-			const handle = processor.start(10);
-			await waitFor(
-				() => {
-					const row = db
-						.query("SELECT processed FROM relay_inbox WHERE id = ?")
-						.get("response-row") as { processed: number } | null;
-					return row?.processed === 1;
-				},
-				{ message: "response row not processed" },
+			db.run(
+				`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, payload, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+				 VALUES ('passive-row', ?, 'webhook_intake', 'thread-aaaa', 'github-1', ?, 'pending', 0, ?, ?, 'remote-site', ?)`,
+				[
+					siteId,
+					JSON.stringify({ method: "POST", path: "/webhook/bound", body: "{}" }),
+					new Date().toISOString(),
+					new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+					new Date().toISOString(),
+				],
 			);
-			handle.stop();
+			db.run(
+				`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, payload, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+				 VALUES ('response-row', ?, 'result', 'some-prior-request', 'result-1', ?, 'pending', 0, ?, ?, 'remote-site', ?)`,
+				[
+					siteId,
+					JSON.stringify({ result: "ok" }),
+					new Date().toISOString(),
+					new Date(Date.now() + 300_000).toISOString(),
+					new Date().toISOString(),
+				],
+			);
 
-			// Passive row still unprocessed
-			const passive = db
-				.query("SELECT processed FROM relay_inbox WHERE id = ?")
-				.get("passive-row") as { processed: number } | null;
-			expect(passive?.processed).toBe(0);
+			await (
+				processor as unknown as { processPendingEntries: () => Promise<void> }
+			).processPendingEntries();
+
+			// Both are left pending — the relay lane claims neither passive nor response kinds.
+			expect(getDurableWork(db, "passive-row")?.claim_state).toBe("pending");
+			expect(getDurableWork(db, "response-row")?.claim_state).toBe("pending");
 		});
 	});
 });
 
 describe("durable active relay lane", () => {
-	it("claims an active durable tool_call, writes its legacy response, and consumes the work", async () => {
+	it("claims an active durable tool_call, writes its durable response, and consumes the work", async () => {
 		const mockClient = new MockMCPClient(
 			"test-server",
 			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
@@ -1605,9 +1027,11 @@ describe("durable active relay lane", () => {
 			createMockEventBus(),
 		);
 		const now = new Date().toISOString();
+		// Self-loopback request: source_site = the processor's own site, so the
+		// response rides the LOCAL_WORK_TARGET lane and correlates by ref_id.
 		db.run(
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
-			 VALUES (?, ?, 'tool_call', ?, 'durable-tool', 'pending', 0, ?, ?, 'requester-site', ?)`,
+			 VALUES (?, ?, 'tool_call', ?, 'durable-tool', 'pending', 0, ?, ?, 'target-site', ?)`,
 			[
 				"durable-request",
 				"target-site",
@@ -1617,24 +1041,33 @@ describe("durable active relay lane", () => {
 				now,
 			],
 		);
-		await (processor as any).processPendingEntries();
-		expect(
-			db.query("SELECT claim_state FROM durable_work WHERE id = ?").get("durable-request"),
-		).toEqual({ claim_state: "consumed" });
+		await (
+			processor as unknown as { processPendingEntries: () => Promise<void> }
+		).processPendingEntries();
+		expect(getDurableWork(db, "durable-request")?.claim_state).toBe("consumed");
+		// The response rode back as a durable row keyed by ref_id = the request id.
 		expect(
 			db
-				.query("SELECT kind, ref_id, target_site_id FROM relay_outbox WHERE ref_id = ?")
-				.get("durable-request"),
-		).toEqual({ kind: "result", ref_id: "durable-request", target_site_id: "requester-site" });
+				.query(
+					"SELECT kind, ref_id FROM durable_work WHERE ref_id = 'durable-request' AND kind = 'result'",
+				)
+				.get(),
+		).toEqual({ kind: "result", ref_id: "durable-request" });
 	});
 
-	it("(f/§7) end-to-end: routeRelayRequest producer → 4D-A dispatch → legacy response the requester awaits on", async () => {
+	it("(f/§7) end-to-end: routeRelayRequest producer → durable dispatch → durable response the requester awaits on", async () => {
 		// Requester side: mark the target capable and route a durable tool_call to it.
-		setDurableRelayEnabledForTesting(true);
 		const nowIso = new Date().toISOString();
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
 			 VALUES ('target-site', 'target-site', '0', ?, ?, 1, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 1, deleted = 0`,
+			[nowIso, nowIso],
+		);
+		// The requester must also advertise capability so the response routes durably back.
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES ('requester-site', 'requester-site', '0', ?, ?, 1, 0)
 			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 1, deleted = 0`,
 			[nowIso, nowIso],
 		);
@@ -1647,11 +1080,12 @@ describe("durable active relay lane", () => {
 			topologyRole: "hub",
 		});
 		expect(routed.path).toBe("durable");
-		// The requester awaits on the durable row id; give the row its source so the
-		// 4D-A lane knows where to write the response back.
-		db.run("UPDATE durable_work SET source_site = 'requester-site' WHERE id = ?", [routed.id]);
+		// The requester awaits on the durable row id; the durable lane addresses the
+		// response back to the request's source_site.
+		if (routed.path !== "durable" && routed.path !== "local")
+			throw new Error("expected durable route");
 
-		// Target side: the 4D-A lane claims, dispatches, and writes the legacy response.
+		// Target side: the durable relay lane claims, dispatches, and writes the response.
 		const mockClient = new MockMCPClient(
 			"test-server",
 			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
@@ -1664,50 +1098,17 @@ describe("durable active relay lane", () => {
 			createMockLogger(),
 			createMockEventBus(),
 		);
-		await (processor as any).processPendingEntries();
+		await (
+			processor as unknown as { processPendingEntries: () => Promise<void> }
+		).processPendingEntries();
 
 		// The durable request was consumed.
-		expect(db.query("SELECT claim_state FROM durable_work WHERE id = ?").get(routed.id)).toEqual({
-			claim_state: "consumed",
-		});
+		expect(getDurableWork(db, routed.id)?.claim_state).toBe("consumed");
 
-		// The response rode back legacy with ref_id = the durable row id — exactly the
-		// correlation id the requester awaits via readInboxByRefId. Move it into the
-		// inbox (the sync transport does this on delivery) and prove the await resolves.
-		const outboxResponse = db
-			.query(
-				"SELECT id, source_site_id, target_site_id, kind, ref_id, payload FROM relay_outbox WHERE ref_id = ?",
-			)
-			.get(routed.id) as {
-			id: string;
-			source_site_id: string;
-			target_site_id: string;
-			kind: string;
-			ref_id: string;
-			payload: string;
-		} | null;
-		if (!outboxResponse) throw new Error("expected a legacy response row for the durable request");
-		expect(outboxResponse).toMatchObject({
-			kind: "result",
-			ref_id: routed.id,
-			target_site_id: "requester-site",
-		});
-		if (!outboxResponse) throw new Error("expected a relay_outbox response row");
-		insertInbox(db, {
-			id: outboxResponse.id,
-			source_site_id: outboxResponse.source_site_id,
-			target_site_id: outboxResponse.target_site_id,
-			kind: outboxResponse.kind,
-			ref_id: outboxResponse.ref_id,
-			idempotency_key: null,
-			stream_id: null,
-			payload: outboxResponse.payload,
-			created_at: new Date().toISOString(),
-			expires_at: new Date(Date.now() + 60_000).toISOString(),
-			received_at: new Date().toISOString(),
-			trace_context: null,
-		});
-		const awaited = readInboxByRefId(db, routed.id);
+		// The response rode back as a durable row with ref_id = the request id — the
+		// correlation id the requester awaits via readDurableResponseByRefId. It is
+		// targeted at the requester ('requester-site'), so the awaiter reads it there.
+		const awaited = readDurableResponseByRefId(db, routed.id, "requester-site");
 		expect(awaited?.kind).toBe("result");
 		expect(awaited?.ref_id).toBe(routed.id);
 	});
@@ -1730,7 +1131,7 @@ describe("durable active relay lane", () => {
 		);
 		const now = new Date().toISOString();
 		db.run(
-			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES (?, ?, 'tool_call', ?, 'durable-fail', 'pending', 0, ?, 'requester-site')`,
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES (?, ?, 'tool_call', ?, 'durable-fail', 'pending', 0, ?, 'target-site')`,
 			[
 				"durable-failure",
 				"target-site",
@@ -1744,7 +1145,7 @@ describe("durable active relay lane", () => {
 		).toEqual({ claim_state: "consumed" });
 		expect(
 			db
-				.query("SELECT kind, ref_id, payload FROM relay_outbox WHERE ref_id = ?")
+				.query("SELECT kind, ref_id, payload FROM durable_work WHERE ref_id = ? AND kind = 'error'")
 				.get("durable-failure"),
 		).toMatchObject({ kind: "error", ref_id: "durable-failure" });
 	});
@@ -1788,6 +1189,14 @@ describe("durable active relay lane", () => {
 			createMockEventBus(),
 		);
 		const now = new Date().toISOString();
+		// The requester must advertise capability so the successful handler's response
+		// routes durably back (Objection 3: an unroutable response now dead-letters).
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES ('requester-site', 'requester-site', '0', ?, ?, 1, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 1, deleted = 0`,
+			[now, now],
+		);
 		db.run(
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, claim_token, attempt_count, created_at, source_site) VALUES ('recovered', 'target-site', 'tool_call', ?, 'recovered-key', 'processing', 'abandoned', 1, ?, 'requester-site')`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
@@ -1828,11 +1237,13 @@ describe("durable active relay lane", () => {
 			claim_state: "processing",
 			attempt_count: 1,
 		});
-		expect(db.query("SELECT COUNT(*) AS n FROM relay_outbox WHERE ref_id = 'infra'").get()).toEqual(
-			{
-				n: 0,
-			},
-		);
+		expect(
+			db
+				.query(
+					"SELECT COUNT(*) AS n FROM durable_work WHERE ref_id = 'infra' AND kind IN ('result', 'error')",
+				)
+				.get(),
+		).toEqual({ n: 0 });
 		expect(listDeadLetterDurableWork(db, "tool_call")).toHaveLength(0);
 	});
 
@@ -1881,6 +1292,93 @@ describe("durable active relay lane", () => {
 		});
 	});
 
+	// Objection 3 (#253): a routing FAILURE on the response write (routeRelayResponse
+	// returns path:"error" because the requester's site no longer advertises capability)
+	// must NOT silently consume the request row. Consuming it strands the sender's
+	// awaiter forever with no signal; the row must dead-letter (workspool-redrivable)
+	// carrying the routing reason in last_error, so the sender's timeout tells the truth
+	// and an operator can redrive after fixing capability. This is the exact silent-drop
+	// class the whole incident was about.
+	it("dead-letters a durable request when its response route fails (no silent consume)", async () => {
+		const mockClient = new MockMCPClient(
+			"test-server",
+			new Map([["test_cmd", { name: "test_cmd", description: "Test tool" }]]),
+		);
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map([["test-server", mockClient as unknown as MCPClient]]),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		// The requester ('requester-site') is a KNOWN peer that does NOT advertise
+		// work_spool_capable, so routeRelayResponse yields path:"error" (not loopback,
+		// not durable). No hosts row inserted for it → capability gate fails.
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('route-fail', 'target-site', 'tool_call', ?, 'route-fail-key', 'pending', 0, ?, 'requester-site')`,
+			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
+		);
+		await (processor as any).processPendingEntries();
+		const row = getDurableWork(db, "route-fail");
+		expect(row?.claim_state).toBe("dead_letter");
+		expect(row?.last_error ?? "").toContain("requester-site");
+		// Nothing silently consumed, and no response row was written.
+		expect(row?.claim_state).not.toBe("consumed");
+		expect(
+			db
+				.query(
+					"SELECT COUNT(*) AS n FROM durable_work WHERE ref_id = 'route-fail' AND kind IN ('result', 'error')",
+				)
+				.get(),
+		).toEqual({ n: 0 });
+	});
+
+	// Objection 3 (#253): the intake-forward site. A hub-side intake row destined for a
+	// peer that no longer advertises capability must dead-letter carrying the routing
+	// reason, NOT ack the claimed intake row consumed after an unroutable forward.
+	it("dead-letters a claimed intake row when the forward route fails (no silent consume)", async () => {
+		const processor = new RelayProcessor(
+			db,
+			"hub-site",
+			new Map(),
+			createMockModelRouter(),
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		// An intake row claimed by the hub, whose payload names a platform bound to a
+		// peer ('worker-site') that does NOT advertise capability → routeRelayRequest
+		// yields path:"error". The row must dead-letter, not be acked consumed.
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, version, platforms, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES ('worker-site', 'worker-site', '0', ?, ?, ?, 0, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 0, deleted = 0`,
+			[JSON.stringify(["discord"]), now, now],
+		);
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('intake-fail', 'hub-site', 'intake', ?, 'intake-fail-key', 'pending', 0, ?, 'origin-site')`,
+			[
+				JSON.stringify({
+					platform: "discord",
+					platform_event_id: "evt-1",
+					thread_id: "t-1",
+					message_id: "m-1",
+					content: "hello",
+				}),
+				now,
+			],
+		);
+		await (processor as any).processPendingEntries();
+		const row = getDurableWork(db, "intake-fail");
+		expect(row?.claim_state).toBe("dead_letter");
+		expect(row?.claim_state).not.toBe("consumed");
+		// The routing failure is captured verbatim so an operator can see WHY it stranded
+		// and redrive after fixing capability — not silently acked away.
+		expect(row?.last_error ?? "").toContain("does not advertise work_spool_capable");
+	});
+
 	// Objection 5(c): a stale claimant's dead-letter is token-fenced — after a
 	// boot-reset + reclaim mints a new generation, the old token cannot terminate
 	// the row, and the new generation is unaffected.
@@ -1909,10 +1407,11 @@ describe("durable active relay lane", () => {
 		expect(deadLetterClaimedDurableWork(db, "fenced", second.claim_token, "terminal")).toBe(true);
 	});
 
-	// Objection 5(d): a twin arriving once via relay_inbox and once via durable_work
-	// under one idempotency_key must execute the handler ONCE — the shared
-	// idempotency cache is the fence across both lanes.
-	it("executes a handler once across the relay_inbox and durable_work twins sharing an idempotency key", async () => {
+	// Objection 5(d): two durable twins under one idempotency_key must execute the
+	// handler ONCE — the durable_work (kind, idempotency_key) unique index is the
+	// fence (the relay_inbox lane is retired at release N+1, so the surviving fence
+	// is entirely within durable_work).
+	it("executes a handler once across durable_work twins sharing an idempotency key", async () => {
 		let calls = 0;
 		const countingClient = new MockMCPClient(
 			"test-server",
@@ -1932,20 +1431,13 @@ describe("durable active relay lane", () => {
 		);
 		const now = new Date().toISOString();
 		const payload = JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } });
-		insertInbox(db, {
-			id: "twin-inbox",
-			source_site_id: "requester-site",
-			kind: "tool_call",
-			ref_id: null,
-			stream_id: null,
-			idempotency_key: "twin-key",
-			payload,
-			expires_at: new Date(Date.now() + 60_000).toISOString(),
-			received_at: now,
-			trace_context: null,
-		});
+		// A twin insert with the same (kind, idempotency_key) is fenced to one row.
 		db.run(
-			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('twin-durable', 'target-site', 'tool_call', ?, 'twin-key', 'pending', 0, ?, 'requester-site')`,
+			`INSERT OR IGNORE INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('twin-a', 'target-site', 'tool_call', ?, 'twin-key', 'pending', 0, ?, 'requester-site')`,
+			[payload, now],
+		);
+		db.run(
+			`INSERT OR IGNORE INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site) VALUES ('twin-durable', 'target-site', 'tool_call', ?, 'twin-key', 'pending', 0, ?, 'requester-site')`,
 			[payload, now],
 		);
 		await (processor as any).processPendingEntries();
@@ -2023,11 +1515,13 @@ describe("durable active relay lane", () => {
 		const row = getDurableWork(db, "nosrc");
 		expect(row).toMatchObject({ claim_state: "dead_letter" });
 		expect(row?.last_error).toContain("source_site");
-		expect(db.query("SELECT COUNT(*) AS n FROM relay_outbox WHERE ref_id = 'nosrc'").get()).toEqual(
-			{
-				n: 0,
-			},
-		);
+		expect(
+			db
+				.query(
+					"SELECT COUNT(*) AS n FROM durable_work WHERE ref_id = 'nosrc' AND kind IN ('result', 'error')",
+				)
+				.get(),
+		).toEqual({ n: 0 });
 	});
 
 	// #253 positive path: a platform_request row WITH source_site (the incident's
@@ -2046,6 +1540,15 @@ describe("durable active relay lane", () => {
 			createMockEventBus(),
 		);
 		const now = new Date().toISOString();
+		// The requester must advertise capability so the platform_request response routes
+		// back cleanly (Objection 3: an unroutable response now dead-letters). This test
+		// pins the source_site guard, not routing — keep the response path healthy.
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES ('requester-site', 'requester-site', '0', ?, ?, 1, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 1, deleted = 0`,
+			[now, now],
+		);
 		db.run(
 			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site) VALUES ('plreq', 'target-site', 'platform_request', ?, 'plreq-key', 'pending', 0, ?, ?, 'requester-site')`,
 			[
@@ -2078,12 +1581,16 @@ describe("durable active relay lane", () => {
 		);
 		const now = new Date().toISOString();
 		db.run(
-			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site, stream_id) VALUES ('streamed', 'target-site', 'tool_call', ?, 'streamed-key', 'pending', 0, ?, 'requester-site', 'stream-42')`,
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, source_site, stream_id) VALUES ('streamed', 'target-site', 'tool_call', ?, 'streamed-key', 'pending', 0, ?, 'target-site', 'stream-42')`,
 			[JSON.stringify({ tool: "test-server", args: { subcommand: "test_cmd" } }), now],
 		);
 		await (processor as any).processPendingEntries();
 		expect(getDurableWork(db, "streamed")).toMatchObject({ claim_state: "consumed" });
-		expect(db.query("SELECT stream_id FROM relay_outbox WHERE ref_id = 'streamed'").get()).toEqual({
+		expect(
+			db
+				.query("SELECT stream_id FROM durable_work WHERE ref_id = 'streamed' AND kind = 'result'")
+				.get(),
+		).toEqual({
 			stream_id: "stream-42",
 		});
 	});

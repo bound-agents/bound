@@ -25,6 +25,18 @@ function createTestDb(): { db: Database; tmpDir: string } {
 	const dbPath = join(tmpDir, "test.db");
 	const db = new Database(dbPath);
 	applySchema(db);
+	// Post-N+1: routeRelayRequest requires the target (and, for a spoke, the hub
+	// hop) to advertise work_spool_capable, else it returns a typed routing error
+	// with no legacy fallback. Register the hosts these tests relay to as capable
+	// so the durable spool route is taken.
+	for (const siteId of ["spoke-1", "spoke-2", "spoke-3"]) {
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES (?, ?, ?, ?, 1, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = 1, deleted = 0`,
+			[siteId, `${siteId}.local`, new Date().toISOString(), new Date().toISOString()],
+		);
+	}
 	return { db, tmpDir };
 }
 
@@ -40,13 +52,22 @@ async function cleanup(db: Database, tmpDir: string) {
 }
 
 function getStreamIdFromOutbox(db: Database): string {
+	// Scope to producer-written inference REQUEST rows: response rows (chunks/end)
+	// share the same stream_id but arrive later, so an unscoped newest-row read
+	// would return a heartbeat chunk's stream instead of the latest request's.
 	const row = db
-		.prepare("SELECT stream_id FROM relay_outbox ORDER BY created_at DESC LIMIT 1")
+		.prepare(
+			"SELECT stream_id FROM durable_work WHERE stream_id IS NOT NULL AND kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+		)
 		.get() as { stream_id: string } | null;
-	if (!row) throw new Error("No outbox entry found");
+	if (!row) throw new Error("No durable_work inference entry with a stream_id found");
 	return row.stream_id;
 }
 
+// Post-N+1: stream responses ride the durable_work spool. A chunk/end response
+// is a durable row targeted at self, keyed stream:<streamId>:<seq>, that the
+// reducer's union-aware consumer claims and folds. This helper writes such a
+// row directly to exercise the consumer without a live target host.
 function insertRelayInboxEntry(
 	db: Database,
 	opts: {
@@ -57,20 +78,28 @@ function insertRelayInboxEntry(
 		payload: string;
 	},
 ) {
+	// Derive a stable seq from the payload so redelivered rows dedupe on the
+	// (kind, idempotency_key) fence, matching production's stream:<id>:<seq> key.
+	let seq = 0;
+	try {
+		seq = (JSON.parse(opts.payload) as { seq?: number }).seq ?? 0;
+	} catch {
+		/* non-JSON payload: seq stays 0 */
+	}
 	db.prepare(
-		`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, received_at, stream_id, source_site)
+		 VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`,
 	).run(
 		opts.id,
-		opts.sourceSiteId,
+		"hub",
 		opts.kind,
-		null,
-		null,
-		opts.streamId,
 		opts.payload,
+		`stream:${opts.streamId}:${opts.kind}:${seq}`,
+		new Date().toISOString(),
 		new Date(Date.now() + 300_000).toISOString(),
 		new Date().toISOString(),
-		0,
+		opts.streamId,
+		opts.sourceSiteId,
 	);
 }
 
@@ -376,7 +405,7 @@ describe("createRelayStream$", () => {
 		await pollUntil(
 			() =>
 				(
-					db.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'").get() as {
+					db.prepare("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'inference'").get() as {
 						cnt: number;
 					}
 				).cnt >= 2,
@@ -385,7 +414,7 @@ describe("createRelayStream$", () => {
 
 		// Get second outbox entry (spoke-2) - query from after first entry
 		const secondEntry = db
-			.prepare("SELECT stream_id FROM relay_outbox ORDER BY created_at DESC LIMIT 1")
+			.prepare("SELECT stream_id FROM durable_work ORDER BY created_at DESC LIMIT 1")
 			.get() as { stream_id: string } | null;
 		if (!secondEntry || secondEntry.stream_id === firstStreamId) {
 			throw new Error("Second outbox entry not found");
@@ -394,7 +423,7 @@ describe("createRelayStream$", () => {
 
 		// Verify we have at least 2 inference outbox entries (plus a cancel for first host timeout)
 		const inferenceOutbox = db
-			.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
+			.prepare("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'inference'")
 			.get() as { cnt: number };
 		expect(inferenceOutbox.cnt).toBe(2);
 
@@ -545,7 +574,7 @@ describe("createRelayStream$", () => {
 			() =>
 				(
 					db
-						.prepare("SELECT COUNT(*) AS count FROM relay_outbox WHERE kind = 'inference'")
+						.prepare("SELECT COUNT(*) AS count FROM durable_work WHERE kind = 'inference'")
 						.get() as {
 						count: number;
 					}
@@ -627,7 +656,7 @@ describe("createRelayStream$", () => {
 
 		// Verify exactly one inference outbox entry was created when host succeeds
 		const outbox = db
-			.prepare("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
+			.prepare("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'inference'")
 			.get() as { cnt: number };
 		expect(outbox.cnt).toBe(1);
 	});
@@ -654,7 +683,7 @@ describe("createRelayStream$", () => {
 		await lastValueFrom(stream$, { defaultValue: undefined }).catch(() => undefined);
 		const rows = db
 			.prepare(
-				"SELECT kind, ref_id, stream_id, payload FROM relay_outbox WHERE kind = 'inference_part'",
+				"SELECT kind, ref_id, stream_id, payload FROM durable_work WHERE kind = 'inference_part'",
 			)
 			.all() as Array<{ kind: string; ref_id: string; stream_id: string; payload: string }>;
 		expect(rows.length).toBeGreaterThan(1);
@@ -665,7 +694,7 @@ describe("createRelayStream$", () => {
 		}
 		expect(
 			(
-				db.prepare("SELECT COUNT(*) AS count FROM relay_outbox WHERE kind = 'inference'").get() as {
+				db.prepare("SELECT COUNT(*) AS count FROM durable_work WHERE kind = 'inference'").get() as {
 					count: number;
 				}
 			).count,
@@ -765,7 +794,7 @@ describe("createRelayStream$ — 4D-D durable chunk union", () => {
 		expect(chunks.map((c) => (c as { text: string }).text)).toEqual(["a", "b", "c"]);
 		const leftover = db
 			.prepare(
-				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND claim_state != 'consumed'",
+				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end') AND claim_state != 'consumed'",
 			)
 			.get(streamId) as { count: number };
 		expect(leftover.count).toBe(0);
@@ -916,7 +945,7 @@ describe("createRelayStream$ — 4D-D durable chunk union", () => {
 		// All rows retired (replayed copies were folded-and-settled without re-emission).
 		const leftover = db
 			.prepare(
-				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND claim_state != 'consumed'",
+				"SELECT COUNT(*) AS count FROM durable_work WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end') AND claim_state != 'consumed'",
 			)
 			.get(streamId) as { count: number };
 		expect(leftover.count).toBe(0);

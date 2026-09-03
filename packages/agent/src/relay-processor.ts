@@ -1,5 +1,4 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
 import {
 	type AppContext,
 	DURABLE_WORK_MAX_ATTEMPTS,
@@ -7,19 +6,15 @@ import {
 	acknowledgeBatch,
 	acknowledgeDurableWork,
 	acknowledgeToolResultForCall,
+	claimAndConsumeDurableWorkByIds,
 	claimLocalDurableWork,
 	claimPending,
 	deadLetterClaimedDurableWork,
 	enqueueClientToolCall,
 	enqueueMessage,
-	hasDroppedLegacyRelayTables,
-	insertInbox,
-	markDelivered,
-	markProcessed,
-	pruneRelayTables,
-	readUndelivered,
-	readUnprocessed,
+	readDurablePartsByStreamId,
 	recordRelayCycle,
+	releaseDurableWorkClaim,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import { LLMError, type ModelRouter } from "@bound/llm";
@@ -42,7 +37,6 @@ import type {
 } from "@bound/shared";
 import {
 	RELAY_KIND_REGISTRY,
-	RELAY_REQUEST_KINDS,
 	RELAY_RESPONSE_KINDS,
 	type RelayRequestKind,
 	clientToolPayloadSchema,
@@ -86,12 +80,12 @@ import {
 	InferenceRequestPartAssembler,
 } from "./inference-request-parts.js";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion.js";
-import { runRelayRetirementPass } from "./relay-retirement.js";
 import {
 	resolveTopologyRole,
 	routeRelayRequest,
 	routeRelayResponse,
 	serializeRelayTraceCarrier,
+	shouldRouteRelayDurable,
 } from "./relay-router.js";
 
 /** Parse a serialized relay carrier without trusting its shape. */
@@ -161,6 +155,28 @@ class PayloadParseError extends Error {
 	}
 }
 
+/**
+ * Objection 3 (#253): a typed routing failure. When {@link routeRelayRequest} or
+ * {@link routeRelayResponse} returns `path: "error"` (the target/requester no longer
+ * advertises `work_spool_capable`), the message cannot be delivered and there is no
+ * legacy fallback after release N+1. A silent consume of the claimed request row
+ * would strand the sender's awaiter forever with no signal — the exact silent-drop
+ * class the incident was about. Throwing this from a response writer or the intake
+ * forward propagates the failure out of {@link dispatchActiveEntry} to
+ * {@link processPendingDurableWork}, which dead-letters the claimed row
+ * (workspool-redrivable) with {@link RelayResponseRoutingError.message} in
+ * `last_error` so operators see it and can redrive after fixing capability.
+ */
+class RelayResponseRoutingError extends Error {
+	constructor(
+		readonly targetSiteId: string,
+		readonly reason: string,
+	) {
+		super(`relay routing failed for target ${targetSiteId}: ${reason}`);
+		this.name = "RelayResponseRoutingError";
+	}
+}
+
 interface IdempotencyCacheEntry {
 	response: string;
 	expiresAt: number;
@@ -184,6 +200,18 @@ export class RelayProcessor {
 	private pendingCancels = new Set<string>();
 	private activeInferenceStreams = new Map<string, AbortController>();
 	private readonly completedInferenceParts = new Set<string>();
+	// Objection 1 round-3 (#253): the durable lane records the claim token of the part
+	// row it is currently dispatching here, keyed by durable-work id, so
+	// handleInferencePart can retire the WHOLE sibling set (current part + pending
+	// siblings) in one transaction before launching inference. Cleared by the lane after
+	// dispatch returns.
+	private readonly inflightPartClaimTokens = new Map<string, string>();
+	// Objection 1 round-4 (#253): when a multipart reassembly ABORTS (a concurrent
+	// claimant took a sibling), handleInferencePart releases the current part's claim
+	// back to `pending` and records its id here so the durable lane skips its normal
+	// consume-ack — the current part must stay recoverable, not be consumed while the
+	// part set is short. Cleared by the lane after it inspects it.
+	private readonly releasedPartIds = new Set<string>();
 	private readonly threadAffinityMap: Map<string, string>;
 	private platformMcpRegistry: PlatformMcpRegistry | null = null;
 	private wsRegistry: ClientToolResolver | null = null;
@@ -305,16 +333,6 @@ export class RelayProcessor {
 
 		const prune$ = pruneInterval$.pipe(
 			tap(() => {
-				// Post-drop (slice 4E): relay_outbox/relay_inbox are gone — pruneRelayTables
-				// would throw "no such table" every 60s and log-spam forever. Skip entirely
-				// once retired; there is nothing left to prune (the spool self-prunes).
-				if (!hasDroppedLegacyRelayTables(this.db)) {
-					try {
-						pruneRelayTables(this.db);
-					} catch (error) {
-						this.logger.error("Relay table prune failed", { error });
-					}
-				}
 				// Catch-of-last-resort for the webhook intake pipeline. Runs against
 				// the LOCAL relay_inbox (invariant #3), so it sees intake on the host
 				// that received the POST. Raises a deduplicated dead-letter advisory
@@ -353,25 +371,6 @@ export class RelayProcessor {
 				} catch (error) {
 					this.logger.error("Dark connector handle reconcile failed", { error });
 				}
-				// Legacy-relay-table retirement (slice 4E). Piggybacks the 60s prune
-				// cadence: this seam already owns the relay lifecycle, has DB +
-				// transport-adjacent access, and runs AFTER pruneRelayTables so the
-				// gate observes truly-empty tables (processed/delivered rows pruned
-				// first). One idempotent pass drains this host's undelivered legacy
-				// outbox onto the spool where the target resolves durable, then runs
-				// the gated drop. topologyRole is derived from the loaded sync config
-				// (mirrors the router's per-hop capability gate for a spoke).
-				try {
-					runRelayRetirementPass({
-						db: this.db,
-						localSiteId: this.siteId,
-						topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
-						logger: this.logger,
-						eventBus: this.eventBus,
-					});
-				} catch (error) {
-					this.logger.error("Relay retirement pass failed", { error });
-				}
 			}),
 		);
 
@@ -379,81 +378,26 @@ export class RelayProcessor {
 		sub.add(prune$.subscribe());
 
 		return {
-			stop: () => sub.unsubscribe(),
+			stop: () => {
+				sub.unsubscribe();
+				// Abort any in-flight inference stream so its heartbeat timer and
+				// flush loop unwind through their `finally` (clearInterval +
+				// activeInferenceStreams.delete) instead of continuing to write
+				// stream_chunk rows after the caller tears the processor down. A
+				// never-completing stream (e.g. a backend that blocks until cancelled)
+				// would otherwise keep writing to a DB the owner is about to close.
+				for (const controller of this.activeInferenceStreams.values()) {
+					controller.abort();
+				}
+			},
 		};
 	}
 
 	private async processPendingEntries(): Promise<void> {
-		// Post-drop (slice 4E): this host retired its legacy relay tables, so the
-		// loopback + legacy inbox scan below would touch dropped tables. Skip the
-		// entire legacy pass and process only durable work — spool-only, forward-fix
-		// posture (the plan's rollback text: no compatibility path after a drop).
-		if (hasDroppedLegacyRelayTables(this.db)) {
-			await this.processPendingDurableWork();
-			return;
-		}
-		// Local loopback: deliver self-targeted outbox entries in single-host mode.
-		// In single-host setups (no sync hub configured), relay_outbox entries targeting
-		// this host are never delivered via the sync relay phase. We handle them here:
-		//   - REQUEST kinds (intake, process, etc.) → insert into relay_inbox for processing
-		//   - RESPONSE kinds (result, error, stream_chunk, etc.) → just mark delivered; they
-		//     are callbacks from a prior request and do not need re-processing on this host.
-		const allSelfOutbox = readUndelivered(this.db, this.siteId);
-		if (allSelfOutbox.length > 0) {
-			this.logger.info("[relay] Loopback: processing self-targeted outbox entries", {
-				count: allSelfOutbox.length,
-				kinds: allSelfOutbox.map((e) => e.kind),
-			});
-			const now = new Date().toISOString();
-			const requestKindSet = new Set<string>(RELAY_REQUEST_KINDS);
-			for (const entry of allSelfOutbox) {
-				if (requestKindSet.has(entry.kind)) {
-					insertInbox(this.db, {
-						id: randomUUID(),
-						source_site_id: entry.source_site_id ?? this.siteId,
-						kind: entry.kind,
-						ref_id: entry.id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id ?? null,
-						payload: entry.payload,
-						expires_at: entry.expires_at,
-						received_at: now,
-						processed: 0,
-						trace_context: serializeRelayTraceCarrier(parseTraceCarrier(entry.trace_context)),
-					});
-				}
-				// Response kinds are silently marked delivered — they are acknowledged by
-				// being discarded (no cross-host requester to notify in single-host mode).
-			}
-			markDelivered(
-				this.db,
-				allSelfOutbox.map((e) => e.id),
-			);
-		}
-
+		// Post-N+1: the legacy relay_outbox/relay_inbox loopback and inbox scan are
+		// gone — the durable_work spool is the sole store. Self-targeted requests
+		// loop back as LOCAL_WORK_TARGET rows claimed by processPendingDurableWork.
 		await this.processPendingDurableWork();
-
-		const entries = readUnprocessed(this.db);
-		if (entries.length === 0) return;
-
-		// First pass: collect cancels to check against pending requests
-		for (const entry of entries) {
-			if (entry.kind === "cancel" && entry.ref_id) {
-				this.pendingCancels.add(entry.ref_id);
-				// Immediately abort any active inference stream for this ref_id
-				const abortController = this.activeInferenceStreams.get(entry.ref_id);
-				if (abortController) {
-					abortController.abort();
-				}
-				markProcessed(this.db, [entry.id]);
-			}
-		}
-
-		// Second pass: process non-cancel entries
-		for (const entry of entries) {
-			if (entry.kind === "cancel") continue;
-			await this.processEntry(entry);
-		}
 	}
 
 	/**
@@ -546,7 +490,26 @@ export class RelayProcessor {
 				// Unlike processActiveEntry (the legacy wrapper), it PROPAGATES
 				// pre/post-dispatch infrastructure failures — handler error-outcomes
 				// are still written and consumed inside it.
-				await this.dispatchDurableEntry(entry);
+				// Objection 1 round-3 (#253): expose the current part's claim token so
+				// handleInferencePart can retire the whole sibling set atomically before
+				// launching inference. Only inference_part uses this; cleared after dispatch.
+				if (claimed.kind === "inference_part" && claimed.claim_token) {
+					this.inflightPartClaimTokens.set(claimed.id, claimed.claim_token);
+				}
+				try {
+					await this.dispatchDurableEntry(entry);
+				} finally {
+					this.inflightPartClaimTokens.delete(claimed.id);
+				}
+				// Objection 1 round-4 (#253): a multipart reassembly that ABORTED on
+				// concurrent-claim contention already released this part back to `pending`
+				// (handleInferencePart, so the full set stays recoverable). Acking it here
+				// would flip that just-released row to `consumed`, permanently shortening the
+				// set. Skip the ack for a released part; the release is its terminal disposition
+				// for this tick.
+				if (this.releasedPartIds.delete(claimed.id)) {
+					continue;
+				}
 				if (
 					!claimed.claim_token ||
 					!acknowledgeDurableWork(this.db, claimed.id, claimed.claim_token)
@@ -556,6 +519,28 @@ export class RelayProcessor {
 					});
 				}
 			} catch (error) {
+				// Objection 3 (#253): a typed routing failure means the response (or intake
+				// forward) could not be addressed — the target/requester no longer advertises
+				// capability and there is no legacy fallback after release N+1. Consuming the
+				// row would strand the sender's awaiter silently; dead-letter it IMMEDIATELY
+				// (workspool-redrivable) with the routing reason in last_error so an operator
+				// sees it and the sender's timeout tells the truth. This is a terminal address
+				// failure, not a transient infra blip, so it does not wait out the attempt budget.
+				if (error instanceof RelayResponseRoutingError) {
+					this.logger.error("Durable relay row unroutable; dead-lettering", {
+						durableWorkId: claimed.id,
+						kind: claimed.kind,
+						targetSiteId: error.targetSiteId,
+						reason: error.reason,
+					});
+					deadLetterClaimedDurableWork(
+						this.db,
+						claimed.id,
+						claimed.claim_token ?? "",
+						error.message,
+					);
+					continue;
+				}
 				// Infrastructure failure: nothing was durably dispatched. Leave the row
 				// `processing` (claim-owned) so boot recovery reclaims it — NO consume,
 				// NO immediate dead-letter. Only after the attempt budget is exhausted
@@ -609,61 +594,6 @@ export class RelayProcessor {
 	private static readonly RESPONSE_KIND_SET = new Set<string>(RELAY_RESPONSE_KINDS);
 	private static readonly PASSIVE_KIND_SET = new Set<string>(PASSIVE_INTAKE_KINDS);
 
-	private async processEntry(entry: RelayInboxEntry): Promise<void> {
-		// Response and passive rows are mailbox traffic, not active request work.
-		if (
-			RelayProcessor.RESPONSE_KIND_SET.has(entry.kind) ||
-			RelayProcessor.PASSIVE_KIND_SET.has(entry.kind)
-		) {
-			if (RelayProcessor.RESPONSE_KIND_SET.has(entry.kind)) markProcessed(this.db, [entry.id]);
-			return;
-		}
-
-		const parentContext = extractTraceContext(parseTraceCarrier(entry.trace_context));
-		const span = getTracer().startSpan(
-			"relay.request.receive",
-			{
-				attributes: {
-					"relay.kind": entry.kind,
-					"relay.request.id": entry.id,
-					"relay.source.site_id": entry.source_site_id,
-					...(entry.stream_id ? { "relay.stream.id": entry.stream_id } : {}),
-				},
-			},
-			parentContext,
-		);
-		try {
-			await context.with(trace.setSpan(parentContext, span), () =>
-				this.processActiveEntry(entry, span),
-			);
-		} finally {
-			span.end();
-		}
-	}
-
-	/**
-	 * Legacy relay-inbox lane. Infrastructure failures are swallowed here: the
-	 * row is logged and marked processed so the inbox never wedges. The durable
-	 * consumer lane needs the opposite contract, so the dispatch core lives in
-	 * {@link dispatchActiveEntry}; only this legacy wrapper swallows.
-	 */
-	private async processActiveEntry(
-		entry: RelayInboxEntry,
-		receiveSpan: import("@opentelemetry/api").Span,
-	): Promise<void> {
-		try {
-			await this.dispatchActiveEntry(entry, receiveSpan);
-		} catch (error) {
-			receiveSpan.recordException(error instanceof Error ? error : new Error(String(error)));
-			receiveSpan.setStatus({
-				code: SpanStatusCode.ERROR,
-				message: error instanceof Error ? error.message : String(error),
-			});
-			this.logger.error("Error processing relay entry", { error, entryId: entry.id });
-			markProcessed(this.db, [entry.id]);
-		}
-	}
-
 	/**
 	 * Dispatch core shared by the legacy and durable lanes. Handler-produced
 	 * error responses are outcomes — written, cached, and marked processed here.
@@ -688,15 +618,13 @@ export class RelayProcessor {
 			// Step 2: Check expiry (AC9.2)
 			const now = new Date();
 			if (new Date(entry.expires_at) < now) {
-				// Discard without execution
-				markProcessed(this.db, [entry.id]);
+				// Discarded without execution; the durable lane acks the consumed row.
 				return;
 			}
 
 			// Step 3: Check cancel (AC7.3)
 			if (this.pendingCancels.has(entry.id)) {
-				// Skip execution, just mark as processed
-				markProcessed(this.db, [entry.id]);
+				// Skip execution; the durable lane acks the consumed row.
 				this.pendingCancels.delete(entry.id);
 				return;
 			}
@@ -707,7 +635,6 @@ export class RelayProcessor {
 				if (cached && cached.expiresAt > Date.now()) {
 					// Cache hit - return cached response
 					this.writeResponse(entry, "result", cached.response);
-					markProcessed(this.db, [entry.id]);
 					return;
 				}
 				// Cache expired or not found, proceed with execution
@@ -725,7 +652,6 @@ export class RelayProcessor {
 					// Unknown relay kind at runtime (e.g., from a newer node version
 					// during rolling upgrade). Log and skip.
 					this.logger.warn("Unknown relay kind", { kind: entry.kind });
-					markProcessed(this.db, [entry.id]);
 					return;
 				}
 				receiveSpan.addEvent("relay.handler.started");
@@ -753,7 +679,6 @@ export class RelayProcessor {
 				response = JSON.stringify(errorResponse);
 				this.writeResponse(entry, "error", response);
 				receiveSpan.addEvent("relay.response.enqueued", { "relay.response.kind": "error" });
-				markProcessed(this.db, [entry.id]);
 				// Record relay cycle for error
 				const executionMs = Date.now() - executionStartTime;
 				try {
@@ -790,8 +715,7 @@ export class RelayProcessor {
 				});
 			}
 
-			// Step 8: Mark processed
-			markProcessed(this.db, [entry.id]);
+			// Step 8: outcome recorded — the durable lane token-acks the consumed row.
 			receiveSpan.addEvent("relay.outcome", { "relay.outcome": "processed" });
 			receiveSpan.setStatus({ code: SpanStatusCode.OK });
 
@@ -842,9 +766,7 @@ export class RelayProcessor {
 				"error",
 				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
 			);
-			markProcessed(this.db, [entry.id]);
-			// Return a sentinel that tells processEntry to skip its normal
-			// response/cache/markProcessed logic — we already handled it.
+			// The durable lane token-acks the consumed row after this error outcome.
 			throw new PayloadParseError();
 		}
 		return executor(payloadResult.value);
@@ -863,8 +785,33 @@ export class RelayProcessor {
 				"error",
 				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
 			);
-			markProcessed(this.db, [entry.id]);
 			throw new PayloadParseError();
+		}
+		// Objection 2 round-3 (#253): PRE-FLIGHT the response route before acking/executing.
+		// executeInference is fire-and-forget (below): once it launches, the durable lane
+		// acks this request row. If a later stream write throws RelayResponseRoutingError it
+		// lands in the .catch logger, NEVER the typed dead-letter catch in
+		// processPendingDurableWork — a silent-consume path. Catch the deterministic
+		// capability-gap class HERE, synchronously, before the row is consumed: if the
+		// response target (entry.source_site_id) is a peer that does not advertise
+		// work_spool_capable, throw so the typed catch dead-letters the request BEFORE
+		// execution. A self-targeted (loopback) response never rides the capability gate, so
+		// it is exempt — mirroring routeRelayResponse's own selfTargeted short-circuit. This
+		// cannot catch a capability flip AFTER pre-flight (mid-stream); that residual is
+		// handled by executeInference surfacing a structured logger.error (see below).
+		const responseTarget = entry.source_site_id;
+		if (responseTarget && responseTarget !== this.siteId) {
+			const routable = shouldRouteRelayDurable(this.db, {
+				targetSiteId: responseTarget,
+				localSiteId: this.siteId,
+				topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
+			});
+			if (!routable) {
+				throw new RelayResponseRoutingError(
+					responseTarget,
+					`inference response target ${responseTarget} does not advertise work_spool_capable; no legacy fallback after release N+1 (stale hosts snapshot or version-skewed peer)`,
+				);
+			}
 		}
 		this.executeInference(entry, payloadResult.value as InferenceRequestPayload).catch((err) => {
 			this.logger.error("executeInference failed", { error: err, entryId: entry.id });
@@ -883,14 +830,34 @@ export class RelayProcessor {
 		if (part.request_id !== entry.ref_id) throw new Error("Multipart request_id/ref_id mismatch");
 		if (this.completedInferenceParts.has(part.request_id)) return null;
 
-		// Post-drop (slice 4E): relay_inbox is gone — multipart inference rides the
-		// durable spool now, so a legacy assembly read would throw. Nothing to assemble.
-		if (hasDroppedLegacyRelayTables(this.db)) return null;
-		const rows = this.db
-			.query(
-				"SELECT * FROM relay_inbox WHERE kind = 'inference_part' AND ref_id = ? ORDER BY received_at ASC, id ASC",
-			)
-			.all(part.request_id) as RelayInboxEntry[];
+		// Multipart inference rides the durable spool: the parts are durable_work
+		// `inference_part` REQUEST rows keyed by stream_id (set by the requester in
+		// relay-stream$; ref_id carries the logical request_id). Read them by
+		// stream_id through a request-kind reader — readDurableResponsesByStreamId
+		// filters RELAY_RESPONSE_KINDS and can never see request rows. Assemble in
+		// receive order.
+		if (!entry.stream_id) throw new Error("Multipart inference part missing stream_id");
+		const rows = readDurablePartsByStreamId(
+			this.db,
+			entry.stream_id,
+			this.siteId,
+			"inference_part",
+		).map(
+			(row) =>
+				({
+					id: row.id,
+					source_site_id: row.source_site ?? entry.source_site_id,
+					kind: row.kind,
+					ref_id: row.ref_id,
+					idempotency_key: row.idempotency_key,
+					stream_id: row.stream_id,
+					payload: row.payload,
+					expires_at: row.expires_at ?? entry.expires_at,
+					received_at: row.received_at ?? "",
+					processed: 0,
+					trace_context: null,
+				}) as RelayInboxEntry,
+		);
 		const assembler = new InferenceRequestPartAssembler();
 		let serialized: string | null = null;
 		for (const row of rows) {
@@ -909,6 +876,41 @@ export class RelayProcessor {
 		if (serialized === null) return null;
 		if (this.pendingCancels.delete(part.request_id)) return null;
 
+		// Objection 1 round-3 (#253): consume ALL sibling part rows atomically BEFORE
+		// launching inference (claim-all-then-execute). This inverts the deliver-before-ack
+		// principle the RESPONSE path uses, and deliberately so: parts are REQUEST
+		// fragments, and the deliverable is the LAUNCHED INFERENCE, not the row content.
+		// For a response the row content IS the deliverable, so it must be delivered before
+		// the row is retired; for request parts the crash-recovery story is the requester's
+		// timeout+retry (the pre-existing at-least-once contract, response-side idempotency
+		// via `response:<requestId>` fences a duplicate response row), NOT part replay. If
+		// we consumed parts one-by-one AFTER launching (the old behavior), a crash between
+		// launch and the last sibling's ack left the full part set recoverable → boot
+		// recovery re-pends → the in-process completedInferenceParts Set is empty → the
+		// backend runs the logical request TWICE. Consuming every sibling in one
+		// transaction before launch means a crash after consumption leaves NO recoverable
+		// part rows, so recovery cannot re-assemble or re-execute. The (kind,idempotency_key)
+		// fence only blocks duplicate row INSERTION, never duplicate execution — this does.
+		const allIds = rows.map((r) => r.id);
+		const consumed = this.consumeInferenceParts(allIds);
+		if (!consumed) {
+			// A concurrent claimant (another tick / a peer / boot recovery) took a sibling
+			// before we could retire the whole set. The atomic claim-and-consume rolled back
+			// entirely: nothing was claimed, nothing consumed. Abandon this reassembly rather
+			// than double-launch. The current part is still `processing` under the lane's
+			// token; if we let the lane ack it (the normal post-dispatch path) the part set
+			// would be permanently one short and no future reassembly could complete. Release
+			// the current part back to `pending` and record its id so the lane skips its ack —
+			// the whole set stays recoverable for a later tick once the contended sibling is
+			// freed. The winning path owns whatever it claimed and launches exactly once.
+			const currentToken = this.inflightPartClaimTokens.get(entry.id);
+			if (currentToken) {
+				releaseDurableWorkClaim(this.db, entry.id, currentToken);
+				this.releasedPartIds.add(entry.id);
+			}
+			return null;
+		}
+
 		this.completedInferenceParts.add(part.request_id);
 		const synthetic: RelayInboxEntry = {
 			...entry,
@@ -922,6 +924,33 @@ export class RelayProcessor {
 		return null;
 	}
 
+	/**
+	 * Retire every sibling `inference_part` row for a completed multipart request in a
+	 * SINGLE transaction (Objection 1 round-4, #253). The currently-claimed part already
+	 * sits in `processing` under the durable lane's own claim token (passed in via
+	 * `preClaimed`); its siblings are `pending`. `claimAndConsumeDurableWorkByIds` claims
+	 * the pending siblings by id AND flips the whole set — the current part included — to
+	 * `consumed`, all inside one `BEGIN IMMEDIATE`, so neither a crash NOR a concurrent
+	 * claimant can leave a partial set: on ANY shortfall (a sibling was claimed away) the
+	 * whole transaction rolls back — nothing claimed, nothing consumed — and this returns
+	 * false. Round-3 split the claim and the ack across two transactions, so a shortfall
+	 * rollback undid only the acks and left the freshly-committed sibling claims stranded
+	 * `processing`; folding both phases into the repository's single transaction closes
+	 * that window.
+	 */
+	private consumeInferenceParts(allIds: readonly string[]): boolean {
+		if (allIds.length === 0) return false;
+		// The current part is already `processing` under a token the durable lane exposed via
+		// inflightPartClaimTokens; hand it in as pre-claimed so the repository consumes it
+		// under that live generation instead of trying (and failing) to re-claim it from
+		// `pending`. Every other id is a `pending` sibling the repository claims itself.
+		const preClaimed = new Map<string, string>();
+		for (const [id, token] of this.inflightPartClaimTokens) {
+			if (allIds.includes(id)) preClaimed.set(id, token);
+		}
+		return claimAndConsumeDurableWorkByIds(this.db, allIds, this.siteId, preClaimed);
+	}
+
 	private async handleIntake(entry: RelayInboxEntry): Promise<null> {
 		const payloadResult = parseJsonSafe(intakePayloadSchema, entry.payload, entry.kind);
 		if (!payloadResult.ok) {
@@ -930,7 +959,6 @@ export class RelayProcessor {
 				error: payloadResult.error,
 				entryId: entry.id,
 			});
-			markProcessed(this.db, [entry.id]);
 			throw new PayloadParseError();
 		}
 		const payload = payloadResult.value;
@@ -988,7 +1016,7 @@ export class RelayProcessor {
 				});
 			});
 		} else {
-			routeRelayRequest(this.db, {
+			const routed = routeRelayRequest(this.db, {
 				targetSiteId,
 				sourceSiteId: entry.source_site_id ?? this.siteId,
 				kind: "intake",
@@ -999,6 +1027,12 @@ export class RelayProcessor {
 				traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
 				topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 			});
+			// Objection 3 (#253): an unroutable intake forward must NOT ack the claimed
+			// intake row consumed — that silently drops the platform event. Propagate so
+			// the durable lane dead-letters the row with the routing reason.
+			if (routed.path === "error") {
+				throw new RelayResponseRoutingError(routed.targetSiteId, routed.reason);
+			}
 		}
 
 		return null;
@@ -1022,7 +1056,6 @@ export class RelayProcessor {
 				error: payloadResult.error,
 				entryId: entry.id,
 			});
-			markProcessed(this.db, [entry.id]);
 			throw new PayloadParseError();
 		}
 		const payload = payloadResult.value;
@@ -1075,7 +1108,6 @@ export class RelayProcessor {
 				"error",
 				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
 			);
-			markProcessed(this.db, [entry.id]);
 			throw new PayloadParseError();
 		}
 		const payload = payloadResult.value as ClientToolPayload;
@@ -1097,7 +1129,6 @@ export class RelayProcessor {
 				retriable: true,
 				definitely_not_executed: true,
 			});
-			markProcessed(this.db, [entry.id]);
 			return null;
 		}
 
@@ -1129,7 +1160,6 @@ export class RelayProcessor {
 				retriable: true,
 				definitely_not_executed: true,
 			});
-			markProcessed(this.db, [entry.id]);
 			return null;
 		}
 
@@ -1152,7 +1182,6 @@ export class RelayProcessor {
 		// blocked; we mark the inbox entry processed up front (the dispatch row is
 		// the durable handoff to the WS layer) so a re-driven client_tool re-emits
 		// cleanly rather than wedging here.
-		markProcessed(this.db, [entry.id]);
 		const timeoutMs = payload.timeout_ms > 0 ? payload.timeout_ms : 30_000;
 		this.awaitClientResult(entry, payload, timeoutMs).catch((err) => {
 			this.logger.error("[relay] client_tool: awaitClientResult failed", {
@@ -1264,7 +1293,7 @@ export class RelayProcessor {
 		}
 		const resultPayload: ClientResultPayload = { call_id: callId, content, is_error: isError };
 		// 4D-D: client_result rides the same response transport. Key `response:<reqId>`.
-		routeRelayResponse(this.db, {
+		const routed = routeRelayResponse(this.db, {
 			targetSiteId,
 			sourceSiteId: this.siteId,
 			kind: "client_result",
@@ -1276,6 +1305,9 @@ export class RelayProcessor {
 			traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
 			topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 		});
+		if (routed.path === "error") {
+			throw new RelayResponseRoutingError(routed.targetSiteId, routed.reason);
+		}
 	}
 
 	/** Relay an `error` response back to the producer that sent a `client_tool`. */
@@ -1488,7 +1520,7 @@ export class RelayProcessor {
 		// identical to before. The durable dedup key is `response:<requestId>` — one
 		// request yields exactly one response outcome (result XOR error), so a
 		// redelivered transfer of the SAME row is fenced by (kind, idempotency_key).
-		routeRelayResponse(this.db, {
+		const routed = routeRelayResponse(this.db, {
 			targetSiteId,
 			sourceSiteId: this.siteId,
 			kind,
@@ -1501,6 +1533,9 @@ export class RelayProcessor {
 				serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)) ?? undefined,
 			topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 		});
+		if (routed.path === "error") {
+			throw new RelayResponseRoutingError(routed.targetSiteId, routed.reason);
+		}
 	}
 
 	private writeStreamChunk(
@@ -1516,7 +1551,7 @@ export class RelayProcessor {
 		// coexist while a redelivered chunk transfer dedupes on the fence. Chunk rows
 		// are kind-scoped short-TTL (5min registry class); the consumer
 		// (relay-stream$) folds the durable union into its seq-dedup loop.
-		routeRelayResponse(this.db, {
+		const routed = routeRelayResponse(this.db, {
 			targetSiteId: requestEntry.source_site_id,
 			sourceSiteId: this.siteId,
 			kind,
@@ -1529,6 +1564,9 @@ export class RelayProcessor {
 				serializeRelayTraceCarrier(parseTraceCarrier(requestEntry.trace_context)) ?? undefined,
 			topologyRole: this.appCtx ? resolveTopologyRole(this.appCtx.optionalConfig) : undefined,
 		});
+		if (routed.path === "error") {
+			throw new RelayResponseRoutingError(routed.targetSiteId, routed.reason);
+		}
 	}
 
 	private pruneIdempotencyCache(): void {
@@ -1679,181 +1717,14 @@ export class RelayProcessor {
 			if (bestHost) return bestHost;
 		}
 
-		// Tier 4: Least-loaded fallback — host with fewest pending relay_outbox entries.
-		// Post-drop (slice 4E): relay_outbox is gone — depth is uniformly zero, so the
-		// JOIN would throw. Fall back to the first live host without the load ranking.
-		if (hasDroppedLegacyRelayTables(this.db)) {
-			const anyHost = this.db
-				.query<{ site_id: string }, []>(
-					"SELECT site_id FROM hosts WHERE deleted = 0 ORDER BY site_id ASC LIMIT 1",
-				)
-				.get();
-			return anyHost?.site_id ?? null;
-		}
-		const loaded = this.db
-			.query<{ site_id: string; depth: number }, []>(
-				`SELECT h.site_id, COUNT(o.id) AS depth
-				 FROM hosts h
-				 LEFT JOIN relay_outbox o ON o.target_site_id = h.site_id AND o.delivered = 0
-				 WHERE h.deleted = 0
-				 GROUP BY h.site_id
-				 ORDER BY depth ASC
-				 LIMIT 1`,
+		// Tier 4: fallback to the first live host. Post-N+1 there is no relay_outbox
+		// to rank pending depth by, so the load-ranked JOIN is gone.
+		const anyHost = this.db
+			.query<{ site_id: string }, []>(
+				"SELECT site_id FROM hosts WHERE deleted = 0 ORDER BY site_id ASC LIMIT 1",
 			)
 			.get();
-		return loaded?.site_id ?? null;
-	}
-
-	/**
-	 * Execute a relay request immediately and return results without writing to outbox.
-	 * Used for hub-local execution to return results in the same sync response.
-	 * Applies the same validation and execution pipeline as processEntry().
-	 */
-	public async executeImmediate(
-		request: RelayOutboxEntry,
-		_hubSiteId: string,
-	): Promise<RelayInboxEntry[]> {
-		const results: RelayInboxEntry[] = [];
-
-		try {
-			// Authorization keys on the authenticated delivering peer, not on
-			// request.source_site_id (#50, R-SR1/R-SR2). See the inbox-processing
-			// path above and docs/design/specs/2026-06-02-spoke-relay-trust.md.
-
-			// Step 2: Check expiry (AC9.2)
-			const now = new Date();
-			if (new Date(request.expires_at) < now) {
-				// Discard without returning anything
-				return results;
-			}
-
-			// Step 2b: Skip inference kind (handled asynchronously by target's polling loop)
-			// inference kind is handled asynchronously by the target's background polling loop,
-			// not synchronously in the hub relay phase
-			if (request.kind === "inference") {
-				return []; // hub routes to inbox; target's RelayProcessor handles it
-			}
-
-			// Step 3: Check cancel (AC7.3)
-			if (this.pendingCancels.has(request.id)) {
-				// Skip execution, return nothing
-				this.pendingCancels.delete(request.id);
-				return results;
-			}
-
-			// Step 4: Idempotency check (AC5.1, AC5.3)
-			if (request.idempotency_key) {
-				const cached = this.idempotencyCache.get(request.idempotency_key);
-				if (cached && cached.expiresAt > Date.now()) {
-					// Cache hit - return cached response
-					results.push(this.createResultEntry(request, "result", cached.response));
-					return results;
-				}
-				// Cache expired or not found, proceed with execution
-				if (cached) {
-					this.idempotencyCache.delete(request.idempotency_key);
-				}
-			}
-
-			// Step 5: Execute based on kind
-			let response: string | null;
-			try {
-				switch (request.kind) {
-					case "tool_call": {
-						const payloadResult = parseJsonUntyped(request.payload, request.kind);
-						if (!payloadResult.ok) {
-							const errorResponse: ErrorPayload = {
-								error: `Invalid payload: ${payloadResult.error}`,
-								retriable: false,
-							};
-							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-							return results;
-						}
-						response = await this.executeToolCall(payloadResult.value as ToolCallPayload);
-						break;
-					}
-					case "resource_read": {
-						const payloadResult = parseJsonUntyped(request.payload, request.kind);
-						if (!payloadResult.ok) {
-							const errorResponse: ErrorPayload = {
-								error: `Invalid payload: ${payloadResult.error}`,
-								retriable: false,
-							};
-							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-							return results;
-						}
-						response = await this.executeResourceRead(payloadResult.value as ResourceReadPayload);
-						break;
-					}
-					case "prompt_invoke": {
-						const payloadResult = parseJsonUntyped(request.payload, request.kind);
-						if (!payloadResult.ok) {
-							const errorResponse: ErrorPayload = {
-								error: `Invalid payload: ${payloadResult.error}`,
-								retriable: false,
-							};
-							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-							return results;
-						}
-						response = await this.executePromptInvoke(payloadResult.value as PromptInvokePayload);
-						break;
-					}
-					case "cache_warm": {
-						const payloadResult = parseJsonUntyped(request.payload, request.kind);
-						if (!payloadResult.ok) {
-							const errorResponse: ErrorPayload = {
-								error: `Invalid payload: ${payloadResult.error}`,
-								retriable: false,
-							};
-							results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-							return results;
-						}
-						response = await this.executeCacheWarm(request);
-						break;
-					}
-					default: {
-						const errorResponse: ErrorPayload = {
-							error: `Unknown request kind: ${request.kind}`,
-							retriable: false,
-						};
-						results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-						return results;
-					}
-				}
-			} catch (executionError) {
-				// Step 5b: Handle execution errors
-				const errorResponse: ErrorPayload = {
-					error: String(executionError),
-					retriable: true,
-				};
-				response = JSON.stringify(errorResponse);
-				results.push(this.createResultEntry(request, "error", response));
-				return results;
-			}
-
-			// Step 6: Return result (null means chunks were written directly to outbox)
-			if (response !== null) {
-				results.push(this.createResultEntry(request, "result", response));
-			}
-
-			// Step 7: Cache result if idempotency key is set (AC5.1)
-			if (request.idempotency_key && response !== null) {
-				this.idempotencyCache.set(request.idempotency_key, {
-					response,
-					expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
-				});
-			}
-
-			return results;
-		} catch (error) {
-			this.logger.error("Error executing immediate relay request", { error, entryId: request.id });
-			const errorResponse: ErrorPayload = {
-				error: String(error),
-				retriable: true,
-			};
-			results.push(this.createResultEntry(request, "error", JSON.stringify(errorResponse)));
-			return results;
-		}
+		return anyHost?.site_id ?? null;
 	}
 
 	private async executeInference(
@@ -2406,26 +2277,6 @@ export class RelayProcessor {
 			yielded: result.yielded,
 			error: result.error,
 			messagesCreated: result.messagesCreated,
-		};
-	}
-
-	private createResultEntry(
-		requestEntry: RelayInboxEntry | RelayOutboxEntry,
-		kind: "result" | "error",
-		payload: string,
-	): RelayInboxEntry {
-		return {
-			id: randomUUID(),
-			source_site_id: this.siteId,
-			kind,
-			ref_id: requestEntry.id,
-			idempotency_key: null,
-			stream_id: requestEntry.stream_id ?? null,
-			payload,
-			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-			received_at: new Date().toISOString(),
-			processed: 0,
-			trace_context: null,
 		};
 	}
 }

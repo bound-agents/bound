@@ -910,6 +910,9 @@ export function generateRemoteMCPProxyCommands(
 					// redelivery-stable key (R-DW5/6).
 					topologyRole: ctx.topologyRole,
 				});
+				if (routed.path === "error") {
+					throw new Error(`Failed to relay tool call to ${targetHost.host_name}: ${routed.reason}`);
+				}
 
 				// Resolve target host's annotations for the dispatched subcommand
 				// so the agent retry policy can consult them. Maps MCP-spec wire

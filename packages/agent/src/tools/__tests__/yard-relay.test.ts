@@ -59,7 +59,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000, pollMs = 10):
 function getInferenceOutboxRow(db: Database): { stream_id: string; payload: string } | null {
 	return db
 		.prepare(
-			"SELECT stream_id, payload FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			"SELECT stream_id, payload FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 		)
 		.get() as { stream_id: string; payload: string } | null;
 }
@@ -68,20 +68,23 @@ function insertRelayInboxEntry(
 	db: Database,
 	opts: { id: string; sourceSiteId: string; kind: string; streamId: string; payload: string },
 ) {
+	// Post-N+1: stream responses ride the durable_work spool as self-targeted rows
+	// keyed by stream_id, consumed by the awaiter's union read.
 	db.prepare(
-		`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, claim_state, attempt_count, created_at, source_site)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
 	).run(
 		opts.id,
-		opts.sourceSiteId,
+		"local-spoke",
 		opts.kind,
 		null,
-		null,
+		`stream:${opts.streamId}:${opts.kind}:${opts.id}`,
 		opts.streamId,
 		opts.payload,
 		new Date(Date.now() + 300_000).toISOString(),
 		new Date().toISOString(),
-		0,
+		new Date().toISOString(),
+		opts.sourceSiteId,
 	);
 }
 
@@ -89,8 +92,8 @@ function insertRelayInboxEntry(
 function insertRemoteHost(db: Database, siteId: string, modelId: string) {
 	const now = new Date().toISOString();
 	db.run(
-		`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-		 VALUES (?, ?, ?, 0, ?, ?)`,
+		`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at, work_spool_capable)
+		 VALUES (?, ?, ?, 0, ?, ?, 1)`,
 		[
 			siteId,
 			`${siteId}.local`,

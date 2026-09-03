@@ -4,9 +4,8 @@ import {
 	applyMetricsSchema,
 	applySchema,
 	enqueueToolResult,
-	insertInbox,
+	insertDurableWork,
 	insertRow,
-	readUnprocessed,
 } from "@bound/core";
 import type { ChatParams, LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -14,8 +13,6 @@ import {
 	type ClientResultPayload,
 	type ClientToolPayload,
 	type Logger,
-	type RelayInboxEntry,
-	type RelayOutboxEntry,
 	TypedEventEmitter,
 } from "@bound/shared";
 import { resolveClientSessionHost } from "../delegation";
@@ -36,6 +33,13 @@ import { sleep, waitFor } from "./helpers";
 // dispatch/relay-level seam is the meaningful contract for the relay handler
 // and is fully deterministic. The producer→consumer wire is covered by the
 // resolver tests + the consumer's response-correlation assertions.
+//
+// Post-N+1: the relay processor is durable-only. A client_tool request rides a
+// self-loopback durable_work row (source_site = the originating producer,
+// target_site_id = the processor's own site "session-host" so
+// claimLocalDurableWork picks it up). The session host relays client_result /
+// error responses back to the producer via routeRelayResponse, which lands a
+// durable_work response row keyed by ref_id = the request id.
 // ---------------------------------------------------------------------------
 
 const createMockLogger = (): Logger => ({
@@ -95,41 +99,49 @@ function makeProcessor(db: Database, registry?: ClientToolResolver): RelayProces
 	return processor;
 }
 
+/** Minimal shape returned by the durable-work response readers below. */
+type DurableRow = {
+	id: string;
+	kind: string;
+	payload: string;
+	ref_id: string | null;
+	claim_state: string;
+};
+
+/**
+ * Seed a self-loopback durable_work `client_tool` request the processor's relay
+ * lane claims and dispatches. `target_site_id = "session-host"` (the processor's
+ * own site) so `claimLocalDurableWork` picks it up; `source_site` is the producer
+ * that originated the call, used to address the response back. The session host
+ * relays client_result/error back to the producer via routeRelayResponse, which
+ * routes durable only when the producer advertises work_spool_capable (no legacy
+ * fallback after release N+1) — seed the producer host as capable.
+ */
 function insertClientToolInbox(
 	db: Database,
 	id: string,
 	sourceSiteId: string,
 	payload: ClientToolPayload,
-): RelayInboxEntry {
+): { id: string; source_site_id: string } {
 	const now = new Date();
+	db.prepare(
+		"INSERT OR IGNORE INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, 0, 1)",
+	).run(sourceSiteId, `host-${sourceSiteId}`, now.toISOString(), now.toISOString());
 	db.run(
-		`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO durable_work (id, target_site_id, source_site, kind, ref_id, idempotency_key, payload, expires_at, received_at, claim_state, attempt_count, created_at)
+		 VALUES (?, 'session-host', ?, 'client_tool', ?, ?, ?, ?, ?, 'pending', 0, ?)`,
 		[
 			id,
 			sourceSiteId,
-			"client_tool",
 			null,
-			null,
+			id,
 			JSON.stringify(payload),
 			new Date(now.getTime() + 60_000).toISOString(),
 			now.toISOString(),
-			0,
+			now.toISOString(),
 		],
 	);
-	return {
-		id,
-		source_site_id: sourceSiteId,
-		kind: "client_tool",
-		ref_id: null,
-		idempotency_key: null,
-		stream_id: null,
-		payload: JSON.stringify(payload),
-		expires_at: new Date(now.getTime() + 60_000).toISOString(),
-		received_at: now.toISOString(),
-		processed: 0,
-		trace_context: null,
-	};
+	return { id, source_site_id: sourceSiteId };
 }
 
 /** Simulate websocket.ts#handleToolResult: persist the tool_result + enqueue. */
@@ -163,16 +175,16 @@ function simulateClientToolResult(
 	enqueueToolResult(db, threadId, callId);
 }
 
-function readClientResults(db: Database, refId: string): RelayOutboxEntry[] {
+function readClientResults(db: Database, refId: string): DurableRow[] {
 	return db
-		.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-		.all("client_result", refId) as RelayOutboxEntry[];
+		.query("SELECT * FROM durable_work WHERE kind = ? AND ref_id = ?")
+		.all("client_result", refId) as DurableRow[];
 }
 
-function readErrors(db: Database, refId: string): RelayOutboxEntry[] {
+function readErrors(db: Database, refId: string): DurableRow[] {
 	return db
-		.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-		.all("error", refId) as RelayOutboxEntry[];
+		.query("SELECT * FROM durable_work WHERE kind = ? AND ref_id = ?")
+		.all("error", refId) as DurableRow[];
 }
 
 let db: Database;
@@ -470,8 +482,16 @@ describe("RelayProcessor.handleClientTool (consumer / session host)", () => {
 		const payload = JSON.parse(readClientResults(db, entry2.id)[0].payload) as ClientResultPayload;
 		expect(payload.call_id).toBe(callId);
 		expect(payload.content).toContain("result-once");
-		// All inbox entries drained.
-		expect(readUnprocessed(db).length).toBe(0);
+		// Both client_tool requests were consumed — none left pending.
+		expect(
+			(
+				db
+					.query(
+						"SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'client_tool' AND claim_state = 'pending'",
+					)
+					.get() as { n: number }
+			).n,
+		).toBe(0);
 	});
 
 	it("drops duplicate client_tool relay delivery before the session handler executes", async () => {
@@ -486,9 +506,14 @@ describe("RelayProcessor.handleClientTool (consumer / session host)", () => {
 			args: { path: "/etc/hosts" },
 			timeout_ms: 5000,
 		};
-		const makeEntry = (id: string): RelayInboxEntry => ({
+		// Seed the producer host capable so the client_result routes durable back.
+		db.prepare(
+			"INSERT OR IGNORE INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, 0, 1)",
+		).run(PRODUCER, `host-${PRODUCER}`, now.toISOString(), now.toISOString());
+		const makeEntry = (id: string) => ({
 			id,
-			source_site_id: PRODUCER,
+			target_site_id: "session-host",
+			source_site: PRODUCER,
 			kind: "client_tool",
 			ref_id: null,
 			idempotency_key: `client-tool:${threadId}:${callId}`,
@@ -496,13 +521,13 @@ describe("RelayProcessor.handleClientTool (consumer / session host)", () => {
 			payload: JSON.stringify(payload),
 			expires_at: new Date(now.getTime() + 60_000).toISOString(),
 			received_at: now.toISOString(),
-			processed: 0,
-			trace_context: null,
 		});
 
 		const first = makeEntry("inbox-client-tool-dedup-1");
-		expect(insertInbox(db, first)).toBe(true);
-		expect(insertInbox(db, makeEntry("inbox-client-tool-dedup-2"))).toBe(false);
+		// Both deliveries share (kind, idempotency_key); the durable-work unique
+		// fence admits the first and rejects the redelivered second.
+		expect(insertDurableWork(db, first)).toBe(true);
+		expect(insertDurableWork(db, makeEntry("inbox-client-tool-dedup-2"))).toBe(false);
 
 		const handle = processor.start(10);
 		await waitFor(

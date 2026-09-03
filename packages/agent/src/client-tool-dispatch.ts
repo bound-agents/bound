@@ -242,5 +242,8 @@ export async function dispatchAwaitableClientTool(
 			topologyRole: deps.topologyRole,
 		}),
 	);
+	if (routed.path === "error") {
+		throw new Error(`Failed to relay client tool to session host: ${routed.reason}`);
+	}
 	return waitForRemoteResult(deps, routed.id);
 }

@@ -217,7 +217,6 @@ export interface WsServerConfig {
 		drainChangelog: (peerSiteId: string) => void;
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
-		drainRelayInbox: (spokesSiteId: string) => void;
 		handleSpoolTransfer: (
 			sourceSiteId: string,
 			payload: SpoolTransferPayload,
@@ -353,7 +352,6 @@ export function createWsHandlers(config: WsServerConfig): {
 				config.wsTransport.seedNewPeer(ws.data.siteId);
 
 				config.wsTransport.drainChangelog(ws.data.siteId);
-				config.wsTransport.drainRelayInbox(ws.data.siteId);
 				config.wsTransport.drainDurableWorkSpool(ws.data.siteId, "reconnect");
 			}
 		},

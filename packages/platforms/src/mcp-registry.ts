@@ -1,14 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import {
-	DURABLE_INTAKE_ENABLED,
-	hasDroppedLegacyRelayTables,
-	insertDurableWork,
-	insertInbox,
-	insertRow,
-	listFreshRemotePlatforms,
-	writeOutbox,
-} from "@bound/core";
+import { insertDurableWork, insertRow, listFreshRemotePlatforms } from "@bound/core";
 import type { ToolDefinition } from "@bound/llm";
 import {
 	type Logger,
@@ -30,8 +22,6 @@ import {
 	updateConnectorHandleCursor,
 } from "./connector-handle.js";
 import { isSubscriptionRejected } from "./subscription-errors.js";
-
-const retiredLegacyIntakeWarnings = new WeakSet<Database>();
 
 const mcpLifecycle = counter("bound.platform.mcp.lifecycle", {
 	description: "Platform MCP connection and subscription lifecycle outcomes",
@@ -108,7 +98,7 @@ export interface PlatformMcpRegistryDeps {
 		timeoutMs: number;
 		idempotencyKey: string;
 		traceContext?: string;
-	}) => { inserted: boolean };
+	}) => { path: "durable" | "local" | "error"; inserted?: boolean; reason?: string };
 	/** Test-only override for the initial poll delay. Production uses two seconds. */
 	pollIntervalSeconds?: number;
 }
@@ -746,31 +736,39 @@ export class PlatformMcpRegistry {
 					content: JSON.stringify([event.data]),
 					attachments: [],
 				});
-				// Agent wiring supplies the capability-gated durable router. Keep the
-				// fallback for standalone registries/tests that predate 4D-C.
-				const inserted = this.deps.routeRelayRequest
-					? this.deps.routeRelayRequest({
-							targetSiteId: this.deps.hubSiteId,
-							sourceSiteId: this.deps.siteId,
-							kind: "intake",
-							payload,
-							timeoutMs: 5 * 60_000,
-							idempotencyKey,
-							traceContext: serializedTraceContext ?? undefined,
-						}).inserted
-					: writeOutbox(this.deps.db, {
-							id: randomUUID(),
-							source_site_id: this.deps.siteId,
-							target_site_id: this.deps.hubSiteId,
-							kind: "intake",
-							ref_id: null,
-							idempotency_key: idempotencyKey,
-							stream_id: null,
-							payload,
-							created_at: now,
-							expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-							trace_context: serializedTraceContext,
-						});
+				// Agent wiring supplies the capability-gated durable router. Standalone
+				// registries/tests that predate 4D-C route straight to durable_work.
+				let inserted: boolean;
+				if (this.deps.routeRelayRequest) {
+					const routed = this.deps.routeRelayRequest({
+						targetSiteId: this.deps.hubSiteId,
+						sourceSiteId: this.deps.siteId,
+						kind: "intake",
+						payload,
+						timeoutMs: 5 * 60_000,
+						idempotencyKey,
+						traceContext: serializedTraceContext ?? undefined,
+					});
+					if (routed.path === "error") {
+						this.deps.logger.error(
+							`[platforms-mcp] intake relay to hub failed: ${routed.reason ?? "unroutable"}`,
+						);
+						continue;
+					}
+					inserted = routed.inserted ?? false;
+				} else {
+					inserted = insertDurableWork(this.deps.db, {
+						id: randomUUID(),
+						target_site_id: this.deps.hubSiteId,
+						kind: "intake",
+						payload,
+						idempotency_key: idempotencyKey,
+						expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+						ref_id: null,
+						source_site: this.deps.siteId,
+						received_at: now,
+					});
+				}
 				if (!inserted) continue;
 				insertRow(
 					this.deps.db,
@@ -808,44 +806,17 @@ export class PlatformMcpRegistry {
 				const idempotencyKey = `connector_intake:${subscription.handleId}:${event.eventId}`;
 				const payload = JSON.stringify([event.data]);
 				const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-				const forceDurable = hasDroppedLegacyRelayTables(this.deps.db);
-				if (
-					forceDurable &&
-					!DURABLE_INTAKE_ENABLED &&
-					!retiredLegacyIntakeWarnings.has(this.deps.db)
-				) {
-					retiredLegacyIntakeWarnings.add(this.deps.db);
-					this.deps.logger.warn(
-						"Legacy relay intake is retired; forcing durable intake despite BOUND_DURABLE_INTAKE=0.",
-					);
-				}
-				if (DURABLE_INTAKE_ENABLED || forceDurable) {
-					insertDurableWork(this.deps.db, {
-						id,
-						target_site_id: this.deps.siteId,
-						kind: "connector_intake",
-						payload,
-						idempotency_key: idempotencyKey,
-						expires_at: expiresAt,
-						ref_id: subscription.threadId,
-						source_site: this.deps.siteId,
-						received_at: now,
-					});
-				} else {
-					insertInbox(this.deps.db, {
-						id,
-						source_site_id: this.deps.siteId,
-						kind: "connector_intake" as const,
-						ref_id: subscription.threadId,
-						idempotency_key: idempotencyKey,
-						stream_id: null,
-						payload,
-						expires_at: expiresAt,
-						received_at: now,
-						processed: 0,
-						trace_context: serializedTraceContext,
-					});
-				}
+				insertDurableWork(this.deps.db, {
+					id,
+					target_site_id: this.deps.siteId,
+					kind: "connector_intake",
+					payload,
+					idempotency_key: idempotencyKey,
+					expires_at: expiresAt,
+					ref_id: subscription.threadId,
+					source_site: this.deps.siteId,
+					received_at: now,
+				});
 			}
 		}
 

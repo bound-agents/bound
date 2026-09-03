@@ -1,10 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-import {
-	countPendingPeerTargetedDurableWork,
-	countUndeliveredRelayOutbox,
-	hasDroppedLegacyRelayTables,
-	listSyncState,
-} from "@bound/core";
+import { countPendingPeerTargetedDurableWork, listSyncState } from "@bound/core";
 import {
 	findClusterConfigKeyByKeyIncludingDeleted,
 	getSiteId,
@@ -50,25 +45,6 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 				modified_at TEXT NOT NULL
 			)
 		`);
-		const legacyRelayRetired = hasDroppedLegacyRelayTables(db);
-		// `boundctl` can run before the main process on an active host, but a
-		// retired host must never resurrect a demolished local relay table.
-		if (!legacyRelayRetired) {
-			db.exec(`
-				CREATE TABLE IF NOT EXISTS relay_outbox (
-					id TEXT PRIMARY KEY,
-					source_site_id TEXT,
-					target_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					ref_id TEXT,
-					idempotency_key TEXT,
-					payload TEXT NOT NULL,
-					created_at TEXT NOT NULL,
-					expires_at TEXT NOT NULL,
-					delivered INTEGER DEFAULT 0
-				)
-			`);
-		}
 
 		// Step 1: Set drain flag
 		// TODO: For multi-hub clusters, this should be in cluster_config (synced) so all
@@ -90,38 +66,26 @@ export async function runSetHub(args: SetHubArgs): Promise<void> {
 		let drained = false;
 
 		console.log(
-			legacyRelayRetired
-				? `Legacy relay retired; waiting for durable peer spool to drain (timeout: ${relayConfig.drain_timeout_seconds}s)...`
-				: `Waiting for relay outbox to drain (timeout: ${relayConfig.drain_timeout_seconds}s)...`,
+			`Waiting for durable peer spool to drain (timeout: ${relayConfig.drain_timeout_seconds}s)...`,
 		);
 
 		while (Date.now() - drainStart < drainTimeoutMs) {
-			const pendingCount = legacyRelayRetired
-				? countPendingPeerTargetedDurableWork(db, siteId)
-				: countUndeliveredRelayOutbox(db);
+			const pendingCount = countPendingPeerTargetedDurableWork(db, siteId);
 
 			if (pendingCount === 0) {
 				drained = true;
-				console.log(
-					legacyRelayRetired
-						? "Durable peer spool drained successfully."
-						: "Relay outbox drained successfully.",
-				);
+				console.log("Durable peer spool drained successfully.");
 				break;
 			}
 
-			console.log(
-				`${legacyRelayRetired ? "Draining durable peer spool" : "Draining relay outbox"}: ${pendingCount} entries remaining...`,
-			);
+			console.log(`Draining durable peer spool: ${pendingCount} entries remaining...`);
 			await sleep(1000);
 		}
 
 		if (!drained) {
-			const remainingCount = legacyRelayRetired
-				? countPendingPeerTargetedDurableWork(db, siteId)
-				: countUndeliveredRelayOutbox(db);
+			const remainingCount = countPendingPeerTargetedDurableWork(db, siteId);
 			console.warn(
-				`Drain timeout reached with ${remainingCount} ${legacyRelayRetired ? "durable peer spool" : "relay outbox"} entries remaining. Proceeding with hub switch.`,
+				`Drain timeout reached with ${remainingCount} durable peer spool entries remaining. Proceeding with hub switch.`,
 			);
 		}
 

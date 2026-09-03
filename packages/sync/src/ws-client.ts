@@ -52,7 +52,6 @@ export interface WsClientConfig {
 		drainChangelog: (peerSiteId: string) => void;
 		handleRelayDeliver: (sourceSiteId: string, payload: RelayDeliverPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
-		drainRelayOutbox: (peerSiteId: string) => void;
 		/** Receive a hub→spoke durable-work spool transfer (R-DW10). */
 		handleSpoolTransfer: (
 			sourceSiteId: string,
@@ -519,7 +518,6 @@ export class WsSyncClient {
 				this.instanceId,
 			);
 			this.config.wsTransport.drainChangelog(this.config.hubSiteId);
-			this.config.wsTransport.drainRelayOutbox(this.config.hubSiteId);
 			// Resume in-flight spool transfers (retained token) and begin pending
 			// peer-targeted ones (R-DW10) — the push path only covers rows written
 			// while connected; reconnect must drain what accumulated while dark.

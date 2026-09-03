@@ -1,14 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
-import { TraceFlags, context, propagation, trace } from "@opentelemetry/api";
-import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
-import {
-	BasicTracerProvider,
-	InMemorySpanExporter,
-	SimpleSpanProcessor,
-} from "@opentelemetry/sdk-trace-base";
-import { setCoreTelemetry } from "../../../core/src/telemetry.js";
 import { getConfirmedSyncWatermark, getPeerCursor, updatePeerCursor } from "../peer-cursor.js";
 import { setSyncTelemetry } from "../telemetry.js";
 import { MicrotaskCoalescer } from "../ws-coalescer.js";
@@ -674,1020 +666,127 @@ describe("WsTransport", () => {
 		});
 	});
 
-	describe("relay tables untouched", () => {
-		it("does not modify relay_outbox or relay_inbox tables", () => {
-			// Create relay tables to verify they remain untouched
-			db.run(`
-				CREATE TABLE relay_outbox (
-					id TEXT PRIMARY KEY,
-					target_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					payload TEXT NOT NULL,
-					delivered INTEGER DEFAULT 0,
-					created_at TEXT NOT NULL,
-					trace_context TEXT
-				)
-			`);
-
-			db.run(`
-				CREATE TABLE relay_inbox (
-					id TEXT PRIMARY KEY,
-					source_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					payload TEXT NOT NULL,
-					processed INTEGER DEFAULT 0,
-					created_at TEXT NOT NULL,
-					trace_context TEXT
-				)
-			`);
-
-			transport.start();
-
-			const sendFrame = (): boolean => true;
-			const key = new Uint8Array(32).fill(1);
-
-			transport.addPeer("peer-1", sendFrame, key);
-
-			// Simulate changelog activity
-			const now = new Date().toISOString();
-			db.run(
-				`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
-				VALUES (?, ?, ?, ?, ?, ?)`,
-				["2026-03-22T10:00:00.000Z_0001_hub", "semantic_memory", "mem-1", "hub", now, "{}"],
-			);
-
-			eventBus.emit("changelog:written", {
-				hlc: "2026-03-22T10:00:00.000Z_0001_hub",
-				tableName: "semantic_memory",
+	describe("legacy relay frames (release N+1 warn-and-drop)", () => {
+		// After the N+1 demolition there is no relay_outbox/relay_inbox to route
+		// into. A legacy RELAY_SEND/RELAY_DELIVER can only arrive from a peer with a
+		// stale capability snapshot; the transport refuses the PAYLOAD but keeps the
+		// SOCKET (the frame decode stays, so no 1011 close flaps the stale peer).
+		it("handleRelaySend warns and drops without inserting or acking", () => {
+			const warnings: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+			const warnDb = new Database(":memory:");
+			const warnTransport = new WsTransport({
+				db: warnDb,
 				siteId: "hub",
+				eventBus: new TypedEventEmitter(),
+				logger: {
+					info() {},
+					error() {},
+					debug() {},
+					warn(msg: string, meta?: Record<string, unknown>) {
+						warnings.push({ msg, meta });
+					},
+				},
 			});
-
-			transport.stop();
-
-			// Verify relay tables remain empty (AC6.5)
-			const relayOutboxCount = (
-				db.query("SELECT COUNT(*) as count FROM relay_outbox").get() as { count: number }
-			).count;
-			const relayInboxCount = (
-				db.query("SELECT COUNT(*) as count FROM relay_inbox").get() as { count: number }
-			).count;
-
-			expect(relayOutboxCount).toBe(0);
-			expect(relayInboxCount).toBe(0);
-		});
-	});
-
-	describe("relay routing (hub-side and spoke-side)", () => {
-		beforeEach(() => {
-			// Create relay tables
-			db.run(`
-				CREATE TABLE relay_outbox (
-					id TEXT PRIMARY KEY,
-					source_site_id TEXT NOT NULL,
-					target_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					ref_id TEXT,
-					idempotency_key TEXT,
-					stream_id TEXT,
-					payload TEXT NOT NULL,
-					created_at TEXT NOT NULL,
-					expires_at TEXT NOT NULL,
-					delivered INTEGER DEFAULT 0,
-					trace_context TEXT
-				)
-			`);
-
-			db.run(`
-				CREATE TABLE relay_inbox (
-					id TEXT PRIMARY KEY,
-					source_site_id TEXT NOT NULL,
-					kind TEXT NOT NULL,
-					ref_id TEXT,
-					idempotency_key TEXT,
-					stream_id TEXT,
-					payload TEXT NOT NULL,
-					expires_at TEXT NOT NULL,
-					received_at TEXT NOT NULL,
-					processed INTEGER DEFAULT 0,
-					trace_context TEXT
-				)
-			`);
-		});
-
-		it("unicast relay routing: Spoke A sends to Spoke B via hub", () => {
-			const spokeASendFrames: Uint8Array[] = [];
-			const spokeBSendFrames: Uint8Array[] = [];
-
-			const spokeAKey = new Uint8Array(32).fill(2);
-			const spokeBKey = new Uint8Array(32).fill(3);
-
-			// Setup: Hub connected to Spoke A and Spoke B
-			transport.addPeer(
+			const sent: Uint8Array[] = [];
+			warnTransport.addPeer(
 				"spoke-a",
 				(frame) => {
-					spokeASendFrames.push(frame);
+					sent.push(frame);
 					return true;
 				},
-				spokeAKey,
+				new Uint8Array(32).fill(2),
 			);
-			transport.addPeer(
-				"spoke-b",
-				(frame) => {
-					spokeBSendFrames.push(frame);
-					return true;
-				},
-				spokeBKey,
-			);
-
-			// Spoke A sends relay_send targeting Spoke B
-			const relaySendPayload: RelaySendPayload = {
-				entries: [
-					{
-						id: "relay-1",
-						target_site_id: "spoke-b",
-						kind: "tool_call",
-						ref_id: "ref-1",
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { tool: "test" },
-					},
-				],
-			};
-
-			transport.handleRelaySend("spoke-a", relaySendPayload);
-
-			// Verify Spoke B received relay_deliver frame
-			expect(spokeBSendFrames.length).toBe(1);
-			const decodedB = decodeFrame(spokeBSendFrames[0], spokeBKey);
-			expect(decodedB.ok).toBe(true);
-			if (decodedB.ok) {
-				expect(decodedB.value.type).toBe(WsMessageType.RELAY_DELIVER);
-			}
-
-			// Verify Spoke A received relay_ack frame
-			expect(spokeASendFrames.length).toBe(1);
-			const decodedA = decodeFrame(spokeASendFrames[0], spokeAKey);
-			expect(decodedA.ok).toBe(true);
-			if (decodedA.ok) {
-				expect(decodedA.value.type).toBe(WsMessageType.RELAY_ACK);
-				const ackPayload = decodedA.value.payload as RelayAckPayload;
-				expect(ackPayload.ids).toContain("relay-1");
-			}
-		});
-
-		it("broadcast fan-out: Spoke A sends to all spokes except itself", () => {
-			const spokeASendFrames: Uint8Array[] = [];
-			const spokeBSendFrames: Uint8Array[] = [];
-			const spokeCFrames: Uint8Array[] = [];
-
-			const spokeAKey = new Uint8Array(32).fill(1);
-			const spokeBKey = new Uint8Array(32).fill(2);
-			const spokeCKey = new Uint8Array(32).fill(3);
-
-			// Hub setup
-			transport.addPeer(
-				"spoke-a",
-				(frame) => {
-					spokeASendFrames.push(frame);
-					return true;
-				},
-				spokeAKey,
-			);
-			transport.addPeer(
-				"spoke-b",
-				(frame) => {
-					spokeBSendFrames.push(frame);
-					return true;
-				},
-				spokeBKey,
-			);
-			transport.addPeer(
-				"spoke-c",
-				(frame) => {
-					spokeCFrames.push(frame);
-					return true;
-				},
-				spokeCKey,
-			);
-
-			// Spoke A sends broadcast (target = "*")
-			const relaySendPayload: RelaySendPayload = {
-				entries: [
-					{
-						id: "broadcast-1",
-						target_site_id: "*",
-						kind: "intake",
-						ref_id: null,
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { platform: "test", thread_id: "t1", message_id: "m1", content: "hello" },
-					},
-				],
-			};
-
-			transport.handleRelaySend("spoke-a", relaySendPayload);
-
-			// Verify only Spoke B and C received relay_deliver (NOT Spoke A)
-			expect(spokeASendFrames.length).toBe(1); // Only ack
-			expect(spokeBSendFrames.length).toBe(1); // deliver + implicit ack
-			expect(spokeCFrames.length).toBe(1); // deliver + implicit ack
-
-			// Verify content is relay_deliver
-			const decodedB = decodeFrame(spokeBSendFrames[0], spokeBKey);
-			expect(decodedB.ok && decodedB.value.type === WsMessageType.RELAY_DELIVER).toBe(true);
-		});
-
-		it("preserves relay delivery wire payloads when draining durable entries", () => {
-			const frames: Uint8Array[] = [];
-			const key = new Uint8Array(32).fill(1);
-			transport.addPeer(
-				"spoke-b",
-				(frame) => {
-					frames.push(frame);
-					return true;
-				},
-				key,
-			);
-
-			const payload = JSON.stringify({ text: "durable payload", nested: { value: 42 } });
-			const now = new Date().toISOString();
-			for (let i = 0; i < 100; i++) {
-				db.run(
-					`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, payload, created_at, expires_at, delivered)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-					[`relay-${i}`, "hub", "spoke-b", "stream_chunk", `ref-${i}`, payload, now, now],
-				);
-			}
-
-			transport.drainRelayInbox("spoke-b");
-
-			expect(frames).toHaveLength(1);
-			const delivery = decodeFrame(frames[0], key);
-			expect(delivery.ok).toBe(true);
-			if (delivery.ok) {
-				const entries = (delivery.value.payload as RelayDeliverPayload).entries;
-				expect(entries).toHaveLength(100);
-				expect(entries[0]).toMatchObject({
-					id: "relay-0",
-					source_site_id: "hub",
-					ref_id: "ref-0",
-					payload: JSON.parse(payload),
-				});
-			}
-		});
-
-		it("hub-local request dispatch: request goes to relay_inbox", () => {
-			const spokeASendFrames: Uint8Array[] = [];
-			const spokeAKey = new Uint8Array(32).fill(1);
-
-			transport.addPeer(
-				"spoke-a",
-				(frame) => {
-					spokeASendFrames.push(frame);
-					return true;
-				},
-				spokeAKey,
-			);
-
-			// Spoke A sends tool_call targeting hub
-			const relaySendPayload: RelaySendPayload = {
-				entries: [
-					{
-						id: "tool-call-1",
-						target_site_id: "hub",
-						kind: "tool_call",
-						ref_id: "ref-1",
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { tool: "test" },
-					},
-				],
-			};
-
-			const inboxEventsFired: Array<{
-				ref_id?: string;
-				stream_id?: string;
-				kind: string;
-			}> = [];
-			eventBus.on("relay:inbox", (event) => {
-				inboxEventsFired.push(event);
-			});
-
-			transport.handleRelaySend("spoke-a", relaySendPayload);
-
-			// Verify entry in relay_inbox
-			const inboxEntry = db
-				.query("SELECT * FROM relay_inbox WHERE id = ?")
-				.get("tool-call-1") as Record<string, unknown> | null;
-			expect(inboxEntry).not.toBeNull();
-			expect(inboxEntry?.kind).toBe("tool_call");
-
-			// Verify relay:inbox event fired
-			expect(inboxEventsFired.length).toBe(1);
-			expect(inboxEventsFired[0].kind).toBe("tool_call");
-
-			// Cleanup
-			eventBus.off("relay:inbox", () => {});
-		});
-
-		it("hub-local response routing: stream_chunk goes to relay_inbox", () => {
-			const spokeASendFrames: Uint8Array[] = [];
-			const spokeAKey = new Uint8Array(32).fill(1);
-
-			transport.addPeer(
-				"spoke-a",
-				(frame) => {
-					spokeASendFrames.push(frame);
-					return true;
-				},
-				spokeAKey,
-			);
-
-			// Spoke A sends stream_chunk targeting hub
-			const relaySendPayload: RelaySendPayload = {
-				entries: [
-					{
-						id: "stream-1",
-						target_site_id: "hub",
-						kind: "stream_chunk",
-						ref_id: null,
-						idempotency_key: null,
-						stream_id: "stream-001",
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { text: "chunk" },
-					},
-				],
-			};
-
-			transport.handleRelaySend("spoke-a", relaySendPayload);
-
-			// Verify entry in relay_inbox (response kinds go to inbox, not executed)
-			const inboxEntry = db
-				.query("SELECT * FROM relay_inbox WHERE id = ?")
-				.get("stream-1") as Record<string, unknown> | null;
-			expect(inboxEntry).not.toBeNull();
-			expect(inboxEntry?.kind).toBe("stream_chunk");
-		});
-
-		// Note: Idempotency dedup testing skipped for now.
-		// The hub-side idempotency check requires matching id,empotency_key,target_site_id
-		// in relay_outbox, but entries targeting different destinations are not in relay_outbox.
-		// Full idempotency testing requires multi-step test setup that will be added in Phase 6.
-
-		it("offline spoke: async-dispatch entries accumulate in hub outbox", () => {
-			// Hub connected to Spoke A only
-			const spokeASendFrames: Uint8Array[] = [];
-			const spokeAKey = new Uint8Array(32).fill(1);
-
-			transport.addPeer(
-				"spoke-a",
-				(frame) => {
-					spokeASendFrames.push(frame);
-					return true;
-				},
-				spokeAKey,
-			);
-
-			// Spoke A sends async relay targeting offline Spoke B
-			// (async-dispatch kinds are fire-and-forget — buffering is correct)
-			const relaySendPayload: RelaySendPayload = {
-				entries: [
-					{
-						id: "relay-1",
-						target_site_id: "spoke-b",
-						kind: "inference",
-						ref_id: null,
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { tool: "test" },
-					},
-				],
-			};
-
-			transport.handleRelaySend("spoke-a", relaySendPayload);
-
-			// Entry should be written to hub outbox (delivered = 0)
-			const outboxEntry = db
-				.query("SELECT * FROM relay_outbox WHERE id = ?")
-				.get("relay-1") as Record<string, unknown> | null;
-			expect(outboxEntry).not.toBeNull();
-			expect(outboxEntry?.target_site_id).toBe("spoke-b");
-			expect(outboxEntry?.delivered).toBe(0);
-
-			// Spoke A should still get ack
-			expect(spokeASendFrames.length).toBeGreaterThan(0);
-		});
-
-		it("offline spoke: sync-dispatch entries fast-fail with retriable error", () => {
-			// Hub connected to Spoke A only; Spoke B (target) is offline.
-			// For sync-dispatch kinds the source is actively polling for a response,
-			// so buffering would silently absorb the request and force a 15s timeout.
-			// Hub should instead fast-fail with a structured retriable=true error.
-			const spokeASendFrames: Uint8Array[] = [];
-			const spokeAKey = new Uint8Array(32).fill(1);
-
-			transport.addPeer(
-				"spoke-a",
-				(frame) => {
-					spokeASendFrames.push(frame);
-					return true;
-				},
-				spokeAKey,
-			);
-
-			const relaySendPayload: RelaySendPayload = {
-				entries: [
-					{
-						id: "relay-1",
-						target_site_id: "spoke-b",
-						kind: "platform_request",
-						ref_id: null,
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: {
-							server_name: "discord",
-							method: "events/list",
-							params: {},
-							timeout_ms: 5000,
-						},
-					},
-				],
-			};
-
-			transport.handleRelaySend("spoke-a", relaySendPayload);
-
-			// No outbox entry should accumulate for sync-dispatch — it would silently
-			// be delivered later, but the source has already moved on by then.
-			const outboxEntry = db
-				.query("SELECT * FROM relay_outbox WHERE id = ?")
-				.get("relay-1") as Record<string, unknown> | null;
-			expect(outboxEntry).toBeNull();
-
-			// Spoke A should receive (a) a relay_deliver carrying a synthetic error
-			// response and (b) a relay_ack clearing its outbox view.
-			expect(spokeASendFrames.length).toBe(2);
-
-			const decoded0 = decodeFrame(spokeASendFrames[0], spokeAKey);
-			expect(decoded0.ok).toBe(true);
-			if (!decoded0.ok) return;
-			expect(decoded0.value.type).toBe(WsMessageType.RELAY_DELIVER);
-			const deliverPayload = decoded0.value.payload as RelayDeliverPayload;
-			expect(deliverPayload.entries.length).toBe(1);
-			const errorEntry = deliverPayload.entries[0];
-			expect(errorEntry.kind).toBe("error");
-			expect(errorEntry.ref_id).toBe("relay-1");
-			const errorBody = errorEntry.payload as {
-				error: string;
-				retriable: boolean;
-				definitely_not_executed?: boolean;
-			};
-			expect(errorBody.retriable).toBe(true);
-			// Hub fast-fail: target was never reached, so the target tool DEFINITELY
-			// did not execute. This lets the agent loop retry safely even for
-			// non-idempotent tools (vs. full-timeout retriable=true cases where
-			// the target may have already started executing).
-			expect(errorBody.definitely_not_executed).toBe(true);
-			expect(errorBody.error).toContain("spoke-b");
-			expect(errorBody.error.toLowerCase()).toContain("not currently connected");
-
-			const decoded1 = decodeFrame(spokeASendFrames[1], spokeAKey);
-			expect(decoded1.ok).toBe(true);
-			if (!decoded1.ok) return;
-			expect(decoded1.value.type).toBe(WsMessageType.RELAY_ACK);
-		});
-
-		it("spoke-side relay deliver: entries inserted to inbox with event fired", () => {
-			// Spoke receiving relay_deliver from hub
-			const relayDeliverPayload: RelayDeliverPayload = {
-				entries: [
-					{
-						id: "relay-result-1",
-						source_site_id: "hub",
-						kind: "result",
-						ref_id: "ref-1",
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60000).toISOString(),
-						payload: { result: "data" },
-					},
-				],
-			};
-
-			const inboxEventsFired: Array<{
-				ref_id?: string;
-				stream_id?: string;
-				kind: string;
-			}> = [];
-			eventBus.on("relay:inbox", (event) => {
-				inboxEventsFired.push(event);
-			});
-
-			transport.handleRelayDeliver("hub", relayDeliverPayload);
-
-			// Verify entry in relay_inbox
-			const inboxEntry = db
-				.query("SELECT * FROM relay_inbox WHERE id = ?")
-				.get("relay-result-1") as Record<string, unknown> | null;
-			expect(inboxEntry).not.toBeNull();
-			expect(inboxEntry?.kind).toBe("result");
-
-			// Verify relay:inbox event fired
-			expect(inboxEventsFired.length).toBe(1);
-			expect(inboxEventsFired[0].kind).toBe("result");
-
-			// Cleanup
-			eventBus.off("relay:inbox", () => {});
-		});
-
-		it("spoke-side relay ack: marks outbox as delivered", () => {
-			// Pre-populate outbox
-			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-				[
-					"relay-1",
-					"spoke-a",
-					"hub",
-					"tool_call",
-					"{}",
-					new Date().toISOString(),
-					new Date(Date.now() + 60000).toISOString(),
-				],
-			);
-
-			const ackPayload: RelayAckPayload = { ids: ["relay-1"] };
-			transport.handleRelayAck("hub", ackPayload);
-
-			// Verify entry marked as delivered
-			const outboxEntry = db
-				.query("SELECT * FROM relay_outbox WHERE id = ?")
-				.get("relay-1") as Record<string, unknown> | null;
-			expect(outboxEntry?.delivered).toBe(1);
-		});
-
-		it("hub-side relay ack only marks entries targeted to the acking spoke", () => {
-			const hubTransport = new WsTransport({
-				db,
-				siteId: "hub",
-				eventBus,
-				isHub: true,
-			});
-			const now = new Date().toISOString();
-			const expiresAt = new Date(Date.now() + 60000).toISOString();
-
-			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-				["relay-to-a", "hub", "spoke-a", "stream_chunk", "{}", now, expiresAt],
-			);
-			db.run(
-				`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, payload, created_at, expires_at, delivered)
-				VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
-				["relay-to-b", "hub", "spoke-b", "stream_chunk", "{}", now, expiresAt],
-			);
-
-			hubTransport.handleRelayAck("spoke-a", { ids: ["relay-to-a", "relay-to-b"] });
-
-			const toA = db.query("SELECT delivered FROM relay_outbox WHERE id = ?").get("relay-to-a") as {
-				delivered: number;
-			} | null;
-			const toB = db.query("SELECT delivered FROM relay_outbox WHERE id = ?").get("relay-to-b") as {
-				delivered: number;
-			} | null;
-
-			expect(toA?.delivered).toBe(1);
-			expect(toB?.delivered).toBe(0);
-		});
-	});
-});
-
-/**
- * Regression suite for the hub-mode relay-routing spin loop.
- *
- * Production failure observed: a hub-originated `error` outbox entry (e.g. a
- * RelayProcessor.writeResponse error response) targeting an offline spoke
- * caused WsTransport.handleRelaySend's offline-async-buffer branch to call
- * writeOutbox again with the same id. INSERT-OR-IGNORE was a no-op but
- * `relay:outbox-written` fired anyway — the listener was synchronous, so it
- * re-entered sendRelayOutboxEntry → handleRelaySend → writeOutbox, recursing
- * ~5000 frames per burst until V8 RangeError, then the supervisor restarted
- * the process and the still-undelivered row re-triggered the loop. Observed
- * as 286k log lines / 99% of total log volume in 26 minutes with 35 restarts.
- *
- * The fix is in @bound/core/relay.ts: writeOutbox only emits the event when
- * the INSERT actually inserted a row (result.changes > 0). This block
- * exercises the integrated path through WsTransport in hub mode.
- */
-describe("WsTransport hub-mode relay-routing spin-loop regression", () => {
-	let db: Database;
-	let eventBus: TypedEventEmitter;
-	let transport: WsTransport;
-
-	beforeEach(() => {
-		db = new Database(":memory:");
-		// Mirror the schema needed by handleRelaySend / sendRelayOutboxEntry.
-		db.run(`
-			CREATE TABLE relay_outbox (
-				id TEXT PRIMARY KEY,
-				source_site_id TEXT NOT NULL,
-				target_site_id TEXT NOT NULL,
-				kind TEXT NOT NULL,
-				ref_id TEXT,
-				idempotency_key TEXT,
-				stream_id TEXT,
-				payload TEXT NOT NULL,
-				created_at TEXT NOT NULL,
-				expires_at TEXT NOT NULL,
-				delivered INTEGER DEFAULT 0,
-				trace_context TEXT
-			)
-		`);
-		db.run(`
-			CREATE UNIQUE INDEX idx_relay_outbox_idempotency
-			ON relay_outbox(idempotency_key, target_site_id)
-			WHERE idempotency_key IS NOT NULL
-		`);
-		db.run(`
-			CREATE TABLE relay_inbox (
-				id TEXT PRIMARY KEY,
-				source_site_id TEXT NOT NULL,
-				kind TEXT NOT NULL,
-				ref_id TEXT,
-				idempotency_key TEXT,
-				stream_id TEXT,
-				payload TEXT NOT NULL,
-				expires_at TEXT NOT NULL,
-				received_at TEXT NOT NULL,
-				processed INTEGER DEFAULT 0,
-				trace_context TEXT
-			)
-		`);
-		// Minimal change_log table to keep the WsTransport changelog listener
-		// happy (it queries on changelog:written events; we don't fire any
-		// here, but the listener path expects the table to exist).
-		db.run(`
-			CREATE TABLE change_log (
-				hlc TEXT PRIMARY KEY,
-				site_id TEXT NOT NULL,
-				table_name TEXT NOT NULL,
-				row_pk TEXT NOT NULL,
-				op TEXT NOT NULL,
-				row_data TEXT,
-				created_at TEXT NOT NULL
-			)
-		`);
-
-		eventBus = new TypedEventEmitter();
-		transport = new WsTransport({
-			db,
-			siteId: "hub",
-			eventBus,
-			isHub: true,
-		});
-		transport.start();
-	});
-
-	afterEach(() => {
-		setCoreTelemetry();
-		setSyncTelemetry();
-		transport.stop();
-		db.close();
-	});
-
-	it("parents durable forwarding writeOutbox under the incoming relay operation", () => {
-		const incomingSpanId = "b7ad6b7169203331";
-		const relaySpanId = "62ff85595cf3dc29";
-		const relaySpan = trace.wrapSpanContext({
-			traceId: "0af7651916cd43dd8448eb211c80319c",
-			spanId: relaySpanId,
-			traceFlags: TraceFlags.SAMPLED,
-		});
-		let relayParentSpanId: string | undefined;
-		let outboxParentSpanId: string | undefined;
-		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
-		const ambientContext = context.active();
-		const originalExtract = propagation.extract;
-		let extractedCarrier: unknown;
-		propagation.extract = ((_base, carrier) => {
-			extractedCarrier = carrier;
-			return trace.setSpan(
-				ambientContext,
-				trace.wrapSpanContext({
-					traceId: "0af7651916cd43dd8448eb211c80319c",
-					spanId: incomingSpanId,
-					traceFlags: TraceFlags.SAMPLED,
-				}),
-			);
-		}) as typeof propagation.extract;
-		setSyncTelemetry({
-			handshakes: { add() {} },
-			drains: { add() {} },
-			drainedEntries: { add() {} },
-			drainDuration: { record() {} },
-			activeConnections: { add() {} },
-			startSpan: (_name, _attributes, parentContext) => {
-				relayParentSpanId = trace.getSpan(parentContext ?? context.active())?.spanContext().spanId;
-				return relaySpan;
-			},
-		});
-		setCoreTelemetry({
-			changeLogTransactions: { add() {} },
-			changeLogPostcommitEvents: { add() {} },
-			relayOutboxOperations: { add() {} },
-			relayOutboxOperationDuration: { record() {} },
-			startSpan: () => {
-				outboxParentSpanId = trace.getSpan(context.active())?.spanContext().spanId;
-				return relaySpan;
-			},
-		});
-
-		try {
-			transport.handleRelaySend("spoke-a", {
-				entries: [
-					{
-						id: "trace-forward-1",
-						target_site_id: "offline-spoke-b",
-						kind: "inference",
-						ref_id: null,
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60_000).toISOString(),
-						payload: { tool: "test" },
-						trace_context: JSON.stringify({
-							traceparent: `00-0af7651916cd43dd8448eb211c80319c-${incomingSpanId}-01`,
-						}),
-					},
-				],
-			});
-
-			expect(extractedCarrier).toEqual({
-				traceparent: `00-0af7651916cd43dd8448eb211c80319c-${incomingSpanId}-01`,
-			});
-			expect(relayParentSpanId).toBe(incomingSpanId);
-			expect(outboxParentSpanId).toBe(relaySpanId);
-			expect(context.active()).toBe(ambientContext);
-		} finally {
-			propagation.extract = originalExtract;
-			context.disable();
-		}
-	});
-	it("routes durable forwarding through a lightweight relay span without spanContext", () => {
-		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
-		const ambientContext = context.active();
-		setSyncTelemetry({
-			handshakes: { add() {} },
-			drains: { add() {} },
-			drainedEntries: { add() {} },
-			drainDuration: { record() {} },
-			activeConnections: { add() {} },
-			startSpan: () => ({
-				addEvent() {},
-				recordException() {},
-				setStatus() {},
-				end() {},
-			}),
-		});
-		setCoreTelemetry({
-			changeLogTransactions: { add() {} },
-			changeLogPostcommitEvents: { add() {} },
-			relayOutboxOperations: { add() {} },
-			relayOutboxOperationDuration: { record() {} },
-			startSpan: () => {
-				trace.getSpan(context.active())?.spanContext();
-				return trace.wrapSpanContext({
-					traceId: "0af7651916cd43dd8448eb211c80319c",
-					spanId: "62ff85595cf3dc29",
-					traceFlags: TraceFlags.SAMPLED,
-				});
-			},
-		});
-
-		try {
-			expect(() =>
-				transport.handleRelaySend("spoke-a", {
+			try {
+				const payload: RelaySendPayload = {
 					entries: [
 						{
-							id: "lightweight-span-forward-1",
-							target_site_id: "offline-spoke-b",
-							kind: "inference",
+							id: "legacy-1",
+							target_site_id: "hub",
+							kind: "tool_call",
 							ref_id: null,
-							idempotency_key: null,
+							idempotency_key: "k1",
 							stream_id: null,
 							expires_at: new Date(Date.now() + 60_000).toISOString(),
-							payload: { tool: "test" },
+							payload: { tool: "noop" },
 							trace_context: null,
 						},
 					],
-				}),
-			).not.toThrow();
-			expect(
-				db.query("SELECT id FROM relay_outbox WHERE id = ?").get("lightweight-span-forward-1"),
-			).toEqual({
-				id: "lightweight-span-forward-1",
-			});
-			expect(context.active()).toBe(ambientContext);
-		} finally {
-			context.disable();
-		}
-	});
-
-	it("does NOT recurse when writeOutbox fires for a hub-self entry to an offline async target (kind=error)", async () => {
-		// Setup: no peer connection for the offline target spoke. This drives
-		// handleRelaySend into the offline-async-buffer branch where the spin
-		// originated.
-		const offlineTarget = "f9c2e53b5d2017d0b2adb195432bfa0c";
-
-		// Count routing log invocations by intercepting through the eventBus.
-		// We can't easily intercept the logger, so we use the event count
-		// instead: each spin iteration emits relay:outbox-written.
-		let emitCount = 0;
-		eventBus.on("relay:outbox-written", () => {
-			emitCount++;
+				};
+				warnTransport.handleRelaySend("spoke-a", payload);
+				// (a) warns, (b) no relay_inbox insert (table does not exist — a write
+				// would have thrown), (c) no ack frame sent back.
+				expect(warnings.some((w) => /RELAY_SEND/.test(w.msg))).toBe(true);
+				expect(sent.length).toBe(0);
+			} finally {
+				warnTransport.stop();
+				warnDb.close();
+			}
 		});
 
-		// Simulate RelayProcessor.writeResponse: hub writes a kind=error
-		// outbox entry targeting the offline spoke. Use writeOutbox via the
-		// module-level bus (matches production wiring).
-		const { setRelayOutboxEventBus, writeOutbox } = await import("@bound/core");
-		setRelayOutboxEventBus(eventBus);
-		try {
-			writeOutbox(db, {
-				id: "9e920bc8-4ebf-4e59-a851-9b58ba9b29cb", // production entry id
-				source_site_id: "hub",
-				target_site_id: offlineTarget,
-				kind: "error",
-				ref_id: "req-original",
-				idempotency_key: null,
-				stream_id: null,
-				payload: JSON.stringify({ error: "upstream timed out", retriable: true }),
-				created_at: new Date().toISOString(),
-				expires_at: new Date(Date.now() + 60_000).toISOString(),
-			});
-		} finally {
-			setRelayOutboxEventBus(null as unknown as TypedEventEmitter);
-		}
-
-		// Pre-fix behavior: emitCount would race past 4000+ in microseconds
-		// before V8 RangeError. Post-fix: exactly one emit (the original
-		// insert), the offline-async-buffer's no-op INSERT-OR-IGNORE doesn't
-		// re-emit.
-		expect(emitCount).toBe(1);
-
-		// Sanity: the entry stayed in relay_outbox (the listener also ran
-		// markDelivered after handleRelaySend, which is the secondary
-		// lost-message bug — out of scope for this regression test, but we
-		// assert the SHAPE so a regression here doesn't quietly resurrect
-		// the spin).
-		const row = db
-			.query("SELECT id, delivered FROM relay_outbox WHERE id = ?")
-			.get("9e920bc8-4ebf-4e59-a851-9b58ba9b29cb") as { id: string; delivered: number } | null;
-		expect(row).not.toBeNull();
-	});
-
-	it("does NOT recurse for spoke-A→offline-spoke-B async-error routing (the second spin shape)", async () => {
-		// Same loop structure but originated from a spoke. handleRelaySend
-		// buffers via writeOutbox; that emits → listener → sendRelayOutboxEntry
-		// → handleRelaySend with sourceSiteId=self → offline-async-buffer →
-		// writeOutbox(same id) → no-op INSERT → no event with the fix.
-		let emitCount = 0;
-		eventBus.on("relay:outbox-written", () => {
-			emitCount++;
-		});
-
-		const { setRelayOutboxEventBus } = await import("@bound/core");
-		setRelayOutboxEventBus(eventBus);
-		try {
-			transport.handleRelaySend("spoke-a", {
-				entries: [
-					{
-						id: "spoke-originated-1",
-						target_site_id: "offline-spoke-b",
-						kind: "inference", // async-dispatch
-						ref_id: null,
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60_000).toISOString(),
-						payload: { tool: "test" },
+		it("handleRelayDeliver warns and drops on a spoke without inserting or acking", () => {
+			const warnings: string[] = [];
+			const warnDb = new Database(":memory:");
+			const warnTransport = new WsTransport({
+				db: warnDb,
+				siteId: "spoke",
+				eventBus: new TypedEventEmitter(),
+				logger: {
+					info() {},
+					error() {},
+					debug() {},
+					warn(msg: string) {
+						warnings.push(msg);
 					},
-				],
+				},
 			});
-		} finally {
-			setRelayOutboxEventBus(null as unknown as TypedEventEmitter);
-		}
-
-		// Exactly one emit — handleRelaySend's first writeOutbox (the
-		// materialization in hub's outbox). The re-entrant emit from the
-		// listener's offline-async-buffer call is gated.
-		expect(emitCount).toBe(1);
-	});
-
-	it("listener skips entries that are already delivered (defense-in-depth)", async () => {
-		// Pre-seed an already-delivered entry, then fire the event manually.
-		// Even if some future caller emits relay:outbox-written for an
-		// already-delivered row, the listener must not re-route it (otherwise
-		// the hub-mode handleRelaySend re-entry path would have a way to
-		// resurrect the spin).
-		db.run(
-			`INSERT INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-			[
-				"already-delivered",
+			const sent: Uint8Array[] = [];
+			warnTransport.addPeer(
 				"hub",
-				"some-spoke",
-				"error",
-				null,
-				null,
-				null,
-				"{}",
-				new Date().toISOString(),
-				new Date(Date.now() + 60_000).toISOString(),
-			],
-		);
-
-		// Count downstream effects of routing: if the listener routed this
-		// entry, handleRelaySend's offline-async-buffer would call writeOutbox
-		// again, which re-emits relay:outbox-written. Our spy counts ALL
-		// emits; we manually emit once, then assert no FURTHER emits occurred
-		// (downstream routing is skipped).
-		const emits: Array<{ id: string; target_site_id: string }> = [];
-		eventBus.on("relay:outbox-written", (e) => {
-			emits.push(e);
+				(frame) => {
+					sent.push(frame);
+					return true;
+				},
+				new Uint8Array(32).fill(1),
+			);
+			try {
+				const payload: RelayDeliverPayload = {
+					entries: [
+						{
+							id: "legacy-2",
+							source_site_id: "hub",
+							kind: "result",
+							ref_id: "req-1",
+							idempotency_key: null,
+							stream_id: null,
+							expires_at: new Date(Date.now() + 60_000).toISOString(),
+							payload: { ok: true },
+							trace_context: null,
+						},
+					],
+				};
+				warnTransport.handleRelayDeliver("hub", payload);
+				expect(warnings.some((m) => /RELAY_DELIVER/.test(m))).toBe(true);
+				expect(sent.length).toBe(0);
+			} finally {
+				warnTransport.stop();
+				warnDb.close();
+			}
 		});
 
-		eventBus.emit("relay:outbox-written", {
-			id: "already-delivered",
-			target_site_id: "some-spoke",
-		});
-
-		// The manual emit goes to all listeners (count = 1). With the fix, the
-		// production listener queries `WHERE id = ? AND delivered = 0` and
-		// gets null, so no routing → no downstream re-emit. Without the fix,
-		// the listener would proceed to handleRelaySend and the offline-async
-		// buffer would (pre-fix) re-emit, giving emits.length = 2.
-		expect(emits).toHaveLength(1);
-		expect(emits[0].id).toBe("already-delivered");
-	});
-});
-
-describe("relay delivery trace topology", () => {
-	it("creates a child span for an extracted delivery carrier", () => {
-		const exporter = new InMemorySpanExporter();
-		const provider = new BasicTracerProvider();
-		provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
-		provider.register({ contextManager: new AsyncLocalStorageContextManager() });
-		setSyncTelemetry({
-			handshakes: { add() {} },
-			drains: { add() {} },
-			drainedEntries: { add() {} },
-			drainDuration: { record() {} },
-			activeConnections: { add() {} },
-			startSpan: (name, attributes, parentContext) =>
-				trace.getTracer("bound.sync").startSpan(name, { attributes }, parentContext),
-		});
-
-		const deliveryDb = new Database(":memory:");
-		deliveryDb.run(`CREATE TABLE relay_inbox (
-			id TEXT PRIMARY KEY, source_site_id TEXT NOT NULL, kind TEXT NOT NULL, ref_id TEXT,
-			idempotency_key TEXT, stream_id TEXT, payload TEXT NOT NULL, expires_at TEXT NOT NULL,
-			received_at TEXT NOT NULL, processed INTEGER NOT NULL DEFAULT 0, trace_context TEXT
-		)`);
-		const deliveryTransport = new WsTransport({
-			db: deliveryDb,
-			siteId: "spoke",
-			eventBus: new TypedEventEmitter(),
-		});
-		try {
-			deliveryTransport.handleRelayDeliver("hub", {
-				entries: [
-					{
-						id: "traced-delivery",
-						source_site_id: "hub",
-						kind: "result",
-						ref_id: "request-1",
-						idempotency_key: null,
-						stream_id: null,
-						expires_at: new Date(Date.now() + 60_000).toISOString(),
-						payload: { ok: true },
-						trace_context: JSON.stringify({
-							traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
-						}),
-					},
-				],
+		it("handleRelayAck is a harmless no-op", () => {
+			const ackDb = new Database(":memory:");
+			const ackTransport = new WsTransport({
+				db: ackDb,
+				siteId: "hub",
+				eventBus: new TypedEventEmitter(),
 			});
-			const delivery = exporter
-				.getFinishedSpans()
-				.find((span: { name: string }) => span.name === "relay.operation");
-			expect(delivery?.parentSpanId).toBe("b7ad6b7169203331");
-		} finally {
-			deliveryTransport.stop();
-			deliveryDb.close();
-			provider.shutdown();
-			trace.disable();
-		}
+			try {
+				const payload: RelayAckPayload = { ids: ["whatever"] };
+				expect(() => ackTransport.handleRelayAck("spoke-a", payload)).not.toThrow();
+			} finally {
+				ackTransport.stop();
+				ackDb.close();
+			}
+		});
 	});
 });

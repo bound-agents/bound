@@ -12,7 +12,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { applySchema, insertRow, setDurableIntakeEnabledForTesting } from "@bound/core";
+import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { createConnectorHandle } from "../connector-handle.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
@@ -56,7 +56,6 @@ describe("connector intake producer flip (deliverBatch, leader-local)", () => {
 	let registry: PlatformMcpRegistry;
 
 	beforeEach(() => {
-		setDurableIntakeEnabledForTesting(false);
 		db = new Database(":memory:");
 		applySchema(db);
 		siteId = `test-site-${randomBytes(4).toString("hex")}`;
@@ -72,7 +71,6 @@ describe("connector intake producer flip (deliverBatch, leader-local)", () => {
 	});
 
 	afterEach(async () => {
-		setDurableIntakeEnabledForTesting(true);
 		await registry.shutdown();
 		db.close();
 	});
@@ -159,10 +157,7 @@ describe("connector intake producer flip (deliverBatch, leader-local)", () => {
 		}>;
 	}
 
-	describe("durable intake ON", () => {
-		beforeEach(() => setDurableIntakeEnabledForTesting(true));
-		afterEach(() => setDurableIntakeEnabledForTesting(true));
-
+	describe("durable intake", () => {
 		it("writes one connector_intake row keyed connector_intake:<handleId>:<eventId> and no relay twin", () => {
 			const sub = seedSubscription();
 			const deliver = registry as unknown as {
@@ -183,8 +178,6 @@ describe("connector intake producer flip (deliverBatch, leader-local)", () => {
 				6 * 24 * 60 * 60 * 1000,
 			);
 			expect(JSON.parse(rows[0].payload)).toEqual([{ hello: "evt-1" }]);
-			// No legacy twin.
-			expect(db.query("SELECT COUNT(*) AS count FROM relay_inbox").get()).toEqual({ count: 0 });
 		});
 
 		it("a duplicate eventId folds to exactly one row", () => {
@@ -202,7 +195,6 @@ describe("connector intake producer flip (deliverBatch, leader-local)", () => {
 			const rows = durableRows();
 			expect(rows.length).toBe(1);
 			expect(rows[0].idempotency_key).toBe(`connector_intake:${sub.handleId}:evt-dup`);
-			expect(db.query("SELECT COUNT(*) AS count FROM relay_inbox").get()).toEqual({ count: 0 });
 		});
 	});
 });
@@ -313,41 +305,6 @@ describe("connector intake producer flip (deliverBatch, spoke leader)", () => {
 			{ idempotency_key: "intake:discord:event-1" },
 		]);
 		expect(db.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1 });
-		expect(db.query("SELECT COUNT(*) AS count FROM relay_outbox").get()).toEqual({ count: 0 });
-	});
-
-	it("preserves legacy outbox and message gating when the router selects legacy", () => {
-		const { threadId, taskId, handleId, deliver } = setup((key, payload) => {
-			const result = db.run(
-				"INSERT OR IGNORE INTO relay_outbox (id, source_site_id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, created_at, expires_at, delivered) VALUES (?, ?, 'hub', 'intake', NULL, ?, NULL, ?, ?, ?, 0)",
-				[
-					randomBytes(8).toString("hex"),
-					siteId,
-					key,
-					payload,
-					new Date().toISOString(),
-					new Date(Date.now() + 300000).toISOString(),
-				],
-			);
-			return result.changes === 1;
-		});
-		const sub: ActiveSubscription = {
-			handleId,
-			serverName: "discord",
-			eventName: "x",
-			params: {},
-			taskId,
-			threadId,
-			buffer: [],
-			flushTimer: null,
-			deduplicationSet: new Set(),
-		};
-		deliver.deliverBatch(sub, [makeSpokeEvent("event-2")]);
-		expect(db.query("SELECT idempotency_key FROM relay_outbox").all()).toEqual([
-			{ idempotency_key: "intake:discord:event-2" },
-		]);
-		expect(db.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1 });
-		expect(db.query("SELECT COUNT(*) AS count FROM durable_work").get()).toEqual({ count: 0 });
 	});
 });
 

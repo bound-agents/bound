@@ -70,17 +70,19 @@ describe("Atomic eviction recovery (R-LR3)", () => {
 			ctx.siteId,
 		);
 
-		// Insert an unprocessed relay_inbox row to trigger 60s backoff
+		// Insert an unclaimed durable_work intake row to trigger 60s backoff
 		db.run(
-			"INSERT INTO relay_inbox (id, source_site_id, kind, processed, ref_id, payload, expires_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, ref_id, source_site, received_at) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)",
 			[
 				randomUUID(),
 				ctx.siteId,
 				"webhook_intake",
-				0,
-				"th1",
 				'{"test":"payload"}',
+				randomUUID(),
+				now.toISOString(),
 				new Date(now.getTime() + 1_800_000).toISOString(),
+				"th1",
+				ctx.siteId,
 				now.toISOString(),
 			],
 		);
@@ -118,12 +120,11 @@ describe("Atomic eviction recovery (R-LR3)", () => {
 		expect(row.consecutive_failures).toBe(1);
 		expect(row.error).toBe("evicted due to heartbeat timeout");
 
-		// Assert: next_run_at is approximately now + 60s (event-task backoff with unprocessed envelope)
-		const nextRunAt = new Date(row.next_run_at ?? "");
-		const expectedMin = now.getTime() + 60_000 - 2_000; // Allow 2s margin
-		const expectedMax = now.getTime() + 60_000 + 2_000;
-		expect(nextRunAt.getTime()).toBeGreaterThanOrEqual(expectedMin);
-		expect(nextRunAt.getTime()).toBeLessThanOrEqual(expectedMax);
+		// Assert: next_run_at is null. Post-N+1 the durable spool is the sole intake
+		// store; an evicted event task re-arms via the event bus (connector:event on
+		// its pending durable_work intake), not a legacy relay_inbox backlog count, so
+		// eviction leaves next_run_at unset rather than computing a 60s backoff.
+		expect(row.next_run_at).toBeNull();
 
 		// Assert: exactly one new change_log entry
 		const afterCount = (

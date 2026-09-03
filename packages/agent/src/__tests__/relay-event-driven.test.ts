@@ -3,8 +3,37 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, readInboxByStreamId } from "@bound/core";
+import { applySchema, readDurableResponsesByStreamId } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
+
+// Post-N+1 stream chunks ride the durable work spool: a peer writes a
+// durable_work response row (kind stream_chunk/stream_end) targeted at the
+// awaiting site, read by readDurableResponsesByStreamId. Legacy relay_inbox is
+// retired. This site owns the stream, so rows target SELF.
+const SELF = "self-site";
+
+function insertStreamChunk(
+	db: Database,
+	opts: { id: string; streamId: string; kind: "stream_chunk" | "stream_end"; payload: unknown },
+): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, stream_id, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+		 VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+		[
+			opts.id,
+			SELF,
+			opts.kind,
+			JSON.stringify(opts.payload),
+			`stream:${opts.streamId}:${opts.id}`,
+			opts.streamId,
+			now,
+			new Date(Date.now() + 60_000).toISOString(),
+			"remote-host",
+			now,
+		],
+	);
+}
 
 let db: Database;
 let testDbPath: string;
@@ -39,66 +68,31 @@ describe("Event-Driven RELAY_STREAM", () => {
 		const chunks: Array<{ seq: number; content: string }> = [];
 
 		// Simulate collecting chunks as relayStream would
-		const entries = readInboxByStreamId(db, streamId);
+		const entries = readDurableResponsesByStreamId(db, streamId, SELF);
 		expect(entries.length).toBe(0);
 
 		// Insert stream chunks in out-of-order sequence (2, 0, 1)
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				"chunk-2",
-				"remote-host",
-				"stream_chunk",
-				streamId,
-				JSON.stringify({
-					seq: 2,
-					chunks: [{ type: "text", content: "Third" }],
-				}),
-				new Date(Date.now() + 60_000).toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				"chunk-0",
-				"remote-host",
-				"stream_chunk",
-				streamId,
-				JSON.stringify({
-					seq: 0,
-					chunks: [{ type: "text", content: "First" }],
-				}),
-				new Date(Date.now() + 60_000).toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
-
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				"chunk-1",
-				"remote-host",
-				"stream_chunk",
-				streamId,
-				JSON.stringify({
-					seq: 1,
-					chunks: [{ type: "text", content: "Second" }],
-				}),
-				new Date(Date.now() + 60_000).toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
+		insertStreamChunk(db, {
+			id: "chunk-2",
+			streamId,
+			kind: "stream_chunk",
+			payload: { seq: 2, chunks: [{ type: "text", content: "Third" }] },
+		});
+		insertStreamChunk(db, {
+			id: "chunk-0",
+			streamId,
+			kind: "stream_chunk",
+			payload: { seq: 0, chunks: [{ type: "text", content: "First" }] },
+		});
+		insertStreamChunk(db, {
+			id: "chunk-1",
+			streamId,
+			kind: "stream_chunk",
+			payload: { seq: 1, chunks: [{ type: "text", content: "Second" }] },
+		});
 
 		// Read entries and verify they're in received order (not seq order initially)
-		const allEntries = readInboxByStreamId(db, streamId);
+		const allEntries = readDurableResponsesByStreamId(db, streamId, SELF);
 		expect(allEntries.length).toBe(3);
 
 		// Parse and verify we can reorder by seq
@@ -184,44 +178,22 @@ describe("Event-Driven RELAY_STREAM", () => {
 		const streamId = randomUUID();
 
 		// Insert stream_chunk
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				"chunk-0",
-				"remote-host",
-				"stream_chunk",
-				streamId,
-				JSON.stringify({
-					seq: 0,
-					chunks: [{ type: "text", content: "Data" }],
-				}),
-				new Date(Date.now() + 60_000).toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
+		insertStreamChunk(db, {
+			id: "chunk-0",
+			streamId,
+			kind: "stream_chunk",
+			payload: { seq: 0, chunks: [{ type: "text", content: "Data" }] },
+		});
 
 		// Insert stream_end
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				"stream-end",
-				"remote-host",
-				"stream_end",
-				streamId,
-				JSON.stringify({
-					seq: 1,
-					chunks: [],
-				}),
-				new Date(Date.now() + 60_000).toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
+		insertStreamChunk(db, {
+			id: "stream-end",
+			streamId,
+			kind: "stream_end",
+			payload: { seq: 1, chunks: [] },
+		});
 
-		const entries = readInboxByStreamId(db, streamId);
+		const entries = readDurableResponsesByStreamId(db, streamId, SELF);
 		const hasEnd = entries.some((e) => e.kind === "stream_end");
 		expect(hasEnd).toBe(true);
 
@@ -282,41 +254,30 @@ describe("Event-Driven RELAY_STREAM", () => {
 
 		// Insert chunk
 		const chunkId = "chunk-123";
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				chunkId,
-				"remote-host",
-				"stream_chunk",
-				streamId,
-				JSON.stringify({
-					seq: 0,
-					chunks: [{ type: "text", content: "Data" }],
-				}),
-				new Date(Date.now() + 60_000).toISOString(),
-				new Date().toISOString(),
-				0,
-			],
-		);
+		insertStreamChunk(db, {
+			id: chunkId,
+			streamId,
+			kind: "stream_chunk",
+			payload: { seq: 0, chunks: [{ type: "text", content: "Data" }] },
+		});
 
-		// Verify entry exists and is not processed
-		let entries = readInboxByStreamId(db, streamId);
+		// Verify entry exists and is pending
+		let entries = readDurableResponsesByStreamId(db, streamId, SELF);
 		expect(entries.length).toBe(1);
-		expect(entries[0].processed).toBe(0);
+		expect(entries[0].claim_state).toBe("pending");
 
-		// Mark as processed (as relayStream would)
-		db.run("UPDATE relay_inbox SET processed = 1 WHERE id = ?", [chunkId]);
+		// Consume it (as relayStream would: claim -> deliver -> ack to consumed)
+		db.run("UPDATE durable_work SET claim_state = 'consumed' WHERE id = ?", [chunkId]);
 
-		// Verify it's marked as processed
-		entries = readInboxByStreamId(db, streamId);
-		expect(entries.length).toBe(0); // readInboxByStreamId filters out processed=1
+		// readDurableResponsesByStreamId filters to pending only
+		entries = readDurableResponsesByStreamId(db, streamId, SELF);
+		expect(entries.length).toBe(0);
 
-		// Verify the database row shows processed=1
+		// Verify the database row shows consumed
 		const allRows = db
-			.query("SELECT processed FROM relay_inbox WHERE id = ?")
-			.all(chunkId) as Array<{ processed: number }>;
-		expect(allRows[0].processed).toBe(1);
+			.query("SELECT claim_state FROM durable_work WHERE id = ?")
+			.all(chunkId) as Array<{ claim_state: string }>;
+		expect(allRows[0].claim_state).toBe("consumed");
 	});
 
 	it("RELAY_STREAM handles out-of-order chunks and gaps", () => {
@@ -331,26 +292,15 @@ describe("Event-Driven RELAY_STREAM", () => {
 		];
 
 		for (const chunk of chunkSeqs) {
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					`chunk-${chunk.seq}`,
-					"remote-host",
-					"stream_chunk",
-					streamId,
-					JSON.stringify({
-						seq: chunk.seq,
-						chunks: [{ type: "text", content: chunk.content }],
-					}),
-					new Date(Date.now() + 60_000).toISOString(),
-					new Date().toISOString(),
-					0,
-				],
-			);
+			insertStreamChunk(db, {
+				id: `chunk-${chunk.seq}`,
+				streamId,
+				kind: "stream_chunk",
+				payload: { seq: chunk.seq, chunks: [{ type: "text", content: chunk.content }] },
+			});
 		}
 
-		const entries = readInboxByStreamId(db, streamId);
+		const entries = readDurableResponsesByStreamId(db, streamId, SELF);
 		expect(entries.length).toBe(4);
 
 		// Parse and sort by seq

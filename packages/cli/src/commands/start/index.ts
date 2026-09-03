@@ -55,8 +55,14 @@ export async function runStart(args: StartArgs): Promise<void> {
 	const { modelRouter } = await initInference(appContext, commandContext);
 
 	// Phase 5: Relay processor, KeyManager
-	const { relayProcessor, relayProcessorHandle, relayExecutor, keyManager, hubSiteId, keyring } =
-		await initRelay(appContext, keypair, mcpClientsMap, modelRouter, clusterFsObj, confirmGates);
+	const { relayProcessor, relayProcessorHandle, keyManager, hubSiteId, keyring } = await initRelay(
+		appContext,
+		keypair,
+		mcpClientsMap,
+		modelRouter,
+		clusterFsObj,
+		confirmGates,
+	);
 
 	// Initialize wsClient reference for SIGHUP callback
 	let wsClient: {
@@ -81,7 +87,6 @@ export async function runStart(args: StartArgs): Promise<void> {
 					appContext,
 					modelRouter,
 					agentLoopFactory,
-					relayExecutor,
 					keyManager,
 					keyring,
 					hubSiteId,

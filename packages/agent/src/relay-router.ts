@@ -1,14 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import {
-	DURABLE_RELAY_ENABLED,
-	findHostWorkSpoolCapabilityById,
-	insertDurableWork,
-	writeOutbox,
-} from "@bound/core";
+import { LOCAL_WORK_TARGET, findHostWorkSpoolCapabilityById, insertDurableWork } from "@bound/core";
 import type { CapabilityRequirements } from "@bound/llm";
-import type { TypedEventEmitter } from "@bound/shared";
-import type { HostModelEntry, RelayKind, RelayOutboxEntry } from "@bound/shared";
+import type { HostModelEntry, RelayKind } from "@bound/shared";
 import { DURABLE_WORK_REGISTRY } from "./durable-work-registry";
 import { type TopologyRole, resolveHubSiteId, resolveTopologyRole } from "./topology";
 
@@ -422,33 +416,6 @@ export function serializeRelayTraceCarrier(carrier: Record<string, string> | nul
 	return JSON.stringify(sanitized);
 }
 
-export function createRelayOutboxEntry(
-	targetSiteId: string,
-	sourceSiteId: string,
-	kind: RelayKind,
-	payload: string,
-	timeoutMs: number,
-	refId?: string,
-	idempotencyKey?: string,
-	streamId?: string,
-	traceContext?: string,
-): Omit<RelayOutboxEntry, "delivered"> {
-	const now = new Date();
-	return {
-		id: crypto.randomUUID(),
-		source_site_id: sourceSiteId,
-		target_site_id: targetSiteId,
-		kind,
-		ref_id: refId ?? null,
-		idempotency_key: idempotencyKey ?? null,
-		stream_id: streamId ?? null,
-		payload,
-		created_at: now.toISOString(),
-		expires_at: new Date(now.getTime() + timeoutMs).toISOString(),
-		trace_context: traceContext ?? null,
-	};
-}
-
 /** Inputs for the 4D-C durable-vs-legacy relay routing decision. */
 export interface RelayDurableRoutingContext {
 	/** Final destination of the request. */
@@ -460,30 +427,29 @@ export interface RelayDurableRoutingContext {
 }
 
 /**
- * Decide whether an active non-stream REQUEST bound for `targetSiteId` should
- * ride the durable work spool (4D-B transfer) instead of the legacy relay
- * outbox. Durable IFF the `BOUND_DURABLE_RELAY` toggle is on AND every hop the
- * row must traverse advertises `work_spool_capable` (R-DW14):
+ * Decide whether an active non-stream REQUEST bound for a PEER `targetSiteId`
+ * should ride the durable work spool. Durable IFF every hop the row must
+ * traverse advertises `work_spool_capable` (R-DW14):
  *
  *   - the final target, always; plus
  *   - the hub, when this host is a SPOKE and the target is not the hub itself
  *     (a spoke->hub->target row buffers at the hub, so the hub must be able to
  *     hold and forward it).
  *
- * A capable final target reachable only through a non-advertising hub returns
- * LEGACY — routing durable would strand the row pending at this spoke with no
- * next hop willing to carry it. A self-targeted request also returns LEGACY:
- * loopback semantics are unchanged this slice (the durable lane is peer-only).
+ * Returns false when a hop does not advertise capability. After the release-N+1
+ * legacy-relay demolition there is no `relay_outbox` fallback: a false result
+ * means the peer is unreachable for relay, which the router surfaces as a typed
+ * routing error (not a silent legacy write). This is a stale-topology /
+ * version-skew guard, not a normal path — every live host advertises the bit.
+ *
+ * Self-targeted requests are NOT routed here: they take the in-process
+ * `LOCAL_WORK_TARGET` loopback path (see {@link routeRelayRequest}).
  *
  * Reads capability locally from the synced `hosts` table via
  * {@link findHostWorkSpoolCapabilityById}; a missing/legacy advertisement is
  * conservatively treated as not-capable.
  */
 export function shouldRouteRelayDurable(db: Database, ctx: RelayDurableRoutingContext): boolean {
-	if (!DURABLE_RELAY_ENABLED) return false;
-	// Self-targeted requests stay on the legacy loopback path unchanged.
-	if (ctx.targetSiteId === ctx.localSiteId) return false;
-
 	const advertises = (siteId: string): boolean =>
 		!!findHostWorkSpoolCapabilityById(db, siteId)?.work_spool_capable;
 
@@ -512,91 +478,110 @@ export interface RouteRelayRequestParams {
 	timeoutMs: number;
 	/** Correlation ref for the eventual response (e.g. a cancel's original id). */
 	refId?: string;
-	/** Verbatim key when the legacy row carries one (#254 contracts). Null-keyed
-	 * legacy rows pass undefined; the durable path then uses the minted row id. */
+	/** Deterministic idempotency key; when omitted the minted row id serves as a
+	 * redelivery-stable key (R-DW5/6). */
 	idempotencyKey?: string;
 	streamId?: string;
 	traceContext?: string;
 	/** Cluster role, for the spoke hub-hop capability gate. */
 	topologyRole: TopologyRole | undefined;
-	/** Event bus threaded through to writeOutbox's push-on-write (legacy path). */
-	eventBus?: TypedEventEmitter;
-	/** Payload-size ceiling forwarded to writeOutbox on the legacy path. */
-	maxPayloadBytes?: number;
-}
-
-/** Outcome of routing a relay request: where it went and the id to await on. */
-export interface RouteRelayRequestResult {
-	/** "durable" wrote a peer-targeted durable_work row; "legacy" wrote relay_outbox. */
-	path: "durable" | "legacy";
-	/** The correlation id the requester awaits via readInboxByRefId. On both
-	 * paths this is the written row's id: the 4D-A lane writes responses with
-	 * ref_id = durable-row-id, and the legacy processor with ref_id = outbox-id. */
-	id: string;
-	/** True only when this call inserted a new row rather than colliding with
-	 * the durable-work or relay-outbox idempotency fence. */
-	inserted: boolean;
 }
 
 /**
- * Route one active non-stream relay REQUEST to the durable work spool or the
- * legacy relay outbox, per {@link shouldRouteRelayDurable}. Returns the id the
- * requester must await on (`readInboxByRefId(db, id)`); it is the written row's
- * id on both paths, so response correlation is transparent to the caller.
+ * Outcome of routing a relay request/response: where it went and the id to
+ * await on. `path` is `"durable"` (a peer-targeted `durable_work` row that
+ * transfers to the target) or `"local"` (a `LOCAL_WORK_TARGET` row consumed
+ * in-process — the loopback replacement for the retired single-host relay
+ * pass). A destination that does not advertise `work_spool_capable` yields
+ * `path: "error"` (see {@link RouteRelayError}) rather than a silent legacy
+ * write — the legacy `relay_outbox` fallback is gone after release N+1.
+ */
+export type RouteRelayRequestResult =
+	| {
+			path: "durable" | "local";
+			/** The correlation id the requester awaits via readDurableResponseByRefId.
+			 * On both paths this is the written row's id: the durable relay lane writes
+			 * responses with ref_id = this row id. */
+			id: string;
+			/** True only when this call inserted a new row rather than colliding with
+			 * the durable-work idempotency fence. */
+			inserted: boolean;
+	  }
+	| RouteRelayError;
+
+/**
+ * A relay request/response could not be routed: its peer destination does not
+ * advertise `work_spool_capable`, and there is no legacy fallback after release
+ * N+1. This is a stale-topology / version-skew guard — every live host
+ * advertises the bit — surfaced to the caller as a retriable relay failure.
+ */
+export interface RouteRelayError {
+	path: "error";
+	/** The unreachable destination. */
+	targetSiteId: string;
+	/** Operator-facing reason. */
+	reason: string;
+}
+
+/**
+ * Route one active non-stream relay REQUEST. A self-targeted request takes the
+ * in-process `LOCAL_WORK_TARGET` loopback path; a peer target rides the durable
+ * work spool when every hop advertises capability ({@link shouldRouteRelayDurable}).
+ * A peer that does not advertise capability yields a {@link RouteRelayError} —
+ * the legacy `relay_outbox` fallback is gone after release N+1.
  *
- * On the durable path the row is inserted peer-targeted and PENDING; 4D-B's
- * `durable_work:written` listener transfers it to the target, whose 4D-A lane
- * claims + dispatches + writes the response back through legacy relay with
- * `ref_id` = this row id. The key rides verbatim when supplied (#254
- * contracts), else the minted row id serves as a deterministic, retry-stable
- * key (R-DW5/6). On the legacy path this is `writeOutbox` exactly as before.
+ * Returns the id the requester awaits on (`readDurableResponseByRefId(db, id)`);
+ * it is the written row's id, so response correlation is transparent to the
+ * caller. On both the durable and local paths the durable-work relay lane writes
+ * the response back with `ref_id` = this row id. The key rides verbatim when
+ * supplied (#254 contracts), else the minted row id serves as a deterministic,
+ * retry-stable key (R-DW5/6).
  */
 export function routeRelayRequest(
 	db: Database,
 	params: RouteRelayRequestParams,
 ): RouteRelayRequestResult {
-	const durable = shouldRouteRelayDurable(db, {
-		targetSiteId: params.targetSiteId,
-		localSiteId: params.sourceSiteId,
-		topologyRole: params.topologyRole,
-	});
-
-	if (durable) {
-		const id = crypto.randomUUID();
-		const now = new Date();
-		const inserted = insertDurableWork(db, {
-			id,
-			target_site_id: params.targetSiteId,
-			kind: params.kind,
-			payload: params.payload,
-			// Verbatim key when the legacy row carries one; otherwise the row id
-			// itself is a deterministic, redelivery-stable key (R-DW5/6).
-			idempotency_key: params.idempotencyKey ?? id,
-			expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
-			ref_id: params.refId ?? null,
-			stream_id: params.streamId ?? null,
-			// Stamp the originating site so the target's durable relay lane can
-			// address the response back. A dispatch:"sync" request whose source_site
-			// is absent is dead-lettered at the hub guard (#253); every RPC request
-			// kind routes through here, so this is the one stamp that covers them all.
-			source_site: params.sourceSiteId,
-		});
-		return { path: "durable", id, inserted };
+	const selfTargeted = params.targetSiteId === params.sourceSiteId;
+	if (
+		!selfTargeted &&
+		!shouldRouteRelayDurable(db, {
+			targetSiteId: params.targetSiteId,
+			localSiteId: params.sourceSiteId,
+			topologyRole: params.topologyRole,
+		})
+	) {
+		return {
+			path: "error",
+			targetSiteId: params.targetSiteId,
+			reason: `relay target ${params.targetSiteId} does not advertise work_spool_capable; no legacy fallback after release N+1 (stale hosts snapshot or version-skewed peer)`,
+		};
 	}
 
-	const entry = createRelayOutboxEntry(
-		params.targetSiteId,
-		params.sourceSiteId,
-		params.kind,
-		params.payload,
-		params.timeoutMs,
-		params.refId,
-		params.idempotencyKey,
-		params.streamId,
-		params.traceContext,
-	);
-	const inserted = writeOutbox(db, entry, params.maxPayloadBytes, params.eventBus);
-	return { path: "legacy", id: entry.id, inserted };
+	// Self-targeted requests loop back in-process: a LOCAL_WORK_TARGET durable row,
+	// claimed and dispatched by this host's own relay lane. This is the mechanism
+	// dispatch wakeups already use; it replaces the retired single-host loopback
+	// pass over relay_outbox. The response (also self-targeted) rides LOCAL_WORK_TARGET
+	// too, and readDurableResponseByRefId's WHERE unions (ownSiteId, LOCAL_WORK_TARGET)
+	// so the awaiter finds it by ref_id unchanged.
+	const id = crypto.randomUUID();
+	const now = new Date();
+	const inserted = insertDurableWork(db, {
+		id,
+		target_site_id: selfTargeted ? LOCAL_WORK_TARGET : params.targetSiteId,
+		kind: params.kind,
+		payload: params.payload,
+		// Verbatim key when the caller carries one; otherwise the row id itself is a
+		// deterministic, redelivery-stable key (R-DW5/6).
+		idempotency_key: params.idempotencyKey ?? id,
+		expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
+		ref_id: params.refId ?? null,
+		stream_id: params.streamId ?? null,
+		// Stamp the originating site so the relay lane can address the response back.
+		// A dispatch:"sync" request whose source_site is absent is dead-lettered at
+		// the hub guard (#253); every RPC request kind routes through here.
+		source_site: params.sourceSiteId,
+	});
+	return { path: selfTargeted ? "local" : "durable", id, inserted };
 }
 
 /** Parameters for routing one relay RESPONSE (result/error/chunk/etc.) back to a requester. */
@@ -626,69 +611,60 @@ export interface RouteRelayResponseParams {
 	traceContext?: string;
 	/** Cluster role, for the spoke hub-hop capability gate. */
 	topologyRole: TopologyRole | undefined;
-	eventBus?: TypedEventEmitter;
-	maxPayloadBytes?: number;
 }
 
 /**
- * Route one relay RESPONSE back to the awaiting requester over the durable work
- * spool or the legacy relay outbox, per {@link shouldRouteRelayDurable} applied
- * to the RESPONSE's destination (the original requester's site). Responses are
- * the other half of the same RPC transport as {@link routeRelayRequest}: the
- * same per-hop capability gate decides durable-vs-legacy per destination, and
- * the same toggle governs both. Returns the written row's id and whether it was
- * newly inserted (false = the durable fence already held a copy — a redelivered
- * response).
+ * Route one relay RESPONSE back to the awaiting requester. Responses are the
+ * other half of the same RPC transport as {@link routeRelayRequest}: a
+ * self-targeted response (the requester is this host) rides the in-process
+ * `LOCAL_WORK_TARGET` loopback; a peer requester rides the durable spool when
+ * every hop advertises capability, else yields a {@link RouteRelayError} (no
+ * legacy fallback after release N+1). Returns the written row's id and whether
+ * it was newly inserted (false = the durable fence already held a copy — a
+ * redelivered response).
  *
- * On the durable path the response is inserted peer-targeted + PENDING; 4D-B's
- * transfer ships it to the requester, whose union-await
- * ({@link readDurableResponseByRefId} / {@link readDurableResponsesByStreamId})
- * claims + delivers + acks it. The 4D-A relay-processor lane deliberately does
- * NOT claim response kinds; the awaiter is the sole response consumer.
+ * The row is inserted PENDING with `ref_id` = the request's id; the requester's
+ * union-await ({@link readDurableResponseByRefId} / {@link readDurableResponsesByStreamId})
+ * claims + delivers + acks it — its WHERE unions (ownSiteId, LOCAL_WORK_TARGET)
+ * so a self-targeted response resolves by ref_id unchanged. The durable relay
+ * lane deliberately does NOT claim response kinds; the awaiter is the sole
+ * response consumer.
  */
 export function routeRelayResponse(
 	db: Database,
 	params: RouteRelayResponseParams,
 ): RouteRelayRequestResult {
-	const durable = shouldRouteRelayDurable(db, {
-		targetSiteId: params.targetSiteId,
-		localSiteId: params.sourceSiteId,
-		topologyRole: params.topologyRole,
-	});
-
-	if (durable) {
-		const id = crypto.randomUUID();
-		const now = new Date();
-		const inserted = insertDurableWork(db, {
-			id,
-			target_site_id: params.targetSiteId,
-			kind: params.kind,
-			payload: params.payload,
-			idempotency_key: params.idempotencyKey,
-			expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
-			ref_id: params.refId,
-			stream_id: params.streamId ?? null,
-			// Stamp the responder's own site as origin (parity with the request path);
-			// responses correlate by ref_id and never hit the sync-dispatch guard, but
-			// the row still carries an unambiguous origin (#253).
-			source_site: params.sourceSiteId,
-		});
-		return { path: "durable", id, inserted };
+	const selfTargeted = params.targetSiteId === params.sourceSiteId;
+	if (
+		!selfTargeted &&
+		!shouldRouteRelayDurable(db, {
+			targetSiteId: params.targetSiteId,
+			localSiteId: params.sourceSiteId,
+			topologyRole: params.topologyRole,
+		})
+	) {
+		return {
+			path: "error",
+			targetSiteId: params.targetSiteId,
+			reason: `relay response target ${params.targetSiteId} does not advertise work_spool_capable; no legacy fallback after release N+1 (stale hosts snapshot or version-skewed peer)`,
+		};
 	}
 
-	const entry = createRelayOutboxEntry(
-		params.targetSiteId,
-		params.sourceSiteId,
-		params.kind,
-		params.payload,
-		params.timeoutMs,
-		params.refId,
-		// Legacy responses carried a null idempotency_key; preserve that on the
-		// legacy path (the durable fence key is a durable-path-only concept).
-		undefined,
-		params.streamId,
-		params.traceContext,
-	);
-	const inserted = writeOutbox(db, entry, params.maxPayloadBytes, params.eventBus);
-	return { path: "legacy", id: entry.id, inserted };
+	const id = crypto.randomUUID();
+	const now = new Date();
+	const inserted = insertDurableWork(db, {
+		id,
+		target_site_id: selfTargeted ? LOCAL_WORK_TARGET : params.targetSiteId,
+		kind: params.kind,
+		payload: params.payload,
+		idempotency_key: params.idempotencyKey,
+		expires_at: durableExpiresAt(params.kind, now, params.timeoutMs),
+		ref_id: params.refId,
+		stream_id: params.streamId ?? null,
+		// Stamp the responder's own site as origin (parity with the request path);
+		// responses correlate by ref_id and never hit the sync-dispatch guard, but
+		// the row still carries an unambiguous origin (#253).
+		source_site: params.sourceSiteId,
+	});
+	return { path: selfTargeted ? "local" : "durable", id, inserted };
 }

@@ -124,8 +124,8 @@ export function initScheduler(
 						// redelivery-stable key (R-DW5/6).
 						traceContext: serializeRelayTraceCarrier(injectTraceContext()) ?? undefined,
 						topologyRole: resolveTopologyRole(appContext.optionalConfig),
-						eventBus: appContext.eventBus,
 					});
+					if (routed.path === "error") throw new Error(routed.reason);
 					const entry = { id: routed.id };
 
 					// Poll for response (synchronous context — tool execute awaits result).

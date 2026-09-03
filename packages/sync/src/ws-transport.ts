@@ -11,7 +11,6 @@ import {
 	findConnectorHandleForSyncNotification,
 	findHostWorkSpoolCapabilityById,
 	findMessageForSyncBroadcast,
-	findUndeliveredRelayOutboxById,
 	insertDurableWork,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
@@ -26,35 +25,24 @@ import {
 	getBackfillablePksSorted,
 	getCachedRowStateHashes,
 	getPkColumn as getPkColumnTyped,
-	hasDroppedLegacyRelayTables,
-	insertInbox,
-	markDelivered,
-	markDeliveredForTarget,
 	mergeDiffEntries,
 	mergeDiffPks,
-	readUndelivered,
 	syncableWhereClause,
 	validateColumnName,
-	writeOutbox,
 } from "@bound/core";
 import type {
 	ChangeLogEntry,
-	ErrorPayload,
 	Logger,
 	Message,
-	RelayInboxEntry,
 	RelayKind,
-	RelayOutboxEntry,
 	SyncedTableName,
 	TypedEventEmitter,
 } from "@bound/shared";
 import {
 	HLC_ZERO,
-	RELAY_KIND_REGISTRY,
 	createScopedTraceCollector,
 	generateHlc,
 	getTraceExporter,
-	randomUUID,
 	reExportSpans,
 } from "@bound/shared";
 import { getPeerCursor, updatePeerCursor } from "./peer-cursor.js";
@@ -73,7 +61,6 @@ import {
 	recordActiveConnection,
 	startBackfill,
 	startConsistencyServing,
-	startRelayOperation,
 	startReplicationDrain,
 	validateConsistencyTraceCarrier,
 } from "./telemetry.js";
@@ -419,20 +406,6 @@ export class WsTransport {
 			}
 		};
 
-		this.relayOutboxWrittenListener = (event) => {
-			// Query the relay outbox entry and send to appropriate peer.
-			// Defense-in-depth filter on `delivered = 0`: the primary cycle-breaker
-			// lives in writeOutbox (only emits when INSERT actually inserted), but
-			// if some future caller emits this event for an already-delivered row,
-			// we don't want to re-route it and risk re-triggering the hub-mode
-			// re-entry path in handleRelaySend that originally produced the spin.
-			const entry = findUndeliveredRelayOutboxById<RelayOutboxEntry>(this.config.db, event.id);
-
-			if (entry) {
-				this.sendRelayOutboxEntry(entry);
-			}
-		};
-
 		// Sender push path for the durable-work spool (R-DW10/R-DW11): on a new
 		// peer-targeted row, transfer it if the target advertises spool support.
 		// Runs on hubs too, so a hub buffering a forwarded row drains it onward.
@@ -446,7 +419,6 @@ export class WsTransport {
 		};
 
 		this.config.eventBus.on("changelog:written", this.changelogWrittenListener);
-		this.config.eventBus.on("relay:outbox-written", this.relayOutboxWrittenListener);
 		this.config.eventBus.on("durable_work:written", this.durableWorkWrittenListener);
 
 		// Running-process leg of the stale-durable-work recovery (see
@@ -479,10 +451,6 @@ export class WsTransport {
 		if (this.changelogWrittenListener) {
 			this.config.eventBus.off("changelog:written", this.changelogWrittenListener);
 			this.changelogWrittenListener = null;
-		}
-		if (this.relayOutboxWrittenListener) {
-			this.config.eventBus.off("relay:outbox-written", this.relayOutboxWrittenListener);
-			this.relayOutboxWrittenListener = null;
 		}
 		if (this.durableWorkWrittenListener) {
 			this.config.eventBus.off("durable_work:written", this.durableWorkWrittenListener);
@@ -818,649 +786,72 @@ export class WsTransport {
 	}
 
 	/**
-	 * Send a relay outbox entry to its destination.
-	 * - If spoke (not isHub): send relay_send frame to hub
-	 * - If hub (isHub): route locally (forward to spoke, insert into own inbox, or broadcast)
-	 */
-	private sendRelayOutboxEntry(entry: RelayOutboxEntry): void {
-		if (!this.config.isHub) {
-			// Spoke mode: find the hub connection (typically there's one)
-			for (const [, peer] of this.peerConnections) {
-				const payload: RelaySendPayload = {
-					entries: [
-						{
-							id: entry.id,
-							target_site_id: entry.target_site_id,
-							kind: entry.kind,
-							ref_id: entry.ref_id,
-							idempotency_key: entry.idempotency_key,
-							stream_id: entry.stream_id,
-							expires_at: entry.expires_at,
-							payload: JSON.parse(entry.payload),
-							trace_context: entry.trace_context ?? null,
-						},
-					],
-				};
-
-				const operation = startRelayOperation("send", {
-					kind: entry.kind,
-					traceContext: entry.trace_context,
-					trigger: "push-write",
-					path: "spoke.outbox.push",
-					entryCount: 1,
-				});
-				operation.run(() => {
-					try {
-						const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
-						operation.complete(peer.sendFrame(frame) ? "sent" : "backpressured");
-					} catch (error) {
-						operation.fail(error);
-						throw error;
-					}
-				});
-				break; // Send to the first (only) hub connection
-			}
-		} else {
-			// Hub mode: route using the same logic as spoke-originated relay_send.
-			// The hub's own agent loop can write relay outbox entries (e.g., inference
-			// requests targeting a spoke). These must be routed just like entries
-			// received from a spoke via handleRelaySend.
-			//
-			// BUT only the hub's OWN entries (source_site_id === this hub) get routed
-			// here. Forwarded entries (source_site_id is some spoke) are written to the
-			// hub outbox purely for durability by handleRelaySend's response/async
-			// branch (#174) — they have ALREADY been delivered inline with the correct
-			// source. Re-routing one would re-enter handleRelaySend with sourceSiteId =
-			// this hub, rewriting the relay source to the hub itself; the target would
-			// then address every response frame (stream_chunk, stream_end, error) back
-			// to the hub instead of the original requester, the hub would file them in
-			// its own relay_inbox, and the requester would poll forever. The durable row
-			// stays delivered=0 until the target acks (or drainRelayOutbox re-sends on
-			// reconnect) — which is exactly the durability guarantee we want to keep.
-			if (entry.source_site_id !== this.config.siteId) {
-				return;
-			}
-			this.config.logger?.info("WsTransport: hub routing outbox entry", {
-				kind: entry.kind,
-				targetSiteId: entry.target_site_id,
-				isSelf: entry.target_site_id === this.config.siteId,
-				entryId: entry.id,
-			});
-			const payload: RelaySendPayload = {
-				entries: [
-					{
-						id: entry.id,
-						target_site_id: entry.target_site_id,
-						kind: entry.kind,
-						ref_id: entry.ref_id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id,
-						expires_at: entry.expires_at,
-						payload: JSON.parse(entry.payload),
-						trace_context: entry.trace_context ?? null,
-					},
-				],
-			};
-			this.handleRelaySend(this.config.siteId, payload);
-			// Mark as delivered — no WS ack for hub-local routing
-			markDelivered(this.config.db, [entry.id]);
-		}
-	}
-
-	/**
-	 * Handle incoming relay_send frame from a spoke (hub-side).
-	 * Implements the same routing logic as HTTP /sync/relay handler:
-	 * - Broadcast fan-out to all connected spokes except source
-	 * - Hub-local dispatch to relay_inbox
-	 * - Forward to another spoke
+	 * Handle an inbound legacy `relay_send` frame (hub-side). After the release
+	 * N+1 demolition there is no `relay_inbox`/`relay_outbox` to route into: the
+	 * durable work spool is the sole store. A legacy `RELAY_SEND` reaching this
+	 * binary can only come from a peer with a STALE `hosts` snapshot (every N+1
+	 * host advertises `work_spool_capable`, so a current peer routes spool-only).
+	 *
+	 * The frame decode is deliberately KEPT (deleting the enum case would close
+	 * the connection with 1011 and flap the stale peer); this handler refuses the
+	 * PAYLOAD while keeping the SOCKET. Warn-and-drop: no insert, no ack. The
+	 * sender's own retry holds its row until it re-reads our advertisement and
+	 * re-sends over the spool. Failure mode: bounded stall, never data loss.
 	 */
 	handleRelaySend(sourceSiteId: string, payload: RelaySendPayload): void {
 		if (!payload.entries || payload.entries.length === 0) {
 			return;
 		}
-
-		const deliveredIds: string[] = [];
-		const operation = startRelayOperation("receive", {
-			kind: payload.entries.length === 1 ? (payload.entries[0]?.kind ?? "batch") : "batch",
-			traceContext: payload.entries.length === 1 ? payload.entries[0]?.trace_context : null,
-			trigger: "receive",
-			path: "hub.relay.receive",
-			entryCount: payload.entries.length,
-		});
-
-		operation.run(() => {
-			try {
-				for (const entry of payload.entries) {
-					// Idempotency check on hub side — skip when source is self, because
-					// hub-originated entries are already in our own relay_outbox (we just
-					// wrote them). Without this guard the check always finds the entry we
-					// just inserted and silently skips routing.
-					//
-					// Post-drop (slice 4E): relay_outbox is gone on a retired hub, so the
-					// dedup read would throw. Skip it — a retired hub routes everything
-					// durable, where the spool's (kind, idempotency_key) fence dedupes.
-					if (
-						entry.idempotency_key &&
-						sourceSiteId !== this.config.siteId &&
-						!hasDroppedLegacyRelayTables(this.config.db)
-					) {
-						const existing = this.config.db
-							.query("SELECT id FROM relay_outbox WHERE idempotency_key = ? AND target_site_id = ?")
-							.get(entry.idempotency_key, entry.target_site_id) as { id: string } | null;
-						if (existing) {
-							deliveredIds.push(entry.id);
-							continue;
-						}
-					}
-
-					// Broadcast: fan-out to all connected spokes except the source
-					if (entry.target_site_id === "*") {
-						for (const [peerSiteId] of this.peerConnections) {
-							if (peerSiteId === sourceSiteId) {
-								continue;
-							}
-
-							const inboxEntry: RelayInboxEntry = {
-								id: entry.id,
-								source_site_id: sourceSiteId,
-								kind: entry.kind as RelayKind,
-								ref_id: entry.ref_id,
-								idempotency_key: entry.idempotency_key,
-								stream_id: entry.stream_id,
-								payload: JSON.stringify(entry.payload),
-								expires_at: entry.expires_at,
-								received_at: new Date().toISOString(),
-								processed: 0,
-								trace_context: entry.trace_context ?? null,
-							};
-
-							this.sendRelayDeliver(peerSiteId, [inboxEntry]);
-						}
-
-						// Also insert into hub's own relay_inbox and emit event
-						const hubInboxEntry: RelayInboxEntry = {
-							id: entry.id,
-							source_site_id: sourceSiteId,
-							kind: entry.kind as RelayKind,
-							ref_id: entry.ref_id,
-							idempotency_key: entry.idempotency_key,
-							stream_id: entry.stream_id,
-							payload: JSON.stringify(entry.payload),
-							expires_at: entry.expires_at,
-							received_at: new Date().toISOString(),
-							processed: 0,
-							trace_context: entry.trace_context ?? null,
-						};
-
-						if (insertInbox(this.config.db, hubInboxEntry)) {
-							this.config.eventBus.emit("relay:inbox", {
-								ref_id: hubInboxEntry.ref_id || undefined,
-								stream_id: hubInboxEntry.stream_id || undefined,
-								kind: hubInboxEntry.kind,
-							});
-						}
-
-						deliveredIds.push(entry.id);
-						continue;
-					}
-
-					// Hub-local: insert into relay_inbox for RelayProcessor
-					if (entry.target_site_id === this.config.siteId) {
-						// Post-drop (slice 4E): this host retired relay_inbox. A legacy
-						// envelope bound for a dropped host can only arrive from a peer with
-						// a STALE hosts snapshot (an advertising peer sends spool-only). We
-						// cannot insert into the missing table, so REFUSE gracefully: do NOT
-						// ack (leave the id out of deliveredIds). The sender's existing
-						// retry/redelivery keeps the row until it re-reads our synced
-						// advertisement and re-sends over the spool. The failure mode is a
-						// bounded stall, never data loss (the sender's copy survives).
-						if (hasDroppedLegacyRelayTables(this.config.db)) {
-							this.config.logger?.warn(
-								"WsTransport refusing legacy inbound on a dropped host (stale-peer envelope); sender will retry over spool",
-								{ sourceSiteId, kind: entry.kind },
-							);
-							continue;
-						}
-						const inboxEntry: RelayInboxEntry = {
-							id: entry.id,
-							source_site_id: sourceSiteId,
-							kind: entry.kind as RelayKind,
-							ref_id: entry.ref_id ?? entry.id,
-							idempotency_key: entry.idempotency_key,
-							stream_id: entry.stream_id,
-							payload: JSON.stringify(entry.payload),
-							expires_at: entry.expires_at,
-							received_at: new Date().toISOString(),
-							processed: 0,
-							trace_context: entry.trace_context ?? null,
-						};
-
-						const inserted = insertInbox(this.config.db, inboxEntry);
-
-						// Only emit relay:inbox event and track as delivered if this is a new entry
-						if (inserted) {
-							this.config.eventBus.emit("relay:inbox", {
-								ref_id: inboxEntry.ref_id || undefined,
-								stream_id: inboxEntry.stream_id || undefined,
-								kind: inboxEntry.kind,
-							});
-
-							deliveredIds.push(entry.id);
-						}
-
-						continue;
-					}
-
-					// Forward to another spoke.
-					// Sync-dispatch kinds (tool_call, platform_request, etc): the source is
-					// actively polling for a response. Forward immediately when connected, or
-					// fast-fail when offline — buffering would silently absorb the request and
-					// let the source time out (~15s).
-					// Response/async kinds (stream_chunk, stream_end, error): ALWAYS buffer to
-					// the hub's outbox first, then forward if connected. The buffered entry
-					// (delivered=0) is the durability guarantee — if the forward frame is lost
-					// on a flapping connection, the target's next reconnect drains and re-sends
-					// it. The spoke's idempotent relay_inbox insert makes duplicate delivery a
-					// no-op. Without buffering, a lost frame on a flapping link is unrecoverable:
-					// the hub already ACKed the source, and nothing was saved to re-send (#174).
-					const kindMeta = RELAY_KIND_REGISTRY[entry.kind as RelayKind];
-					const targetPeer = this.peerConnections.get(entry.target_site_id);
-
-					if (kindMeta?.dispatch === "sync") {
-						if (targetPeer) {
-							const inboxEntry: RelayInboxEntry = {
-								id: entry.id,
-								source_site_id: sourceSiteId,
-								kind: entry.kind as RelayKind,
-								ref_id: entry.ref_id ?? entry.id,
-								idempotency_key: entry.idempotency_key,
-								stream_id: entry.stream_id,
-								payload: JSON.stringify(entry.payload),
-								expires_at: entry.expires_at,
-								received_at: new Date().toISOString(),
-								processed: 0,
-								trace_context: entry.trace_context ?? null,
-							};
-							this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
-						} else {
-							// Hub fast-fail: the request never left the hub, so the target tool
-							// DEFINITELY did not execute. Lets the agent loop retry safely even
-							// for non-idempotent tools.
-							const errorPayload: ErrorPayload = {
-								error: `Target host ${entry.target_site_id} is not currently connected`,
-								retriable: true,
-								definitely_not_executed: true,
-							};
-							const errorInboxEntry: RelayInboxEntry = {
-								id: randomUUID(),
-								// Synthetic source: the hub speaks on behalf of the target so the
-								// response shape matches "remote error from target". The source
-								// matches by ref_id, not source_site_id.
-								source_site_id: entry.target_site_id,
-								kind: "error",
-								ref_id: entry.id,
-								idempotency_key: null,
-								stream_id: entry.stream_id,
-								payload: JSON.stringify(errorPayload),
-								expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-								received_at: new Date().toISOString(),
-								processed: 0,
-								trace_context: null,
-							};
-							this.sendRelayDeliver(sourceSiteId, [errorInboxEntry]);
-							this.config.logger?.debug("WsTransport sync-dispatch fast-fail: target offline", {
-								kind: entry.kind,
-								target: entry.target_site_id,
-								source: sourceSiteId,
-							});
-						}
-					} else {
-						// Response/async kinds: buffer to hub's outbox for durability, then
-						// forward if connected. The entry stays delivered=0 until the target's
-						// next drainRelayInbox marks it (on reconnect) or the TTL pruner reaps
-						// it (on stable connections). This guarantees recovery for frames lost
-						// mid-flight on a flapping link (#174).
-						writeOutbox(this.config.db, {
-							id: entry.id,
-							source_site_id: sourceSiteId,
-							target_site_id: entry.target_site_id,
-							kind: entry.kind as RelayKind,
-							ref_id: entry.ref_id ?? entry.id,
-							idempotency_key: entry.idempotency_key,
-							stream_id: entry.stream_id,
-							payload: JSON.stringify(entry.payload),
-							created_at: new Date().toISOString(),
-							expires_at: entry.expires_at,
-							trace_context: entry.trace_context ?? null,
-						});
-
-						if (targetPeer) {
-							// Target connected: forward optimistically. The buffered entry
-							// (delivered=0) acts as a fallback if this frame is lost.
-							const inboxEntry: RelayInboxEntry = {
-								id: entry.id,
-								source_site_id: sourceSiteId,
-								kind: entry.kind as RelayKind,
-								ref_id: entry.ref_id ?? entry.id,
-								idempotency_key: entry.idempotency_key,
-								stream_id: entry.stream_id,
-								payload: JSON.stringify(entry.payload),
-								expires_at: entry.expires_at,
-								received_at: new Date().toISOString(),
-								processed: 0,
-								trace_context: entry.trace_context ?? null,
-							};
-							this.sendRelayDeliver(entry.target_site_id, [inboxEntry]);
-						}
-					}
-
-					deliveredIds.push(entry.id);
-				}
-
-				// Send relay_ack back to source
-				this.sendRelayAck(sourceSiteId, deliveredIds);
-				operation.complete(deliveredIds.length > 0 ? "delivered" : "duplicate");
-			} catch (error) {
-				operation.fail(error);
-				throw error;
-			}
-		});
+		this.config.logger?.warn(
+			"WsTransport refusing legacy RELAY_SEND on a release-N+1 host; sender has a stale capability snapshot and must re-read our work_spool_capable advertisement and re-send over the spool",
+			{
+				sourceSiteId,
+				kinds: payload.entries.map((e) => e.kind),
+				entryCount: payload.entries.length,
+			},
+		);
+		// No insertInbox, no ack: the sender's redelivery is the recovery path.
 	}
 
 	/**
-	 * Handle incoming relay_deliver frame from hub (spoke-side).
-	 * Inserts entries into relay_inbox and emits relay:inbox events.
+	 * Handle an inbound legacy `relay_deliver` frame (spoke-side). After the
+	 * release N+1 demolition there is no `relay_inbox` to insert into — the
+	 * durable spool carries delivery. A legacy `RELAY_DELIVER` can only reach this
+	 * binary from a hub with a stale capability snapshot. Warn-and-drop, keep the
+	 * socket (see {@link handleRelaySend}); the hub's redelivery re-sends over the
+	 * spool once it re-reads our advertisement.
 	 */
 	handleRelayDeliver(sourceSiteId: string, payload: RelayDeliverPayload): void {
 		if (!payload.entries || payload.entries.length === 0) {
 			return;
 		}
-
-		const receivedIds: string[] = [];
-		const operation = startRelayOperation("deliver", {
-			kind: payload.entries.length === 1 ? (payload.entries[0]?.kind ?? "batch") : "batch",
-			traceContext: payload.entries.length === 1 ? payload.entries[0]?.trace_context : null,
-			trigger: "deliver",
-			path: "spoke.relay.deliver",
-			entryCount: payload.entries.length,
-		});
-
-		operation.run(() => {
-			try {
-				for (const entry of payload.entries) {
-					const inboxEntry: RelayInboxEntry = {
-						id: entry.id,
-						source_site_id: entry.source_site_id,
-						kind: entry.kind as RelayKind,
-						ref_id: entry.ref_id ?? null,
-						idempotency_key: entry.idempotency_key ?? null,
-						stream_id: entry.stream_id ?? null,
-						payload: JSON.stringify(entry.payload),
-						expires_at: entry.expires_at,
-						received_at: new Date().toISOString(),
-						processed: 0,
-						trace_context: entry.trace_context ?? null,
-					};
-
-					const inserted = insertInbox(this.config.db, inboxEntry);
-					if (inserted) {
-						receivedIds.push(entry.id);
-
-						// Emit relay:inbox event for new entries
-						this.config.eventBus.emit("relay:inbox", {
-							ref_id: inboxEntry.ref_id || undefined,
-							stream_id: inboxEntry.stream_id || undefined,
-							kind: inboxEntry.kind,
-						});
-					}
-				}
-
-				// Send relay_ack back to hub
-				this.sendRelayAck(sourceSiteId, receivedIds);
-				operation.complete(receivedIds.length > 0 ? "inserted" : "duplicate");
-			} catch (error) {
-				operation.fail(error);
-				throw error;
-			}
-		});
+		this.config.logger?.warn(
+			"WsTransport refusing legacy RELAY_DELIVER on a release-N+1 host; sender has a stale capability snapshot and must re-send over the spool",
+			{
+				sourceSiteId,
+				kinds: payload.entries.map((e) => e.kind),
+				entryCount: payload.entries.length,
+			},
+		);
+		// No insertInbox, no ack: the sender's redelivery is the recovery path.
 	}
 
 	/**
-	 * Handle incoming relay_ack frame from peer.
-	 * Marks outbox entries as delivered.
+	 * Handle an inbound legacy `relay_ack` frame. After the release N+1
+	 * demolition there is no `relay_outbox` to mark delivered — the spool tracks
+	 * its own transfer acks. A stray legacy ack is a harmless no-op.
 	 */
 	handleRelayAck(sourceSiteId: string, payload: RelayAckPayload): void {
 		if (!payload.ids || payload.ids.length === 0) {
 			return;
 		}
-
-		if (this.config.isHub) {
-			markDeliveredForTarget(this.config.db, payload.ids, sourceSiteId);
-		} else {
-			markDelivered(this.config.db, payload.ids);
-		}
-
-		this.config.logger?.debug("WsTransport relay_ack received", {
+		this.config.logger?.debug("WsTransport ignoring legacy relay_ack on a release-N+1 host", {
 			sourceSiteId,
 			idCount: payload.ids.length,
 		});
 	}
 
 	/**
-	 * Drain undelivered relay outbox entries on reconnection (spoke-side).
-	 * Sends all entries with delivered = 0.
-	 */
-	drainRelayOutbox(peerSiteId: string): void {
-		let __replicationDrain: ReturnType<typeof startReplicationDrain> | undefined;
-		let __replicationTerminal: ["completed" | "empty" | "backpressured" | "skipped", number] = [
-			"skipped",
-			0,
-		];
-		let __replicationError: unknown;
-		let __replicationFailed = false;
-		try {
-			const peer = this.peerConnections.get(peerSiteId);
-			if (!peer) {
-				this.config.logger?.debug("WsTransport relay drain skipped - peer not connected", {
-					peerSiteId,
-				});
-				__replicationTerminal = ["skipped", 0];
-				return;
-			}
-
-			// Post-drop (slice 4E): relay_outbox is gone on this host, so there is no
-			// legacy outbox to drain — the spool drain (drainDurableWorkSpool) carries
-			// everything now. Skip rather than touch a dropped table.
-			if (hasDroppedLegacyRelayTables(this.config.db)) {
-				__replicationTerminal = ["empty", 0];
-				return;
-			}
-
-			__replicationDrain = startReplicationDrain("relay_outbox");
-			const allEntries = readUndelivered(this.config.db) as RelayOutboxEntry[];
-
-			if (allEntries.length === 0) {
-				this.config.logger?.debug("WsTransport relay drain - no missed entries", {
-					peerSiteId,
-				});
-				__replicationTerminal = ["empty", 0];
-				return;
-			}
-
-			// Batch entries in chunks of 100
-			const batchSize = 100;
-			let backpressured = false;
-
-			for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
-				const batch = allEntries.slice(i, i + batchSize);
-
-				const payload: RelaySendPayload = {
-					entries: batch.map((entry) => ({
-						id: entry.id,
-						target_site_id: entry.target_site_id,
-						kind: entry.kind,
-						ref_id: entry.ref_id,
-						idempotency_key: entry.idempotency_key,
-						stream_id: entry.stream_id,
-						expires_at: entry.expires_at,
-						payload: JSON.parse(entry.payload),
-						trace_context: entry.trace_context ?? null,
-					})),
-				};
-
-				const operation = startRelayOperation("send", {
-					kind: batch.length === 1 ? (batch[0]?.kind ?? "batch") : "batch",
-					traceContext: batch.length === 1 ? batch[0]?.trace_context : null,
-					trigger: "reconnect-drain",
-					path: "spoke.outbox.drain",
-					entryCount: batch.length,
-				});
-				let sent = false;
-				operation.run(() => {
-					try {
-						const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, peer.symmetricKey);
-						sent = peer.sendFrame(frame);
-						operation.complete(sent ? "sent" : "backpressured");
-					} catch (error) {
-						operation.fail(error);
-						throw error;
-					}
-				});
-
-				if (!sent) {
-					this.config.logger?.warn("WsTransport relay drain backpressured", {
-						peerSiteId,
-						batchIndex: i / batchSize,
-						totalBatches: Math.ceil(allEntries.length / batchSize),
-					});
-					backpressured = true;
-				}
-			}
-
-			if (!backpressured) {
-				__replicationTerminal = ["completed", allEntries.length];
-				this.config.logger?.debug("WsTransport relay drain completed", {
-					peerSiteId,
-					entryCount: allEntries.length,
-				});
-			} else {
-				__replicationTerminal = ["backpressured", allEntries.length];
-			}
-		} catch (__drainError) {
-			__replicationFailed = true;
-			__replicationError = __drainError;
-			throw __drainError;
-		} finally {
-			if (__replicationFailed) {
-				__replicationDrain?.fail(__replicationError);
-			} else {
-				__replicationDrain?.complete(...__replicationTerminal);
-			}
-		}
-	}
-
-	/**
-	 * Drain undelivered relay inbox entries targeting a reconnected spoke (hub-side).
-	 * Sends relay_deliver frames for entries in hub's outbox targeting the spoke.
-	 */
-	drainRelayInbox(spokesSiteId: string): void {
-		let __replicationDrain: ReturnType<typeof startReplicationDrain> | undefined;
-		let __replicationTerminal: ["completed" | "empty" | "backpressured" | "skipped", number] = [
-			"skipped",
-			0,
-		];
-		let __replicationError: unknown;
-		let __replicationFailed = false;
-		try {
-			const peer = this.peerConnections.get(spokesSiteId);
-			if (!peer) {
-				this.config.logger?.debug("WsTransport relay inbox drain skipped - peer not connected", {
-					spokesSiteId,
-				});
-				__replicationTerminal = ["skipped", 0];
-				return;
-			}
-
-			__replicationDrain = startReplicationDrain("relay_inbox");
-			const allEntries = readUndelivered(this.config.db, spokesSiteId) as RelayOutboxEntry[];
-
-			if (allEntries.length === 0) {
-				__replicationTerminal = ["empty", 0];
-				return;
-			}
-
-			// Batch entries in chunks of 100
-			const batchSize = 100;
-
-			for (let i = 0; i < allEntries.length; i += batchSize) {
-				const batch = allEntries.slice(i, i + batchSize);
-
-				const inboxEntries: RelayInboxEntry[] = batch.map((entry) => ({
-					id: entry.id,
-					source_site_id: entry.source_site_id,
-					kind: entry.kind,
-					ref_id: entry.ref_id,
-					idempotency_key: entry.idempotency_key,
-					stream_id: entry.stream_id,
-					payload: entry.payload,
-					expires_at: entry.expires_at,
-					received_at: new Date().toISOString(),
-					processed: 0,
-					trace_context: entry.trace_context ?? null,
-				}));
-
-				this.sendRelayDeliver(spokesSiteId, inboxEntries);
-				markDelivered(
-					this.config.db,
-					batch.map((e) => e.id),
-				);
-			}
-
-			__replicationTerminal = ["completed", allEntries.length];
-			this.config.logger?.debug("WsTransport relay inbox drain completed", {
-				spokesSiteId,
-				entryCount: allEntries.length,
-			});
-		} catch (__drainError) {
-			__replicationFailed = true;
-			__replicationError = __drainError;
-			throw __drainError;
-		} finally {
-			if (__replicationFailed) {
-				__replicationDrain?.fail(__replicationError);
-			} else {
-				__replicationDrain?.complete(...__replicationTerminal);
-			}
-		}
-	}
-
-	/**
-	 * Send a relay_deliver frame to a peer with relay inbox entries.
-	 */
-	private sendRelayDeliver(peerSiteId: string, entries: RelayInboxEntry[]): void {
-		const peer = this.peerConnections.get(peerSiteId);
-		if (!peer) {
-			return;
-		}
-
-		const payload: RelayDeliverPayload = {
-			entries: entries.map((entry) => ({
-				id: entry.id,
-				source_site_id: entry.source_site_id,
-				kind: entry.kind,
-				ref_id: entry.ref_id,
-				idempotency_key: entry.idempotency_key,
-				stream_id: entry.stream_id,
-				expires_at: entry.expires_at,
-				payload: JSON.parse(entry.payload),
-				trace_context: entry.trace_context ?? null,
-			})),
-		};
-
-		const frame = encodeFrame(WsMessageType.RELAY_DELIVER, payload, peer.symmetricKey);
-		peer.sendFrame(frame);
-	}
-
 	// ── Durable-work spool transfer (R-DW10/R-DW11) ───────────────────────
 	//
 	// A peer-targeted durable_work row travels host-to-host over SPOOL_TRANSFER.
@@ -1601,8 +992,8 @@ export class WsTransport {
 	 * begins transfers for pending peer-targeted rows whose next hop is this peer.
 	 * Next-hop resolution matches {@link resolveSpoolNextHop}: on a spoke the peer
 	 * is the hub and carries every peer-targeted row; on a hub only rows whose
-	 * final destination equals the peer route to it. Batched 100/frame, mirroring
-	 * {@link drainRelayOutbox}. Runs on both spokes and hubs.
+	 * final destination equals the peer route to it. Batched 100/frame. Runs on
+	 * both spokes and hubs.
 	 */
 	drainDurableWorkSpool(peerSiteId: string, reason: "reconnect" | "sweep" = "sweep"): void {
 		const peer = this.peerConnections.get(peerSiteId);
@@ -2456,21 +1847,6 @@ export class WsTransport {
 			tables: SNAPSHOT_TABLE_ORDER.length,
 			rows: totalRows,
 		});
-	}
-
-	/**
-	 * Send a relay_ack frame to a peer.
-	 */
-	private sendRelayAck(peerSiteId: string, ids: string[]): void {
-		const peer = this.peerConnections.get(peerSiteId);
-		if (!peer) {
-			return;
-		}
-
-		const payload: RelayAckPayload = { ids };
-		const frame = encodeFrame(WsMessageType.RELAY_ACK, payload, peer.symmetricKey);
-
-		peer.sendFrame(frame);
 	}
 
 	// ── Consistency check ────────────────────────────────────────────────

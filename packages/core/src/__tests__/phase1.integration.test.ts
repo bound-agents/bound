@@ -85,7 +85,7 @@ describe("Phase 1 Integration", async () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(34); // + agents (#201) + local-only row_state_hashes cache + local_flags = 34
+		expect(tables.length).toBe(32); // relay_outbox/relay_inbox retired at release N+1; + agents (#201) + local-only row_state_hashes cache + local_flags = 32
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [
@@ -100,8 +100,6 @@ describe("Phase 1 Integration", async () => {
 			"memory_edges",
 			"messages",
 			"relay_cycles",
-			"relay_inbox",
-			"relay_outbox",
 			"semantic_memory",
 			"skills",
 			"sync_state",

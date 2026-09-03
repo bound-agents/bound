@@ -7,13 +7,12 @@
  * so the agent loop never entered RELAY_WAIT for remote MCP tool calls.
  * The tool result was "Command completed successfully" (empty stdout).
  */
-
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, readUndelivered } from "@bound/core";
+import { applySchema } from "@bound/core";
 import { createDefineCommands, loopContextStorage } from "@bound/sandbox";
 import type { CommandContext } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
@@ -37,8 +36,8 @@ beforeEach(() => {
 
 	// Seed a remote host with MCP tools
 	db.run(
-		`INSERT INTO hosts (site_id, host_name, mcp_tools, online_at, modified_at, deleted)
-		 VALUES (?, ?, ?, ?, ?, 0)`,
+		`INSERT INTO hosts (site_id, host_name, mcp_tools, online_at, modified_at, work_spool_capable, deleted)
+		 VALUES (?, ?, ?, ?, ?, 1, 0)`,
 		[
 			"remote-spoke-1",
 			"remote-spoke",
@@ -110,10 +109,12 @@ describe("Remote MCP proxy commands via relay", () => {
 		expect(relayReq.targetSiteId).toBe("remote-spoke-1");
 		expect(relayReq.toolName).toBe("github");
 
-		// Should have written outbox entry
-		const outbox = readUndelivered(db);
-		expect(outbox.length).toBe(1);
-		expect(outbox[0].kind).toBe("tool_call");
+		// Should have written a durable_work request row.
+		const durable = db
+			.query("SELECT kind FROM durable_work WHERE kind = 'tool_call'")
+			.all() as Array<{ kind: string }>;
+		expect(durable.length).toBe(1);
+		expect(durable[0].kind).toBe("tool_call");
 	});
 
 	it("proxy command handler attaches target host annotations to the relay request", async () => {

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { setChangelogEventBus, setRelayOutboxEventBus } from "@bound/core";
+import { setChangelogEventBus, setDurableWorkEventBus } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { ensureKeypair, exportPublicKey } from "../crypto.js";
@@ -290,14 +290,16 @@ const FULL_SCHEMA = `
 	);
 
 	CREATE TABLE relay_cycles (
-		id TEXT PRIMARY KEY,
-		requester_site_id TEXT NOT NULL,
-		target_site_id TEXT NOT NULL,
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		direction TEXT NOT NULL,
+		peer_site_id TEXT NOT NULL,
 		kind TEXT NOT NULL,
-		stream_id TEXT,
+		delivery_method TEXT NOT NULL,
+		latency_ms INTEGER,
+		expired INTEGER NOT NULL DEFAULT 0,
+		success INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL,
-		latency_ms INTEGER NOT NULL,
-		success INTEGER NOT NULL
+		stream_id TEXT
 	);
 
 	CREATE TABLE durable_work (
@@ -308,6 +310,14 @@ const FULL_SCHEMA = `
 		created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT,
 		ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT, reclassify_count INTEGER NOT NULL DEFAULT 0
 	) STRICT;
+
+	-- Mirror production's durable_work indexes (packages/core/src/schema.ts). The
+	-- (kind, idempotency_key) UNIQUE index is load-bearing: insertDurableWork uses
+	-- INSERT OR IGNORE against this fence, so without it a redelivered SPOOL_TRANSFER
+	-- (or any duplicate insert) creates a second row instead of deduping.
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_durable_work_kind_key ON durable_work(kind, idempotency_key);
+	CREATE INDEX IF NOT EXISTS idx_durable_work_claimable ON durable_work(target_site_id, claim_state, created_at) WHERE claim_state = 'pending';
+	CREATE INDEX IF NOT EXISTS idx_durable_work_expiry ON durable_work(expires_at) WHERE expires_at IS NOT NULL;
 
 	CREATE TABLE dispatch_queue (
 		message_id TEXT PRIMARY KEY,
@@ -382,15 +392,20 @@ export interface WsTestCluster {
 /**
  * Create a multi-node WS test cluster with a hub and N spokes.
  *
- * All nodes share a single TypedEventEmitter so that relay:outbox-written
- * events emitted by the module-level writeOutbox() reach every WsTransport.
- * Each WsTransport queries its own DB on drain, so non-owning transports
- * find no entries and are effectively no-ops.
+ * All nodes share a single TypedEventEmitter so that module-level writes
+ * (changelog:written, durable_work:written) reach every WsTransport. Each
+ * WsTransport queries its own DB on drain, so non-owning transports find no
+ * entries and are effectively no-ops.
  *
- * NOTE: Because setChangelogEventBus and setRelayOutboxEventBus are
- * module-level singletons, this function overwrites them. Tests using this
- * cluster must not rely on separate per-instance event buses for changelog
- * or relay outbox writes.
+ * The cluster is seeded to mirror the two membership facts the durable relay
+ * path depends on in production (see the seeding block below): a
+ * `work_spool_capable = 1` hosts row per member on every node, and a spoke
+ * `sync_state` row naming the hub. Without them `shouldRouteRelayDurable`
+ * treats peers as unreachable and `routeRelayRequest` returns `path: "error"`.
+ *
+ * NOTE: Because setChangelogEventBus / setDurableWorkEventBus are module-level
+ * singletons, this function overwrites them. Tests using this cluster must not
+ * rely on separate per-instance event buses for changelog or durable-work writes.
  */
 export async function createWsTestCluster(config: {
 	spokeCount: number;
@@ -403,9 +418,18 @@ export async function createWsTestCluster(config: {
 	// One shared event bus for all nodes (see NOTE above)
 	const sharedBus = new TypedEventEmitter();
 
-	// Wire module-level event buses so writeOutbox() / insertRow() push to sharedBus
-	setChangelogEventBus(sharedBus);
-	setRelayOutboxEventBus(sharedBus);
+	// Wire the module-level changelog bus so insertRow() pushes to sharedBus.
+	// Wire the durable-work spool push path so a peer-targeted durable_work row
+	// fires `durable_work:written`, which the WsTransport listener turns into a
+	// SPOOL_TRANSFER toward the target. Post-N+1 the active relay path rides the
+	// durable spool (not relay_outbox), so without this a peer-targeted request
+	// row strands `pending` and never reaches the target's relay lane.
+	setDurableWorkEventBus(sharedBus);
+	// Wire the durable-work push path too: insertDurableWork emits
+	// `durable_work:written`, which the WsTransport listener turns into a
+	// SPOOL_TRANSFER toward the target peer. Without this, peer-targeted durable
+	// rows strand `pending` on the writer and never reach the target's relay lane
+	// (post-N+1 there is no legacy relay_outbox carrier for active relay traffic).
 
 	// Generate keypairs for all nodes: index 0 = hub, 1..N = spokes
 	const keypairs = await Promise.all(
@@ -543,6 +567,51 @@ export async function createWsTestCluster(config: {
 
 	// Wait briefly for all spoke WebSocket connections to open
 	await new Promise((r) => setTimeout(r, 100));
+
+	// ── Cluster membership seeding ────────────────────────────────────────────
+	//
+	// Production seeds two things the durable relay path depends on, which this
+	// harness must mirror or the active relay lane cannot route:
+	//
+	//   1. A `hosts` row per cluster member with `work_spool_capable = 1`. In
+	//      production every node registers itself capable at startup
+	//      (`bootstrap.ts` host registration) and the row syncs to peers.
+	//      `shouldRouteRelayDurable` / `sendDurableWorkToPeer` /
+	//      `drainDurableWorkSpool` all gate on this bit
+	//      (`findHostWorkSpoolCapabilityById`): a peer that does not advertise it
+	//      is treated as unreachable for relay, and post-N+1 there is no legacy
+	//      `relay_outbox` fallback — `routeRelayRequest` returns `path: "error"`
+	//      and the request never leaves the requester.
+	//
+	//   2. A `sync_state` row on each spoke naming the hub as its peer. In
+	//      production the WS handshake seeds this (`seedNewPeer` /
+	//      `initPeerCursor`). `resolveHubSiteId` reads it (`getPeerSiteId`) to find
+	//      the hub hop, which `shouldRouteRelayDurable` requires on a spoke routing
+	//      to a non-hub target (the spoke→hub→peer buffer hop).
+	//
+	// Seed the whole membership mesh into every node's DB so any node can route to
+	// any other. These are local-only test fixtures (no cross-host correctness
+	// invariant), so raw writes are appropriate — the same category as the raw
+	// schema `db.exec` above.
+	const seedNow = new Date().toISOString();
+	const allMembers: Array<{ db: Database; siteId: string }> = [
+		{ db: hubDb, siteId: hubSiteId },
+		...spokeNodes.map((s) => ({ db: s.db, siteId: s.siteId })),
+	];
+	for (const owner of allMembers) {
+		for (const member of allMembers) {
+			owner.db.run(
+				`INSERT OR IGNORE INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
+				 VALUES (?, ?, ?, ?, ?, 1, 0)`,
+				[member.siteId, `node-${member.siteId.slice(0, 8)}`, "1.0", seedNow, seedNow],
+			);
+		}
+	}
+	// Each spoke peers with exactly the hub (production: one sync_state row names
+	// the hub). resolveHubSiteId gates on topologyRole === "spoke" then reads this.
+	for (const spoke of spokeNodes) {
+		spoke.db.run("INSERT OR IGNORE INTO sync_state (peer_site_id) VALUES (?)", [hubSiteId]);
+	}
 
 	// ── Cleanup ───────────────────────────────────────────────────────────────
 

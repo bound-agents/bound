@@ -79,28 +79,11 @@ export {
 	pruneRelayCycles,
 	type RelayCycleEntry,
 } from "./relay-metrics";
+export { PayloadTooLargeError } from "./relay";
 export {
-	writeOutbox,
-	readUndelivered,
-	markDelivered,
-	markDeliveredForTarget,
-	readUnprocessed,
-	insertInbox,
-	markProcessed,
-	pruneRelayTables,
-	readInboxByRefId,
-	readInboxByStreamId,
-	readUnprocessedInboxByRefId,
-	findStaleUnprocessedIntake,
-	type StaleIntakeGroup,
-	PayloadTooLargeError,
-	setRelayOutboxEventBus,
-	LEGACY_RELAY_DROPPED_FLAG,
-	hasDroppedLegacyRelayTables,
-	legacyRelayTablesEmpty,
-	dropLegacyRelayTables,
-} from "./relay";
-export { countPendingPeerTargetedDurableWork } from "./repositories/durable-work";
+	countPendingPeerTargetedDurableWork,
+	readDurablePartsByStreamId,
+} from "./repositories/durable-work";
 export {
 	enqueueMessage,
 	setDurableDispatchEnqueueEnabledForTesting,
@@ -132,6 +115,7 @@ export {
 	insertDurableWork,
 	claimLocalDurableWork,
 	claimDurableWorkByIds,
+	claimAndConsumeDurableWorkByIds,
 	acknowledgeDurableWork,
 	releaseDurableWorkClaim,
 	beginDurableWorkTransfer,
@@ -154,10 +138,6 @@ export {
 	pruneExpiredDeadLetters,
 	pruneConsumedDurableWork,
 	validateDurableWork,
-	DURABLE_INTAKE_ENABLED,
-	setDurableIntakeEnabledForTesting,
-	DURABLE_RELAY_ENABLED,
-	setDurableRelayEnabledForTesting,
 	InvalidDurableWorkRowError,
 	type DurableWorkRow,
 	type NewDurableWork,

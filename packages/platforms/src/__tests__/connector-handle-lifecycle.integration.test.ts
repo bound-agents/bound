@@ -1,7 +1,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { applySchema, insertRow, setDurableIntakeEnabledForTesting } from "@bound/core";
+import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -54,7 +54,6 @@ describe("Connector Handle Lifecycle", () => {
 	let _client: Client;
 
 	beforeEach(async () => {
-		setDurableIntakeEnabledForTesting(true);
 		// Setup database
 		const dbPath = ":memory:";
 		db = new Database(dbPath);
@@ -106,9 +105,7 @@ describe("Connector Handle Lifecycle", () => {
 		}));
 	});
 
-	afterEach(() => {
-		setDurableIntakeEnabledForTesting(true);
-	});
+	afterEach(() => {});
 	describe("AC1.2: Event persisted as developer-role message", () => {
 		it("delivers event batch as developer-role message in task thread", async () => {
 			// Setup: Create task with thread

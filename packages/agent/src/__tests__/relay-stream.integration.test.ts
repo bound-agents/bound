@@ -4,7 +4,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 
 import { type WsTestCluster, createWsTestCluster } from "../../../sync/src/__tests__/test-harness";
 
-import { applyMetricsSchema } from "@bound/core";
+import { applyMetricsSchema, insertDurableWork } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -18,10 +18,10 @@ import type { AgentLoopConfig } from "../types";
  * Can have independent response queues keyed by stream_id for concurrent test.
  */
 class MockLLMBackend implements LLMBackend {
-	private responses: Array<() => AsyncGenerator<StreamChunk>> = [];
+	private responses: Array<(signal?: AbortSignal) => AsyncGenerator<StreamChunk>> = [];
 	private callCount = 0;
 
-	pushResponse(gen: () => AsyncGenerator<StreamChunk>) {
+	pushResponse(gen: (signal?: AbortSignal) => AsyncGenerator<StreamChunk>) {
 		this.responses.push(gen);
 	}
 
@@ -62,12 +62,37 @@ class MockLLMBackend implements LLMBackend {
 		});
 	}
 
-	async *chat() {
+	// Yield `chunks` (with `delayMs` between each), then block until the consumer
+	// aborts — never yielding `done`. The stream cannot self-complete, so it can't
+	// win a race against the cancel round-trip: the requester folds in no
+	// `done`/usage chunk, records zero usage, and fires its zero-usage
+	// `[Turn cancelled]` branch deterministically (AC1.4). Because the block
+	// releases on the target's abort signal, the target's inference loop breaks and
+	// its `finally` clears the heartbeat timer and active-stream entry — so no
+	// stream_chunk write escapes into afterEach's DB close (avoids the
+	// `RangeError: Cannot use a closed database` teardown race). Scoped to the
+	// cancel test only; setSlowTextResponse and the other tests' shared 50ms poll
+	// cadence are untouched.
+	setBlockingTextResponse(chunks: string[], delayMs: number) {
+		this.responses = [];
+		this.pushResponse(async function* (signal?: AbortSignal) {
+			for (const chunk of chunks) {
+				yield { type: "text" as const, content: chunk };
+				await new Promise((r) => setTimeout(r, delayMs));
+			}
+			// Block until the consumer aborts; only the cancel ends this stream.
+			await new Promise<void>((resolve) => {
+				if (signal?.aborted) return resolve();
+				signal?.addEventListener("abort", () => resolve(), { once: true });
+			});
+		});
+	}
+	async *chat(params?: { signal?: AbortSignal }) {
 		const gen = this.responses[this.callCount];
 		this.callCount++;
 
 		if (gen) {
-			yield* gen();
+			yield* gen(params?.signal);
 		} else {
 			// Default: empty text response
 			yield { type: "text" as const, content: "" };
@@ -244,8 +269,9 @@ describe("relay-stream integration tests", () => {
 		// Setup: Register target spoke in requester's hosts table
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET host_name = excluded.host_name, models = excluded.models, work_spool_capable = 1`,
 			[
 				targetSiteId,
 				"target-host",
@@ -360,8 +386,9 @@ describe("relay-stream integration tests", () => {
 		// Setup: Register target in requester's hosts
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET host_name = excluded.host_name, models = excluded.models, work_spool_capable = 1`,
 			[
 				targetSiteId,
 				"target-host",
@@ -376,11 +403,14 @@ describe("relay-stream integration tests", () => {
 			],
 		);
 
-		// Configure mock backend on target to yield slowly
+		// Stream a few chunks then block until aborted (never yields `done`), so the
+		// inference cannot self-complete — only the cancel ends it. The requester then
+		// records zero usage and its zero-usage `[Turn cancelled]` branch fires
+		// deterministically, with no race against the mock completing on its own.
 		const mockBackend = new MockLLMBackend();
-		mockBackend.setSlowTextResponse(
-			Array.from({ length: 10 }, (_, i) => `chunk${i}`),
-			200,
+		mockBackend.setBlockingTextResponse(
+			Array.from({ length: 3 }, (_, i) => `chunk${i}`),
+			50,
 		);
 		const modelRouter = createMockRouter(mockBackend, "cancel-test-model");
 
@@ -434,29 +464,28 @@ describe("relay-stream integration tests", () => {
 
 		const loopPromise = agentLoop.run();
 
-		// Wait for the inference request to enter the requester's outbox (written by RELAY_STREAM)
-		const inferenceQueued = await waitFor(() => {
-			const entries = requesterDb
-				.query("SELECT id FROM relay_outbox WHERE kind = 'inference'")
+		// Wait until the requester has actually begun consuming the stream (a
+		// stream_chunk response row has arrived from the target). This also proves
+		// RELAY_STREAM was entered — the requester routed the inference request to the
+		// peer, the target streamed, and chunks came back. We do NOT poll for the
+		// requester's own `kind='inference'` durable_work row: that row is peer-targeted
+		// and the spool transfer protocol PHYSICALLY DELETES the sender's copy once it
+		// ships to the target (acknowledgeDurableWorkTransfer), so it is a transient
+		// state that races the poll — present under a cold connection, already gone
+		// under a warm one. The arriving stream_chunk is the stable observable.
+		const streamStarted = await waitFor(() => {
+			const chunks = requesterDb
+				.query("SELECT id FROM durable_work WHERE kind = 'stream_chunk'")
 				.all() as Array<{ id: string }>;
-			return entries.length > 0;
+			return chunks.length > 0;
 		}, 5000);
-		expect(inferenceQueued).toBe(true);
-
-		// Abort — the RELAY_STREAM loop is blocked in its 500ms polling wait.
-		// The cancel entry will be written on the next poll iteration.
+		expect(streamStarted).toBe(true);
 		abortController.abort();
 
 		// Wait for the loop to complete (abort should cause it to exit within ~500ms)
 		const result = await loopPromise;
 
 		expect(result).toBeDefined();
-
-		// Verify the inference request was written to the outbox (RELAY_STREAM was entered)
-		const inferenceEntries = requesterDb
-			.query("SELECT kind FROM relay_outbox WHERE kind = 'inference'")
-			.all() as Array<{ kind: string }>;
-		expect(inferenceEntries.length).toBeGreaterThan(0);
 
 		// Verify the loop stopped via the abort path — a "[Turn cancelled]" system message
 		// should have been inserted. This validates AC1.4 (requester stops on cancel).
@@ -479,13 +508,16 @@ describe("relay-stream integration tests", () => {
 		// Verify that when RelayProcessor receives an inference request for a model
 		// it doesn't have, it returns an error response.
 
-		const inboxEntry = {
-			id: randomUUID(),
-			source_site_id: requesterSiteId,
-			kind: "inference" as const,
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: randomUUID(),
+		// A durable inference request that loops back through the target's OWN relay
+		// lane: target_site_id = source_site = targetSiteId, so the RelayProcessor
+		// claims it via claimLocalDurableWork and writes its error response back to
+		// the same site (staying in targetDb for the assertion).
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		insertDurableWork(targetDb, {
+			id: requestId,
+			target_site_id: targetSiteId,
+			kind: "inference",
 			payload: JSON.stringify({
 				model: "unavailable-model",
 				segments: [],
@@ -495,62 +527,48 @@ describe("relay-stream integration tests", () => {
 				max_tokens: 1000,
 				temperature: 0.7,
 			}),
+			idempotency_key: requestId,
 			expires_at: new Date(Date.now() + 60000).toISOString(),
-			received_at: new Date().toISOString(),
-			processed: 0,
-		};
+			source_site: targetSiteId,
+			stream_id: streamId,
+		});
 
-		targetDb.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				inboxEntry.id,
-				inboxEntry.source_site_id,
-				inboxEntry.kind,
-				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
-				inboxEntry.stream_id,
-				inboxEntry.payload,
-				inboxEntry.expires_at,
-				inboxEntry.received_at,
-				inboxEntry.processed,
-			],
-		);
-
-		// Wait for RelayProcessor to write the error response to outbox.
+		// Wait for RelayProcessor to write the error response as a durable_work row.
 		// Poll rather than a fixed sleep — the processor's poll-process-write
 		// cycle can exceed a short fixed wait on a slow (e.g. Windows CI) runner.
 		const appeared = await waitFor(
 			() =>
 				(
 					targetDb
-						.query("SELECT 1 FROM relay_outbox WHERE kind = 'error' LIMIT 1")
-						.all() as unknown[]
+						.query("SELECT 1 FROM durable_work WHERE kind = 'error' AND ref_id = ? LIMIT 1")
+						.all(requestId) as unknown[]
 				).length > 0,
 		);
 		expect(appeared).toBe(true);
 
-		// Verify error response was written to outbox
-		const outboxEntries = targetDb
+		// Verify error response was written as a durable_work row
+		const errorEntries = targetDb
 			.query(
-				"SELECT kind, payload FROM relay_outbox WHERE kind = 'error' ORDER BY created_at DESC LIMIT 1",
+				"SELECT kind, payload FROM durable_work WHERE kind = 'error' AND ref_id = ? ORDER BY created_at DESC LIMIT 1",
 			)
-			.all() as Array<{ kind: string; payload: string }>;
+			.all(requestId) as Array<{ kind: string; payload: string }>;
 
-		expect(outboxEntries.length).toBeGreaterThan(0);
-		const errorPayload = JSON.parse(outboxEntries[0].payload);
+		expect(errorEntries.length).toBeGreaterThan(0);
+		const errorPayload = JSON.parse(errorEntries[0].payload);
 		expect(errorPayload.error).toContain("Model not available");
 	});
 
 	it("expired inference request discarded silently (AC3.5)", async () => {
-		// Write an expired inference entry directly to target's relay_inbox
-		const inboxEntry = {
-			id: randomUUID(),
-			source_site_id: requesterSiteId,
+		// A durable inference request that already expired, looping back through the
+		// target's OWN relay lane (target_site_id = source_site = targetSiteId). The
+		// processor claims it, sees it expired, and discards it silently — acking the
+		// row consumed with no stream response written.
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		insertDurableWork(targetDb, {
+			id: requestId,
+			target_site_id: targetSiteId,
 			kind: "inference",
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: randomUUID(),
 			payload: JSON.stringify({
 				model: "test-model",
 				segments: [],
@@ -560,47 +578,31 @@ describe("relay-stream integration tests", () => {
 				max_tokens: 1000,
 				temperature: 0.7,
 			}),
+			idempotency_key: requestId,
 			expires_at: new Date(Date.now() - 1000).toISOString(), // In the past
-			received_at: new Date().toISOString(),
-			processed: 0,
-		};
-
-		targetDb.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				inboxEntry.id,
-				inboxEntry.source_site_id,
-				inboxEntry.kind,
-				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
-				inboxEntry.stream_id,
-				inboxEntry.payload,
-				inboxEntry.expires_at,
-				inboxEntry.received_at,
-				inboxEntry.processed,
-			],
-		);
+			source_site: targetSiteId,
+			stream_id: streamId,
+		});
 
 		// Wait a bit for the RelayProcessor to process it
-		await new Promise((r) => setTimeout(r, 80));
+		await new Promise((r) => setTimeout(r, 200));
 
-		// Verify no stream_chunk in target's outbox
-		const outboxEntries = targetDb
+		// Verify no stream response row was written for this stream
+		const streamRows = targetDb
 			.query(
-				"SELECT kind FROM relay_outbox WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end')",
+				"SELECT kind FROM durable_work WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end')",
 			)
-			.all(inboxEntry.stream_id) as Array<{ kind: string }>;
+			.all(streamId) as Array<{ kind: string }>;
 
-		expect(outboxEntries.length).toBe(0);
+		expect(streamRows.length).toBe(0);
 
-		// Verify inbox entry is marked processed
-		const inboxCheckAfter = targetDb
-			.query("SELECT processed FROM relay_inbox WHERE id = ?")
-			.get(inboxEntry.id) as { processed: number } | null;
+		// Verify the durable request row was discarded (consumed, not dead-lettered)
+		const requestRow = targetDb
+			.query("SELECT claim_state FROM durable_work WHERE id = ?")
+			.get(requestId) as { claim_state: string } | null;
 
-		expect(inboxCheckAfter).not.toBeNull();
-		expect(inboxCheckAfter?.processed).toBe(1);
+		expect(requestRow).not.toBeNull();
+		expect(requestRow?.claim_state).toBe("consumed");
 	});
 
 	it("local inference leaves relay metrics NULL (AC4.2)", async () => {
@@ -676,8 +678,9 @@ describe("relay-stream integration tests", () => {
 		// Register target
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET host_name = excluded.host_name, models = excluded.models, work_spool_capable = 1`,
 			[
 				targetSiteId,
 				"target-host",
@@ -833,8 +836,9 @@ describe("relay-stream integration tests", () => {
 		// Register target
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET host_name = excluded.host_name, models = excluded.models, work_spool_capable = 1`,
 			[
 				targetSiteId,
 				"target-host",
@@ -969,8 +973,9 @@ describe("relay-stream integration tests", () => {
 	it("slow multi-chunk inference completes through full relay pipeline", async () => {
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET host_name = excluded.host_name, models = excluded.models, work_spool_capable = 1`,
 			[
 				targetSiteId,
 				"target-host",
@@ -1058,11 +1063,14 @@ describe("relay-stream integration tests", () => {
 		expect(msgs[0].content).toContain("fox");
 		expect(msgs[0].content).toContain("dog");
 
-		// Verify stream chunks were written to target's outbox (proof of multi-flush)
-		const outboxChunks = targetDb
-			.query("SELECT count(*) as cnt FROM relay_outbox WHERE kind = 'stream_chunk'")
+		// Verify multiple stream chunks were produced by the target (proof of
+		// multi-flush). The target's stream rows route to the requester and are
+		// consumed there, so they don't linger in targetDb; the local relay_cycles
+		// telemetry table (invariant #3, local-only) records one row per stream leg.
+		const chunkCycles = targetDb
+			.query("SELECT count(*) as cnt FROM relay_cycles WHERE kind = 'stream_chunk'")
 			.get() as { cnt: number } | null;
-		expect(outboxChunks?.cnt ?? 0).toBeGreaterThanOrEqual(2);
+		expect(chunkCycles?.cnt ?? 0).toBeGreaterThanOrEqual(2);
 	}, 15000);
 
 	// ============================================================
@@ -1076,8 +1084,9 @@ describe("relay-stream integration tests", () => {
 	it("stream completes correctly even with simulated retransmission", async () => {
 		const now = new Date().toISOString();
 		requesterDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET host_name = excluded.host_name, models = excluded.models, work_spool_capable = 1`,
 			[
 				targetSiteId,
 				"target-host",
@@ -1141,25 +1150,60 @@ describe("relay-stream integration tests", () => {
 			return result;
 		})();
 
-		// Wait for target outbox to have stream entries, then inject retransmission
+		// Wait for the target to mint stream response rows, then simulate a
+		// retransmission. Post-N+1 there is no `relay_outbox.delivered` flag to clear;
+		// the durable spool's redelivery is a re-sent SPOOL_TRANSFER of the SAME row,
+		// deduped by the (kind, idempotency_key) fence. Re-inserting a duplicate copy
+		// of an already-minted stream row exercises exactly that fence.
 		let retransmissionInjected = false;
 
 		const retransmitPoll = async (): Promise<void> => {
-			// Wait for target to have some delivered outbox entries (stream chunks/end)
-			const injected = await waitFor(() => {
-				const undelivered = targetDb
+			// Wait for the target to have produced stream rows. They route to the
+			// requester and are consumed there, so they don't linger in targetDb; the
+			// target's local relay_cycles telemetry (invariant #3) records each leg.
+			const produced = await waitFor(() => {
+				const count = targetDb
 					.query(
-						"SELECT count(*) as cnt FROM relay_outbox WHERE delivered = 1 AND kind IN ('stream_chunk', 'stream_end')",
+						"SELECT count(*) as cnt FROM relay_cycles WHERE kind IN ('stream_chunk', 'stream_end')",
 					)
 					.get() as { cnt: number };
-				return undelivered.cnt > 0;
+				return count.cnt > 0;
 			}, 5000);
 
-			if (injected) {
-				// Simulate response loss: un-mark stream chunks as delivered
-				targetDb.run(
-					"UPDATE relay_outbox SET delivered = 0 WHERE delivered = 1 AND kind IN ('stream_chunk', 'stream_end')",
-				);
+			if (produced) {
+				// Simulate a re-sent SPOOL_TRANSFER: re-insert a copy of every stream row
+				// still present anywhere in the cluster, under a fresh id but the SAME
+				// (kind, idempotency_key). insertDurableWork is INSERT OR IGNORE on that
+				// fence, so each re-insert dedups — the redelivery cannot duplicate a row.
+				for (const node of [requesterDb, targetDb, cluster.hub.db]) {
+					const rows = node
+						.query(
+							"SELECT target_site_id, kind, payload, idempotency_key, ref_id, stream_id, expires_at, source_site FROM durable_work WHERE kind IN ('stream_chunk', 'stream_end')",
+						)
+						.all() as Array<{
+						target_site_id: string;
+						kind: string;
+						payload: string;
+						idempotency_key: string;
+						ref_id: string | null;
+						stream_id: string | null;
+						expires_at: string | null;
+						source_site: string | null;
+					}>;
+					for (const row of rows) {
+						insertDurableWork(node, {
+							id: randomUUID(), // fresh id — the fence is on (kind, idempotency_key)
+							target_site_id: row.target_site_id,
+							kind: row.kind,
+							payload: row.payload,
+							idempotency_key: row.idempotency_key,
+							ref_id: row.ref_id,
+							stream_id: row.stream_id,
+							expires_at: row.expires_at,
+							source_site: row.source_site,
+						});
+					}
+				}
 				retransmissionInjected = true;
 			}
 		};
@@ -1183,13 +1227,16 @@ describe("relay-stream integration tests", () => {
 		expect(msgs.length).toBeGreaterThan(0);
 		expect(msgs[0].content).toContain("Retransmission test passed");
 
-		// Verify hub's relay_inbox doesn't have duplicates for this stream
-		// (dedup should prevent duplicate entries even after retransmission)
-		const hubInboxStreams = cluster.hub.db
-			.query(
-				"SELECT stream_id, count(*) as cnt FROM relay_inbox WHERE kind = 'stream_end' GROUP BY stream_id HAVING cnt > 1",
-			)
-			.all() as Array<{ stream_id: string; cnt: number }>;
-		expect(hubInboxStreams.length).toBe(0); // No stream should have duplicate stream_end entries
+		// Verify the durable spool holds no duplicate stream_end for any stream: the
+		// (kind, idempotency_key) fence must reject the re-inserted copies. Check every
+		// node's durable_work — the fence is per-store, so a duplicate anywhere fails.
+		for (const node of [requesterDb, targetDb, cluster.hub.db]) {
+			const dupStreams = node
+				.query(
+					"SELECT stream_id, count(*) as cnt FROM durable_work WHERE kind = 'stream_end' AND stream_id IS NOT NULL GROUP BY stream_id, idempotency_key HAVING cnt > 1",
+				)
+				.all() as Array<{ stream_id: string; cnt: number }>;
+			expect(dupStreams.length).toBe(0);
+		}
 	}, 15000);
 });

@@ -1,9 +1,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { randomUUID } from "node:crypto";
 import { applySchema } from "@bound/core";
 import { injectTraceContext } from "@bound/shared";
-import { createRelayOutboxEntry } from "../relay-router";
 
 describe("relay-trace-inject (Task 3: AC5.1)", () => {
 	let db: Database;
@@ -42,64 +40,10 @@ describe("relay-trace-inject (Task 3: AC5.1)", () => {
 		expect(mockCarrier.traceparent).toMatch(/^00-/);
 	});
 
-	it("should serialize trace context as JSON in outbox entry", () => {
-		const sourceSiteId = randomUUID();
-		const targetSiteId = randomUUID();
-
-		// Simulate the trace context that would be injected from global telemetry
-		const simulatedTraceContext = {
-			traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
-			tracestate: "vendor=value",
-		};
-
-		// Create an outbox entry with the trace context
-		const outboxEntry = createRelayOutboxEntry(
-			targetSiteId,
-			sourceSiteId,
-			"inference",
-			JSON.stringify({ model: "test-model" }),
-			60000,
-			undefined,
-			undefined,
-			randomUUID(),
-			JSON.stringify(simulatedTraceContext),
-		);
-
-		// Verify trace_context is properly serialized
-		expect(outboxEntry.trace_context).not.toBeNull();
-		expect(typeof outboxEntry.trace_context).toBe("string");
-
-		// Parse it back to verify it's valid JSON
-		if (outboxEntry.trace_context === null) {
-			throw new Error("trace_context should not be null");
-		}
-		const parsed = JSON.parse(outboxEntry.trace_context);
-		expect(parsed).toHaveProperty("traceparent");
-		expect(parsed.traceparent).toBe(simulatedTraceContext.traceparent);
-	});
-
 	it("should gracefully handle null trace context (AC5.6)", () => {
-		// When no span is active, injectTraceContext returns null
+		// When no span is active, injectTraceContext returns null; the durable relay
+		// row simply carries a null trace_context.
 		const traceContext = injectTraceContext();
 		expect(traceContext).toBeNull();
-
-		// Create an outbox entry without trace context
-		const sourceSiteId = randomUUID();
-		const targetSiteId = randomUUID();
-
-		const outboxEntry = createRelayOutboxEntry(
-			targetSiteId,
-			sourceSiteId,
-			"inference",
-			JSON.stringify({ model: "test-model" }),
-			60000,
-			undefined,
-			undefined,
-			randomUUID(),
-			traceContext ? JSON.stringify(traceContext) : undefined,
-		);
-
-		// Verify trace_context is null
-		expect(outboxEntry.trace_context).toBeNull();
 	});
 });

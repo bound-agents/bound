@@ -1,13 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import {
-	DURABLE_INTAKE_ENABLED,
-	findClusterConfigValueByKey,
-	findWebhookByName,
-	hasDroppedLegacyRelayTables,
-	insertDurableWork,
-	insertInbox,
-} from "@bound/core";
+import { findClusterConfigValueByKey, findWebhookByName, insertDurableWork } from "@bound/core";
 import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY, counter, histogram } from "@bound/shared";
 import type { TypedEventEmitter, Webhook } from "@bound/shared";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
@@ -17,7 +10,6 @@ export const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const webhookDeliveryCounter = counter("bound.web.webhook.deliveries", {
 	description: "Webhook delivery outcomes by HTTP status class",
 });
-const retiredLegacyIntakeWarnings = new WeakSet<Database>();
 
 const webhookDeliveryDuration = histogram("bound.web.webhook.delivery.duration", {
 	description: "Webhook intake latency",
@@ -98,7 +90,7 @@ async function readRequestBodyLimited(request: Request): Promise<
 
 /**
  * Handles incoming webhook POST requests.
- * Validates signature, writes relay_inbox entry, emits events for scheduler triggering,
+ * Validates signature, writes durable-work intake, emits events for scheduler triggering,
  * and returns appropriate HTTP response.
  */
 export async function handleWebhookRequest(
@@ -210,7 +202,7 @@ async function handleWebhookRequestInner(
 	const deliveryId = extractDeliveryId(request.headers);
 	const idempotencyKey = deliveryId ?? `${name}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
-	// Write relay_inbox entry. `webhook_intake` is a passive relay kind — the
+	// Write a durable-work intake entry. `webhook_intake` is a passive relay kind — the
 	// row is a durable mailbox entry owned by the scheduler's event-task
 	// wakeup path (buildEventWakeupContent), NOT the relay-processor's
 	// dispatcher. Using a discriminated kind prevents the relay-processor
@@ -218,46 +210,17 @@ async function handleWebhookRequestInner(
 	// MCP-platform `intakePayloadSchema`, and silently markProcessed-ing it
 	// before the scheduler ever sees it. See RELAY_KIND_REGISTRY in
 	// @bound/shared types.ts for the full dispatch-mode contract.
-	const inboxEntry = {
+	const inserted = insertDurableWork(deps.db, {
 		id: randomUUID(),
-		source_site_id: deps.siteId,
-		kind: "webhook_intake" as const,
-		ref_id: webhook.thread_id,
-		idempotency_key: idempotencyKey,
-		stream_id: null,
+		target_site_id: deps.siteId,
+		kind: "webhook_intake",
 		payload: envelope,
+		idempotency_key: idempotencyKey,
 		expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
+		ref_id: webhook.thread_id,
+		source_site: deps.siteId,
 		received_at: new Date().toISOString(),
-		processed: 0,
-		trace_context: null,
-	};
-
-	const forceDurable = hasDroppedLegacyRelayTables(deps.db);
-	if (forceDurable && !DURABLE_INTAKE_ENABLED && !retiredLegacyIntakeWarnings.has(deps.db)) {
-		retiredLegacyIntakeWarnings.add(deps.db);
-		console.warn(
-			JSON.stringify({
-				event: "legacy_relay_intake_unavailable",
-				component: "webhook-handler",
-				message:
-					"Legacy relay intake is retired; forcing durable intake despite BOUND_DURABLE_INTAKE=0.",
-			}),
-		);
-	}
-	const inserted =
-		DURABLE_INTAKE_ENABLED || forceDurable
-			? insertDurableWork(deps.db, {
-					id: inboxEntry.id,
-					target_site_id: deps.siteId,
-					kind: inboxEntry.kind,
-					payload: inboxEntry.payload,
-					idempotency_key: inboxEntry.idempotency_key,
-					expires_at: inboxEntry.expires_at,
-					ref_id: inboxEntry.ref_id,
-					source_site: deps.siteId,
-					received_at: inboxEntry.received_at,
-				})
-			: insertInbox(deps.db, inboxEntry);
+	});
 	if (!inserted) {
 		return new Response("", { status: 202 });
 	}

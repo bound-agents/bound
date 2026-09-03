@@ -164,8 +164,9 @@ describe("summary-extraction relay integration", () => {
 		// Register the remote host (advertising the model) in the spoke's hosts table
 		// so resolveModel finds it for remote delegation.
 		spokeDb.run(
-			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, online_at, modified_at, deleted)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO hosts (site_id, host_name, version, sync_url, mcp_servers, mcp_tools, models, work_spool_capable, online_at, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+			 ON CONFLICT(site_id) DO UPDATE SET models = excluded.models, work_spool_capable = 1`,
 			[
 				remoteSiteId,
 				"remote-host",

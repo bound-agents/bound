@@ -94,10 +94,10 @@ describe("RelayProcessor webhook delegation", () => {
 			0,
 		]);
 
-		// Insert a relay_inbox intake entry (hub-only spoke sent this)
+		// Insert a durable_work intake row (hub-only spoke sent this)
 		db.prepare(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, idempotency_key, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, payload, idempotency_key, expires_at, received_at, claim_state, attempt_count, created_at, source_site)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
 		).run([
 			randomUUID(),
 			siteId,
@@ -111,7 +111,8 @@ describe("RelayProcessor webhook delegation", () => {
 			"github-delivery-123",
 			new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
 			new Date().toISOString(),
-			0,
+			new Date().toISOString(),
+			siteId,
 		]);
 
 		// Verify the SELECT query for the task works in hub-only context
@@ -128,9 +129,9 @@ describe("RelayProcessor webhook delegation", () => {
 		expect(taskRow).toBeDefined();
 		expect(taskRow?.system_prompt_addition).toBe(systemPromptAddition);
 
-		// Verify the relay_inbox entry can be queried
+		// Verify the durable_work intake entry can be queried
 		const inboxRow = db
-			.query("SELECT id, ref_id, payload FROM relay_inbox WHERE kind = 'intake' AND ref_id = ?")
+			.query("SELECT id, ref_id, payload FROM durable_work WHERE kind = 'intake' AND ref_id = ?")
 			.get(threadId) as { id: string; ref_id: string; payload: string } | null;
 
 		expect(inboxRow).toBeDefined();
@@ -149,7 +150,7 @@ describe("RelayProcessor webhook delegation", () => {
 		expect(taskCount).toBe(1);
 
 		const inboxCount = (
-			db.prepare("SELECT COUNT(*) as cnt FROM relay_inbox WHERE kind = 'intake'").get() as any
+			db.prepare("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'intake'").get() as any
 		).cnt;
 		expect(inboxCount).toBe(1);
 	});

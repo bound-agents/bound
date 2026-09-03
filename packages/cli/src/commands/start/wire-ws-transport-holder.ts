@@ -44,7 +44,6 @@ export interface WsTransportHolder {
 	drainChangelog: (siteId: string) => void;
 	handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
 	handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
-	drainRelayInbox: (siteId: string) => void;
 	handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => void;
 	handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => void;
 	drainDurableWorkSpool: (siteId: string) => void;
@@ -88,7 +87,6 @@ const REQUIRED_HOLDER_METHODS: ReadonlyArray<keyof WsTransportHolder> = [
 	"drainChangelog",
 	"handleRelaySend",
 	"handleRelayAck",
-	"drainRelayInbox",
 	"handleSpoolTransfer",
 	"handleSpoolTransferAck",
 	"drainDurableWorkSpool",
@@ -236,7 +234,6 @@ export function wireWsTransportHolder(
 		drainChangelog: wsTransport.drainChangelog.bind(wsTransport),
 		handleRelaySend: wsTransport.handleRelaySend.bind(wsTransport),
 		handleRelayAck: wsTransport.handleRelayAck.bind(wsTransport),
-		drainRelayInbox: wsTransport.drainRelayInbox.bind(wsTransport),
 		handleSpoolTransfer: wsTransport.handleSpoolTransfer.bind(wsTransport),
 		handleSpoolTransferAck: wsTransport.handleSpoolTransferAck.bind(wsTransport),
 		drainDurableWorkSpool: wsTransport.drainDurableWorkSpool.bind(wsTransport),

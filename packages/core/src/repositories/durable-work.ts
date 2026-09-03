@@ -63,11 +63,11 @@ export function readDurableResponseByRefId(
 	return db
 		.query(
 			`SELECT * FROM durable_work
-			 WHERE ref_id = ? AND target_site_id = ? AND claim_state = 'pending'
+			 WHERE ref_id = ? AND target_site_id IN (?, ?) AND claim_state = 'pending'
 			   AND kind IN (${RESPONSE_KIND_PLACEHOLDERS})
 			 ORDER BY created_at ASC LIMIT 1`,
 		)
-		.get(refId, ownSiteId, ...RELAY_RESPONSE_KINDS) as DurableWorkRow | null;
+		.get(refId, ownSiteId, LOCAL_WORK_TARGET, ...RELAY_RESPONSE_KINDS) as DurableWorkRow | null;
 }
 
 /**
@@ -83,11 +83,36 @@ export function readDurableResponsesByStreamId(
 	return db
 		.query(
 			`SELECT * FROM durable_work
-			 WHERE stream_id = ? AND target_site_id = ? AND claim_state = 'pending'
+			 WHERE stream_id = ? AND target_site_id IN (?, ?) AND claim_state = 'pending'
 			   AND kind IN (${RESPONSE_KIND_PLACEHOLDERS})
 			 ORDER BY created_at ASC`,
 		)
-		.all(streamId, ownSiteId, ...RELAY_RESPONSE_KINDS) as DurableWorkRow[];
+		.all(streamId, ownSiteId, LOCAL_WORK_TARGET, ...RELAY_RESPONSE_KINDS) as DurableWorkRow[];
+}
+
+/**
+ * All pending durable REQUEST rows of `kind` targeted at self for `streamId`,
+ * oldest first. Multipart inference rides `inference_part` request rows keyed by
+ * `stream_id = request_id`; {@link readDurableResponsesByStreamId} filters
+ * {@link RELAY_RESPONSE_KINDS} and physically cannot see request kinds, so
+ * `handleInferencePart` reassembles the split payload through this reader. The
+ * caller passes the concrete request kind (`inference_part`) so a response row
+ * sharing the same `stream_id` is never mistaken for a part.
+ */
+export function readDurablePartsByStreamId(
+	db: Database,
+	streamId: string,
+	ownSiteId: string,
+	kind: string,
+): DurableWorkRow[] {
+	return db
+		.query(
+			`SELECT * FROM durable_work
+			 WHERE stream_id = ? AND target_site_id IN (?, ?) AND claim_state IN ('pending', 'processing')
+			   AND kind = ?
+			 ORDER BY created_at ASC`,
+		)
+		.all(streamId, ownSiteId, LOCAL_WORK_TARGET, kind) as DurableWorkRow[];
 }
 
 export interface StalePendingIntakeDurableWorkGroup {

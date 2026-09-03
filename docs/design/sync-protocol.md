@@ -22,14 +22,17 @@ The `@bound/sync` package implements event-sourced synchronisation between distr
 
 Bound uses a hub-and-spoke topology. Each spoke instance runs a `WsSyncClient` that maintains a persistent WebSocket connection to its hub at `/sync/ws`. Replication is event-driven rather than polled: whenever a local change log entry is written, a `changelog:written` event triggers the `WsTransport` to coalesce recent entries and send a `changelog_push` frame to every connected peer.
 
-The exchange consists of four frame kinds that move in both directions:
+The exchange consists of frame kinds that move in both directions:
 
 1. **`changelog_push`** — sender transmits change log entries the peer has not yet seen. Entries originating from the destination peer are filtered out (echo suppression).
 2. **`changelog_ack`** — receiver confirms the highest HLC it has applied, allowing the sender to advance its `last_sent` cursor and prune accordingly.
-3. **`relay_send` / `relay_deliver`** — cross-host relay messages (tool calls, inference requests, broadcast events) are forwarded spoke→hub (`relay_send`) or hub→spoke (`relay_deliver`).
-4. **`relay_ack`** — acknowledges delivery of relay entries so the outbox can be marked delivered.
+3. **`spool_transfer`** — a peer-targeted `durable_work` row travels host-to-host. Active relay traffic — remote tool calls, inference requests (including multi-part `inference_part` requests), responses (`result`/`error`/`client_result`/`trace_data`), and stream chunks — rides the durable-work spool, not a dedicated relay frame. The sender begins a transfer (`pending` → `transferring`, retaining its claim token), ships immutable work identity only, and retires its copy on ack.
+4. **`spool_transfer_ack`** — the receiver, having durably inserted each transferred row (`INSERT OR IGNORE` fenced by the `(kind, idempotency_key)` unique index), echoes each id plus the sender's transfer token so the sender retires the source row exactly-once.
 
-On reconnection, the transport drains any changelog entries or relay outbox entries missed while disconnected, then resumes event-driven replication.
+A stale `relay_send` frame from a version-skewed peer that still believes the legacy transport exists is warn-and-dropped: after release N+1 the `relay_outbox` / `relay_inbox` tables are demolished and there is no legacy fallback. The sender must re-read this host's `work_spool_capable` advertisement and re-send over the spool.
+
+On reconnection, the transport drains any changelog entries missed while disconnected and resumes the spool transfer of pending and in-flight peer-targeted `durable_work` rows, then resumes event-driven replication.
+
 
 The WebSocket upgrade request is signed with the caller's Ed25519 private key. The receiving side authenticates the upgrade by verifying the signature against the caller's public key, which it retrieves from a shared `keyring` configuration file. This means no pre-shared passwords or TLS client certificates are required — identity is entirely key-based. Once the upgrade succeeds, subsequent frames are encrypted with the per-peer symmetric key and no further per-message signatures are used.
 
@@ -430,11 +433,11 @@ transport.start();
 On `start()`, `WsTransport` registers listeners for two event bus events:
 
 - `changelog:written` — fired whenever the local `change_log` table gains a row. The handler loads the full entry and hands it to a `MicrotaskCoalescer` that batches entries arriving in the same microtask, then flushes each batch as a `changelog_push` frame to every connected peer (with echo suppression).
-- `relay:outbox-written` — fired whenever a relay outbox entry is created. The handler routes the entry: on a spoke it sends a `relay_send` frame to the hub; on the hub it invokes the same routing logic as an incoming `relay_send` (broadcast, hub-local dispatch, or forward to another spoke).
+- `durable_work:written` — fired whenever a peer-targeted `durable_work` row is inserted. The handler resolves the row's next hop and begins a `spool_transfer` toward it (spoke → hub, or hub → the spoke that routes to the final destination). A row targeted at the `LOCAL_WORK_TARGET` sentinel is consumed in-process and never transferred.
 
-### `drainChangelog(peerSiteId)` / `drainRelayOutbox(peerSiteId)` / `drainRelayInbox(spokesSiteId)`
+### `drainChangelog(peerSiteId)` / `drainDurableWorkSpool(peerSiteId, reason)`
 
-Called when a peer connects or reconnects. `drainChangelog` queries `change_log WHERE hlc > last_sent AND site_id != peerSiteId`, batches the results in chunks of 100, and sends each as a `changelog_push` frame, updating `last_sent` after each successful batch and emitting a final `drain_complete` frame. `drainRelayOutbox` (spoke-side) resends all undelivered outbox entries. `drainRelayInbox` (hub-side) forwards entries from the hub's outbox targeting the reconnected spoke.
+Called when a peer connects or reconnects. `drainChangelog` queries `change_log WHERE hlc > last_sent AND site_id != peerSiteId`, batches the results in chunks of 100, and sends each as a `changelog_push` frame, updating `last_sent` after each successful batch and emitting a final `drain_complete` frame. `drainDurableWorkSpool` carries relay reconnect recovery: it re-sends any `durable_work` rows already `transferring` whose next hop is this peer (retaining their transfer token), then begins transfers for pending peer-targeted rows whose next hop is this peer, batched 100 per frame. It runs on both spokes and hubs — the push-on-write path only covers rows written while connected, so reconnect must drain what accumulated while the link was dark.
 
 ---
 
@@ -458,11 +461,13 @@ The plaintext is UTF-8 encoded JSON. Minimum valid frame size is 41 bytes (1 + 2
 |------|------|-----------|---------|
 | `0x01` | `CHANGELOG_PUSH` | both | Batch of change log entries the sender wants the receiver to apply. |
 | `0x02` | `CHANGELOG_ACK` | both | Confirms the highest HLC the receiver has applied. |
-| `0x03` | `RELAY_SEND` | spoke → hub | Relay outbox entries awaiting routing by the hub. |
-| `0x04` | `RELAY_DELIVER` | hub → spoke | Relay inbox entries being delivered to a spoke. |
-| `0x05` | `RELAY_ACK` | both | Acknowledges delivery of relay entries by ID. |
-| `0x06` | `DRAIN_REQUEST` | reserved | Request peer to drain missed entries. |
-| `0x07` | `DRAIN_COMPLETE` | sender → peer | Signals end of a reconnect drain. |
+| `0x03` | `RELAY_SEND` | legacy | Legacy wire-compat only. Once carried relay outbox entries for the hub to route; after the release-N+1 legacy-relay demolition the receiver warns and drops it. Kept solely so a stale release-N peer that still emits it is not connection-flapped. |
+| `0x04` | `RELAY_DELIVER` | legacy | Legacy wire-compat only. Once carried relay inbox entries to a spoke; now warn-and-drop on receipt, kept only for stale-peer compatibility. |
+| `0x05` | `RELAY_ACK` | legacy | Legacy wire-compat only. Once acknowledged delivery of relay entries by ID; now warn-and-drop on receipt, kept only for stale-peer compatibility. |
+| `0x06` | `DRAIN_REQUEST` | legacy | Legacy wire-compat only. Once requested a peer drain missed relay entries on reconnect; now warn-and-drop, kept only for stale-peer compatibility. |
+| `0x07` | `DRAIN_COMPLETE` | sender → peer | Sent after a reconnect changelog drain completes successfully (see `drainChangelog`), signalling the peer that catch-up is done. Payload is `{ success: boolean }`. Active, not legacy. |
+| `0x40` | `SPOOL_TRANSFER` | sender → peer | Durable-work transfer: peer-targeted `durable_work` rows shipped to the target's spool for its durable-work relay lane to claim and dispatch. The active replacement for `RELAY_SEND`/`RELAY_DELIVER`. |
+| `0x41` | `SPOOL_TRANSFER_ACK` | peer → sender | Token-fenced acknowledgement of a `SPOOL_TRANSFER`: confirms the receiver durably accepted the shipped generation so the sender retires only the rows it shipped (R-DW10). |
 | `0xff` | `ERROR` | either | Advisory error payload. |
 
 ### `CHANGELOG_PUSH`
@@ -492,19 +497,7 @@ On receipt, `WsTransport.handleChangelogAck` advances `sync_state.last_sent` for
 
 ### `RELAY_SEND` / `RELAY_DELIVER` / `RELAY_ACK`
 
-```typescript
-type RelaySendPayload = { entries: Array<{ id, target_site_id, kind, ref_id, idempotency_key, stream_id, expires_at, payload }> };
-type RelayDeliverPayload = { entries: Array<{ id, source_site_id, kind, ref_id, idempotency_key, stream_id, expires_at, payload }> };
-type RelayAckPayload = { ids: string[] };
-```
-
-`RELAY_SEND` carries outbox entries from a spoke to the hub for routing (see [Relay Transport](#relay-transport)). The hub dispatches each entry by its `target_site_id`:
-
-- `"*"` — fan out to every other connected spoke and insert one copy into the hub's own `relay_inbox`.
-- Hub's own `site_id` — insert into the hub's `relay_inbox` for local processing.
-- Another spoke — if that spoke is currently connected, send a `RELAY_DELIVER` to it immediately; otherwise write an entry into the hub's `relay_outbox` targeting the spoke, to be drained when it reconnects.
-
-`RELAY_DELIVER` is the hub → spoke direction. The receiving spoke inserts the entries into its own `relay_inbox` and emits a `relay:inbox` event. Delivery is at-least-once until `RELAY_ACK`, so senders attach deterministic `idempotency_key` values for side-effecting work; the receiving partial unique index admits legacy `NULL` keys unchanged but collapses repeated keyed deliveries. `RELAY_ACK` carries a list of delivered entry IDs and causes `markDelivered` to run on the outbox.
+The legacy relay frame family remains decodable for version skew. Release-N+1 nodes do not own relay tables or route relay payloads: `RELAY_SEND` received from a stale peer is logged and dropped without acknowledgement, preserving the connection while the peer refreshes its work-spool capability view. Active cross-host work uses `SPOOL_TRANSFER` / `SPOOL_TRANSFER_ACK` and local loopback uses the `LOCAL_WORK_TARGET` durable-work sentinel.
 
 ### `DRAIN_COMPLETE`
 
@@ -591,147 +584,12 @@ The combination of `getMinConfirmedHlc` (taking the minimum across all peers) an
 
 ## Relay Transport
 
-The relay frames (`RELAY_SEND`, `RELAY_DELIVER`, `RELAY_ACK`) provide store-and-forward delivery for cross-host operations: MCP tool calls, remote LLM inference, and loop delegation. Relay traffic shares the same WebSocket connection as changelog replication.
+Directed work is local durable-work spool state, not changelog state. `durable_work` holds peer-targeted requests and responses; `relay_cycles` remains local telemetry. The transport transfers peer-targeted work with `SPOOL_TRANSFER` / `SPOOL_TRANSFER_ACK`; the receiver claims request kinds in its relay lane. Response kinds remain pending durable rows for the requester's awaiter and never enter `executeImmediate()`.
 
-### Tables
+Every peer hop must advertise work-spool capability. A non-advertising target or hub hop is a typed routing error. A self-targeted request uses `LOCAL_WORK_TARGET` and is consumed in-process, never transferred. Deterministic `(kind, idempotency_key)` fences duplicate transfers; awaiters token-claim, deliver, then ack durable response rows.
 
-Three local-only tables (not synced via change_log):
-
-| Table | Purpose |
-|-------|---------|
-| `relay_outbox` | Messages the local host wants to send to a specific remote host |
-| `relay_inbox` | Messages received from remote hosts, awaiting processing |
-| `relay_cycles` | Per-cycle metrics (latency, success, kind) |
-
-All three tables carry a nullable `stream_id TEXT` column for correlating streaming inference chunks. The outbox and inbox both have partial indexes on `(stream_id)` where `stream_id IS NOT NULL`.
-
-CRUD helpers (from `@bound/core`): `writeOutbox`, `insertInbox`, `readUnprocessed`, `markProcessed`, `readUndelivered`, `markDelivered`, `readInboxByStreamId`.
+`RELAY_SEND`, `RELAY_DELIVER`, and `RELAY_ACK` are retained only for wire compatibility. A release-N+1 receiver warns and drops a stale `RELAY_SEND` frame rather than closing the socket or reviving legacy routing.
 
 ### Relay Kinds
 
-**Request kinds** (requester → target):
-
-| Kind | Purpose |
-|------|---------|
-| `tool_call` | Execute an MCP tool on the target |
-| `resource_read` | Read an MCP resource on the target |
-| `prompt_invoke` | Invoke an MCP prompt on the target |
-| `cache_warm` | Warm cache on the target |
-| `cancel` | Cancel an active inference stream (carries `ref_id`) |
-| `inference` | Request LLM inference from the target (streaming response; context travels as `segments`) |
-| `client_tool` | Relay a client (WS) tool call to the host holding the WS session |
-| `intake` | Route an inbound platform message to the appropriate spoke for processing |
-| `notify_wakeup` | Ship a notify/introspect/task-completion wakeup to the host holding the thread's live WS session, so exactly one host wakes the thread (dispatch_queue is local-only; a local enqueue on the sending host would mint a second, detached loop) |
-| `platform_request` | Proxy an MCP platform request (e.g. `events/list`) to the host running that connector (sync dispatch) |
-| `webhook_intake` | Passive: durable HTTP-envelope mailbox row written by `/webhook/:name`, consumed by the scheduler (not the relay-processor) |
-
-The `process` (whole-loop delegation) relay kind is **removed** (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD13); the loop always runs on the trigger host, which relays only inference and tool calls. The `client_tool`/`client_result` kinds are new: they let a loop on a non-session host execute a client tool by relaying to the session host (R-UD5/R-UD8).
-
-**Response kinds** (target → requester):
-
-| Kind | Purpose |
-|------|---------|
-| `result` | Tool call / resource read result |
-| `error` | Error response for any request kind |
-| `stream_chunk` | One batch of `StreamChunk` objects from a remote inference stream |
-| `stream_end` | Final batch; closes the inference stream |
-| `client_result` | Result/error of a relayed `client_tool` call (enqueue idempotent on `(thread_id, call_id)`, R-UD9) |
-
-### Hub Routing
-
-The hub acts as a relay router. When a spoke sends a `RELAY_SEND` frame, `WsTransport.handleRelaySend` processes each entry and dispatches it based on `target_site_id`:
-
-1. **`"*"` (broadcast)** — fan out to every connected spoke except the originator by sending each a `RELAY_DELIVER`, and also insert one copy into the hub's own `relay_inbox`.
-2. **Hub's own `site_id`** — insert into the hub's `relay_inbox` for local processing by the `RelayProcessor`.
-3. **Another spoke** — if that spoke is currently connected, send a `RELAY_DELIVER` immediately; otherwise write the entry into the hub's own `relay_outbox` targeting the spoke, to be forwarded when it reconnects via `drainRelayInbox`.
-
-After routing, the hub sends a `RELAY_ACK` back to the originating spoke containing the delivered IDs. An idempotency check on `(idempotency_key, target_site_id)` prevents duplicate routing when entries are replayed.
-
-`stream_id` is propagated through all routing paths, so `readInboxByStreamId()` on the requester always finds its chunks.
-
-**Routing for `intake`:** The receiving spoke's `RelayProcessor` selects the best host to handle the platform message using a five-tier algorithm:
-
-1. **platform affinity** — if the intake carries a `platform` field, route to a host that advertises that platform.
-2. **thread affinity** — the spoke that most recently processed this thread (tracked via `status_forward` messages passing through the hub).
-3. **model match** — a spoke that advertises the model listed in `threads.model_hint` for this thread.
-4. **tool match** — the spoke with the highest overlap between its registered MCP tools and the tools used in this thread.
-5. **least-loaded fallback** — the spoke with the fewest pending undelivered `relay_outbox` entries.
-
-Once a target is selected, the platform message is routed to that spoke, which runs the agent loop locally (the old `process` whole-loop delegation entry is gone — `docs/design/specs/2026-06-29-unified-delegation.md`).
-
-**Outbound platform delivery:** There is no dedicated `platform_deliver` relay kind. The agent sends to a platform by calling the connector's own tool (e.g. `discord_send_message`), which is a platform MCP tool. When the loop runs on a host that does not hold that platform's leader role, the uniform `{local | relay}` tool dispatch relays the tool call to the serving host and returns the result (`docs/design/specs/2026-06-29-unified-delegation.md`, R-UD5/R-UD8). Leadership is stored in the synced `cluster_config` table under the key `platform_leader:<platform>` (e.g., `platform_leader:discord`); only the leader runs the active gateway connection.
-
-**Immediate delivery:** Because replication runs over a persistent WebSocket, relay entries are delivered to connected peers as soon as they are written — there is no separate polling cycle to wait for. The `relay_cycles.delivery_method` column records whether delivery went through the sync pipeline or an out-of-band eager push path; the current WebSocket transport uses `"sync"`.
-
-### Inference Relay Flow
-
-```
-Requester                        Hub                       Target
-    |                             |                            |
-    | writeOutbox(inference)      |                            |
-    | emit relay:outbox-written   |                            |
-    |                             |                            |
-    |------- RELAY_SEND --------->|                            |
-    |                             |-------- RELAY_DELIVER ---->|
-    |                             |      (routes to target)    |
-    |                             |                            |-- insertInbox(inference)
-    |                             |                            |-- RelayProcessor.executeInference()
-    |                             |                            |   - calls local LLMBackend.chat()
-    |                             |                            |   - flushes at 200ms or 4KB
-    |                             |                            |   writeOutbox(stream_chunk / stream_end)
-    |                             |                            |
-    |                             |<-------- RELAY_SEND -------|
-    |<------- RELAY_DELIVER ------| (routes to requester)      |
-    |                             |                            |
-    | readInboxByStreamId()       |                            |
-    | yields StreamChunks         |                            |
-```
-
-The `InferenceRequestPayload` (defined in `@bound/llm`) carries:
-
-```typescript
-interface InferenceRequestPayload {
-  model: string;
-  segments: ContextSegment[];  // inline tail + at most one range-pointer (replaces `messages`)
-  nowMs: number;               // producer's captured clock, so range re-annotation is byte-identical
-  tools?: ToolDefinition[];
-  system?: string;
-  system_suffix?: string;
-  max_tokens?: number;
-  temperature?: number;
-  cache_breakpoints?: number[];
-  thinking?: { type: "enabled"; budget_tokens: number };
-  timeout_ms: number;
-}
-```
-
-`stream_chunk` and `stream_end` payloads:
-
-```typescript
-interface StreamChunkPayload {
-  chunks: StreamChunk[];  // one or more StreamChunk objects
-  seq: number;            // monotonic, starting at 0
-}
-```
-
-### Relay Metrics
-
-`relay_cycles` records one row per relay operation:
-
-| Column | Description |
-|--------|-------------|
-| `direction` | `"inbound"` (target receiving) or `"outbound"` (requester sending) |
-| `peer_site_id` | Site ID of the other party |
-| `kind` | Relay kind (e.g., `"inference"`, `"stream_chunk"`, `"stream_end"`) |
-| `delivery_method` | `"sync"` or `"eager_push"` |
-| `latency_ms` | Milliseconds from request to response (null for intermediate chunks) |
-| `expired` | 1 if the entry was expired without execution |
-| `success` | 1 if the operation completed successfully |
-| `stream_id` | Stream ID for inference operations |
-
-The `turns` table also records relay metrics per agent turn: `relay_target` (host_name of the inference provider) and `relay_latency_ms` (time to first chunk). Both are NULL for local inference.
-
-
-### Local row-state hash cache
-
-Consistency pages select only the primary key and `modified_at`. `row_state_hashes` is a local-only, lazily warmed cache of the canonical SHA-256 state hash (every column except `modified_at`); cache misses fetch only the requested primary keys. `applySchema` installs generated INSERT/UPDATE/DELETE invalidation triggers for every synced table, so reducer, snapshot, outbox, and sanctioned raw-write paths all invalidate without relying on writer discipline. The cache is never synchronized or startup-backfilled.
+Request and response kinds retain their registry dispatch roles. Requests are claimed by the durable relay lane; responses (`result`, `error`, `stream_chunk`, `stream_end`, `client_result`, and `status_forward`) are consumed by the requester awaiter.

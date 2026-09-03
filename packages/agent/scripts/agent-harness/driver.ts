@@ -64,12 +64,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import {
-	insertRow,
-	loadConfigWithPrecedence,
-	setChangelogEventBus,
-	setRelayOutboxEventBus,
-} from "@bound/core";
+import { insertRow, loadConfigWithPrecedence, setChangelogEventBus } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { ToolDefinition } from "@bound/llm";
 import {
@@ -231,7 +226,6 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 		remoteSiteId = remoteKeypair.siteId;
 		remoteEventBus = new TypedEventEmitter();
 		setChangelogEventBus(remoteEventBus);
-		setRelayOutboxEventBus(remoteEventBus);
 	}
 	const env = createHarnessEnvironment({
 		rawBackends,
@@ -301,7 +295,6 @@ export async function runHarness(opts: HarnessRunOptions): Promise<HarnessRunRes
 			drainChangelog: () => {},
 			handleRelayDeliver: wt.handleRelayDeliver.bind(wt),
 			handleRelayAck: wt.handleRelayAck.bind(wt),
-			drainRelayOutbox: wt.drainRelayOutbox.bind(wt),
 			applySnapshotChunk: (tableName: string, rows: Array<Record<string, unknown>>) =>
 				tableName === "hosts" ? wt.applySnapshotChunk(tableName, rows) : 0,
 			applyColumnChunk: (

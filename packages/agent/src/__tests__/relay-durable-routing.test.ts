@@ -5,12 +5,7 @@
 // docs/design/specs/2026-08-31-durable-work-consolidation.md (R-DW5/6, R-DW14).
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import {
-	applySchema,
-	claimLocalDurableWork,
-	deadLetterExpiredDurableWork,
-	setDurableRelayEnabledForTesting,
-} from "@bound/core";
+import { applySchema, claimLocalDurableWork, deadLetterExpiredDurableWork } from "@bound/core";
 import { routeRelayRequest, routeRelayResponse, shouldRouteRelayDurable } from "../relay-router";
 
 let db: Database;
@@ -40,11 +35,9 @@ function seedHubPeer(hubSiteId: string): void {
 beforeEach(() => {
 	db = new Database(":memory:");
 	applySchema(db);
-	setDurableRelayEnabledForTesting(true);
 });
 
 afterEach(() => {
-	setDurableRelayEnabledForTesting(true);
 	db.close();
 });
 
@@ -64,8 +57,10 @@ describe("shouldRouteRelayDurable", () => {
 		).toBe(true);
 	});
 
-	it("routes legacy when the toggle is off, even if all hops are capable", () => {
-		setDurableRelayEnabledForTesting(false);
+	it("routes durable for a self-targeted request (loopback rides LOCAL_WORK_TARGET)", () => {
+		// A self-targeted request is handled by routeRelayRequest's LOCAL_WORK_TARGET
+		// loopback before shouldRouteRelayDurable is consulted, so the capability gate
+		// itself is a pure target-advertises check here.
 		setHostCapability(TARGET, true);
 		expect(
 			shouldRouteRelayDurable(db, {
@@ -73,25 +68,14 @@ describe("shouldRouteRelayDurable", () => {
 				localSiteId: LOCAL,
 				topologyRole: "hub",
 			}),
-		).toBe(false);
+		).toBe(true);
 	});
 
-	it("routes legacy when the final target does not advertise capability", () => {
+	it("is not durable when the final target does not advertise capability (caller errors, no legacy fallback)", () => {
 		setHostCapability(TARGET, false);
 		expect(
 			shouldRouteRelayDurable(db, {
 				targetSiteId: TARGET,
-				localSiteId: LOCAL,
-				topologyRole: "hub",
-			}),
-		).toBe(false);
-	});
-
-	it("routes legacy for a self-targeted request (loopback stays unchanged)", () => {
-		setHostCapability(LOCAL, true);
-		expect(
-			shouldRouteRelayDurable(db, {
-				targetSiteId: LOCAL,
 				localSiteId: LOCAL,
 				topologyRole: "hub",
 			}),
@@ -112,7 +96,7 @@ describe("shouldRouteRelayDurable", () => {
 			).toBe(true);
 		});
 
-		it("routes legacy when the target is capable but the hub is not (never strand rows at a spoke)", () => {
+		it("is not durable when the target is capable but the hub is not (never strand rows at a spoke)", () => {
 			seedHubPeer(HUB);
 			setHostCapability(TARGET, true);
 			setHostCapability(HUB, false);
@@ -137,7 +121,7 @@ describe("shouldRouteRelayDurable", () => {
 			).toBe(true);
 		});
 
-		it("routes legacy when the target is the hub but the hub is not capable", () => {
+		it("is not durable when the target is the hub but the hub is not capable", () => {
 			seedHubPeer(HUB);
 			setHostCapability(HUB, false);
 			expect(
@@ -158,12 +142,8 @@ describe("routeRelayRequest write behavior", () => {
 	function durableRows(): Array<Record<string, unknown>> {
 		return db.query("SELECT * FROM durable_work").all() as Array<Record<string, unknown>>;
 	}
-	function outboxRows(): Array<Record<string, unknown>> {
-		return db.query("SELECT * FROM relay_outbox").all() as Array<Record<string, unknown>>;
-	}
 
-	it("(b) toggle off writes a legacy relay_outbox row, no durable row", () => {
-		setDurableRelayEnabledForTesting(false);
+	it("routes durable to a capable target, writing a durable_work row and no outbox row", () => {
 		setHostCapability(TARGET, true);
 		const routed = routeRelayRequest(db, {
 			targetSiteId: TARGET,
@@ -173,11 +153,25 @@ describe("routeRelayRequest write behavior", () => {
 			timeoutMs: 30_000,
 			topologyRole: "hub",
 		});
-		expect(routed.path).toBe("legacy");
+		expect(routed.path).toBe("durable");
 		expect(routed.inserted).toBe(true);
+		const rows = durableRows();
+		expect(rows).toHaveLength(1);
+		expect(rows[0].id).toBe(routed.id);
+	});
+
+	it("errors when the target does not advertise capability (no legacy fallback after release N+1)", () => {
+		setHostCapability(TARGET, false);
+		const routed = routeRelayRequest(db, {
+			targetSiteId: TARGET,
+			sourceSiteId: LOCAL,
+			kind: "tool_call",
+			payload: JSON.stringify({ kind: "tool_call", toolName: "x", args: {} }),
+			timeoutMs: 30_000,
+			topologyRole: "hub",
+		});
+		expect(routed.path).toBe("error");
 		expect(durableRows()).toHaveLength(0);
-		expect(outboxRows()).toHaveLength(1);
-		expect(outboxRows()[0].id).toBe(routed.id);
 	});
 
 	it("(a) toggle on + capable target writes a durable_work row, no outbox row", () => {
@@ -192,7 +186,6 @@ describe("routeRelayRequest write behavior", () => {
 		});
 		expect(routed.path).toBe("durable");
 		expect(routed.inserted).toBe(true);
-		expect(outboxRows()).toHaveLength(0);
 		const rows = durableRows();
 		expect(rows).toHaveLength(1);
 		expect(rows[0].id).toBe(routed.id);
@@ -239,11 +232,11 @@ describe("routeRelayRequest write behavior", () => {
 		expect(durableRows()[0].idempotency_key).toBe(key);
 	});
 
-	it("(d) client_tool key is byte-identical across the flip (durable vs legacy)", () => {
+	it("(d) client_tool key rides verbatim on the durable row (retry-stable)", () => {
 		const key = "client-tool:thread-1:call-9";
 		const payload = JSON.stringify({ thread_id: "thread-1", call_id: "call-9" });
 		setHostCapability(TARGET, true);
-		const durable = routeRelayRequest(db, {
+		const first = routeRelayRequest(db, {
 			targetSiteId: TARGET,
 			sourceSiteId: LOCAL,
 			kind: "client_tool",
@@ -252,20 +245,7 @@ describe("routeRelayRequest write behavior", () => {
 			idempotencyKey: key,
 			topologyRole: "hub",
 		});
-		setDurableRelayEnabledForTesting(false);
-		const legacy = routeRelayRequest(db, {
-			targetSiteId: TARGET,
-			sourceSiteId: LOCAL,
-			kind: "client_tool",
-			payload,
-			timeoutMs: 300_000,
-			idempotencyKey: key,
-			topologyRole: "hub",
-		});
-		const durableKey = durableRows().find((r) => r.id === durable.id)?.idempotency_key;
-		const legacyKey = outboxRows().find((r) => r.id === legacy.id)?.idempotency_key;
-		expect(durableKey).toBe(key);
-		expect(legacyKey).toBe(key);
+		expect(durableRows().find((r) => r.id === first.id)?.idempotency_key).toBe(key);
 	});
 
 	it("(d) notify_wakeup null key falls back to the minted row id", () => {
@@ -359,9 +339,6 @@ describe("routeRelayResponse write behavior", () => {
 	function durableRows(): Array<Record<string, unknown>> {
 		return db.query("SELECT * FROM durable_work").all() as Array<Record<string, unknown>>;
 	}
-	function outboxRows(): Array<Record<string, unknown>> {
-		return db.query("SELECT * FROM relay_outbox").all() as Array<Record<string, unknown>>;
-	}
 
 	it("(a) toggle on + capable requester writes a durable response row keyed response:<refId>", () => {
 		setHostCapability(REQUESTER, true);
@@ -377,7 +354,6 @@ describe("routeRelayResponse write behavior", () => {
 		});
 		expect(routed.path).toBe("durable");
 		expect(routed.inserted).toBe(true);
-		expect(outboxRows()).toHaveLength(0);
 		const rows = durableRows();
 		expect(rows).toHaveLength(1);
 		expect(rows[0].target_site_id).toBe(REQUESTER);
@@ -402,27 +378,6 @@ describe("routeRelayResponse write behavior", () => {
 			topologyRole: "hub",
 		});
 		expect(durableRows()[0].source_site).toBe(LOCAL);
-	});
-
-	it("(e) toggle off writes a legacy relay_outbox response row with a null idempotency_key", () => {
-		setDurableRelayEnabledForTesting(false);
-		setHostCapability(REQUESTER, true);
-		const routed = routeRelayResponse(db, {
-			targetSiteId: REQUESTER,
-			sourceSiteId: LOCAL,
-			kind: "result",
-			payload: JSON.stringify({ stdout: "ok", stderr: "", exit_code: 0 }),
-			timeoutMs: 300_000,
-			refId: "req-abc",
-			idempotencyKey: "response:req-abc",
-			topologyRole: "hub",
-		});
-		expect(routed.path).toBe("legacy");
-		expect(durableRows()).toHaveLength(0);
-		const rows = outboxRows();
-		expect(rows).toHaveLength(1);
-		expect(rows[0].ref_id).toBe("req-abc");
-		expect(rows[0].idempotency_key).toBeNull();
 	});
 
 	it("(a) a redelivered response transfer is fenced by (kind, idempotency_key)", () => {

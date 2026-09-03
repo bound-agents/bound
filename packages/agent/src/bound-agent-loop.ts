@@ -1667,6 +1667,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 					topologyRole: resolveTopologyRole(this.ctx.optionalConfig),
 				}),
 			);
+			if (routed.path === "error") throw new Error(routed.reason);
 			awaitId = routed.id;
 		} catch (error) {
 			this.ctx.logger.error("[agent-loop] Failed to write client_tool relay request", {

@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, insertDurableWork, insertInbox, insertRow } from "@bound/core";
+import { applySchema, getDurableWork, insertDurableWork, insertRow } from "@bound/core";
 import { registerConnectorEventDelivery } from "@bound/platforms";
-import { type RelayInboxEntry, TypedEventEmitter } from "@bound/shared";
+import { TypedEventEmitter } from "@bound/shared";
 import { applyAdvisory, getPendingAdvisories } from "../advisories";
 import { Scheduler } from "../scheduler";
 import { reconcileStaleWebhookIntake } from "../webhook-intake-reconciler";
@@ -45,25 +45,25 @@ function insertWebhook(
 function insertIntake(
 	db: Database,
 	opts: { id?: string; refId: string; receivedAt: string; kind?: string; processed?: boolean },
-): void {
+): string {
 	const id = opts.id ?? randomUUID();
-	const entry: RelayInboxEntry = {
+	insertDurableWork(db, {
 		id,
-		source_site_id: "hub-site",
-		kind: (opts.kind ?? "webhook_intake") as RelayInboxEntry["kind"],
+		target_site_id: SITE,
+		kind: opts.kind ?? "webhook_intake",
 		ref_id: opts.refId,
 		idempotency_key: id,
-		stream_id: null,
 		payload: JSON.stringify({ body: '{"action":"opened"}' }),
 		expires_at: new Date(NOW.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+		source_site: "hub-site",
 		received_at: opts.receivedAt,
-		processed: 0,
-		trace_context: null,
-	};
-	insertInbox(db, entry);
+	});
 	if (opts.processed) {
-		db.run("UPDATE relay_inbox SET processed = 1 WHERE id = ?", [id]);
+		// A drained intake row is consumed (token-fenced ack); the reconciler's
+		// stale sweep only considers claim_state='pending' rows.
+		db.run("UPDATE durable_work SET claim_state = 'consumed' WHERE id = ?", [id]);
 	}
+	return id;
 }
 
 const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60 * 1000).toISOString();
@@ -71,7 +71,7 @@ const minutesAgo = (m: number) => new Date(NOW.getTime() - m * 60 * 1000).toISOS
 function unprocessedCount(db: Database, refId: string): number {
 	const row = db
 		.query(
-			"SELECT COUNT(*) AS c FROM relay_inbox WHERE ref_id = ? AND kind = 'webhook_intake' AND processed = 0",
+			"SELECT COUNT(*) AS c FROM durable_work WHERE ref_id = ? AND kind = 'webhook_intake' AND claim_state = 'pending'",
 		)
 		.get(refId) as { c: number };
 	return row.c;
@@ -313,13 +313,7 @@ it("routes repeated stale re-emissions through scheduler CAS into one durable wa
 			.all(threadId) as Array<{ content: string }>;
 		expect(wakeups).toHaveLength(1);
 		expect(wakeups[0].content).toContain("action");
-		expect(
-			(
-				db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxId) as {
-					processed: number;
-				}
-			).processed,
-		).toBe(1);
+		expect(getDurableWork(db, inboxId)?.claim_state).toBe("consumed");
 		reconcileStaleWebhookIntake(db, SITE, { staleAfterMs: STALE_AFTER_MS, now: NOW, eventBus });
 		expect(runs).toBe(1);
 	} finally {
@@ -424,9 +418,10 @@ it("re-emits stale connector intake with its per-handle trigger and binding iden
 		},
 	]);
 
-	db.run("UPDATE relay_inbox SET processed = 1 WHERE ref_id = ? AND kind = 'connector_intake'", [
-		threadId,
-	]);
+	db.run(
+		"UPDATE durable_work SET claim_state = 'consumed' WHERE ref_id = ? AND kind = 'connector_intake'",
+		[threadId],
+	);
 	const afterProcessing = reconcileStaleWebhookIntake(db, SITE, {
 		staleAfterMs: STALE_AFTER_MS,
 		now: NOW,
@@ -463,7 +458,13 @@ it("dead-letters stale connector intake when its live handle backs a cancelled t
 		},
 		SITE,
 	);
-	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+	const connectorRowId = randomUUID();
+	insertIntake(db, {
+		id: connectorRowId,
+		refId: threadId,
+		receivedAt: minutesAgo(60),
+		kind: "connector_intake",
+	});
 	const emitted: Array<{ event: string; payload: Record<string, unknown> }> = [];
 	const eventBus = {
 		emit: (event: string, payload: Record<string, unknown>) => emitted.push({ event, payload }),
@@ -485,13 +486,7 @@ it("dead-letters stale connector intake when its live handle backs a cancelled t
 	expect(first.redelivered).toBe(0);
 	expect(second.redelivered).toBe(0);
 	expect(emitted).toEqual([]);
-	expect(
-		(
-			db
-				.query("SELECT processed FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
-				.get(threadId) as { processed: number }
-		).processed,
-	).toBe(1);
+	expect(getDurableWork(db, connectorRowId)?.claim_state).toBe("dead_letter");
 });
 
 it("dead-letters stale connector intake when its live handle backs a soft-deleted task", () => {
@@ -521,7 +516,13 @@ it("dead-letters stale connector intake when its live handle backs a soft-delete
 		},
 		SITE,
 	);
-	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+	const connectorRowId = randomUUID();
+	insertIntake(db, {
+		id: connectorRowId,
+		refId: threadId,
+		receivedAt: minutesAgo(60),
+		kind: "connector_intake",
+	});
 	const emitted: unknown[] = [];
 	const eventBus = {
 		emit: (_event: string, payload: unknown) => emitted.push(payload),
@@ -543,13 +544,7 @@ it("dead-letters stale connector intake when its live handle backs a soft-delete
 	expect(first.redelivered).toBe(0);
 	expect(second.redelivered).toBe(0);
 	expect(emitted).toEqual([]);
-	expect(
-		(
-			db
-				.query("SELECT processed FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
-				.get(threadId) as { processed: number }
-		).processed,
-	).toBe(1);
+	expect(getDurableWork(db, connectorRowId)?.claim_state).toBe("dead_letter");
 });
 
 it("dead-letters stale connector intake after its handle is soft-deleted", () => {
@@ -573,7 +568,13 @@ it("dead-letters stale connector intake after its handle is soft-deleted", () =>
 		},
 		SITE,
 	);
-	insertIntake(db, { refId: threadId, receivedAt: minutesAgo(60), kind: "connector_intake" });
+	const connectorRowId = randomUUID();
+	insertIntake(db, {
+		id: connectorRowId,
+		refId: threadId,
+		receivedAt: minutesAgo(60),
+		kind: "connector_intake",
+	});
 
 	const result = reconcileStaleWebhookIntake(db, SITE, {
 		staleAfterMs: STALE_AFTER_MS,
@@ -582,13 +583,7 @@ it("dead-letters stale connector intake after its handle is soft-deleted", () =>
 
 	expect(result.deadLettered).toBe(1);
 	expect(getPendingAdvisories(db)).toEqual([]);
-	expect(
-		(
-			db
-				.query("SELECT processed FROM relay_inbox WHERE ref_id = ? AND kind = 'connector_intake'")
-				.get(threadId) as { processed: number }
-		).processed,
-	).toBe(1);
+	expect(getDurableWork(db, connectorRowId)?.claim_state).toBe("dead_letter");
 });
 
 describe("webhook intake reconciler — orphaned (no live binding)", () => {

@@ -70,7 +70,7 @@ import {
 	injectTraceContext,
 	isUserFacingInterface,
 } from "@bound/shared";
-import type { KeyManager, RelayExecutor } from "@bound/sync";
+import type { KeyManager } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
@@ -144,8 +144,8 @@ export function createRemotePlatformRequest(
 			// redelivery-stable key (R-DW5/6).
 			traceContext: serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
 			topologyRole: resolveTopologyRole(deps.optionalConfig),
-			eventBus: deps.eventBus,
 		});
+		if (routed.path === "error") throw new Error(routed.reason);
 		const entry = { id: routed.id };
 
 		// 4D-D union await: resolves whether the response arrived over the legacy
@@ -314,7 +314,6 @@ export interface ServerResult {
 		drainChangelog: (siteId: string) => void;
 		handleRelaySend: (sourceSiteId: string, payload: Record<string, unknown>) => void;
 		handleRelayAck: (sourceSiteId: string, payload: Record<string, unknown>) => void;
-		drainRelayInbox: (siteId: string) => void;
 		handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => void;
 		handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => void;
 		drainDurableWorkSpool: (siteId: string) => void;
@@ -338,7 +337,6 @@ export interface ServerDeps {
 	appContext: AppContext;
 	modelRouter: ModelRouter;
 	agentLoopFactory: AgentLoopFactory;
-	relayExecutor: RelayExecutor | undefined;
 	keyManager: KeyManager | undefined;
 	keyring: KeyringConfig | undefined;
 	hubSiteId: string | undefined;
@@ -358,7 +356,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		appContext,
 		modelRouter,
 		agentLoopFactory,
-		relayExecutor,
 		keyManager,
 		keyring,
 		hubSiteId,
@@ -512,7 +509,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				siteId: appContext.siteId,
 				keyring,
 				logger: appContext.logger,
-				relayExecutor,
 				hubSiteId,
 				keyManager,
 				wsConfig: wsConfig
@@ -1357,7 +1353,6 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				routeRelayRequest(appContext.db, {
 					...params,
 					topologyRole: resolveTopologyRole(appContext.optionalConfig),
-					eventBus: appContext.eventBus,
 				}),
 		});
 		appContext.logger.info("[platforms-mcp] MCP registry initialized");

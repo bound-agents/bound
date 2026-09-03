@@ -10,7 +10,7 @@ import { resolveRelayConfig } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import type { ClusterFsResult } from "@bound/sandbox";
 import type { KeyringConfig, SyncConfig } from "@bound/shared";
-import type { KeyManager, RelayExecutor } from "@bound/sync";
+import type { KeyManager } from "@bound/sync";
 
 /** Keypair shape returned by ensureKeypair from @bound/sync. */
 export interface Keypair {
@@ -22,7 +22,6 @@ export interface Keypair {
 export interface RelayResult {
 	relayProcessor: RelayProcessor;
 	relayProcessorHandle: { stop: () => void };
-	relayExecutor: RelayExecutor;
 	keyManager: KeyManager | undefined;
 	hubSiteId: string | undefined;
 	keyring: KeyringConfig | undefined;
@@ -76,11 +75,6 @@ export async function initRelay(
 	const relayProcessorHandle = relayProcessor.start();
 	appContext.logger.info("[relay] Relay processor started");
 
-	// Create the RelayExecutor callback for hub-local execution
-	const relayExecutor: RelayExecutor = async (request, hubSiteId) => {
-		return relayProcessor.executeImmediate(request, hubSiteId);
-	};
-
 	// Determine hub siteId from keyring (for spoke-side validation)
 	let hubSiteId: string | undefined;
 	if (keyringResult?.ok && syncConfigResult?.ok) {
@@ -132,7 +126,6 @@ export async function initRelay(
 	return {
 		relayProcessor,
 		relayProcessorHandle,
-		relayExecutor,
 		keyManager,
 		hubSiteId,
 		keyring,

@@ -1010,7 +1010,6 @@ describe("createWsHandlers", async () => {
 						drainChangelog: () => {},
 						handleRelaySend: () => {},
 						handleRelayAck: () => {},
-						drainRelayInbox: () => {},
 						handleSpoolTransfer: () => {},
 						handleSpoolTransferAck: () => {},
 						drainDurableWorkSpool: () => {},

@@ -141,6 +141,7 @@ export function createRelayWait$(
 						// redelivery-stable key (R-DW5/6).
 						topologyRole: deps.topologyRole,
 					});
+					if (routed.path === "error") throw new Error(routed.reason);
 					currentOutboxId = routed.id;
 				} catch (error) {
 					deps.logger.warn("Failed to write relay outbox entry for failover host", {

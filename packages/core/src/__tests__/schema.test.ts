@@ -4,9 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { insertRow, updateRow } from "../change-log";
 import { createDatabase } from "../database";
-import { dropLegacyRelayTables, hasDroppedLegacyRelayTables } from "../relay";
 import { applySchema } from "../schema";
-
 describe("Database Schema", () => {
 	let dbPath: string;
 
@@ -63,17 +61,19 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
-		expect(tableNames).toContain("relay_outbox");
-		expect(tableNames).toContain("relay_inbox");
+		expect(tableNames).not.toContain("relay_outbox");
+		expect(tableNames).not.toContain("relay_inbox");
 		expect(tableNames).toContain("relay_cycles");
 		expect(tableNames).toContain("dispatch_queue");
 
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 26 base tables (including local-only row_state_hashes cache, durable_work, and local_flags) + FTS5 virtual table + 5 FTS5 shadow tables = 32
+		// 24 base tables (relay_outbox/relay_inbox retired at release N+1; includes
+		// local-only row_state_hashes cache, durable_work, and local_flags) + FTS5
+		// virtual table + 5 FTS5 shadow tables = 30
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(27); // 26 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(25); // 24 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -101,7 +101,7 @@ describe("Database Schema", () => {
 		expect(consistencyPlan.map((row) => row.detail).join(" ")).toContain(
 			"COVERING INDEX idx_messages_consistency",
 		);
-		expect(indexNames).toContain("idx_relay_inbox_ref_unprocessed_received");
+		expect(indexNames).not.toContain("idx_relay_inbox_ref_unprocessed_received");
 
 		const messagePlan = db
 			.query(
@@ -112,14 +112,6 @@ describe("Database Schema", () => {
 			"idx_messages_live_thread_created",
 		);
 
-		const relayPlan = db
-			.query(
-				"EXPLAIN QUERY PLAN SELECT * FROM relay_inbox WHERE ref_id = ? AND processed = 0 AND kind = ? ORDER BY received_at ASC",
-			)
-			.all("thread-1", "webhook_intake") as Array<{ detail: string }>;
-		expect(relayPlan.map((row) => row.detail).join(" ")).toContain(
-			"idx_relay_inbox_ref_unprocessed_received",
-		);
 		expect(indexNames).toContain("idx_memory_key");
 		expect(indexNames).toContain("idx_files_path");
 		expect(indexNames).toContain("idx_skills_name");
@@ -264,24 +256,19 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 32 tables (26 base, including local-only durable_work, local_flags, and row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(32);
+		// Still exactly 30 tables (24 base after relay_outbox/relay_inbox retired at
+		// release N+1, incl. local-only durable_work, local_flags, row_state_hashes
+		// cache, + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(30);
 
 		db.close();
 	});
 
-	it("boot-after-drop does not recreate retired relay tables", () => {
+	it("boot never creates the retired relay tables (release N+1)", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
-		// Retire the legacy relay tables (one-way drop + marker).
-		expect(dropLegacyRelayTables(db, "boot-after-drop test")).toBe(true);
-		expect(hasDroppedLegacyRelayTables(db)).toBe(true);
-
-		// Simulate a restart: applySchema runs again on the same DB.
-		applySchema(db);
-
-		// The retired tables must NOT be recreated.
+		// The retired tables must never be created on a fresh N+1 host.
 		const outbox = db
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_outbox'")
 			.get();
@@ -291,8 +278,11 @@ describe("Database Schema", () => {
 		expect(outbox).toBeNull();
 		expect(inbox).toBeNull();
 
-		// The marker survives and the guard still reads dropped.
-		expect(hasDroppedLegacyRelayTables(db)).toBe(true);
+		// A restart is a no-op — still never created.
+		applySchema(db);
+		expect(
+			db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_outbox'").get(),
+		).toBeNull();
 
 		// relay_cycles (retained telemetry) still exists.
 		const cycles = db
@@ -303,21 +293,90 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("a fresh DB without the marker creates both relay tables", () => {
-		const db = createDatabase(dbPath);
-		applySchema(db);
+	describe("startup refusal on populated legacy relay tables (release N+1)", () => {
+		// A host reaching this binary with a legacy relay table that still holds
+		// rows skipped the release-N drain-and-drop migration. applySchema must
+		// refuse to start rather than silently strand that undelivered work.
+		function createLegacyRelayTable(db: ReturnType<typeof createDatabase>, table: string): void {
+			if (table === "relay_outbox") {
+				db.run(`
+					CREATE TABLE relay_outbox (
+						id              TEXT PRIMARY KEY,
+						source_site_id  TEXT,
+						target_site_id  TEXT NOT NULL,
+						kind            TEXT NOT NULL,
+						ref_id          TEXT,
+						idempotency_key TEXT,
+						payload         TEXT NOT NULL,
+						created_at      TEXT NOT NULL,
+						expires_at      TEXT NOT NULL,
+						delivered       INTEGER DEFAULT 0
+					) STRICT
+				`);
+			} else {
+				db.run(`
+					CREATE TABLE relay_inbox (
+						id              TEXT PRIMARY KEY,
+						source_site_id  TEXT NOT NULL,
+						kind            TEXT NOT NULL,
+						ref_id          TEXT,
+						idempotency_key TEXT,
+						payload         TEXT NOT NULL,
+						expires_at      TEXT NOT NULL,
+						received_at     TEXT NOT NULL,
+						processed       INTEGER DEFAULT 0
+					) STRICT
+				`);
+			}
+		}
 
-		expect(hasDroppedLegacyRelayTables(db)).toBe(false);
-		const outbox = db
-			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_outbox'")
-			.get();
-		const inbox = db
-			.query("SELECT name FROM sqlite_master WHERE type='table' AND name='relay_inbox'")
-			.get();
-		expect(outbox).not.toBeNull();
-		expect(inbox).not.toBeNull();
+		it("refuses to start when relay_outbox still holds rows", () => {
+			const db = createDatabase(dbPath);
+			createLegacyRelayTable(db, "relay_outbox");
+			db.run(
+				"INSERT INTO relay_outbox (id, target_site_id, kind, payload, created_at, expires_at) VALUES (?,?,?,?,?,?)",
+				["e1", "peer", "result", "{}", "2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z"],
+			);
 
-		db.close();
+			expect(() => applySchema(db)).toThrow(/relay_outbox/);
+			expect(() => applySchema(db)).toThrow(/1 row/);
+			expect(() => applySchema(db)).toThrow(/release-N|release N/i);
+
+			db.close();
+		});
+
+		it("refuses to start when relay_inbox still holds rows", () => {
+			const db = createDatabase(dbPath);
+			createLegacyRelayTable(db, "relay_inbox");
+			db.run(
+				"INSERT INTO relay_inbox (id, source_site_id, kind, payload, expires_at, received_at) VALUES (?,?,?,?,?,?)",
+				["e1", "peer", "inference", "{}", "2026-01-01T01:00:00Z", "2026-01-01T00:00:00Z"],
+			);
+
+			expect(() => applySchema(db)).toThrow(/relay_inbox/);
+
+			db.close();
+		});
+
+		it("starts (no throw) when empty legacy relay tables are present", () => {
+			// On this release the CREATE TABLE block in applySchema still runs, so a
+			// fresh host legitimately holds empty relay tables. The refusal only fires
+			// on populated tables; empty ones are left to the create block. (Once the
+			// create block is deleted, an empty legacy table is dropped for cleanliness.)
+			const db = createDatabase(dbPath);
+			createLegacyRelayTable(db, "relay_outbox");
+			createLegacyRelayTable(db, "relay_inbox");
+
+			expect(() => applySchema(db)).not.toThrow();
+
+			db.close();
+		});
+
+		it("starts clean when the legacy tables are absent (post-4E host)", () => {
+			const db = createDatabase(dbPath);
+			expect(() => applySchema(db)).not.toThrow();
+			db.close();
+		});
 	});
 
 	it("verifies threads table has model_hint column", () => {

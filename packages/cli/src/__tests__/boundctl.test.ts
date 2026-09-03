@@ -25,8 +25,7 @@ describe("boundctl commands", () => {
 		dbPath = join(dataDir, "bound.db");
 
 		// Apply the full production schema so commands like sync-status, which query
-		// relay_outbox / relay_inbox, find every table they expect rather than failing
-		// with "no such table".
+		// all current command tables are present.
 		const db = createDatabase(dbPath);
 		applySchema(db);
 		applyMetricsSchema(db);
@@ -305,116 +304,22 @@ describe("boundctl commands", () => {
 		});
 	});
 
-	describe("set-hub with relay drain", () => {
-		it("AC4.1: sets relay_draining flag before polling outbox", async () => {
+	describe("set-hub", () => {
+		it("sets the hub without legacy relay-table drain machinery", async () => {
 			const dataDir = join(tempDir, "data");
-			const configDir = join(tempDir, "config");
-			mkdirSync(configDir);
-
-			// Set hub (applySchema in beforeEach already provisioned relay_outbox)
-			await runSetHub({
-				hostName: "new-hub-host",
-				configDir: dataDir,
-			});
-
-			// Verify hub was switched
-			const db2 = new Database(dbPath);
-			const hubEntry = db2
-				.query("SELECT * FROM cluster_config WHERE key = 'cluster_hub'")
-				.get() as { key: string; value: string } | null;
-
-			expect(hubEntry).not.toBeNull();
-			expect(hubEntry?.value).toBe("new-hub-host");
-
-			// Verify drain flag was cleared (it should have been set then cleared)
-			const drainFlag = db2
-				.query("SELECT value FROM host_meta WHERE key = 'relay_draining'")
-				.get() as { value: string } | null;
-
-			expect(drainFlag).toBeNull();
-
-			db2.close();
-		});
-
-		it("does not recreate relay_outbox after legacy relay retirement", async () => {
-			const { dropLegacyRelayTables, hasDroppedLegacyRelayTables } = await import("@bound/core");
-			const dataDir = join(tempDir, "data");
-			const db = new Database(dbPath);
-			expect(dropLegacyRelayTables(db, "test retirement")).toBe(true);
-			expect(hasDroppedLegacyRelayTables(db)).toBe(true);
-			db.close();
-
 			await runSetHub({ hostName: "new-hub-host", configDir: dataDir });
-
-			const verify = new Database(dbPath);
-			expect(hasDroppedLegacyRelayTables(verify)).toBe(true);
-			expect(
-				verify
-					.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'relay_outbox'")
-					.get(),
-			).toBeNull();
-			expect(
-				verify.query("SELECT value FROM cluster_config WHERE key = 'cluster_hub'").get(),
-			).toEqual({ value: "new-hub-host" });
-			verify.close();
-		});
-
-		it("AC4.5: proceeds with hub switch on drain timeout", async () => {
-			const dataDir = join(tempDir, "data");
-
-			// Create sync.json with short drain timeout for testing (2 seconds)
-			const syncConfig = {
-				relay: {
-					drain_timeout_seconds: 2,
-				},
-			};
-			writeFileSync(join(dataDir, "sync.json"), JSON.stringify(syncConfig));
-
-			// Insert an undelivered outbox entry (will not be delivered, causing timeout).
-			// applySchema in beforeEach already provisioned relay_outbox.
 			const db = new Database(dbPath);
-			db.query(`
-				INSERT INTO relay_outbox (
-					id, source_site_id, target_site_id, kind, ref_id,
-					payload, created_at, expires_at, delivered
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`).run(
-				"outbox-1",
-				"hub-site-id",
-				"spoke-site-id",
-				"tool_call",
-				"ref-1",
-				JSON.stringify({ tool: "test" }),
-				new Date().toISOString(),
-				new Date(Date.now() + 60000).toISOString(),
-				0, // NOT delivered - will cause timeout
-			);
-
-			db.close();
-
-			// Set hub with relay drain - should timeout but still proceed
-			await runSetHub({
-				hostName: "new-hub-host",
-				configDir: dataDir,
+			expect(db.query("SELECT value FROM cluster_config WHERE key = 'cluster_hub'").get()).toEqual({
+				value: "new-hub-host",
 			});
-
-			// Verify hub was switched even though drain timed out
-			const db2 = new Database(dbPath);
-			const hubEntry = db2
-				.query("SELECT * FROM cluster_config WHERE key = 'cluster_hub'")
-				.get() as { key: string; value: string } | null;
-
-			expect(hubEntry).not.toBeNull();
-			expect(hubEntry?.value).toBe("new-hub-host");
-
-			// Verify drain flag was cleared
-			const drainFlag = db2
-				.query("SELECT value FROM host_meta WHERE key = 'relay_draining'")
-				.get() as { value: string } | null;
-
-			expect(drainFlag).toBeNull();
-
-			db2.close();
+			expect(
+				db
+					.query(
+						"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('relay_outbox', 'relay_inbox')",
+					)
+					.all(),
+			).toEqual([]);
+			db.close();
 		});
 	});
 });
