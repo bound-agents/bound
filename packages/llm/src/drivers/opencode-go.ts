@@ -13,6 +13,8 @@ import {
 
 const DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 const PROVIDER_NAME = "opencode-go";
+const BOUND_USER_AGENT = "bound";
+export const MAX_OPENCODE_SESSION_ID_LENGTH = 256;
 
 export function deriveOpenCodeGoBaseUrl(override?: string): string {
 	return override ?? DEFAULT_OPENCODE_GO_BASE_URL;
@@ -60,22 +62,32 @@ export class OpenCodeGoDriver implements LLMBackend {
 		this.contextWindow = config.contextWindow;
 		const baseUrl = deriveOpenCodeGoBaseUrl(config.baseUrl);
 		const customFetch = resolveProviderFetch(PROVIDER_NAME, config);
+		const providerFetch = (async (input, init) => {
+			const headers = new Headers(init?.headers);
+			headers.set("User-Agent", BOUND_USER_AGENT);
+			return (customFetch ?? globalThis.fetch)(input, { ...init, headers });
+		}) as typeof fetch;
 
 		this.openaiProvider = createOpenAICompatible({
 			name: PROVIDER_NAME,
 			baseURL: baseUrl,
 			apiKey: config.apiKey,
-			...(customFetch && { fetch: customFetch }),
+			fetch: providerFetch,
 		});
 		this.anthropicProvider = createAnthropic({
 			name: PROVIDER_NAME,
 			baseURL: baseUrl,
 			apiKey: config.apiKey,
-			...(customFetch && { fetch: customFetch }),
+			fetch: providerFetch,
 		});
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+		if (!params.threadId || params.threadId.length > MAX_OPENCODE_SESSION_ID_LENGTH) {
+			throw new Error(
+				`OpenCode Go requests require a non-empty Bound threadId of at most ${MAX_OPENCODE_SESSION_ID_LENGTH} characters`,
+			);
+		}
 		const modelId = stripOpenCodeGoModelPrefix(params.model || this.model);
 		const protocol = classifyOpenCodeGoProtocol(modelId);
 		const tools = toToolSet(params.tools);
@@ -108,6 +120,10 @@ export class OpenCodeGoDriver implements LLMBackend {
 								...(tools && { tools }),
 								...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 								...(params.temperature !== undefined && { temperature: params.temperature }),
+								headers: {
+									"User-Agent": BOUND_USER_AGENT,
+									"x-opencode-session": params.threadId,
+								},
 								abortSignal: params.signal,
 							}).fullStream,
 						map: { estimateInputFromMessages: params.messages },
@@ -147,6 +163,10 @@ export class OpenCodeGoDriver implements LLMBackend {
 							...(tools && { tools }),
 							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 							...(params.temperature !== undefined && { temperature: params.temperature }),
+							headers: {
+								"User-Agent": BOUND_USER_AGENT,
+								"x-opencode-session": params.threadId,
+							},
 							abortSignal: params.signal,
 						}).fullStream,
 					map: { estimateInputFromMessages: params.messages },

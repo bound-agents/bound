@@ -519,6 +519,7 @@ describe("relay-stream integration tests", () => {
 			target_site_id: targetSiteId,
 			kind: "inference",
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "unavailable-model",
 				segments: [],
 				nowMs: 0,
@@ -570,6 +571,7 @@ describe("relay-stream integration tests", () => {
 			target_site_id: targetSiteId,
 			kind: "inference",
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [],
 				nowMs: 0,

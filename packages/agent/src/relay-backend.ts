@@ -100,6 +100,9 @@ export function createRelayBackend(
 ): LLMBackend {
 	return {
 		chat(params: ChatParams): AsyncIterable<StreamChunk> {
+			if (!params.threadId) {
+				throw new Error("Relayed inference requires a Bound threadId");
+			}
 			// This relay path carries ad-hoc messages (e.g. loop-end summary
 			// extraction), NOT a thread's assembled history — they don't correspond
 			// to synced message rows, so there is no range to point at. Ship every
@@ -107,6 +110,7 @@ export function createRelayBackend(
 			// segment wire format, R-UD3). nowMs is the send instant; with no range
 			// segment to resolve, the consumer never uses it for re-annotation.
 			const payload: InferenceRequestPayload = {
+				threadId: params.threadId,
 				model: modelId,
 				segments: params.messages.map((message) => ({ kind: "inline" as const, message })),
 				nowMs: Date.now(),

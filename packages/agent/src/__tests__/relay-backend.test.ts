@@ -119,6 +119,7 @@ describe("createRelayBackend", () => {
 		const collected: StreamChunk[] = [];
 		const consume = (async () => {
 			for await (const chunk of backend.chat({
+				threadId: "thread-123",
 				system: "Summarize the thread.",
 				messages: [{ role: "user", content: "hello" }],
 				max_tokens: 256,
@@ -137,11 +138,13 @@ describe("createRelayBackend", () => {
 
 		// AC1.2: the payload carries the logical alias, not a provider-specific id.
 		const payload = JSON.parse(row.payload) as {
+			threadId: string;
 			model: string;
 			timeout_ms: number;
 			segments: Array<{ kind: string; message?: unknown }>;
 			nowMs: number;
 		};
+		expect(payload.threadId).toBe("thread-123");
 		expect(payload.model).toBe("opus");
 		expect(payload.timeout_ms).toBe(5000);
 		// The relay backend now emits inline segments + a send-instant nowMs

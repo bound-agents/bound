@@ -153,6 +153,8 @@ export function createResponsesRoutes(
 		}
 
 		const modelId = resolution.modelId;
+		// The Responses API is stateless, so one HTTP request is one provider session.
+		const providerSessionId = `responses-${randomUUID()}`;
 
 		const createStream = (): AsyncIterable<StreamChunk> => {
 			if (resolution.kind === "local") {
@@ -166,6 +168,7 @@ export function createResponsesRoutes(
 					: maxOutputCap;
 
 				return resolution.backend.chat({
+					threadId: providerSessionId,
 					messages,
 					tools,
 					system,
@@ -186,6 +189,7 @@ export function createResponsesRoutes(
 				message: msg,
 			}));
 			const payload: InferenceRequestPayload = {
+				threadId: providerSessionId,
 				model: modelId,
 				segments,
 				nowMs: Date.now(),

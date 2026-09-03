@@ -84,6 +84,7 @@ export const inferenceRequestPartPayloadSchema = z.object({
 });
 
 export const inferenceRequestPayloadSchema = z.object({
+	threadId: z.string().min(1).max(256).optional(),
 	model: z.string().min(1),
 	/**
 	 * The delegated context as segments (R-UD3). The consumer resolves these via

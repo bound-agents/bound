@@ -5,9 +5,39 @@ import {
 	wsStreamChunkSchema,
 } from "../relay-schemas";
 
+describe("inferenceRequestPayloadSchema threadId compatibility", () => {
+	const basePayload = {
+		model: "opus",
+		segments: [{ kind: "inline" as const, message: { role: "user" as const, content: "hello" } }],
+		nowMs: 0,
+		timeout_ms: 5000,
+	};
+
+	it("accepts a bounded non-empty threadId", () => {
+		expect(
+			inferenceRequestPayloadSchema.safeParse({ ...basePayload, threadId: "thread-123" }).success,
+		).toBe(true);
+	});
+
+	it("accepts a missing threadId from legacy producers and already-spooled rows", () => {
+		expect(inferenceRequestPayloadSchema.safeParse(basePayload).success).toBe(true);
+	});
+
+	it("rejects empty and oversized threadIds when present", () => {
+		expect(inferenceRequestPayloadSchema.safeParse({ ...basePayload, threadId: "" }).success).toBe(
+			false,
+		);
+		expect(
+			inferenceRequestPayloadSchema.safeParse({ ...basePayload, threadId: "x".repeat(257) })
+				.success,
+		).toBe(false);
+	});
+});
+
 describe("inferenceRequestPayloadSchema thinking field", () => {
 	it("accepts payload with thinking config", () => {
 		const payload = {
+			threadId: "thread-123",
 			model: "opus",
 			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
 			nowMs: 0,
@@ -22,6 +52,7 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 
 	it("accepts payload without thinking config", () => {
 		const payload = {
+			threadId: "thread-123",
 			model: "opus",
 			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
 			nowMs: 0,
@@ -35,6 +66,7 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 
 	it("rejects thinking with invalid type", () => {
 		const payload = {
+			threadId: "thread-123",
 			model: "opus",
 			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
 			nowMs: 0,
@@ -46,6 +78,7 @@ describe("inferenceRequestPayloadSchema thinking field", () => {
 
 	it("rejects thinking with negative budget_tokens", () => {
 		const payload = {
+			threadId: "thread-123",
 			model: "opus",
 			segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
 			nowMs: 0,
@@ -60,6 +93,7 @@ describe("inferenceRequestPayloadSchema cache_ttl field", () => {
 	it("mirrors arbitrary valid duration strings across the relay", () => {
 		for (const cache_ttl of ["30m", "PT30M"]) {
 			const result = inferenceRequestPayloadSchema.safeParse({
+				threadId: "thread-123",
 				model: "gpt-5.6",
 				segments: [{ kind: "inline", message: { role: "user", content: "hello" } }],
 				nowMs: 0,
@@ -124,6 +158,7 @@ describe("inferenceRequestPayloadSchema native tool definitions", () => {
 
 		// Serialize through the relay payload schema
 		const payload = {
+			threadId: "thread-123",
 			model: "claude-3-5-sonnet-20241022",
 			segments: [
 				{ kind: "inline", message: { role: "user", content: "Hello, schedule something" } },
@@ -201,6 +236,7 @@ describe("inferenceRequestPayloadSchema native tool definitions", () => {
 		];
 
 		const payload = {
+			threadId: "thread-123",
 			model: "claude-3-5-sonnet-20241022",
 			segments: [{ kind: "inline", message: { role: "user", content: "test" } }],
 			nowMs: 0,
