@@ -14,13 +14,8 @@ import {
 import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import { resolveTopologyRole, routeRelayRequest, serializeRelayTraceCarrier } from "@bound/agent";
-import {
-	type AppContext,
-	findFreshPlatformHost,
-	hasDroppedLegacyRelayTables,
-	markProcessed,
-	readInboxByRefId,
-} from "@bound/core";
+import { awaitPlatformRequestResponse } from "@bound/agent";
+import { type AppContext, findFreshPlatformHost } from "@bound/core";
 import type { ModelRouter } from "@bound/llm";
 import {
 	type ConnectorToolContext,
@@ -29,7 +24,7 @@ import {
 	createConnectorTool,
 	registerConnectorEventDelivery,
 } from "@bound/platforms";
-import { formatError, injectTraceContext, parseJsonSafe, resultPayloadSchema } from "@bound/shared";
+import { formatError, injectTraceContext } from "@bound/shared";
 import { resolvePlatformToolsForThread } from "./platform-tools.js";
 import { shutdownTelemetry } from "./telemetry.js";
 
@@ -133,32 +128,16 @@ export function initScheduler(
 					});
 					const entry = { id: routed.id };
 
-					// Poll for response (synchronous context — tool execute awaits result)
-					const deadline = Date.now() + 15_000;
-					// Post-drop (slice 4E): relay_inbox is gone — remote results arrive via
-					// the durable spool, so never poll the legacy table (it would throw).
-					const inboxDropped = hasDroppedLegacyRelayTables(appContext.db);
-					while (!inboxDropped && Date.now() < deadline) {
-						const response = readInboxByRefId(appContext.db, entry.id);
-						if (response) {
-							markProcessed(appContext.db, [response.id]);
-							if (response.kind === "error") {
-								const errPayload = JSON.parse(response.payload) as { error?: string };
-								throw new Error(errPayload.error ?? response.payload);
-							}
-							const parsed = parseJsonSafe(
-								resultPayloadSchema,
-								response.payload,
-								"platform_request result",
-							);
-							if (!parsed.ok) {
-								throw new Error(`Invalid platform_request response: ${parsed.error}`);
-							}
-							return JSON.parse(parsed.value.stdout);
-						}
-						await new Promise((r) => setTimeout(r, 200));
-					}
-					throw new Error(`Timeout waiting for platform_request response from ${targetSiteId}`);
+					// Poll for response (synchronous context — tool execute awaits result).
+					// 4D-D union await: resolves whether the response arrived over the
+					// legacy relay_inbox (pre-drop) or the durable spool (post-4E). The
+					// shared helper consumes a durable row exactly-once via the
+					// token-fenced claim → deliver → ack lifecycle.
+					return await awaitPlatformRequestResponse(
+						{ db: appContext.db, siteId: appContext.siteId },
+						entry.id,
+						{ deadline: Date.now() + 15_000, targetSiteId },
+					);
 				},
 			};
 			const rawConnectorTool = createConnectorTool(connectorCtx);
