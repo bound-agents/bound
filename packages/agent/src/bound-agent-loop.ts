@@ -670,6 +670,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 			});
 
 			const inferencePayload: InferenceRequestPayload = {
+				threadId: this.config.threadId,
 				model: resolution.modelId,
 				segments,
 				nowMs: frame.assembled.assemblyNowMs,
@@ -746,6 +747,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		const abortOnParentAbort = () => silenceAbortController.abort();
 		this.config.abortSignal?.addEventListener("abort", abortOnParentAbort, { once: true });
 		const source = resolution.backend.chat({
+			threadId: this.config.threadId,
 			messages: frame.messages,
 			system: frame.assembled.systemPrompt || undefined,
 			tools: frame.mergedTools,

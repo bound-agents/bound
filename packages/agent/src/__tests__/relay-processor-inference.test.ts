@@ -191,6 +191,7 @@ describe("RelayProcessor - executeInference", () => {
 			id: randomUUID(),
 			streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -214,6 +215,7 @@ describe("RelayProcessor - executeInference", () => {
 			{ message: "AC3.1: stream_end not written" },
 		);
 		handle.stop();
+		expect(mockBackend.capturedParams[0]?.threadId).toBe("thread-123");
 
 		const chunks = db
 			.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
@@ -318,6 +320,7 @@ describe("RelayProcessor - executeInference", () => {
 		);
 		handle.stop();
 		expect(backend.capturedParams).toHaveLength(1);
+		expect(backend.capturedParams[0]?.threadId).toBe(`legacy-relay-${streamId}`);
 		expect((backend.capturedParams[0].messages[0].content as string).length).toBe(2000);
 	});
 
@@ -333,6 +336,7 @@ describe("RelayProcessor - executeInference", () => {
 	function seedMultipartInference(streamId: string, requestId: string): { partCount: number } {
 		const expiresAt = new Date(Date.now() + 60_000).toISOString();
 		const serialized = JSON.stringify({
+			threadId: "thread-123",
 			model: "test-model",
 			segments: [{ kind: "inline", message: { role: "user", content: "電".repeat(2000) } }],
 			nowMs: 0,
@@ -623,6 +627,7 @@ describe("RelayProcessor - executeInference", () => {
 			streamId,
 			sourceSite: "requester-peer",
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ kind: "inline", message: { role: "user", content: "hi" } }],
 				nowMs: 0,
@@ -706,6 +711,7 @@ describe("RelayProcessor - executeInference", () => {
 			streamId,
 			sourceSite: "requester-peer",
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ kind: "inline", message: { role: "user", content: "hi" } }],
 				nowMs: 0,
@@ -779,6 +785,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -870,6 +877,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -947,6 +955,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -1049,6 +1058,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -1159,6 +1169,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -1290,6 +1301,7 @@ describe("RelayProcessor - executeInference", () => {
 				idempotency_key: null,
 				stream_id: streamIds[i],
 				payload: JSON.stringify({
+					threadId: "thread-123",
 					model: `model-${i + 1}`,
 					segments: [{ role: "user" as const, content: `Hello ${i + 1}` }].map((m) => ({
 						kind: "inline" as const,
@@ -1396,6 +1408,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Think about this" }].map((m) => ({
 					kind: "inline" as const,
@@ -1506,6 +1519,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "nova-pro",
 				segments: [{ role: "user" as const, content: "hi" }].map((m) => ({
 					kind: "inline" as const,
@@ -1581,6 +1595,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "opus",
 				segments: [{ role: "user" as const, content: "hi" }].map((m) => ({
 					kind: "inline" as const,
@@ -1697,6 +1712,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "priced-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -1802,6 +1818,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,
@@ -1880,6 +1897,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: `inference-stream:${streamId}`,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ kind: "inline", message: { role: "user", content: "Hello" } }],
 				nowMs: 0,
@@ -1974,6 +1992,7 @@ describe("RelayProcessor - executeInference", () => {
 			idempotency_key: null,
 			stream_id: streamId,
 			payload: JSON.stringify({
+				threadId: "thread-123",
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
 					kind: "inline" as const,

@@ -1920,6 +1920,9 @@ export class RelayProcessor {
 			const localMaxOutputTokens = this.modelRouter.getMaxOutputTokens(payload.model);
 			const effectiveMaxTokens = clampMaxOutputTokens(payload.max_tokens, localMaxOutputTokens);
 			const chatStream = backend.chat({
+				// Compatibility-only fallback for requests spooled before threadId existed.
+				// New producers always preserve the originating Bound thread exactly.
+				threadId: payload.threadId ?? `legacy-relay-${streamId}`,
 				messages,
 				tools: payload.tools,
 				system: payload.system,

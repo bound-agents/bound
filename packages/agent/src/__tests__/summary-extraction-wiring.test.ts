@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { MainAgentLoop } from "../agent-loop";
@@ -67,8 +67,10 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		}
 
 		let callNumber = 0;
+		const capturedThreadIds: Array<string | undefined> = [];
 		class FactMockLLMBackend implements LLMBackend {
-			async *chat(): AsyncGenerator<StreamChunk> {
+			async *chat(params: ChatParams): AsyncGenerator<StreamChunk> {
+				capturedThreadIds.push(params.threadId);
 				callNumber++;
 				if (callNumber === 1) {
 					// First call: summary
@@ -112,6 +114,7 @@ describe("extractSummaryAndMemories wiring (R-E17/idle trigger)", () => {
 		);
 
 		expect(result.ok).toBe(true);
+		expect(capturedThreadIds).toEqual([threadId, threadId]);
 		if (result.ok) {
 			expect(result.value.memoriesExtracted).toBeGreaterThan(0);
 		}

@@ -93,6 +93,8 @@ export interface ChatParams {
 	 * Do NOT pass logical aliases like "opus" — the ModelRouter handles alias resolution.
 	 */
 	model?: string;
+	/** Stable Bound thread id for provider-side session affinity/telemetry. */
+	threadId?: string;
 	messages: LLMMessage[];
 	tools?: ToolDefinition[];
 	max_tokens?: number;
@@ -456,6 +458,8 @@ export class LLMError extends Error {
 // the Opus 4.7 adaptive shape are forwarded to remote hosts. `effort`
 // forwards the top-level output_config.effort knob.
 export interface InferenceRequestPayload {
+	/** Originating Bound thread; absent only on legacy relayed payloads. */
+	threadId?: string;
 	model: string;
 	/**
 	 * The delegated context as segments (R-UD3) — the SINGLE wire representation.

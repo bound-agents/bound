@@ -692,6 +692,7 @@ function createYardHost(
 						const consume = async (): Promise<string> => {
 							const chunks: string[] = [];
 							for await (const chunk of backend.chat({
+								threadId: ctx.threadId ?? scope.runId ?? scope.traceId,
 								messages: [{ role: "user", content: parts.join("\n\n") }],
 								max_tokens: maxTokens,
 								signal: scope.abort.signal,

@@ -868,6 +868,7 @@ export class ModularAgentLoop {
 		}
 		return {
 			chunks: frame.resolution.backend.chat({
+				threadId: this.loopConfig.threadId,
 				messages: frame.messages,
 				system: frame.assembled.systemPrompt || undefined,
 				tools: frame.toolDefinitions.length > 0 ? frame.toolDefinitions : undefined,
