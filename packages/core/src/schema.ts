@@ -705,28 +705,148 @@ export function applySchema(db: Database): void {
 `);
 
 	// Release N+1 startup refusal: a host reaching this binary with a legacy
-	// relay table that still holds rows skipped the release-N drain-and-drop
-	// migration (slice 4E). Refuse to start rather than silently strand that
-	// undelivered work — the legacy tables and their CRUD no longer exist on
-	// N+1, so those rows would never be delivered. Probe sqlite_master raw so
-	// this check has no dependency on the (deleted) row types. Empty-but-present
-	// tables are a host that reached the gate but crashed before the DROP: drop
-	// them here for cleanliness. `table` is a compile-time literal, not user
-	// input, so interpolating it into COUNT(*) is safe (invariant #4).
+	// relay table that still holds LIVE rows never released the release-N
+	// drain-and-drop gate (slice 4E). "tables empty after drain" can fail to hold
+	// for reasons other than skipping the migration — most importantly rows
+	// addressed to a peer that went offline or was never upgraded can never
+	// deliver, so the gate never releases even though the host ran release N for
+	// days. Refuse only when LIVE work is present; classify each row so
+	// contractually-dead residue (expired or already-delivered/-processed) never
+	// bricks the boot. Probe sqlite_master raw so this check has no dependency on
+	// the (deleted) row types. `table` is a compile-time literal, not user input,
+	// so interpolating it into COUNT(*) is safe (invariant #4).
+	//
+	// This is a BOOT-SAFETY gate, so the classification is conservative: a row is
+	// dropped only when it is PROVABLY consumed or PROVABLY validly-expired.
+	// Everything else — NULL/malformed expires_at, NULL delivered/processed, any
+	// row the two safe buckets can't claim — counts as LIVE and refuses. That
+	// remainder is computed arithmetically (live = total - consumed - expired)
+	// rather than by a third predicate, which guarantees the buckets are
+	// exhaustive and always sum to total.
+	//
+	// SHARED PREDICATES — the classifier and the advertised inspection SQL are
+	// built from ONE set of SQL-fragment constants per table so they cannot
+	// drift (objection 1): whatever the classifier counted live is EXACTLY what
+	// the operator's inspection query returns. The two provably-safe buckets,
+	// matching how the rest of the codebase treats these columns (delivered/
+	// processed are the consumed flags; expires_at is an ISO 8601 string):
+	//   consumed: COALESCE(<flag> IN (1, '1'), 0)
+	//   expired:  COALESCE(<flag> = 0, 0) AND expires_at IS NOT NULL
+	//             AND expires_at GLOB <full ISO shape> AND datetime(expires_at)
+	//             IS NOT NULL AND expires_at <= now
+	//   live:     NOT (consumed) AND NOT (expired)   -- the exact complement
+	// Both safe fragments are COALESCE-wrapped so they are TOTAL (never NULL):
+	// a NULL flag makes `IN (1,'1')` and `= 0` yield NULL, and `NOT NULL` is
+	// NULL, which would drop the row from the complement WHERE clause while the
+	// arithmetic remainder still counted it live — the exact obj-1 drift. With
+	// COALESCE(...,0) a NULL flag is `not provably consumed` and `not provably
+	// expired`, so it lands in live from BOTH the arithmetic count and the
+	// complement SQL. Verified: the buckets are mutually exclusive (a consumed
+	// row has flag != 0, failing expired's `= 0` guard), so live counted
+	// arithmetically equals COUNT(* WHERE liveFrag).
+	//
+	// CONSUMED is a PROVEN marker, not `!= 0` (objection 3): release-N code wrote
+	// integer 1 to delivered/processed. On a hand-migrated NON-STRICT legacy
+	// table, `<flag> != 0` treats '' and 'garbage' as consumed (both compare
+	// != 0 TRUE under SQLite affinity), silently dropping live work. `IN (1, '1')`
+	// accepts only the value release N actually wrote (integer 1; '1' for a
+	// non-STRICT table whose affinity stored text). 0 / NULL / '' / 'garbage' /
+	// 2 / -1 are NOT provably consumed → fall through to expired-or-live.
+	//
+	// EXPIRED requires a FULL ISO shape, not a date-shaped prefix (objection 2):
+	// the GLOB spans year through seconds so '2026-01-01Tgarbage' is rejected,
+	// and `datetime(expires_at) IS NOT NULL` uses SQLite's own parser to reject
+	// semantically-invalid instants the GLOB can't catch ('2026-99-99T00:00:00',
+	// '0000-00-00T00:00:00' both parse to NULL — verified empirically, so no
+	// year floor is needed). `datetime()` normalizes an out-of-range day like
+	// '2026-02-31' to a real instant, which is acceptable: it is a genuine past
+	// timestamp SQLite accepts, so dropping it is correct. SQLite subtleties this
+	// defends against: `NULL > x` / `NULL <= x` both evaluate NULL (a NULL
+	// expires_at falls to neither safe bucket → live), and `'' <= nowIso` /
+	// `'garbage' <= nowIso` are TRUE under string comparison (the GLOB + parse
+	// guards keep malformed timestamps out of expired → live). An expired relay
+	// row is contractually dead — the requester's await timed out long ago; the
+	// TTL is the delivery contract. A delivered/processed row is consumed. Either
+	// is safe to drop.
+	const nowIso = new Date().toISOString();
 	for (const table of ["relay_outbox", "relay_inbox"] as const) {
 		const exists = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
 		if (!exists) continue; // already dropped (4E) — the healthy N→N+1 path
-		const { count } = db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
-			count: number;
+		const consumedCol = table === "relay_outbox" ? "delivered" : "processed";
+		// Full ISO-8601 shape: year through seconds. Rejects date-shaped prefixes
+		// ('2026-01-01Tgarbage') that a year-through-'T' GLOB would wrongly accept.
+		// Paired with datetime()-parse below to reject semantically-invalid instants
+		// the shape alone can't catch ('2026-99-99T00:00:00', '0000-00-00T00:00:00').
+		const isoShapeGlob =
+			"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*";
+		// SHARED FRAGMENTS (objection 1): one definition each, reused verbatim by the
+		// classifier aggregate AND the advertised inspection SQL so they cannot drift.
+		// COALESCE(...,0) makes each safe fragment TOTAL (never NULL) so `NOT (...)`
+		// in liveFrag is well-defined for NULL flags — see the block comment above.
+		// The GLOB literal and nowIso are interpolated (not bound) because the same
+		// text must appear inside both the aggregate CASEs and the standalone
+		// inspection SQL string handed to the operator; both are compile-time-shaped
+		// (the GLOB is a constant, nowIso is an ISO string from Date, consumedCol is a
+		// literal), so no user input reaches the SQL (invariant #4).
+		const consumedFrag = `COALESCE(${consumedCol} IN (1, '1'), 0)`;
+		const expiredFrag = `COALESCE(${consumedCol} = 0, 0) AND expires_at IS NOT NULL AND expires_at GLOB '${isoShapeGlob}' AND datetime(expires_at) IS NOT NULL AND datetime(expires_at) <= datetime('${nowIso}')`;
+		const liveFrag = `NOT (${consumedFrag}) AND NOT (${expiredFrag})`;
+		const { total, consumed, expired } = db
+			.query(
+				`SELECT
+					COUNT(*) AS total,
+					SUM(CASE WHEN ${consumedFrag} THEN 1 ELSE 0 END) AS consumed,
+					SUM(CASE WHEN ${expiredFrag} THEN 1 ELSE 0 END) AS expired
+				FROM ${table}`,
+			)
+			.get() as {
+			total: number;
+			consumed: number;
+			expired: number;
 		};
-		if (count > 0) {
+		// Exhaustive remainder: any row the two provably-safe buckets can't claim is
+		// unsafe to drop and refuses. Guarantees live + expired + consumed == total.
+		const live = total - consumed - expired;
+		if (live > 0) {
+			const consumedLabel = table === "relay_outbox" ? "delivered" : "processed";
+			// Per-table inspection SQL and diagnosis wording. relay_outbox rows are
+			// addressed to a (possibly-offline) target peer; relay_inbox rows are
+			// local received-but-unprocessed work the release-N binary would have
+			// consumed. The column lists match the verified release-N table shapes
+			// (outbox: target_site_id/created_at; inbox: source_site_id/received_at) —
+			// a shared list naming outbox columns would error against relay_inbox.
+			const inspectCols =
+				table === "relay_outbox"
+					? `${consumedCol}, kind, target_site_id, created_at, expires_at`
+					: `${consumedCol}, kind, source_site_id, received_at, expires_at`;
+			// WHERE liveFrag is the SAME shared fragment the classifier counted with, so
+			// the operator query returns EXACTLY the ${live} rows the count named — not
+			// the round-2 `${consumedCol} = 0 AND expires_at > now`, which excluded every
+			// indeterminate live row (NULL/malformed expires_at, NULL flag) and could
+			// return zero while the message reported live > 0 (objection 1).
+			const inspectSql = `SELECT ${inspectCols} FROM ${table} WHERE ${liveFrag};`;
+			const diagnosis =
+				table === "relay_outbox"
+					? `most plausibly because these rows are addressed to a peer that is offline or was never upgraded, so "tables empty after drain" never held`
+					: 'these are local received-but-unprocessed relay work items that the release-N binary would have consumed, so "tables empty after drain" never held';
+			const remedies =
+				table === "relay_outbox"
+					? "Two remedies: (a) roll back to the release-N binary (hasDroppedLegacyRelayTables / commit 5aaecbd3) ONLY if the target peer(s) can come back online to drain these rows; or (b) if they are addressed to a permanently-gone peer, manually export/delete the live rows (they can never deliver) and restart this binary, which will then drop the empty table cleanly."
+					: "Two remedies: (a) roll back to the release-N binary (hasDroppedLegacyRelayTables / commit 5aaecbd3) so it can consume these local rows before upgrading; or (b) if this work is no longer wanted, manually export/delete the live rows and restart this binary, which will then drop the empty table cleanly.";
 			throw new Error(
-				`Refusing to start: legacy relay table "${table}" still holds ${count} row(s). This host skipped the release-N drain-and-drop migration. Roll back to the release-N binary (the first version shipping legacy-relay drain-and-drop, i.e. hasDroppedLegacyRelayTables / commit 5aaecbd3) and let it drain and drop the legacy relay tables before upgrading to this release.`,
+				`Refusing to start: legacy relay table "${table}" still holds ${live} live row(s) (undelivered/unprocessed, or of indeterminate state, AND not validly expired), plus ${expired} expired and ${consumed} ${consumedLabel} residue (${total} total). This host did not complete the release-N drain-and-drop migration (slice 4E) — ${diagnosis}. Inspect the live rows:\n  ${inspectSql}\n${remedies}`,
 			);
 		}
-		// Table exists but empty (reached the 4E gate, crashed before the DROP, or a
-		// stale schema left it behind): drop it. N+1 never creates these tables, so
-		// there is no create block to contend with.
+		// No live rows: either empty, or only contractually-dead residue (expired
+		// and/or consumed). Both are safe. Log one structured warning naming the
+		// per-table breakdown, then drop — N+1 never creates these tables, so there
+		// is no create block to contend with.
+		if (total > 0) {
+			const consumedLabel = table === "relay_outbox" ? "delivered" : "processed";
+			console.warn(
+				`[schema] dropping legacy ${table}: ${total} row(s), all expired/${consumedLabel} residue (${expired} expired, ${consumed} ${consumedLabel}); no live work — safe to drop.`,
+			);
+		}
 		db.run(`DROP TABLE IF EXISTS ${table}`);
 	}
 
