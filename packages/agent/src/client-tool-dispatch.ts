@@ -1,13 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import {
-	acknowledgeToolResultForCall,
-	enqueueClientToolCall,
-	findToolResultByThreadAndCallId,
-	hasDroppedLegacyRelayTables,
-	markProcessed,
-	readInboxByRefId,
-} from "@bound/core";
+import { enqueueClientToolCall, findToolResultByThreadAndCallId } from "@bound/core";
+import { acknowledgeToolResultForCall } from "@bound/core";
 import {
 	type ClientToolPayload,
 	type TypedEventEmitter,
@@ -19,6 +13,7 @@ import {
 import { injectTraceContext } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 import { resolveClientSessionHost } from "./delegation";
+import { readUnionResponseEntry } from "./relay-await-helpers";
 import { type TopologyRole, routeRelayRequest } from "./relay-router";
 
 const POLL_MS = 100;
@@ -119,25 +114,41 @@ function waitForRemoteResult(
 	outboxId: string,
 ): Promise<AwaitableClientToolResult | null> {
 	const read = (): AwaitableClientToolResult | null | undefined => {
-		// Post-drop (slice 4E): relay_inbox is gone — client results arrive via the
-		// durable spool, so skip the legacy read (it would throw on the missing table).
-		if (hasDroppedLegacyRelayTables(deps.db)) return undefined;
-		const entry = readInboxByRefId(deps.db, outboxId);
+		// 4D-D union read: consume the winning scalar response for this request,
+		// whether it landed in legacy relay_inbox (pre-drop) or the durable spool
+		// (post-4E). readUnionResponseEntry claims a durable row under a fresh
+		// token and defers its ack to settle(); a legacy row's markProcessed is
+		// likewise deferred — so we settle() only AFTER taking delivery, matching
+		// awaitPlatformRequestResponse's claim → deliver → ack ordering.
+		const entry = readUnionResponseEntry(deps.db, outboxId, deps.siteId);
 		if (!entry) return undefined;
-		markProcessed(deps.db, [entry.id]);
 		if (entry.kind === "client_result") {
 			const parsed = parseJsonSafe(clientResultPayloadSchema, entry.payload, entry.kind);
-			return parsed.ok
-				? { content: normalizeClientContent(parsed.value.content), isError: parsed.value.is_error }
-				: { content: "Error: malformed client_result payload", isError: true };
+			// A deterministically-unparseable payload is POISON, not a transient
+			// fault: leaving it claimed would let a boot-reset return it to pending
+			// and re-deliver the same garbage forever until TTL. Match the reference
+			// (awaitPlatformRequestResponse settle()s then throws on a parse failure):
+			// settle() to consume the row — it was delivered to its only consumer —
+			// then surface a parse error immediately rather than hanging until timeout.
+			if (!parsed.ok) {
+				entry.settle();
+				return { content: "Error: malformed client_result payload", isError: true };
+			}
+			entry.settle();
+			return {
+				content: normalizeClientContent(parsed.value.content),
+				isError: parsed.value.is_error,
+			};
 		}
 		if (entry.kind === "error") {
 			const parsed = parseJsonSafe(errorPayloadSchema, entry.payload, entry.kind);
+			entry.settle();
 			return {
 				content: `Error: ${parsed.ok ? parsed.value.error : entry.payload}`,
 				isError: true,
 			};
 		}
+		entry.settle();
 		return { content: `Error: unexpected relay response kind "${entry.kind}"`, isError: true };
 	};
 

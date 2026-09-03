@@ -5,10 +5,7 @@ import {
 	enqueueToolResult,
 	findMessageById,
 	getLatestChangeLogHlcForRows,
-	hasDroppedLegacyRelayTables,
 	listLiveMessageProjectionByThreadNewestFirst,
-	markProcessed,
-	readInboxByRefId,
 	recordContextDebug,
 	recordTurn,
 	recordTurnRelayMetrics,
@@ -76,6 +73,7 @@ import {
 	firstValueFrom,
 	map,
 	merge,
+	mergeMap,
 	of,
 	race,
 	take,
@@ -106,6 +104,7 @@ import {
 	resolveSameTierFallback,
 	waitForModelResolution,
 } from "./model-resolution";
+import { readUnionResponseEntry } from "./relay-await-helpers";
 import { createRelayBackend } from "./relay-backend";
 import { type EligibleHost, resolveTopologyRole, routeRelayRequest } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
@@ -1728,8 +1727,11 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	 * Wait for a `client_result` (or `error`) relay response correlated to
 	 * `outboxEntryId`, mirroring {@link createRelayWait$}'s inbox correlation
 	 * (initial read + `relay:inbox` event wakeups, with a hard timeout). Resolves
-	 * to the executed tool output, or null on timeout / abort / unparseable
-	 * payload (treated as a retriable failure by the caller).
+	 * to the executed tool output, or null on timeout / abort. A deterministically
+	 * unparseable payload is settled (consumed, not left claimed) and resolves to
+	 * `{ content: "Error: malformed client_result payload", isError: true }` — poison
+	 * is not retriable, mirroring {@link awaitPlatformRequestResponse}'s parse-failure
+	 * disposition (settle-then-error) in relay-await-helpers.
 	 */
 	private createClientResultWait$(
 		outboxEntryId: string,
@@ -1738,37 +1740,52 @@ export class BoundAgentLoop extends ModularAgentLoop {
 	): Observable<{ content: string; isError: boolean } | null> {
 		const db = this.ctx.db;
 		const eventBus = this.ctx.eventBus;
-		// Post-drop (slice 4E): relay_inbox is gone on this host — client results
-		// arrive via the durable spool, so never touch the legacy table (it would
-		// throw). A capability flip already forced spool-only delivery here.
-		const legacyRead = () =>
-			hasDroppedLegacyRelayTables(db) ? null : readInboxByRefId(db, outboxEntryId);
+		// 4D-D union read: a client_result (or error) response lands in legacy
+		// relay_inbox (pre-drop) or the durable spool (post-4E). readUnionResponseEntry
+		// claims a durable row under a fresh token and defers its ack to settle();
+		// a legacy row's markProcessed is likewise deferred. We settle() only AFTER
+		// taking delivery (parse) below, matching the claim → deliver → ack ordering
+		// awaitPlatformRequestResponse uses so a mid-flight capability flip still resolves.
+		const unionRead = () => readUnionResponseEntry(db, outboxEntryId, this.ctx.siteId);
 		const response$ = merge(
-			defer(() => of(legacyRead())),
+			defer(() => of(unionRead())),
 			fromEventBus(eventBus, "relay:inbox").pipe(
 				filter((event) => event.ref_id === outboxEntryId),
-				map(() => legacyRead()),
+				map(() => unionRead()),
 			),
 		).pipe(
 			filter((entry): entry is NonNullable<typeof entry> => entry !== null && entry !== undefined),
-			take(1),
-			timeout(timeoutMs),
-			map((entry) => {
-				markProcessed(db, [entry.id]);
+			// Parse + settle BEFORE take(1). Deliver BEFORE ack: settle() the row,
+			// then emit its outcome. A deterministically-unparseable client_result is
+			// POISON, not a transient fault: leaving it claimed would let a boot-reset
+			// return it to pending and re-emit the same garbage forever until TTL.
+			// Match the reference (awaitPlatformRequestResponse settle()s then throws
+			// on a parse failure): settle() to consume it — it was delivered to its
+			// only consumer — then emit a parse-error outcome through the same channel
+			// an error-kind row uses, rather than EMPTY-and-keep-waiting.
+			mergeMap((entry) => {
 				if (entry.kind === "client_result") {
 					const parsed = parseJsonSafe(clientResultPayloadSchema, entry.payload, entry.kind);
+					entry.settle();
 					if (!parsed.ok) {
-						return { content: "Error: malformed client_result payload", isError: true };
+						return of({ content: "Error: malformed client_result payload", isError: true });
 					}
-					return { content: parsed.value.content, isError: parsed.value.is_error };
+					return of({ content: parsed.value.content, isError: parsed.value.is_error });
 				}
 				if (entry.kind === "error") {
 					const parsed = parseJsonSafe(errorPayloadSchema, entry.payload, entry.kind);
+					entry.settle();
 					const message = parsed.ok ? parsed.value.error : entry.payload;
-					return { content: `Error: ${message}`, isError: true };
+					return of({ content: `Error: ${message}`, isError: true });
 				}
-				return { content: `Error: unexpected relay response kind "${entry.kind}"`, isError: true };
+				entry.settle();
+				return of({
+					content: `Error: unexpected relay response kind "${entry.kind}"`,
+					isError: true,
+				});
 			}),
+			take(1),
+			timeout(timeoutMs),
 			catchError((err) => {
 				if (err instanceof TimeoutError) return of(null);
 				return throwError(() => err);
