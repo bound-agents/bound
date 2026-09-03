@@ -3,16 +3,18 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	applySchema,
-	claimLocalDurableWork,
-	insertDurableWork,
-	insertInbox,
-	setDurableRelayEnabledForTesting,
-} from "@bound/core";
+import { applySchema, claimLocalDurableWork, getDurableWork, insertDurableWork } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
-import type { Logger, RelayInboxEntry, RelayOutboxEntry } from "@bound/shared";
+import type { Logger } from "@bound/shared";
+type DurableRow = {
+	id: string;
+	kind: string;
+	payload: string;
+	ref_id: string | null;
+	stream_id: string | null;
+	claim_state: string;
+};
 import { splitInferenceRequest } from "../inference-request-parts";
 import { RelayProcessor } from "../relay-processor";
 import { waitFor } from "./helpers";
@@ -127,6 +129,32 @@ afterEach(() => {
 	}
 });
 
+// Post-N+1 the relay processor is durable-only. An inference request rides a
+// self-loopback durable_work row (source_site = the processor's own site) so its
+// stream_chunk/stream_end responses ride the LOCAL_WORK_TARGET lane and land as
+// durable_work rows keyed by stream_id.
+function insertDurableInference(entry: {
+	id: string;
+	streamId: string;
+	payload: string;
+	expiresAt?: string;
+}): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, stream_id, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+		 VALUES (?, 'target-site', 'inference', ?, ?, ?, 'pending', 0, ?, ?, 'target-site', ?)`,
+		[
+			entry.id,
+			entry.payload,
+			entry.id,
+			entry.streamId,
+			now,
+			entry.expiresAt ?? new Date(Date.now() + 60000).toISOString(),
+			now,
+		],
+	);
+}
+
 describe("RelayProcessor - executeInference", () => {
 	it("AC3.1: executes inference, writes stream_chunk and stream_end with monotonic seq", async () => {
 		const mockBackend = new MockBackend();
@@ -158,15 +186,10 @@ describe("RelayProcessor - executeInference", () => {
 			createMockEventBus(),
 		);
 
-		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		insertDurableInference({
 			id: randomUUID(),
-			source_site_id: "requester-site",
-			kind: "inference",
-			ref_id: null,
-			idempotency_key: null,
-			stream_id: streamId,
+			streamId,
 			payload: JSON.stringify({
 				model: "test-model",
 				segments: [{ role: "user" as const, content: "Hello" }].map((m) => ({
@@ -176,27 +199,7 @@ describe("RelayProcessor - executeInference", () => {
 				nowMs: 0,
 				timeout_ms: 5000,
 			}),
-			expires_at: new Date(now.getTime() + 60000).toISOString(),
-			received_at: now.toISOString(),
-			processed: 0,
-		};
-
-		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				inboxEntry.id,
-				inboxEntry.source_site_id,
-				inboxEntry.kind,
-				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
-				inboxEntry.stream_id,
-				inboxEntry.payload,
-				inboxEntry.expires_at,
-				inboxEntry.received_at,
-				inboxEntry.processed,
-			],
-		);
+		});
 
 		const handle = processor.start(10);
 		await waitFor(
@@ -204,7 +207,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -213,11 +216,11 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 
 		const chunks = db
-			.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-			.all(streamId, "stream_chunk") as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+			.all(streamId, "stream_chunk") as DurableRow[];
 		const ends = db
-			.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-			.all(streamId, "stream_end") as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+			.all(streamId, "stream_end") as DurableRow[];
 
 		expect(chunks.length).toBeGreaterThan(0);
 		expect(ends.length).toBeGreaterThan(0);
@@ -248,6 +251,17 @@ describe("RelayProcessor - executeInference", () => {
 		expect(cycleKinds.has("stream_end")).toBe(true);
 	});
 
+	// Objection 1 (#253): a durable multipart inference reassembles through the REAL
+	// processPendingDurableWork claim lifecycle. processPendingDurableWork claims each
+	// inference_part (pending→processing) BEFORE dispatching handleInferencePart, so the
+	// part currently being handled sits in 'processing'. readDurablePartsByStreamId must
+	// therefore include claim_state IN ('pending','processing') — mirroring the OLD
+	// relay_inbox reader's processed=0 contract (every not-yet-consumed part) — or the
+	// row is invisible to itself and reassembly can never see the full set. The parts
+	// below are inserted as pending durable_work rows and driven ONLY through
+	// processor.start() (the real loop), never hand-claimed, so this exercises the actual
+	// claim→dispatch→reassemble path. Asserts the backend fires exactly once with the
+	// fully reassembled payload.
 	it("reassembles out-of-order inference parts and invokes the backend exactly once", async () => {
 		const backend = new MockBackend();
 		backend.setTextResponse("multipart-ok");
@@ -271,19 +285,20 @@ describe("RelayProcessor - executeInference", () => {
 		});
 		const parts = splitInferenceRequest(serialized, requestId, 512).reverse();
 		const insert = db.prepare(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, 'inference_part', ?, ?, ?, ?, ?, ?, 0)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', 'inference_part', ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 		);
 		for (const part of [...parts, parts[0]]) {
+			const nowIso = new Date().toISOString();
 			insert.run(
 				randomUUID(),
-				"requester-site",
 				requestId,
 				`part-${requestId}-${part.index}-${randomUUID()}`,
 				streamId,
 				JSON.stringify(part),
 				expiresAt,
-				new Date().toISOString(),
+				nowIso,
+				nowIso,
 			);
 		}
 		const handle = processor.start(10);
@@ -295,7 +310,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) AS n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number }
 				).n === 1,
@@ -304,6 +319,421 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 		expect(backend.capturedParams).toHaveLength(1);
 		expect((backend.capturedParams[0].messages[0].content as string).length).toBe(2000);
+	});
+
+	// Objection 1 round-3 (#253): multipart reassembly must be CRASH-IDEMPOTENT.
+	// The old design recorded completion only in the in-process completedInferenceParts
+	// Set and acked parts one-by-one on later ticks. A crash after handleInference
+	// launched but before every sibling part acked left the full part set recoverable →
+	// boot recovery re-pends → the empty in-process Set no longer short-circuits →
+	// the backend executes the LOGICAL request TWICE. The (kind,idempotency_key) fence
+	// only stops duplicate row INSERTION, not duplicate execution. The fix consumes ALL
+	// sibling part rows atomically BEFORE launching inference (claim-all-then-execute),
+	// so a crash after consumption leaves NO recoverable parts.
+	function seedMultipartInference(streamId: string, requestId: string): { partCount: number } {
+		const expiresAt = new Date(Date.now() + 60_000).toISOString();
+		const serialized = JSON.stringify({
+			model: "test-model",
+			segments: [{ kind: "inline", message: { role: "user", content: "電".repeat(2000) } }],
+			nowMs: 0,
+			timeout_ms: 5000,
+		});
+		const parts = splitInferenceRequest(serialized, requestId, 512);
+		const insert = db.prepare(
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', 'inference_part', ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
+		);
+		for (const part of parts) {
+			const nowIso = new Date().toISOString();
+			insert.run(
+				randomUUID(),
+				requestId,
+				`part-${requestId}-${part.index}`,
+				streamId,
+				JSON.stringify(part),
+				expiresAt,
+				nowIso,
+				nowIso,
+			);
+		}
+		return { partCount: parts.length };
+	}
+
+	it("consumes ALL sibling inference_part rows after reassembly — none leak for boot recovery", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("multipart-ok");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		const { partCount } = seedMultipartInference(streamId, requestId);
+		expect(partCount).toBeGreaterThan(1);
+
+		const handle = processor.start(10);
+		await waitFor(() => backend.capturedParams.length === 1, {
+			message: "multipart inference did not invoke backend",
+		});
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number }
+				).n === 1,
+			{ message: "multipart inference did not complete" },
+		);
+		// Let the lane run a few more ticks so any un-consumed sibling would be claimed.
+		await new Promise((r) => setTimeout(r, 60));
+		handle.stop();
+
+		// Every inference_part row for this stream must be 'consumed' — no 'pending'
+		// or 'processing' row survives for boot recovery to re-pend and re-assemble.
+		const leaked = db
+			.query(
+				"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'inference_part' AND claim_state IN ('pending','processing')",
+			)
+			.get(streamId) as { n: number };
+		expect(leaked.n).toBe(0);
+		const consumed = db
+			.query(
+				"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'inference_part' AND claim_state = 'consumed'",
+			)
+			.get(streamId) as { n: number };
+		expect(consumed.n).toBe(partCount);
+	});
+
+	// Objection 1 round-4 (#253): the claim-and-consume must be ONE atomic transaction.
+	// Round-3 split it across two transactions — claimDurableWorkByIds committed its
+	// sibling claims, THEN a separate BEGIN IMMEDIATE acked the set. On a concurrent-claim
+	// shortfall the ack rollback undid only the acks; the freshly-committed sibling claims
+	// were NOT undone, stranding those siblings in `processing` under the lane's tokens,
+	// and the outer lane then acked the CURRENT part into `consumed` (handleInferencePart
+	// returned null) — permanently shortening the part set. The fix runs sibling selection,
+	// pending→processing claims, cardinality validation, and processing→consumed acks in
+	// ONE BEGIN IMMEDIATE: on ANY shortfall the whole transaction rolls back (nothing
+	// claimed, nothing consumed) and the current part is RELEASED back to pending so a
+	// future reassembly can complete the set — never consumed while the set is short.
+	it("concurrent-claim contention aborts atomically — nothing consumed, nothing stranded, current part recoverable", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("multipart-ok");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		const { partCount } = seedMultipartInference(streamId, requestId);
+		expect(partCount).toBeGreaterThan(1);
+
+		// A concurrent claimant (another tick / a different node in a live cluster) has
+		// already claimed ONE sibling under its OWN token before this lane assembles the
+		// set. That sibling is `processing` under a FOREIGN token — visible for assembly
+		// (readDurablePartsByStreamId includes pending+processing) but NOT ackable by this
+		// lane. consumeInferenceParts must therefore fail to claim/ack it and roll the whole
+		// transaction back.
+		const foreignToken = randomUUID();
+		const siblingRows = db
+			.query(
+				"SELECT id FROM durable_work WHERE stream_id = ? AND kind = 'inference_part' ORDER BY id",
+			)
+			.all(streamId) as Array<{ id: string }>;
+		expect(siblingRows.length).toBe(partCount);
+		const foreignSiblingId = siblingRows[0].id;
+		db.run(
+			"UPDATE durable_work SET claim_state = 'processing', claim_token = ?, claimed_at = ? WHERE id = ?",
+			[foreignToken, new Date().toISOString(), foreignSiblingId],
+		);
+
+		const handle = processor.start(10);
+		// Give the lane several ticks to claim every claimable part and reach the assembling
+		// tick where consumeInferenceParts runs against the contended set.
+		await new Promise((r) => setTimeout(r, 120));
+		handle.stop();
+
+		// The reassembly aborted: the backend never fired.
+		expect(backend.capturedParams).toHaveLength(0);
+
+		// NOTHING was consumed — the transaction rolled back atomically.
+		const consumed = db
+			.query(
+				"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'inference_part' AND claim_state = 'consumed'",
+			)
+			.get(streamId) as { n: number };
+		expect(consumed.n).toBe(0);
+
+		// The pre-claimed sibling still belongs to its FOREIGN owner — the lane did not
+		// reclaim or disturb it.
+		const foreignRow = db
+			.query("SELECT claim_state, claim_token FROM durable_work WHERE id = ?")
+			.get(foreignSiblingId) as { claim_state: string; claim_token: string | null };
+		expect(foreignRow.claim_state).toBe("processing");
+		expect(foreignRow.claim_token).toBe(foreignToken);
+
+		// No part is stranded `processing` under one of THIS lane's tokens: every part is
+		// either `pending` (the current part released, the siblings the lane claimed then
+		// rolled back) or `processing` under the foreign token. The lane holds no live claim.
+		const laneStranded = db
+			.query(
+				"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'inference_part' AND claim_state = 'processing' AND claim_token IS NOT ?",
+			)
+			.get(streamId, foreignToken) as { n: number };
+		expect(laneStranded.n).toBe(0);
+
+		// The full part set is still recoverable: partCount-1 rows `pending` + the 1 foreign
+		// `processing`. Nothing is permanently lost, so a future reassembly can complete.
+		const recoverable = db
+			.query(
+				"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'inference_part' AND claim_state IN ('pending','processing')",
+			)
+			.get(streamId) as { n: number };
+		expect(recoverable.n).toBe(partCount);
+	});
+
+	it("re-pending consumed parts (boot recovery) does NOT execute the backend twice", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("multipart-ok");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		seedMultipartInference(streamId, requestId);
+
+		const handle = processor.start(10);
+		await waitFor(() => backend.capturedParams.length === 1, {
+			message: "multipart inference did not invoke backend",
+		});
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number }
+				).n === 1,
+			{ message: "multipart inference did not complete" },
+		);
+		handle.stop();
+		expect(backend.capturedParams).toHaveLength(1);
+
+		// Simulate boot recovery: a NEW processor instance (empty in-process
+		// completedInferenceParts Set) with the SAME durable rows. Because the fix
+		// consumed every sibling atomically before executing, there is nothing left
+		// pending to re-pend, so a second lane pass must NOT re-assemble or re-execute.
+		const backend2Router = new ModelRouter(
+			new Map([["test-model", backend as LLMBackend]]),
+			"test-model",
+		);
+		const processor2 = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			backend2Router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		const handle2 = processor2.start(10);
+		await new Promise((r) => setTimeout(r, 120));
+		handle2.stop();
+
+		// Exactly one execution across the original run AND the recovery run.
+		expect(backend.capturedParams).toHaveLength(1);
+	});
+
+	// Objection 2 round-3 (#253): STREAMING routing errors must not be a silent-consume
+	// path. handleInference fire-and-forgets executeInference and returns null, so the
+	// durable lane acks the request immediately; a RelayResponseRoutingError thrown from a
+	// later stream write lands in the fire-and-forget .catch logger, never the typed
+	// dead-letter catch in processPendingDurableWork. The fix PRE-FLIGHTS the response
+	// route before launch: a non-capable response target throws synchronously so the typed
+	// catch dead-letters the request BEFORE execution.
+	function setHostCapability(siteId: string, capable: boolean): void {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, version, online_at, modified_at, work_spool_capable, deleted)
+			 VALUES (?, ?, '0', ?, ?, ?, 0)
+			 ON CONFLICT(site_id) DO UPDATE SET work_spool_capable = excluded.work_spool_capable, deleted = 0`,
+			[siteId, siteId, now, now, capable ? 1 : 0],
+		);
+	}
+
+	function insertPeerInference(entry: {
+		id: string;
+		streamId: string;
+		payload: string;
+		sourceSite: string;
+	}): void {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, payload, idempotency_key, stream_id, claim_state, attempt_count, created_at, expires_at, source_site, received_at)
+			 VALUES (?, 'target-site', 'inference', ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+			[
+				entry.id,
+				entry.payload,
+				entry.id,
+				entry.streamId,
+				now,
+				new Date(Date.now() + 60000).toISOString(),
+				entry.sourceSite,
+				now,
+			],
+		);
+	}
+
+	it("dead-letters an inference request whose response target is non-capable, BEFORE executing", async () => {
+		const backend = new MockBackend();
+		backend.setTextResponse("should-not-run");
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+		// The response target (source_site of the request) is a peer that does NOT
+		// advertise work_spool_capable — the response could never be routed back.
+		setHostCapability("requester-peer", false);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		insertPeerInference({
+			id: requestId,
+			streamId,
+			sourceSite: "requester-peer",
+			payload: JSON.stringify({
+				model: "test-model",
+				segments: [{ kind: "inline", message: { role: "user", content: "hi" } }],
+				nowMs: 0,
+				timeout_ms: 5000,
+			}),
+		});
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db.query("SELECT claim_state FROM durable_work WHERE id = ?").get(requestId) as {
+						claim_state: string;
+					} | null
+				)?.claim_state === "dead_letter",
+			{ message: "inference request was not dead-lettered for unroutable response target" },
+		);
+		handle.stop();
+
+		const row = db
+			.query("SELECT claim_state, last_error FROM durable_work WHERE id = ?")
+			.get(requestId) as { claim_state: string; last_error: string | null };
+		expect(row.claim_state).toBe("dead_letter");
+		expect(row.last_error ?? "").toContain("work_spool_capable");
+		// The backend must NOT have been invoked — dead-lettered before execution.
+		expect(backend.capturedParams).toHaveLength(0);
+	});
+
+	it("surfaces a mid-stream routing failure via logger.error rather than swallowing it", async () => {
+		// A capability flip AFTER pre-flight cannot be caught before ack. executeInference
+		// attempts a routed error response; if THAT also fails to route, the final fallback
+		// must be a structured logger.error with stream/request identifiers, not a swallowed
+		// promise. Drive: response target capable at pre-flight, then retract capability so
+		// the first stream chunk write throws RelayResponseRoutingError mid-stream.
+		const errorRecords: Array<{ msg: string; meta: Record<string, unknown> }> = [];
+		const capturingLogger: Logger = {
+			info: () => {},
+			warn: () => {},
+			debug: () => {},
+			error: (msg: string, meta?: Record<string, unknown>) => {
+				errorRecords.push({ msg, meta: meta ?? {} });
+			},
+		};
+		// A backend that blocks after the first chunk until the test releases it, so the
+		// capability retraction lands BEFORE any flush reaches writeStreamChunk — making the
+		// mid-stream routing failure deterministic rather than racing the flush timer.
+		let releaseStream: () => void = () => {};
+		const streamGate = new Promise<void>((resolve) => {
+			releaseStream = resolve;
+		});
+		const backend = new MockBackend();
+		backend.pushResponse(async function* () {
+			await streamGate;
+			yield { type: "text" as const, content: "x".repeat(5000) };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 1,
+					output_tokens: 1,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			};
+		});
+		const router = new ModelRouter(new Map([["test-model", backend as LLMBackend]]), "test-model");
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			router,
+			capturingLogger,
+			createMockEventBus(),
+		);
+		// Capable at pre-flight so execution launches.
+		setHostCapability("requester-peer", true);
+		const requestId = randomUUID();
+		const streamId = randomUUID();
+		insertPeerInference({
+			id: requestId,
+			streamId,
+			sourceSite: "requester-peer",
+			payload: JSON.stringify({
+				model: "test-model",
+				segments: [{ kind: "inline", message: { role: "user", content: "hi" } }],
+				nowMs: 0,
+				timeout_ms: 5000,
+			}),
+		});
+
+		const handle = processor.start(10);
+		// The backend has been entered (chat() called) and is now parked on streamGate.
+		await waitFor(() => backend.capturedParams.length === 1, {
+			message: "inference did not launch",
+		});
+		// Retract capability, THEN release the stream so every flush routes to error.
+		setHostCapability("requester-peer", false);
+		releaseStream();
+		await waitFor(
+			() =>
+				errorRecords.some((r) => JSON.stringify(r).includes(streamId)) ||
+				errorRecords.some((r) => JSON.stringify(r).includes(requestId)),
+			{ message: "mid-stream routing failure was not surfaced via logger.error" },
+		);
+		handle.stop();
+
+		// The failure surfaced with a stream or request identifier — not silent.
+		const surfaced = errorRecords.some(
+			(r) => JSON.stringify(r).includes(streamId) || JSON.stringify(r).includes(requestId),
+		);
+		expect(surfaced).toBe(true);
 	});
 
 	it("AC3.2a: flushes at 200ms timer with pending chunks", async () => {
@@ -341,7 +771,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -363,19 +793,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -385,7 +814,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_chunk'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_chunk'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n >= 1,
@@ -394,8 +823,8 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 
 		const chunks = db
-			.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-			.all(streamId, "stream_chunk") as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+			.all(streamId, "stream_chunk") as DurableRow[];
 
 		expect(chunks.length).toBeGreaterThanOrEqual(1);
 	});
@@ -433,7 +862,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -455,19 +884,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -477,7 +905,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_chunk'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_chunk'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n >= 1,
@@ -486,8 +914,8 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 
 		const chunks = db
-			.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-			.all(streamId, "stream_chunk") as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+			.all(streamId, "stream_chunk") as DurableRow[];
 
 		expect(chunks.length).toBeGreaterThanOrEqual(1);
 	});
@@ -511,7 +939,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -533,19 +961,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -555,7 +982,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -564,8 +991,8 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 
 		const ends = db
-			.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-			.all(streamId, "stream_end") as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+			.all(streamId, "stream_end") as DurableRow[];
 
 		expect(ends.length).toBeGreaterThan(0);
 
@@ -614,7 +1041,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -636,35 +1063,28 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
 		const handle = processor.start(10);
 		// Wait for the inference entry to be dispatched (fire-and-forget) before inserting cancel
-		await waitFor(
-			() =>
-				(
-					db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxEntry.id) as {
-						processed: number;
-					} | null
-				)?.processed === 1,
-			{ message: "AC3.4: inference entry not dispatched" },
-		);
+		await waitFor(() => getDurableWork(db, inboxEntry.id)?.claim_state === "consumed", {
+			message: "AC3.4: inference entry not dispatched",
+		});
 
-		const cancelEntry: RelayInboxEntry = {
+		const cancelEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "cancel",
@@ -678,19 +1098,17 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', 'cancel', ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				cancelEntry.id,
-				cancelEntry.source_site_id,
-				cancelEntry.kind,
 				cancelEntry.ref_id,
-				cancelEntry.idempotency_key,
+				cancelEntry.id,
 				cancelEntry.stream_id,
 				cancelEntry.payload,
 				cancelEntry.expires_at,
 				cancelEntry.received_at,
-				cancelEntry.processed,
+				cancelEntry.received_at,
 			],
 		);
 
@@ -698,7 +1116,7 @@ describe("RelayProcessor - executeInference", () => {
 			() =>
 				(
 					db
-						.query("SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'error' AND ref_id = ?")
+						.query("SELECT COUNT(*) as n FROM durable_work WHERE kind = 'error' AND ref_id = ?")
 						.get(inboxEntry.id) as { n: number } | null
 				)?.n > 0,
 			{ message: "AC3.4: error response not written after cancel" },
@@ -706,8 +1124,8 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 
 		const errorResponses = db
-			.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-			.all("error", inboxEntry.id) as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE kind = ? AND ref_id = ?")
+			.all("error", inboxEntry.id) as DurableRow[];
 
 		expect(errorResponses.length).toBeGreaterThan(0);
 		const errorPayload = JSON.parse(errorResponses[0].payload);
@@ -733,9 +1151,9 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
-			source_site_id: "requester-site",
+			source_site_id: "target-site",
 			kind: "inference",
 			ref_id: null,
 			idempotency_key: null,
@@ -755,47 +1173,44 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
 		const handle = processor.start(10);
-		// Wait for the expired entry to be processed (discarded) — no outbox entries expected
-		await waitFor(
-			() =>
-				(
-					db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxEntry.id) as {
-						processed: number;
-					} | null
-				)?.processed === 1,
-			{ message: "AC3.5: expired entry not processed/discarded" },
-		);
+		// Wait for the expired entry to be claimed and discarded without execution.
+		// The durable lane acks the expired row as consumed (relay-processor's expiry
+		// check returns before dispatch); no stream_chunk/stream_end is written.
+		await waitFor(() => getDurableWork(db, inboxEntry.id)?.claim_state === "consumed", {
+			message: "AC3.5: expired entry not discarded (consumed)",
+		});
 		handle.stop();
 
 		const chunks = db
 			.query(
-				"SELECT * FROM relay_outbox WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end')",
+				"SELECT * FROM durable_work WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end')",
 			)
-			.all(streamId) as RelayOutboxEntry[];
+			.all(streamId) as DurableRow[];
 
 		expect(chunks.length).toBe(0);
 
-		const unprocessed = db
-			.query("SELECT * FROM relay_inbox WHERE id = ? AND processed = 0")
+		// Expired requests are discarded by the expiry check, never dispatched:
+		// no pending row survives.
+		const stillPending = db
+			.query("SELECT id FROM durable_work WHERE id = ? AND claim_state = 'pending'")
 			.get(inboxEntry.id);
-		expect(unprocessed).toBeNull();
+		expect(stillPending).toBeNull();
 	});
 
 	it("AC3.6: concurrent inference streams execute simultaneously", async () => {
@@ -867,7 +1282,7 @@ describe("RelayProcessor - executeInference", () => {
 		const inferenceIds = [randomUUID(), randomUUID(), randomUUID()];
 
 		for (let i = 0; i < 3; i++) {
-			const inboxEntry: RelayInboxEntry = {
+			const inboxEntry = {
 				id: inferenceIds[i],
 				source_site_id: "requester-site",
 				kind: "inference",
@@ -889,19 +1304,18 @@ describe("RelayProcessor - executeInference", () => {
 			};
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+				 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 				[
 					inboxEntry.id,
-					inboxEntry.source_site_id,
 					inboxEntry.kind,
 					inboxEntry.ref_id,
-					inboxEntry.idempotency_key,
+					inboxEntry.idempotency_key ?? inboxEntry.id,
 					inboxEntry.stream_id,
 					inboxEntry.payload,
 					inboxEntry.expires_at,
 					inboxEntry.received_at,
-					inboxEntry.processed,
+					inboxEntry.received_at,
 				],
 			);
 		}
@@ -914,7 +1328,7 @@ describe("RelayProcessor - executeInference", () => {
 						(
 							db
 								.query(
-									"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+									"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 								)
 								.get(sid) as { n: number } | null
 						)?.n > 0,
@@ -925,11 +1339,11 @@ describe("RelayProcessor - executeInference", () => {
 
 		for (let i = 0; i < 3; i++) {
 			const chunks = db
-				.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-				.all(streamIds[i], "stream_chunk") as RelayOutboxEntry[];
+				.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+				.all(streamIds[i], "stream_chunk") as DurableRow[];
 			const ends = db
-				.query("SELECT * FROM relay_outbox WHERE stream_id = ? AND kind = ?")
-				.all(streamIds[i], "stream_end") as RelayOutboxEntry[];
+				.query("SELECT * FROM durable_work WHERE stream_id = ? AND kind = ?")
+				.all(streamIds[i], "stream_end") as DurableRow[];
 
 			expect(chunks.length).toBeGreaterThan(0);
 			expect(ends.length).toBeGreaterThan(0);
@@ -974,7 +1388,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -997,19 +1411,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -1019,7 +1432,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -1030,7 +1443,7 @@ describe("RelayProcessor - executeInference", () => {
 		// Verify thinking chunks are included in the outbox (stream_chunk or stream_end)
 		const chunkRows = db
 			.query(
-				"SELECT payload FROM relay_outbox WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end') ORDER BY created_at",
+				"SELECT payload FROM durable_work WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end') ORDER BY created_at",
 			)
 			.all(streamId) as Array<{ payload: string }>;
 
@@ -1085,7 +1498,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -1108,19 +1521,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -1130,7 +1542,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -1161,7 +1573,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -1184,19 +1596,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -1206,7 +1617,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -1278,7 +1689,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -1300,19 +1711,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -1322,7 +1732,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -1334,7 +1744,7 @@ describe("RelayProcessor - executeInference", () => {
 		// stream_chunk — chunkBuffer is flushed exactly once with isFinal=true
 		// at the end of runInferenceWithTracing.
 		const ends = db
-			.query("SELECT payload FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'")
+			.query("SELECT payload FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'")
 			.all(streamId) as Array<{ payload: string }>;
 		expect(ends.length).toBe(1);
 
@@ -1384,7 +1794,7 @@ describe("RelayProcessor - executeInference", () => {
 
 		const now = new Date();
 		const streamId = randomUUID();
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: randomUUID(),
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -1406,19 +1816,18 @@ describe("RelayProcessor - executeInference", () => {
 		};
 
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
@@ -1428,7 +1837,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) as n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number } | null
 				)?.n > 0,
@@ -1437,7 +1846,7 @@ describe("RelayProcessor - executeInference", () => {
 		handle.stop();
 
 		const ends = db
-			.query("SELECT payload FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'")
+			.query("SELECT payload FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'")
 			.all(streamId) as Array<{ payload: string }>;
 		const endPayload = JSON.parse(ends[0].payload) as {
 			chunks: StreamChunk[];
@@ -1463,9 +1872,9 @@ describe("RelayProcessor - executeInference", () => {
 		);
 		const streamId = randomUUID();
 		const now = new Date();
-		const makeEntry = (id: string): RelayInboxEntry => ({
+		const makeEntry = (id: string) => ({
 			id,
-			source_site_id: "requester-site",
+			target_site_id: "target-site",
 			kind: "inference",
 			ref_id: null,
 			idempotency_key: `inference-stream:${streamId}`,
@@ -1478,12 +1887,13 @@ describe("RelayProcessor - executeInference", () => {
 			}),
 			expires_at: new Date(now.getTime() + 60_000).toISOString(),
 			received_at: now.toISOString(),
-			processed: 0,
-			trace_context: null,
+			source_site: "target-site",
 		});
 
-		expect(insertInbox(db, makeEntry("inbox-inference-dedup-1"))).toBe(true);
-		expect(insertInbox(db, makeEntry("inbox-inference-dedup-2"))).toBe(false);
+		// The (kind, idempotency_key) unique index dedupes: the first insert lands,
+		// the second with the same key is suppressed (insertDurableWork returns false).
+		expect(insertDurableWork(db, makeEntry("inbox-inference-dedup-1"))).toBe(true);
+		expect(insertDurableWork(db, makeEntry("inbox-inference-dedup-2"))).toBe(false);
 
 		const handle = processor.start(10);
 		await waitFor(
@@ -1491,7 +1901,7 @@ describe("RelayProcessor - executeInference", () => {
 				(
 					db
 						.query(
-							"SELECT COUNT(*) AS n FROM relay_outbox WHERE stream_id = ? AND kind = 'stream_end'",
+							"SELECT COUNT(*) AS n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
 						)
 						.get(streamId) as { n: number }
 				).n === 1,
@@ -1502,7 +1912,7 @@ describe("RelayProcessor - executeInference", () => {
 		expect(backend.capturedParams).toHaveLength(1);
 		expect(
 			(
-				db.query("SELECT COUNT(*) AS n FROM relay_inbox WHERE kind = 'inference'").get() as {
+				db.query("SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'inference'").get() as {
 					n: number;
 				}
 			).n,
@@ -1517,8 +1927,6 @@ describe("RelayProcessor - executeInference", () => {
 	// failures were cross-file BOUND_DURABLE_RELAY leaks, so the flag is set in
 	// this test and restored on the surrounding afterEach.
 	it("4D-D: a durable cancel row aborts a running inference stream and writes a cancel error", async () => {
-		setDurableRelayEnabledForTesting(true);
-
 		const mockBackend = new MockBackend();
 		// A stream that hangs long enough for the durable cancel to catch it
 		// mid-flight: first chunk lands, then a long delay before the next.
@@ -1558,7 +1966,7 @@ describe("RelayProcessor - executeInference", () => {
 		// The inference request arrives on the legacy relay_inbox path (the stream
 		// itself is unchanged by 4D-D; only its cancel flips durable). This starts
 		// the stream and registers its AbortController under `inferenceId`.
-		const inboxEntry: RelayInboxEntry = {
+		const inboxEntry = {
 			id: inferenceId,
 			source_site_id: "requester-site",
 			kind: "inference",
@@ -1579,34 +1987,27 @@ describe("RelayProcessor - executeInference", () => {
 			processed: 0,
 		};
 		db.run(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', ?, ?, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
 			[
 				inboxEntry.id,
-				inboxEntry.source_site_id,
 				inboxEntry.kind,
 				inboxEntry.ref_id,
-				inboxEntry.idempotency_key,
+				inboxEntry.idempotency_key ?? inboxEntry.id,
 				inboxEntry.stream_id,
 				inboxEntry.payload,
 				inboxEntry.expires_at,
 				inboxEntry.received_at,
-				inboxEntry.processed,
+				inboxEntry.received_at,
 			],
 		);
 
 		const handle = processor.start(10);
 		// Wait for the inference entry to be dispatched (fire-and-forget) so the
 		// stream is running and its AbortController is registered before the cancel.
-		await waitFor(
-			() =>
-				(
-					db.query("SELECT processed FROM relay_inbox WHERE id = ?").get(inboxEntry.id) as {
-						processed: number;
-					} | null
-				)?.processed === 1,
-			{ message: "4D-D: inference entry not dispatched" },
-		);
+		await waitFor(() => getDurableWork(db, inboxEntry.id)?.claim_state === "consumed", {
+			message: "4D-D: inference entry not dispatched",
+		});
 
 		// The DURABLE cancel row, shaped as it would arrive on the target after the
 		// 4D-C producer flip + spool transfer: pending, self-targeted, kind cancel,
@@ -1632,7 +2033,7 @@ describe("RelayProcessor - executeInference", () => {
 			() =>
 				(
 					db
-						.query("SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'error' AND ref_id = ?")
+						.query("SELECT COUNT(*) as n FROM durable_work WHERE kind = 'error' AND ref_id = ?")
 						.get(inferenceId) as { n: number } | null
 				)?.n > 0,
 			{ message: "4D-D: cancel error not written after durable cancel" },
@@ -1642,8 +2043,8 @@ describe("RelayProcessor - executeInference", () => {
 		// (1) The running stream terminated as cancelled — same assertion strength
 		// as the legacy AC3.4 test.
 		const errorResponses = db
-			.query("SELECT * FROM relay_outbox WHERE kind = ? AND ref_id = ?")
-			.all("error", inferenceId) as RelayOutboxEntry[];
+			.query("SELECT * FROM durable_work WHERE kind = ? AND ref_id = ?")
+			.all("error", inferenceId) as DurableRow[];
 		expect(errorResponses.length).toBeGreaterThan(0);
 		expect(JSON.parse(errorResponses[0].payload).error).toContain("cancelled by requester");
 
@@ -1660,7 +2061,7 @@ describe("RelayProcessor - executeInference", () => {
 		// (4) The stream did not also complete normally — no stream_end slipped
 		// through alongside the cancel.
 		const streamEnds = db
-			.query("SELECT COUNT(*) as n FROM relay_outbox WHERE kind = 'stream_end' AND stream_id = ?")
+			.query("SELECT COUNT(*) as n FROM durable_work WHERE kind = 'stream_end' AND stream_id = ?")
 			.get(streamId) as { n: number };
 		expect(streamEnds.n).toBe(0);
 	});

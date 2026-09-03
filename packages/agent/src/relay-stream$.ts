@@ -4,10 +4,7 @@ import type { Database } from "bun:sqlite";
 import {
 	acknowledgeDurableWork,
 	claimDurableWorkByIds,
-	hasDroppedLegacyRelayTables,
-	markProcessed,
 	readDurableResponsesByStreamId,
-	readInboxByStreamId,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
 import type { TypedEventEmitter } from "@bound/shared";
@@ -135,18 +132,7 @@ function createStreamReducer(
 		// re-fold is absorbed by the seq-dedup below (any seq < nextExpectedSeq is
 		// suppressed), so a late ack is harmless while an early ack would be lossy.
 		type UnionEntry = { id: string; kind: string; payload: string; settle: () => void };
-		// Post-drop (slice 4E): relay_inbox is gone on this host, so read only the
-		// durable spool for stream chunks; the legacy read would throw on the
-		// missing table. A capability flip already forced spool-only delivery here.
-		const legacyRows = hasDroppedLegacyRelayTables(deps.db)
-			? []
-			: readInboxByStreamId(deps.db, streamId);
-		const unionEntries: UnionEntry[] = legacyRows.map((e) => ({
-			id: e.id,
-			kind: e.kind,
-			payload: e.payload,
-			settle: () => markProcessed(deps.db, [e.id]),
-		}));
+		const unionEntries: UnionEntry[] = [];
 		for (const durable of readDurableResponsesByStreamId(deps.db, streamId, deps.siteId)) {
 			// Claim under a fresh token now so settle() acks exactly this generation.
 			const claimed = claimDurableWorkByIds(deps.db, [durable.id], deps.siteId)[0];
@@ -336,26 +322,26 @@ export function createRelayStream$(
 			// by stream_id through the union-aware consumer below.
 			let outboxEntry: { id: string };
 			if (requestParts) {
-				const partIds = requestParts.map(
-					(part) =>
-						routeRelayRequest(deps.db, {
-							targetSiteId: host.site_id,
-							sourceSiteId: deps.siteId,
-							kind: "inference_part",
-							payload: JSON.stringify(part),
-							timeoutMs: perHostTimeoutMs,
-							refId: requestId,
-							// Verbatim #254 key: part-scoped so a redelivered part transfer dedupes.
-							idempotencyKey: `inference-part:${requestId}:${part.index}`,
-							streamId,
-							traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
-							topologyRole: deps.topologyRole,
-							maxPayloadBytes,
-						}).id,
-				);
+				const partIds = requestParts.map((part) => {
+					const routed = routeRelayRequest(deps.db, {
+						targetSiteId: host.site_id,
+						sourceSiteId: deps.siteId,
+						kind: "inference_part",
+						payload: JSON.stringify(part),
+						timeoutMs: perHostTimeoutMs,
+						refId: requestId,
+						// Verbatim #254 key: part-scoped so a redelivered part transfer dedupes.
+						idempotencyKey: `inference-part:${requestId}:${part.index}`,
+						streamId,
+						traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
+						topologyRole: deps.topologyRole,
+					});
+					if (routed.path === "error") throw new Error(routed.reason);
+					return routed.id;
+				});
 				outboxEntry = { id: partIds[0] };
 			} else {
-				outboxEntry = routeRelayRequest(deps.db, {
+				const routed = routeRelayRequest(deps.db, {
 					targetSiteId: host.site_id,
 					sourceSiteId: deps.siteId,
 					kind: "inference",
@@ -366,8 +352,9 @@ export function createRelayStream$(
 					streamId,
 					traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
 					topologyRole: deps.topologyRole,
-					maxPayloadBytes,
 				});
+				if (routed.path === "error") throw new Error(routed.reason);
+				outboxEntry = { id: routed.id };
 			}
 			const logicalRequestId = requestParts ? requestId : outboxEntry.id;
 

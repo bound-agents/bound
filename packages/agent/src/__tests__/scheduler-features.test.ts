@@ -2243,19 +2243,17 @@ describe("Scheduler features", () => {
 			const threadId = randomUUID();
 			insertEventTask(taskId);
 			db.run("UPDATE tasks SET thread_id = ?, payload = '' WHERE id = ?", [threadId, taskId]);
-			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, 'webhook_intake', ?, ?, ?, ?, ?, 0)`,
-				[
-					randomUUID(),
-					siteId,
-					threadId,
-					`webhook:${randomUUID()}`,
-					JSON.stringify({ body: '{"action":"opened"}' }),
-					new Date(Date.now() + 3600_000).toISOString(),
-					new Date().toISOString(),
-				],
-			);
+			insertDurableWork(db, {
+				id: randomUUID(),
+				target_site_id: siteId,
+				kind: "webhook_intake",
+				ref_id: threadId,
+				idempotency_key: `webhook:${randomUUID()}`,
+				payload: JSON.stringify({ body: '{"action":"opened"}' }),
+				expires_at: new Date(Date.now() + 3600_000).toISOString(),
+				source_site: siteId,
+				received_at: new Date().toISOString(),
+			});
 
 			let loopRuns = 0;
 			const factory = () => ({
@@ -2291,7 +2289,7 @@ describe("Scheduler features", () => {
 			).toContain('<connector-events trigger="test:event" count="1">');
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
-			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+			db.run("DELETE FROM durable_work WHERE ref_id = ?", [threadId]);
 			db.run("DELETE FROM messages WHERE thread_id = ?", [threadId]);
 			db.run("DELETE FROM threads WHERE id = ?", [threadId]);
 		});
@@ -2412,19 +2410,17 @@ describe("Scheduler features", () => {
 			// inside the loop factory to model exactly that interleaving.
 			const midRunEventFactory = () => ({
 				run: async (): Promise<AgentLoopResult> => {
-					db.run(
-						`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-						 VALUES (?, ?, 'connector_intake', ?, ?, ?, ?, ?, 0)`,
-						[
-							randomUUID(),
-							siteId,
-							threadId,
-							`connector_intake:test-handle:${randomUUID()}`,
-							JSON.stringify([{ content: "mid-run event" }]),
-							new Date(Date.now() + 3600_000).toISOString(),
-							new Date().toISOString(),
-						],
-					);
+					insertDurableWork(db, {
+						id: randomUUID(),
+						target_site_id: siteId,
+						kind: "connector_intake",
+						ref_id: threadId,
+						idempotency_key: `connector_intake:test-handle:${randomUUID()}`,
+						payload: JSON.stringify([{ content: "mid-run event" }]),
+						expires_at: new Date(Date.now() + 3600_000).toISOString(),
+						source_site: siteId,
+						received_at: new Date().toISOString(),
+					});
 					return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
 				},
 			});
@@ -2454,7 +2450,7 @@ describe("Scheduler features", () => {
 			stop();
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
-			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+			db.run("DELETE FROM durable_work WHERE ref_id = ?", [threadId]);
 		});
 
 		it("counts connector_intake rows in the soft-failure retry gate", async () => {
@@ -2485,19 +2481,17 @@ describe("Scheduler features", () => {
 			// seeded before the run never reaches the failure gate.
 			const softErrorFactory = () => ({
 				run: async (): Promise<AgentLoopResult> => {
-					db.run(
-						`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, payload, expires_at, received_at, processed)
-						 VALUES (?, ?, 'connector_intake', ?, ?, ?, ?, ?, 0)`,
-						[
-							randomUUID(),
-							siteId,
-							threadId,
-							`connector_intake:test-handle-2:${randomUUID()}`,
-							JSON.stringify([{ content: "pending event" }]),
-							new Date(Date.now() + 3600_000).toISOString(),
-							new Date().toISOString(),
-						],
-					);
+					insertDurableWork(db, {
+						id: randomUUID(),
+						target_site_id: siteId,
+						kind: "connector_intake",
+						ref_id: threadId,
+						idempotency_key: `connector_intake:test-handle-2:${randomUUID()}`,
+						payload: JSON.stringify([{ content: "pending event" }]),
+						expires_at: new Date(Date.now() + 3600_000).toISOString(),
+						source_site: siteId,
+						received_at: new Date().toISOString(),
+					});
 					return {
 						messagesCreated: 0,
 						toolCallsMade: 0,
@@ -2534,7 +2528,7 @@ describe("Scheduler features", () => {
 			stop();
 
 			db.run("DELETE FROM tasks WHERE id = ?", [taskId]);
-			db.run("DELETE FROM relay_inbox WHERE ref_id = ?", [threadId]);
+			db.run("DELETE FROM durable_work WHERE ref_id = ?", [threadId]);
 		});
 
 		// 4C-2: the fold consumes durable_work intake rows too. These tests

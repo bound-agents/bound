@@ -37,7 +37,6 @@ function makeSpyTransport() {
 		drainChangelog: record("drainChangelog"),
 		handleRelaySend: record("handleRelaySend"),
 		handleRelayAck: record("handleRelayAck"),
-		drainRelayInbox: record("drainRelayInbox"),
 		handleSpoolTransfer: record("handleSpoolTransfer"),
 		handleSpoolTransferAck: record("handleSpoolTransferAck"),
 		drainDurableWorkSpool: record("drainDurableWorkSpool"),

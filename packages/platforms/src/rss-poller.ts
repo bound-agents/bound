@@ -4,11 +4,8 @@ import { lookup } from "node:dns/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import {
-	DURABLE_INTAKE_ENABLED,
 	emitDurableWorkWritten,
-	hasDroppedLegacyRelayTables,
 	insertDurableWork,
-	insertInbox,
 	listActiveRssFeeds,
 	updateRow,
 } from "@bound/core";
@@ -16,7 +13,6 @@ import {
 	RSS_SEEN_GUIDS_CAP,
 	counter,
 	histogram,
-	injectTraceContext,
 	isBlockedAddress,
 	isIpAddress,
 } from "@bound/shared";
@@ -56,8 +52,6 @@ export interface RssItem {
 }
 
 /** Cap per-item summary text so a full-content feed can't bloat the wakeup. */
-const retiredLegacyIntakeWarnings = new WeakSet<Database>();
-
 const MAX_ITEM_SUMMARY_CHARS = 4096;
 
 /** Floor on per-feed cadence — protects feed hosts from misconfigured rows. */
@@ -357,8 +351,7 @@ export interface RssPollerDeps {
 	now?: () => number;
 	/** Captures the active W3C context at durable intake time. */
 	traceContext?: () => Record<string, string> | null;
-	/** Injectable only for failure-path tests. */
-	insertInbox?: typeof insertInbox;
+	/** Injectable only for durable failure-path tests. */
 	/** Injectable only for durable failure-path tests (mirrors the legacy insertInbox seam). */
 	insertDurableWork?: typeof insertDurableWork;
 }
@@ -573,9 +566,6 @@ export class RssPoller {
 			// transaction (this insert PLUS the seen_guids cursor advance) has not
 			// committed and may still roll back.
 			const durableWritten: Array<{ id: string; target_site_id: string }> = [];
-			const traceContext = this.deps.traceContext?.() ?? injectTraceContext();
-			const serializedTraceContext = traceContext ? JSON.stringify(traceContext) : null;
-			const persistIntake = this.deps.insertInbox ?? insertInbox;
 			const persistDurable = this.deps.insertDurableWork ?? insertDurableWork;
 			const persistTransaction = this.deps.db.transaction(() => {
 				if (!isFirstPoll) {
@@ -585,48 +575,21 @@ export class RssPoller {
 						const payload = JSON.stringify({ feed: feed.name, url: feed.url, ...item });
 						const receivedAt = new Date(nowMs).toISOString();
 						const expiresAt = new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString();
-						const forceDurable = hasDroppedLegacyRelayTables(this.deps.db);
-						if (
-							forceDurable &&
-							!DURABLE_INTAKE_ENABLED &&
-							!retiredLegacyIntakeWarnings.has(this.deps.db)
-						) {
-							retiredLegacyIntakeWarnings.add(this.deps.db);
-							this.deps.logger?.warn(
-								"[rss-poller] Legacy relay intake is retired; forcing durable intake despite BOUND_DURABLE_INTAKE=0.",
-							);
-						}
-						const useDurable = (DURABLE_INTAKE_ENABLED || forceDurable) && !this.deps.insertInbox;
-						const inserted = useDurable
-							? persistDurable(this.deps.db, {
-									id,
-									target_site_id: this.deps.siteId,
-									kind: "rss_intake",
-									payload,
-									idempotency_key: idempotencyKey,
-									expires_at: expiresAt,
-									ref_id: feed.thread_id,
-									source_site: this.deps.siteId,
-									received_at: receivedAt,
-								})
-							: persistIntake(this.deps.db, {
-									id,
-									source_site_id: this.deps.siteId,
-									kind: "rss_intake",
-									ref_id: feed.thread_id,
-									idempotency_key: idempotencyKey,
-									stream_id: null,
-									payload,
-									expires_at: expiresAt,
-									received_at: receivedAt,
-									processed: 0,
-									trace_context: serializedTraceContext,
-								});
+						const inserted = persistDurable(this.deps.db, {
+							id,
+							target_site_id: this.deps.siteId,
+							kind: "rss_intake",
+							payload,
+							idempotency_key: idempotencyKey,
+							expires_at: expiresAt,
+							ref_id: feed.thread_id,
+							source_site: this.deps.siteId,
+							received_at: receivedAt,
+						});
 						if (inserted) {
 							delivered++;
-							// Only the durable path emits durable_work:written; the legacy
-							// relay-inbox path has no spool drain. Collect for post-commit flush.
-							if (useDurable) durableWritten.push({ id, target_site_id: this.deps.siteId });
+							// The durable path emits durable_work:written; collect for post-commit flush.
+							durableWritten.push({ id, target_site_id: this.deps.siteId });
 						}
 					}
 				}

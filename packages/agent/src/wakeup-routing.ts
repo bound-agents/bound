@@ -90,7 +90,6 @@ export function routeNotificationWakeup(
 			// the legacy path and, on the durable path, the minted row id.
 			idempotencyKey,
 			topologyRole,
-			eventBus,
 		});
 		return {
 			delivery: "relayed",

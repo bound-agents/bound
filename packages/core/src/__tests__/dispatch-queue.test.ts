@@ -29,7 +29,6 @@ import {
 	setDurableDispatchEnqueueEnabledForTesting,
 	updateClaimedBy,
 } from "../dispatch";
-import { insertInbox } from "../relay";
 import { findBackgroundPlaceholderDeliveryState } from "../repositories/messages";
 import { applySchema } from "../schema";
 let db: ReturnType<typeof createDatabase>;
@@ -74,30 +73,6 @@ describe("dispatch_queue schema", () => {
 		} | null;
 		expect(row).not.toBeNull();
 		expect(row?.status).toBe("pending");
-	});
-});
-
-describe("relay inbox idempotency fence", () => {
-	it("accepts legacy null keys but drops a repeated sender-derived key through insertInbox", () => {
-		const now = new Date().toISOString();
-		const entry = (id: string, idempotencyKey: string | null) => ({
-			id,
-			source_site_id: "sender",
-			kind: "client_tool" as const,
-			ref_id: null,
-			idempotency_key: idempotencyKey,
-			stream_id: null,
-			payload: "{}",
-			expires_at: now,
-			received_at: now,
-			processed: 0,
-			trace_context: null,
-		});
-		expect(insertInbox(db, entry("legacy-1", null))).toBe(true);
-		expect(insertInbox(db, entry("legacy-2", null))).toBe(true);
-		expect(insertInbox(db, entry("keyed-1", "client-tool:thread:call"))).toBe(true);
-		expect(insertInbox(db, entry("keyed-2", "client-tool:thread:call"))).toBe(false);
-		expect(db.query("SELECT COUNT(*) AS n FROM relay_inbox").get()).toEqual({ n: 3 });
 	});
 });
 

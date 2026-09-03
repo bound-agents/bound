@@ -10,11 +10,10 @@ import {
 	claimDurableWorkByIds,
 	createDatabase,
 	resetProcessingDurableWork,
-	writeOutbox,
 } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { Subject, firstValueFrom } from "rxjs";
-import { type EligibleHost, createRelayOutboxEntry } from "../relay-router";
+import type { EligibleHost } from "../relay-router";
 import { type RelayWaitParams, createRelayWait$ } from "../relay-wait$";
 
 describe("createRelayWait$", () => {
@@ -37,9 +36,57 @@ describe("createRelayWait$", () => {
 	});
 
 	beforeEach(() => {
-		db.exec("DELETE FROM relay_outbox");
-		db.exec("DELETE FROM relay_inbox");
+		db.exec("DELETE FROM durable_work");
 	});
+
+	// Post-N+1 the relay path is durable-only. A tool_call request rides a
+	// durable_work row; the awaiter (createRelayWait$ → readUnionResponseEntry)
+	// resolves from a durable response row keyed by the request's ref_id and
+	// consumes it exactly-once via the token-fenced claim/ack lifecycle.
+	function insertDurableRequest(opts: {
+		id: string;
+		kind: string;
+		targetSiteId: string;
+	}): void {
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO durable_work
+			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site)
+			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+		`).run(
+			opts.id,
+			opts.targetSiteId,
+			opts.kind,
+			JSON.stringify({ kind: opts.kind, toolName: "test_tool", args: {} }),
+			opts.id,
+			now,
+			new Date(Date.now() + 30_000).toISOString(),
+			siteId,
+		);
+	}
+
+	function insertDurableResponse(opts: {
+		id: string;
+		kind: string;
+		refId: string;
+		payload: unknown;
+	}): void {
+		const now = new Date().toISOString();
+		db.prepare(`
+			INSERT INTO durable_work
+			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, ref_id, source_site)
+			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+		`).run(
+			opts.id,
+			siteId,
+			opts.kind,
+			JSON.stringify(opts.payload),
+			`response:${opts.refId}`,
+			now,
+			opts.refId,
+			"host-0",
+		);
+	}
 
 	const createHostsAndParams = (hostCount = 1) => {
 		const hosts: EligibleHost[] = Array.from({ length: hostCount }, (_, i) => ({
@@ -49,17 +96,20 @@ describe("createRelayWait$", () => {
 			mcp_tools: [],
 		}));
 
-		const outboxEntry = createRelayOutboxEntry(
-			hosts[0].site_id,
-			siteId,
-			"tool_call",
-			JSON.stringify({ kind: "tool_call", toolName: "test_tool", args: {} }),
-			30_000,
-		);
-		writeOutbox(db, outboxEntry);
+		// The failover/cancel paths route through routeRelayRequest, which requires
+		// the target host to advertise work_spool_capable in the hosts table.
+		const now = new Date().toISOString();
+		for (const host of hosts) {
+			db.prepare(
+				"INSERT OR IGNORE INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, 0, 1)",
+			).run(host.site_id, host.host_name, now, now);
+		}
+
+		const outboxEntryId = `req-${Math.random().toString(36).slice(2)}`;
+		insertDurableRequest({ id: outboxEntryId, kind: "tool_call", targetSiteId: hosts[0].site_id });
 
 		const params: RelayWaitParams = {
-			outboxEntryId: outboxEntry.id,
+			outboxEntryId,
 			toolName: "test_tool",
 			toolInput: {},
 			eligibleHosts: hosts,
@@ -68,11 +118,11 @@ describe("createRelayWait$", () => {
 			threadId,
 		};
 
-		return { hosts, params, outboxEntryId: outboxEntry.id };
+		return { hosts, params, outboxEntryId };
 	};
 
 	it("AC2.1: Parses result response and marks processed", async () => {
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const aborted$ = new Subject<void>();
 
 		// Subscribe to observable
@@ -93,26 +143,18 @@ describe("createRelayWait$", () => {
 		// Wait a tick for subscription
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
-		// Insert a result response into relay_inbox
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"result-1",
-			hosts[0].site_id,
-			"result",
-			outboxEntryId,
-			JSON.stringify({
+		// Insert a result response as a durable_work row keyed by the request ref_id
+		insertDurableResponse({
+			id: "result-1",
+			kind: "result",
+			refId: outboxEntryId,
+			payload: {
 				stdout: "Success output",
 				stderr: "",
 				exit_code: 0,
 				execution_ms: 1234,
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		// Emit event
 		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
@@ -123,15 +165,17 @@ describe("createRelayWait$", () => {
 		// Verify result content
 		expect(result.content).toContain("Success output");
 
-		// Verify marked processed
-		const marked = db.prepare("SELECT processed FROM relay_inbox WHERE id = ?").get("result-1") as {
-			processed: number;
+		// Verify the durable response row was consumed exactly-once
+		const marked = db
+			.prepare("SELECT claim_state FROM durable_work WHERE id = ?")
+			.get("result-1") as {
+			claim_state: string;
 		};
-		expect(marked.processed).toBe(1);
+		expect(marked.claim_state).toBe("consumed");
 	});
 
 	it("AC2.2: Records relay metrics when turnId provided", async () => {
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const turnId = "turn-123";
 		const modifiedParams: RelayWaitParams = { ...params, currentTurnId: turnId };
 
@@ -160,26 +204,18 @@ describe("createRelayWait$", () => {
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
-		// Insert result
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"result-2",
-			hosts[0].site_id,
-			"result",
-			outboxEntryId,
-			JSON.stringify({
+		// Insert result as a durable_work response row
+		insertDurableResponse({
+			id: "result-2",
+			kind: "result",
+			refId: outboxEntryId,
+			payload: {
 				stdout: "ok",
 				stderr: "",
 				exit_code: 0,
 				execution_ms: 100,
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
 
@@ -197,7 +233,7 @@ describe("createRelayWait$", () => {
 	});
 
 	it("AC2.3: Handles error response correctly", async () => {
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const aborted$ = new Subject<void>();
 
 		const promise = firstValueFrom(
@@ -216,24 +252,16 @@ describe("createRelayWait$", () => {
 
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
-		// Insert error response
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"error-1",
-			hosts[0].site_id,
-			"error",
-			outboxEntryId,
-			JSON.stringify({
+		// Insert error response as a durable_work response row
+		insertDurableResponse({
+			id: "error-1",
+			kind: "error",
+			refId: outboxEntryId,
+			payload: {
 				error: "model overloaded",
 				retriable: true,
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
 
@@ -247,7 +275,7 @@ describe("createRelayWait$", () => {
 	});
 
 	it("propagates retriable=false for non-retriable error responses", async () => {
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const aborted$ = new Subject<void>();
 
 		const promise = firstValueFrom(
@@ -264,23 +292,15 @@ describe("createRelayWait$", () => {
 			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"error-2",
-			hosts[0].site_id,
-			"error",
-			outboxEntryId,
-			JSON.stringify({
+		insertDurableResponse({
+			id: "error-2",
+			kind: "error",
+			refId: outboxEntryId,
+			payload: {
 				error: "tool not found",
 				retriable: false,
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
 
@@ -294,7 +314,7 @@ describe("createRelayWait$", () => {
 		// is offline. The hub sets definitely_not_executed=true so the agent
 		// loop knows the target tool never ran and can retry safely regardless
 		// of the tool's idempotency.
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const aborted$ = new Subject<void>();
 
 		const promise = firstValueFrom(
@@ -311,24 +331,16 @@ describe("createRelayWait$", () => {
 			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"error-fast-fail",
-			hosts[0].site_id,
-			"error",
-			outboxEntryId,
-			JSON.stringify({
+		insertDurableResponse({
+			id: "error-fast-fail",
+			kind: "error",
+			refId: outboxEntryId,
+			payload: {
 				error: "Target host site-target is not currently connected",
 				retriable: true,
 				definitely_not_executed: true,
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
 
@@ -341,7 +353,7 @@ describe("createRelayWait$", () => {
 	it("leaves definitely_not_executed undefined for ambiguous errors and timeouts", async () => {
 		// Target-side errors and full-timeout errors don't carry the attestation
 		// — the target may have started executing before the failure surfaced.
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const aborted$ = new Subject<void>();
 
 		const promise = firstValueFrom(
@@ -358,24 +370,16 @@ describe("createRelayWait$", () => {
 			{ defaultValue: { content: "cancelled", retriable: false } },
 		);
 
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"error-ambiguous",
-			hosts[0].site_id,
-			"error",
-			outboxEntryId,
-			JSON.stringify({
+		insertDurableResponse({
+			id: "error-ambiguous",
+			kind: "error",
+			refId: outboxEntryId,
+			payload: {
 				error: "model overloaded mid-execution",
 				retriable: true,
 				// definitely_not_executed intentionally omitted
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		eventBus.emit("relay:inbox", { ref_id: outboxEntryId });
 
@@ -408,9 +412,9 @@ describe("createRelayWait$", () => {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
 		// Now send result for second host
-		// Query the new outbox entry created for second host
+		// Query the new durable request row created for the second host
 		const outboxEntries = db
-			.prepare("SELECT id, target_site_id FROM relay_outbox WHERE kind = 'tool_call'")
+			.prepare("SELECT id, target_site_id FROM durable_work WHERE kind = 'tool_call'")
 			.all() as Array<{
 			id: string;
 			target_site_id: string;
@@ -419,25 +423,17 @@ describe("createRelayWait$", () => {
 		expect(secondHostOutboxId).toBeDefined();
 
 		if (secondHostOutboxId) {
-			const now = new Date().toISOString();
-			db.prepare(`
-				INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`).run(
-				"result-failover",
-				"host-1",
-				"result",
-				secondHostOutboxId,
-				JSON.stringify({
+			insertDurableResponse({
+				id: "result-failover",
+				kind: "result",
+				refId: secondHostOutboxId,
+				payload: {
 					stdout: "failover success",
 					stderr: "",
 					exit_code: 0,
 					execution_ms: 100,
-				}),
-				new Date(Date.now() + 60000).toISOString(),
-				now,
-				0,
-			);
+				},
+			});
 
 			eventBus.emit("relay:inbox", { ref_id: secondHostOutboxId });
 		}
@@ -475,38 +471,30 @@ describe("createRelayWait$", () => {
 		// Should get the cancelled message
 		expect(result.content).toContain("Cancelled");
 
-		// Verify cancel outbox entry was written
+		// Verify a durable cancel row was written for the request
 		const cancelEntry = db
-			.prepare("SELECT kind, ref_id FROM relay_outbox WHERE kind = 'cancel' AND ref_id = ?")
+			.prepare("SELECT kind, ref_id FROM durable_work WHERE kind = 'cancel' AND ref_id = ?")
 			.get(outboxEntryId) as { kind: string; ref_id: string } | undefined;
 		expect(cancelEntry).toBeDefined();
 		expect(cancelEntry?.kind).toBe("cancel");
 	});
 
 	it("Race condition: Response already in DB before subscribe", async () => {
-		const { hosts, params, outboxEntryId } = createHostsAndParams();
+		const { params, outboxEntryId } = createHostsAndParams();
 		const aborted$ = new Subject<void>();
 
-		// Insert response BEFORE subscribing
-		const now = new Date().toISOString();
-		db.prepare(`
-			INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			"result-pre",
-			hosts[0].site_id,
-			"result",
-			outboxEntryId,
-			JSON.stringify({
+		// Insert response BEFORE subscribing, as a durable_work response row
+		insertDurableResponse({
+			id: "result-pre",
+			kind: "result",
+			refId: outboxEntryId,
+			payload: {
 				stdout: "pre-response",
 				stderr: "",
 				exit_code: 0,
 				execution_ms: 50,
-			}),
-			new Date(Date.now() + 60000).toISOString(),
-			now,
-			0,
-		);
+			},
+		});
 
 		// Now subscribe
 		const promise = firstValueFrom(

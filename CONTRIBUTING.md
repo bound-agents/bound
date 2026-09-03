@@ -104,7 +104,7 @@ These rules exist because violating them has historically caused real production
 
 1. [Change-log outbox pattern](docs/invariants.md#1-change-log-outbox-pattern) — all writes to synced tables go through `insertRow()` / `updateRow()` / `softDelete()`, never raw SQL.
 2. [Soft deletes only](docs/invariants.md#2-soft-deletes-only) — flip `deleted = 0|1` via `softDelete()`; never physically `DELETE` a synced row.
-3. [Durable work and relay telemetry are local-only](docs/invariants.md#3-durable-work-and-relay-telemetry-are-local-only) — `durable_work` / `relay_cycles` use dedicated CRUD, not the outbox; legacy `relay_outbox` / `relay_inbox` are transitional and dropped per-host after the 4E gate.
+3. [Durable work and relay telemetry are local-only](docs/invariants.md#3-durable-work-and-relay-telemetry-are-local-only) — `durable_work` / `relay_cycles` use dedicated CRUD, not the outbox; legacy relay tables are deleted at N+1 and populated copies refuse startup.
 4. [Column-name validation](docs/invariants.md#4-column-name-validation) — any interpolated column name passes through `validateColumnName()`; values stay parameterized.
 5. [OCC filesystem](docs/invariants.md#5-occ-filesystem) — compare hash-to-hash, persist inside `BEGIN IMMEDIATE`, emit `file:changed` only after commit.
 6. [Events after commit](docs/invariants.md#6-events-after-commit) — `file:changed` / `changelog:written` fire after `COMMIT`, never mid-transaction.
@@ -115,7 +115,7 @@ These rules exist because violating them has historically caused real production
 11. [Model-alias passthrough](docs/invariants.md#11-model-alias-passthrough) — never pass `payload.model` to `backend.chat()` from the relay processor.
 12. [Canonical edge relations](docs/invariants.md#12-canonical-edge-relations) — `memory_edges.relation` must be one of the 10 `CANONICAL_RELATIONS`.
 13. [Config schemas are closed (strict mode)](docs/invariants.md#13-config-schemas-are-closed-strict-mode) — declare every config field in its Zod schema or the loader rejects the file.
-14. [Hub response-kind routing](docs/invariants.md#14-hub-response-kind-routing) — hub-targeted response kinds go into `relay_inbox`, not `executeImmediate()`.
+14. [Hub response-kind routing](docs/invariants.md#14-hub-response-kind-routing) — response kinds remain in durable_work for the requester awaiter; they do not enter executeImmediate().
 15. [Platform intake affinity (optimization)](docs/invariants.md#15-platform-intake-affinity-optimization-not-a-requirement) — `intake` with a `platform` field prefers that connector's host, but the loop runs locally there; affinity saves a round-trip, it is not required.
 16. [Extended-thinking routing](docs/invariants.md#16-extended-thinking-routing) — `thinking` / `effort` fold into `reasoningConfig`; mirror new fields in `inferenceRequestPayloadSchema`.
 17. [Shared-config → router hand-off](docs/invariants.md#17-shared-config-to-router-hand-off) — new per-backend fields must be copied in `toRouterConfig()` or they never reach the router.

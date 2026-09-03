@@ -1,12 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import {
-	applySchema,
-	type insertDurableWork,
-	insertRow,
-	setDurableIntakeEnabledForTesting,
-} from "@bound/core";
+import { applySchema, type insertDurableWork, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { RssPoller, fetchValidatedUrl, parseFeed } from "../rss-poller.js";
 
@@ -124,9 +119,14 @@ describe("RssPoller", () => {
 
 	const pollerDeps = { resolveHost: resolvePublicHost };
 
+	// After the release N+1 demolition, intake is unconditionally durable: RSS
+	// items land as rss_intake durable_work rows. The former relay_inbox helper
+	// now reads the durable store so the delivery-count assertions still hold.
 	function inboxRows(): Array<{ ref_id: string; kind: string; payload: string }> {
 		return db
-			.query("SELECT ref_id, kind, payload FROM relay_inbox ORDER BY received_at ASC")
+			.query(
+				"SELECT ref_id, kind, payload FROM durable_work WHERE kind = 'rss_intake' ORDER BY received_at ASC",
+			)
 			.all() as Array<{ ref_id: string; kind: string; payload: string }>;
 	}
 
@@ -148,7 +148,6 @@ describe("RssPoller", () => {
 	}
 
 	beforeEach(() => {
-		setDurableIntakeEnabledForTesting(false);
 		db = new Database(":memory:");
 		applySchema(db);
 		siteId = `test-site-${randomBytes(4).toString("hex")}`;
@@ -162,7 +161,6 @@ describe("RssPoller", () => {
 	});
 
 	afterEach(() => {
-		setDurableIntakeEnabledForTesting(true);
 		db.close();
 	});
 
@@ -189,32 +187,9 @@ describe("RssPoller", () => {
 		expect(seen).toContain("guid-1");
 	});
 
-	it("persists the active W3C context when supplied by the intake runtime", async () => {
-		const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
-		const poller = new RssPoller({
-			...pollerDeps,
-			db,
-			siteId,
-			eventBus,
-			fetchImpl: fetchReturning(RSS_DOC),
-			traceContext: () => ({
-				traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
-			}),
-		});
-
-		await poller.tick();
-
-		const row = db
-			.query("SELECT trace_context FROM relay_inbox WHERE ref_id = ?")
-			.get(feed.thread_id) as {
-			trace_context: string | null;
-		};
-		expect(row.trace_context).not.toBeNull();
-		const carrier = JSON.parse(row.trace_context as string) as Record<string, string>;
-		expect(carrier.traceparent).toMatch(/^00-/);
-		expect(row.trace_context).not.toContain("Second post");
-		expect(row.trace_context).not.toContain("https://example.com/2");
-	});
+	// Trace-context persistence on the intake row was retired at release N+1: the
+	// durable_work intake row has no trace_context column, and rss-poller no longer
+	// stamps a carrier onto the row. (The poll still opens an OTel span.)
 
 	it("delivers only unseen items as rss_intake rows and emits connector:event", async () => {
 		const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
@@ -524,9 +499,9 @@ describe("RssPoller", () => {
 	it("preserves accepted deliveries when a later cursor write throws", async () => {
 		seedFeed({ seen_guids: JSON.stringify([]) });
 		const originalRun = db.run.bind(db);
-		let inboxInserts = 0;
+		let intakeInserts = 0;
 		(db as unknown as { run: typeof db.run }).run = ((sql: string, ...args: unknown[]) => {
-			if (sql.includes("relay_inbox")) inboxInserts++;
+			if (sql.includes("durable_work")) intakeInserts++;
 			if (sql.includes("UPDATE rss_feeds")) throw new Error("cursor write failed");
 			return originalRun(
 				sql,
@@ -542,7 +517,7 @@ describe("RssPoller", () => {
 			fetchImpl: fetchReturning(RSS_DOC),
 		});
 		await expect(poller.tick()).rejects.toThrow("cursor write failed");
-		expect(inboxInserts).toBe(2);
+		expect(intakeInserts).toBe(2);
 		// Intake and synced cursor are one transaction: an interrupted cursor
 		// write cannot consume GUIDs while leaving durable rows behind.
 		expect(inboxRows()).toEqual([]);
@@ -578,10 +553,7 @@ describe("RssPoller", () => {
 		expect(cursor.length).toBe(2);
 	});
 
-	describe("durable intake ON", () => {
-		beforeEach(() => setDurableIntakeEnabledForTesting(true));
-		afterEach(() => setDurableIntakeEnabledForTesting(true));
-
+	describe("durable intake", () => {
 		it("writes rss_intake durable_work rows keyed rss-<name>-<guid> and no relay twin", async () => {
 			const feed = seedFeed({ seen_guids: JSON.stringify(["guid-1"]) });
 			const poller = new RssPoller({
@@ -608,8 +580,6 @@ describe("RssPoller", () => {
 			const payload = JSON.parse(rows[0].payload) as Record<string, unknown>;
 			expect(payload.feed).toBe("test-feed");
 			expect(payload.guid).toBe("https://example.com/2");
-			// No legacy twin.
-			expect(inboxRows()).toEqual([]);
 
 			// Second poll with the same document: guid skip preserved, no new rows.
 			await poller.tick();
@@ -667,9 +637,8 @@ describe("RssPoller", () => {
 
 			await expect(poller.tick()).rejects.toThrow("durable intake write failed");
 			expect(durableAttempts).toBeGreaterThan(0);
-			// No durable rows, no legacy rows, and the cursor stayed empty.
+			// No durable rows and the cursor stayed empty.
 			expect(durableRows()).toEqual([]);
-			expect(inboxRows()).toEqual([]);
 			const row = db.query("SELECT seen_guids FROM rss_feeds WHERE id = ?").get(feed.id) as {
 				seen_guids: string;
 			};

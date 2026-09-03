@@ -2,20 +2,16 @@ import type { Database } from "bun:sqlite";
 import {
 	acknowledgeDurableWork,
 	claimDurableWorkByIds,
-	hasDroppedLegacyRelayTables,
-	markProcessed,
 	readDurableResponseByRefId,
-	readInboxByRefId,
 } from "@bound/core";
 import { parseJsonSafe, resultPayloadSchema } from "@bound/shared";
 
 /**
  * The winning scalar response for one awaiting request, adapted to a common
- * `{ id, kind, payload, settle }` shape regardless of which store it came from.
- * `settle()` retires the row: a legacy relay_inbox row is `markProcessed`; a
- * durable response row was claimed under a fresh token here, so `settle()` acks
- * it to `consumed`. The token-fenced lifecycle makes delivery exactly-once even
- * if a redelivered transfer produced a second (fenced-away) copy.
+ * `{ id, kind, payload, settle }` shape. `settle()` retires the row: a durable
+ * response row was claimed under a fresh token here, so `settle()` acks it to
+ * `consumed`. The token-fenced lifecycle makes delivery exactly-once even if a
+ * redelivered transfer produced a second (fenced-away) copy.
  */
 export interface UnionResponseEntry {
 	id: string;
@@ -25,11 +21,9 @@ export interface UnionResponseEntry {
 }
 
 /**
- * 4D-D union read for one awaiting request's scalar response. Returns the
- * winning row (legacy relay_inbox ∪ durable_work response targeted at self for
- * `refId`) or null when neither store has one yet. Legacy is checked first so
- * an in-flight capability flip that split a request/response across stores
- * still resolves.
+ * Union read for one awaiting request's scalar response. Returns the winning
+ * durable_work response row targeted at self (or LOCAL_WORK_TARGET) for `refId`,
+ * or null when none has landed yet.
  *
  * CRITICAL ORDER (claim → deliver → ack): a durable row is CLAIMED under a
  * fresh token here, but its ack is DEFERRED to `settle()` — the caller must
@@ -48,20 +42,6 @@ export function readUnionResponseEntry(
 	refId: string,
 	ownSiteId: string,
 ): UnionResponseEntry | null {
-	// Post-drop (slice 4E): this host retired relay_inbox, so skip the legacy
-	// read entirely (it would throw on the missing table) and resolve from the
-	// durable spool only. A capability flip already forced spool-only here.
-	const legacy = hasDroppedLegacyRelayTables(db) ? null : readInboxByRefId(db, refId);
-	if (legacy) {
-		return {
-			id: legacy.id,
-			kind: legacy.kind,
-			payload: legacy.payload,
-			// Legacy symmetry: mark-processed is deferred to settle() so it fires
-			// only AFTER delivery, matching the durable branch's ack ordering.
-			settle: () => markProcessed(db, [legacy.id]),
-		};
-	}
 	const durable = readDurableResponseByRefId(db, refId, ownSiteId);
 	if (!durable) return null;
 	const claimed = claimDurableWorkByIds(db, [durable.id], ownSiteId);

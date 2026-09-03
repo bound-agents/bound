@@ -1,23 +1,11 @@
 import Database from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import {
-	applySchema,
-	dropLegacyRelayTables,
-	insertDurableWork,
-	readDurableResponseByRefId,
-	readUndelivered,
-} from "@bound/core";
+import { applySchema, insertDurableWork, readDurableResponseByRefId } from "@bound/core";
 import { createRemotePlatformRequest } from "../commands/start/server.js";
 
 /**
  * Regression coverage for the last #253 defect: the two remotePlatformRequest
- * awaiters (scheduler.ts + server.ts) polled ONLY legacy relay_inbox and were
- * gated on `!hasDroppedLegacyRelayTables(db)`, so once slice 4E dropped the
- * legacy tables the poll loop body never ran and every platform_request hung
- * 15s → "Timeout waiting for platform_request response". Responses arrive on
- * the requesting spoke as pending durable_work rows targeted at self; the
- * awaiter must consume them via the union await (readDurableResponseByRefId +
- * token-fenced claim → deliver → ack).
+ * awaiters must consume responses from pending durable_work rows targeted at the requester via the token-fenced claim → deliver → ack lifecycle.
  */
 
 let openDbs: Database[] = [];
@@ -77,7 +65,6 @@ describe("remotePlatformRequest durable-response awaiting (server.ts)", () => {
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
 		seedFreshRemoteHost(db, remoteSiteId);
-		dropLegacyRelayTables(db, "test: post-4E drop");
 
 		const request = createRemotePlatformRequest({
 			db,
@@ -118,7 +105,6 @@ describe("remotePlatformRequest durable-response awaiting (server.ts)", () => {
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
 		seedFreshRemoteHost(db, remoteSiteId);
-		dropLegacyRelayTables(db, "test: post-4E drop");
 
 		const request = createRemotePlatformRequest({
 			db,
@@ -152,55 +138,5 @@ describe("remotePlatformRequest durable-response awaiting (server.ts)", () => {
 			.query("SELECT claim_state FROM durable_work WHERE id = ?")
 			.get(`err-${refId}`) as { claim_state: string } | null;
 		expect(row?.claim_state).toBe("consumed");
-	});
-
-	it("(c) still consumes from legacy relay_inbox when the tables are present (compat path)", async () => {
-		const db = makeDb();
-		const localSiteId = "local-site";
-		const remoteSiteId = "remote-site";
-		// legacy tables NOT dropped, and the remote host does NOT advertise
-		// work_spool_capable, so routeRelayRequest falls back to the legacy
-		// relay_outbox path (the pre-4E compat condition).
-		const now0 = new Date().toISOString();
-		db.run(
-			"INSERT INTO hosts (site_id, host_name, platforms, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
-			[remoteSiteId, "remote", JSON.stringify(["discord"]), now0, now0],
-		);
-
-		const request = createRemotePlatformRequest({
-			db,
-			siteId: localSiteId,
-			eventBus: undefined,
-			optionalConfig: undefined,
-		} as never);
-
-		const pending = request("discord", "tools/call", { name: "discord_list_channels" });
-		await new Promise((r) => setTimeout(r, 20));
-
-		const outbox = readUndelivered(db)[0];
-		expect(outbox).toBeDefined();
-		const now = new Date().toISOString();
-		db.run(
-			"INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed) VALUES (?, ?, 'result', ?, ?, ?, ?, 0)",
-			[
-				"legacy-result",
-				remoteSiteId,
-				outbox?.id,
-				JSON.stringify({
-					stdout: JSON.stringify({ ok: "legacy" }),
-					stderr: "",
-					exit_code: 0,
-					execution_ms: 1,
-				}),
-				now,
-				now,
-			],
-		);
-
-		expect(await pending).toEqual({ ok: "legacy" });
-		const processed = db
-			.query("SELECT processed FROM relay_inbox WHERE id = ?")
-			.get("legacy-result") as { processed: number } | null;
-		expect(processed?.processed).toBe(1);
 	});
 });

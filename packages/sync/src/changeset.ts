@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { ChangeLogEntry, RelayInboxEntry, RelayOutboxEntry, Result } from "@bound/shared";
+import type { ChangeLogEntry, Result } from "@bound/shared";
 import { HLC_ZERO, err, ok } from "@bound/shared";
 
 export interface Changeset {
@@ -7,18 +7,6 @@ export interface Changeset {
 	source_site_id: string;
 	source_hlc_start: string;
 	source_hlc_end: string;
-}
-
-export interface RelayRequest {
-	relay_outbox: RelayOutboxEntry[];
-}
-
-export interface RelayResponse {
-	relay_inbox: RelayInboxEntry[];
-	relay_delivered: string[];
-	relay_draining: boolean;
-	/** True when the hub has additional pending relay entries for this spoke. */
-	relay_pending?: boolean;
 }
 
 export function fetchOutboundChangeset(

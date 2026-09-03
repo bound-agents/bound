@@ -46,29 +46,34 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000, pollMs = 10):
 function getInferenceOutboxRow(db: Database): { stream_id: string; payload: string } | null {
 	return db
 		.prepare(
-			"SELECT stream_id, payload FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+			"SELECT stream_id, payload FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 		)
 		.get() as { stream_id: string; payload: string } | null;
 }
 
+// Post-N+1: stream responses ride the durable_work spool as self-targeted rows
+// keyed by stream_id, consumed by the awaiter's union read.
 function insertRelayInboxEntry(
 	db: Database,
 	opts: { id: string; sourceSiteId: string; kind: string; streamId: string; payload: string },
 ) {
+	// Post-N+1: stream responses ride the durable_work spool. A chunk/end is a
+	// durable row targeted at the requester (local-spoke), keyed by stream_id.
 	db.prepare(
-		`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, claim_state, attempt_count, created_at, source_site)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
 	).run(
 		opts.id,
-		opts.sourceSiteId,
+		"local-spoke",
 		opts.kind,
 		null,
-		null,
+		`stream:${opts.streamId}:${opts.kind}:${opts.id}`,
 		opts.streamId,
 		opts.payload,
 		new Date(Date.now() + 300_000).toISOString(),
 		new Date().toISOString(),
-		0,
+		new Date().toISOString(),
+		opts.sourceSiteId,
 	);
 }
 
@@ -79,6 +84,15 @@ const eligibleHost = (siteId: string, hostName: string): EligibleHost => ({
 	online_at: new Date().toISOString(),
 	modified_at: new Date().toISOString(),
 });
+
+// Post-N+1 routeRelayRequest requires the target host to advertise
+// work_spool_capable (no legacy fallback). Seed the relay target as capable.
+function seedCapableHost(db: Database, siteId: string, hostName: string) {
+	const now = new Date().toISOString();
+	db.prepare(
+		"INSERT OR IGNORE INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, 0, 1)",
+	).run(siteId, hostName, now, now);
+}
 
 describe("createRelayBackend", () => {
 	let db: Database;
@@ -92,6 +106,8 @@ describe("createRelayBackend", () => {
 		({ db, tmpDir } = createTestDb());
 		const eventBus = new TypedEventEmitter();
 		const remoteSite = "remote-spoke";
+		seedCapableHost(db, remoteSite, "remote-spoke.local");
+		seedCapableHost(db, remoteSite, "remote-spoke.local");
 
 		const backend = createRelayBackend(
 			{ db, eventBus, siteId: "local-spoke", logger: mockLogger },

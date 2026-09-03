@@ -18,7 +18,7 @@ import type { NotifyWakeupPayload } from "../wakeup-routing";
 
 function insertHost(db: Database, siteId: string, hostName: string, modifiedAt: string) {
 	db.prepare(
-		"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, 0)",
+		"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, 0, 1)",
 	).run(siteId, hostName, modifiedAt, modifiedAt);
 }
 
@@ -37,6 +37,9 @@ function getDispatchRows(db: Database, threadId: string): Array<{ event_payload:
 		.all(threadId) as Array<{ event_payload: string }>;
 }
 
+// Post-N+1 the relay path is durable-only: routeNotificationWakeup writes a
+// peer-targeted durable_work row (kind "notify_wakeup") that transfers to the
+// session host. The legacy relay_outbox is gone; assertions read durable_work.
 function getOutboxRows(db: Database): Array<{
 	kind: string;
 	target_site_id: string;
@@ -44,7 +47,9 @@ function getOutboxRows(db: Database): Array<{
 	idempotency_key: string | null;
 }> {
 	return db
-		.prepare("SELECT kind, target_site_id, payload, idempotency_key FROM relay_outbox")
+		.prepare(
+			"SELECT kind, target_site_id, payload, idempotency_key FROM durable_work WHERE kind = 'notify_wakeup'",
+		)
 		.all() as Array<{
 		kind: string;
 		target_site_id: string;

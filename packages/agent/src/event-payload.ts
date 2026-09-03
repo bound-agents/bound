@@ -1,13 +1,7 @@
 import type { Database } from "bun:sqlite";
-import {
-	claimDurableWorkByIds,
-	listPendingIntakeDurableWorkForRef,
-	readUnprocessedInboxByRefId,
-} from "@bound/core";
-import type { DurableWorkRow } from "@bound/core";
+import { claimDurableWorkByIds, listPendingIntakeDurableWorkForRef } from "@bound/core";
 import { escapeXmlAttr } from "@bound/shared";
 import type { Task } from "@bound/shared";
-import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry";
 
 export interface DurableWakeupClaim {
 	/** The durable_work row id that was claimed for this wakeup. */
@@ -59,8 +53,6 @@ interface MergedIntakeEntry {
 	kind: string;
 	source_site_id: string;
 	payload: string;
-	/** Relay-side row id, present for relay rows and for a relay twin of a durable row. */
-	relayId: string | null;
 	/** Durable row id, present only for a durable row. */
 	durableId: string | null;
 }
@@ -161,45 +153,15 @@ export function buildEventWakeupContent(
 	}
 	const threadId = task.thread_id;
 
-	// Legacy relay_inbox passive rows for this thread, across the three passive
-	// intake kinds. Reading each kind explicitly (rather than dropping the kind
-	// filter) keeps a stray platform-MCP `intake` row — whose payload schema is
-	// entirely different — from being folded as if it were an event envelope.
-	const relayRows = PASSIVE_INTAKE_KINDS.flatMap((kind) =>
-		readUnprocessedInboxByRefId(db, threadId, kind),
-	);
+	// Passive intake rows for this thread ride the durable_work spool (4C-1
+	// reader; already scoped to the passive intake kinds and ordered by
+	// received/created time). Legacy relay_inbox intake is retired (release N+1).
 
 	// Pending durable_work intake rows for this thread (4C-1 reader; already
 	// scoped to the passive intake kinds and ordered by received/created time).
 	const durableRows = listPendingIntakeDurableWorkForRef(db, threadId);
 
-	// TWIN DEDUPE: index durable rows by (kind, idempotency_key). A relay row
-	// whose key matches a durable row is a twin — we fold the durable copy and
-	// still mark the relay twin processed so it never re-folds.
-	const durableByKey = new Map<string, DurableWorkRow>();
-	for (const row of durableRows) {
-		durableByKey.set(`${row.kind}\u0000${row.idempotency_key}`, row);
-	}
-
 	const merged: MergedIntakeEntry[] = [];
-	const relayTwinIds: string[] = [];
-	for (const row of relayRows) {
-		const twin = durableByKey.get(`${row.kind}\u0000${row.idempotency_key}`);
-		if (twin) {
-			// The durable copy folds; the relay twin is still drained so it can
-			// never re-fold on a later wakeup.
-			relayTwinIds.push(row.id);
-			continue;
-		}
-		merged.push({
-			received_at: row.received_at,
-			kind: row.kind,
-			source_site_id: row.source_site_id,
-			payload: row.payload,
-			relayId: row.id,
-			durableId: null,
-		});
-	}
 	for (const row of durableRows) {
 		merged.push({
 			// received_at is nullable on durable_work; fall back to created_at so
@@ -208,7 +170,6 @@ export function buildEventWakeupContent(
 			kind: row.kind,
 			source_site_id: row.source_site ?? "",
 			payload: row.payload,
-			relayId: null,
 			durableId: row.id,
 		});
 	}
@@ -239,9 +200,8 @@ export function buildEventWakeupContent(
 	);
 
 	if (folded.length === 0) {
-		// Every durable candidate slipped away and there were no relay rows; the
-		// relay twins (if any) still need draining.
-		return { content: fallback, processedIds: relayTwinIds, durableClaims: [] };
+		// Every durable candidate slipped away between the list and the claim.
+		return { content: fallback, processedIds: [], durableClaims: [] };
 	}
 
 	const triggerSpec = task.trigger_spec || "(unspecified)";
@@ -276,12 +236,9 @@ export function buildEventWakeupContent(
 
 	const standing = task.payload ? `\n\nStanding task payload:\n${task.payload}` : "";
 
-	// Relay ids to mark processed: the relay rows we folded directly PLUS the
-	// relay twins we skipped in favor of their durable copy.
-	const processedIds = [
-		...folded.map((entry) => entry.relayId).filter((id): id is string => id !== null),
-		...relayTwinIds,
-	];
+	// No relay ids to mark processed after the release-N+1 demolition — the
+	// durable claims below are the sole acknowledgment path.
+	const processedIds: string[] = [];
 	const durableClaims: DurableWakeupClaim[] = folded
 		.filter((entry) => entry.durableId !== null)
 		.map((entry) => ({

@@ -11,12 +11,8 @@ export {
 	importPrivateKey,
 } from "./crypto.js";
 export { signRequest } from "./signing.js";
-
-// Relay wire format
-export type { RelayRequest, RelayResponse } from "./changeset.js";
+// Changeset chunking
 export { chunkChangeset, DEFAULT_MAX_CHUNK_BYTES } from "./changeset.js";
-export type { RelayExecutor } from "./relay-executor.js";
-export { noopRelayExecutor } from "./relay-executor.js";
 
 // Pruning
 export { startPruningLoop, drainFreelistOnStartup } from "./pruning.js";

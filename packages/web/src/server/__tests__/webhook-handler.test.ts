@@ -1,8 +1,8 @@
 import Database from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { applySchema, insertRow, setDurableIntakeEnabledForTesting } from "@bound/core";
+import { applySchema, insertRow } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { MAX_WEBHOOK_BODY_BYTES, handleWebhookRequest } from "../webhook-handler.js";
 
@@ -12,7 +12,6 @@ describe("handleWebhookRequest", () => {
 	let eventBus: TypedEventEmitter;
 
 	beforeEach(() => {
-		setDurableIntakeEnabledForTesting(false);
 		db = new Database(":memory:");
 		siteId = randomUUID();
 		eventBus = new TypedEventEmitter();
@@ -26,14 +25,10 @@ describe("handleWebhookRequest", () => {
 		);
 	});
 
-	afterEach(() => {
-		setDurableIntakeEnabledForTesting(true);
-	});
-
 	// ──────────────────────────────────────────────────────────────────
-	// AC2.1: Valid signature writes relay_inbox entry and returns 202
+	// AC2.1: Valid signature writes durable_work entry and returns 202
 	// ──────────────────────────────────────────────────────────────────
-	test("AC2.1: POST with valid GitHub signature returns 202 and writes relay_inbox", async () => {
+	test("AC2.1: POST with valid GitHub signature returns 202 and writes durable_work", async () => {
 		// Create a webhook row
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
@@ -83,14 +78,14 @@ describe("handleWebhookRequest", () => {
 		const text = await response.text();
 		expect(text).toBe("");
 
-		// Verify relay_inbox entry was written
+		// Verify durable_work entry was written
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(1);
 
 		const entry = inboxEntries[0] as any;
-		expect(entry.source_site_id).toBe(siteId);
+		expect(entry.source_site).toBe(siteId);
 		// AC3.1: ref_id must equal the webhook's thread_id
 		expect(entry.ref_id).toBe(webhookThreadId);
 		const payload = JSON.parse(entry.payload);
@@ -98,10 +93,7 @@ describe("handleWebhookRequest", () => {
 		expect(payload.path).toBe("/webhook/test_webhook");
 	});
 
-	describe("durable intake default", () => {
-		beforeEach(() => setDurableIntakeEnabledForTesting(true));
-		afterEach(() => setDurableIntakeEnabledForTesting(true));
-
+	describe("durable intake", () => {
 		test("writes one webhook row with the delivery key and no relay twin", async () => {
 			const webhookId = randomUUID();
 			const threadId = randomUUID();
@@ -157,7 +149,7 @@ describe("handleWebhookRequest", () => {
 			expect(Date.parse(rows[0].expires_at) - Date.parse(rows[0].received_at)).toBeGreaterThan(
 				6 * 24 * 60 * 60 * 1000,
 			);
-			expect(db.query("SELECT COUNT(*) AS count FROM relay_inbox").get()).toEqual({ count: 0 });
+			// The durable mailbox is the sole intake store; the row above is the expected entry.
 		});
 	});
 
@@ -335,7 +327,7 @@ describe("handleWebhookRequest", () => {
 	// ──────────────────────────────────────────────────────────────────
 	// AC2.5: Body bytes are preserved exactly
 	// ──────────────────────────────────────────────────────────────────
-	test("AC2.5: Body bytes preserved exactly in relay_inbox payload", async () => {
+	test("AC2.5: Body bytes preserved exactly in durable_work payload", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
 		const webhookName = "test_webhook";
@@ -381,7 +373,7 @@ describe("handleWebhookRequest", () => {
 
 		// Verify body was preserved
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		const entry = inboxEntries[0] as any;
 		const payload = JSON.parse(entry.payload);
@@ -454,9 +446,9 @@ describe("handleWebhookRequest", () => {
 		const text = await response.text();
 		expect(text).toBe("");
 
-		// Verify no relay_inbox entry was created
+		// Verify no durable_work entry was created
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(0);
 	});
@@ -509,9 +501,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response.status).toBe(202);
 
-		// Verify relay_inbox entry
+		// Verify durable_work entry
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(1);
 	});
@@ -562,9 +554,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response.status).toBe(202);
 
-		// Verify relay_inbox entry
+		// Verify durable_work entry
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(1);
 	});
@@ -618,7 +610,7 @@ describe("handleWebhookRequest", () => {
 
 		// Verify envelope includes event headers but not connection/host headers
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
@@ -638,7 +630,7 @@ describe("handleWebhookRequest", () => {
 	// ──────────────────────────────────────────────────────────────────
 	// AC3.4: Delivery-header deduplication
 	// ──────────────────────────────────────────────────────────────────
-	test("AC3.4: Two requests with same X-GitHub-Delivery header produce one relay_inbox entry", async () => {
+	test("AC3.4: Two requests with same X-GitHub-Delivery header produce one durable_work entry", async () => {
 		const webhookId = randomUUID();
 		const webhookSecret = "test_secret_123";
 		const webhookName = "test_webhook";
@@ -701,9 +693,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response2.status).toBe(202);
 
-		// Verify only one relay_inbox entry was created (deduped)
+		// Verify only one durable_work entry was created (deduped)
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(1);
 
@@ -831,9 +823,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response2.status).toBe(202);
 
-		// Verify two separate relay_inbox entries were created (no dedup possible)
+		// Verify two separate durable_work entries were created (no dedup possible)
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(2);
 
@@ -891,9 +883,9 @@ describe("handleWebhookRequest", () => {
 
 		expect(response.status).toBe(202);
 
-		// Verify relay_inbox entry uses Stripe delivery ID
+		// Verify durable_work entry uses Stripe delivery ID
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		expect(inboxEntries.length).toBe(1);
 
@@ -949,7 +941,7 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
@@ -1005,7 +997,7 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
@@ -1061,7 +1053,7 @@ describe("handleWebhookRequest", () => {
 		expect(response.status).toBe(202);
 
 		const inboxEntries = db
-			.prepare("SELECT * FROM relay_inbox WHERE kind = 'webhook_intake'")
+			.prepare("SELECT * FROM durable_work WHERE kind = 'webhook_intake'")
 			.all();
 		const entry = inboxEntries[0] as any;
 		const envelope = JSON.parse(entry.payload);
@@ -1071,72 +1063,5 @@ describe("handleWebhookRequest", () => {
 		expect(envelope.headers["x-slack-signature"]).toBeUndefined();
 		// Timestamp is an event-type header and is needed for replay, so it's included
 		expect(envelope.headers["x-slack-request-timestamp"]).toBe(timestamp);
-	});
-});
-
-describe("retired relay intake", () => {
-	let retiredDb: Database;
-	let retiredSiteId: string;
-	beforeEach(() => {
-		retiredDb = new Database(":memory:");
-		retiredSiteId = randomUUID();
-		applySchema(retiredDb);
-		retiredDb.run(
-			"INSERT INTO hosts (site_id, host_name, version, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-			[retiredSiteId, "test-host", "1.0.0", new Date().toISOString(), 0],
-		);
-	});
-	afterEach(() => setDurableIntakeEnabledForTesting(true));
-	test("forces durable intake when the rollback toggle is enabled", async () => {
-		const { dropLegacyRelayTables, hasDroppedLegacyRelayTables } = await import("@bound/core");
-		const secret = "retired-secret";
-		insertRow(
-			retiredDb,
-			"webhooks",
-			{
-				id: randomUUID(),
-				name: "retired-hook",
-				secret,
-				signature_format: "github",
-				description: null,
-				task_id: randomUUID(),
-				thread_id: randomUUID(),
-				created_at: new Date().toISOString(),
-				modified_at: new Date().toISOString(),
-				deleted: 0,
-			},
-			retiredSiteId,
-		);
-		expect(dropLegacyRelayTables(retiredDb, "test retirement")).toBe(true);
-		expect(hasDroppedLegacyRelayTables(retiredDb)).toBe(true);
-		setDurableIntakeEnabledForTesting(false);
-		const body = Buffer.from('{"event":"retired"}');
-		const warning = console.warn;
-		const warnings: unknown[][] = [];
-		console.warn = (...args: unknown[]) => warnings.push(args);
-		try {
-			const response = await handleWebhookRequest(
-				new Request("http://localhost/webhook/retired-hook", {
-					method: "POST",
-					headers: {
-						"X-Hub-Signature-256": `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`,
-					},
-					body,
-				}),
-				"retired-hook",
-				{ db: retiredDb, siteId: retiredSiteId, eventBus: new TypedEventEmitter() },
-			);
-			expect(response.status).toBe(202);
-		} finally {
-			console.warn = warning;
-			setDurableIntakeEnabledForTesting(true);
-		}
-		expect(
-			retiredDb
-				.query("SELECT COUNT(*) AS count FROM durable_work WHERE kind = 'webhook_intake'")
-				.get(),
-		).toEqual({ count: 1 });
-		expect(warnings).toHaveLength(1);
-		expect(String(warnings[0][0])).toContain("legacy_relay_intake_unavailable");
 	});
 });

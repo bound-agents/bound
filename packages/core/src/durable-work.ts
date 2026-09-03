@@ -8,31 +8,10 @@ let durableWorkEventBus: TypedEventEmitter | null = null;
 
 /**
  * Set the event bus for `durable_work:written` events. Called at startup to
- * enable push-on-insert spool transfer for peer-targeted rows (R-DW10/R-DW11),
- * mirroring {@link setRelayOutboxEventBus}.
+ * enable push-on-insert spool transfer for peer-targeted rows (R-DW10/R-DW11).
  */
 export function setDurableWorkEventBus(eventBus: TypedEventEmitter | null): void {
 	durableWorkEventBus = eventBus;
-}
-
-/** Set BOUND_DURABLE_INTAKE=0 or false before startup to restore legacy relay-inbox intake writes. */
-export let DURABLE_INTAKE_ENABLED = !["0", "false"].includes(
-	process.env.BOUND_DURABLE_INTAKE?.toLowerCase() ?? "",
-);
-
-/** Test seam for exercising the intake rollback route without changing production defaults. */
-export function setDurableIntakeEnabledForTesting(enabled: boolean): void {
-	DURABLE_INTAKE_ENABLED = enabled;
-}
-
-/** Set BOUND_DURABLE_RELAY=0 or false before startup to restore legacy relay_outbox writes for all active non-stream RPC. */
-export let DURABLE_RELAY_ENABLED = !["0", "false"].includes(
-	process.env.BOUND_DURABLE_RELAY?.toLowerCase() ?? "",
-);
-
-/** Test seam for exercising the relay rollback route without changing production defaults. */
-export function setDurableRelayEnabledForTesting(enabled: boolean): void {
-	DURABLE_RELAY_ENABLED = enabled;
 }
 
 /**
@@ -298,6 +277,96 @@ export function claimDurableWorkByIds(
 			}
 			db.exec("COMMIT");
 			return claimed;
+		} catch (error) {
+			try {
+				db.exec("ROLLBACK");
+			} catch {
+				/* original error wins */
+			}
+			throw error;
+		}
+	});
+}
+
+/**
+ * Claim a set of `pending` sibling rows and consume the WHOLE set (the caller's
+ * already-claimed rows plus the freshly-claimed siblings) in ONE
+ * `BEGIN IMMEDIATE`. This is the atomic form of "claim my remaining siblings,
+ * validate I have the complete set, retire all of them" that a multipart
+ * reassembler needs: the caller holds one row `processing` under a known token
+ * (`preClaimed`) and must retire it together with its `pending` siblings so a
+ * crash cannot leave a partial set recoverable, and a concurrent claimant taking
+ * any sibling away rolls the WHOLE thing back with nothing claimed and nothing
+ * consumed.
+ *
+ * `allIds` is the complete set to consume. `preClaimed` maps ids the caller has
+ * already claimed to their live tokens; every other id is claimed here (only if
+ * still `pending`). If ANY id in `allIds` cannot be acknowledged under a live
+ * `processing` token — a sibling was never claimable (claimed away by a peer or
+ * boot recovery), or a pre-claimed token went stale — the transaction rolls
+ * back: no sibling this call claimed survives, and no row is consumed. Returns
+ * true only when EVERY id reached `consumed`.
+ *
+ * Splitting claim and consume across two transactions (claim helper commits,
+ * then a separate ack transaction) is unsafe: a shortfall rollback would undo
+ * only the acks, leaving the freshly-committed sibling claims stranded
+ * `processing`. Keeping both phases in one transaction is why the caller must
+ * hand in `preClaimed` rather than letting this function re-derive it — the
+ * current part is already `processing` and cannot be re-claimed from `pending`.
+ */
+export function claimAndConsumeDurableWorkByIds(
+	db: Database,
+	allIds: readonly string[],
+	targetSiteId: string,
+	preClaimed: ReadonlyMap<string, string>,
+): boolean {
+	if (allIds.length === 0) return false;
+	return instrument("claim-and-consume-by-ids", "any", () => {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			const tokenById = new Map<string, string>(preClaimed);
+			const pendingIds = allIds.filter((id) => !tokenById.has(id));
+			if (pendingIds.length > 0) {
+				const placeholders = pendingIds.map(() => "?").join(", ");
+				const pending = db
+					.query(
+						`SELECT id FROM durable_work WHERE target_site_id = ? AND claim_state = 'pending' AND id IN (${placeholders})`,
+					)
+					.all(targetSiteId, ...pendingIds) as Array<{ id: string }>;
+				const now = new Date().toISOString();
+				for (const row of pending) {
+					const token = randomUUID();
+					db.run(
+						`UPDATE durable_work SET claim_state = 'processing', claim_token = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE id = ? AND claim_state = 'pending'`,
+						[token, now, row.id],
+					);
+					tokenById.set(row.id, token);
+				}
+			}
+			const consumedAt = new Date().toISOString();
+			let allConsumed = true;
+			for (const id of allIds) {
+				const token = tokenById.get(id);
+				if (!token) {
+					allConsumed = false;
+					break;
+				}
+				const acked =
+					db.run(
+						"UPDATE durable_work SET claim_state = 'consumed', consumed_at = ?, claim_token = NULL, claimed_at = NULL WHERE id = ? AND claim_state = 'processing' AND claim_token = ?",
+						[consumedAt, id, token],
+					).changes === 1;
+				if (!acked) {
+					allConsumed = false;
+					break;
+				}
+			}
+			if (!allConsumed) {
+				db.exec("ROLLBACK");
+				return false;
+			}
+			db.exec("COMMIT");
+			return true;
 		} catch (error) {
 			try {
 				db.exec("ROLLBACK");

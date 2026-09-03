@@ -28,6 +28,12 @@ describe("createRelayStream$() observable", () => {
 	});
 
 	afterEach(async () => {
+		// The relay-stream$ observable polls readDurableResponsesByStreamId on deps.db
+		// each tick; a poll can still be in flight when a test's `await streamPromise`
+		// resolves (gap-detection tests leave the stream open past the assertion).
+		// Let pending microtasks/timers drain before closing so an in-flight poll does
+		// not hit a closed database and surface as the NEXT test's failure.
+		await new Promise((r) => setTimeout(r, 50));
 		try {
 			db.close();
 		} catch {
@@ -41,11 +47,18 @@ describe("createRelayStream$() observable", () => {
 	});
 
 	function makeMockHost(hostName: string): EligibleHost {
+		const siteId = `site-${hostName}`;
+		const nowIso = new Date().toISOString();
+		// Post-N+1 routeRelayRequest routes durable only when the target advertises
+		// work_spool_capable (no legacy fallback). Seed the target host as capable.
+		db.prepare(
+			"INSERT OR IGNORE INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, 0, 1)",
+		).run(siteId, hostName, nowIso, nowIso);
 		return {
-			site_id: `site-${hostName}`,
+			site_id: siteId,
 			host_name: hostName,
 			sync_url: null,
-			online_at: new Date().toISOString(),
+			online_at: nowIso,
 		};
 	}
 
@@ -97,7 +110,7 @@ describe("createRelayStream$() observable", () => {
 		// Read the generated stream_id from relay_outbox
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -107,14 +120,14 @@ describe("createRelayStream$() observable", () => {
 			// Now insert stream_chunk entries matching the generated stream_id
 			const now = new Date().toISOString();
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 0,
@@ -122,19 +135,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 1,
@@ -142,19 +154,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 2,
@@ -162,7 +173,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -209,7 +219,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -219,14 +229,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert one chunk then stream_end with done chunk
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 0,
@@ -234,19 +244,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 1,
@@ -254,7 +263,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -304,7 +312,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -314,14 +322,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert out of order: seq 2, then 0, then 1
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 2,
@@ -329,19 +337,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 0,
@@ -349,19 +356,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 1,
@@ -369,19 +375,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 3,
@@ -389,7 +394,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -443,7 +447,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT id, stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT id, stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { id: string; stream_id: string } | null;
 
@@ -454,14 +458,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert one chunk to trigger iteration
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 0,
@@ -469,7 +473,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -479,7 +482,7 @@ describe("createRelayStream$() observable", () => {
 		// Verify cancel entry was written with correct ref_id
 		const cancelEntry = db
 			.query(
-				"SELECT ref_id FROM relay_outbox WHERE kind = 'cancel' ORDER BY created_at DESC LIMIT 1",
+				"SELECT ref_id FROM durable_work WHERE kind = 'cancel' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { ref_id: string | null } | null;
 
@@ -532,7 +535,7 @@ describe("createRelayStream$() observable", () => {
 
 		// Verify multiple inference entries with different stream_ids
 		const inferenceEntries = db
-			.query("SELECT DISTINCT stream_id FROM relay_outbox WHERE kind = 'inference'")
+			.query("SELECT DISTINCT stream_id FROM durable_work WHERE kind = 'inference'")
 			.all() as Array<{ stream_id: string }>;
 
 		for (const e of inferenceEntries) {
@@ -545,7 +548,7 @@ describe("createRelayStream$() observable", () => {
 
 		// And should have written at least 1 inference entry
 		const allInference = db
-			.query("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
+			.query("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'inference'")
 			.get() as { cnt: number };
 		expect(allInference.cnt).toBeGreaterThanOrEqual(1);
 	});
@@ -590,7 +593,7 @@ describe("createRelayStream$() observable", () => {
 
 		// Verify that an inference entry was written (indicating the request was attempted)
 		const inferenceEntries = db
-			.query("SELECT COUNT(*) as cnt FROM relay_outbox WHERE kind = 'inference'")
+			.query("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'inference'")
 			.get() as { cnt: number };
 		expect(inferenceEntries.cnt).toBe(1);
 	});
@@ -627,7 +630,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -637,19 +640,18 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert error entry
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"error",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ error: "model not found" }),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -697,7 +699,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -707,14 +709,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert seq=0, then insert seq=2 (skip seq=1)
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 0,
@@ -722,7 +724,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
@@ -730,14 +731,14 @@ describe("createRelayStream$() observable", () => {
 			await new Promise((r) => setTimeout(r, 10));
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 2,
@@ -745,19 +746,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 3,
@@ -765,7 +765,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -811,7 +810,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -821,14 +820,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert a chunk to populate metadata
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 0,
@@ -836,19 +835,18 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 1,
@@ -856,7 +854,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					new Date(Date.now() + 60_000).toISOString(),
 					now,
-					0,
 				],
 			);
 		}
@@ -899,7 +896,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -911,68 +908,65 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert seq 0
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "hello" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
 			// Insert seq 1 with a specific id
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					dupeId,
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "world" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
 			// Try to insert duplicate of seq 1 with SAME id — should be silently ignored
 			db.run(
-				`INSERT OR IGNORE INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT OR IGNORE INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					dupeId,
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "world-dupe" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
 			// Insert stream_end
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 2,
@@ -980,7 +974,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					expires,
 					now,
-					0,
 				],
 			);
 		}
@@ -1023,7 +1016,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -1035,19 +1028,18 @@ describe("createRelayStream$() observable", () => {
 			// Insert seq 0, 1, 2 in order
 			for (let seq = 0; seq < 3; seq++) {
 				db.run(
-					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 					[
 						randomUUID(),
 						host.site_id,
 						"stream_chunk",
 						null,
-						null,
+						randomUUID(),
 						generatedStreamId,
 						JSON.stringify({ seq, chunks: [{ type: "text", content: `chunk-${seq}` }] }),
 						expires,
 						now,
-						0,
 					],
 				);
 			}
@@ -1059,19 +1051,18 @@ describe("createRelayStream$() observable", () => {
 			// These should be discarded by the backwards-jump guard
 			for (let seq = 0; seq < 2; seq++) {
 				db.run(
-					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 					[
 						randomUUID(),
 						host.site_id,
 						"stream_chunk",
 						null,
-						null,
+						randomUUID(),
 						generatedStreamId,
 						JSON.stringify({ seq, chunks: [{ type: "text", content: `stale-${seq}` }] }),
 						expires,
 						now,
-						0,
 					],
 				);
 			}
@@ -1081,14 +1072,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Now insert seq 3 (stream_end) to complete the stream
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 3,
@@ -1096,7 +1087,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					expires,
 					now,
-					0,
 				],
 			);
 		}
@@ -1143,7 +1133,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -1154,19 +1144,18 @@ describe("createRelayStream$() observable", () => {
 
 			// Delivery 1: seq 0 arrives (simulating first sync cycle)
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "A" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
@@ -1175,35 +1164,33 @@ describe("createRelayStream$() observable", () => {
 
 			// Delivery 2: seq 2 and 3 arrive, but NOT seq 1 yet (split sync cycle)
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 2, chunks: [{ type: "text", content: "C" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 3, chunks: [{ type: "text", content: "D" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
@@ -1212,32 +1199,31 @@ describe("createRelayStream$() observable", () => {
 
 			// Delivery 3: seq 1 arrives (delayed from second sync cycle)
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "B" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
 			// Insert stream_end
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 4,
@@ -1245,7 +1231,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					expires,
 					now,
-					0,
 				],
 			);
 		}
@@ -1287,7 +1272,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -1299,19 +1284,18 @@ describe("createRelayStream$() observable", () => {
 			// First delivery: seq 0, 1, 2
 			for (let seq = 0; seq < 3; seq++) {
 				db.run(
-					`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 					[
 						randomUUID(),
 						host.site_id,
 						"stream_chunk",
 						null,
-						null,
+						randomUUID(),
 						generatedStreamId,
 						JSON.stringify({ seq, chunks: [{ type: "text", content: `original-${seq}` }] }),
 						expires,
 						now,
-						0,
 					],
 				);
 			}
@@ -1323,30 +1307,29 @@ describe("createRelayStream$() observable", () => {
 			// The stale seq 1 has a DIFFERENT id (simulating hub creating new inbox entry
 			// before the dedup fix), but same seq number
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 1, chunks: [{ type: "text", content: "STALE" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 3,
@@ -1354,7 +1337,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					expires,
 					now,
-					0,
 				],
 			);
 		}
@@ -1397,7 +1379,7 @@ describe("createRelayStream$() observable", () => {
 
 		const outboxEntry = db
 			.query(
-				"SELECT stream_id FROM relay_outbox WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' ORDER BY created_at DESC LIMIT 1",
 			)
 			.get() as { stream_id: string } | null;
 
@@ -1408,35 +1390,33 @@ describe("createRelayStream$() observable", () => {
 
 			// Insert seq 0, skip seq 1 entirely, insert seq 2
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "zero" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_chunk",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({ seq: 2, chunks: [{ type: "text", content: "two" }] }),
 					expires,
 					now,
-					0,
 				],
 			);
 
@@ -1445,14 +1425,14 @@ describe("createRelayStream$() observable", () => {
 
 			// Now insert stream_end at seq 3
 			db.run(
-				`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO durable_work (id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, target_site_id, claim_state, attempt_count, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'test-site-id', 'pending', 0, datetime('now'))`,
 				[
 					randomUUID(),
 					host.site_id,
 					"stream_end",
 					null,
-					null,
+					randomUUID(),
 					generatedStreamId,
 					JSON.stringify({
 						seq: 3,
@@ -1460,7 +1440,6 @@ describe("createRelayStream$() observable", () => {
 					}),
 					expires,
 					now,
-					0,
 				],
 			);
 		}

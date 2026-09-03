@@ -1,11 +1,6 @@
 import Database from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import {
-	applySchema,
-	dropLegacyRelayTables,
-	insertDurableWork,
-	readDurableResponseByRefId,
-} from "@bound/core";
+import { applySchema, insertDurableWork, readDurableResponseByRefId } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
 import type { LLMBackend } from "@bound/llm";
@@ -86,7 +81,6 @@ describe("client_result durable-response awaiting (client-tool-dispatch.ts)", ()
 		const remoteSiteId = "remote-site";
 		const threadId = "thread-1";
 		seedCapableSessionHost(db, { remoteSiteId, threadId });
-		dropLegacyRelayTables(db, "test: post-4E drop");
 
 		const pending = dispatchAwaitableClientTool(deps(db, { siteId: localSiteId, threadId }));
 		await new Promise((r) => setTimeout(r, 20));
@@ -126,7 +120,6 @@ describe("client_result durable-response awaiting (client-tool-dispatch.ts)", ()
 		const remoteSiteId = "remote-site";
 		const threadId = "thread-err";
 		seedCapableSessionHost(db, { remoteSiteId, threadId });
-		dropLegacyRelayTables(db, "test: post-4E drop");
 
 		const pending = dispatchAwaitableClientTool(deps(db, { siteId: localSiteId, threadId }));
 		await new Promise((r) => setTimeout(r, 20));
@@ -155,49 +148,8 @@ describe("client_result durable-response awaiting (client-tool-dispatch.ts)", ()
 		expect(row?.claim_state).toBe("consumed");
 	});
 
-	it("(d) still consumes from legacy relay_inbox when the tables are present (compat path)", async () => {
-		const db = makeDb();
-		const localSiteId = "local-site";
-		const remoteSiteId = "remote-site";
-		const threadId = "thread-legacy";
-		// legacy tables NOT dropped, and the session host does NOT advertise
-		// work_spool_capable → routeRelayRequest falls back to legacy relay_outbox.
-		const now = new Date().toISOString();
-		db.run(
-			"INSERT INTO hosts (site_id, host_name, platforms, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
-			[remoteSiteId, "remote", JSON.stringify([]), now, now],
-		);
-		db.run(
-			"INSERT INTO client_sessions (id, connection_id, thread_id, site_id, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, 0)",
-			[`sess-${remoteSiteId}`, "conn-1", threadId, remoteSiteId, now, now],
-		);
-
-		const pending = dispatchAwaitableClientTool(deps(db, { siteId: localSiteId, threadId }));
-		await new Promise((r) => setTimeout(r, 20));
-
-		const outbox = db.query("SELECT id FROM relay_outbox LIMIT 1").get() as { id: string } | null;
-		expect(outbox).not.toBeNull();
-		const refId = outbox?.id as string;
-
-		const now2 = new Date().toISOString();
-		db.run(
-			"INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, payload, expires_at, received_at, processed) VALUES (?, ?, 'client_result', ?, ?, ?, ?, 0)",
-			[
-				"legacy-client-result",
-				remoteSiteId,
-				refId,
-				JSON.stringify({ call_id: "c1", content: "legacy contents", is_error: false }),
-				now2,
-				now2,
-			],
-		);
-
-		expect(await pending).toEqual({ content: "legacy contents", isError: false });
-		const processed = db
-			.query("SELECT processed FROM relay_inbox WHERE id = ?")
-			.get("legacy-client-result") as { processed: number } | null;
-		expect(processed?.processed).toBe(1);
-	});
+	// The legacy relay_inbox compat path was retired at release N+1: there is no
+	// "legacy tables present" state — the durable spool is the sole store.
 
 	it("(objection 1) SETTLES an unparseable durable 'client_result' row (consumes it) and resolves with a parse-error result promptly", async () => {
 		const db = makeDb();
@@ -205,7 +157,6 @@ describe("client_result durable-response awaiting (client-tool-dispatch.ts)", ()
 		const remoteSiteId = "remote-site";
 		const threadId = "thread-bad";
 		seedCapableSessionHost(db, { remoteSiteId, threadId });
-		dropLegacyRelayTables(db, "test: post-4E drop");
 
 		// Long timeout: the parse-error result must arrive from the read, NOT from
 		// the timeout path — a deterministically-unparseable payload is poison, so
@@ -351,7 +302,6 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		dropLegacyRelayTables(db, "test: post-4E drop");
 		const loop = makeWaitProbeLoop(db, localSiteId);
 
 		const refId = "rxjs-ref-a";
@@ -382,7 +332,6 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		dropLegacyRelayTables(db, "test: post-4E drop");
 		const loop = makeWaitProbeLoop(db, localSiteId);
 
 		const refId = "rxjs-ref-b";
@@ -411,7 +360,6 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		dropLegacyRelayTables(db, "test: post-4E drop");
 		const loop = makeWaitProbeLoop(db, localSiteId);
 
 		const refId = "rxjs-ref-d";
@@ -448,7 +396,6 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		dropLegacyRelayTables(db, "test: post-4E drop");
 		const loop = makeWaitProbeLoop(db, localSiteId);
 		const eventBus = (loop as unknown as { ctx: { eventBus: TypedEventEmitter } }).ctx.eventBus;
 
@@ -489,7 +436,6 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		dropLegacyRelayTables(db, "test: post-4E drop");
 		const loop = makeWaitProbeLoop(db, localSiteId);
 		const eventBus = (loop as unknown as { ctx: { eventBus: TypedEventEmitter } }).ctx.eventBus;
 

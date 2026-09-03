@@ -11,13 +11,7 @@
 import Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import {
-	acknowledgeDurableWork,
-	applySchema,
-	getDurableWork,
-	insertRow,
-	setDurableIntakeEnabledForTesting,
-} from "@bound/core";
+import { acknowledgeDurableWork, applySchema, getDurableWork, insertRow } from "@bound/core";
 import { RssPoller } from "@bound/platforms";
 import type { Task, TypedEventEmitter } from "@bound/shared";
 import { buildEventWakeupContent } from "../event-payload";
@@ -43,7 +37,6 @@ describe("durable intake producer→consumer handoff", () => {
 	let siteId: string;
 
 	beforeEach(() => {
-		setDurableIntakeEnabledForTesting(true);
 		db = new Database(":memory:");
 		applySchema(db);
 		siteId = randomUUID();
@@ -52,7 +45,6 @@ describe("durable intake producer→consumer handoff", () => {
 
 	afterEach(() => {
 		db.close();
-		setDurableIntakeEnabledForTesting(true);
 	});
 
 	function makeEventTask(threadId: string): Task {
@@ -151,7 +143,6 @@ describe("durable intake producer→consumer handoff", () => {
 		expect(produced[0].idempotency_key).toBe("rss-handoff-feed-handoff-guid-1");
 		expect(produced[0].ref_id).toBe(threadId);
 		expect(produced[0].claim_state).toBe("pending");
-		expect(db.query("SELECT COUNT(*) AS count FROM relay_inbox").get()).toEqual({ count: 0 });
 		expect(emitted.some((e) => e.event === "connector:event")).toBe(true);
 
 		// ── CONSUMER: the scheduler folds the produced row into the wakeup.

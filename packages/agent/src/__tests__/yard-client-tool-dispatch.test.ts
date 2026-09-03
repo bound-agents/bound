@@ -172,6 +172,7 @@ describe("dispatchAwaitableClientTool", () => {
 				online_at: now,
 				modified_at: now,
 				deleted: 0,
+				work_spool_capable: 1,
 			},
 			siteId,
 		);
@@ -201,7 +202,9 @@ describe("dispatchAwaitableClientTool", () => {
 		});
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		const outbox = db
-			.prepare("SELECT id, target_site_id, kind, payload FROM relay_outbox LIMIT 1")
+			.prepare(
+				"SELECT id, target_site_id, kind, payload FROM durable_work WHERE kind = 'client_tool' LIMIT 1",
+			)
 			.get() as {
 			id: string;
 			target_site_id: string;
@@ -212,14 +215,17 @@ describe("dispatchAwaitableClientTool", () => {
 		expect(outbox.target_site_id).toBe("remote-site");
 		const request = JSON.parse(outbox.payload) as { call_id: string };
 		db.prepare(
-			`INSERT INTO relay_inbox (id, source_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, processed)
-			 VALUES (?, ?, 'client_result', ?, NULL, NULL, ?, ?, ?, 0)`,
+			`INSERT INTO durable_work (id, target_site_id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, ?, ?, 'client_result', ?, ?, NULL, ?, ?, ?, 'pending', 0, ?)`,
 		).run(
 			"remote-result",
+			siteId,
 			"remote-site",
 			outbox.id,
+			`response:${outbox.id}`,
 			JSON.stringify({ call_id: request.call_id, content: '"remote"', is_error: false }),
 			new Date(Date.now() + 60_000).toISOString(),
+			new Date().toISOString(),
 			new Date().toISOString(),
 		);
 		eventBus.emit("relay:inbox", { ref_id: outbox.id, kind: "client_result" });

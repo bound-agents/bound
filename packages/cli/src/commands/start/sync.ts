@@ -4,7 +4,7 @@
  */
 
 import type { AppContext } from "@bound/core";
-import { setChangelogEventBus, setDurableWorkEventBus, setRelayOutboxEventBus } from "@bound/core";
+import { setChangelogEventBus, setDurableWorkEventBus } from "@bound/core";
 import type { KeyringConfig, SyncConfig } from "@bound/shared";
 import { formatError, wsSchema } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
@@ -50,9 +50,8 @@ export async function initSync(
 					logger: appContext.logger,
 					isHub: !syncConfig.hub, // Hub if no hub URL configured, spoke if hub URL configured
 				});
-				// Enable push-on-write for changelog and relay entries
+				// Enable push-on-write for the changelog and the durable-work spool.
 				setChangelogEventBus(appContext.eventBus);
-				setRelayOutboxEventBus(appContext.eventBus);
 				setDurableWorkEventBus(appContext.eventBus);
 				wsTransport.start();
 				appContext.logger.info("[sync] WsTransport started");

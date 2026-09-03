@@ -505,7 +505,6 @@ describe("WsSyncClient", () => {
 				drainChangelog: () => {},
 				handleRelayDeliver: () => {},
 				handleRelayAck: () => {},
-				drainRelayOutbox: () => {},
 				handleSpoolTransfer: (
 					sourceSiteId: string,
 					payload: unknown,
@@ -843,7 +842,6 @@ describe("WsSyncClient", () => {
 					drainChangelog: () => {},
 					handleRelayDeliver: () => {},
 					handleRelayAck: () => {},
-					drainRelayOutbox: () => {},
 					handleSpoolTransfer: () => {},
 					handleSpoolTransferAck: () => {},
 					drainDurableWorkSpool: (peerSiteId: string) => {
@@ -881,7 +879,6 @@ describe("WsSyncClient", () => {
 					drainChangelog: () => {},
 					handleRelayDeliver: () => {},
 					handleRelayAck: () => {},
-					drainRelayOutbox: () => {},
 					handleSpoolTransfer: () => {},
 					handleSpoolTransferAck: () => {},
 					drainDurableWorkSpool: (peerSiteId: string) => {

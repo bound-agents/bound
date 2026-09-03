@@ -2,10 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
 	deadLetterPendingDurableWork,
 	findStalePendingIntakeDurableWork,
-	findStaleUnprocessedIntake,
 	listPendingIntakeDurableWork,
-	markProcessed,
-	readUnprocessedInboxByRefId,
 } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import { createAdvisory, hasAdvisoryWithTitle } from "./advisories";
@@ -106,10 +103,7 @@ export function reconcileStaleWebhookIntake(
 	// sweep repairs only lost local event-bus wakeups for live bindings.
 	for (const sweep of PASSIVE_INTAKE_REGISTRY) {
 		const staleGroups = new Map<string, { count: number; oldestReceivedAt: string }>();
-		for (const group of [
-			...findStaleUnprocessedIntake(db, sweep.kind, staleBeforeIso),
-			...findStalePendingIntakeDurableWork(db, sweep.kind, staleBeforeIso),
-		]) {
+		for (const group of findStalePendingIntakeDurableWork(db, sweep.kind, staleBeforeIso)) {
 			const existing = staleGroups.get(group.ref_id);
 			staleGroups.set(group.ref_id, {
 				count: (existing?.count ?? 0) + group.count,
@@ -124,14 +118,8 @@ export function reconcileStaleWebhookIntake(
 			const liveBinding = sweep.findBinding(db, refId);
 
 			if (!liveBinding) {
-				// An orphan cannot drain either store. Preserve the legacy relay disposition,
-				// but retain durable rows as workspool-redrivable dead letters.
-				const relayOrphans = readUnprocessedInboxByRefId(db, refId, sweep.kind);
-				if (relayOrphans.length > 0)
-					markProcessed(
-						db,
-						relayOrphans.map((row) => row.id),
-					);
+				// An orphan cannot drain: retain durable rows as workspool-redrivable
+				// dead letters.
 				const durableOrphans = listPendingIntakeDurableWork(db, sweep.kind, refId);
 				for (const row of durableOrphans) {
 					deadLetterPendingDurableWork(
@@ -141,12 +129,11 @@ export function reconcileStaleWebhookIntake(
 						now.toISOString(),
 					);
 				}
-				const orphanedCount = relayOrphans.length + durableOrphans.length;
-				if (orphanedCount > 0) {
-					deadLettered += orphanedCount;
+				if (durableOrphans.length > 0) {
+					deadLettered += durableOrphans.length;
 					logger?.warn(`[relay] Dead-lettered orphaned ${sweep.noun} intake (no live binding)`, {
 						refId,
-						rows: orphanedCount,
+						rows: durableOrphans.length,
 					});
 				}
 				continue;

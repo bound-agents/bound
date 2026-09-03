@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { ModelRouter } from "@bound/llm";
 import type { KeyringConfig, Logger, StatusForwardPayload, TypedEventEmitter } from "@bound/shared";
 import type { McpConfig } from "@bound/shared";
-import type { KeyManager, RelayExecutor } from "@bound/sync";
+import type { KeyManager } from "@bound/sync";
 import type {
 	ChangelogAckPayload,
 	ChangelogPushPayload,
@@ -102,7 +102,6 @@ export interface SyncAppConfig {
 	siteId: string;
 	keyring: KeyringConfig;
 	logger: Logger;
-	relayExecutor?: RelayExecutor;
 	hubSiteId?: string;
 	keyManager?: KeyManager;
 	wsConfig?: {
@@ -121,7 +120,6 @@ export interface SyncAppConfig {
 		drainChangelog: (siteId: string) => void;
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
-		drainRelayInbox: (siteId: string) => void;
 		handleSpoolTransfer: (sourceSiteId: string, payload: unknown) => void;
 		handleSpoolTransferAck: (sourceSiteId: string, payload: unknown) => void;
 		drainDurableWorkSpool: (siteId: string) => void;
