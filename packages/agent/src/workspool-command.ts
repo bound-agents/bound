@@ -4,6 +4,7 @@ import {
 	getDurableWork,
 	listDeadLetterDurableWork,
 	listDurableWorkForInspection,
+	purgeDurableWork,
 	redriveDeadLetterDurableWork,
 	redriveTransferringDurableWork,
 } from "@bound/core";
@@ -51,6 +52,39 @@ function parseStaleMs(value: string | undefined): number | null {
 	return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function parseOlderThanMs(value: string | undefined): number | undefined | null {
+	if (value === undefined) return undefined;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function purge(
+	args: Record<string, string>,
+	ctx: { db: Parameters<typeof purgeDurableWork>[0] },
+): CommandResult {
+	const olderThanMs = parseOlderThanMs(args["older-than"]);
+	if (olderThanMs === null) return result("--older-than must be a non-negative number", 1);
+	const kind = args.kind;
+	if (args["dead-lettered"] === "true") {
+		const deleted = purgeDurableWork(ctx.db, { mode: "dead-lettered", kind, olderThanMs });
+		return result(
+			JSON.stringify({ purged: deleted, mode: "dead-lettered", kind: kind ?? null }, null, 2),
+		);
+	}
+	if (args["all-unclaimed"] === "true") {
+		const deleted = purgeDurableWork(ctx.db, {
+			mode: "all-unclaimed",
+			kind,
+			olderThanMs,
+			force: args.force === "true",
+		});
+		return result(
+			JSON.stringify({ purged: deleted, mode: "all-unclaimed", kind: kind ?? null }, null, 2),
+		);
+	}
+	return result("pass --dead-lettered or --all-unclaimed", 1);
+}
+
 export function createWorkspoolCommand(): CommandDefinition {
 	return {
 		name: "workspool",
@@ -63,8 +97,17 @@ export function createWorkspoolCommand(): CommandDefinition {
 			"",
 			"  redrive --id ID | --kind KIND --all-dead-lettered",
 			"    Return selected dead letters to pending. Existing attempts are preserved; registered TTLs restart.",
+			"",
+			"  purge [--kind KIND] --dead-lettered | --all-unclaimed [--older-than MS] [--force]",
+			"    Physically delete local residue. --dead-lettered removes dead letters of any target",
+			"    (--older-than filters by age, no floor). --all-unclaimed removes pending or dead-lettered",
+			"    rows: dead letters of any target, but pending rows only when local-targeted (dispatch",
+			"    wakeups) — peer-targeted pending rows are the live spool-transfer queue and are excluded",
+			"    without --force. The 1h pending floor is a HARD gate without --force: --older-than can only",
+			"    narrow the window (older rows), never below the floor. --force lets --older-than apply as given",
+			"    and lifts the peer-pending exclusion. Never touches claimed or transferring rows.",
 		].join("\n"),
-		args: [{ name: "action", required: true, description: "list or redrive" }],
+		args: [{ name: "action", required: true, description: "list, redrive, or purge" }],
 		handler: async (args, ctx) => {
 			const staleMs = parseStaleMs(args["stale-ms"]);
 			if (staleMs === null) return result("--stale-ms must be a non-negative number", 1);
@@ -74,7 +117,8 @@ export function createWorkspoolCommand(): CommandDefinition {
 					JSON.stringify(listDurableWorkForInspection(ctx.db, staleBefore).map(formatRow), null, 2),
 				);
 			}
-			if (args.action !== "redrive") return result("action must be list or redrive", 1);
+			if (args.action === "purge") return purge(args, ctx);
+			if (args.action !== "redrive") return result("action must be list, redrive, or purge", 1);
 			const ids = args.id ? [args.id] : [];
 			if (args["all-dead-lettered"] === "true") {
 				if (!args.kind) return result("--kind is required with --all-dead-lettered", 1);
