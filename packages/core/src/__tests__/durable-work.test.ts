@@ -12,6 +12,7 @@ import {
 	insertDurableWork,
 	pruneConsumedDurableWork,
 	pruneExpiredDeadLetters,
+	purgeDurableWork,
 	readPendingPeerTargetedDurableWork,
 	readTransferringDurableWork,
 	reclassifyTransferExhaustedDeadLetters,
@@ -506,5 +507,35 @@ describe("durable_work LOCAL_WORK_TARGET sentinel", () => {
 		expect(
 			db.query("SELECT claim_state FROM durable_work WHERE id = 'real-transfer'").get(),
 		).toEqual({ claim_state: "transferring" });
+	});
+});
+
+describe("durable_work purge — dead-letter age filtering under --all-unclaimed", () => {
+	const HOUR_MS = 3_600_000;
+	// Backdate created_at so age-based purge predicates have something to bite on.
+	const backdate = (id: string, ageMs: number) =>
+		db.run("UPDATE durable_work SET created_at = ? WHERE id = ?", [
+			new Date(Date.now() - ageMs).toISOString(),
+			id,
+		]);
+	const deadLetter = (id: string) =>
+		db.run("UPDATE durable_work SET claim_state = 'dead_letter' WHERE id = ?", [id]);
+
+	it("age-filters peer dead letters under --all-unclaimed --older-than (the old one purges, the young one survives)", () => {
+		// A 3h-old and a 10-min-old dead letter, both peer-targeted. Under
+		// { mode: all-unclaimed, olderThanMs: 1h }, only the old one should purge —
+		// the supplied age must narrow dead letters, not pass every one through.
+		insertDurableWork(db, row("old-dead", "peer-site"));
+		insertDurableWork(db, row("young-dead", "peer-site"));
+		backdate("old-dead", 3 * HOUR_MS);
+		backdate("young-dead", 10 * 60_000);
+		deadLetter("old-dead");
+		deadLetter("young-dead");
+
+		const purged = purgeDurableWork(db, { mode: "all-unclaimed", olderThanMs: HOUR_MS });
+
+		expect(purged).toBe(1);
+		expect(rowState(db, "old-dead")).toBeNull();
+		expect(rowState(db, "young-dead")?.claim_state).toBe("dead_letter");
 	});
 });

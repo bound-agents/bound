@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { insertDurableWork } from "@bound/core";
 import { HLC_ZERO } from "@bound/shared";
 import {
 	determinePruningMode,
 	drainFreelistOnStartup,
 	pruneChangeLog,
 	runIncrementalVacuum,
+	startPruningLoop,
 } from "../pruning.js";
 
 describe("pruning", () => {
@@ -38,6 +40,29 @@ describe("pruning", () => {
 				last_sync_at TEXT,
 				sync_errors INTEGER NOT NULL DEFAULT 0
 			)
+		`);
+
+		db.exec(`
+			CREATE TABLE durable_work (
+				id TEXT PRIMARY KEY, target_site_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
+				claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+				created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT,
+				ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT, reclassify_count INTEGER NOT NULL DEFAULT 0
+			) STRICT;
+
+			CREATE TABLE relay_cycles (
+				id INTEGER PRIMARY KEY AUTOINCREMENT, direction TEXT NOT NULL, peer_site_id TEXT NOT NULL,
+				kind TEXT NOT NULL, delivery_method TEXT NOT NULL, latency_ms INTEGER,
+				expired INTEGER NOT NULL DEFAULT 0, success INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+			) STRICT;
+
+			CREATE TABLE dispatch_queue (
+				message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+				claimed_by TEXT, event_type TEXT NOT NULL DEFAULT 'user_message', event_payload TEXT,
+				created_at TEXT NOT NULL, modified_at TEXT NOT NULL
+			) STRICT;
 		`);
 	});
 
@@ -270,5 +295,51 @@ describe("pruning", () => {
 			// 5MB of data churn + VACUUM on Windows filesystems can exceed the
 			// default 5s per-test timeout; allow up to 30s.
 		}, 30000);
+	});
+
+	describe("startPruningLoop dead-letter retention sweep", () => {
+		function seedDeadLetter(id: string, expiresAt: string): void {
+			insertDurableWork(db, {
+				id,
+				target_site_id: "local",
+				kind: "dispatch_message",
+				payload: JSON.stringify({ id }),
+				idempotency_key: `dl-${id}`,
+				expires_at: expiresAt,
+			});
+			db.run(
+				"UPDATE durable_work SET claim_state = 'dead_letter', dead_lettered_at = ? WHERE id = ?",
+				[new Date().toISOString(), id],
+			);
+		}
+
+		it("deletes dead-letter rows past their retention deadline and leaves live rows alone", async () => {
+			const past = new Date(Date.now() - 60_000).toISOString();
+			const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+			seedDeadLetter("dl-expired-1", past);
+			seedDeadLetter("dl-expired-2", past);
+			seedDeadLetter("dl-live", future);
+			insertDurableWork(db, {
+				id: "pending-null-ttl",
+				target_site_id: "local",
+				kind: "dispatch_message",
+				payload: JSON.stringify({ id: "pending-null-ttl" }),
+				idempotency_key: "pending-null-ttl",
+				expires_at: null,
+			});
+
+			const handle = startPruningLoop(db, 20);
+			try {
+				await new Promise((resolve) => setTimeout(resolve, 80));
+			} finally {
+				handle.stop();
+			}
+
+			const survivors = (
+				db.query("SELECT id FROM durable_work ORDER BY id").all() as Array<{ id: string }>
+			).map((r) => r.id);
+			expect(survivors).toEqual(["dl-live", "pending-null-ttl"]);
+		});
 	});
 });

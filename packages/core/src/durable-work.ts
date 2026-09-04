@@ -840,6 +840,41 @@ export function pruneConsumedDurableWork(db: Database, cutoff: string): number {
 	);
 }
 
+/**
+ * Retire a pending local `dispatch_message` wakeup by its `(kind, idempotency_key)`
+ * fence, transitioning `pending -> consumed` WITHOUT a claim generation.
+ *
+ * The token-fenced {@link acknowledgeDurableWork} retires only a `processing` row
+ * under its exact claim token — the right discipline for a row a consumer claimed.
+ * This is the disposition a NESTED loop needs: an aux invocation (#201) resolves a
+ * deferred/client tool INLINE and keeps running in-process, so nothing ever claims
+ * the re-wake `enqueueToolResult` queued. Left pending, that durable row is a
+ * phantom wakeup that never expires (`dispatch_message` carries a null TTL) and
+ * accumulates one row per inline tool call for the thread's lifetime (#253). The
+ * inline resolver closes it here the same way it closes the legacy `dispatch_queue`
+ * twin. Requiring `claim_state = 'pending'` leaves a concurrent claim untouched, so
+ * a row the ordinary dispatcher is mid-consuming is never clobbered. The consumed
+ * row keeps the fence for its retention window (pruned by
+ * {@link pruneConsumedDurableWork}), so a redelivered wakeup for the same identity
+ * stays idempotent. Returns the number of rows retired (0 or 1).
+ */
+export function consumePendingDispatchByIdempotencyKey(
+	db: Database,
+	idempotencyKey: string,
+	now = new Date().toISOString(),
+): number {
+	return instrument(
+		"consume-pending-dispatch",
+		"any",
+		() =>
+			db.run(
+				`UPDATE durable_work SET claim_state = 'consumed', consumed_at = ?, claim_token = NULL, claimed_at = NULL
+		 WHERE target_site_id = ? AND kind = 'dispatch_message' AND idempotency_key = ? AND claim_state = 'pending'`,
+				[now, LOCAL_WORK_TARGET, idempotencyKey],
+			).changes,
+	);
+}
+
 export function pruneExpiredDeadLetters(db: Database, now = new Date().toISOString()): number {
 	return instrument(
 		"dead-letter-prune",
@@ -850,6 +885,108 @@ export function pruneExpiredDeadLetters(db: Database, now = new Date().toISOStri
 				[now],
 			).changes,
 	);
+}
+
+/** The claim states {@link purgeDurableWork} treats as unclaimed and therefore safe to delete. */
+export type PurgeSelector =
+	| { mode: "dead-lettered"; kind?: string; olderThanMs?: number }
+	| { mode: "all-unclaimed"; kind?: string; olderThanMs?: number; force?: boolean };
+
+/** Floor below which a pending/processing row is never age-purged without `force`. */
+export const PURGE_UNCLAIMED_FLOOR_MS = 60 * 60 * 1000;
+
+/**
+ * Operator/agent on-demand purge of local durable-work residue (the `workspool
+ * purge` surface). Physical DELETE is correct here: `durable_work` is local-only
+ * and never synced (invariant #3), so there is no tombstone contract to honor.
+ *
+ * Two modes, both scoped to `kind` when one is given:
+ * - `dead-lettered` deletes terminally-classified `dead_letter` rows. These are
+ *   already failed and retained only for inspection/redrive, so there is no floor.
+ * - `all-unclaimed` deletes `pending` rows (and `dead_letter` rows) that no
+ *   consumer holds. It NEVER touches `processing`, `transferring`, or `consumed`
+ *   rows: a `processing`/`transferring` row is actively owned (deleting it would
+ *   race a live consumer or a wedged-but-recoverable transfer), and a `consumed`
+ *   row is an idempotency fence the pruning loop retires on its own schedule.
+ *   Peer-targeted `pending` rows are the durable spool-transfer queue — the MSI
+ *   outage proved they can stay healthy for DAYS and deliver on reconnect — so
+ *   without `force` only {@link LOCAL_WORK_TARGET} (stale local wakeup) pending
+ *   rows are eligible; `force` widens eligibility to peer-targeted pending rows
+ *   too. `dead_letter` rows of every target are terminal and purgeable regardless.
+ *
+ * SAFETY FLOOR: a `pending` row younger than `olderThanMs` (default
+ * {@link PURGE_UNCLAIMED_FLOOR_MS}) is refused unless `force` is set — a
+ * legitimately slow-to-drain wakeup must not be destroyed as if it were residue.
+ * `dead_letter` rows carry no floor (they are already terminal). Returns the
+ * number of rows deleted.
+ */
+export function purgeDurableWork(
+	db: Database,
+	selector: PurgeSelector,
+	now = new Date().toISOString(),
+): number {
+	return instrument("purge", "any", () => {
+		// No target_site_id restriction on dead letters: the whole durable_work table is
+		// host-local (invariant #3), and peer-targeted dead letters
+		// (result/inference/platform_request/cancel) are exactly the backlog this command
+		// clears. The claim_state guards below are the primary safety boundary; the one
+		// exception is peer-targeted PENDING rows — the live spool-transfer queue — which
+		// --all-unclaimed excludes unless --force is set (see the pending clause below).
+		const clauses: string[] = [];
+		const params: (string | number)[] = [];
+		if (selector.kind) {
+			clauses.push("kind = ?");
+			params.push(selector.kind);
+		}
+		if (selector.mode === "dead-lettered") {
+			clauses.push("claim_state = 'dead_letter'");
+			if (selector.olderThanMs !== undefined) {
+				clauses.push("created_at <= ?");
+				params.push(new Date(Date.parse(now) - selector.olderThanMs).toISOString());
+			}
+		} else {
+			// all-unclaimed: pending or dead_letter, never processing/transferring/consumed.
+			// Pending and dead_letter are age-filtered by SEPARATE branches — a shared
+			// `created_at <= horizon` clause OR'd against `claim_state = 'dead_letter'`
+			// would pass every dead letter through unconditionally, so --older-than could
+			// never narrow dead letters. The two branches below are OR'd into one clause.
+			//
+			// Pending branch: peer-targeted pending rows are the durable spool-transfer
+			// queue — an hour-old peer pending row is NOT residue, it is undelivered work
+			// that reconnect will drain — so without --force only LOCAL_WORK_TARGET pending
+			// rows are eligible; --force lifts the peer-pending exclusion. The pending floor
+			// is a HARD gate without --force: --older-than can only NARROW the window (older
+			// rows only), never reach younger than the floor. With --force, --older-than
+			// applies as given.
+			const pendingPreds: string[] = [];
+			if (!selector.force) {
+				pendingPreds.push("target_site_id = ?");
+				params.push(LOCAL_WORK_TARGET);
+			}
+			const pendingFloorMs = selector.force
+				? selector.olderThanMs
+				: Math.max(selector.olderThanMs ?? PURGE_UNCLAIMED_FLOOR_MS, PURGE_UNCLAIMED_FLOOR_MS);
+			if (pendingFloorMs !== undefined) {
+				pendingPreds.push("created_at <= ?");
+				params.push(new Date(Date.parse(now) - pendingFloorMs).toISOString());
+			}
+			const pendingBranch =
+				pendingPreds.length > 0
+					? `claim_state = 'pending' AND ${pendingPreds.join(" AND ")}`
+					: "claim_state = 'pending'";
+			// Dead-letter branch: rows of any target are terminal and carry no floor, but
+			// --older-than still filters them by age when supplied — with no age argument
+			// every dead letter is eligible.
+			let deadLetterBranch = "claim_state = 'dead_letter'";
+			if (selector.olderThanMs !== undefined) {
+				deadLetterBranch += " AND created_at <= ?";
+				params.push(new Date(Date.parse(now) - selector.olderThanMs).toISOString());
+			}
+			clauses.push(`((${pendingBranch}) OR (${deadLetterBranch}))`);
+		}
+		const where = clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "";
+		return db.run(`DELETE FROM durable_work${where}`, params).changes;
+	});
 }
 
 export interface DurableWorkInspectionRow extends DurableWorkRow {

@@ -1711,4 +1711,35 @@ console.log(JSON.stringify({ legacy: db.query("SELECT COUNT(*) AS c FROM dispatc
 			{ idempotency_key: identity },
 		]);
 	});
+
+	it("acknowledgeToolResultForCall retires the durable wakeup row an aux loop resolves inline", () => {
+		// Reproduces the #253 pending dispatch_message leak. A nested aux loop
+		// (aux-agent-loop.ts) resolves each client/deferred tool INLINE and keeps
+		// running in-process — it never returns to the ThreadExecutor's re-drain, so
+		// nothing claims the queued re-wake. To avoid a phantom wakeup on the next
+		// boot it calls `acknowledgeToolResultForCall` to close the entry it will
+		// never consume. Under BOUND_DURABLE_DISPATCH (the production default),
+		// `enqueueToolResult` writes the wakeup to `durable_work`, but
+		// `acknowledgeToolResultForCall` only touched the legacy `dispatch_queue`
+		// table — so the durable row orphaned as `pending` forever
+		// (dispatch_message ttlMs is null, nothing expires it). This is the exact
+		// mechanism behind aux threads accumulating hundreds of pending rows.
+		const threadId = randomUUID();
+
+		// An aux loop resolves five deferred tools inline over its lifetime.
+		for (let i = 0; i < 5; i++) {
+			const callId = `call_${i}`;
+			enqueueToolResult(db, threadId, callId);
+			acknowledgeToolResultForCall(db, threadId, callId);
+		}
+
+		// Every wakeup the aux loop resolved inline must be retired: none may sit
+		// pending in the durable store waiting for a claim that will never come.
+		const pending = db
+			.query(
+				"SELECT COUNT(*) AS c FROM durable_work WHERE kind = 'dispatch_message' AND claim_state = 'pending'",
+			)
+			.get() as { c: number };
+		expect(pending.c).toBe(0);
+	});
 });

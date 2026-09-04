@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { countChangeLogEntries, countSyncStatePeers, getChangeLogHlcAtOffset } from "@bound/core";
-import { pruneAcknowledged, pruneConsumedDurableWork, pruneRelayCycles } from "@bound/core";
+import {
+	pruneAcknowledged,
+	pruneConsumedDurableWork,
+	pruneExpiredDeadLetters,
+	pruneRelayCycles,
+} from "@bound/core";
 import { HLC_ZERO } from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import { getMinConfirmedHlc } from "./peer-cursor.js";
@@ -119,6 +124,18 @@ export function startPruningLoop(
 			const durableDispatchPruned = pruneConsumedDurableWork(db, dispatchCutoff);
 			if (durableDispatchPruned > 0) {
 				logger?.debug("Pruned consumed durable_work", { count: durableDispatchPruned });
+			}
+			// Dead-letter writers stamp expires_at = dead_lettered_at + 7d as a retention
+			// deadline (durable-work.ts). Nothing else deletes past it, so a populated
+			// dead-letter table would grow without bound after the #253 incident window.
+			// This is the retention sweeper: a physical DELETE of terminally-classified
+			// rows whose retention deadline has passed. durable_work is local-only and
+			// never synced (invariant #3), so a hard DELETE is correct here. Live pending
+			// rows are left alone — age-based deletion of undrained work would be silent
+			// data loss; genuine pending residue is the operator's `workspool purge` call.
+			const deadLettersPruned = pruneExpiredDeadLetters(db);
+			if (deadLettersPruned > 0) {
+				logger?.info("Pruned expired durable_work dead letters", { count: deadLettersPruned });
 			}
 
 			// Reclaim freed pages incrementally

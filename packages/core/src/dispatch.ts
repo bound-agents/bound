@@ -2,7 +2,12 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TypedEventEmitter } from "@bound/shared";
 import { readMessageMetadata, updateRow } from "./change-log";
-import { LOCAL_WORK_TARGET, acknowledgeDurableWork, insertDurableWork } from "./durable-work";
+import {
+	LOCAL_WORK_TARGET,
+	acknowledgeDurableWork,
+	consumePendingDispatchByIdempotencyKey,
+	insertDurableWork,
+} from "./durable-work";
 import { countBackgroundToolCallsByThread } from "./repositories/messages";
 
 /** Set BOUND_DURABLE_DISPATCH=0 or false before startup to route new enqueues to legacy dispatch_queue. */
@@ -663,6 +668,13 @@ export function pruneAcknowledged(db: Database, cutoff: string): number {
  * tool inline and keeps running — so nothing would ever claim the row. Left
  * pending it becomes a phantom wakeup that crash-recovery re-dispatches on the
  * next boot. The inline resolver calls this to close the entry it will never use.
+ *
+ * Closes the entry in BOTH stores: the legacy `dispatch_queue` twin AND, under
+ * durable dispatch (the production default), the `durable_work` row
+ * `enqueueToolResult` wrote. Without the durable arm the durable wakeup orphaned
+ * as `pending` forever — `dispatch_message` carries a null TTL, so nothing
+ * expired it — accumulating one row per inline tool call for the aux thread's
+ * lifetime (#253).
  */
 export function acknowledgeToolResultForCall(db: Database, threadId: string, callId: string): void {
 	const now = new Date().toISOString();
@@ -672,4 +684,7 @@ export function acknowledgeToolResultForCall(db: Database, threadId: string, cal
 		 WHERE thread_id = ? AND event_type = ? AND event_payload = ?
 		   AND status IN ('pending', 'processing')`,
 	).run(now, threadId, TOOL_RESULT, JSON.stringify({ call_id: callId }));
+	if (DURABLE_DISPATCH_ENQUEUE_ENABLED) {
+		consumePendingDispatchByIdempotencyKey(db, `tool-result:${threadId}:${callId}`, now);
+	}
 }
