@@ -382,6 +382,8 @@ export interface BackendConfig {
 	providerMode?: "anthropic" | "openai_responses";
 	model: string;
 	baseUrl?: string;
+	/** Absolute path to the ChatGPT OAuth token bundle, when configured. */
+	tokenStorePath?: string;
 	contextWindow?: number;
 	/**
 	 * Per-backend cap on `maxOutputTokens` forwarded to the provider. When

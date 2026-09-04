@@ -73,6 +73,31 @@ through the change log. Use it to repair a spoke whose replica should be replace
 
 The process handles `SIGINT` and `SIGTERM` with graceful shutdown.
 
+### `bound login`
+
+Sign in with a ChatGPT subscription so a `chatgpt-oauth` backend can drive OpenAI models
+without an API key:
+
+```text
+bound login --chatgpt [--from-codex] [--config-dir DIR]
+```
+
+`--chatgpt` runs the OAuth 2.0 Authorization Code + PKCE flow against `auth.openai.com`. It
+binds a loopback callback on `localhost:1455`, opens your browser to approve access (the URL
+is also printed for headless or remote shells), and on success writes the token bundle to
+`<config-dir>/chatgpt-auth.json`. The access token, rotating refresh token, and account id
+live in that bound-owned file; the running server refreshes the access token automatically
+before each expiry.
+
+`--from-codex` skips the browser and imports an existing `~/.codex/auth.json` ChatGPT session
+instead. On a first `--chatgpt` run with no bound token store yet, an existing Codex ChatGPT
+session is imported automatically. The store is kept separate from Codex's own file on purpose:
+sharing one file means two tools racing to rotate a single refresh token, and the loser is
+logged out.
+
+After signing in, add a backend with `provider: "chatgpt-oauth"` to `model_backends` (see the
+[Configuration Reference](/bound/reference/configuration/)).
+
 Before using `boundctl`, note that a **host** is a running Bound instance, the **hub** is the
 host that coordinates replication, and other synchronized hosts are **spokes**.
 

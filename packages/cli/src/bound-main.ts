@@ -41,6 +41,9 @@ OPTIONS:
   bound init --with-mcp            Also create mcp.json template
   bound init --force               Overwrite existing config
 
+  bound login --chatgpt            Sign in with ChatGPT (OAuth) for the chatgpt-oauth provider
+  bound login --chatgpt --from-codex  Import an existing ~/.codex/auth.json session instead
+
   bound start                       Start the orchestrator
   bound start --reseed              Wipe local DB, request full hub snapshot, then catch up via changelog
 
@@ -79,6 +82,22 @@ EXAMPLES:
 			await runInit(initArgs);
 		} catch (error) {
 			console.error("Init failed:", error);
+			process.exit(1);
+		}
+		process.exit(0);
+	}
+
+	if (command === "login") {
+		const loginConfigIdx = args.indexOf("--config-dir");
+		const { runLogin } = await import("./commands/login.js");
+		try {
+			await runLogin({
+				chatgpt: args.includes("--chatgpt"),
+				fromCodex: args.includes("--from-codex"),
+				configDir: loginConfigIdx !== -1 ? args[loginConfigIdx + 1] : "config",
+			});
+		} catch (error) {
+			console.error("Login failed:", error instanceof Error ? error.message : String(error));
 			process.exit(1);
 		}
 		process.exit(0);

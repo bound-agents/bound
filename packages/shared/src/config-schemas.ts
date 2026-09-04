@@ -159,6 +159,7 @@ const modelBackendSchema = z
 			"zai",
 			"opencode-go",
 			"umans",
+			"chatgpt-oauth",
 		]),
 		// `model`, `context_window`, and `tier` are REQUIRED for every provider
 		// EXCEPT `umans`, which is config-light + self-configuring: a umans
@@ -171,6 +172,8 @@ const modelBackendSchema = z
 		provider_mode: z.enum(["anthropic", "openai_responses"]).optional(),
 		base_url: z.string().url().optional(),
 		api_key: z.string().optional(),
+		// Absolute path to the OAuth token JSON; defaults to <configDir>/chatgpt-auth.json when absent.
+		token_store_path: z.string().optional(),
 		region: z.string().optional(),
 		profile: z.string().optional(),
 		context_window: z.number().int().positive().optional(),
