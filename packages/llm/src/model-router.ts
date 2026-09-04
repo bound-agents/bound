@@ -2,6 +2,8 @@ import type { Logger } from "@bound/shared";
 import { AnthropicDriver } from "./drivers/anthropic";
 import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
+import { ChatGptOAuthDriver } from "./drivers/chatgpt-oauth/driver";
+import { FileTokenStore, TokenManager } from "./drivers/chatgpt-oauth/token-store";
 import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 import { OpenCodeGoDriver } from "./drivers/opencode-go";
 import { UmansDriver, createUmansAccount } from "./drivers/umans";
@@ -678,6 +680,23 @@ function createBackendFromConfig(
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
 				additionalHeaders: config.additionalHeaders,
+			});
+		}
+
+		case "chatgpt-oauth": {
+			const contextWindow = config.contextWindow ?? 128000;
+			const store = new FileTokenStore(config.tokenStorePath ?? "config/chatgpt-auth.json");
+			const tokens = store.load();
+			if (!tokens) {
+				throw new Error("ChatGPT OAuth is not logged in — run `bound login --chatgpt`");
+			}
+			return new ChatGptOAuthDriver({
+				tokenManager: new TokenManager(tokens, { fetch: fetch ?? globalThis.fetch }, store),
+				model: config.model,
+				contextWindow,
+				logger,
+				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
 			});
 		}
 

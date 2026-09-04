@@ -155,4 +155,25 @@ describe("toRouterConfig", () => {
 		};
 		expect(toRouterConfig(cfg).backends[0].providerMode).toBe("anthropic");
 	});
+
+	it("propagates token_store_path to BackendConfig.tokenStorePath", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{
+					id: "chatgpt",
+					provider: "chatgpt-oauth",
+					model: "gpt-5",
+					context_window: 272000,
+					tier: 1,
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+					token_store_path: "/Users/test/.config/bound/chatgpt-auth.json",
+				},
+			],
+			default: "chatgpt",
+		};
+		expect(toRouterConfig(cfg).backends[0].tokenStorePath).toBe(
+			"/Users/test/.config/bound/chatgpt-auth.json",
+		);
+	});
 });

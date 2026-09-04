@@ -31,6 +31,20 @@ export { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 
 export { OpenCodeGoDriver } from "./drivers/opencode-go";
 
+export { ChatGptOAuthDriver } from "./drivers/chatgpt-oauth/driver";
+
+export { FileTokenStore, TokenManager } from "./drivers/chatgpt-oauth/token-store";
+
+export {
+	buildAuthorizeUrl,
+	CHATGPT_OAUTH_REDIRECT_URI,
+	exchangeCodeForTokens,
+	extractIdClaims,
+	generatePkce,
+	generateState,
+	type ChatGptTokens,
+} from "./drivers/chatgpt-oauth/auth-core";
+
 export { UmansDriver, type UmansAccount } from "./drivers/umans";
 
 export {

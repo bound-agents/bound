@@ -104,6 +104,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				baseUrl: b.base_url,
 				contextWindow: b.context_window,
 				apiKey: b.api_key,
+				tokenStorePath: b.token_store_path,
 				region: b.region,
 				profile: b.profile,
 				capabilities: b.capabilities,
