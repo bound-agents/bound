@@ -6,19 +6,16 @@
 // pure crypto/HTTP; this command owns the impure edges — binding the local
 // callback server, opening the browser, and file placement.
 //
-// The store is bound-owned (config/chatgpt-auth.json), NOT ~/.codex/auth.json:
-// sharing Codex's file means two tools racing to rotate one refresh token, and
-// whichever refreshes second gets logged out. On first login we OPTIONALLY seed
-// from an existing ~/.codex/auth.json (import once, then own our copy) so a user
-// already signed into Codex doesn't have to re-auth in the browser.
+// The store is bound-owned (config/chatgpt-auth.json). It is deliberately NOT
+// seeded from ~/.codex/auth.json: OpenAI rotates the refresh token on each
+// refresh and invalidates the prior one, so two tools sharing a single refresh
+// lineage would take turns logging each other out. bound gets its own lineage
+// via the browser flow.
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
 	CHATGPT_OAUTH_REDIRECT_URI,
-	type ChatGptTokens,
 	buildAuthorizeUrl,
 	exchangeCodeForTokens,
 	extractIdClaims,
@@ -30,8 +27,7 @@ import { FileTokenStore } from "@bound/llm";
 export interface LoginArgs {
 	chatgpt?: boolean;
 	configDir?: string;
-	/** Skip the browser + loopback capture and seed from ~/.codex/auth.json only. */
-	fromCodex?: boolean;
+	/** Injectable for tests — defaults to opening the OS browser. */
 	/** Injectable for tests — defaults to opening the OS browser. */
 	openBrowser?: (url: string) => void;
 }
@@ -43,11 +39,6 @@ const CALLBACK_PATH = "/auth/callback";
 /** Default bound-owned token store location, a sibling of the other config files. */
 export function defaultTokenStorePath(configDir: string): string {
 	return resolve(configDir, "chatgpt-auth.json");
-}
-
-/** Codex's own store — read-only, seed source only. */
-function codexAuthPath(): string {
-	return join(homedir(), ".codex", "auth.json");
 }
 
 /** Open a URL in the default browser, best-effort per platform. */
@@ -67,57 +58,10 @@ function openInBrowser(url: string): void {
 }
 
 /**
- * Import an existing Codex ~/.codex/auth.json into a bound `ChatGptTokens`.
- * Returns null when the file is absent or not in ChatGPT-account mode (an
- * API-key-only auth.json has no OAuth tokens to seed from).
- */
-export function seedFromCodex(rawJson: string): ChatGptTokens | null {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(rawJson);
-	} catch {
-		return null;
-	}
-	if (typeof parsed !== "object" || parsed === null) return null;
-	const tokens = (parsed as Record<string, unknown>).tokens as Record<string, unknown> | undefined;
-	if (!tokens) return null;
-	const accessToken = tokens.access_token;
-	const refreshToken = tokens.refresh_token;
-	const idToken = tokens.id_token;
-	if (
-		typeof accessToken !== "string" ||
-		typeof refreshToken !== "string" ||
-		typeof idToken !== "string"
-	) {
-		return null;
-	}
-	const claims = extractIdClaims(idToken);
-	const accountId =
-		claims.chatgptAccountId ??
-		(typeof tokens.account_id === "string" ? tokens.account_id : undefined);
-	if (!accountId) return null;
-	// Derive expiry from the access_token exp; a seeded token that's already
-	// expired is fine — the TokenManager refreshes on first use.
-	let accessTokenExpiresAt = 0;
-	try {
-		const payload = JSON.parse(
-			Buffer.from(
-				accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"),
-				"base64",
-			).toString("utf8"),
-		) as { exp?: number };
-		accessTokenExpiresAt = typeof payload.exp === "number" ? payload.exp * 1000 : 0;
-	} catch {
-		accessTokenExpiresAt = 0;
-	}
-	return { accessToken, refreshToken, idToken, accountId, accessTokenExpiresAt };
-}
-
-/**
  * Wait for the OAuth redirect on the loopback callback, verifying `state`.
  * Resolves with the authorization code. Uses Bun.serve on the fixed port the
- * redirect_uri names; rejects if that port is already bound (a running Codex
- * login, or a stale server).
+ * redirect_uri names; rejects if that port is already bound (a stale server or
+ * another login already running).
  */
 function awaitCallback(expectedState: string): Promise<string> {
 	return new Promise((resolvePromise, reject) => {
@@ -177,47 +121,12 @@ function awaitCallback(expectedState: string): Promise<string> {
 
 export async function runLogin(args: LoginArgs): Promise<void> {
 	if (!args.chatgpt) {
-		console.error("Usage: bound login --chatgpt [--from-codex] [--config-dir <dir>]");
+		console.error("Usage: bound login --chatgpt [--config-dir <dir>]");
 		process.exit(1);
 	}
 	const configDir = args.configDir || "config";
 	const storePath = defaultTokenStorePath(configDir);
 	const store = new FileTokenStore(storePath);
-
-	// Seed path: import an existing Codex session without a browser round-trip.
-	if (args.fromCodex) {
-		const codexPath = codexAuthPath();
-		if (!existsSync(codexPath)) {
-			console.error(
-				`No Codex auth found at ${codexPath}. Run \`codex login\` first, or omit --from-codex.`,
-			);
-			process.exit(1);
-		}
-		const seeded = seedFromCodex(readFileSync(codexPath, "utf8"));
-		if (!seeded) {
-			console.error(
-				`${codexPath} is not a ChatGPT-account session (API-key-only auth.json has no OAuth tokens to import).`,
-			);
-			process.exit(1);
-		}
-		await store.save(seeded);
-		console.log(`Imported ChatGPT session from Codex → ${storePath}`);
-		console.log(`Account: ${extractIdClaims(seeded.idToken).email ?? seeded.accountId}`);
-		return;
-	}
-
-	// First-run convenience: if no bound store exists yet but a Codex ChatGPT
-	// session does, offer the seed rather than forcing a browser flow.
-	if ((await store.load()) === null && existsSync(codexAuthPath())) {
-		const seeded = seedFromCodex(readFileSync(codexAuthPath(), "utf8"));
-		if (seeded) {
-			await store.save(seeded);
-			console.log(`Found an existing Codex ChatGPT session; imported it → ${storePath}`);
-			console.log(`Account: ${extractIdClaims(seeded.idToken).email ?? seeded.accountId}`);
-			console.log("(Re-run with just --chatgpt to force a fresh browser login instead.)");
-			return;
-		}
-	}
 
 	// Full browser flow.
 	const pkce = generatePkce();

@@ -79,7 +79,7 @@ Sign in with a ChatGPT subscription so a `chatgpt-oauth` backend can drive OpenA
 without an API key:
 
 ```text
-bound login --chatgpt [--from-codex] [--config-dir DIR]
+bound login --chatgpt [--config-dir DIR]
 ```
 
 `--chatgpt` runs the OAuth 2.0 Authorization Code + PKCE flow against `auth.openai.com`. It
@@ -89,11 +89,10 @@ is also printed for headless or remote shells), and on success writes the token 
 live in that bound-owned file; the running server refreshes the access token automatically
 before each expiry.
 
-`--from-codex` skips the browser and imports an existing `~/.codex/auth.json` ChatGPT session
-instead. On a first `--chatgpt` run with no bound token store yet, an existing Codex ChatGPT
-session is imported automatically. The store is kept separate from Codex's own file on purpose:
-sharing one file means two tools racing to rotate a single refresh token, and the loser is
-logged out.
+The token bundle is deliberately kept separate from Codex's own `~/.codex/auth.json` and is
+not seeded from it. OpenAI mints a new refresh token on each refresh and invalidates the
+previous one, so two tools sharing a single refresh lineage would take turns logging each
+other out. Signing in through the browser gives bound its own independent lineage.
 
 After signing in, add a backend with `provider: "chatgpt-oauth"` to `model_backends` (see the
 [Configuration Reference](/bound/reference/configuration/)).

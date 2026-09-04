@@ -42,7 +42,6 @@ OPTIONS:
   bound init --force               Overwrite existing config
 
   bound login --chatgpt            Sign in with ChatGPT (OAuth) for the chatgpt-oauth provider
-  bound login --chatgpt --from-codex  Import an existing ~/.codex/auth.json session instead
 
   bound start                       Start the orchestrator
   bound start --reseed              Wipe local DB, request full hub snapshot, then catch up via changelog
@@ -93,7 +92,6 @@ EXAMPLES:
 		try {
 			await runLogin({
 				chatgpt: args.includes("--chatgpt"),
-				fromCodex: args.includes("--from-codex"),
 				configDir: loginConfigIdx !== -1 ? args[loginConfigIdx + 1] : "config",
 			});
 		} catch (error) {
