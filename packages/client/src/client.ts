@@ -205,15 +205,12 @@ export class BoundClient {
 		return res.json() as Promise<T>;
 	}
 
-	private async fetchVoid(path: string, options?: RequestInit): Promise<void> {
-		await this.fetchOk(path, options);
-	}
-
-	private postJson(path: string, body?: unknown): Promise<Response> {
-		return fetch(`${this.baseUrl}${path}`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: body !== undefined ? JSON.stringify(body) : undefined,
+	private json<T>(path: string, method: string, body?: unknown): Promise<T> {
+		return this.fetchJson(path, {
+			method,
+			...(body === undefined
+				? {}
+				: { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
 		});
 	}
 
@@ -589,19 +586,11 @@ export class BoundClient {
 		if (options?.interface) {
 			body.interface = options.interface;
 		}
-		return this.fetchJson("/api/threads", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
+		return this.json("/api/threads", "POST", body);
 	}
 
 	async renameThread(id: string, title: string): Promise<ThreadDetail> {
-		return this.fetchJson(`/api/threads/${id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ title }),
-		});
+		return this.json(`/api/threads/${id}`, "PATCH", { title });
 	}
 
 	async getThread(id: string): Promise<ThreadDetail> {
@@ -795,11 +784,7 @@ export class BoundClient {
 		id: string,
 		updates: { no_history?: boolean; model_hint?: string; alert_threshold?: number },
 	): Promise<Task> {
-		return this.fetchJson(`/api/tasks/${id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(updates),
-		});
+		return this.json(`/api/tasks/${id}`, "PATCH", updates);
 	}
 
 	// ---- Advisories ----
@@ -816,35 +801,19 @@ export class BoundClient {
 	}
 
 	async approveAdvisory(id: string, note: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/approve`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ note }),
-		});
+		return this.json(`/api/advisories/${id}/approve`, "POST", { note });
 	}
 
 	async dismissAdvisory(id: string, note: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/dismiss`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ note }),
-		});
+		return this.json(`/api/advisories/${id}/dismiss`, "POST", { note });
 	}
 
 	async deferAdvisory(id: string, note: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/defer`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ note }),
-		});
+		return this.json(`/api/advisories/${id}/defer`, "POST", { note });
 	}
 
 	async applyAdvisory(id: string, note: string): Promise<Advisory> {
-		return this.fetchJson(`/api/advisories/${id}/apply`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ note }),
-		});
+		return this.json(`/api/advisories/${id}/apply`, "POST", { note });
 	}
 
 	// ---- Webhooks ----
@@ -858,23 +827,15 @@ export class BoundClient {
 	}
 
 	async createWebhook(options: CreateWebhookOptions): Promise<WebhookCreateResponse> {
-		return this.fetchJson("/api/webhooks", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(options),
-		});
+		return this.json("/api/webhooks", "POST", options);
 	}
 
 	async updateWebhook(id: string, options: UpdateWebhookOptions): Promise<WebhookListEntry> {
-		return this.fetchJson(`/api/webhooks/${id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(options),
-		});
+		return this.json(`/api/webhooks/${id}`, "PATCH", options);
 	}
 
 	async deleteWebhook(id: string): Promise<void> {
-		await this.fetchVoid(`/api/webhooks/${id}`, { method: "DELETE" });
+		await this.fetchOk(`/api/webhooks/${id}`, { method: "DELETE" });
 	}
 
 	async rotateWebhookSecret(id: string): Promise<WebhookRotateResponse> {
@@ -902,10 +863,8 @@ export class BoundClient {
 
 	/** Flip the cluster-wide unauthenticated-webhook kill switch (#195). */
 	async setWebhookUnauthenticatedSwitch(allow: boolean): Promise<WebhookUnauthenticatedSwitch> {
-		return this.fetchJson("/api/webhooks/unauthenticated-switch", {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ allow_unauthenticated: allow }),
+		return this.json("/api/webhooks/unauthenticated-switch", "PUT", {
+			allow_unauthenticated: allow,
 		});
 	}
 
@@ -920,23 +879,15 @@ export class BoundClient {
 	}
 
 	async createRssFeed(options: CreateRssFeedOptions): Promise<RssFeedListEntry> {
-		return this.fetchJson("/api/rss-feeds", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(options),
-		});
+		return this.json("/api/rss-feeds", "POST", options);
 	}
 
 	async updateRssFeed(id: string, options: UpdateRssFeedOptions): Promise<RssFeedListEntry> {
-		return this.fetchJson(`/api/rss-feeds/${id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(options),
-		});
+		return this.json(`/api/rss-feeds/${id}`, "PATCH", options);
 	}
 
 	async deleteRssFeed(id: string): Promise<void> {
-		await this.fetchVoid(`/api/rss-feeds/${id}`, { method: "DELETE" });
+		await this.fetchOk(`/api/rss-feeds/${id}`, { method: "DELETE" });
 	}
 
 	// ---- Connector bindings ----
@@ -946,7 +897,7 @@ export class BoundClient {
 	}
 
 	async detachConnectorBinding(id: string): Promise<void> {
-		await this.fetchVoid(`/api/connectors/bindings/${id}`, { method: "DELETE" });
+		await this.fetchOk(`/api/connectors/bindings/${id}`, { method: "DELETE" });
 	}
 
 	/**
@@ -958,11 +909,7 @@ export class BoundClient {
 		id: string,
 		options: UpdateConnectorBindingOptions,
 	): Promise<ConnectorBindingEntry> {
-		return this.fetchJson(`/api/connectors/bindings/${id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(options),
-		});
+		return this.json(`/api/connectors/bindings/${id}`, "PATCH", options);
 	}
 
 	// ---- Status ----
@@ -1018,11 +965,7 @@ export class BoundClient {
 				body: data,
 			});
 		}
-		return this.fetchJson("/api/skills", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(data),
-		});
+		return this.json("/api/skills", "POST", data);
 	}
 
 	async updateSkill(
@@ -1034,14 +977,10 @@ export class BoundClient {
 			compatibility?: string;
 		},
 	): Promise<{ skill: Skill }> {
-		return this.fetchJson(`/api/skills/${id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(data),
-		});
+		return this.json(`/api/skills/${id}`, "PATCH", data);
 	}
 
 	async deleteSkill(id: string): Promise<void> {
-		await this.fetchVoid(`/api/skills/${id}`, { method: "DELETE" });
+		await this.fetchOk(`/api/skills/${id}`, { method: "DELETE" });
 	}
 }
