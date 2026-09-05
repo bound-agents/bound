@@ -101,6 +101,11 @@ export class ChatGptOAuthDriver implements LLMBackend {
 						// ride even when the caller sets them. tool_choice stays only when
 						// tools are present (it is on the allowlist).
 						...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
+						// The Codex backend requires `store: false` (zero retention) and
+						// rejects the request with 400 `{"detail":"Store must be set to
+						// false"}` otherwise. The @ai-sdk/openai Responses provider maps
+						// `providerOptions.openai.store` onto the body `store` field.
+						providerOptions: { openai: { store: false } },
 						abortSignal: params.signal,
 					}).fullStream,
 				map: { estimateInputFromMessages: params.messages, coalescePrefixItems: true },

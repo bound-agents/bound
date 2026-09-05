@@ -29,6 +29,7 @@ export function mapError(err: unknown, provider: string): LLMError {
 				message?: string;
 				$metadata?: { httpStatusCode?: number };
 				responseHeaders?: Record<string, string>;
+				responseBody?: unknown;
 		  }
 		| null
 		| undefined;
@@ -36,13 +37,46 @@ export function mapError(err: unknown, provider: string): LLMError {
 	const retryAfterHeader =
 		e?.responseHeaders?.["retry-after"] ?? e?.responseHeaders?.["Retry-After"];
 	const retryAfterMs = retryAfterHeader ? parseRetryAfter(retryAfterHeader) : undefined;
+	// The AI SDK's APICallError sets `.message` to the bare HTTP status text
+	// ("Bad Request") and stashes the provider's actual explanation in
+	// `.responseBody` — e.g. the Codex backend's `{"detail":"Store must be set
+	// to false"}`. `formatError` returns `err.message` for an Error instance, so
+	// without this the useful detail never reaches the caller (and, over the
+	// relay, never crosses the wire — only the opaque status text does). Surface
+	// the response body when present so a remote inference failure is diagnosable
+	// from the requesting host, not just the executing one's logs.
+	const responseDetail = formatResponseBody(e?.responseBody);
+	const baseMessage = formatError(err);
+	const message =
+		responseDetail && !baseMessage.includes(responseDetail)
+			? `${provider} request failed: ${baseMessage} — ${responseDetail}`
+			: `${provider} request failed: ${baseMessage}`;
 	return new LLMError(
-		`${provider} request failed: ${formatError(err)}`,
+		message,
 		provider,
 		statusCode,
 		err instanceof Error ? err : new Error(String(err)),
 		retryAfterMs,
 	);
+}
+
+/**
+ * Extract a human-readable detail from an AI SDK `APICallError.responseBody`,
+ * which is a raw response string (often a JSON envelope like
+ * `{"detail":"…"}` or `{"error":{"message":"…"}}`). Returns undefined when
+ * there is nothing useful to add.
+ */
+function formatResponseBody(body: unknown): string | undefined {
+	if (typeof body !== "string" || body.length === 0) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(body);
+		const detail = formatError(parsed, "");
+		if (detail) return detail;
+	} catch {
+		// Not JSON — fall back to the raw body, trimmed to keep the message bounded.
+	}
+	const trimmed = body.trim();
+	return trimmed.length > 0 ? trimmed.slice(0, 500) : undefined;
 }
 
 function parseRetryAfter(header: string): number | undefined {
