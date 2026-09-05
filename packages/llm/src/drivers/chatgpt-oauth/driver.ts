@@ -91,9 +91,15 @@ export class ChatGptOAuthDriver implements LLMBackend {
 						allowSystemInMessages: true,
 						...(params.system && { system: params.system }),
 						...(tools && { tools }),
-						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-						...(params.temperature !== undefined && { temperature: params.temperature }),
-						...(params.top_p !== undefined && { topP: params.top_p }),
+						// The ChatGPT-backend Responses endpoint
+						// (chatgpt.com/backend-api/codex/responses) validates a STRICT
+						// parameter allowlist — model, input, instructions, stream, store,
+						// include, tools, tool_choice, reasoning, previous_response_id,
+						// truncation — far narrower than api.openai.com/v1/responses. It
+						// rejects temperature, top_p, and max_output_tokens with a 400
+						// (`{"detail":"Unsupported parameter: …"}`), so none of those may
+						// ride even when the caller sets them. tool_choice stays only when
+						// tools are present (it is on the allowlist).
 						...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 						abortSignal: params.signal,
 					}).fullStream,
