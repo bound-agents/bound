@@ -23,6 +23,7 @@
 
 import type { LLMMessage } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
+import { findHistoryBoundary, isWireLegalHistoryOpener } from "../history-boundary";
 import { type FoldedLine, dedupeFoldedLines, foldMessages } from "./tool-cycle-fold";
 
 // Budget allocation ratios.
@@ -149,54 +150,7 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 	}
 
 	// --- RECENT TIER ---
-	// Backward-fill from the tail until recentBudget exhausted.
-	// Same algorithm as the original truncateHistoryToBudget but with the
-	// recent-tier budget instead of the full historyBudget.
-	let recentAccumulated = 0;
-	let recentSliceStart = n;
-	for (let i = n - 1; i >= 0; i--) {
-		const msgTokens = msgTokenCounts[i];
-		if (recentAccumulated + msgTokens > recentBudget) break;
-		recentAccumulated += msgTokens;
-		recentSliceStart = i;
-	}
-
-	// Floor: keep at least 2 messages.
-	recentSliceStart = Math.min(recentSliceStart, Math.max(0, n - 2));
-
-	// Advance past orphan tool_result/tool_call/assistant to land on a
-	// wire-legal opener (a user message when possible). This only moves the
-	// slice start forward, and anchoring to a stable user position keeps the
-	// ancient-marker drop count byte-stable across consecutive cold rebuilds —
-	// the message-level prefix cache depends on that.
-	const preAdvanceStart = recentSliceStart;
-	while (recentSliceStart < n && historyMessages[recentSliceStart].role !== "user") {
-		recentSliceStart++;
-	}
-
-	// Fallback: if no user message in the recent window, scan backward for one.
-	// (Sustained autonomous tool-only runs have no user turn since the budget
-	// boundary.) Anchoring to a fixed historical user position is what makes the
-	// drop count byte-stable as the tail grows. The recent slice this produces
-	// may exceed the budget — the hard clamp below is the authoritative ceiling
-	// that trims it back, so this anchor choice cannot defeat the budget.
-	if (recentSliceStart >= n) {
-		let foundUser = false;
-		for (let i = n - 1; i >= 0; i--) {
-			if (historyMessages[i].role === "user") {
-				recentSliceStart = i;
-				foundUser = true;
-				break;
-			}
-		}
-		if (!foundUser) {
-			// Strip leading tool_results from the pre-advance position.
-			recentSliceStart = preAdvanceStart;
-			while (recentSliceStart < n && historyMessages[recentSliceStart].role === "tool_result") {
-				recentSliceStart++;
-			}
-		}
-	}
+	let recentSliceStart = findHistoryBoundary(historyMessages, msgTokenCounts, recentBudget);
 
 	// Re-assert the ≥2-message floor AFTER the wire-legal advance. The advance
 	// loop and the no-user fallback only move the slice start FORWARD; on a tail
@@ -395,13 +349,7 @@ export function tieredHistoryTruncation(params: TieredHistoryParams): TieredHist
 	}
 
 	// Wire-legal opener check.
-	const wireLegalOpener =
-		recentMessages.length === 0 ||
-		recentMessages[0].role === "user" ||
-		recentMessages[0].role === "developer" ||
-		recentMessages[0].role === "system" ||
-		recentMessages[0].role === "assistant" ||
-		recentMessages[0].role === "tool_call";
+	const wireLegalOpener = isWireLegalHistoryOpener(historyMessages, recentSliceStart);
 
 	return {
 		ancientMarker,

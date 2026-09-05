@@ -5,6 +5,11 @@
 
 import type { LLMMessage } from "@bound/llm";
 import { countContentTokens } from "@bound/shared";
+import {
+	type HistoryTokenCounter,
+	findHistoryBoundary,
+	isWireLegalHistoryOpener,
+} from "../history-boundary";
 
 export interface TruncateHistoryParams {
 	/**
@@ -23,6 +28,9 @@ export interface TruncateHistoryParams {
 	 */
 	historyBudget: number;
 }
+
+const countMessageContentTokens: HistoryTokenCounter = (message) =>
+	countContentTokens(message.content);
 
 export interface TruncateHistoryResult {
 	/**
@@ -69,71 +77,13 @@ export function truncateHistoryToBudget(params: TruncateHistoryParams): Truncate
 		return { kept: [], truncatedCount: 0, sliceStart: 0, wireLegalOpener: true };
 	}
 
-	// Backward fill — accumulate tokens until we'd exceed budget.
-	// The predecessor implementation hardcoded `length - 10`, which
-	// slid the kept window forward and amputated recent user
-	// messages when bulky tool errors were present.
-	let accumulatedTokens = 0;
-	let sliceStart = historyMessages.length; // start at end (include nothing)
-	for (let i = historyMessages.length - 1; i >= 0; i--) {
-		const msgTokens = countContentTokens(historyMessages[i].content);
-		if (accumulatedTokens + msgTokens > historyBudget) break;
-		accumulatedTokens += msgTokens;
-		sliceStart = i;
-	}
-
-	// Floor: keep at least 2 messages so the agent has something to
-	// work with even when budget is unusually tight or the message
-	// at the tail is huge enough to alone exceed the budget.
-	sliceStart = Math.min(sliceStart, Math.max(0, historyMessages.length - 2));
-
-	// Advance past orphan tool_result/tool_call/assistant boundaries
-	// so the slice opens at a clean user message when possible.
-	// Pre-fix Bedrock would 400 with "Expected toolResult blocks at
-	// messages.0.content for the following Ids: …" when the slice
-	// started on an orphan tool_result.
-	const preAdvanceStart = sliceStart;
-	while (sliceStart < historyMessages.length && historyMessages[sliceStart].role !== "user") {
-		sliceStart++;
-	}
-
-	// Fallback path: scheduled task threads with only system wakeup +
-	// tool cycles have no user message in the kept window. Scan back
-	// to the last user message; if none exists, fall back to the
-	// pre-advance position and strip leading tool_result rows so the
-	// opener is at least a tool_call (well-formed pair) or a non-tool
-	// message.
-	if (sliceStart >= historyMessages.length) {
-		let foundUser = false;
-		for (let i = historyMessages.length - 1; i >= 0; i--) {
-			if (historyMessages[i].role === "user") {
-				sliceStart = i;
-				foundUser = true;
-				break;
-			}
-		}
-		if (!foundUser) {
-			sliceStart = preAdvanceStart;
-			while (
-				sliceStart < historyMessages.length &&
-				historyMessages[sliceStart].role === "tool_result"
-			) {
-				sliceStart++;
-			}
-		}
-	}
+	const sliceStart = findHistoryBoundary(historyMessages, countMessageContentTokens, historyBudget);
 
 	const kept = historyMessages.slice(sliceStart);
 	const truncatedCount = historyMessages.length - kept.length;
 
 	// Compute wireLegalOpener for the result.
-	const wireLegalOpener =
-		kept.length === 0 ||
-		kept[0].role === "user" ||
-		kept[0].role === "developer" ||
-		kept[0].role === "system" ||
-		kept[0].role === "assistant" ||
-		kept[0].role === "tool_call";
+	const wireLegalOpener = isWireLegalHistoryOpener(historyMessages, sliceStart);
 	// Note: a leading `tool_result` is the only wire-illegal opener
 	// after the advance/fallback chain. Production usually avoids
 	// this via the placeholder user message that Bedrock prepends,

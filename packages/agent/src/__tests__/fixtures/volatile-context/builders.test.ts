@@ -87,6 +87,17 @@ describe("volatile-context builders smoke tests", () => {
 		expect(msgResult.count).toBe(3);
 	});
 
+	it("makeSiblingThread derives a deterministic user ID when userId is empty", () => {
+		const title = "Empty User Thread";
+		const ctx: BuilderContext = { db, siteId, nowMs, userId: "" };
+		const threadId = makeSiblingThread(ctx, title, 0, null);
+		const thread = db.prepare("SELECT user_id FROM threads WHERE id=?", [threadId]).get() as {
+			user_id: string;
+		};
+
+		expect(thread.user_id).toBe(deterministicUUID(BOUND_NAMESPACE, `${title}:user`));
+	});
+
 	it("makeAppliedAdvisory creates applied advisory", () => {
 		const ctx: BuilderContext = { db, siteId, nowMs };
 		makeAppliedAdvisory(ctx, "Test Advisory", 2);
