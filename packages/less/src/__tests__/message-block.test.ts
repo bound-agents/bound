@@ -2,31 +2,39 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Message, formatWithHashes } from "@bound/shared";
+import { formatWithHashes } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
-import { MessageBlock } from "../tui/components/MessageBlock";
+import {
+	MessageBlock,
+	parseMessageContent,
+	textContentLines,
+	withoutBoundlessProvenance,
+} from "../tui/components/MessageBlock";
 
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
-type MessageFixture = Pick<Message, "id" | "role" | "content"> &
-	Partial<Omit<Message, "id" | "role" | "content">>;
+import { renderMessageBlock, messageFixture as sharedMessageFixture } from "./tui-message-fixtures";
 
-const messageFixture = ({ id, role, content, ...overrides }: MessageFixture): Message => ({
-	id,
-	thread_id: "t-1",
-	role,
-	content,
-	model_id: null,
-	tool_name: null,
-	created_at: new Date().toISOString(),
-	modified_at: null,
-	host_origin: "test",
-	deleted: 0,
-	exit_code: null,
-	metadata: null,
-	...overrides,
+const messageFixture = (overrides: Parameters<typeof sharedMessageFixture>[0]) =>
+	sharedMessageFixture({ thread_id: "t-1", created_at: new Date().toISOString(), ...overrides });
+
+describe("MessageBlock content normalization", () => {
+	it("parses block transport, removes provenance only when content remains, and trims result lines", () => {
+		const blocks = parseMessageContent(
+			JSON.stringify([
+				{ type: "text", text: "[boundless] host=test" },
+				{ type: "text", text: "\u001b[32m\nanswer\n\u001b[0m" },
+			]),
+		);
+		expect(textContentLines(withoutBoundlessProvenance(blocks))).toEqual(["answer"]);
+		expect(
+			withoutBoundlessProvenance(
+				parseMessageContent('[{"type":"text","text":"[boundless] only"}]'),
+			),
+		).toEqual([{ type: "text", text: "[boundless] only" }]);
+	});
 });
 
 describe("MessageBlock", () => {
@@ -75,9 +83,7 @@ describe("MessageBlock", () => {
 			tool_name: "aux-1",
 		});
 		const frame =
-			render(
-				React.createElement(MessageBlock, { message, toolName: "aux", terminalColumns: 120 }),
-			).lastFrame() ?? "";
+			renderMessageBlock(message, { toolName: "aux", terminalColumns: 120 }).lastFrame() ?? "";
 		expect(frame).toContain("Aux report");
 		expect(frame).toContain("• first");
 		expect(frame).toContain("… 14 more lines");
@@ -93,13 +99,10 @@ describe("MessageBlock", () => {
 			tool_name: "bash-1",
 		});
 		const frame =
-			render(
-				React.createElement(MessageBlock, {
-					message,
-					toolName: "boundless_bash",
-					terminalColumns: 120,
-				}),
-			).lastFrame() ?? "";
+			renderMessageBlock(message, {
+				toolName: "boundless_bash",
+				terminalColumns: 120,
+			}).lastFrame() ?? "";
 		expect(frame).toContain("- literal bullet");
 		expect(frame).not.toContain("• literal bullet");
 	});
@@ -123,9 +126,7 @@ describe("MessageBlock", () => {
 			]),
 		});
 		try {
-			const frame =
-				render(React.createElement(MessageBlock, { message, terminalColumns: 120 })).lastFrame() ??
-				"";
+			const frame = renderMessageBlock(message, { terminalColumns: 120 }).lastFrame() ?? "";
 			expect(frame).toContain("+ const newValue = 2;");
 			const source = await Bun.file("packages/less/src/tui/components/MessageBlock.tsx").text();
 			expect(source).toContain(

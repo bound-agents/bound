@@ -12,6 +12,12 @@ import {
 	buildTurnActivityMap,
 	partitionPendingMessage,
 } from "../tui/views/ChatView";
+import {
+	messageFixture as msg,
+	renderMessageBlock,
+	toolCall,
+	toolResult,
+} from "./tui-message-fixtures";
 
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
@@ -235,41 +241,6 @@ describe("ChatView Yard-dispatched client tools", () => {
 	});
 });
 
-/**
- * Test fixtures for buildToolResultMetaMap. Real tool_call messages store a
- * JSON array of content blocks in `content`; tool_result messages stash the
- * matching tool_use_id in their `tool_name` column.
- */
-function msg(overrides: Partial<Message> & Pick<Message, "id" | "role" | "content">): Message {
-	return {
-		thread_id: "t1",
-		model_id: null,
-		tool_name: null,
-		created_at: "2026-05-22T00:00:00Z",
-		modified_at: null,
-		host_origin: "test",
-		deleted: 0,
-		exit_code: null,
-		metadata: null,
-		...overrides,
-	};
-}
-
-function toolCall(
-	id: string,
-	uses: Array<{ id: string; name: string; input?: Record<string, unknown> }>,
-): Message {
-	return msg({
-		id,
-		role: "tool_call",
-		content: JSON.stringify(uses.map((u) => ({ type: "tool_use", ...u }))),
-	});
-}
-
-function toolResult(id: string, toolUseId: string, content = "ok"): Message {
-	return msg({ id, role: "tool_result", tool_name: toolUseId, content });
-}
-
 describe("buildToolResultMetaMap", () => {
 	it("returns an empty map for an empty input", () => {
 		expect(buildToolResultMetaMap([]).size).toBe(0);
@@ -455,25 +426,17 @@ describe("MessageBlock tool_result header", () => {
 	}
 
 	it("renders the resolved tool name, not the tool_use_id", () => {
-		const { lastFrame } = render(
-			React.createElement(MessageBlock, {
-				message: resultMsg(),
-				toolName: "boundless_read",
-				terminalColumns: 80,
-			}),
-		);
+		const { lastFrame } = renderMessageBlock(resultMsg(), {
+			toolName: "boundless_read",
+			terminalColumns: 80,
+		});
 		const out = lastFrame() ?? "";
 		expect(out).toContain("read");
 		expect(out).not.toContain(toolUseId);
 	});
 
 	it("omits the header label entirely when no tool name resolves", () => {
-		const { lastFrame } = render(
-			React.createElement(MessageBlock, {
-				message: resultMsg(),
-				terminalColumns: 80,
-			}),
-		);
+		const { lastFrame } = renderMessageBlock(resultMsg(), { terminalColumns: 80 });
 		expect(lastFrame() ?? "").not.toContain(toolUseId);
 	});
 });

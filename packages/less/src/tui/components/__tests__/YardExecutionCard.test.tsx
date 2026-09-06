@@ -4,14 +4,21 @@ import React from "react";
 import type { YardTreeSnapshot } from "../../hooks/useYardExecutions";
 import { YardExecutionCard } from "../YardExecutionCard";
 
-const root = {
-	id: "root",
-	parentId: null,
-	node: { kind: "run", depth: 0 } as const,
-	phase: "started" as const,
-	seq: 1,
-	startSeq: 1,
-};
+type YardNode = YardTreeSnapshot["nodes"][number];
+
+function yardNode<T extends YardNode["node"]>(
+	id: string,
+	parentId: string | null,
+	node: T,
+	seq: number,
+	overrides: Partial<YardNode> = {},
+): YardNode {
+	return { id, parentId, node, phase: "started", seq, startSeq: seq, ...overrides };
+}
+
+const root = yardNode("root", null, { kind: "run", depth: 0 }, 1);
+const tool = (id: string, name: string, seq: number, overrides: Partial<YardNode> = {}) =>
+	yardNode(id, "root", { kind: "tool", name }, seq, overrides);
 
 function tree(nodes: YardTreeSnapshot["nodes"], programPreview?: string): YardTreeSnapshot {
 	return { traceId: "trace", runId: "root", phase: "started", nodes, programPreview };
@@ -30,17 +37,7 @@ function frame(
 
 describe("YardExecutionCard program and graph accounting", () => {
 	it("keeps absent, empty, six-line, and seven-line live programs exact", () => {
-		const nodes = [
-			root,
-			{
-				id: "tool",
-				parentId: "root",
-				node: { kind: "tool", name: "tool" } as const,
-				phase: "started" as const,
-				seq: 2,
-				startSeq: 2,
-			},
-		];
+		const nodes = [root, tool("tool", "tool", 2)];
 		const absent = frame(tree(nodes), { maxGraphRows: 20 });
 		const empty = frame(tree(nodes, ""), { maxGraphRows: 20 });
 		const six = frame(tree(nodes, "a\nb\nc\nd\ne\nf"), { maxGraphRows: 20 });
@@ -55,39 +52,17 @@ describe("YardExecutionCard program and graph accounting", () => {
 	it("preserves live depth-first rows, threshold packing, failure details, and exhausted-budget elision", () => {
 		const nodes: YardTreeSnapshot["nodes"] = [
 			root,
-			{
-				id: "nested",
-				parentId: "root",
-				node: { kind: "run", depth: 1 },
-				phase: "started",
-				seq: 2,
-				startSeq: 2,
-			},
-			{
-				id: "inside",
-				parentId: "nested",
-				node: { kind: "tool", name: "inside" },
-				phase: "started",
-				seq: 3,
-				startSeq: 3,
-			},
-			...Array.from({ length: 3 }, (_, i) => ({
-				id: `same-${i}`,
-				parentId: "root",
-				node: { kind: "tool", name: "same" } as const,
-				phase: (i === 1 ? "failed" : "started") as "started" | "failed",
-				seq: i + 4,
-				startSeq: i + 4,
-				...(i === 1 ? { summary: "failed member" } : {}),
-			})),
-			{
-				id: "other",
-				parentId: "root",
-				node: { kind: "tool", name: "other" },
-				phase: "started",
-				seq: 7,
-				startSeq: 7,
-			},
+			yardNode("nested", "root", { kind: "run", depth: 1 }, 2),
+			yardNode("inside", "nested", { kind: "tool", name: "inside" }, 3),
+			...Array.from({ length: 3 }, (_, i) =>
+				tool(
+					`same-${i}`,
+					"same",
+					i + 4,
+					i === 1 ? { phase: "failed", summary: "failed member" } : {},
+				),
+			),
+			tool("other", "other", 7),
 		];
 		const full = frame(tree(nodes));
 		expect(full.indexOf("run · depth 1")).toBeLessThan(full.indexOf("inside"));

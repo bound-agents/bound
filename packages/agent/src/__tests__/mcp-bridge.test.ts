@@ -1187,6 +1187,68 @@ describe("MCP Bridge", () => {
 		db.close();
 	});
 
+	it("keeps legacy tool-result projection when a client also supplies an ordered envelope", async () => {
+		const client = makeMockClient(
+			{ name: "legacy-projection", transport: "stdio", command: "test" },
+			[{ name: "mixed", inputSchema: {} }],
+			[],
+			[],
+		);
+		(client as unknown as { callTool: () => unknown }).callTool = async () => ({
+			content: "first\nsecond",
+			resourceLinks: [{ uri: "file:///link", name: "link" }],
+			images: [{ media_type: "image/png", data: "IMAGE" }],
+			// The bridge must retain the legacy channel projection, not source ordering.
+			contentBlocks: [
+				{ type: "image", media_type: "image/png", data: "IMAGE" },
+				{ type: "text", text: "first" },
+				{ type: "resource_link", uri: "file:///link", name: "link" },
+				{ type: "text", text: "second" },
+			],
+			isError: false,
+		});
+
+		const { commands } = await generateMCPCommands(new Map([["legacy-projection", client]]));
+		const command = commands.find((entry) => entry.name === "legacy-projection");
+		expect(command).toBeDefined();
+		const ctx = createMockCommandContext();
+		// biome-ignore lint/style/noNonNullAssertion: assertion above establishes the command
+		const result = await command!.handler({ subcommand: "mixed" }, ctx);
+		expect(JSON.parse(result.stdout)).toMatchObject([
+			{
+				type: "text",
+				text: 'first\nsecond\n\n[Resource link: uri=file:///link name="link"]\nLoad with: resource "file:///link"',
+			},
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: "IMAGE" } },
+		]);
+	});
+
+	it("treats missing and empty ordered envelopes as legacy compatibility channels", async () => {
+		for (const contentBlocks of [undefined, []]) {
+			const client = makeMockClient(
+				{ name: "compat", transport: "stdio", command: "test" },
+				[{ name: "image", inputSchema: {} }],
+				[],
+				[],
+			);
+			(client as unknown as { callTool: () => unknown }).callTool = async () => ({
+				content: "caption",
+				contentBlocks,
+				images: [{ media_type: "image/png", data: "IMAGE" }],
+				isError: false,
+			});
+			const { commands } = await generateMCPCommands(new Map([["compat", client]]));
+			const command = commands.find((entry) => entry.name === "compat");
+			const ctx = createMockCommandContext();
+			// biome-ignore lint/style/noNonNullAssertion: command is generated from the supplied client
+			const result = await command!.handler({ subcommand: "image" }, ctx);
+			expect(JSON.parse(result.stdout)).toEqual([
+				{ type: "text", text: "caption" },
+				{ type: "image", source: { type: "base64", media_type: "image/png", data: "IMAGE" } },
+			]);
+		}
+	});
+
 	it("serializes image content blocks as JSON ContentBlock[] in stdout", async () => {
 		const imageClient = {
 			getConfig: () => ({ name: "image-server", transport: "stdio", command: "test" }),
