@@ -95,17 +95,32 @@ export class ChatGptOAuthDriver implements LLMBackend {
 						// (chatgpt.com/backend-api/codex/responses) validates a STRICT
 						// parameter allowlist — model, input, instructions, stream, store,
 						// include, tools, tool_choice, reasoning, previous_response_id,
-						// truncation — far narrower than api.openai.com/v1/responses. It
-						// rejects temperature, top_p, and max_output_tokens with a 400
-						// (`{"detail":"Unsupported parameter: …"}`), so none of those may
-						// ride even when the caller sets them. tool_choice stays only when
-						// tools are present (it is on the allowlist).
+						// prompt_cache_key, truncation — far narrower than
+						// api.openai.com/v1/responses. It rejects temperature, top_p, and
+						// max_output_tokens with a 400 (`{"detail":"Unsupported parameter:
+						// …"}`), so none of those may ride even when the caller sets them.
+						// tool_choice stays only when tools are present (it is on the
+						// allowlist).
 						...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 						// The Codex backend requires `store: false` (zero retention) and
 						// rejects the request with 400 `{"detail":"Store must be set to
 						// false"}` otherwise. The @ai-sdk/openai Responses provider maps
 						// `providerOptions.openai.store` onto the body `store` field.
-						providerOptions: { openai: { store: false } },
+						//
+						// Prompt caching: the endpoint has NO prompt_cache_breakpoint field
+						// (that knob is the Mantle/GPT-5.6 surface), so Bound's `{role:
+						// "cache"}` markers cannot ride this driver. Cache reuse rides the
+						// automatic prefix cache instead, keyed by a session-stable
+						// `prompt_cache_key` — the same mechanism the Codex CLI reference
+						// client uses (it sends the conversation session id). Without a
+						// stable key, requests land on arbitrary cache partitions and
+						// multi-turn agent loops measure ~0% cached tokens.
+						providerOptions: {
+							openai: {
+								store: false,
+								...(params.threadId && { promptCacheKey: params.threadId }),
+							},
+						},
 						abortSignal: params.signal,
 					}).fullStream,
 				map: { estimateInputFromMessages: params.messages, coalescePrefixItems: true },
