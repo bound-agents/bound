@@ -1,58 +1,56 @@
 import { describe, expect, it } from "bun:test";
-import type { Message } from "@bound/shared";
 import { render } from "ink-testing-library";
-import { MessageBlock } from "../tui/components/MessageBlock";
 import { StatusBar } from "../tui/components/StatusBar";
 import { ToolCallCard } from "../tui/components/ToolCallCard";
+import { messageFixture, renderMessageBlock } from "./tui-message-fixtures";
+
+const legacyMessageFixture = (overrides: Parameters<typeof messageFixture>[0]) =>
+	messageFixture({
+		thread_id: "thread-1",
+		user_id: "user-1",
+		created_at: "2024-01-01T00:00:00Z",
+		...overrides,
+	});
 
 describe("Message rendering components", () => {
 	describe("MessageBlock", () => {
 		it("AC9.1: renders user messages with role header", async () => {
-			const message: Message = {
+			const message = legacyMessageFixture({
 				id: "msg-1",
-				thread_id: "thread-1",
-				user_id: "user-1",
 				role: "user",
 				content: "Hello there",
 				tool_name: null,
-				created_at: "2024-01-01T00:00:00Z",
-			};
+			});
 
-			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
+			const { lastFrame } = renderMessageBlock(message, { terminalColumns: 120 });
 			const output = lastFrame();
 			expect(output).toContain("you");
 			expect(output).toContain("Hello there");
 		});
 
 		it("AC9.1: renders assistant messages with role header", async () => {
-			const message: Message = {
+			const message = legacyMessageFixture({
 				id: "msg-2",
-				thread_id: "thread-1",
-				user_id: "user-1",
 				role: "assistant",
 				content: "I can help",
 				tool_name: null,
-				created_at: "2024-01-01T00:00:00Z",
-			};
+			});
 
-			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
+			const { lastFrame } = renderMessageBlock(message, { terminalColumns: 120 });
 			const output = lastFrame();
 			expect(output).toContain("agent");
 			expect(output).toContain("I can help");
 		});
 
 		it("AC9.1: renders tool_call messages with ⏵ glyph and tool name", async () => {
-			const message: Message = {
+			const message = legacyMessageFixture({
 				id: "msg-3",
-				thread_id: "thread-1",
-				user_id: "user-1",
 				role: "tool_call",
 				content: '{"path": "/etc/passwd"}',
 				tool_name: "read",
-				created_at: "2024-01-01T00:00:00Z",
-			};
+			});
 
-			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
+			const { lastFrame } = renderMessageBlock(message, { terminalColumns: 120 });
 			const output = lastFrame();
 			// Tool calls render as "⏵ <tool>: <content>" under the assistant stripe
 			expect(output).toContain("⏵");
@@ -60,17 +58,14 @@ describe("Message rendering components", () => {
 		});
 
 		it("AC9.1: renders tool_result with success indicator and content", async () => {
-			const message: Message = {
+			const message = legacyMessageFixture({
 				id: "msg-4",
-				thread_id: "thread-1",
-				user_id: "user-1",
 				role: "tool_result",
 				content: "file contents here",
 				tool_name: "read",
-				created_at: "2024-01-01T00:00:00Z",
-			};
+			});
 
-			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
+			const { lastFrame } = renderMessageBlock(message, { terminalColumns: 120 });
 			const output = lastFrame();
 			// Tool results render as indented output with ✓/✗ indicator
 			expect(output).toContain("✓");
@@ -78,33 +73,27 @@ describe("Message rendering components", () => {
 		});
 
 		it("AC9.1: handles string content", async () => {
-			const message: Message = {
+			const message = legacyMessageFixture({
 				id: "msg-5",
-				thread_id: "thread-1",
-				user_id: "user-1",
 				role: "assistant",
 				content: "simple string",
 				tool_name: null,
-				created_at: "2024-01-01T00:00:00Z",
-			};
+			});
 
-			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
+			const { lastFrame } = renderMessageBlock(message, { terminalColumns: 120 });
 			const output = lastFrame();
 			expect(output).toContain("simple string");
 		});
 
 		it("AC9.1: handles ContentBlock[] content", async () => {
-			const message: Message = {
+			const message = legacyMessageFixture({
 				id: "msg-6",
-				thread_id: "thread-1",
-				user_id: "user-1",
 				role: "assistant",
 				content: JSON.stringify([{ type: "text", text: "block content" }]),
 				tool_name: null,
-				created_at: "2024-01-01T00:00:00Z",
-			};
+			});
 
-			const { lastFrame } = render(<MessageBlock message={message} terminalColumns={120} />);
+			const { lastFrame } = renderMessageBlock(message, { terminalColumns: 120 });
 			const output = lastFrame();
 			expect(output).toContain("block content");
 		});

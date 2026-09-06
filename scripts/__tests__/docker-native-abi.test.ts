@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "../..");
@@ -9,6 +10,7 @@ const smokeScript = readFileSync(join(root, "scripts/docker-native-abi-smoke.sh"
 const packageJson = readFileSync(join(root, "package.json"), "utf8");
 const nativeStaging = readFileSync(join(root, "scripts/tree-sitter-native-staging.ts"), "utf8");
 const nativeProbe = readFileSync(join(root, "scripts/tree-sitter-native-probe.ts"), "utf8");
+const ciWorkflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
 
 describe("release Docker native ABI contract", () => {
 	test("runs Bun embedded native addons on an Ubuntu 24.04 runtime with its matching C++ ABI", () => {
@@ -97,5 +99,63 @@ describe("release Docker native ABI contract", () => {
 		);
 		expect(nativeProbe).toContain("parser.setLanguage(language)");
 		expect(nativeProbe).toContain("loaded ${grammars.length} structure-reader grammar addons");
+	});
+
+	test("fails a package when tee fails even if Bun succeeds, while retaining Bun exit sidecars", () => {
+		const match = ciWorkflow.match(/run_test_with_log\(\) \{[\s\S]*?^\s*\}/m);
+		if (!match) throw new Error("run_test_with_log was not found in CI workflow");
+
+		const dir = mkdtempSync(join(tmpdir(), "bound-ci-pipeline-"));
+		const bin = join(dir, "bin");
+		const results = join(dir, "results");
+		mkdirSync(bin);
+		mkdirSync(results);
+		const writeCommand = (name: string, body: string) => {
+			const path = join(bin, name);
+			writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`);
+			chmodSync(path, 0o755);
+		};
+
+		try {
+			writeCommand("bun", 'printf "bun output\\n"; exit "${BUN_EXIT}"');
+			writeCommand("tee", 'cat >/dev/null; exit "${TEE_EXIT}"');
+			const run = (bunExit: number, teeExit: number) =>
+				Bun.spawnSync({
+					cmd: [
+						"bash",
+						"-c",
+						`set -euo pipefail; log="${results}/core.log"; ${match[0]}; run_test_with_log "${results}/core.exit" bun test`,
+					],
+					env: {
+						...process.env,
+						PATH: `${bin}:${process.env.PATH}`,
+						BUN_EXIT: String(bunExit),
+						TEE_EXIT: String(teeExit),
+					},
+				});
+
+			expect(run(0, 9).exitCode).toBe(9);
+			expect(readFileSync(join(results, "core.exit"), "utf8").trim()).toBe("0");
+			expect(run(7, 0).exitCode).toBe(7);
+			expect(readFileSync(join(results, "core.exit"), "utf8").trim()).toBe("7");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("prepares pinned native headers only on Linux and captures every package's complete test log", () => {
+		expect(ciWorkflow).toContain("os: [ubuntu-latest, macos-latest, windows-2022]");
+		expect(ciWorkflow).toContain("34018618564");
+		expect(ciWorkflow).toContain("node-gyp could not recognize VS2026");
+		expect(ciWorkflow).toContain("this is not ABI validation");
+		expect(ciWorkflow).toMatch(
+			/if: \$\{\{ runner\.os == 'Linux' \}\}[\s\S]*NODE_VERSION=22\.15\.0[\s\S]*NODE_HEADERS_SHA256=cda8bbbfb4f7fb19b65efd5faabc97ccea1e94422e7066b9a1e70280c1ca6453[\s\S]*NODE_GYP_NODEDIR/,
+		);
+		expect(ciWorkflow).toMatch(
+			/bun install --frozen-lockfile[\s\S]*if: \$\{\{ runner\.os == 'Linux' \}\}[\s\S]*bun run scripts\/tree-sitter-native-staging\.ts/,
+		);
+		expect(ciWorkflow).toMatch(
+			/run_test_with_log\(\) \{[\s\S]*"\$@" 2>&1 \| tee "\$log"[\s\S]*local -a pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)[\s\S]*printf '%s\\n' "\$\{pipeline_status\[0\]\}" > "\$exit_sidecar"[\s\S]*return "\$\{pipeline_status\[1\]\}"/,
+		);
 	});
 });

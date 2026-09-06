@@ -53,6 +53,16 @@ describe("extractMCPToolResult", () => {
 		});
 	});
 
+	it("keeps malformed recognized blocks on the legacy extraction path", () => {
+		expect(() => extractMCPToolResult([{ type: "resource" }])).toThrow();
+		expect(extractMCPToolResult([{ type: "image" }])).toMatchObject({
+			images: [{ media_type: undefined, data: undefined }],
+		});
+		expect(
+			extractMCPToolResult([{ type: "resource_link", uri: "" }]).resourceLinks,
+		).toBeUndefined();
+	});
+
 	it("handles multiple images", () => {
 		const result = extractMCPToolResult([
 			{ type: "text", text: "Two screenshots" },
@@ -210,5 +220,13 @@ describe("MCPClient.callTool structuredContent fallback (#165)", () => {
 		const client = stubbedClient({ content: [] });
 		const result = await client.callTool("noop", {});
 		expect(result.content).toBe("");
+	});
+
+	it("preserves malformed recognized-block behavior through callTool", async () => {
+		await expect(
+			stubbedClient({ content: [{ type: "resource" }] }).callTool("broken", {}),
+		).rejects.toThrow();
+		const result = await stubbedClient({ content: [{ type: "image" }] }).callTool("partial", {});
+		expect(result.images).toEqual([{ media_type: undefined, data: undefined }]);
 	});
 });

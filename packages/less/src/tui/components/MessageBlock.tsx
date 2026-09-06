@@ -56,6 +56,45 @@ function displayToolName(name: string): string {
 
 /** One parsed tool_use block from a tool_call message's content JSON. */
 export type ToolUseBlockLite = { name: string; input: Record<string, unknown> };
+type MessageContent = string | ContentBlock[];
+
+/** Decode persisted block-array transport without treating ordinary JSON text as content. */
+export function parseMessageContent(content: string): MessageContent {
+	if (!content.startsWith("[")) return content;
+	try {
+		const parsed: unknown = JSON.parse(content);
+		return Array.isArray(parsed) ? (parsed as ContentBlock[]) : content;
+	} catch {
+		return content;
+	}
+}
+
+/** Hide provenance only when doing so leaves an operator-visible result. */
+export function withoutBoundlessProvenance(content: MessageContent): MessageContent {
+	if (!Array.isArray(content)) return content;
+	const visible = content.filter(
+		(block) => block.type !== "text" || !(block as { text: string }).text.startsWith("[boundless]"),
+	);
+	return visible.length > 0 ? visible : content;
+}
+
+/** Flatten text result blocks and remove terminal control plus exterior blank rows. */
+export function textContentLines(content: MessageContent): string[] {
+	const text = stripTerminalControlSequences(
+		typeof content === "string"
+			? content
+			: content
+					.filter((block) => block.type === "text")
+					.map((block) => (block as { text: string }).text)
+					.join("\n"),
+	);
+	const lines = text.split("\n");
+	const first = lines.findIndex((line) => line.trim().length > 0);
+	if (first < 0) return lines;
+	let last = lines.length - 1;
+	while (last > first && lines[last].trim().length === 0) last--;
+	return lines.slice(first, last + 1);
+}
 
 /**
  * Compact tools (read/search/query) collapse to one committed line per
@@ -753,18 +792,7 @@ export function MessageBlock({
 		return <Box flexDirection="column">{parts}</Box>;
 	};
 
-	// Parse content if it's a JSON string
-	let parsedContent: string | ContentBlock[] = message.content;
-	try {
-		if (typeof message.content === "string" && message.content.startsWith("[")) {
-			const parsed = JSON.parse(message.content);
-			if (Array.isArray(parsed)) {
-				parsedContent = parsed;
-			}
-		}
-	} catch {
-		// Keep original content
-	}
+	const parsedContent = parseMessageContent(message.content);
 
 	// Render based on role
 	if (message.role === "user") {
@@ -870,41 +898,9 @@ export function MessageBlock({
 	}
 
 	if (message.role === "tool_result") {
-		// Filter out [boundless] provenance blocks — they're useful for the agent
-		// but noise in the TUI (the tool name is already in the header).
-		let filteredContent = parsedContent;
-		if (Array.isArray(parsedContent)) {
-			const nonProvenance = parsedContent.filter(
-				(block) =>
-					block.type !== "text" ||
-					!(block as { type: "text"; text: string }).text.startsWith("[boundless]"),
-			);
-			if (nonProvenance.length > 0) {
-				filteredContent = nonProvenance;
-			}
-		}
-
-		// Flatten all text into lines and truncate to keep the TUI compact
-		const fullText = stripTerminalControlSequences(
-			typeof filteredContent === "string"
-				? filteredContent
-				: filteredContent
-						.filter((b) => b.type === "text")
-						.map((b) => (b as { type: "text"; text: string }).text)
-						.join("\n"),
-		);
-		// Strip leading/trailing blank lines so truncation shows meaningful content
-		const rawLines = fullText.split("\n");
-		const firstNonEmpty = rawLines.findIndex((l: string) => l.trim().length > 0);
-		let lastNonEmpty = -1;
-		for (let i = rawLines.length - 1; i >= 0; i--) {
-			if (rawLines[i].trim().length > 0) {
-				lastNonEmpty = i;
-				break;
-			}
-		}
-		const allLines =
-			firstNonEmpty >= 0 ? rawLines.slice(firstNonEmpty, lastNonEmpty + 1) : rawLines;
+		const filteredContent = withoutBoundlessProvenance(parsedContent);
+		const allLines = textContentLines(filteredContent);
+		const fullText = allLines.join("\n");
 		if (resolvedToolName === "aux") {
 			const clipped = clipToolResultSourceLines(allLines);
 			return (

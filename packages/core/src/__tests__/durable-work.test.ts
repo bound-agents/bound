@@ -59,6 +59,13 @@ const terminalRow = (id: string, lastError: string, expiresAt: string) => ({
 	last_error: lastError,
 	expires_at: expiresAt,
 });
+const transferringRow = (id: string, expiresAt: string | null, claimedAt: string) => {
+	insertDurableWork(db, row(id, "peer", expiresAt));
+	db.run(
+		"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = ?",
+		[claimedAt, id],
+	);
+};
 // The relay attempt cap (DURABLE_RELAY_MAX_ATTEMPTS in @bound/agent) the sweep
 // enforces sender-side; core is registry-agnostic so the caller supplies it.
 const DEFAULT_ATTEMPT_CAP = 3;
@@ -98,8 +105,7 @@ describe("durable_work", () => {
 		receiver.close();
 	});
 	it("counts a transferring peer-targeted row as undrained", () => {
-		insertDurableWork(db, row("transfer", "peer"));
-		expect(beginDurableWorkTransfer(db, "transfer")).not.toBeNull();
+		transferringRow("transfer", null, "2026-01-01T00:00:00.000Z");
 		expect(countPendingPeerTargetedDurableWork(db, "local")).toBe(1);
 	});
 	it("requires the consumer claim token for acknowledgement", () => {
@@ -173,12 +179,8 @@ describe("durable_work", () => {
 		// is the sole running-process recovery path: return it to 'pending' so the
 		// drain re-sends it, charging one attempt so a poisoned row eventually caps.
 		const farFuture = "2027-01-01T00:00:00.000Z";
-		insertDurableWork(db, row("stuck", "peer", farFuture));
 		const claimedAt = "2026-01-01T00:00:00.000Z";
-		db.run(
-			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'stuck'",
-			[claimedAt],
-		);
+		transferringRow("stuck", farFuture, claimedAt);
 
 		// Within the transfer timeout window (claimed_at + 30s) is a no-op: a
 		// slow-but-live ack must not be raced.
@@ -203,12 +205,12 @@ describe("durable_work", () => {
 		// poisoned; the sweep dead-letters it (with a transfer-exhaustion last_error)
 		// rather than re-pending it a fourth time.
 		const farFuture = "2027-01-01T00:00:00.000Z";
-		insertDurableWork(db, row("poisoned", "peer", farFuture));
 		const claimedAt = "2026-01-01T00:00:00.000Z";
-		db.run(
-			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ?, attempt_count = ? WHERE id = 'poisoned'",
-			[claimedAt, DEFAULT_ATTEMPT_CAP],
-		);
+		transferringRow("poisoned", farFuture, claimedAt);
+		// Only the poisoned-row case begins at the cap.
+		db.run("UPDATE durable_work SET attempt_count = ? WHERE id = 'poisoned'", [
+			DEFAULT_ATTEMPT_CAP,
+		]);
 
 		expect(
 			sweepStaleTransferringDurableWork(db, DEFAULT_ATTEMPT_CAP, "2026-01-01T00:01:00.000Z"),
@@ -225,11 +227,7 @@ describe("durable_work", () => {
 		// transfer sweep; deadLetterExpiredDurableWork owns terminal expiry. The two
 		// sweeps must not race over the same row.
 		const pastTerminal = "2026-01-01T00:00:00.000Z";
-		insertDurableWork(db, row("expired", "peer", pastTerminal));
-		db.run(
-			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'expired'",
-			["2025-12-31T00:00:00.000Z"],
-		);
+		transferringRow("expired", pastTerminal, "2025-12-31T00:00:00.000Z");
 
 		// now is well past both the transfer timeout AND the terminal expiry, yet the
 		// transfer sweep leaves the row untouched: it is not re-pended.
@@ -248,11 +246,7 @@ describe("durable_work", () => {
 		// keyed on claimed_at (not expires_at), a null terminal TTL no longer blocks
 		// recovery — there is no terminal deadline to defer to, so the transfer clock
 		// is the only clock. It is still gated by the transfer timeout, not by age.
-		insertDurableWork(db, row("forever", "peer", null));
-		db.run(
-			"UPDATE durable_work SET claim_state = 'transferring', claim_token = 'tok', claimed_at = ? WHERE id = 'forever'",
-			["2026-01-01T00:00:00.000Z"],
-		);
+		transferringRow("forever", null, "2026-01-01T00:00:00.000Z");
 
 		// Within the transfer window: untouched.
 		expect(

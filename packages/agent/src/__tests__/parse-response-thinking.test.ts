@@ -14,7 +14,12 @@ let parseStreamChunks: any;
 try {
 	const mod = await import("../agent-loop-utils");
 	parseStreamChunks = mod.parseStreamChunks;
-} catch {
+} catch (error) {
+	console.error(
+		"Failed to import parseStreamChunks:",
+		error,
+		error instanceof Error ? error.stack : undefined,
+	);
 	// Will be defined after implementation
 }
 
