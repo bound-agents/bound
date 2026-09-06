@@ -1,7 +1,7 @@
 import { findTaskInfraBinding, updateRow } from "@bound/core";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const cancelSchema = z.object({
 	task_id: z.string().optional().describe("Task ID to cancel"),
@@ -9,24 +9,21 @@ const cancelSchema = z.object({
 });
 
 export function createCancelTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(cancelSchema);
+	const toolSchema = defineToolSchema(
+		"cancel",
+		"Cancel a scheduled task (supports task-id or payload-match)",
+		cancelSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "cancel",
-				description: "Cancel a scheduled task (supports task-id or payload-match)",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Idempotent: cancelling an already-cancelled task is a no-op (terminal
 		// state). payload_match resolves to a set; re-running matches the same
 		// set or a subset.
 		idempotent: true,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(cancelSchema, raw, "cancel");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

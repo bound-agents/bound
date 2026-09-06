@@ -3,7 +3,7 @@ import { z } from "zod";
 import { getClientSessions } from "../delegation.js";
 import { resolveHubSiteId } from "../topology.js";
 import type { RegisteredTool, ToolContext } from "../types.js";
-import { parseToolInput, zodToToolParams } from "./tool-schema.js";
+import { defineToolSchema } from "./tool-schema.js";
 
 interface HostRow {
 	site_id: string;
@@ -61,24 +61,20 @@ interface ModelInfo {
 const hostinfoSchema = z.object({});
 
 export function createHostinfoTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(hostinfoSchema);
+	const toolSchema = defineToolSchema(
+		"hostinfo",
+		"Display registered host information, cluster topology, and per-host capabilities",
+		hostinfoSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "hostinfo",
-				description:
-					"Display registered host information, cluster topology, and per-host capabilities",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Read-only: queries the hosts table and formats topology. No mutations.
 		idempotent: true,
 		readOnly: true,
 		execute: async (raw: Record<string, unknown>): Promise<string> => {
-			const parsed = parseToolInput(hostinfoSchema, raw, "hostinfo");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 
 			try {

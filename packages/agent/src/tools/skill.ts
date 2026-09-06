@@ -2,7 +2,7 @@ import type { SkillFileEntry } from "@bound/shared";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
 import { MAX_SKILL_NAME_LENGTH, SKILL_NAME_REGEX, importSkillFromFiles } from "./skill-utils.js";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const skillSchema = z.object({
 	action: z.enum(["activate", "list", "read", "deactivate"]).describe("Skill operation to perform"),
@@ -11,18 +11,15 @@ const skillSchema = z.object({
 });
 
 export function createSkillTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(skillSchema);
+	const toolSchema = defineToolSchema(
+		"skill",
+		"Manage skills: activate, list, read, or deactivate",
+		skillSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "skill",
-				description: "Manage skills: activate, list, read, or deactivate",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Per-action idempotency. list/read are pure queries. activate
 		// flips a status flag — running it twice with the same skill name
 		// leaves the same final state.
@@ -44,7 +41,7 @@ export function createSkillTool(ctx: ToolContext): RegisteredTool {
 			}
 		},
 		execute: async (raw: Record<string, unknown>): Promise<string> => {
-			const parsed = parseToolInput(skillSchema, raw, "skill");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

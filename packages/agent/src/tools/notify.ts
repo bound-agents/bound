@@ -4,7 +4,7 @@ import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { routeNotificationWakeup } from "../wakeup-routing.js";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const notifySchema = z.object({
 	thread_id: z.string().describe("Target thread ID"),
@@ -12,23 +12,19 @@ const notifySchema = z.object({
 });
 
 export function createNotifyTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(notifySchema);
+	const toolSchema = defineToolSchema(
+		"notify",
+		"Remind yourself of something. Enqueues a message and triggers inference on the target thread. When composing messages, use 'we' and 'our' — you are both the sender and the receiver. Be sure to check if the target thread has the right capabilities to act on your reminder before using this.",
+		notifySchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "notify",
-				description:
-					"Remind yourself of something. Enqueues a message and triggers inference on the target thread. When composing messages, use 'we' and 'our' — you are both the sender and the receiver. Be sure to check if the target thread has the right capabilities to act on your reminder before using this.",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Non-idempotent: each call sends another message to the target.
 		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(notifySchema, raw, "notify");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const { thread_id, message } = parsed.value;
 

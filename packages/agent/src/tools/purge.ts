@@ -2,7 +2,7 @@ import { insertRow } from "@bound/core";
 import { randomUUID } from "@bound/shared";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const purgeSchema = z.object({
 	message_ids: z.string().optional().describe("Comma-separated message IDs to purge"),
@@ -12,24 +12,20 @@ const purgeSchema = z.object({
 });
 
 export function createPurgeTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(purgeSchema);
+	const toolSchema = defineToolSchema(
+		"purge",
+		"Clear your head by purging unnecessary thoughts. Use this when you've realized a message is useless or too distracting for you to be productive.",
+		purgeSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "purge",
-				description:
-					"Clear your head by purging unnecessary thoughts. Use this when you've realized a message is useless or too distracting for you to be productive.",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Non-idempotent: each call inserts a new purge record (with a fresh
 		// generated id). Two calls with identical args produce two records.
 		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(purgeSchema, raw, "purge");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

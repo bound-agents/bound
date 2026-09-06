@@ -229,28 +229,19 @@ function renderProse(
 	key: string,
 	base: InlineStyle = {},
 ): React.ReactElement {
-	const logicalLines = splitRunsOnNewlines(elementsToRuns(node, base));
-	const lines: StyledRun[][] = [];
-	for (let i = 0; i < logicalLines.length; i++) {
+	const lines = splitRunsOnNewlines(elementsToRuns(node, base)).flatMap((logical, index) => [
 		// Blank visual line between authored lines = the double-spacing.
-		if (i > 0) {
-			lines.push([]);
-		}
-		const logical = logicalLines[i];
-		const wrapped = width && width > 0 ? wrapStyledRuns(logical, width) : [logical];
-		lines.push(...wrapped);
-	}
-	const children: React.ReactNode[] = [];
-	for (let li = 0; li < lines.length; li++) {
-		if (li > 0) {
-			children.push("\n");
-		}
-		const line = lines[li];
-		for (let ri = 0; ri < line.length; ri++) {
-			children.push(renderRun(line[ri], `${li}-${ri}`));
-		}
-	}
-	return <Text key={key}>{children}</Text>;
+		...(index > 0 ? [[]] : []),
+		...(width && width > 0 ? wrapStyledRuns(logical, width) : [logical]),
+	]);
+	return (
+		<Text key={key}>
+			{lines.flatMap((line, lineIndex) => [
+				...(lineIndex > 0 ? ["\n"] : []),
+				...line.map((run, runIndex) => renderRun(run, `${lineIndex}-${runIndex}`)),
+			])}
+		</Text>
+	);
 }
 
 /** Heading colors by level; h1 is the only one that differs. */

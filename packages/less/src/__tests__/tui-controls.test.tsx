@@ -12,24 +12,49 @@ import { TextInput, breakLines } from "../tui/components/TextInput.js";
 // inverse-video space that renders the cursor); when disabled, that cell
 // is not rendered at all.
 
+const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
+const noop = () => {};
+
+function renderTextInput({
+	onSubmit = noop,
+	...props
+}: {
+	onSubmit?: () => void;
+	placeholder?: string;
+	disabled?: boolean;
+	columns?: number;
+} = {}) {
+	return render(<TextInput onSubmit={onSubmit} {...props} />);
+}
+
+function renderConfirm({
+	message,
+	onYes = noop,
+	onNo = noop,
+}: {
+	message: string;
+	onYes?: () => void;
+	onNo?: () => void;
+}) {
+	return render(<Confirm message={message} onYes={onYes} onNo={onNo} />);
+}
+
 describe("TextInput", () => {
 	it("renders with placeholder when empty", () => {
-		const { lastFrame } = render(<TextInput onSubmit={() => {}} placeholder="Type here" />);
+		const { lastFrame } = renderTextInput({ placeholder: "Type here" });
 		const output = lastFrame();
 		expect(output).toContain("Type here");
 	});
 
 	it("renders cursor indicator", () => {
-		const { lastFrame } = render(<TextInput onSubmit={() => {}} placeholder="hi" />);
+		const { lastFrame } = renderTextInput({ placeholder: "hi" });
 		const output = lastFrame() ?? "";
 		// The cursor is the leading (inverse-video) space before the placeholder.
 		expect(output).toBe(" hi");
 	});
 
 	it("does not render cursor when disabled", () => {
-		const { lastFrame } = render(
-			<TextInput onSubmit={() => {}} placeholder="hi" disabled={true} />,
-		);
+		const { lastFrame } = renderTextInput({ placeholder: "hi", disabled: true });
 		const output = lastFrame() ?? "";
 		// No cursor cell — placeholder starts at column 0.
 		expect(output).toBe("hi");
@@ -37,7 +62,7 @@ describe("TextInput", () => {
 
 	it("handles useInput with character entry capability", () => {
 		const handleSubmit = mock(() => {});
-		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} placeholder="hi" />);
+		const { lastFrame } = renderTextInput({ onSubmit: handleSubmit, placeholder: "hi" });
 		const output = lastFrame() ?? "";
 		// Cursor cell present (leading space before placeholder).
 		expect(output).toBe(" hi");
@@ -45,9 +70,7 @@ describe("TextInput", () => {
 	});
 
 	it("uses useInput with isActive controlled by disabled prop", () => {
-		const { lastFrame: disabledOutput } = render(
-			<TextInput onSubmit={() => {}} placeholder="hi" disabled={true} />,
-		);
+		const { lastFrame: disabledOutput } = renderTextInput({ placeholder: "hi", disabled: true });
 		const output = disabledOutput() ?? "";
 		// No cursor cell when disabled.
 		expect(output).toBe("hi");
@@ -55,7 +78,7 @@ describe("TextInput", () => {
 
 	it("renders with enter key handler registered", () => {
 		const handleSubmit = mock(() => {});
-		const { lastFrame } = render(<TextInput onSubmit={handleSubmit} placeholder="hi" />);
+		const { lastFrame } = renderTextInput({ onSubmit: handleSubmit, placeholder: "hi" });
 		const output = lastFrame() ?? "";
 		expect(output).toBe(" hi");
 		expect(typeof handleSubmit).toBe("function");
@@ -65,8 +88,7 @@ describe("TextInput", () => {
 		// On macOS, Option+Left sends ESC+b (\x1bb) and Option+Right sends
 		// ESC+f (\x1bf). Ink parses these as { meta: true, input: 'b'/'f' }
 		// (NOT leftArrow/rightArrow). The TextInput must handle both.
-		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
-		const tick = () => new Promise((r) => setTimeout(r, 50));
+		const { lastFrame, stdin, unmount } = renderTextInput();
 
 		try {
 			await tick();
@@ -116,8 +138,7 @@ describe("TextInput", () => {
 	it("wraps long text to multiple explicit lines with columns prop", async () => {
 		// With columns=10, text longer than 10 chars should render on
 		// multiple explicit lines (with real \n between them).
-		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} columns={10} />);
-		const tick = () => new Promise((r) => setTimeout(r, 50));
+		const { lastFrame, stdin, unmount } = renderTextInput({ columns: 10 });
 
 		try {
 			await tick();
@@ -139,8 +160,7 @@ describe("TextInput", () => {
 		// Regression test: Delete (forward) used to behave as Backspace.
 		// Backspace removes the grapheme to the LEFT of the cursor;
 		// Delete must remove the grapheme AT the cursor.
-		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
-		const tick = () => new Promise((r) => setTimeout(r, 50));
+		const { lastFrame, stdin, unmount } = renderTextInput();
 
 		try {
 			await tick();
@@ -167,8 +187,7 @@ describe("TextInput", () => {
 	});
 
 	it("delete at end-of-string is a no-op", async () => {
-		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
-		const tick = () => new Promise((r) => setTimeout(r, 50));
+		const { lastFrame, stdin, unmount } = renderTextInput();
 
 		try {
 			await tick();
@@ -190,8 +209,7 @@ describe("TextInput", () => {
 		// The cursor is rendered via inverse-video *on top of* the character
 		// at `pos`, not inserted between characters. Moving the cursor
 		// should not change the visible column position of any character.
-		const { lastFrame, stdin, unmount } = render(<TextInput onSubmit={() => {}} />);
-		const tick = () => new Promise((r) => setTimeout(r, 50));
+		const { lastFrame, stdin, unmount } = renderTextInput();
 
 		try {
 			// Wait for useInput to register on the first render tick before
@@ -235,14 +253,25 @@ describe("SelectList", () => {
 		{ id: 3, name: "Third" },
 	];
 
-	it("renders all items", () => {
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={() => {}}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
+	const defaultRenderItem = (item: Item, selected: boolean) =>
+		selected ? `> ${item.name}` : `  ${item.name}`;
+
+	function renderSelectList({
+		onSelect = noop,
+		onCancel,
+		renderItem = defaultRenderItem,
+	}: {
+		onSelect?: (item: Item) => void;
+		onCancel?: () => void;
+		renderItem?: (item: Item, selected: boolean) => string;
+	} = {}) {
+		return render(
+			<SelectList items={items} onSelect={onSelect} onCancel={onCancel} renderItem={renderItem} />,
 		);
+	}
+
+	it("renders all items", () => {
+		const { lastFrame } = renderSelectList();
 		const output = lastFrame();
 		expect(output).toContain("First");
 		expect(output).toContain("Second");
@@ -250,21 +279,13 @@ describe("SelectList", () => {
 	});
 
 	it("highlights first item by default", () => {
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={() => {}}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
-		);
+		const { lastFrame } = renderSelectList();
 		const output = lastFrame();
 		expect(output).toContain("> First");
 	});
 
 	it("uses provided renderItem function for each item", () => {
-		const { lastFrame } = render(
-			<SelectList items={items} onSelect={() => {}} renderItem={(item) => `Item: ${item.name}`} />,
-		);
+		const { lastFrame } = renderSelectList({ renderItem: (item) => `Item: ${item.name}` });
 		const output = lastFrame();
 		expect(output).toContain("Item: First");
 		expect(output).toContain("Item: Second");
@@ -272,13 +293,7 @@ describe("SelectList", () => {
 	});
 
 	it("initializes with selectedIndex at 0", () => {
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={() => {}}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
-		);
+		const { lastFrame } = renderSelectList();
 		const output = lastFrame();
 		expect(output).toContain("> First");
 		expect(output).not.toContain("> Second");
@@ -286,13 +301,7 @@ describe("SelectList", () => {
 
 	it("has keyboard handlers for navigation", () => {
 		const handleSelect = mock(() => {});
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={handleSelect}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
-		);
+		const { lastFrame } = renderSelectList({ onSelect: handleSelect });
 		const output = lastFrame();
 		expect(output).toContain("> First");
 		// useInput is registered to handle arrow keys
@@ -301,13 +310,7 @@ describe("SelectList", () => {
 
 	it("has enter key selection handler", () => {
 		const handleSelect = mock(() => {});
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={handleSelect}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
-		);
+		const { lastFrame } = renderSelectList({ onSelect: handleSelect });
 		expect(typeof handleSelect).toBe("function");
 		const output = lastFrame();
 		expect(output).toBeDefined();
@@ -315,14 +318,7 @@ describe("SelectList", () => {
 
 	it("has escape and Ctrl-C cancel handlers", () => {
 		const handleCancel = mock(() => {});
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={() => {}}
-				onCancel={handleCancel}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
-		);
+		const { lastFrame } = renderSelectList({ onCancel: handleCancel });
 		expect(typeof handleCancel).toBe("function");
 		const output = lastFrame();
 		expect(output).toBeDefined();
@@ -330,14 +326,7 @@ describe("SelectList", () => {
 
 	it("uses key.escape handler instead of raw escape code", () => {
 		const handleCancel = mock(() => {});
-		const { lastFrame } = render(
-			<SelectList
-				items={items}
-				onSelect={() => {}}
-				onCancel={handleCancel}
-				renderItem={(item, selected) => (selected ? `> ${item.name}` : `  ${item.name}`)}
-			/>,
-		);
+		const { lastFrame } = renderSelectList({ onCancel: handleCancel });
 		const output = lastFrame();
 		expect(output).toBeDefined();
 		// useInput configured with key.escape handler
@@ -346,23 +335,21 @@ describe("SelectList", () => {
 
 describe("Confirm", () => {
 	it("renders message with [Y/n] default", () => {
-		const { lastFrame } = render(<Confirm message="Continue?" onYes={() => {}} onNo={() => {}} />);
+		const { lastFrame } = renderConfirm({ message: "Continue?" });
 		const output = lastFrame();
 		expect(output).toContain("Continue?");
 		expect(output).toContain("[Y/n]");
 	});
 
 	it("renders message correctly", () => {
-		const { lastFrame } = render(
-			<Confirm message="Proceed with operation?" onYes={() => {}} onNo={() => {}} />,
-		);
+		const { lastFrame } = renderConfirm({ message: "Proceed with operation?" });
 		const output = lastFrame();
 		expect(output).toContain("Proceed with operation?");
 	});
 
 	it("has y and Y key handlers for yes", () => {
 		const handleYes = mock(() => {});
-		const { lastFrame } = render(<Confirm message="Test?" onYes={handleYes} onNo={() => {}} />);
+		const { lastFrame } = renderConfirm({ message: "Test?", onYes: handleYes });
 		expect(typeof handleYes).toBe("function");
 		const output = lastFrame();
 		expect(output).toContain("Test?");
@@ -370,21 +357,21 @@ describe("Confirm", () => {
 
 	it("has n and N key handlers for no", () => {
 		const handleNo = mock(() => {});
-		const { lastFrame } = render(<Confirm message="Test?" onYes={() => {}} onNo={handleNo} />);
+		const { lastFrame } = renderConfirm({ message: "Test?", onNo: handleNo });
 		expect(typeof handleNo).toBe("function");
 		const output = lastFrame();
 		expect(output).toContain("Test?");
 	});
 
 	it("renders with Y/n display indicating yes is default", () => {
-		const { lastFrame } = render(<Confirm message="Confirm?" onYes={() => {}} onNo={() => {}} />);
+		const { lastFrame } = renderConfirm({ message: "Confirm?" });
 		const output = lastFrame();
 		expect(output).toContain("[Y/n]");
 	});
 
 	it("has enter key handler for selection confirmation", () => {
 		const handleYes = mock(() => {});
-		const { lastFrame } = render(<Confirm message="Continue?" onYes={handleYes} onNo={() => {}} />);
+		const { lastFrame } = renderConfirm({ message: "Continue?", onYes: handleYes });
 		const output = lastFrame();
 		expect(output).toContain("Continue?");
 		expect(typeof handleYes).toBe("function");

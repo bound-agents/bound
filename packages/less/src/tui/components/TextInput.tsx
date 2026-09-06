@@ -245,10 +245,9 @@ function wordRight(value: string, pos: number): number {
 	return i;
 }
 
-/** Recalled history entries pass through the same sanitation as a paste:
- * tabs → spaces, embedded newlines → single spaces — a multi-line historical
- * message must not desync the input's physical-row accounting. */
-function sanitizeRecall(s: string): string {
+/** Text from history and ordinary paste shares one physical-row contract: tabs
+ * expand to spaces and embedded newlines flatten to a single space. */
+function sanitizeInput(s: string): string {
 	return expandTabs(s).replace(/\r\n|\r|\n/g, " ");
 }
 
@@ -310,6 +309,12 @@ export function TextInput({
 		setHist((h) => (h.idx === null ? h : { idx: null, draft: "" }));
 	}, []);
 
+	// Keep every navigation branch explicit while centralizing the state update
+	// that preserves the current buffer under batched keystrokes.
+	const moveCursor = useCallback((next: (value: string, pos: number) => number) => {
+		setState((s) => ({ ...s, pos: next(s.value, s.pos) }));
+	}, []);
+
 	// Mirror the live value/disabled into refs so clear() (whose identity must
 	// stay stable across renders) reads current state rather than a stale
 	// capture.
@@ -366,21 +371,13 @@ export function TextInput({
 			// because Option+Arrow on macOS arrives as meta === true). ---
 
 			if (key.leftArrow) {
-				if (key.meta || key.ctrl) {
-					// Option/Alt+Left (macOS) or Ctrl+Left (Linux): word jump left
-					setState((s) => ({ ...s, pos: wordLeft(s.value, s.pos) }));
-				} else {
-					setState((s) => ({ ...s, pos: graphemeLeft(s.value, s.pos) }));
-				}
+				// Option/Alt+Left (macOS) or Ctrl+Left (Linux): word jump left.
+				moveCursor(key.meta || key.ctrl ? wordLeft : graphemeLeft);
 				return;
 			}
 
 			if (key.rightArrow) {
-				if (key.meta || key.ctrl) {
-					setState((s) => ({ ...s, pos: wordRight(s.value, s.pos) }));
-				} else {
-					setState((s) => ({ ...s, pos: graphemeRight(s.value, s.pos) }));
-				}
+				moveCursor(key.meta || key.ctrl ? wordRight : graphemeRight);
 				return;
 			}
 
@@ -398,7 +395,7 @@ export function TextInput({
 				if (history.length === 0) return;
 				const nextIdx = hist.idx === null ? history.length - 1 : Math.max(0, hist.idx - 1);
 				const draft = hist.idx === null ? value : hist.draft;
-				const recalled = sanitizeRecall(history[nextIdx] ?? "");
+				const recalled = sanitizeInput(history[nextIdx] ?? "");
 				setHist({ idx: nextIdx, draft });
 				setState({ value: recalled, pos: recalled.length });
 				return;
@@ -415,7 +412,7 @@ export function TextInput({
 					setState({ value: draft, pos: draft.length });
 				} else {
 					const nextIdx = hist.idx + 1;
-					const recalled = sanitizeRecall(history[nextIdx] ?? "");
+					const recalled = sanitizeInput(history[nextIdx] ?? "");
 					setHist((h) => ({ ...h, idx: nextIdx }));
 					setState({ value: recalled, pos: recalled.length });
 				}
@@ -426,21 +423,21 @@ export function TextInput({
 			// sends these in most terminals. Ink parses them as meta + 'b'/'f'
 			// (not as leftArrow/rightArrow), so they need separate handling.
 			if (key.meta && input === "b") {
-				setState((s) => ({ ...s, pos: wordLeft(s.value, s.pos) }));
+				moveCursor(wordLeft);
 				return;
 			}
 			if (key.meta && input === "f") {
-				setState((s) => ({ ...s, pos: wordRight(s.value, s.pos) }));
+				moveCursor(wordRight);
 				return;
 			}
 
 			// Ctrl+A / Ctrl+E: jump to start/end (readline convention).
 			if (key.ctrl && input === "a") {
-				setState((s) => ({ ...s, pos: 0 }));
+				moveCursor(() => 0);
 				return;
 			}
 			if (key.ctrl && input === "e") {
-				setState((s) => ({ ...s, pos: s.value.length }));
+				moveCursor((current) => current.length);
 				return;
 			}
 
@@ -550,7 +547,7 @@ export function TextInput({
 				// under-erase and re-emit the input box's top border on every
 				// keystroke. Tabs become spaces; newlines (multiline paste into a
 				// single-line input) become single spaces.
-				const sanitized = expandTabs(input).replace(/\r\n|\r|\n/g, " ");
+				const sanitized = sanitizeInput(input);
 				setState((s) => ({
 					value: s.value.slice(0, s.pos) + sanitized + s.value.slice(s.pos),
 					pos: s.pos + sanitized.length,
@@ -612,79 +609,46 @@ export function TextInput({
 		return <Text dimColor={value.length === 0}>{value.length === 0 ? placeholder : value}</Text>;
 	}
 
-	// --- Explicit line breaking (when `columns` is set) ---
-	// Instead of relying on terminal wrapping (which creates physical rows
-	// without \n, causing Ink's log-update to under-erase and leave ghost
-	// lines), break the text into explicit lines so each physical row
-	// corresponds to a logical line in Ink's output.
-	if (columns != null && columns > 0) {
-		const lines = breakLines(value, columns);
-		const { cursorLine, cursorCol } = findCursorInLines(lines, pos);
+	// Positive column counts require explicit rows; absent or nonpositive counts
+	// retain the original single-row, string-index cursor contract.
+	const hasExplicitRows = columns != null && columns > 0;
+	const lines = columns != null && columns > 0 ? breakLines(value, columns) : [value];
+	const cursor = hasExplicitRows
+		? findCursorInLines(lines, pos)
+		: { cursorLine: 0, cursorCol: pos };
 
-		return (
-			<Box flexDirection="column">
-				{lines.map((line, lineIdx) => {
-					if (lineIdx === cursorLine) {
-						// This line contains the cursor.
-						const cluster = graphemeAt(line, cursorCol);
-						if (cluster === null) {
-							// Cursor at end of this line (or end of string).
-							return (
-								// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
-								<Text key={lineIdx}>
-									{line}
-									<Text inverse> </Text>
-								</Text>
-							);
-						}
-						const cStart = cursorCol;
-						const cEnd = cStart + cluster.length;
-						return (
-							// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
-							<Text key={lineIdx}>
-								{line.slice(0, cStart)}
-								<Text inverse>{cluster}</Text>
-								{line.slice(cEnd)}
-							</Text>
-						);
-					}
-					// Non-cursor line.
+	return (
+		<Box flexDirection="column">
+			{lines.map((line, lineIdx) => {
+				if (lineIdx !== cursor.cursorLine) {
 					return (
 						// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
 						<Text key={lineIdx}>{line}</Text>
 					);
-				})}
-				{menuNode}
-			</Box>
-		);
-	}
+				}
 
-	// --- Single-line rendering (no columns prop) ---
-	const cluster = graphemeAt(value, pos);
+				const cluster = graphemeAt(line, cursor.cursorCol);
+				if (cluster === null) {
+					return (
+						// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
+						<Text key={lineIdx}>
+							{line}
+							<Text inverse> </Text>
+						</Text>
+					);
+				}
 
-	if (cluster === null) {
-		// Cursor is past end-of-string — render as a trailing inverse space.
-		return (
-			<Box flexDirection="column">
-				<Text>
-					{value}
-					<Text inverse> </Text>
-				</Text>
-				{menuNode}
-			</Box>
-		);
-	}
-
-	const clusterStart = pos; // by invariant, pos sits on a boundary
-	const clusterEnd = clusterStart + cluster.length;
-
-	return (
-		<Box flexDirection="column">
-			<Text>
-				{value.slice(0, clusterStart)}
-				<Text inverse>{cluster}</Text>
-				{value.slice(clusterEnd)}
-			</Text>
+				const clusterStart = cursor.cursorCol;
+				const clusterEnd = clusterStart + cluster.length;
+				return (
+					// biome-ignore lint/suspicious/noArrayIndexKey: lines are immutable per render
+					<Text key={lineIdx}>
+						{line.slice(0, clusterStart)}
+						<Text inverse>{cluster}</Text>
+						{line.slice(clusterEnd)}
+					</Text>
+				);
+			})}
 			{menuNode}
 		</Box>
 	);

@@ -1,6 +1,6 @@
 import type Database from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import type { CommandContext } from "@bound/sandbox";
+import { type CommandContext, loopContextStorage } from "@bound/sandbox";
 import type { Logger } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
 import { generateMCPCommands, updateHostMCPInfo } from "../mcp-bridge";
@@ -60,6 +60,18 @@ function makeMockClient(
 		getServerInstructions: () => undefined,
 		getServerInfo: () => undefined,
 	} as unknown as MCPClient;
+}
+
+async function createHostDatabase(siteId: string): Promise<Database> {
+	const { applySchema, createDatabase } = await import("@bound/core");
+	const db = createDatabase(":memory:");
+	applySchema(db);
+	db.run(
+		`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
+		VALUES (?, ?, ?, ?)`,
+		[siteId, "test-host", new Date().toISOString(), 0],
+	);
+	return db;
 }
 
 describe("MCP Bridge", () => {
@@ -808,19 +820,8 @@ describe("MCP Bridge", () => {
 
 	// AC5.1 & AC5.2: updateHostMCPInfo stores server names not tool names
 	it("updateHostMCPInfo stores server names not tool names", async () => {
-		const { applySchema, createDatabase } = await import("@bound/core");
-
-		const db = createDatabase(":memory:");
-		applySchema(db);
-
 		const siteId = "test-site";
-
-		// Create the host row first
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
-			VALUES (?, ?, ?, ?)`,
-			[siteId, "test-host", new Date().toISOString(), 0],
-		);
+		const db = await createHostDatabase(siteId);
 
 		const client1 = makeMockClient(
 			{ name: "server-a", transport: "stdio", command: "test" },
@@ -861,18 +862,8 @@ describe("MCP Bridge", () => {
 	});
 
 	it("updateHostMCPInfo captures per-tool MCP annotations into mcp_tool_annotations", async () => {
-		const { applySchema, createDatabase } = await import("@bound/core");
-
-		const db = createDatabase(":memory:");
-		applySchema(db);
-
 		const siteId = "test-site-annotations";
-
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
-			VALUES (?, ?, ?, ?)`,
-			[siteId, "test-host", new Date().toISOString(), 0],
-		);
+		const db = await createHostDatabase(siteId);
 
 		const githubClient = makeMockClient(
 			{ name: "github", transport: "stdio", command: "test" },
@@ -1004,17 +995,8 @@ describe("MCP Bridge", () => {
 
 	// mcp_capabilities: full per-server inventory (serverInfo, tools, prompts, resources)
 	it("updateHostMCPInfo persists full server capabilities into mcp_capabilities", async () => {
-		const { applySchema, createDatabase } = await import("@bound/core");
-
-		const db = createDatabase(":memory:");
-		applySchema(db);
-
 		const siteId = "test-site";
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
-			VALUES (?, ?, ?, ?)`,
-			[siteId, "test-host", new Date().toISOString(), 0],
-		);
+		const db = await createHostDatabase(siteId);
 
 		const client = makeMockClient(
 			{ name: "server-a", transport: "stdio", command: "test" },
@@ -1050,69 +1032,74 @@ describe("MCP Bridge", () => {
 		db.close();
 	});
 
-	// MCP Apps binding: a UI-bearing tool carries `_meta.ui.resourceUri` pointing at
-	// a `ui://` resource. The capture must preserve that binding so the Connections
-	// page can show which tools render MCP Apps — name+description alone drops it.
-	it("updateHostMCPInfo captures the _meta.ui.resourceUri binding on UI-bearing tools", async () => {
-		const { applySchema, createDatabase } = await import("@bound/core");
-
-		const db = createDatabase(":memory:");
-		applySchema(db);
-
-		const siteId = "test-site";
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
-			VALUES (?, ?, ?, ?)`,
-			[siteId, "test-host", new Date().toISOString(), 0],
-		);
-
+	it("preserves each baseline resourceUri projection for valid, empty, and malformed metadata", async () => {
+		const tools = [
+			{
+				name: "valid_binding",
+				description: "Valid binding",
+				inputSchema: {},
+				_meta: { ui: { resourceUri: "ui://github-mcp-server/get-me" } },
+			},
+			{
+				name: "empty_binding",
+				description: "Empty binding",
+				inputSchema: {},
+				_meta: { ui: { resourceUri: "" } },
+			},
+			{
+				name: "malformed_binding",
+				description: "Malformed binding",
+				inputSchema: {},
+				_meta: { ui: { resourceUri: 42 } },
+			},
+		] as unknown as Tool[];
 		const client = makeMockClient(
 			{ name: "github", transport: "http", url: "https://example.invalid/mcp" },
-			[
-				{
-					name: "get_me",
-					description: "Get the authenticated user",
-					inputSchema: {},
-					_meta: {
-						ui: { resourceUri: "ui://github-mcp-server/get-me", visibility: ["model", "app"] },
-					},
-				} as unknown as Tool,
-				{ name: "list_issues", description: "List issues", inputSchema: {} },
-			],
+			tools,
 			[],
 			[],
 		);
+		const { commands } = await generateMCPCommands(new Map([["github", client]]));
+		const serverCommand = commands.find((command) => command.name === "github");
+		expect(serverCommand).toBeDefined();
 
+		for (const [subcommand, expectedUri] of [
+			["valid_binding", "ui://github-mcp-server/get-me"],
+			["empty_binding", ""],
+			["malformed_binding", undefined],
+		] as const) {
+			const store: { mcpApp?: unknown } = {};
+			await loopContextStorage.run(store, () =>
+				serverCommand?.handler({ subcommand }, createMockCommandContext()),
+			);
+			expect(store.mcpApp).toEqual(
+				expectedUri === undefined
+					? undefined
+					: { server: "github", tool: subcommand, uiResourceUri: expectedUri, input: {} },
+			);
+		}
+
+		const siteId = "test-site";
+		const db = await createHostDatabase(siteId);
 		await updateHostMCPInfo(db, siteId, new Map([["github", client]]));
-
 		const host = db.query("SELECT mcp_capabilities FROM hosts WHERE site_id = ?").get(siteId) as {
 			mcp_capabilities: string;
-		} | null;
-		const caps = JSON.parse(host?.mcp_capabilities ?? "{}");
-		expect(caps.github.tools).toEqual([
+		};
+		expect(JSON.parse(host.mcp_capabilities).github.tools).toEqual([
 			{
-				name: "get_me",
-				description: "Get the authenticated user",
+				name: "valid_binding",
+				description: "Valid binding",
 				uiResourceUri: "ui://github-mcp-server/get-me",
 			},
-			{ name: "list_issues", description: "List issues" },
+			{ name: "empty_binding", description: "Empty binding", uiResourceUri: "" },
+			{ name: "malformed_binding", description: "Malformed binding" },
 		]);
-
 		db.close();
 	});
 
 	it("updateHostMCPInfo omits prompts/resources when the server lacks those capabilities", async () => {
-		const { applySchema, createDatabase } = await import("@bound/core");
-
-		const db = createDatabase(":memory:");
-		applySchema(db);
-
 		const siteId = "test-site";
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, modified_at, deleted)
-			VALUES (?, ?, ?, ?)`,
-			[siteId, "test-host", new Date().toISOString(), 0],
-		);
+		const db = await createHostDatabase(siteId);
 
 		const client = makeMockClient(
 			{ name: "server-b", transport: "stdio", command: "test" },

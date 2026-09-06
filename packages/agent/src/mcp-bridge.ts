@@ -31,6 +31,17 @@ function capDescription(s: string, maxLen = 80): string {
 const IMAGE_MIME_PREFIX = "image/";
 
 /**
+ * Project the MCP Apps tool binding used by both command dispatch and the
+ * replicated capability inventory. Keep the string guard at this boundary:
+ * untyped server metadata must not enter either persisted projection.
+ */
+function getToolUiResourceUri(tool: Tool): string | undefined {
+	const resourceUri = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta?.ui
+		?.resourceUri;
+	return typeof resourceUri === "string" ? resourceUri : undefined;
+}
+
+/**
  * Format a single resource_link as a structured text annotation.
  *
  * MCP `resource_link` items point at a resource without inlining bytes, so
@@ -467,8 +478,7 @@ export async function generateMCPCommands(
 				// return value, so — like relayRequest — this rides the side-channel.
 				// The binding describes the tool, so it is recorded regardless of call
 				// outcome; a UI-capable surface renders the result, error or not.
-				const uiResourceUri = (entry.tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta
-					?.ui?.resourceUri;
+				const uiResourceUri = getToolUiResourceUri(entry.tool);
 
 				// Pass all args except 'subcommand' to callTool, with type coercion.
 				// Args arrive as strings from the bash --key value parser. MCP servers
@@ -546,53 +556,56 @@ export async function generateMCPCommands(
 	return { commands, serverNames };
 }
 
-/**
- * Create the 'resources' command to list all resources across MCP servers
- */
-function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinition {
+/** Build the identically-shaped resource and prompt inventory commands. */
+function createInventoryCommand<Item>(
+	name: string,
+	description: string,
+	failureLabel: string,
+	clients: Map<string, MCPClient>,
+	list: (client: MCPClient) => Promise<Item[]>,
+	format: (serverName: string, item: Item) => string,
+): CommandDefinition {
 	return {
-		name: "resources",
-		description: "List all resources across MCP servers",
+		name,
+		description,
 		args: [{ name: "server", required: false, description: "Optional server name to filter by" }],
 		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
 			try {
-				const targetServer = args.server;
-				const resources: string[] = [];
-
+				const entries: string[] = [];
 				for (const [serverName, client] of clients) {
-					if (targetServer && serverName !== targetServer) {
-						continue;
-					}
-
-					if (!client.isConnected()) {
-						continue;
-					}
-
+					if ((args.server && serverName !== args.server) || !client.isConnected()) continue;
 					try {
-						const serverResources = await client.listResources();
-						for (const resource of serverResources) {
-							resources.push(`${serverName}: ${resource.uri} (${resource.name})`);
-						}
+						for (const item of await list(client)) entries.push(format(serverName, item));
 					} catch {
-						// Skip servers that fail to list resources (e.g., disconnected)
+						// Optional inventories are best-effort; skip a disconnected or unsupported server.
 					}
 				}
-
 				return {
-					stdout: resources.length > 0 ? `${resources.join("\n")}\n` : "",
+					stdout: entries.length > 0 ? `${entries.join("\n")}\n` : "",
 					stderr: "",
 					exitCode: 0,
 				};
 			} catch (error) {
-				const message = formatError(error);
 				return {
 					stdout: "",
-					stderr: `Failed to list resources: ${message}\n`,
+					stderr: `Failed to list ${failureLabel}: ${formatError(error)}\n`,
 					exitCode: 1,
 				};
 			}
 		},
 	};
+}
+
+/** Create the 'resources' command to list all resources across MCP servers. */
+function createResourcesCommand(clients: Map<string, MCPClient>): CommandDefinition {
+	return createInventoryCommand(
+		"resources",
+		"List all resources across MCP servers",
+		"resources",
+		clients,
+		(client) => client.listResources(),
+		(serverName, resource) => `${serverName}: ${resource.uri} (${resource.name})`,
+	);
 }
 
 /**
@@ -679,53 +692,16 @@ function createResourceCommand(clients: Map<string, MCPClient>): CommandDefiniti
 	};
 }
 
-/**
- * Create the 'prompts' command to list all prompts across MCP servers
- */
+/** Create the 'prompts' command to list all prompts across MCP servers. */
 function createPromptsCommand(clients: Map<string, MCPClient>): CommandDefinition {
-	return {
-		name: "prompts",
-		description: "List all prompts across MCP servers",
-		args: [{ name: "server", required: false, description: "Optional server name to filter by" }],
-		handler: async (args: Record<string, string>, _ctx: CommandContext): Promise<CommandResult> => {
-			try {
-				const targetServer = args.server;
-				const prompts: string[] = [];
-
-				for (const [serverName, client] of clients) {
-					if (targetServer && serverName !== targetServer) {
-						continue;
-					}
-
-					if (!client.isConnected()) {
-						continue;
-					}
-
-					try {
-						const serverPrompts = await client.listPrompts();
-						for (const prompt of serverPrompts) {
-							prompts.push(`${serverName}: ${prompt.name} (${prompt.description ?? ""})`);
-						}
-					} catch {
-						// Skip servers that fail to list prompts (e.g., disconnected)
-					}
-				}
-
-				return {
-					stdout: prompts.length > 0 ? `${prompts.join("\n")}\n` : "",
-					stderr: "",
-					exitCode: 0,
-				};
-			} catch (error) {
-				const message = formatError(error);
-				return {
-					stdout: "",
-					stderr: `Failed to list prompts: ${message}\n`,
-					exitCode: 1,
-				};
-			}
-		},
-	};
+	return createInventoryCommand(
+		"prompts",
+		"List all prompts across MCP servers",
+		"prompts",
+		clients,
+		(client) => client.listPrompts(),
+		(serverName, prompt) => `${serverName}: ${prompt.name} (${prompt.description ?? ""})`,
+	);
 }
 
 /**
@@ -1069,8 +1045,7 @@ export async function updateHostMCPInfo(
 							// pointing at a `ui://…;profile=mcp-app` resource. Preserve it so the
 							// Connections page can show which tools render MCP Apps — name +
 							// description alone would silently drop the binding.
-							const uiResourceUri = (tool as { _meta?: { ui?: { resourceUri?: unknown } } })._meta
-								?.ui?.resourceUri;
+							const uiResourceUri = getToolUiResourceUri(tool);
 							return {
 								name: tool.name,
 								...(tool.description

@@ -17,7 +17,7 @@ import type {
 	ToolContext,
 	ToolResultWithMetadata,
 } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 /**
  * Auxiliary-agent identity management (#201), define/list/retire slice.
@@ -83,19 +83,15 @@ const auxSchema = z.object({
 type AuxInput = z.infer<typeof auxSchema>;
 
 export function createAuxTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(auxSchema);
+	const toolSchema = defineToolSchema(
+		"aux",
+		"Manage auxiliary-agent identities: define, update, retire, list, or invoke. An auxiliary agent is a durable, persona-scoped identity with its own memory namespace, invoked to handle side errands without dragging the main agent's context or identity along. The persona says who it IS, not what it's for. Before defining a new identity or writing a long invocation, activate the `aux-agents` skill — it carries the persona-vs-errand doctrine, roster design by role, and the overprompting smell that means an identity is missing.",
+		auxSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "aux",
-				description:
-					"Manage auxiliary-agent identities: define, update, retire, list, or invoke. An auxiliary agent is a durable, persona-scoped identity with its own memory namespace, invoked to handle side errands without dragging the main agent's context or identity along. The persona says who it IS, not what it's for. Before defining a new identity or writing a long invocation, activate the `aux-agents` skill — it carries the persona-vs-errand doctrine, roster design by role, and the overprompting smell that means an identity is missing.",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		resolveAnnotations: (args: Record<string, unknown>) => {
 			switch (args.action) {
 				case "list":
@@ -117,7 +113,7 @@ export function createAuxTool(ctx: ToolContext): RegisteredTool {
 			raw: Record<string, unknown>,
 			callId?: string,
 		): Promise<string | DeferredToolResult | ToolResultWithMetadata> => {
-			const parsed = parseToolInput(auxSchema, raw, "aux");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

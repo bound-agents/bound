@@ -4,7 +4,7 @@ import { randomUUID } from "@bound/shared";
 import { z } from "zod";
 import { resolveModel } from "../model-resolution";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 function parseTimeOffset(offset: string): Date {
 	const now = new Date();
@@ -289,25 +289,21 @@ function handleUpdate(input: TaskInput, ctx: ToolContext): string {
 }
 
 export function createTaskTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(taskSchema);
+	const toolSchema = defineToolSchema(
+		"task",
+		"Manage scheduled tasks. action=schedule creates a deferred, cron, or event-driven task; action=update toggles no_history / model_hint / alert_threshold on an existing task by id. A task cannot update itself (use the model_hint tool to change the running task's model).",
+		taskSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "task",
-				description:
-					"Manage scheduled tasks. action=schedule creates a deferred, cron, or event-driven task; action=update toggles no_history / model_hint / alert_threshold on an existing task by id. A task cannot update itself (use the model_hint tool to change the running task's model).",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Non-idempotent: action=schedule creates a new task with a fresh id on
 		// every call. action=update is idempotent for a given input, but the tool
 		// as a whole is declared non-idempotent to preserve schedule semantics.
 		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(taskSchema, raw, "task");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

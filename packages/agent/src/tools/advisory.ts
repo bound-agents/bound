@@ -12,7 +12,7 @@ import {
 	dismissAdvisory,
 } from "../advisories";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 /**
  * Resolve a (possibly prefix-truncated) advisory ID to the full UUID.
@@ -67,18 +67,15 @@ const advisorySchema = z.object({
 });
 
 export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(advisorySchema);
+	const toolSchema = defineToolSchema(
+		"advisory",
+		"Post a proactive advisory for operator review",
+		advisorySchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "advisory",
-				description: "Post a proactive advisory for operator review",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// list → read-only; approve/apply/defer/dismiss → idempotent (terminal
 		// status transitions); create → non-idempotent (each call inserts a new
 		// advisory row with a fresh id).
@@ -98,7 +95,7 @@ export function createAdvisoryTool(ctx: ToolContext): RegisteredTool {
 			}
 		},
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(advisorySchema, raw, "advisory");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

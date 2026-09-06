@@ -1,7 +1,7 @@
 import { softDelete } from "@bound/core";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 function parseTimeOffset(offset: string): Date {
 	const now = new Date();
@@ -40,22 +40,19 @@ const archiveSchema = z.object({
 });
 
 export function createArchiveTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(archiveSchema);
+	const toolSchema = defineToolSchema(
+		"archive",
+		"Archive a thread to long-term storage",
+		archiveSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "archive",
-				description: "Archive a thread to long-term storage",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Idempotent: archiving an already-archived thread is a no-op.
 		idempotent: true,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(archiveSchema, raw, "archive");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

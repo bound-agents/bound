@@ -3,13 +3,16 @@ import { randomUUID } from "node:crypto";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { TypedEventEmitter } from "@bound/shared";
 import {
 	createChangeLogEntry,
 	insertRow,
+	setChangelogEventBus,
 	softDelete,
 	updateRow,
 	updateRowIf,
 	withChangeLog,
+	withTx,
 } from "../change-log";
 import { createDatabase } from "../database";
 import { applySchema } from "../schema";
@@ -18,6 +21,19 @@ describe("Change Log Producer", () => {
 	let dbPath: string;
 	let db: ReturnType<typeof createDatabase>;
 	const siteId = "site-123";
+	const userRow = <T extends Record<string, unknown> = Record<never, never>>(
+		id: string,
+		displayName: string,
+		now: string,
+		extra?: T,
+	) => ({
+		id,
+		display_name: displayName,
+		first_seen_at: now,
+		modified_at: now,
+		deleted: 0,
+		...extra,
+	});
 
 	beforeEach(() => {
 		dbPath = join(tmpdir(), `bound-test-${randomBytes(4).toString("hex")}.db`);
@@ -26,6 +42,7 @@ describe("Change Log Producer", () => {
 	});
 
 	afterEach(() => {
+		setChangelogEventBus(null);
 		try {
 			db.close();
 		} catch {
@@ -42,13 +59,7 @@ describe("Change Log Producer", () => {
 		const userId = randomUUID();
 		const now = new Date().toISOString();
 
-		const rowData = {
-			id: userId,
-			display_name: "Alice",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		const rowData = userRow(userId, "Alice", now);
 
 		createChangeLogEntry(db, "users", userId, siteId, rowData);
 
@@ -70,13 +81,7 @@ describe("Change Log Producer", () => {
 		const userId = randomUUID();
 		const now = new Date().toISOString();
 
-		const userData = {
-			id: userId,
-			display_name: "Bob",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		const userData = userRow(userId, "Bob", now);
 
 		insertRow(db, "users", userData, siteId);
 
@@ -100,13 +105,7 @@ describe("Change Log Producer", () => {
 		const now = new Date().toISOString();
 
 		// Insert initial user
-		const userData = {
-			id: userId,
-			display_name: "Charlie",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		const userData = userRow(userId, "Charlie", now);
 
 		insertRow(db, "users", userData, siteId);
 
@@ -137,13 +136,7 @@ describe("Change Log Producer", () => {
 		const now = new Date().toISOString();
 
 		// Insert user
-		const userData = {
-			id: userId,
-			display_name: "Diana",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		const userData = userRow(userId, "Diana", now);
 
 		insertRow(db, "users", userData, siteId);
 
@@ -175,21 +168,8 @@ describe("Change Log Producer", () => {
 		const user2Id = randomUUID();
 		const now = new Date().toISOString();
 
-		const user1 = {
-			id: user1Id,
-			display_name: "User1",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
-
-		const user2 = {
-			id: user2Id,
-			display_name: "User2",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		const user1 = userRow(user1Id, "User1", now);
+		const user2 = userRow(user2Id, "User2", now);
 
 		insertRow(db, "users", user1, siteId);
 		insertRow(db, "users", user2, siteId);
@@ -207,13 +187,7 @@ describe("Change Log Producer", () => {
 		const now = new Date().toISOString();
 		const originatingSiteId = "originating-host-123";
 
-		const userData = {
-			id: userId,
-			display_name: "Eve",
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		const userData = userRow(userId, "Eve", now);
 
 		insertRow(db, "users", userData, originatingSiteId);
 
@@ -229,14 +203,9 @@ describe("Change Log Producer", () => {
 		const userId = randomUUID();
 		const now = new Date().toISOString();
 
-		const userData = {
-			id: userId,
-			display_name: "Frank",
+		const userData = userRow(userId, "Frank", now, {
 			platform_ids: JSON.stringify({ discord: "discord-123" }),
-			first_seen_at: now,
-			modified_at: now,
-			deleted: 0,
-		};
+		});
 
 		insertRow(db, "users", userData, siteId);
 
@@ -305,13 +274,7 @@ describe("Change Log Producer", () => {
 		const now = new Date().toISOString();
 
 		const result = withChangeLog(db, siteId, () => {
-			const userData = {
-				id: userId,
-				display_name: "Grace",
-				first_seen_at: now,
-				modified_at: now,
-				deleted: 0,
-			};
+			const userData = userRow(userId, "Grace", now);
 
 			db.run(
 				"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
@@ -358,13 +321,7 @@ describe("Change Log Producer", () => {
 
 		try {
 			withChangeLog(db, siteId, () => {
-				const userData = {
-					id: userId,
-					display_name: "Hank",
-					first_seen_at: now,
-					modified_at: now,
-					deleted: 0,
-				};
+				const userData = userRow(userId, "Hank", now);
 
 				db.run(
 					"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
@@ -407,12 +364,7 @@ describe("Change Log Producer", () => {
 		const now = new Date().toISOString();
 
 		// Minimal fixture: a user + thread that satisfies FK-free STRICT inserts.
-		insertRow(
-			db,
-			"users",
-			{ id: userId, display_name: "Invariant", first_seen_at: now, modified_at: now, deleted: 0 },
-			siteId,
-		);
+		insertRow(db, "users", userRow(userId, "Invariant", now), siteId);
 		insertRow(
 			db,
 			"threads",
@@ -466,12 +418,7 @@ describe("Change Log Producer", () => {
 		const threadId = randomUUID();
 		const now = new Date().toISOString();
 
-		insertRow(
-			db,
-			"users",
-			{ id: userId, display_name: "Dev", first_seen_at: now, modified_at: now, deleted: 0 },
-			siteId,
-		);
+		insertRow(db, "users", userRow(userId, "Dev", now), siteId);
 		insertRow(
 			db,
 			"threads",
@@ -666,6 +613,141 @@ describe("Change Log Producer", () => {
 					siteId,
 				),
 			).toThrow(/Invalid column name/);
+		});
+	});
+
+	describe("changelog:written events", () => {
+		function recordEvents() {
+			const events: Array<{ hlc: string; tableName: string; userCount: number }> = [];
+			const eventBus = new TypedEventEmitter();
+			eventBus.on("changelog:written", ({ hlc, tableName }) => {
+				const userCount = (
+					db.query("SELECT COUNT(*) AS count FROM users").get() as { count: number }
+				).count;
+				events.push({ hlc, tableName, userCount });
+			});
+			setChangelogEventBus(eventBus);
+			return events;
+		}
+
+		function insertUser(id: string, displayName: string): void {
+			const now = new Date().toISOString();
+			insertRow(db, "users", userRow(id, displayName, now), siteId);
+		}
+
+		function eventRowIds(events: ReadonlyArray<{ hlc: string }>): string[] {
+			return events.map(
+				({ hlc }) =>
+					(db.query("SELECT row_id FROM change_log WHERE hlc = ?").get(hlc) as { row_id: string })
+						.row_id,
+			);
+		}
+
+		it("emits standalone writes and skips a failed CAS", () => {
+			const events = recordEvents();
+			const userId = randomUUID();
+			insertUser(userId, "Events");
+			expect(
+				updateRowIf(db, "users", userId, { deleted: 1 }, { display_name: "Nope" }, siteId),
+			).toBe(false);
+			updateRow(db, "users", userId, { display_name: "Updated" }, siteId);
+			expect(events.map(({ tableName }) => tableName)).toEqual(["users", "users"]);
+		});
+
+		it("delivers nested writes after the outer commit in original write order", () => {
+			const events = recordEvents();
+			const firstId = randomUUID();
+			const secondId = randomUUID();
+			withTx(db, () => {
+				insertUser(firstId, "First");
+				withTx(db, () => insertUser(secondId, "Second"));
+				updateRow(db, "users", firstId, { display_name: "First updated" }, siteId);
+				expect(events).toEqual([]);
+			});
+			expect(eventRowIds(events)).toEqual([firstId, secondId, firstId]);
+			expect(events.map(({ userCount }) => userCount)).toEqual([2, 2, 2]);
+			expect(db.query("SELECT display_name FROM users WHERE id = ?").get(firstId)).toEqual({
+				display_name: "First updated",
+			});
+		});
+
+		it("discards all events when the outer transaction rolls back", () => {
+			const events = recordEvents();
+			const userId = randomUUID();
+			expect(() =>
+				withTx(db, () => {
+					insertUser(userId, "Rollback");
+					throw new Error("outer rollback");
+				}),
+			).toThrow("outer rollback");
+			expect(events).toEqual([]);
+			expect(db.query("SELECT * FROM users WHERE id = ?").get(userId)).toBeNull();
+		});
+
+		it("discards rolled-back savepoint writes without losing surviving outer writes", () => {
+			const events = recordEvents();
+			const beforeId = randomUUID();
+			const rolledBackId = randomUUID();
+			const afterId = randomUUID();
+			withTx(db, () => {
+				insertUser(beforeId, "Before");
+				expect(() =>
+					withTx(db, () => {
+						insertUser(rolledBackId, "Rolled back");
+						throw new Error("savepoint rollback");
+					}),
+				).toThrow("savepoint rollback");
+				insertUser(afterId, "After");
+			});
+			expect(eventRowIds(events)).toEqual([beforeId, afterId]);
+			expect(db.query("SELECT * FROM users WHERE id = ?").get(rolledBackId)).toBeNull();
+		});
+
+		it("drains a, b, then a listener's reentrant committed write in HLC order", () => {
+			const events: Array<{ hlc: string; rowId: string }> = [];
+			const ids = [randomUUID(), randomUUID(), randomUUID()];
+			const eventBus = new TypedEventEmitter();
+			eventBus.on("changelog:written", ({ hlc }) => {
+				const rowId = (
+					db.query("SELECT row_id FROM change_log WHERE hlc = ?").get(hlc) as {
+						row_id: string;
+					}
+				).row_id;
+				events.push({ hlc, rowId });
+				if (rowId === ids[0]) insertUser(ids[2], "Reentrant");
+			});
+			setChangelogEventBus(eventBus);
+			withTx(db, () => {
+				insertUser(ids[0], "A");
+				insertUser(ids[1], "B");
+			});
+			expect(events.map(({ rowId }) => rowId)).toEqual(ids);
+			expect(events.map(({ hlc }) => hlc)).toEqual([...events.map(({ hlc }) => hlc)].sort());
+			expect(db.query("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 3 });
+		});
+
+		it("attempts every committed event before propagating the first listener failure", () => {
+			const delivered: string[] = [];
+			const eventBus = new TypedEventEmitter();
+			eventBus.on("changelog:written", ({ hlc }) => {
+				delivered.push(hlc);
+				if (delivered.length === 1) throw new Error("listener failed");
+			});
+			setChangelogEventBus(eventBus);
+			expect(() =>
+				withTx(db, () => {
+					insertUser(randomUUID(), "A");
+					insertUser(randomUUID(), "B");
+				}),
+			).toThrow("listener failed");
+			expect(delivered).toHaveLength(2);
+			// A later standalone write still propagates its listener error directly.
+			const standaloneBus = new TypedEventEmitter();
+			standaloneBus.on("changelog:written", () => {
+				throw new Error("standalone listener failed");
+			});
+			setChangelogEventBus(standaloneBus);
+			expect(() => insertUser(randomUUID(), "C")).toThrow("standalone listener failed");
 		});
 	});
 });

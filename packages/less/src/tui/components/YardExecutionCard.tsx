@@ -263,27 +263,30 @@ export function YardExecutionCard({
 	terminalColumns = 80,
 	maxGraphRows,
 }: YardExecutionCardProps): React.ReactElement {
-	let rows = flattenTree(tree);
-	// Rows the live program section will consume (label + head + elide line),
-	// charged against the graph budget so program + graph together never
-	// outgrow the viewport (the febfe45e flicker class).
-	const programLineCount = tree.programPreview ? tree.programPreview.split("\n").length : 0;
+	const programLines = tree.programPreview ? tree.programPreview.split("\n") : [];
 	const liveProgramRows =
-		running && programLineCount > 0
+		running && programLines.length > 0
 			? 1 +
-				Math.min(programLineCount, LIVE_PROGRAM_ROWS) +
-				(programLineCount > LIVE_PROGRAM_ROWS ? 1 : 0)
+				Math.min(programLines.length, LIVE_PROGRAM_ROWS) +
+				Number(programLines.length > LIVE_PROGRAM_ROWS)
 			: 0;
-	// Live-card height guard: cap the graph section so the dynamic region
-	// never outgrows the viewport (constant-flicker regression, febfe45e).
-	if (running && maxGraphRows !== undefined) {
-		const budget = Math.max(1, maxGraphRows - liveProgramRows);
-		if (rows.length > budget) {
-			const keep = Math.max(1, budget - 1);
-			const hidden = rows.length - keep;
-			rows = [...rows.slice(0, keep), { key: "overflow", kind: "overflow", count: hidden }];
-		}
-	}
+	// Program and graph share one live viewport. Reserve a graph row even
+	// when the program has exhausted the budget so its overflow remains a
+	// truthful summary of in-flight work.
+	const graphBudget =
+		running && maxGraphRows !== undefined ? Math.max(1, maxGraphRows - liveProgramRows) : undefined;
+	const graphRows = flattenTree(tree);
+	const rows =
+		graphBudget !== undefined && graphRows.length > graphBudget
+			? [
+					...graphRows.slice(0, Math.max(1, graphBudget - 1)),
+					{
+						key: "overflow",
+						kind: "overflow" as const,
+						count: graphRows.length - Math.max(1, graphBudget - 1),
+					},
+				]
+			: graphRows;
 	const effectCount = tree.nodes.filter((node) => node.node.kind !== "run").length;
 	// Mirrors MessageBlock's stripeWidth computation so Yard turns align
 	// with every other turn in the transcript.
@@ -321,25 +324,23 @@ export function YardExecutionCard({
 				{effectCount} {effectCount === 1 ? "effect" : "effects"}
 				{treeMs !== null ? <DurationFragment ms={treeMs} /> : null}
 			</Text>
-			{tree.programPreview ? (
+			{programLines.length > 0 ? (
 				running ? (
 					<>
 						<Text dimColor>program</Text>
 						<HighlightedCodeBlock
-							code={tree.programPreview.split("\n").slice(0, LIVE_PROGRAM_ROWS).join("\n")}
+							code={programLines.slice(0, LIVE_PROGRAM_ROWS).join("\n")}
 							lang="js"
 						/>
-						{tree.programPreview.split("\n").length > LIVE_PROGRAM_ROWS ? (
-							<Text dimColor>
-								… +{tree.programPreview.split("\n").length - LIVE_PROGRAM_ROWS} more lines
-							</Text>
+						{programLines.length > LIVE_PROGRAM_ROWS ? (
+							<Text dimColor>… +{programLines.length - LIVE_PROGRAM_ROWS} more lines</Text>
 						) : null}
 					</>
 				) : (
 					<>
 						<Text dimColor>program</Text>
 						<HighlightedCodeBlock
-							code={tree.programPreview}
+							code={tree.programPreview ?? ""}
 							lang="js"
 							width={Math.max(10, stripeWidth - 2)}
 						/>

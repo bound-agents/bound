@@ -134,11 +134,7 @@ export function withChangeLog<T>(
 
 		if (changelogEventBus) {
 			try {
-				changelogEventBus.emit("changelog:written", {
-					hlc: committed.hlc,
-					tableName: committed.tableName,
-					siteId,
-				});
+				emitChangeLogEvent(db, { hlc: committed.hlc, tableName: committed.tableName, siteId });
 				recordChangeLogPostcommitEvent("succeeded");
 			} catch (error) {
 				recordChangeLogPostcommitEvent("failed");
@@ -151,6 +147,48 @@ export function withChangeLog<T>(
 
 		return committed.result;
 	});
+}
+
+type ChangeLogEvent = { hlc: string; tableName: SyncedTableName; siteId: string };
+
+type ChangeLogDispatchScope = { events: ChangeLogEvent[]; draining: boolean };
+
+// Each database owns its transaction/event-dispatch state. Keeping the outer scope
+// installed while it drains makes a listener's committed reentrant write append to
+// the same FIFO rather than leapfrogging already-buffered notifications.
+const pendingChangeLogEvents = new WeakMap<Database, ChangeLogDispatchScope[]>();
+
+function emitChangeLogEvent(db: Database, event: ChangeLogEvent): void {
+	const scope = pendingChangeLogEvents.get(db)?.at(-1);
+	if (scope) {
+		scope.events.push(event);
+	} else {
+		changelogEventBus?.emit("changelog:written", event);
+	}
+}
+
+function drainChangeLogEvents(_db: Database, scope: ChangeLogDispatchScope): void {
+	scope.draining = true;
+	let firstError: unknown;
+	for (let index = 0; index < scope.events.length; index++) {
+		try {
+			changelogEventBus?.emit("changelog:written", scope.events[index]);
+		} catch (error) {
+			// Every committed event gets its notification attempt. Propagate the
+			// first listener failure only after later events have been drained.
+			firstError ??= error;
+		}
+	}
+	if (firstError !== undefined) throw firstError;
+}
+
+function emitWrittenChangeLogEvent(
+	db: Database,
+	tableName: SyncedTableName,
+	siteId: string,
+	hlc: string | null,
+): void {
+	if (hlc !== null) emitChangeLogEvent(db, { hlc, tableName, siteId });
 }
 
 export function insertRow<T extends SyncedTableName>(
@@ -192,10 +230,8 @@ export function insertRow<T extends SyncedTableName>(
 
 	const hlc = txFn();
 
-	// Emit event after transaction commits
-	if (changelogEventBus) {
-		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
-	}
+	// Emit event after transaction commits.
+	emitWrittenChangeLogEvent(db, table, siteId, hlc);
 }
 
 export function updateRow<T extends SyncedTableName>(
@@ -234,10 +270,8 @@ export function updateRow<T extends SyncedTableName>(
 
 	const hlc = txFn();
 
-	// Emit event after transaction commits
-	if (changelogEventBus) {
-		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
-	}
+	// Emit event after transaction commits.
+	emitWrittenChangeLogEvent(db, table, siteId, hlc);
 }
 
 /**
@@ -300,29 +334,43 @@ export function updateRowIf<T extends SyncedTableName>(
 
 	const hlc = txFn();
 
-	// Emit event after transaction commits (only if we actually wrote)
-	if (hlc !== null && changelogEventBus) {
-		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
-	}
+	// Emit event after transaction commits (only if we actually wrote).
+	emitWrittenChangeLogEvent(db, table, siteId, hlc);
 
 	return hlc !== null;
 }
 
 /**
  * Run `fn` inside a SQLite transaction. Returns whatever `fn` returns. The transaction
- * commits if `fn` returns normally and rolls back if it throws.
- *
- * Use this when you need to compose multiple reads + a single `updateRowIf` (or other
- * outbox-routed write) inside one transaction, e.g., the eviction recovery path that
- * SELECTs from `relay_inbox` to compute `next_run_at` before calling `updateRowIf`.
- *
- * `updateRowIf` opens its own internal `db.transaction()`; bun:sqlite handles nested
- * transactions via savepoints, so calling `updateRowIf` inside `withTx` is safe.
- *
- * See docs/design/specs/2026-05-26-task-lifecycle-resilience.md §3.1 R-LR3.
+ * commits if `fn` returns normally and rolls back if it throws. Nested transactions use
+ * savepoints, and changelog notifications are delayed until the outer commit.
  */
 export function withTx<T>(db: Database, fn: () => T): T {
-	return db.transaction(fn)();
+	const scopes = pendingChangeLogEvents.get(db) ?? [];
+	const scope: ChangeLogDispatchScope = { events: [], draining: false };
+	scopes.push(scope);
+	pendingChangeLogEvents.set(db, scopes);
+
+	try {
+		const result = db.transaction(fn)();
+		if (scopes.length > 1) {
+			scopes.pop();
+			scopes.at(-1)?.events.push(...scope.events);
+		} else {
+			// Keep this scope registered until draining is fully complete so
+			// reentrant committed writes join the tail of this FIFO.
+			try {
+				drainChangeLogEvents(db, scope);
+			} finally {
+				pendingChangeLogEvents.delete(db);
+			}
+		}
+		return result;
+	} catch (error) {
+		if (scopes.at(-1) === scope) scopes.pop();
+		if (scopes.length === 0) pendingChangeLogEvents.delete(db);
+		throw error;
+	}
 }
 
 export function softDelete(db: Database, table: SyncedTableName, id: string, siteId: string): void {
@@ -346,10 +394,8 @@ export function softDelete(db: Database, table: SyncedTableName, id: string, sit
 
 	const hlc = txFn();
 
-	// Emit event after transaction commits
-	if (changelogEventBus) {
-		changelogEventBus.emit("changelog:written", { hlc, tableName: table, siteId });
-	}
+	// Emit event after transaction commits.
+	emitWrittenChangeLogEvent(db, table, siteId, hlc);
 }
 
 /**
