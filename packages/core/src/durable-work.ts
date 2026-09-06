@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Database, SQLQueryBindings } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TypedEventEmitter } from "@bound/shared";
 import { trace } from "@opentelemetry/api";
@@ -574,18 +574,20 @@ export function sweepStaleTransferringDurableWork(
 ): number {
 	return instrument("sweep-stale-transferring", "any", () => {
 		const staleBefore = new Date(Date.parse(now) - DURABLE_WORK_TRANSFER_STALE_MS).toISOString();
-		const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
 		// Dead-letter the poisoned generations first (at/over cap), then re-pend the
 		// rest. Both are gated identically: transferring, transfer timeout lapsed,
 		// and NOT already past terminal expiry (that is the terminal sweep's row).
-		const deadLettered = db.run(
-			`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = ?, dead_lettered_at = ?, expires_at = ?
-		 WHERE claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?
-		   AND (expires_at IS NULL OR expires_at > ?)
-		   AND attempt_count >= ?`,
-			[TRANSFER_EXHAUSTED_LAST_ERROR, now, retention, staleBefore, now, maxAttempts],
-		).changes;
+		const deadLettered = deadLetterDurableWorkRows(
+			db,
+			now,
+			TRANSFER_EXHAUSTED_LAST_ERROR,
+			`claim_state = 'transferring' AND claimed_at IS NOT NULL AND claimed_at <= ?
+			AND (expires_at IS NULL OR expires_at > ?) AND attempt_count >= ?`,
+			false,
+			staleBefore,
+			now,
+			maxAttempts,
+		);
 		const rePended = db.run(
 			`UPDATE durable_work SET claim_state = 'pending', claim_token = NULL, claimed_at = NULL,
 		 attempt_count = attempt_count + 1
@@ -598,19 +600,37 @@ export function sweepStaleTransferringDurableWork(
 	});
 }
 
+const DEAD_LETTER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Apply the common terminal representation; callers keep their predicates and instrumentation. */
+function deadLetterDurableWorkRows(
+	db: Database,
+	now: string,
+	lastError: string | null,
+	where: string,
+	preserveExistingError = false,
+	...params: SQLQueryBindings[]
+): number {
+	const retention = new Date(Date.parse(now) + DEAD_LETTER_RETENTION_MS).toISOString();
+	const errorSql = preserveExistingError ? "COALESCE(last_error, 'expired')" : "?";
+	return db.run(
+		`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
+	 last_error = ${errorSql}, dead_lettered_at = ?, expires_at = ? WHERE ${where}`,
+		preserveExistingError ? [now, retention, ...params] : [lastError, now, retention, ...params],
+	).changes;
+}
+
 /** Expiry and terminal failure are preserved as seven-day dead-letter rows, never silently discarded. */
 export function deadLetterExpiredDurableWork(db: Database, now = new Date().toISOString()): number {
-	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
-	return instrument(
-		"expiry",
-		"any",
-		() =>
-			db.run(
-				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = COALESCE(last_error, 'expired'), dead_lettered_at = ?, expires_at = ?
-		 WHERE claim_state != 'dead_letter' AND expires_at IS NOT NULL AND expires_at <= ?`,
-				[now, retention, now],
-			).changes,
+	return instrument("expiry", "any", () =>
+		deadLetterDurableWorkRows(
+			db,
+			now,
+			null,
+			"claim_state != 'dead_letter' AND expires_at IS NOT NULL AND expires_at <= ?",
+			true,
+			now,
+		),
 	);
 }
 
@@ -620,16 +640,18 @@ export function deadLetterDurableWork(
 	error: string,
 	now = new Date().toISOString(),
 ): boolean {
-	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
 	return instrument(
 		"dead-letter",
 		"unknown",
 		() =>
-			db.run(
-				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = ?, dead_lettered_at = ?, expires_at = ? WHERE id = ? AND claim_state != 'dead_letter'`,
-				[error, now, retention, id],
-			).changes === 1,
+			deadLetterDurableWorkRows(
+				db,
+				now,
+				error,
+				"id = ? AND claim_state != 'dead_letter'",
+				false,
+				id,
+			) === 1,
 	);
 }
 
@@ -648,17 +670,19 @@ export function deadLetterClaimedDurableWork(
 	error: string,
 	now = new Date().toISOString(),
 ): boolean {
-	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
 	return instrument(
 		"dead-letter",
 		"unknown",
 		() =>
-			db.run(
-				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = ?, dead_lettered_at = ?, expires_at = ?
-		 WHERE id = ? AND claim_state = 'processing' AND claim_token = ?`,
-				[error, now, retention, id, claimToken],
-			).changes === 1,
+			deadLetterDurableWorkRows(
+				db,
+				now,
+				error,
+				"id = ? AND claim_state = 'processing' AND claim_token = ?",
+				false,
+				id,
+				claimToken,
+			) === 1,
 	);
 }
 
@@ -674,17 +698,12 @@ export function deadLetterPendingDurableWork(
 	error: string,
 	now = new Date().toISOString(),
 ): boolean {
-	const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
 	return instrument(
 		"dead-letter",
 		"unknown",
 		() =>
-			db.run(
-				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = ?, dead_lettered_at = ?, expires_at = ?
-		 WHERE id = ? AND claim_state = 'pending'`,
-				[error, now, retention, id],
-			).changes === 1,
+			deadLetterDurableWorkRows(db, now, error, "id = ? AND claim_state = 'pending'", false, id) ===
+			1,
 	);
 }
 
@@ -707,14 +726,16 @@ export function redriveTransferringDurableWork(
 	now = new Date().toISOString(),
 ): boolean {
 	return instrument("redrive-transferring", "unknown", () => {
-		const retention = new Date(Date.parse(now) + 7 * 24 * 60 * 60 * 1000).toISOString();
 		if (
-			db.run(
-				`UPDATE durable_work SET claim_state = 'dead_letter', claim_token = NULL, claimed_at = NULL,
-		 last_error = ?, dead_lettered_at = ?, expires_at = ?
-		 WHERE id = ? AND claim_state = 'transferring' AND attempt_count >= ?`,
-				[TRANSFER_EXHAUSTED_LAST_ERROR, now, retention, id, maxAttempts],
-			).changes === 1
+			deadLetterDurableWorkRows(
+				db,
+				now,
+				TRANSFER_EXHAUSTED_LAST_ERROR,
+				"id = ? AND claim_state = 'transferring' AND attempt_count >= ?",
+				false,
+				id,
+				maxAttempts,
+			) === 1
 		)
 			return true;
 		return (

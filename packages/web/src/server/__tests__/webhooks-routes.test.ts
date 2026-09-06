@@ -7,6 +7,55 @@ import { createWebhooksRoutes } from "../routes/webhooks";
 
 let db: Database;
 let siteId: string;
+type WebhooksApp = ReturnType<typeof createWebhooksRoutes>;
+
+function request(app: WebhooksApp, method: string, path = "/", body?: string): Promise<Response> {
+	return app.fetch(
+		new Request(`http://localhost${path}`, body === undefined ? { method } : { method, body }),
+	);
+}
+
+type WebhookResponse = Record<string, unknown>;
+
+async function createWebhook(
+	app: WebhooksApp,
+	body: Record<string, unknown>,
+): Promise<WebhookResponse> {
+	const response = await request(app, "POST", "/", JSON.stringify(body));
+	expect(response.status).toBe(201);
+	return (await response.json()) as WebhookResponse;
+}
+
+async function patchWebhook(
+	app: WebhooksApp,
+	id: string,
+	body: Record<string, unknown>,
+): Promise<WebhookResponse> {
+	const response = await request(app, "PATCH", `/${id}`, JSON.stringify(body));
+	expect(response.status).toBe(200);
+	return (await response.json()) as WebhookResponse;
+}
+
+async function listWebhooks(app: WebhooksApp): Promise<WebhookResponse[]> {
+	const response = await request(app, "GET");
+	expect(response.status).toBe(200);
+	return (await response.json()) as WebhookResponse[];
+}
+
+async function getWebhook(app: WebhooksApp, id: string): Promise<WebhookResponse> {
+	const response = await request(app, "GET", `/${id}`);
+	expect(response.status).toBe(200);
+	return (await response.json()) as WebhookResponse;
+}
+
+function linkedTaskValue<T>(webhookId: string, column: "model_hint" | "no_history"): T {
+	const webhook = db.prepare("SELECT task_id FROM webhooks WHERE id = ?").get(webhookId) as {
+		task_id: string;
+	};
+	return (
+		db.prepare(`SELECT ${column} FROM tasks WHERE id = ?`).get(webhook.task_id) as Record<string, T>
+	)[column];
+}
 
 beforeEach(() => {
 	db = new BunDatabase(":memory:");
@@ -44,6 +93,32 @@ describe("webhooks routes", () => {
 			expect(json.description).toBe("Test webhook");
 		});
 
+		it("maps a persistence error to the existing 500 body without returning a created webhook", async () => {
+			const app = createWebhooksRoutes(db);
+			db.exec(`
+				CREATE TRIGGER abort_http_webhook_task_insert
+				BEFORE INSERT ON tasks
+				WHEN NEW.trigger_spec = 'webhook:persistence-failure'
+				BEGIN SELECT RAISE(ABORT, 'forced HTTP persistence failure'); END
+			`);
+
+			const response = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ name: "persistence-failure" }),
+				}),
+			);
+
+			expect(response.status).toBe(500);
+			expect(await response.json()).toEqual({
+				error: "Failed to create webhook",
+				details: "forced HTTP persistence failure",
+			});
+			expect(db.prepare("SELECT COUNT(*) AS count FROM threads").get()).toEqual({ count: 1 });
+			expect(db.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
+			expect(db.prepare("SELECT COUNT(*) AS count FROM webhooks").get()).toEqual({ count: 0 });
+		});
+
 		it("validates webhook name format", async () => {
 			const app = createWebhooksRoutes(db);
 
@@ -59,16 +134,12 @@ describe("webhooks routes", () => {
 
 			// Create first webhook
 			const body1 = JSON.stringify({ name: "unique-webhook" });
-			const response1 = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: body1 }),
-			);
+			const response1 = await request(app, "POST", "/", body1);
 			expect(response1.status).toBe(201);
 
 			// Try to create duplicate
 			const body2 = JSON.stringify({ name: "unique-webhook" });
-			const response2 = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: body2 }),
-			);
+			const response2 = await request(app, "POST", "/", body2);
 			expect(response2.status).toBe(400);
 		});
 
@@ -79,23 +150,17 @@ describe("webhooks routes", () => {
 
 			// Create the original webhook.
 			const body1 = JSON.stringify({ name: "reusable-name" });
-			const response1 = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: body1 }),
-			);
+			const response1 = await request(app, "POST", "/", body1);
 			expect(response1.status).toBe(201);
 			const created = (await response1.json()) as { id: string };
 
 			// Delete it (soft-delete + cancel task).
-			const deleteResponse = await app.fetch(
-				new Request(`http://localhost/${created.id}`, { method: "DELETE" }),
-			);
+			const deleteResponse = await request(app, "DELETE", `/${created.id}`);
 			expect(deleteResponse.status).toBe(204);
 
 			// Create a fresh webhook with the same name. This must succeed.
 			const body2 = JSON.stringify({ name: "reusable-name" });
-			const response2 = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: body2 }),
-			);
+			const response2 = await request(app, "POST", "/", body2);
 			if (response2.status !== 201) {
 				console.error("recreate failed:", await response2.text());
 			}
@@ -109,13 +174,11 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "list-test-webhook" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			expect(createResponse.status).toBe(201);
 
 			// Get list
-			const listResponse = await app.fetch(new Request("http://localhost/", { method: "GET" }));
+			const listResponse = await request(app, "GET", "/");
 
 			expect(listResponse.status).toBe(200);
 			const json = (await listResponse.json()) as unknown[];
@@ -141,10 +204,10 @@ describe("webhooks routes", () => {
 			});
 			const withoutPrompt = JSON.stringify({ name: "without-prompt-webhook" });
 
-			await app.fetch(new Request("http://localhost/", { method: "POST", body: withPrompt }));
-			await app.fetch(new Request("http://localhost/", { method: "POST", body: withoutPrompt }));
+			await request(app, "POST", "/", withPrompt);
+			await request(app, "POST", "/", withoutPrompt);
 
-			const listResponse = await app.fetch(new Request("http://localhost/", { method: "GET" }));
+			const listResponse = await request(app, "GET", "/");
 			expect(listResponse.status).toBe(200);
 			const json = (await listResponse.json()) as Array<Record<string, unknown>>;
 
@@ -166,9 +229,7 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "get-test-webhook" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			expect(createResponse.status).toBe(201);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
@@ -187,9 +248,7 @@ describe("webhooks routes", () => {
 		it("returns 404 for non-existent webhook", async () => {
 			const app = createWebhooksRoutes(db);
 
-			const response = await app.fetch(
-				new Request("http://localhost/nonexistent-id", { method: "GET" }),
-			);
+			const response = await request(app, "GET", "/nonexistent-id");
 
 			expect(response.status).toBe(404);
 		});
@@ -202,9 +261,7 @@ describe("webhooks routes", () => {
 				name: "detail-prompt-webhook",
 				prompt: "Detail-view prompt content",
 			});
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 
@@ -222,17 +279,13 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "patch-test-webhook", description: "Old" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 
 			// Update description
 			const patchBody = JSON.stringify({ description: "New description" });
-			const patchResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "PATCH", body: patchBody }),
-			);
+			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 			const updated = (await patchResponse.json()) as Record<string, unknown>;
@@ -244,17 +297,13 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "prompt-test-webhook", prompt: "Old prompt" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 
 			// Update prompt
 			const patchBody = JSON.stringify({ prompt: "New prompt" });
-			const patchResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "PATCH", body: patchBody }),
-			);
+			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 
@@ -278,17 +327,13 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "format-test-webhook", format: "github" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 
 			// Update format
 			const patchBody = JSON.stringify({ format: "gitlab" });
-			const patchResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "PATCH", body: patchBody }),
-			);
+			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 			const updated = (await patchResponse.json()) as Record<string, unknown>;
@@ -302,17 +347,13 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "original-name" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 
 			// Try to update name
 			const patchBody = JSON.stringify({ name: "new-name" });
-			const patchResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "PATCH", body: patchBody }),
-			);
+			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 
@@ -328,18 +369,14 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "thread-test" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 			const originalThreadId = created.thread_id as string;
 
 			// Try to update thread_id
 			const patchBody = JSON.stringify({ thread_id: "fake-thread-id" });
-			const patchResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "PATCH", body: patchBody }),
-			);
+			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 
@@ -355,18 +392,14 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "secret-test" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 			const originalSecret = created.secret as string;
 
 			// Try to update secret
 			const patchBody = JSON.stringify({ secret: "fake-secret" });
-			const patchResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "PATCH", body: patchBody }),
-			);
+			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 
@@ -379,326 +412,154 @@ describe("webhooks routes", () => {
 	});
 
 	describe("model_hint round-trip on tasks.model_hint", () => {
-		const taskModelFor = (db: Database, webhookId: string): string | null => {
-			const wh = db
-				.prepare("SELECT task_id, thread_id FROM webhooks WHERE id = ?")
-				.get(webhookId) as { task_id: string; thread_id: string };
-			const task = db.prepare("SELECT model_hint FROM tasks WHERE id = ?").get(wh.task_id) as {
-				model_hint: string | null;
-			};
-			return task.model_hint;
-		};
+		function taskModelFor(webhookId: string): string | null {
+			return linkedTaskValue<string | null>(webhookId, "model_hint");
+		}
 
 		it("POST without model_hint stores null on the task (uses cluster default)", async () => {
-			const app = createWebhooksRoutes(db);
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "no-model-webhook" }),
-				}),
-			);
-			expect(createResponse.status).toBe(201);
-			const created = (await createResponse.json()) as Record<string, unknown>;
-
+			const created = await createWebhook(createWebhooksRoutes(db), { name: "no-model-webhook" });
 			expect(created.model_hint).toBeNull();
-			expect(taskModelFor(db, created.id as string)).toBeNull();
+			expect(taskModelFor(created.id as string)).toBeNull();
 		});
 
 		it("POST with model_hint stores it on the linked task and thread", async () => {
-			const app = createWebhooksRoutes(db);
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "kimi-webhook", model_hint: "kimi-k2" }),
-				}),
-			);
-			expect(createResponse.status).toBe(201);
-			const created = (await createResponse.json()) as Record<string, unknown>;
-
+			const created = await createWebhook(createWebhooksRoutes(db), {
+				name: "kimi-webhook",
+				model_hint: "kimi-k2",
+			});
 			expect(created.model_hint).toBe("kimi-k2");
-			expect(taskModelFor(db, created.id as string)).toBe("kimi-k2");
-
-			// Thread should be mirrored too (matches CLI behaviour)
-			const wh = db
-				.prepare("SELECT thread_id FROM webhooks WHERE id = ?")
-				.get(created.id as string) as { thread_id: string };
+			expect(taskModelFor(created.id as string)).toBe("kimi-k2");
+			const webhook = db.prepare("SELECT thread_id FROM webhooks WHERE id = ?").get(created.id) as {
+				thread_id: string;
+			};
 			const thread = db
 				.prepare("SELECT model_hint FROM threads WHERE id = ?")
-				.get(wh.thread_id) as { model_hint: string | null };
+				.get(webhook.thread_id) as { model_hint: string | null };
 			expect(thread.model_hint).toBe("kimi-k2");
 		});
 
 		it("POST with empty-string model_hint stores null", async () => {
-			const app = createWebhooksRoutes(db);
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "empty-model-webhook", model_hint: "" }),
-				}),
-			);
-			expect(createResponse.status).toBe(201);
-			const created = (await createResponse.json()) as Record<string, unknown>;
+			const created = await createWebhook(createWebhooksRoutes(db), {
+				name: "empty-model-webhook",
+				model_hint: "",
+			});
 			expect(created.model_hint).toBeNull();
-			expect(taskModelFor(db, created.id as string)).toBeNull();
+			expect(taskModelFor(created.id as string)).toBeNull();
 		});
 
 		it("GET list and detail include model_hint", async () => {
 			const app = createWebhooksRoutes(db);
-			await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "list-model-webhook", model_hint: "kimi-k2" }),
-				}),
-			);
-
-			const listResp = await app.fetch(new Request("http://localhost/", { method: "GET" }));
-			const listed = (await listResp.json()) as Array<Record<string, unknown>>;
+			await createWebhook(app, { name: "list-model-webhook", model_hint: "kimi-k2" });
+			const listed = await listWebhooks(app);
 			expect(listed[0]?.model_hint).toBe("kimi-k2");
-
-			const id = listed[0]?.id as string;
-			const detailResp = await app.fetch(new Request(`http://localhost/${id}`, { method: "GET" }));
-			const detail = (await detailResp.json()) as Record<string, unknown>;
+			const detail = await getWebhook(app, listed[0]?.id as string);
 			expect(detail.model_hint).toBe("kimi-k2");
 		});
 
 		it("PATCH with model_hint sets it on the task", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "patch-model-webhook" }),
-				}),
-			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ model_hint: "kimi-k2" }),
-				}),
-			);
-			expect(patchResp.status).toBe(200);
-			const patched = (await patchResp.json()) as Record<string, unknown>;
+			const created = await createWebhook(app, { name: "patch-model-webhook" });
+			const patched = await patchWebhook(app, created.id as string, { model_hint: "kimi-k2" });
 			expect(patched.model_hint).toBe("kimi-k2");
-			expect(taskModelFor(db, id)).toBe("kimi-k2");
+			expect(taskModelFor(created.id as string)).toBe("kimi-k2");
 		});
 
 		it("PATCH with model_hint=null clears it back to default", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "clear-model-webhook", model_hint: "kimi-k2" }),
-				}),
-			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-			expect(taskModelFor(db, id)).toBe("kimi-k2");
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ model_hint: null }),
-				}),
-			);
-			expect(patchResp.status).toBe(200);
-			const patched = (await patchResp.json()) as Record<string, unknown>;
+			const created = await createWebhook(app, {
+				name: "clear-model-webhook",
+				model_hint: "kimi-k2",
+			});
+			expect(taskModelFor(created.id as string)).toBe("kimi-k2");
+			const patched = await patchWebhook(app, created.id as string, { model_hint: null });
 			expect(patched.model_hint).toBeNull();
-			expect(taskModelFor(db, id)).toBeNull();
+			expect(taskModelFor(created.id as string)).toBeNull();
 		});
 
 		it("PATCH without model_hint key leaves existing model_hint alone", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "leave-model-webhook", model_hint: "kimi-k2" }),
-				}),
-			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ description: "unrelated change" }),
-				}),
-			);
-			expect(patchResp.status).toBe(200);
-			const patched = (await patchResp.json()) as Record<string, unknown>;
+			const created = await createWebhook(app, {
+				name: "leave-model-webhook",
+				model_hint: "kimi-k2",
+			});
+			const patched = await patchWebhook(app, created.id as string, {
+				description: "unrelated change",
+			});
 			expect(patched.model_hint).toBe("kimi-k2");
-			expect(taskModelFor(db, id)).toBe("kimi-k2");
+			expect(taskModelFor(created.id as string)).toBe("kimi-k2");
 		});
 	});
 
 	// no_history round-trip: stored as INTEGER 0/1 on tasks, exposed as boolean
 	// over the JSON API (#54).
 	describe("no_history round-trip on tasks.no_history", () => {
-		const taskNoHistoryFor = (db: Database, webhookId: string): number | null => {
-			const wh = db.prepare("SELECT task_id FROM webhooks WHERE id = ?").get(webhookId) as {
-				task_id: string;
-			};
-			const task = db.prepare("SELECT no_history FROM tasks WHERE id = ?").get(wh.task_id) as {
-				no_history: number | null;
-			};
-			return task.no_history;
-		};
+		function taskNoHistoryFor(webhookId: string): number | null {
+			return linkedTaskValue<number | null>(webhookId, "no_history");
+		}
 
-		it("POST without no_history defaults to no_history=0 on the task", async () => {
-			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "default-no-history" }),
-				}),
-			);
-			expect(createResp.status).toBe(201);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			expect(created.no_history).toBe(false);
-			expect(taskNoHistoryFor(db, created.id as string)).toBe(0);
-		});
-
-		it("POST with no_history=true stores 1 on the task and returns true", async () => {
-			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "no-history-true", no_history: true }),
-				}),
-			);
-			expect(createResp.status).toBe(201);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			expect(created.no_history).toBe(true);
-			expect(taskNoHistoryFor(db, created.id as string)).toBe(1);
-		});
-
-		it("POST with no_history=false stores 0 explicitly", async () => {
-			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "no-history-false", no_history: false }),
-				}),
-			);
-			expect(createResp.status).toBe(201);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			expect(created.no_history).toBe(false);
-			expect(taskNoHistoryFor(db, created.id as string)).toBe(0);
-		});
+		it.each([
+			["default-no-history", undefined, false, 0],
+			["no-history-true", true, true, 1],
+			["no-history-false", false, false, 0],
+		])(
+			"POST with no_history=%p returns %p and stores %p",
+			async (name, no_history, exposed, stored) => {
+				const created = await createWebhook(createWebhooksRoutes(db), {
+					name,
+					...(no_history === undefined ? {} : { no_history }),
+				});
+				expect(created.no_history).toBe(exposed);
+				expect(taskNoHistoryFor(created.id as string)).toBe(stored);
+			},
+		);
 
 		it("GET list and detail include no_history as boolean", async () => {
 			const app = createWebhooksRoutes(db);
-			await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "listed-no-history", no_history: true }),
-				}),
-			);
-
-			const listResp = await app.fetch(new Request("http://localhost/", { method: "GET" }));
-			const listed = (await listResp.json()) as Array<Record<string, unknown>>;
+			await createWebhook(app, { name: "listed-no-history", no_history: true });
+			const listed = await listWebhooks(app);
 			expect(listed[0]?.no_history).toBe(true);
 			expect(typeof listed[0]?.no_history).toBe("boolean");
-
-			const id = listed[0]?.id as string;
-			const detailResp = await app.fetch(new Request(`http://localhost/${id}`, { method: "GET" }));
-			const detail = (await detailResp.json()) as Record<string, unknown>;
+			const detail = await getWebhook(app, listed[0]?.id as string);
 			expect(detail.no_history).toBe(true);
 		});
 
 		it("PATCH with no_history=true sets it on the task", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "patch-no-history" }),
-				}),
-			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ no_history: true }),
-				}),
-			);
-			expect(patchResp.status).toBe(200);
-			const patched = (await patchResp.json()) as Record<string, unknown>;
+			const created = await createWebhook(app, { name: "patch-no-history" });
+			const patched = await patchWebhook(app, created.id as string, { no_history: true });
 			expect(patched.no_history).toBe(true);
-			expect(taskNoHistoryFor(db, id)).toBe(1);
+			expect(taskNoHistoryFor(created.id as string)).toBe(1);
 		});
 
 		it("PATCH with no_history=false clears it back to 0", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "clear-no-history", no_history: true }),
-				}),
-			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-			expect(taskNoHistoryFor(db, id)).toBe(1);
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ no_history: false }),
-				}),
-			);
-			expect(patchResp.status).toBe(200);
-			const patched = (await patchResp.json()) as Record<string, unknown>;
+			const created = await createWebhook(app, { name: "clear-no-history", no_history: true });
+			expect(taskNoHistoryFor(created.id as string)).toBe(1);
+			const patched = await patchWebhook(app, created.id as string, { no_history: false });
 			expect(patched.no_history).toBe(false);
-			expect(taskNoHistoryFor(db, id)).toBe(0);
+			expect(taskNoHistoryFor(created.id as string)).toBe(0);
 		});
 
 		it("PATCH without no_history key leaves existing no_history alone", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "leave-no-history", no_history: true }),
-				}),
-			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ description: "unrelated" }),
-				}),
-			);
-			expect(patchResp.status).toBe(200);
-			const patched = (await patchResp.json()) as Record<string, unknown>;
+			const created = await createWebhook(app, { name: "leave-no-history", no_history: true });
+			const patched = await patchWebhook(app, created.id as string, { description: "unrelated" });
 			expect(patched.no_history).toBe(true);
-			expect(taskNoHistoryFor(db, id)).toBe(1);
+			expect(taskNoHistoryFor(created.id as string)).toBe(1);
 		});
 
 		it("PATCH with non-boolean no_history returns 400", async () => {
 			const app = createWebhooksRoutes(db);
-			const createResp = await app.fetch(
-				new Request("http://localhost/", {
-					method: "POST",
-					body: JSON.stringify({ name: "bad-no-history" }),
-				}),
+			const created = await createWebhook(app, { name: "bad-no-history" });
+			const response = await request(
+				app,
+				"PATCH",
+				`/${created.id}`,
+				JSON.stringify({ no_history: "yes" }),
 			);
-			const created = (await createResp.json()) as Record<string, unknown>;
-			const id = created.id as string;
-
-			const patchResp = await app.fetch(
-				new Request(`http://localhost/${id}`, {
-					method: "PATCH",
-					body: JSON.stringify({ no_history: "yes" }),
-				}),
-			);
-			expect(patchResp.status).toBe(400);
-			const body = (await patchResp.json()) as Record<string, unknown>;
-			expect(body.error).toContain("no_history");
-			// Original value preserved on rejection.
-			expect(taskNoHistoryFor(db, id)).toBe(0);
+			expect(response.status).toBe(400);
+			expect(((await response.json()) as WebhookResponse).error).toContain("no_history");
+			expect(taskNoHistoryFor(created.id as string)).toBe(0);
 		});
 	});
 
@@ -708,9 +569,7 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "delete-test-webhook" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 
@@ -720,9 +579,7 @@ describe("webhooks routes", () => {
 			};
 
 			// Delete webhook
-			const deleteResponse = await app.fetch(
-				new Request(`http://localhost/${id}`, { method: "DELETE" }),
-			);
+			const deleteResponse = await request(app, "DELETE", `/${id}`);
 
 			expect(deleteResponse.status).toBe(204);
 
@@ -746,17 +603,13 @@ describe("webhooks routes", () => {
 
 			// Create a webhook
 			const createBody = JSON.stringify({ name: "rotate-test-webhook" });
-			const createResponse = await app.fetch(
-				new Request("http://localhost/", { method: "POST", body: createBody }),
-			);
+			const createResponse = await request(app, "POST", "/", createBody);
 			const created = (await createResponse.json()) as Record<string, unknown>;
 			const id = created.id as string;
 			const originalSecret = created.secret as string;
 
 			// Rotate secret
-			const rotateResponse = await app.fetch(
-				new Request(`http://localhost/${id}/rotate`, { method: "POST" }),
-			);
+			const rotateResponse = await request(app, "POST", `/${id}/rotate`);
 
 			expect(rotateResponse.status).toBe(200);
 			const json = (await rotateResponse.json()) as Record<string, unknown>;
@@ -782,9 +635,7 @@ describe("webhooks routes", () => {
 	describe("#195: unauthenticated-webhook kill switch", () => {
 		it("GET /unauthenticated-switch defaults to false (row absent)", async () => {
 			const app = createWebhooksRoutes(db);
-			const res = await app.fetch(
-				new Request("http://localhost/unauthenticated-switch", { method: "GET" }),
-			);
+			const res = await request(app, "GET", "/unauthenticated-switch");
 			expect(res.status).toBe(200);
 			expect(await res.json()).toEqual({ allow_unauthenticated: false });
 		});
@@ -816,9 +667,7 @@ describe("webhooks routes", () => {
 			expect(put.status).toBe(200);
 			expect(await put.json()).toEqual({ allow_unauthenticated: true });
 
-			const get = await app.fetch(
-				new Request("http://localhost/unauthenticated-switch", { method: "GET" }),
-			);
+			const get = await request(app, "GET", "/unauthenticated-switch");
 			expect(await get.json()).toEqual({ allow_unauthenticated: true });
 
 			const create = await app.fetch(
@@ -854,9 +703,7 @@ describe("webhooks routes", () => {
 				);
 			await set(true);
 			await set(false);
-			const get = await app.fetch(
-				new Request("http://localhost/unauthenticated-switch", { method: "GET" }),
-			);
+			const get = await request(app, "GET", "/unauthenticated-switch");
 			expect(await get.json()).toEqual({ allow_unauthenticated: false });
 			const res = await app.fetch(
 				new Request("http://localhost/", {

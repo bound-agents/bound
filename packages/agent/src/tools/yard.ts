@@ -13,7 +13,7 @@ import {
 	type YardInferenceRequest,
 	runYardProgram,
 } from "../yard/driver";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 /**
  * Yard — actionless native tool that executes a bounded JavaScript generator
@@ -848,26 +848,19 @@ async function runYard(ctx: ToolContext, params: YardInput, scope: YardRunScope)
 }
 
 export function createYardTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(yardSchema);
 	// Description-time steering: an aux agent's Yard carries the warning up
 	// front so the doomed aux() program is never written (the construction-
 	// and dispatch-time guards below remain the enforcement).
 	const description = ctx.agentId
 		? `${AUX_UNAVAILABLE_NOTICE}\n\n${YARD_DESCRIPTION}`
 		: YARD_DESCRIPTION;
+	const toolSchema = defineToolSchema("yard", description, yardSchema);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "yard",
-				description,
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		execute: async (input: Record<string, unknown>, callId?: string) => {
-			const parsed = parseToolInput(yardSchema, input, "yard");
+			const parsed = toolSchema.safeParse(input);
 			if (!parsed.ok) return parsed.error;
 			if (!ctx.getToolRegistry?.()) {
 				return "Error: yard is not wired to a tool registry on this host";

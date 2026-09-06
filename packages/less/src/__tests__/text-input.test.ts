@@ -2,7 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { useState } from "react";
-import { TextInput, breakLines, findCursorInLines } from "../tui/components/TextInput";
+import {
+	TextInput,
+	type TextInputProps,
+	breakLines,
+	findCursorInLines,
+} from "../tui/components/TextInput";
 
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
@@ -10,23 +15,16 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 /**
  * Minimal harness: just a TextInput that displays submitted value.
  */
-function TestHarness({
-	disabled = false,
-	hasFocus = true,
-}: {
-	disabled?: boolean;
-	hasFocus?: boolean;
-}) {
+function TestHarness(props: Omit<TextInputProps, "onSubmit">) {
 	const [submitted, setSubmitted] = useState<string | null>(null);
 
 	return React.createElement(
 		React.Fragment,
 		null,
 		React.createElement(TextInput, {
-			onSubmit: (val: string) => setSubmitted(val),
-			placeholder: "type here",
-			disabled,
-			hasFocus,
+			...props,
+			placeholder: props.placeholder ?? "type here",
+			onSubmit: (value: string) => setSubmitted(value),
 		}),
 		submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
 	);
@@ -739,23 +737,9 @@ describe("paste sanitization (tab/newline width desync)", () => {
 });
 
 describe("history recall (↑/↓)", () => {
-	function HistoryHarness({ history }: { history: string[] }) {
-		const [submitted, setSubmitted] = useState<string | null>(null);
-		return React.createElement(
-			React.Fragment,
-			null,
-			React.createElement(TextInput, {
-				onSubmit: (val: string) => setSubmitted(val),
-				placeholder: "type here",
-				history,
-			}),
-			submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
-		);
-	}
-
 	it("↑ recalls the newest entry, ↑ again walks older", async () => {
 		const { lastFrame, stdin } = render(
-			React.createElement(HistoryHarness, { history: ["oldest", "newest"] }),
+			React.createElement(TestHarness, { history: ["oldest", "newest"] }),
 		);
 		await tick();
 		stdin.write("\x1B[A");
@@ -768,7 +752,7 @@ describe("history recall (↑/↓)", () => {
 
 	it("↓ walks forward and finally restores the interrupted draft", async () => {
 		const { lastFrame, stdin } = render(
-			React.createElement(HistoryHarness, { history: ["prior message"] }),
+			React.createElement(TestHarness, { history: ["prior message"] }),
 		);
 		await tick();
 		stdin.write("dra");
@@ -784,7 +768,7 @@ describe("history recall (↑/↓)", () => {
 	});
 
 	it("↑ at the oldest entry stays put (no wrap)", async () => {
-		const { lastFrame, stdin } = render(React.createElement(HistoryHarness, { history: ["only"] }));
+		const { lastFrame, stdin } = render(React.createElement(TestHarness, { history: ["only"] }));
 		await tick();
 		stdin.write("\x1B[A");
 		await tick();
@@ -795,7 +779,7 @@ describe("history recall (↑/↓)", () => {
 
 	it("recalled multi-line text is sanitized to a single line", async () => {
 		const { lastFrame, stdin } = render(
-			React.createElement(HistoryHarness, { history: ["line one\nline two"] }),
+			React.createElement(TestHarness, { history: ["line one\nline two"] }),
 		);
 		await tick();
 		stdin.write("\x1B[A");
@@ -805,7 +789,7 @@ describe("history recall (↑/↓)", () => {
 
 	it("editing after recall detaches from history (typed char lands in recalled text)", async () => {
 		const { lastFrame, stdin } = render(
-			React.createElement(HistoryHarness, { history: ["recalled"] }),
+			React.createElement(TestHarness, { history: ["recalled"] }),
 		);
 		await tick();
 		stdin.write("\x1B[A");
@@ -820,7 +804,7 @@ describe("history recall (↑/↓)", () => {
 	});
 
 	it("↑ with no history does nothing", async () => {
-		const { lastFrame, stdin } = render(React.createElement(HistoryHarness, { history: [] }));
+		const { lastFrame, stdin } = render(React.createElement(TestHarness, { history: [] }));
 		await tick();
 		stdin.write("\x1B[A");
 		await tick();
@@ -835,22 +819,10 @@ describe("slash-command completion menu", () => {
 		{ value: "/mcp", description: "MCP server configuration" },
 	];
 
-	function MenuHarness() {
-		const [submitted, setSubmitted] = useState<string | null>(null);
-		return React.createElement(
-			React.Fragment,
-			null,
-			React.createElement(TextInput, {
-				onSubmit: (val: string) => setSubmitted(val),
-				placeholder: "type here",
-				completions: COMPLETIONS,
-			}),
-			submitted !== null ? React.createElement(Text, null, `submitted:${submitted}`) : null,
-		);
-	}
-
 	it("typing / opens the menu with all commands", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("/");
 		await tick();
@@ -861,7 +833,9 @@ describe("slash-command completion menu", () => {
 	});
 
 	it("narrowing the prefix filters the menu", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("/m");
 		await tick();
@@ -872,7 +846,9 @@ describe("slash-command completion menu", () => {
 	});
 
 	it("a space closes the menu (arguments have begun)", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("/model x");
 		await tick();
@@ -880,7 +856,9 @@ describe("slash-command completion menu", () => {
 	});
 
 	it("Tab completes the selected command; takesArgs appends a space", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("/mo");
 		await tick();
@@ -897,7 +875,9 @@ describe("slash-command completion menu", () => {
 	});
 
 	it("Enter submits the SELECTED command, not the partial buffer", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("/he");
 		await tick();
@@ -907,7 +887,9 @@ describe("slash-command completion menu", () => {
 	});
 
 	it("↓ moves the selection before Enter submits it", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("/m");
 		await tick();
@@ -920,7 +902,9 @@ describe("slash-command completion menu", () => {
 	});
 
 	it("no menu for non-slash input; ↑/↓ keep their history meaning", async () => {
-		const { lastFrame, stdin } = render(React.createElement(MenuHarness));
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
 		await tick();
 		stdin.write("hello");
 		await tick();
@@ -972,5 +956,48 @@ describe("image paste chords", () => {
 		stdin.write("\x1b"); // Esc #2: buffer empty → drop fires
 		await tick();
 		expect(drops).toBe(1);
+	});
+});
+
+describe("TextInput value rendering", () => {
+	const LEFT = "\x1b[D";
+	const COMPLETIONS = [
+		{ value: "/model", description: "Switch model" },
+		{ value: "/mcp", description: "MCP configuration" },
+	];
+
+	it("keeps the complete single-row frame and menu when columns is absent", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { completions: COMPLETIONS }),
+		);
+		await tick();
+		stdin.write("/m");
+		await tick();
+
+		expect(lastFrame()).toBe("/m\n❯ /model Switch model\n  /mcp MCP configuration");
+	});
+
+	it("places the menu after positive-column rows when the cursor ends a wrapped line", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { columns: 2, completions: COMPLETIONS }),
+		);
+		await tick();
+		stdin.write("/m");
+		await tick();
+
+		expect(lastFrame()).toBe("/m\n❯ /model Switch model\n  /mcp MCP configuration");
+	});
+
+	it("keeps an inverse grapheme intact across an explicit wrap boundary", async () => {
+		const { lastFrame, stdin } = render(
+			React.createElement(TestHarness, { columns: 3, completions: COMPLETIONS }),
+		);
+		await tick();
+		stdin.write("a🐻b");
+		await tick();
+		stdin.write(LEFT);
+		await tick();
+
+		expect(lastFrame()).toBe("a🐻\nb");
 	});
 });

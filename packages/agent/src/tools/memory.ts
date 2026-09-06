@@ -15,7 +15,7 @@ import {
 	upsertEdge,
 } from "../graph-queries";
 import type { RegisteredTool, ToolContext } from "../types";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const memorySchema = z.object({
 	action: z
@@ -543,25 +543,21 @@ function handleNeighbors(args: MemoryInput, ctx: ToolContext): string {
 }
 
 export function createMemoryTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(memorySchema);
+	const toolSchema = defineToolSchema(
+		"memory",
+		"Your durable cross-session knowledge graph — entries persist across sessions and surface back into context automatically, so reach for it instead of re-deriving what you already worked out. Actions, and when to use each:\n" +
+			"- store: when you learn something worth reusing later — a durable fact, a research finding, a user preference, a correction, or an operating rule. Use a descriptive, namespaced key (e.g. 'curiosity:*', 'person:*'). Pass tier='pinned' for rules/corrections/policy that must survive context compaction; tier is the single source of truth for pinning (key naming never auto-pins), and pinned space is capped, so keep pinned entries lean.\n" +
+			"- search: before answering or starting work that prior knowledge might bear on, rather than researching from scratch — also pulls a detail-tier entry's body by key.\n" +
+			"- connect / disconnect: link related entries so retrieval surfaces them together; relation must be one of CANONICAL_RELATIONS, with any bespoke phrasing in 'context' rather than the relation.\n" +
+			"- traverse / neighbors: walk the graph outward from a known entry to gather related context.\n" +
+			"- forget: retire an entry that is obsolete or wrong.\n" +
+			"- agent_name: optional. Target an auxiliary agent's memory namespace (main agent only; ignored when running as an aux). Lets the main agent read and write an aux identity's memory.",
+		memorySchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "memory",
-				description:
-					"Your durable cross-session knowledge graph — entries persist across sessions and surface back into context automatically, so reach for it instead of re-deriving what you already worked out. Actions, and when to use each:\n" +
-					"- store: when you learn something worth reusing later — a durable fact, a research finding, a user preference, a correction, or an operating rule. Use a descriptive, namespaced key (e.g. 'curiosity:*', 'person:*'). Pass tier='pinned' for rules/corrections/policy that must survive context compaction; tier is the single source of truth for pinning (key naming never auto-pins), and pinned space is capped, so keep pinned entries lean.\n" +
-					"- search: before answering or starting work that prior knowledge might bear on, rather than researching from scratch — also pulls a detail-tier entry's body by key.\n" +
-					"- connect / disconnect: link related entries so retrieval surfaces them together; relation must be one of CANONICAL_RELATIONS, with any bespoke phrasing in 'context' rather than the relation.\n" +
-					"- traverse / neighbors: walk the graph outward from a known entry to gather related context.\n" +
-					"- forget: retire an entry that is obsolete or wrong.\n" +
-					"- agent_name: optional. Target an auxiliary agent's memory namespace (main agent only; ignored when running as an aux). Lets the main agent read and write an aux identity's memory.",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Per-action idempotency. search/traverse/neighbors are pure reads.
 		// store/forget/connect/disconnect are state-mutating but idempotent
 		// on (key, value) — overwriting with the same value or deleting an
@@ -583,7 +579,7 @@ export function createMemoryTool(ctx: ToolContext): RegisteredTool {
 			}
 		},
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(memorySchema, raw, "memory");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

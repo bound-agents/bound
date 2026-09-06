@@ -193,6 +193,17 @@ interface PeerConnection {
 const MAX_SNAPSHOT_FRAME_BYTES = 4 * 1024 * 1024;
 const MAX_CHANGELOG_FRAME_BYTES = MAX_SNAPSHOT_FRAME_BYTES;
 
+function toChangelogWireEntries(entries: ChangeLogEntry[]): ChangelogPushPayload["entries"] {
+	return entries.map((entry) => ({
+		hlc: entry.hlc,
+		table_name: entry.table_name,
+		row_id: entry.row_id,
+		site_id: entry.site_id,
+		timestamp: entry.timestamp,
+		row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
+	}));
+}
+
 function encodeChangelogFrames(
 	entries: Array<{
 		hlc: string;
@@ -482,14 +493,7 @@ export class WsTransport {
 				continue;
 			}
 
-			const wireEntries = entriesToSend.map((entry) => ({
-				hlc: entry.hlc,
-				table_name: entry.table_name,
-				row_id: entry.row_id,
-				site_id: entry.site_id,
-				timestamp: entry.timestamp,
-				row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
-			}));
+			const wireEntries = toChangelogWireEntries(entriesToSend);
 
 			const frames = encodeChangelogFrames(wireEntries, peer.symmetricKey);
 			let allSent = true;
@@ -711,14 +715,7 @@ export class WsTransport {
 			for (let i = 0; i < allEntries.length && !backpressured; i += batchSize) {
 				const batch = allEntries.slice(i, i + batchSize);
 
-				const wireEntries = batch.map((entry) => ({
-					hlc: entry.hlc,
-					table_name: entry.table_name,
-					row_id: entry.row_id,
-					site_id: entry.site_id,
-					timestamp: entry.timestamp,
-					row_data: JSON.parse(entry.row_data) as Record<string, unknown>,
-				}));
+				const wireEntries = toChangelogWireEntries(batch);
 
 				const frames = encodeChangelogFrames(wireEntries, peer.symmetricKey);
 				for (const frame of frames) {

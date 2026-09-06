@@ -511,19 +511,26 @@ function ToolCallRow({
 	// label in an OSC 8 file:// hyperlink so it's clickable in supporting terminals.
 	const displayPath = filePath ? tildifyPath(filePath) : null;
 	const linkedPath = displayPath ? linkifyPath(displayPath, filePath, cwd) : null;
+	const requestLabel = (detail?: React.ReactNode) => (
+		<Text>
+			<Text color={tokens.toolRequestMarker}>⏵ </Text>
+			<Text color={tokens.toolRequestMarker} bold>
+				{name}
+			</Text>
+			<Text dimColor>
+				{" "}
+				{linkedPath}
+				{detail}
+			</Text>
+		</Text>
+	);
 
 	// boundless_edit: header + per-edit anchor ranges with added-line previews
 	if (block.name === "boundless_edit" && filePath) {
 		const edits = asHashlineEdits(block.input.edits);
 		return (
 			<Box flexDirection="column">
-				<Text>
-					<Text color={tokens.toolRequestMarker}>⏵ </Text>
-					<Text color={tokens.toolRequestMarker} bold>
-						{name}
-					</Text>
-					<Text dimColor> {linkedPath}</Text>
-				</Text>
+				{requestLabel()}
 				<HashlineEditsBody edits={edits} filePath={filePath} cwd={cwd} width={bodyWidth} />
 			</Box>
 		);
@@ -535,16 +542,12 @@ function ToolCallRow({
 		const lineCount = content.length === 0 ? 0 : content.split("\n").length;
 		return (
 			<Box flexDirection="column">
-				<Text>
-					<Text color={tokens.toolRequestMarker}>⏵ </Text>
-					<Text color={tokens.toolRequestMarker} bold>
-						{name}
-					</Text>
-					<Text dimColor>
+				{requestLabel(
+					<>
 						{" "}
-						{linkedPath} · {lineCount} {lineCount === 1 ? "line" : "lines"}
-					</Text>
-				</Text>
+						· {lineCount} {lineCount === 1 ? "line" : "lines"}
+					</>,
+				)}
 				<WritePreviewBody content={content} filePath={filePath} width={bodyWidth} />
 			</Box>
 		);

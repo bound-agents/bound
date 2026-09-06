@@ -25,11 +25,7 @@ export function McpView({
 }: McpViewProps): React.ReactElement {
 	const serverStates = mcpManager.getServerStates();
 
-	// Create list items from configs
-	const items = mcpConfigs.map((config) => ({
-		config,
-		state: serverStates.get(config.name),
-	}));
+	const items = mcpConfigs.map((config) => ({ config, state: serverStates.get(config.name) }));
 
 	return (
 		<ModalOverlay onDismiss={onCancel}>
@@ -71,10 +67,6 @@ export function McpView({
 							{ keys: "Esc", label: "back" },
 						]}
 					/>
-					{/* TODO: Implement add/toggle/delete handlers for MCP servers */}
-					{/* - Add: prompt for name + config, hot-reload */}
-					{/* - Toggle: enable/disable server, hot-reload */}
-					{/* - Delete: confirm, then hot-reload */}
 				</Box>
 			</Box>
 		</ModalOverlay>

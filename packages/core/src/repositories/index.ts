@@ -37,6 +37,7 @@ export * from "./connector-handles";
 export * from "./memory-edges";
 export * from "./client-sessions";
 export * from "./webhooks";
+export * from "./create-webhook-binding";
 export * from "./rss-feeds";
 export * from "./change-log";
 export * from "./host-meta";

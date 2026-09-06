@@ -38,6 +38,30 @@ describe("Config Loader", async () => {
 		}
 	});
 
+	const writeJsonConfig = (filename: string, value: unknown) =>
+		writeFileSync(join(configDir, filename), JSON.stringify(value));
+	const writeJavaScriptConfig = (filename: string, value: unknown) =>
+		writeFileSync(join(configDir, filename), `export default ${JSON.stringify(value)};`);
+	const allowlistConfig = () => ({
+		default_web_user: "alice",
+		users: { alice: { display_name: "Alice" } },
+	});
+	const modelBackendsConfig = (defaultBackend = "ollama-local") => ({
+		backends: [
+			{
+				id: "ollama-local",
+				provider: "openai-compatible",
+				model: "llama3",
+				context_window: 4096,
+				tier: 1,
+				base_url: "http://localhost:11434",
+			},
+		],
+		default: defaultBackend,
+	});
+	const invalidAllowlistConfig = { default_web_user: "alice", users: {} };
+	const invalidModelBackendsConfig = { backends: [], default: "none" };
+
 	describe("expandEnvVars", async () => {
 		it("replaces environment variables", async () => {
 			process.env.TEST_VAR = "test-value";
@@ -83,7 +107,7 @@ describe("Config Loader", async () => {
 				},
 			};
 
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(validAllowlist));
+			writeJsonConfig("allowlist.json", validAllowlist);
 
 			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
 
@@ -114,20 +138,36 @@ describe("Config Loader", async () => {
 			}
 		});
 
-		it("validates against schema and returns field errors", async () => {
-			const invalidAllowlist = {
-				default_web_user: "alice",
-				users: {}, // Invalid: must have at least one user
+		it("preserves exact schema validation errors for JSON and JavaScript configs", async () => {
+			const schema = {
+				safeParse: () => ({
+					success: false,
+					error: {
+						message: "name is required",
+						flatten: () => ({ fieldErrors: { name: ["name is required"], empty: undefined } }),
+					},
+				}),
+			};
+			const expectedError = {
+				message: "Validation failed: name is required",
+				fieldErrors: { name: ["name is required"], empty: [] },
 			};
 
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
+			writeJsonConfig("config.json", {});
+			const json = loadConfigFile(configDir, "config.json", schema);
+			expect(json).toEqual({ ok: false, error: { filename: "config.json", ...expectedError } });
 
-			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
+			writeJavaScriptConfig("config.js", {});
+			const javascript = await loadConfigWithPrecedence(configDir, "config", schema);
+			expect(javascript).toEqual({ ok: false, error: { filename: "config.js", ...expectedError } });
 
-			expect(result.ok).toBe(false);
-			if (!result.ok) {
-				expect(result.error.filename).toBe("allowlist.json");
-				expect(Object.keys(result.error.fieldErrors).length).toBeGreaterThan(0);
+			const invalidAllowlist = invalidAllowlistConfig;
+			writeJsonConfig("allowlist.json", invalidAllowlist);
+			const allowlist = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
+			expect(allowlist.ok).toBe(false);
+			if (!allowlist.ok) {
+				expect(allowlist.error.filename).toBe("allowlist.json");
+				expect(Object.keys(allowlist.error.fieldErrors).length).toBeGreaterThan(0);
 			}
 		});
 
@@ -140,7 +180,7 @@ describe("Config Loader", async () => {
 				},
 			};
 
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(configContent));
+			writeJsonConfig("allowlist.json", configContent);
 
 			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
 
@@ -151,21 +191,7 @@ describe("Config Loader", async () => {
 		});
 
 		it("validates model_backends schema", async () => {
-			const validBackends = {
-				backends: [
-					{
-						id: "ollama-local",
-						provider: "openai-compatible",
-						model: "llama3",
-						context_window: 4096,
-						tier: 1,
-						base_url: "http://localhost:11434",
-					},
-				],
-				default: "ollama-local",
-			};
-
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(validBackends));
+			writeJsonConfig("model_backends.json", modelBackendsConfig());
 
 			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
 
@@ -178,20 +204,11 @@ describe("Config Loader", async () => {
 
 		it("validates cross-field constraints in schema", async () => {
 			const invalidBackends = {
-				backends: [
-					{
-						id: "ollama-local",
-						provider: "openai-compatible",
-						model: "llama3",
-						context_window: 4096,
-						tier: 1,
-						// Missing base_url for ollama provider
-					},
-				],
-				default: "ollama-local",
+				...modelBackendsConfig(),
+				backends: [{ ...modelBackendsConfig().backends[0], base_url: undefined }],
 			};
 
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(invalidBackends));
+			writeJsonConfig("model_backends.json", invalidBackends);
 
 			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
 
@@ -205,29 +222,12 @@ describe("Config Loader", async () => {
 
 	describe("loadRequiredConfigs", async () => {
 		it("loads both required configs successfully", async () => {
-			const allowlist = {
-				default_web_user: "alice",
-				users: {
-					alice: { display_name: "Alice" },
-				},
-			};
+			const allowlist = allowlistConfig();
 
-			const backends = {
-				backends: [
-					{
-						id: "ollama-local",
-						provider: "openai-compatible",
-						model: "llama3",
-						context_window: 4096,
-						tier: 1,
-						base_url: "http://localhost:11434",
-					},
-				],
-				default: "ollama-local",
-			};
+			const backends = modelBackendsConfig();
 
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
+			writeJsonConfig("allowlist.json", allowlist);
+			writeJsonConfig("model_backends.json", backends);
 
 			const result = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -239,18 +239,8 @@ describe("Config Loader", async () => {
 		});
 
 		it("returns all errors at once", async () => {
-			const invalidAllowlist = {
-				default_web_user: "alice",
-				users: {}, // Invalid
-			};
-
-			const invalidBackends = {
-				backends: [], // Invalid: must have at least one
-				default: "none",
-			};
-
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(invalidBackends));
+			writeJsonConfig("allowlist.json", invalidAllowlistConfig);
+			writeJsonConfig("model_backends.json", invalidModelBackendsConfig);
 
 			const result = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -263,21 +253,7 @@ describe("Config Loader", async () => {
 		});
 
 		it("fails if allowlist.json is missing", async () => {
-			const backends = {
-				backends: [
-					{
-						id: "ollama-local",
-						provider: "openai-compatible",
-						model: "llama3",
-						context_window: 4096,
-						tier: 1,
-						base_url: "http://localhost:11434",
-					},
-				],
-				default: "ollama-local",
-			};
-
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
+			writeJsonConfig("model_backends.json", modelBackendsConfig());
 
 			const result = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -289,14 +265,7 @@ describe("Config Loader", async () => {
 		});
 
 		it("fails if model_backends.json is missing", async () => {
-			const allowlist = {
-				default_web_user: "alice",
-				users: {
-					alice: { display_name: "Alice" },
-				},
-			};
-
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
+			writeJsonConfig("allowlist.json", allowlistConfig());
 
 			const result = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -308,29 +277,8 @@ describe("Config Loader", async () => {
 		});
 
 		it("validates cross-field constraint: default_web_user references existing user", async () => {
-			const invalidAllowlist = {
-				default_web_user: "nonexistent",
-				users: {
-					alice: { display_name: "Alice" },
-				},
-			};
-
-			const backends = {
-				backends: [
-					{
-						id: "ollama-local",
-						provider: "openai-compatible",
-						model: "llama3",
-						context_window: 4096,
-						tier: 1,
-						base_url: "http://localhost:11434",
-					},
-				],
-				default: "ollama-local",
-			};
-
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(invalidAllowlist));
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(backends));
+			writeJsonConfig("allowlist.json", { ...allowlistConfig(), default_web_user: "nonexistent" });
+			writeJsonConfig("model_backends.json", modelBackendsConfig());
 
 			const result = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -341,29 +289,8 @@ describe("Config Loader", async () => {
 		});
 
 		it("validates cross-field constraint: default backend exists", async () => {
-			const allowlist = {
-				default_web_user: "alice",
-				users: {
-					alice: { display_name: "Alice" },
-				},
-			};
-
-			const invalidBackends = {
-				backends: [
-					{
-						id: "ollama-local",
-						provider: "openai-compatible",
-						model: "llama3",
-						context_window: 4096,
-						tier: 1,
-						base_url: "http://localhost:11434",
-					},
-				],
-				default: "nonexistent",
-			};
-
-			writeFileSync(join(configDir, "allowlist.json"), JSON.stringify(allowlist));
-			writeFileSync(join(configDir, "model_backends.json"), JSON.stringify(invalidBackends));
+			writeJsonConfig("allowlist.json", allowlistConfig());
+			writeJsonConfig("model_backends.json", modelBackendsConfig("nonexistent"));
 
 			const result = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 
@@ -388,13 +315,10 @@ describe("Config Loader", async () => {
 		] as const;
 
 		it("prefers allowlist.js over allowlist.json and expands environment variables", async () => {
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify({
-					default_web_user: "json",
-					users: { json: { display_name: "JSON" } },
-				}),
-			);
+			writeJsonConfig("allowlist.json", {
+				default_web_user: "json",
+				users: { json: { display_name: "JSON" } },
+			});
 			process.env.BOUND_JS_USER = "javascript";
 			writeFileSync(
 				join(configDir, "allowlist.js"),
@@ -411,8 +335,8 @@ describe("Config Loader", async () => {
 
 		for (const [name, schema, value] of optionalCases) {
 			it(`prefers ${name}.js over ${name}.json`, async () => {
-				writeFileSync(join(configDir, `${name}.json`), JSON.stringify({ ...value, ignored: true }));
-				writeFileSync(join(configDir, `${name}.js`), `export default ${JSON.stringify(value)};`);
+				writeJsonConfig(`${name}.json`, { ...value, ignored: true });
+				writeJavaScriptConfig(`${name}.js`, value);
 
 				const result = await loadConfigWithPrecedence(configDir, name, schema);
 				expect(result.ok).toBe(true);
@@ -433,26 +357,17 @@ describe("Config Loader", async () => {
 				],
 				default: "js",
 			};
-			writeFileSync(
-				join(configDir, "model_backends.json"),
-				JSON.stringify({ ...modelBackends, default: "json" }),
-			);
-			writeFileSync(
-				join(configDir, "model_backends.js"),
-				`export default ${JSON.stringify(modelBackends)};`,
-			);
+			writeJsonConfig("model_backends.json", { ...modelBackends, default: "json" });
+			writeJavaScriptConfig("model_backends.js", modelBackends);
 
-			writeFileSync(
-				join(configDir, "allowlist.json"),
-				JSON.stringify({
-					default_web_user: "json",
-					users: { json: { display_name: "JSON" } },
-				}),
-			);
-			writeFileSync(
-				join(configDir, "allowlist.js"),
-				`export default { default_web_user: "js", users: { js: { display_name: "JavaScript" } } };`,
-			);
+			writeJsonConfig("allowlist.json", {
+				default_web_user: "json",
+				users: { json: { display_name: "JSON" } },
+			});
+			writeJavaScriptConfig("allowlist.js", {
+				default_web_user: "js",
+				users: { js: { display_name: "JavaScript" } },
+			});
 			const loaded = await loadRequiredConfigs(configDir, allowlistSchema, modelBackendsSchema);
 			expect(loaded.ok).toBe(true);
 			if (loaded.ok) {
@@ -462,10 +377,7 @@ describe("Config Loader", async () => {
 		});
 
 		it("falls back to JSON when an optional JavaScript config is absent", async () => {
-			writeFileSync(
-				join(configDir, "sync.json"),
-				JSON.stringify({ hub: "https://json.example.com" }),
-			);
+			writeJsonConfig("sync.json", { hub: "https://json.example.com" });
 			const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
 			expect(result.ok).toBe(true);
 			if (result.ok) expect(result.value.hub).toBe("https://json.example.com");
@@ -484,10 +396,7 @@ export default { hub };`,
 		});
 
 		it("reports JavaScript syntax and schema errors against the selected JavaScript file", async () => {
-			writeFileSync(
-				join(configDir, "sync.json"),
-				JSON.stringify({ hub: "https://json.example.com" }),
-			);
+			writeJsonConfig("sync.json", { hub: "https://json.example.com" });
 			writeFileSync(join(configDir, "sync.js"), "export default { hub: ;");
 			const syntax = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
 			expect(syntax.ok).toBe(false);
@@ -501,7 +410,7 @@ export default { hub };`,
 
 		it("loads every optional JavaScript alternative through the aggregate loader", async () => {
 			for (const [name, _schema, value] of optionalCases) {
-				writeFileSync(join(configDir, `${name}.js`), `export default ${JSON.stringify(value)};`);
+				writeJavaScriptConfig(`${name}.js`, value);
 			}
 			const configs = await loadOptionalConfigs(configDir);
 			expect(Object.keys(configs).sort()).toEqual(optionalCases.map(([name]) => name).sort());

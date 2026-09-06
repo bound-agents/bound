@@ -1,11 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
-import { randomUUID } from "node:crypto";
-import { findWebhookResponseById } from "@bound/core";
+import { createWebhookBinding, findWebhookResponseById } from "@bound/core";
 import {
 	findClusterConfigKeyByKeyIncludingDeleted,
 	findClusterConfigValueByKey,
-	findWebhookDeletedFlagById,
 	findWebhookIdById,
 	findWebhookIdByName,
 	findWebhookIdsById,
@@ -19,11 +17,7 @@ import {
 	softDelete,
 	updateRow,
 } from "@bound/core";
-import {
-	BOUND_NAMESPACE,
-	WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
-	deterministicUUID,
-} from "@bound/shared";
+import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 import { Hono } from "hono";
 import { buildWebhookUrls } from "../webhook-urls";
@@ -255,125 +249,14 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 				return c.json({ error: `Webhook '${name}' already exists` }, 400);
 			}
 
-			// Generate 256-bit secret (64 hex chars)
-			const secret = randomBytes(32).toString("hex");
-			const now = new Date().toISOString();
-
-			// Create thread for webhook message delivery
-			const threadId = randomUUID();
-			insertRow(
-				db,
-				"threads",
-				{
-					id: threadId,
-					user_id: "system",
-					interface: "webhook",
-					host_origin: siteId,
-					color: 0,
-					title: `Webhook: ${name}`,
-					summary: null,
-					summary_through: null,
-					summary_model_id: null,
-					extracted_through: null,
-					model_hint: modelHint,
-					created_at: now,
-					last_message_at: now,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			// Create event task
-			const taskId = randomUUID();
-			insertRow(
-				db,
-				"tasks",
-				{
-					id: taskId,
-					type: "event",
-					status: "pending",
-					trigger_spec: `webhook:${name}`,
-					payload: null,
-					created_at: now,
-					created_by: siteId,
-					thread_id: threadId,
-					origin_thread_id: null,
-					claimed_by: null,
-					claimed_at: null,
-					lease_id: null,
-					next_run_at: null,
-					last_run_at: null,
-					run_count: 0,
-					max_runs: null,
-					requires: null,
-					model_hint: modelHint,
-					no_history: noHistory,
-					inject_mode: "results",
-					depends_on: null,
-					require_success: 0,
-					alert_threshold: 3,
-					consecutive_failures: 0,
-					event_depth: 0,
-					no_quiescence: 0,
-					heartbeat_at: null,
-					result: null,
-					error: null,
-					system_prompt_addition: prompt || null,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			// Create webhook row. The webhook id is derived deterministically
-			// from the name so concurrent creates on different hosts converge
-			// on the same row (LWW handles divergence). When the same name has
-			// previously been used and soft-deleted, that row is still present
-			// with deleted=1 — insert would fail on the PK. Restore it in
-			// place via updateRow so the deterministic-id property holds.
-			const webhookId = deterministicUUID(BOUND_NAMESPACE, `webhook:${name}`);
-			const priorRow = findWebhookDeletedFlagById(db, webhookId);
-
-			if (priorRow) {
-				// Existing row must be soft-deleted at this point — the active
-				// uniqueness check above would have short-circuited otherwise.
-				updateRow(
-					db,
-					"webhooks",
-					webhookId,
-					{
-						name,
-						secret,
-						signature_format: format,
-						description: description || null,
-						task_id: taskId,
-						thread_id: threadId,
-						created_at: now,
-						deleted: 0,
-						modified_at: now,
-					},
-					siteId,
-				);
-			} else {
-				insertRow(
-					db,
-					"webhooks",
-					{
-						id: webhookId,
-						name,
-						secret,
-						signature_format: format,
-						description: description || null,
-						task_id: taskId,
-						thread_id: threadId,
-						created_at: now,
-						deleted: 0,
-						modified_at: now,
-					},
-					siteId,
-				);
-			}
+			const { webhookId, secret } = createWebhookBinding(db, siteId, {
+				name,
+				signatureFormat: format,
+				description: description || null,
+				prompt: prompt || null,
+				modelHint,
+				noHistory,
+			});
 
 			// Return full webhook object INCLUDING secret. Re-SELECT through
 			// WEBHOOK_SELECT so the response shape (prompt, model_hint, etc.)

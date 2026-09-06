@@ -243,13 +243,13 @@ describe("App Component", () => {
 			mockMcpManager.getServerStates = vi.fn().mockReturnValue(
 				new Map([
 					["github", { status: "running" }],
-					["slack", { status: "stopped" }],
+					["slack", { status: "stopped", error: "connection refused" }],
 				]),
 			);
 			const { lastFrame, stdin } = renderApp({
 				mcpConfigs: [
 					{ name: "github", transport: "stdio", command: "x", args: [], enabled: true },
-					{ name: "slack", transport: "stdio", command: "y", args: [], enabled: true },
+					{ name: "slack", transport: "stdio", command: "y", args: [], enabled: false },
 				],
 			});
 			await tick();
@@ -261,6 +261,8 @@ describe("App Component", () => {
 			// crash) before Esc can possibly dismiss it.
 			expect(lastFrame() ?? "").toContain("MCP Server Configuration");
 			expect(lastFrame() ?? "").toContain("github");
+			expect(lastFrame() ?? "").toContain("(disabled)");
+			expect(lastFrame() ?? "").toContain("connection refused");
 
 			stdin.write(ESC);
 			await tick();

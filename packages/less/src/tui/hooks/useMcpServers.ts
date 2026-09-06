@@ -27,20 +27,17 @@ export function useMcpServers(mcpManager: McpServerManager): UseMcpServersResult
 		const interval = setInterval(() => {
 			const updatedStates = mcpManager.getServerStates();
 			const prev = statesRef.current;
-			// Only update if the count or any status changed
-			if (updatedStates.size !== prev.size) {
-				setServerStates(updatedStates);
-				return;
-			}
-			for (const [name, state] of updatedStates) {
-				const prevState = prev.get(name);
-				const prevToolsLen = prevState?.tools?.length ?? -1;
-				const nextToolsLen = state?.tools?.length ?? -1;
-				if (!prevState || prevState.status !== state?.status || prevToolsLen !== nextToolsLen) {
-					setServerStates(updatedStates);
-					return;
-				}
-			}
+			const changed =
+				updatedStates.size !== prev.size ||
+				Array.from(updatedStates).some(([name, state]) => {
+					const previous = prev.get(name);
+					return (
+						!previous ||
+						previous.status !== state.status ||
+						(previous.tools?.length ?? -1) !== (state.tools?.length ?? -1)
+					);
+				});
+			if (changed) setServerStates(updatedStates);
 		}, 5000);
 
 		return () => clearInterval(interval);

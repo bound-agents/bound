@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema } from "@bound/core";
 import {
 	webhookCreate,
@@ -15,13 +15,20 @@ describe("webhook commands", () => {
 	let db: Database;
 	let originalLog: typeof console.log;
 
-	function setup() {
+	beforeEach(() => {
 		originalLog = console.log;
 		// In-memory DB: these tests pass the `db` object directly to the command
 		// under test and never reopen from a path, so a file-backed temp DB only
 		// adds a Windows EBUSY hazard (rmSync racing the still-closing WAL handle).
 		db = new Database(":memory:");
 		applySchema(db);
+		console.log = () => {};
+	});
+
+	function collectOutput(): string[] {
+		const output: string[] = [];
+		console.log = (message: string) => output.push(message);
+		return output;
 	}
 
 	afterEach(() => {
@@ -32,10 +39,7 @@ describe("webhook commands", () => {
 	// Task 1: webhookCreate
 	describe("webhookCreate", () => {
 		it("should create a webhook with valid name and generate 64-char secret", () => {
-			setup();
-
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookCreate(db, SITE_ID, ["--name", "my-webhook", "--format", "github"]);
 
@@ -94,25 +98,37 @@ describe("webhook commands", () => {
 			expect(outputStr).toContain("Format: github");
 		});
 
-		it("should reject webhook name with uppercase letters", () => {
-			setup();
+		it("propagates persistence errors before emitting any creation output", () => {
+			const output = collectOutput();
+			db.exec(`
+				CREATE TRIGGER abort_cli_webhook_task_insert
+				BEFORE INSERT ON tasks
+				WHEN NEW.trigger_spec = 'webhook:persistence-failure'
+				BEGIN SELECT RAISE(ABORT, 'forced CLI persistence failure'); END
+			`);
 
+			expect(() => {
+				webhookCreate(db, SITE_ID, ["--name", "persistence-failure"]);
+			}).toThrow("forced CLI persistence failure");
+			expect(output).toEqual([]);
+			expect(db.prepare("SELECT COUNT(*) AS count FROM threads").get()).toEqual({ count: 1 });
+			expect(db.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
+			expect(db.prepare("SELECT COUNT(*) AS count FROM webhooks").get()).toEqual({ count: 0 });
+		});
+
+		it("should reject webhook name with uppercase letters", () => {
 			expect(() => {
 				webhookCreate(db, SITE_ID, ["--name", "MyWebhook"]);
 			}).toThrow(/Invalid webhook name/);
 		});
 
 		it("should reject webhook name with special characters", () => {
-			setup();
-
 			expect(() => {
 				webhookCreate(db, SITE_ID, ["--name", "my webhook!"]);
 			}).toThrow(/Invalid webhook name/);
 		});
 
 		it("should reject webhook name longer than 64 chars", () => {
-			setup();
-
 			const longName = "a".repeat(65);
 			expect(() => {
 				webhookCreate(db, SITE_ID, ["--name", longName]);
@@ -120,11 +136,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should create webhook with custom description and prompt", () => {
-			setup();
-
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
-
 			webhookCreate(db, SITE_ID, [
 				"--name",
 				"my-webhook",
@@ -156,10 +167,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should reject duplicate webhook name", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "duplicate"]);
 
 			expect(() => {
@@ -168,10 +175,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should allow reusing the name of a previously-deleted webhook", () => {
-			setup();
-
-			console.log = () => {};
-
 			// Create, capture the deterministic id + original secret/task/thread.
 			webhookCreate(db, SITE_ID, ["--name", "recycle"]);
 			const original = db
@@ -194,6 +197,7 @@ describe("webhook commands", () => {
 
 			// Re-create the same name. Pre-fix this throws on the PK collision;
 			// post-fix it restores the soft-deleted row in place.
+			const output = collectOutput();
 			expect(() => {
 				webhookCreate(db, SITE_ID, ["--name", "recycle"]);
 			}).not.toThrow();
@@ -212,6 +216,15 @@ describe("webhook commands", () => {
 			expect(restored).not.toBeNull();
 			expect(restored?.deleted).toBe(0);
 			expect(restored?.secret).not.toBe(original.secret);
+			expect(restored?.task_id).not.toBe(original.task_id);
+			expect(restored?.thread_id).not.toBe(original.thread_id);
+			expect(db.prepare("SELECT id FROM tasks WHERE id = ?").get(restored?.task_id)).toEqual({
+				id: restored?.task_id,
+			});
+			expect(db.prepare("SELECT id FROM threads WHERE id = ?").get(restored?.thread_id)).toEqual({
+				id: restored?.thread_id,
+			});
+			expect(output).toContain(`Secret: ${restored?.secret}`);
 
 			// Only one webhook with this name should be live.
 			const liveCount = db
@@ -224,15 +237,10 @@ describe("webhook commands", () => {
 	// Task 2: webhookList
 	describe("webhookList", () => {
 		it("should list webhooks without secrets", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "webhook1", "--description", "First"]);
 			webhookCreate(db, SITE_ID, ["--name", "webhook2", "--description", "Second"]);
 
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookList(db);
 
@@ -245,10 +253,7 @@ describe("webhook commands", () => {
 		});
 
 		it("should show empty message when no webhooks exist", () => {
-			setup();
-
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookList(db);
 
@@ -259,18 +264,13 @@ describe("webhook commands", () => {
 	// Task 2: webhookDelete
 	describe("webhookDelete", () => {
 		it("should soft-delete webhook and cancel task", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "to-delete"]);
 
 			const webhook = db
 				.prepare("SELECT id, task_id FROM webhooks WHERE name = ?")
 				.get("to-delete") as { id: string; task_id: string };
 
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookDelete(db, SITE_ID, "to-delete");
 
@@ -292,8 +292,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should throw error if webhook not found", () => {
-			setup();
-
 			expect(() => {
 				webhookDelete(db, SITE_ID, "nonexistent");
 			}).toThrow(/not found/);
@@ -303,18 +301,13 @@ describe("webhook commands", () => {
 	// Task 2: webhookUpdate
 	describe("webhookUpdate", () => {
 		it("should update webhook prompt via system_prompt_addition", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "update-test"]);
 
 			const webhook = db
 				.prepare("SELECT task_id FROM webhooks WHERE name = ?")
 				.get("update-test") as { task_id: string };
 
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookUpdate(db, SITE_ID, ["--name", "update-test", "--prompt", "New prompt"]);
 
@@ -327,10 +320,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should update webhook description", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "desc-test"]);
 
 			webhookUpdate(db, SITE_ID, ["--name", "desc-test", "--description", "New description"]);
@@ -343,10 +332,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should update webhook signature format", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "format-test", "--format", "github"]);
 
 			webhookUpdate(db, SITE_ID, ["--name", "format-test", "--format", "stripe"]);
@@ -359,9 +344,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should reject unsupported webhook signature formats", () => {
-			setup();
-			console.log = () => {};
-
 			expect(() =>
 				webhookCreate(db, SITE_ID, ["--name", "invalid-format", "--format", "bogus"]),
 			).toThrow(/Unsupported signature format/);
@@ -376,10 +358,6 @@ describe("webhook commands", () => {
 	// Task 2: webhookRotateSecret
 	describe("webhookRotateSecret", () => {
 		it("should generate new secret and update webhook row", () => {
-			setup();
-
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "rotate-test"]);
 
 			const originalWebhook = db
@@ -388,8 +366,7 @@ describe("webhook commands", () => {
 
 			const oldSecret = originalWebhook.secret;
 
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookRotateSecret(db, SITE_ID, "rotate-test");
 
@@ -411,8 +388,6 @@ describe("webhook commands", () => {
 		});
 
 		it("should throw error if webhook not found", () => {
-			setup();
-
 			expect(() => {
 				webhookRotateSecret(db, SITE_ID, "nonexistent");
 			}).toThrow(/not found/);
@@ -438,9 +413,6 @@ describe("webhook commands", () => {
 		};
 
 		it("webhookCreate without --model leaves model_hint null on the task and thread", () => {
-			setup();
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "no-model"]);
 
 			const hints = taskAndThreadModelFor("no-model");
@@ -449,9 +421,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookCreate with --model sets model_hint on the task and thread", () => {
-			setup();
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "kimi-hook", "--model", "kimi-k2"]);
 
 			const hints = taskAndThreadModelFor("kimi-hook");
@@ -460,9 +429,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookCreate with --model '' is equivalent to omitting the flag", () => {
-			setup();
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "empty-model", "--model", ""]);
 
 			const hints = taskAndThreadModelFor("empty-model");
@@ -471,9 +437,7 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookCreate prints the configured model in the create output", () => {
-			setup();
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookCreate(db, SITE_ID, ["--name", "print-model", "--model", "kimi-k2"]);
 
@@ -481,13 +445,10 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookList surfaces the configured model column", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "listed-default"]);
 			webhookCreate(db, SITE_ID, ["--name", "listed-kimi", "--model", "kimi-k2"]);
 
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 			webhookList(db);
 			const joined = output.join("\n");
 
@@ -497,8 +458,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --model sets model_hint on the task and thread", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "set-via-update"]);
 
 			webhookUpdate(db, SITE_ID, ["--name", "set-via-update", "--model", "kimi-k2"]);
@@ -509,8 +468,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --model '' clears model_hint back to default", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "clear-via-update", "--model", "kimi-k2"]);
 
 			webhookUpdate(db, SITE_ID, ["--name", "clear-via-update", "--model", ""]);
@@ -521,8 +478,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate without --model leaves existing model_hint alone", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "leave-alone", "--model", "kimi-k2"]);
 
 			webhookUpdate(db, SITE_ID, ["--name", "leave-alone", "--description", "still kimi"]);
@@ -546,27 +501,19 @@ describe("webhook commands", () => {
 		};
 
 		it("webhookCreate without --no-history leaves no_history=0 on the task", () => {
-			setup();
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "default-history"]);
 
 			expect(noHistoryFor("default-history")).toBe(0);
 		});
 
 		it("webhookCreate with --no-history sets no_history=1 on the task", () => {
-			setup();
-			console.log = () => {};
-
 			webhookCreate(db, SITE_ID, ["--name", "no-history-hook", "--no-history"]);
 
 			expect(noHistoryFor("no-history-hook")).toBe(1);
 		});
 
 		it("webhookCreate prints History line in the create output", () => {
-			setup();
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 
 			webhookCreate(db, SITE_ID, ["--name", "history-output", "--no-history"]);
 
@@ -574,13 +521,10 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookList shows H column reflecting per-webhook no_history", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "with-history"]);
 			webhookCreate(db, SITE_ID, ["--name", "without-history", "--no-history"]);
 
-			const output: string[] = [];
-			console.log = (msg: string) => output.push(msg);
+			const output = collectOutput();
 			webhookList(db);
 			const joined = output.join("\n");
 
@@ -594,8 +538,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --no-history sets no_history=1 on the task", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "set-via-update"]);
 
 			webhookUpdate(db, SITE_ID, ["--name", "set-via-update", "--no-history"]);
@@ -604,8 +546,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with --history clears no_history back to 0", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "clear-via-update", "--no-history"]);
 			expect(noHistoryFor("clear-via-update")).toBe(1);
 
@@ -615,8 +555,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate without history flags leaves existing no_history alone", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "leave-alone-history", "--no-history"]);
 
 			webhookUpdate(db, SITE_ID, [
@@ -630,8 +568,6 @@ describe("webhook commands", () => {
 		});
 
 		it("webhookUpdate with both --no-history and --history throws", () => {
-			setup();
-			console.log = () => {};
 			webhookCreate(db, SITE_ID, ["--name", "ambiguous"]);
 
 			expect(() => {

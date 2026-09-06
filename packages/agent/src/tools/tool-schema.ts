@@ -1,4 +1,3 @@
-import type { ToolDefinition } from "@bound/llm";
 import { type ZodObject, type ZodRawShape, z } from "zod";
 
 export function zodToToolParams<T extends ZodRawShape>(
@@ -32,16 +31,14 @@ export function defineToolSchema<T extends ZodRawShape>(
 	name: string,
 	description: string,
 	schema: ZodObject<T>,
-): {
-	definition: ToolDefinition;
-	parse: (input: Record<string, unknown>) => z.infer<ZodObject<T>>;
-} {
+) {
 	return {
 		definition: {
-			type: "function",
+			type: "function" as const,
 			function: { name, description, parameters: zodToToolParams(schema) },
 		},
 		parse: (input: Record<string, unknown>) => schema.parse(nullsToAbsent(input)),
+		safeParse: (input: Record<string, unknown>) => parseToolInput(schema, input, name),
 	};
 }
 

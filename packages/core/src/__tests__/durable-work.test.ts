@@ -8,7 +8,10 @@ import {
 	beginDurableWorkTransfer,
 	claimDurableWorkByIds,
 	claimLocalDurableWork,
+	deadLetterClaimedDurableWork,
+	deadLetterDurableWork,
 	deadLetterExpiredDurableWork,
+	deadLetterPendingDurableWork,
 	insertDurableWork,
 	pruneConsumedDurableWork,
 	pruneExpiredDeadLetters,
@@ -48,6 +51,14 @@ const rowState = (db: Database, id: string) =>
 		claim_token: string | null;
 		attempt_count: number;
 	} | null;
+const terminalRow = (id: string, lastError: string, expiresAt: string) => ({
+	id,
+	claim_state: "dead_letter",
+	claim_token: null,
+	claimed_at: null,
+	last_error: lastError,
+	expires_at: expiresAt,
+});
 // The relay attempt cap (DURABLE_RELAY_MAX_ATTEMPTS in @bound/agent) the sweep
 // enforces sender-side; core is registry-agnostic so the caller supplies it.
 const DEFAULT_ATTEMPT_CAP = 3;
@@ -114,6 +125,42 @@ describe("durable_work", () => {
 		).toEqual({ claim_state: "dead_letter", last_error: "expired" });
 		expect(pruneExpiredDeadLetters(db, "2026-01-07T00:00:00.000Z")).toBe(0);
 		expect(pruneExpiredDeadLetters(db, "2026-01-08T00:00:00.001Z")).toBe(1);
+	});
+
+	it("preserves each terminal dead-letter fence while retaining terminal rows for seven days", () => {
+		const now = "2026-01-01T00:00:00.000Z";
+		const retention = "2026-01-08T00:00:00.000Z";
+		insertDurableWork(db, row("id-only"));
+		insertDurableWork(db, row("claimed"));
+		insertDurableWork(db, row("pending"));
+		db.run(
+			"UPDATE durable_work SET claim_state = 'processing', claim_token = 'live' WHERE id = 'claimed'",
+		);
+		db.run("UPDATE durable_work SET claim_state = 'processing' WHERE id = 'pending'");
+
+		// The id-only caller retains its intentionally broad predicate.
+		expect(deadLetterDurableWork(db, "id-only", "manual", now)).toBe(true);
+		expect(deadLetterDurableWork(db, "id-only", "again", now)).toBe(false);
+		// A stale claimant cannot terminalize a newer processing generation.
+		expect(deadLetterClaimedDurableWork(db, "claimed", "stale", "failed", now)).toBe(false);
+		expect(deadLetterClaimedDurableWork(db, "claimed", "live", "failed", now)).toBe(true);
+		// Intake reconciliation only terminalizes a row still awaiting a claim.
+		expect(deadLetterPendingDurableWork(db, "pending", "orphaned", now)).toBe(false);
+		db.run("UPDATE durable_work SET claim_state = 'pending' WHERE id = 'pending'");
+		expect(deadLetterPendingDurableWork(db, "pending", "orphaned", now)).toBe(true);
+
+		const expectedTerminalRows = [
+			terminalRow("claimed", "failed", retention),
+			terminalRow("id-only", "manual", retention),
+			terminalRow("pending", "orphaned", retention),
+		];
+		expect(
+			db
+				.query(
+					"SELECT id, claim_state, claim_token, claimed_at, last_error, expires_at FROM durable_work ORDER BY id",
+				)
+				.all(),
+		).toEqual(expectedTerminalRows);
 	});
 
 	it("sweeps a transferring row whose transfer timeout lapsed back to pending, charging an attempt", () => {

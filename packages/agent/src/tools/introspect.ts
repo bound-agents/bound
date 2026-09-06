@@ -5,7 +5,7 @@ import { z } from "zod";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { routeNotificationWakeup } from "../wakeup-routing.js";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const introspectSchema = z.object({
 	thread_id: z.string().describe("Target thread ID to introspect"),
@@ -25,23 +25,19 @@ function pollIntervalMs(): number {
 const DEFAULT_TIMEOUT_MS = 300000; // 5 minutes
 
 export function createIntrospectTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(introspectSchema);
+	const toolSchema = defineToolSchema(
+		"introspect",
+		"Introspect about something. Use for deeper reflection or insight from a different context. When composing messages to other threads, use 'we' and 'our' — you are both the sender and the receiver. Be sure to check if the target thread has the right capabilities to address your needs before using this.",
+		introspectSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "introspect",
-				description:
-					"Introspect about something. Use for deeper reflection or insight from a different context. When composing messages to other threads, use 'we' and 'our' — you are both the sender and the receiver. Be sure to check if the target thread has the right capabilities to address your needs before using this.",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Non-idempotent: each call queues another message in the target thread.
 		idempotent: false,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(introspectSchema, raw, "introspect");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 

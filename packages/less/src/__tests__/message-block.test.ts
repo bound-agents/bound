@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatWithHashes } from "@bound/shared";
+import { type Message, formatWithHashes } from "@bound/shared";
 import { render } from "ink-testing-library";
 import React from "react";
 import { MessageBlock } from "../tui/components/MessageBlock";
@@ -10,22 +10,36 @@ import { MessageBlock } from "../tui/components/MessageBlock";
 /** Let React effects flush */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
+type MessageFixture = Pick<Message, "id" | "role" | "content"> &
+	Partial<Omit<Message, "id" | "role" | "content">>;
+
+const messageFixture = ({ id, role, content, ...overrides }: MessageFixture): Message => ({
+	id,
+	thread_id: "t-1",
+	role,
+	content,
+	model_id: null,
+	tool_name: null,
+	created_at: new Date().toISOString(),
+	modified_at: null,
+	host_origin: "test",
+	deleted: 0,
+	exit_code: null,
+	metadata: null,
+	...overrides,
+});
+
 describe("MessageBlock", () => {
 	it("renders cache read/write usage on assistant cards and omits empty usage", () => {
-		const baseMessage = {
+		const baseMessage = messageFixture({
 			id: "assistant-cache",
-			thread_id: "t-1",
 			role: "assistant" as const,
 			content: "Done.",
 			model_id: "test-model",
 			tool_name: null,
-			created_at: new Date().toISOString(),
-			modified_at: null,
-			host_origin: "test",
-			deleted: 0,
 			exit_code: null,
 			metadata: JSON.stringify({ cache_usage: { read: 12_300, write: 400 } }),
-		};
+		});
 		const withCache =
 			render(
 				React.createElement(MessageBlock, {
@@ -54,14 +68,12 @@ describe("MessageBlock", () => {
 			"```ts",
 			...Array.from({ length: 40 }, (_, i) => `const value${i} = ${i};`),
 		];
-		const message = {
+		const message = messageFixture({
 			id: "aux-result",
-			thread_id: "t-1",
 			role: "tool_result" as const,
 			content: sourceLines.join("\n"),
 			tool_name: "aux-1",
-			created_at: new Date().toISOString(),
-		};
+		});
 		const frame =
 			render(
 				React.createElement(MessageBlock, { message, toolName: "aux", terminalColumns: 120 }),
@@ -74,14 +86,12 @@ describe("MessageBlock", () => {
 	});
 
 	it("keeps non-aux tool result rendering unchanged", () => {
-		const message = {
+		const message = messageFixture({
 			id: "bash-result",
-			thread_id: "t-1",
 			role: "tool_result" as const,
 			content: "# literal heading\n- literal bullet",
 			tool_name: "bash-1",
-			created_at: new Date().toISOString(),
-		};
+		});
 		const frame =
 			render(
 				React.createElement(MessageBlock, {
@@ -100,7 +110,7 @@ describe("MessageBlock", () => {
 		writeFileSync(filePath, before);
 		const anchor = formatWithHashes(before).split("|")[0];
 		const edits = [{ start: anchor, end: anchor, content: "const newValue = 2;" }];
-		const message = {
+		const message = messageFixture({
 			id: "call-highlight",
 			role: "tool_call" as const,
 			content: JSON.stringify([
@@ -111,9 +121,7 @@ describe("MessageBlock", () => {
 					input: { file_path: filePath, edits },
 				},
 			]),
-			thread_id: "t-1",
-			created_at: new Date().toISOString(),
-		};
+		});
 		try {
 			const frame =
 				render(React.createElement(MessageBlock, { message, terminalColumns: 120 })).lastFrame() ??
@@ -144,7 +152,7 @@ describe("MessageBlock", () => {
 				content: ["const keep = 1;", "const same = 2;", "const fresh = 3;"].join("\n"),
 			},
 		];
-		const call = {
+		const call = messageFixture({
 			id: "call-edit",
 			role: "tool_call" as const,
 			content: JSON.stringify([
@@ -155,16 +163,14 @@ describe("MessageBlock", () => {
 					input: { file_path: filePath, edits },
 				},
 			]),
-			thread_id: "t-1",
-			created_at: new Date().toISOString(),
-		};
-		const result = {
+		});
+		const result = messageFixture({
 			...call,
 			id: "result-edit",
 			role: "tool_result" as const,
 			content: "Edited",
 			tool_name: "edit-1",
-		};
+		});
 		try {
 			const callFrame =
 				render(
@@ -192,14 +198,12 @@ describe("MessageBlock", () => {
 
 	it("marks unreadable hashline removal counts as estimates", () => {
 		const edits = [{ start: "4:aaaa", end: "6:bbbb", content: "replacement" }];
-		const message = {
+		const message = messageFixture({
 			id: "result-remote-edit",
-			thread_id: "t-1",
 			role: "tool_result" as const,
 			content: "Edited",
 			tool_name: "edit-1",
-			created_at: new Date().toISOString(),
-		};
+		});
 		const frame =
 			render(
 				React.createElement(MessageBlock, {
@@ -225,13 +229,11 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "tool_call",
 						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -268,13 +270,11 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "tool_call",
 						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -299,13 +299,11 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-yard",
 						role: "tool_call",
 						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -320,13 +318,11 @@ describe("MessageBlock", () => {
 			const renderCall = (id: string, name: string, input: Record<string, unknown>) =>
 				render(
 					React.createElement(MessageBlock, {
-						message: {
+						message: messageFixture({
 							id: "msg-1",
 							role: "tool_call",
 							content: JSON.stringify([{ type: "tool_use", id, name, input }]),
-							thread_id: "t-1",
-							created_at: new Date().toISOString(),
-						},
+						}),
 						terminalColumns: 120,
 					}),
 				);
@@ -351,13 +347,11 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "tool_call",
 						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -382,13 +376,11 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "tool_call",
 						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -413,13 +405,11 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "tool_call",
 						content,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -442,13 +432,11 @@ describe("MessageBlock", () => {
 			const renderShellCall = (id: string, name: string, command: string) =>
 				render(
 					React.createElement(MessageBlock, {
-						message: {
+						message: messageFixture({
 							id: "msg-1",
 							role: "tool_call",
 							content: JSON.stringify([{ type: "tool_use", id, name, input: { command } }]),
-							thread_id: "t-1",
-							created_at: new Date().toISOString(),
-						},
+						}),
 						terminalColumns: 120,
 					}),
 				);
@@ -469,13 +457,11 @@ describe("MessageBlock", () => {
 		it("renders alert messages with a red stripe and header", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "alert",
 						content: "Error: Bedrock request failed: Expected toolResult blocks",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -494,14 +480,12 @@ describe("MessageBlock", () => {
 		it("does not render a collapsible header with tool name", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-no-header",
 						role: "tool_result",
 						content: "some output",
 						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -518,14 +502,12 @@ describe("MessageBlock", () => {
 		it("shows a success indicator for non-error results", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-success",
 						role: "tool_result",
 						content: "file written",
 						tool_name: "boundless_write",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -539,15 +521,13 @@ describe("MessageBlock", () => {
 		it("shows an error indicator for error results", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-err",
 						role: "tool_result",
 						content: "command not found",
 						tool_name: "boundless_bash",
 						exit_code: 1,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -564,14 +544,12 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-trunc-1",
 						role: "tool_result",
 						content,
 						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -594,14 +572,12 @@ describe("MessageBlock", () => {
 			const content = Array.from({ length: 33 }, (_, i) => `line ${i + 1}`).join("\n");
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-preview-fit",
 						role: "tool_result",
 						content,
 						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -619,14 +595,12 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-trunc-2",
 						role: "tool_result",
 						content,
 						tool_name: "boundless_read",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -647,14 +621,12 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-trunc-4",
 						role: "tool_result",
 						content,
 						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -678,14 +650,12 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-trunc-wrap",
 						role: "tool_result",
 						content,
 						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -706,14 +676,12 @@ describe("MessageBlock", () => {
 
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "tool_result",
 						content,
 						tool_name: "boundless_bash",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -731,13 +699,11 @@ describe("MessageBlock", () => {
 		it("renders system messages with a yellow stripe and header", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-1",
 						role: "system",
 						content: "[Client tool call expired]",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -753,13 +719,11 @@ describe("MessageBlock", () => {
 		it("renders developer messages (system notifications) with a yellow stripe and header", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-dev",
 						role: "developer",
 						content: "New PR opened: #140",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 120,
 				}),
 			);
@@ -787,13 +751,11 @@ describe("MessageBlock", () => {
 			const longLine = "abcdefghij".repeat(20); // 200 chars, no whitespace breaks
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-wrap",
 						role: "user",
 						content: longLine,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 40,
 				}),
 			);
@@ -820,13 +782,11 @@ describe("MessageBlock", () => {
 			const longLine = "x".repeat(200);
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "msg-floor",
 						role: "assistant",
 						content: longLine,
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 5,
 				}),
 			);
@@ -848,13 +808,11 @@ describe("MessageBlock", () => {
 		it("renders the pending placeholder with a sending cue", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "__pending_user__",
 						role: "user",
 						content: "deploy the thing",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 80,
 				}),
 			);
@@ -869,13 +827,11 @@ describe("MessageBlock", () => {
 		it("renders a committed user message without the sending cue", async () => {
 			const { lastFrame } = render(
 				React.createElement(MessageBlock, {
-					message: {
+					message: messageFixture({
 						id: "real-1",
 						role: "user",
 						content: "deploy the thing",
-						thread_id: "t-1",
-						created_at: new Date().toISOString(),
-					},
+					}),
 					terminalColumns: 80,
 				}),
 			);
@@ -901,14 +857,12 @@ describe("JSON-shaped tool_result rendering", () => {
 		});
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-json-1",
 					role: "tool_result",
 					content,
 					tool_name: "tooluse_gh1",
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName: "github",
 				terminalColumns: 120,
 			}),
@@ -928,14 +882,12 @@ describe("JSON-shaped tool_result rendering", () => {
 	it("leaves non-JSON results alone", async () => {
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-json-2",
 					role: "tool_result",
 					content: "{not json at all",
 					tool_name: "tooluse_x",
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				terminalColumns: 120,
 			}),
 		);
@@ -953,14 +905,12 @@ describe("offloaded tool_result rendering", () => {
 			"  cat /var/folders/xx/bound-tool-results/abc.txt | head -100";
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-off-1",
 					role: "tool_result",
 					content,
 					tool_name: "tooluse_b1",
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName: "boundless_bash",
 				terminalColumns: 120,
 			}),
@@ -979,15 +929,13 @@ describe("outcome fact fragments (creative round)", () => {
 	it("translates conventional exit codes on error results", async () => {
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-exit-hint",
 					role: "tool_result",
 					content: "sh: nope: command not found",
 					tool_name: "tu1",
 					exit_code: 127,
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName: "boundless_bash",
 				terminalColumns: 120,
 			}),
@@ -1001,15 +949,13 @@ describe("outcome fact fragments (creative round)", () => {
 		// approximate rather than presented as a measured diff.
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-diffstat",
 					role: "tool_result",
 					content: "Edited /x/y.ts: applied 2 edits",
 					tool_name: "tu1",
 					exit_code: 0,
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName: "boundless_edit",
 				filePath: "/x/y.ts",
 				toolInput: {
@@ -1046,13 +992,11 @@ describe("edit preview removal headers", () => {
 		]);
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-edit-minus",
 					role: "tool_call",
 					content,
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				terminalColumns: 120,
 			}),
 		);
@@ -1071,15 +1015,13 @@ describe("full-length tool arguments (no truncation)", () => {
 		const longCmd = `git add -A packages/less && git commit -F - <<'MSG'\nfeat(less): a very long commit message body that continues well past any old eighty character cap\nMSG`;
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-long-cmd",
 					role: "tool_call",
 					content: JSON.stringify([
 						{ type: "tool_use", id: "tu-lc", name: "boundless_bash", input: { command: longCmd } },
 					]),
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				terminalColumns: 60,
 			}),
 		);
@@ -1099,7 +1041,7 @@ describe("full-length tool arguments (no truncation)", () => {
 		const bigValue = "x".repeat(120);
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-mcp-args",
 					role: "tool_call",
 					content: JSON.stringify([
@@ -1115,9 +1057,7 @@ describe("full-length tool arguments (no truncation)", () => {
 							},
 						},
 					]),
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				terminalColumns: 200,
 			}),
 		);
@@ -1133,7 +1073,7 @@ describe("full-length tool arguments (no truncation)", () => {
 	it("summarizes bms_edit as its file, not an edits JSON dump", async () => {
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-bms-edit",
 					role: "tool_call",
 					content: JSON.stringify([
@@ -1147,9 +1087,7 @@ describe("full-length tool arguments (no truncation)", () => {
 							},
 						},
 					]),
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				terminalColumns: 120,
 			}),
 		);
@@ -1167,15 +1105,13 @@ describe("clickable file paths (OSC 8)", () => {
 	it("renders a read target as an OSC 8 file:// hyperlink, resolving relative paths against cwd", async () => {
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-osc8-read",
 					role: "tool_result",
 					content: "1:aaaa|line 0\n2:bbbb|line 1",
 					tool_name: "tu1",
 					exit_code: 0,
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName: "boundless_read",
 				toolInput: { file_path: "packages/less/src/x.ts" },
 				filePath: "packages/less/src/x.ts",
@@ -1195,15 +1131,13 @@ describe("clickable file paths (OSC 8)", () => {
 	it("degrades to plain text when no cwd anchors a relative path", async () => {
 		const { lastFrame } = render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-osc8-nocwd",
 					role: "tool_result",
 					content: "1:aaaa|x",
 					tool_name: "tu1",
 					exit_code: 0,
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName: "boundless_read",
 				toolInput: { file_path: "rel/x.ts" },
 				filePath: "rel/x.ts",
@@ -1218,21 +1152,14 @@ describe("clickable file paths (OSC 8)", () => {
 });
 
 describe("image content blocks", () => {
-	const createMessage = (overrides: { role: string; content: string }) =>
-		({
-			id: "msg-img",
-			thread_id: "t-1",
-			created_at: new Date().toISOString(),
-			...overrides,
-		}) as never;
-
 	it("renders a cached half-block preview for a pasted image", async () => {
 		const { storeImagePreview, clearImagePreviews } = await import("../tui/util/image-preview");
 		clearImagePreviews();
 		// Two fake preview rows — real ones are SGR-colored ▀ runs, but the
 		// renderer treats them as opaque text lines either way.
 		storeImagePreview("deadbeef", ["▀▀▀", "▀▀▀"]);
-		const message = createMessage({
+		const message = messageFixture({
+			id: "msg-img",
 			role: "user",
 			content: JSON.stringify([
 				{ type: "text", text: "what do you see here?" },
@@ -1258,7 +1185,8 @@ describe("image content blocks", () => {
 	it("renders a dim placeholder for a foreign image (no cached preview)", async () => {
 		const { clearImagePreviews } = await import("../tui/util/image-preview");
 		clearImagePreviews();
-		const message = createMessage({
+		const message = messageFixture({
+			id: "msg-img",
 			role: "user",
 			content: JSON.stringify([
 				{
@@ -1277,7 +1205,8 @@ describe("image content blocks", () => {
 	});
 
 	it("renders an undescribed image block as a generic [image] marker", () => {
-		const message = createMessage({
+		const message = messageFixture({
+			id: "msg-img",
 			role: "user",
 			content: JSON.stringify([{ type: "image", source: { type: "file_ref", file_id: "f3" } }]),
 		});
@@ -1297,7 +1226,8 @@ describe("image content blocks", () => {
 		storeImagePreview("beef1234", ["HALFBLOCK-ROW"]);
 		const sentinel = "<<KITTY-ESCAPE-SENTINEL>>";
 		storeImageGraphics("beef1234", { escape: sentinel, rows: 4, cols: 20 });
-		const message = createMessage({
+		const message = messageFixture({
+			id: "msg-img",
 			role: "user",
 			content: JSON.stringify([
 				{
@@ -1329,15 +1259,13 @@ describe("remote tag on collapsed one-line results (#215)", () => {
 	) =>
 		render(
 			React.createElement(MessageBlock, {
-				message: {
+				message: messageFixture({
 					id: "msg-215",
 					role: "tool_result",
 					content,
 					tool_name: "tu1",
 					exit_code: 0,
-					thread_id: "t-1",
-					created_at: new Date().toISOString(),
-				},
+				}),
 				toolName,
 				toolInput,
 				filePath,

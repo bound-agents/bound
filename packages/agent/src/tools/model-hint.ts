@@ -4,7 +4,7 @@ import { formatError } from "@bound/shared";
 import { z } from "zod";
 import { resolveModel } from "../model-resolution.js";
 import type { RegisteredTool, ToolContext } from "../types.js";
-import { parseToolInput, zodToToolParams } from "./tool-schema.js";
+import { defineToolSchema } from "./tool-schema.js";
 
 const modelHintSchema = z.object({
 	model: z.string().optional().describe("Model ID or tier to switch to"),
@@ -12,24 +12,21 @@ const modelHintSchema = z.object({
 });
 
 export function createModelHintTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(modelHintSchema);
+	const toolSchema = defineToolSchema(
+		"model_hint",
+		"Set or clear the model hint for the current task",
+		modelHintSchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "model_hint",
-				description: "Set or clear the model hint for the current task",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Idempotent: setting the same hint repeatedly leaves the same final state.
 		// Re-setting to a different value is still idempotent on (taskId, model)
 		// since the agent loop never mutates args between retry attempts.
 		idempotent: true,
 		execute: async (raw: Record<string, unknown>): Promise<string> => {
-			const parsed = parseToolInput(modelHintSchema, raw, "model_hint");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const params = parsed.value;
 

@@ -1,9 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
+	createWebhookBinding,
 	findClusterConfigKeyByKeyIncludingDeleted,
 	findClusterConfigValueByKey,
-	findWebhookDeletedFlagById,
 	findWebhookIdAndTaskIdByName,
 	findWebhookIdByName,
 	findWebhookIdsByName,
@@ -12,11 +12,7 @@ import {
 	softDelete,
 	updateRow,
 } from "@bound/core";
-import {
-	BOUND_NAMESPACE,
-	WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
-	deterministicUUID,
-} from "@bound/shared";
+import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
 import type { SignatureFormat } from "@bound/shared";
 
 const SIGNATURE_FORMATS = new Set<SignatureFormat>(["github", "stripe", "slack", "raw", "none"]);
@@ -116,126 +112,14 @@ export function webhookCreate(db: Database, siteId: string, args: string[]): voi
 		throw new Error(`Webhook '${name}' already exists.`);
 	}
 
-	// Generate 256-bit secret (64 hex chars)
-	const secret = randomBytes(32).toString("hex");
-
-	const now = new Date().toISOString();
-
-	// Create thread for webhook message delivery
-	const threadId = randomUUID();
-	insertRow(
-		db,
-		"threads",
-		{
-			id: threadId,
-			user_id: "system",
-			interface: "webhook",
-			host_origin: siteId,
-			color: 0,
-			title: `Webhook: ${name}`,
-			summary: null,
-			summary_through: null,
-			summary_model_id: null,
-			extracted_through: null,
-			model_hint: modelHintValue,
-			created_at: now,
-			last_message_at: now,
-			modified_at: now,
-			deleted: 0,
-		},
-		siteId,
-	);
-
-	// Create event task
-	const taskId = randomUUID();
-	insertRow(
-		db,
-		"tasks",
-		{
-			id: taskId,
-			type: "event",
-			status: "pending",
-			trigger_spec: `webhook:${name}`,
-			payload: null,
-			created_at: now,
-			created_by: siteId,
-			thread_id: threadId,
-			origin_thread_id: null,
-			claimed_by: null,
-			claimed_at: null,
-			lease_id: null,
-			next_run_at: null,
-			last_run_at: null,
-			run_count: 0,
-			max_runs: null,
-			requires: null,
-			model_hint: modelHintValue,
-			no_history: noHistory,
-			inject_mode: "results",
-			depends_on: null,
-			require_success: 0,
-			alert_threshold: 3,
-			consecutive_failures: 0,
-			event_depth: 0,
-			no_quiescence: 0,
-			heartbeat_at: null,
-			result: null,
-			error: null,
-			system_prompt_addition: prompt || null,
-			modified_at: now,
-			deleted: 0,
-		},
-		siteId,
-	);
-
-	// Create webhook row. The id is a deterministic UUID derived from the
-	// name, so the same name always maps to the same PK. When the name has
-	// previously been used and soft-deleted, that row is still present with
-	// deleted=1 — a bare insert would fail on the PK. Restore it in place via
-	// updateRow so the deterministic-id property holds. (Mirrors the web
-	// route's POST handler; see #59.)
-	const webhookId = deterministicUUID(BOUND_NAMESPACE, `webhook:${name}`);
-	const priorRow = findWebhookDeletedFlagById(db, webhookId);
-
-	if (priorRow) {
-		// Existing row must be soft-deleted at this point — the active
-		// uniqueness check above would have thrown otherwise.
-		updateRow(
-			db,
-			"webhooks",
-			webhookId,
-			{
-				name,
-				secret,
-				signature_format: format,
-				description: description || null,
-				task_id: taskId,
-				thread_id: threadId,
-				created_at: now,
-				deleted: 0,
-				modified_at: now,
-			},
-			siteId,
-		);
-	} else {
-		insertRow(
-			db,
-			"webhooks",
-			{
-				id: webhookId,
-				name,
-				secret,
-				signature_format: format,
-				description: description || null,
-				task_id: taskId,
-				thread_id: threadId,
-				created_at: now,
-				deleted: 0,
-				modified_at: now,
-			},
-			siteId,
-		);
-	}
+	const { secret } = createWebhookBinding(db, siteId, {
+		name,
+		signatureFormat: format,
+		description: description || null,
+		prompt: prompt || null,
+		modelHint: modelHintValue,
+		noHistory,
+	});
 
 	// Print output
 	console.log(`Webhook created: ${name}`);

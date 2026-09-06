@@ -129,6 +129,28 @@ function expandEnvVarsInObject(obj: unknown): unknown {
 	return obj;
 }
 
+function validateConfig<T>(
+	filename: string,
+	schema: ZodSchema<T>,
+	config: unknown,
+): Result<T, ConfigError> {
+	const result = schema.safeParse(config);
+	if (result.success && result.data !== undefined) return ok(result.data);
+
+	const fieldErrors: Record<string, string[]> = {};
+	if (result.error) {
+		for (const [field, errors] of Object.entries(result.error.flatten().fieldErrors ?? {})) {
+			fieldErrors[field] = (errors as string[]) || [];
+		}
+		return err({
+			filename,
+			message: `Validation failed: ${result.error.message}`,
+			fieldErrors,
+		});
+	}
+	return err({ filename, message: "Validation failed: unknown error", fieldErrors });
+}
+
 export async function loadConfigWithPrecedence<T>(
 	configDir: string,
 	basename: string,
@@ -143,21 +165,7 @@ export async function loadConfigWithPrecedence<T>(
 	try {
 		const source = expandEnvVars(readFileSync(join(configDir, jsFilename), "utf-8"));
 		const evaluated = await evaluateJavaScriptConfig(source, jsFilename);
-		const expanded = expandEnvVarsInObject(evaluated);
-		const result = schema.safeParse(expanded);
-		if (result.success && result.data !== undefined) return ok(result.data);
-		const fieldErrors: Record<string, string[]> = {};
-		if (result.error) {
-			for (const [field, errors] of Object.entries(result.error.flatten().fieldErrors ?? {})) {
-				fieldErrors[field] = (errors as string[]) || [];
-			}
-			return err({
-				filename: jsFilename,
-				message: `Validation failed: ${result.error.message}`,
-				fieldErrors,
-			});
-		}
-		return err({ filename: jsFilename, message: "Validation failed: unknown error", fieldErrors });
+		return validateConfig(jsFilename, schema, expandEnvVarsInObject(evaluated));
 	} catch (error) {
 		return err({
 			filename: jsFilename,
@@ -178,39 +186,7 @@ export function loadConfigFile<T>(
 		const content = readFileSync(path, "utf-8");
 		const parsed = JSON.parse(content);
 
-		// Expand environment variables
-		const expanded = expandEnvVarsInObject(parsed);
-
-		// Validate with Zod
-		const result = schema.safeParse(expanded);
-
-		if (!result.success && result.error) {
-			const fieldErrors: Record<string, string[]> = {};
-
-			// Extract field errors from Zod error format
-			const flatten = result.error.flatten();
-			if (flatten.fieldErrors) {
-				for (const [field, errors] of Object.entries(flatten.fieldErrors)) {
-					fieldErrors[field] = (errors as string[]) || [];
-				}
-			}
-
-			return err({
-				filename,
-				message: `Validation failed: ${result.error.message}`,
-				fieldErrors,
-			});
-		}
-
-		if (result.success && result.data !== undefined) {
-			return ok(result.data);
-		}
-
-		return err({
-			filename,
-			message: "Validation failed: unknown error",
-			fieldErrors: {},
-		});
+		return validateConfig(filename, schema, expandEnvVarsInObject(parsed));
 	} catch (error) {
 		if (error instanceof SyntaxError) {
 			return err({

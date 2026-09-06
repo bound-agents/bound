@@ -1,7 +1,7 @@
 import { formatError } from "@bound/shared";
 import { z } from "zod";
 import type { RegisteredTool, ToolContext } from "../types.js";
-import { parseToolInput, zodToToolParams } from "./tool-schema";
+import { defineToolSchema } from "./tool-schema";
 
 const MAX_ROWS = 1000;
 const MAX_OUTPUT_BYTES = 1_048_576; // 1MB
@@ -115,23 +115,20 @@ const querySchema = z.object({
 });
 
 export function createQueryTool(ctx: ToolContext): RegisteredTool {
-	const jsonSchema = zodToToolParams(querySchema);
+	const toolSchema = defineToolSchema(
+		"query",
+		"Execute a read-only SELECT query or read-only PRAGMA against the database",
+		querySchema,
+	);
 
 	return {
 		kind: "builtin",
-		toolDefinition: {
-			type: "function",
-			function: {
-				name: "query",
-				description: "Execute a read-only SELECT query or read-only PRAGMA against the database",
-				parameters: jsonSchema,
-			},
-		},
+		toolDefinition: toolSchema.definition,
 		// Read-only: SELECT/PRAGMA enforced — no mutations possible.
 		idempotent: true,
 		readOnly: true,
 		execute: async (raw: Record<string, unknown>) => {
-			const parsed = parseToolInput(querySchema, raw, "query");
+			const parsed = toolSchema.safeParse(raw);
 			if (!parsed.ok) return parsed.error;
 			const input = parsed.value;
 
