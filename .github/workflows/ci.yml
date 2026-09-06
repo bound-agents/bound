@@ -58,7 +58,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Run 34018618564 failed during tree-sitter-kotlin installation because
+        # node-gyp could not recognize VS2026 on windows-latest. Keep the known
+        # compatible image until node-gyp supports it; this is not ABI validation.
+        os: [ubuntu-latest, macos-latest, windows-2022]
     steps:
       - uses: actions/checkout@v4
 
@@ -73,6 +76,22 @@ jobs:
           restore-keys: bun-${{ runner.os }}-
 
       - run: bun install --frozen-lockfile
+
+      - name: Prepare Linux Tree-sitter native addons
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ curl ca-certificates
+          NODE_VERSION=22.15.0
+          NODE_HEADERS_SHA256=cda8bbbfb4f7fb19b65efd5faabc97ccea1e94422e7066b9a1e70280c1ca6453
+          HEADER_DIR="$RUNNER_TEMP/node-v${NODE_VERSION}"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/node-headers.tar.gz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-headers.tar.gz"
+          echo "${NODE_HEADERS_SHA256}  $RUNNER_TEMP/node-headers.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/node-headers.tar.gz" -C "$RUNNER_TEMP"
+          test -f "$HEADER_DIR/include/node/node_api.h"
+          export NODE_GYP_NODEDIR="$HEADER_DIR"
+          bun run scripts/tree-sitter-native-staging.ts
 
       - name: Build Windows AppContainer lowbox helper
         if: ${{ runner.os == 'Windows' }}
@@ -155,8 +174,25 @@ jobs:
             # step above already runs it, serially and with its own timeout. On
             # Linux/macOS all 8 cases are win32-gated skips, so excluding it
             # everywhere costs no coverage.
-            bun test "packages/$pkg" $PARALLEL_ARG --timeout "$TEST_TIMEOUT" --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' --reporter=junit --reporter-outfile="test-results/$pkg.xml" || pkg_code=$?
-            echo "$pkg_code" > "test-results/$pkg.exit"
+            log="test-results/$pkg.log"
+            # `tee` keeps output live and retains the complete package log. Snapshot
+            # every pipeline status before another command can overwrite PIPESTATUS:
+            # sidecars record Bun's status while either Bun or tee fails the job.
+            run_test_with_log() {
+              local exit_sidecar="$1"
+              shift
+              set +e
+              "$@" 2>&1 | tee "$log"
+              local -a pipeline_status=("${PIPESTATUS[@]}")
+              set -e
+              printf '%s\n' "${pipeline_status[0]}" > "$exit_sidecar"
+              if [ "${pipeline_status[0]}" -ne 0 ]; then return "${pipeline_status[0]}"; fi
+              return "${pipeline_status[1]}"
+            }
+            set +e
+            run_test_with_log "test-results/$pkg.exit" bun test "packages/$pkg" $PARALLEL_ARG --timeout "$TEST_TIMEOUT" --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' --reporter=junit --reporter-outfile="test-results/$pkg.xml"
+            pkg_code=$?
+            set -e
             if [ "$pkg_code" -ne 0 ]; then exit_code=$pkg_code; fi
             echo "::endgroup::"
           done
