@@ -7,7 +7,7 @@ import type { LLMBackend } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Observable } from "rxjs";
 import { Subject, firstValueFrom } from "rxjs";
-import { BoundAgentLoop, type BoundPreparedFrame } from "../bound-agent-loop";
+import { MainAgentLoop } from "../agent-loop";
 import { dispatchAwaitableClientTool } from "../client-tool-dispatch";
 
 /**
@@ -229,31 +229,25 @@ const stubBackend = {
 	}),
 } as unknown as LLMBackend;
 
-/** Surfaces the private RxJS awaiter for real-path testing. */
-class WaitProbeLoop extends BoundAgentLoop {
-	protected override async prepareFrame(_input: {
-		resolution: BoundPreparedFrame["resolution"];
-	}): Promise<Omit<BoundPreparedFrame, "resolution">> {
-		throw new Error("WaitProbeLoop does not assemble inference frames");
-	}
-	public clientResultWait$(
-		outboxEntryId: string,
-		timeoutMs: number,
-		aborted$: Observable<unknown>,
-	): Observable<{ content: string; isError: boolean } | null> {
-		return (
-			this as unknown as {
-				createClientResultWait$: (
-					id: string,
-					t: number,
-					a: Observable<unknown>,
-				) => Observable<{ content: string; isError: boolean } | null>;
-			}
-		).createClientResultWait$(outboxEntryId, timeoutMs, aborted$);
-	}
+/** Calls the actual awaiter on a concrete production loop. */
+function clientResultWait$(
+	loop: MainAgentLoop,
+	outboxEntryId: string,
+	timeoutMs: number,
+	aborted$: Observable<unknown>,
+): Observable<{ content: string; isError: boolean } | null> {
+	return (
+		loop as unknown as {
+			createClientResultWait$: (
+				id: string,
+				timeout: number,
+				aborted: Observable<unknown>,
+			) => Observable<{ content: string; isError: boolean } | null>;
+		}
+	).createClientResultWait$(outboxEntryId, timeoutMs, aborted$);
 }
 
-function makeWaitProbeLoop(db: Database, siteId: string): WaitProbeLoop {
+function makeConcreteLoop(db: Database, siteId: string): MainAgentLoop {
 	const eventBus = new TypedEventEmitter();
 	const ctx = {
 		db,
@@ -263,7 +257,7 @@ function makeWaitProbeLoop(db: Database, siteId: string): WaitProbeLoop {
 		logger: { debug() {}, info() {}, warn() {}, error() {} },
 	} as unknown as AppContext;
 	const router = new ModelRouter(new Map([["test-model", stubBackend]]), "test-model");
-	return new WaitProbeLoop(
+	return new MainAgentLoop(
 		ctx,
 		{ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
 		router,
@@ -307,7 +301,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		const loop = makeWaitProbeLoop(db, localSiteId);
+		const loop = makeConcreteLoop(db, localSiteId);
 
 		const refId = "rxjs-ref-a";
 		const durableId = `result-${refId}`;
@@ -320,7 +314,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 			payload: JSON.stringify({ call_id: "c1", content: "file contents", is_error: false }),
 		});
 
-		const resolved = await firstValueFrom(loop.clientResultWait$(refId, 2000, new Subject()), {
+		const resolved = await firstValueFrom(clientResultWait$(loop, refId, 2000, new Subject()), {
 			defaultValue: null,
 		});
 		expect(resolved).toEqual({ content: "file contents", isError: false });
@@ -337,7 +331,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		const loop = makeWaitProbeLoop(db, localSiteId);
+		const loop = makeConcreteLoop(db, localSiteId);
 
 		const refId = "rxjs-ref-b";
 		seedDurableResponse(db, {
@@ -349,7 +343,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 			payload: JSON.stringify({ error: "client blew up", retriable: false }),
 		});
 
-		const resolved = await firstValueFrom(loop.clientResultWait$(refId, 2000, new Subject()), {
+		const resolved = await firstValueFrom(clientResultWait$(loop, refId, 2000, new Subject()), {
 			defaultValue: null,
 		});
 		expect(resolved).toEqual({ content: "Error: client blew up", isError: true });
@@ -365,7 +359,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		const loop = makeWaitProbeLoop(db, localSiteId);
+		const loop = makeConcreteLoop(db, localSiteId);
 
 		const refId = "rxjs-ref-d";
 		const durableId = `result-${refId}`;
@@ -382,7 +376,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		// Long timeout: the parse-error outcome must arrive via the stream from the
 		// initial read, NOT from the timeout path. Poison is settled + surfaced
 		// immediately, mirroring awaitPlatformRequestResponse.
-		const resolved = await firstValueFrom(loop.clientResultWait$(refId, 5000, new Subject()), {
+		const resolved = await firstValueFrom(clientResultWait$(loop, refId, 5000, new Subject()), {
 			defaultValue: null,
 		});
 		expect(resolved).toEqual({
@@ -401,7 +395,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		const loop = makeWaitProbeLoop(db, localSiteId);
+		const loop = makeConcreteLoop(db, localSiteId);
 		const eventBus = (loop as unknown as { ctx: { eventBus: TypedEventEmitter } }).ctx.eventBus;
 
 		const refId = "rxjs-ref-wakeup";
@@ -410,7 +404,7 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		// Subscribe FIRST with NO row present. The initial `defer` read finds nothing
 		// (returns null → filtered out), so the stream is genuinely parked on the
 		// relay:inbox wakeup — not resolved by the initial read.
-		const pending = firstValueFrom(loop.clientResultWait$(refId, 2000, new Subject()), {
+		const pending = firstValueFrom(clientResultWait$(loop, refId, 2000, new Subject()), {
 			defaultValue: null,
 		});
 
@@ -441,14 +435,14 @@ describe("client_result durable-response awaiting (bound-agent-loop.ts createCli
 		const db = makeDb();
 		const localSiteId = "local-site";
 		const remoteSiteId = "remote-site";
-		const loop = makeWaitProbeLoop(db, localSiteId);
+		const loop = makeConcreteLoop(db, localSiteId);
 		const eventBus = (loop as unknown as { ctx: { eventBus: TypedEventEmitter } }).ctx.eventBus;
 
 		const refId = "rxjs-ref-race";
 		const durableId = `result-${refId}`;
 
 		// Subscribe first with no row; the initial read finds nothing and parks.
-		const pending = firstValueFrom(loop.clientResultWait$(refId, 2000, new Subject()), {
+		const pending = firstValueFrom(clientResultWait$(loop, refId, 2000, new Subject()), {
 			defaultValue: null,
 		});
 		await new Promise((r) => setTimeout(r, 30));
