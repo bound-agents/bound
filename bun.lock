@@ -257,6 +257,7 @@
       "devDependencies": {
         "@bound/agent": "workspace:*",
         "@opentelemetry/context-async-hooks": "^2.7.1",
+        "@opentelemetry/sdk-trace-base": "^1.30.0",
         "fast-check": "^4.8.0",
       },
     },
