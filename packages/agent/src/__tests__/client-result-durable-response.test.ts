@@ -7,7 +7,7 @@ import type { LLMBackend } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
 import type { Observable } from "rxjs";
 import { Subject, firstValueFrom } from "rxjs";
-import { BoundAgentLoop } from "../bound-agent-loop";
+import { BoundAgentLoop, type BoundPreparedFrame } from "../bound-agent-loop";
 import { dispatchAwaitableClientTool } from "../client-tool-dispatch";
 
 /**
@@ -231,6 +231,11 @@ const stubBackend = {
 
 /** Surfaces the private RxJS awaiter for real-path testing. */
 class WaitProbeLoop extends BoundAgentLoop {
+	protected override async prepareFrame(_input: {
+		resolution: BoundPreparedFrame["resolution"];
+	}): Promise<Omit<BoundPreparedFrame, "resolution">> {
+		throw new Error("WaitProbeLoop does not assemble inference frames");
+	}
 	public clientResultWait$(
 		outboxEntryId: string,
 		timeoutMs: number,

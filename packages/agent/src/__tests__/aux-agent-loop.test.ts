@@ -21,6 +21,39 @@ class TestAuxAgentLoop extends AuxAgentLoop {
 	}
 }
 
+class AuxLifecycleProbeLoop extends AuxAgentLoop {
+	readonly events: string[] = [];
+
+	seedTurnState(): void {
+		this.currentTurnId = "stale-turn";
+		this.relayMetadataRef = { hostName: "stale-host", firstChunkLatencyMs: 1 };
+	}
+
+	stateSnapshot(): string {
+		return `${this.currentTurnId ?? "null"}:${JSON.stringify(this.relayMetadataRef)}`;
+	}
+
+	async runTwoTurns(): Promise<void> {
+		this.setPhase("HYDRATE_FS");
+		this.setPhase("ASSEMBLE_CONTEXT");
+		this.seedTurnState();
+		await this.beforeTurn(1, {} as BoundPreparedFrame);
+		this.events.push(`phase:${this.phase}`);
+		this.setPhase("PARSE_RESPONSE");
+		this.setPhase("TOOL_EXECUTE");
+		this.setPhase("TOOL_PERSIST");
+		this.seedTurnState();
+		await this.beforeTurn(2, {} as BoundPreparedFrame);
+		this.events.push(`phase:${this.phase}`);
+	}
+
+	protected override async prepareTurn(turn: number, _frame: BoundPreparedFrame): Promise<void> {
+		this.events.push(`prepare:${turn}:start`);
+		await Promise.resolve();
+		this.events.push(`prepare:${turn}:done`);
+	}
+}
+
 function makeLoop(): TestAuxAgentLoop {
 	return new TestAuxAgentLoop(
 		{
@@ -72,5 +105,44 @@ describe("AuxAgentLoop context rebuild", () => {
 
 		expect(messages.some((message) => message.role === "cache")).toBe(false);
 		expect(placement.placed).toBe(false);
+	});
+
+	it("resets inherited lifecycle state before activity and awaits policy across aux turns", async () => {
+		const warnings: string[] = [];
+		const probe = { loop: undefined as AuxLifecycleProbeLoop | undefined };
+		const loop = new AuxLifecycleProbeLoop(
+			{
+				logger: {
+					debug() {},
+					info() {},
+					warn(message: string) {
+						warnings.push(message);
+					},
+					error() {},
+				},
+			} as never,
+			{} as never,
+			{} as never,
+			{
+				threadId: "aux-lifecycle-thread",
+				userId: "user",
+				onActivity: () => probe.loop?.events.push(`activity:${probe.loop.stateSnapshot()}`),
+			},
+		);
+		probe.loop = loop;
+
+		await loop.runTwoTurns();
+
+		expect(loop.events).toEqual([
+			"activity:null:{}",
+			"prepare:1:start",
+			"prepare:1:done",
+			"phase:LLM_CALL",
+			"activity:null:{}",
+			"prepare:2:start",
+			"prepare:2:done",
+			"phase:LLM_CALL",
+		]);
+		expect(warnings).toEqual([]);
 	});
 });
