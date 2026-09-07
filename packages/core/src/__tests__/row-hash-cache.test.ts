@@ -6,11 +6,11 @@ import { applyMetricsSchema } from "../metrics-schema.js";
 import { computeRowStateHash } from "../row-hash-cache.js";
 import { getCachedRowStateHashes } from "../row-hash-cache.js";
 import { applySchema, installRowHashInvalidationTriggers } from "../schema.js";
+import { createCoreTestDb } from "./test-database.js";
 
 describe("row state hash cache", () => {
 	test("computes canonical hashes for cache misses and reuses warm entries", () => {
-		const db = new Database(":memory:");
-		applySchema(db);
+		const db = createCoreTestDb();
 		db.run(
 			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'key', 'value', 'now', 'now')",
 		);
@@ -29,8 +29,7 @@ describe("row state hash cache", () => {
 	});
 
 	test("selects every table column on a cache miss", () => {
-		const db = new Database(":memory:");
-		applySchema(db);
+		const db = createCoreTestDb();
 		db.run(
 			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'k', 'v', 'now', 'now')",
 		);
@@ -67,8 +66,7 @@ describe("row state hash cache", () => {
 	});
 
 	test("uses a UTF-8 byte range scan for non-ASCII cache keys", () => {
-		const db = new Database(":memory:");
-		applySchema(db);
+		const db = createCoreTestDb();
 		const ids = ["a", "x\u{10000}b", "x\uFF61a"];
 		for (const id of ids)
 			db.run(
@@ -91,8 +89,7 @@ describe("row state hash cache", () => {
 	});
 
 	test("starts using a cache table created after an initial uncached lookup", () => {
-		const db = new Database(":memory:");
-		applySchema(db);
+		const db = createCoreTestDb();
 		db.run(
 			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'key', 'value', 'now', 'now')",
 		);
@@ -117,8 +114,7 @@ describe("row state hash cache", () => {
 	});
 
 	test("triggers invalidate cached rows after a raw synced-table update", () => {
-		const db = new Database(":memory:");
-		applySchema(db);
+		const db = createCoreTestDb();
 		db.run(
 			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'key', 'old', 'now', 'now')",
 		);
@@ -166,9 +162,7 @@ describe("row state hash cache", () => {
 	});
 
 	test("turns writes invalidate a cached row when metrics schema is applied after core schema", () => {
-		const db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		const db = createCoreTestDb({ metrics: true });
 		db.run(
 			"INSERT INTO turns (id, model_id, tokens_in, tokens_out, created_at) VALUES ('t1', 'm', 1, 1, 'now')",
 		);

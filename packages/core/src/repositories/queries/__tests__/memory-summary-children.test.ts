@@ -1,7 +1,8 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { MemoryEdge, SemanticMemory } from "@bound/shared";
-import { applyMetricsSchema, applySchema, insertRow, softDelete, updateRow } from "../../../index";
+import { createCoreTestDb } from "../../../__tests__/test-database";
+import { insertRow, softDelete, updateRow } from "../../../index";
 import {
 	listSummarizesChildrenKeyValue,
 	listSummaryChildrenForStaleness,
@@ -46,9 +47,7 @@ function seedEdge(
 }
 
 beforeEach(() => {
-	db = new Database(":memory:");
-	applySchema(db);
-	applyMetricsSchema(db);
+	db = createCoreTestDb({ metrics: true });
 });
 
 afterEach(() => {

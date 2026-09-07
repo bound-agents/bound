@@ -10,6 +10,7 @@ import {
 	TypedEventEmitter,
 	type Webhook,
 } from "@bound/shared";
+import { createCoreTestDb } from "../../__tests__/test-database";
 import {
 	applyMetricsSchema,
 	applySchema,
@@ -54,9 +55,7 @@ describe("webhooks repository finders", () => {
 	let db: Database;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		db = createCoreTestDb({ metrics: true });
 	});
 
 	afterEach(() => {
@@ -299,9 +298,7 @@ describe("createWebhookBinding", () => {
 	}
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		db = createCoreTestDb({ metrics: true });
 		observerDb = null;
 		tempDir = null;
 	});

@@ -560,6 +560,24 @@ describe(".git exec-surface protection", () => {
 		expect(winProtected).toContain(realpathSync(join(repo, ".git", "config")));
 	});
 
+	it("retains the lexical hooks root for Windows when it is a reparse point", () => {
+		const redirectedHooks = join(repo, "redirected-hooks");
+		const hooks = join(repo, ".git", "hooks");
+		mkdirSync(redirectedHooks);
+		rmSync(hooks, { recursive: true, force: true });
+		symlinkSync(redirectedHooks, hooks, "dir");
+
+		const metadata = {
+			gitdir: join(repo, ".git"),
+			commondir: join(repo, ".git"),
+			protectedPaths: [realpathSync(hooks)],
+		};
+		const winProtected = computeGitProtectedPaths(repo, "win32", metadata);
+		expect(winProtected).toContain(hooks);
+		expect(winProtected).toContain(realpathSync(hooks));
+		expect(computeGitProtectedPaths(repo, "linux", metadata)).not.toContain(hooks);
+	});
+
 	it("returns [] for a non-repo cwd — nothing to protect, no broken bind", () => {
 		const bare = realpathSync(
 			(() => {

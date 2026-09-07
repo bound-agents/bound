@@ -1,7 +1,8 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ClientSession } from "@bound/shared";
-import { applyMetricsSchema, applySchema, insertRow, softDelete } from "../../index";
+import { createCoreTestDb } from "../../__tests__/test-database";
+import { insertRow, softDelete } from "../../index";
 import {
 	findClientSessionIdById,
 	findLiveClientSessionIdById,
@@ -32,9 +33,7 @@ function seedSession(overrides: Partial<ClientSession> & { id: string }): Client
 }
 
 beforeEach(() => {
-	db = new Database(":memory:");
-	applySchema(db);
-	applyMetricsSchema(db);
+	db = createCoreTestDb({ metrics: true });
 });
 
 afterEach(() => {

@@ -1,7 +1,8 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Thread, User } from "@bound/shared";
-import { applyMetricsSchema, applySchema, insertRow, softDelete, updateRow } from "../../../index";
+import { createCoreTestDb } from "../../../__tests__/test-database";
+import { insertRow, softDelete, updateRow } from "../../../index";
 import { getThreadUserDisplayName } from "../thread-user-display-name";
 
 const SITE_ID = "site-test";
@@ -40,9 +41,7 @@ describe("getThreadUserDisplayName", () => {
 	let db: Database;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		db = createCoreTestDb({ metrics: true });
 	});
 
 	afterEach(() => {

@@ -31,11 +31,11 @@ import {
 	listPendingIntakeDurableWorkForRef,
 } from "../repositories/durable-work";
 import { applySchema } from "../schema";
+import { createCoreTestDb } from "./test-database";
 
 let db: Database;
 beforeEach(() => {
-	db = new Database(":memory:");
-	applySchema(db);
+	db = createCoreTestDb();
 });
 const row = (id: string, target = "local", expires_at: string | null = null) => ({
 	id,
