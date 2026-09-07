@@ -69,7 +69,11 @@ describe("Tree-sitter native release staging", () => {
 			const bindingGyp = readFileSync(join(entry.packageRoot, "binding.gyp"), "utf8");
 			expect(bindingGyp).toContain(`\"target_name\": \"${targetName}\"`);
 			expect(entry.buildTargetName).toBe(targetName);
-			expect(entry.buildOutputPath).toEndWith(`build/Release/${targetName}.node`);
+			// join() yields native separators, so compare on a normalized form —
+			// a forward-slash toEndWith can never match on Windows.
+			expect(entry.buildOutputPath.replaceAll("\\", "/")).toEndWith(
+				`build/Release/${targetName}.node`,
+			);
 			if (prebuildFilename) {
 				expect(loader).toContain(
 					`prebuilds/${"${process.platform}"}-${"${process.arch}"}/${prebuildFilename}`,
