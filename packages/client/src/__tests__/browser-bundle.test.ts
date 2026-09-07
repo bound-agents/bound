@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const CLIENT_ROOT = new URL("../..", import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: on Windows .pathname yields "/C:/..." and
+// join() then produces "\C:\...", which mkdtemp cannot touch (ENOENT).
+const CLIENT_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const NODE_ONLY_TELEMETRY_SIGNATURES = [
 	"@opentelemetry/context-async-hooks",
 	"@opentelemetry/exporter-trace-otlp-http",
