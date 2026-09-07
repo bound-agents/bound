@@ -13,12 +13,7 @@ import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import type {
-	LoopContextAssemblyResult,
-	LoopModelResolution,
-	LoopPersistenceHooks,
-	LoopTurnMetrics,
-} from "./extensions";
+import type { LoopContextAssemblyResult, LoopModelResolution, LoopTurnMetrics } from "./extensions";
 import {
 	type LoopToolExecutionBatch,
 	type LoopTurnDecision,
@@ -28,7 +23,7 @@ import {
 import type { ParsedToolCall } from "./stream-parser";
 import type { AgentLoopConfig, RegisteredTool, ToolExecutionResult } from "./types";
 
-type Harness = {
+type TestLoopStrategy = {
 	logger: {
 		debug(message: string, metadata?: Record<string, unknown>): void;
 		info(message: string, metadata?: Record<string, unknown>): void;
@@ -39,29 +34,39 @@ type Harness = {
 	assembleContext(): Promise<LoopContextAssemblyResult>;
 	listTools(): RegisteredTool[];
 	executeTool(toolCall: ParsedToolCall): Promise<ToolExecutionResult>;
-	persistence: LoopPersistenceHooks;
+	recordTurn(metrics: LoopTurnMetrics): string | null | Promise<string | null>;
+	persistAssistantResponse(
+		content: string | import("@bound/llm").ContentBlock[],
+		modelId: string,
+	): Promise<void> | void;
+	persistToolRoundTrip(input: {
+		modelId: string;
+		assistantBlocks: import("@bound/llm").ContentBlock[];
+		results: Array<{ toolCall: ParsedToolCall; result: ToolExecutionResult }>;
+	}): Promise<void> | void;
+	persistAlert(content: string): Promise<void> | void;
 };
 
 /** Test-only host that implements the same complete response/tool strategies as Bound. */
 class TestAgentLoop extends ModularAgentLoop {
 	constructor(
-		private readonly harness: Harness,
+		private readonly strategy: TestLoopStrategy,
 		config: AgentLoopConfig,
 		options = {},
 	) {
-		super({ logger: harness.logger }, config, options);
+		super({ logger: strategy.logger }, config, options);
 	}
 
 	protected resolveModel(): LoopModelResolution {
-		return this.harness.resolveModel();
+		return this.strategy.resolveModel();
 	}
 
 	protected async prepareFrame(_input: { resolution: PreparedLoopFrame["resolution"] }): Promise<
 		Omit<PreparedLoopFrame, "resolution">
 	> {
-		const tools = this.loopConfig.noTools ? [] : this.harness.listTools();
+		const tools = this.loopConfig.noTools ? [] : this.strategy.listTools();
 		const toolDefinitions = tools.map((tool) => tool.toolDefinition);
-		const assembled = await this.harness.assembleContext();
+		const assembled = await this.strategy.assembleContext();
 		return { assembled, messages: [...assembled.messages], toolDefinitions };
 	}
 
@@ -80,7 +85,7 @@ class TestAgentLoop extends ModularAgentLoop {
 			},
 			[],
 		);
-		await this.harness.persistence.persistAssistantResponse(
+		await this.strategy.persistAssistantResponse(
 			content.length > 0 ? content : parsed.textContent,
 			frame.resolution.modelId,
 		);
@@ -93,7 +98,7 @@ class TestAgentLoop extends ModularAgentLoop {
 		const results = [] as LoopToolExecutionBatch["results"];
 		for (const toolCall of parsed.toolCalls) {
 			this.toolCallsMade++;
-			results.push({ toolCall, result: await this.harness.executeTool(toolCall) });
+			results.push({ toolCall, result: await this.strategy.executeTool(toolCall) });
 		}
 		return { results, deferred: [] };
 	}
@@ -114,7 +119,7 @@ class TestAgentLoop extends ModularAgentLoop {
 			parsed.toolCalls,
 		);
 		frame.messages.push({ role: "tool_call", content: assistantBlocks });
-		await this.harness.persistence.persistToolRoundTrip({
+		await this.strategy.persistToolRoundTrip({
 			modelId: frame.resolution.modelId,
 			assistantBlocks,
 			results: batch.results,
@@ -131,10 +136,10 @@ class TestAgentLoop extends ModularAgentLoop {
 	}
 
 	protected recordTurn(metrics: LoopTurnMetrics): Promise<string | null> | string | null {
-		return this.harness.persistence.recordTurn(metrics);
+		return this.strategy.recordTurn(metrics);
 	}
 	protected persistAlert(content: string): Promise<void> | void {
-		return this.harness.persistence.persistAlert(content);
+		return this.strategy.persistAlert(content);
 	}
 }
 
@@ -199,7 +204,7 @@ function makeHarness(
 		turns: [] as unknown[],
 		alerts: [] as string[],
 	};
-	const harness: Harness = {
+	const strategy: TestLoopStrategy = {
 		logger: {
 			debug: () => {},
 			info: () => {},
@@ -227,23 +232,21 @@ function makeHarness(
 			},
 		],
 		executeTool,
-		persistence: {
-			recordTurn: async (metrics) => {
-				persisted.turns.push(metrics);
-				return `turn-${persisted.turns.length}`;
-			},
-			persistAssistantResponse: async (content) => {
-				persisted.assistant.push(content);
-			},
-			persistToolRoundTrip: async (roundTrip) => {
-				persisted.tools.push(roundTrip);
-			},
-			persistAlert: async (content) => {
-				persisted.alerts.push(content);
-			},
+		recordTurn: async (metrics) => {
+			persisted.turns.push(metrics);
+			return `turn-${persisted.turns.length}`;
+		},
+		persistAssistantResponse: async (content) => {
+			persisted.assistant.push(content);
+		},
+		persistToolRoundTrip: async (roundTrip) => {
+			persisted.tools.push(roundTrip);
+		},
+		persistAlert: async (content) => {
+			persisted.alerts.push(content);
 		},
 	};
-	return { harness, persisted };
+	return { strategy, persisted };
 }
 
 describe("ModularAgentLoop provider attempts", () => {
@@ -268,8 +271,8 @@ describe("ModularAgentLoop provider attempts", () => {
 			emptyDone(),
 			[{ type: "text", content: "ok" }, done()],
 		]);
-		const { harness } = makeHarness(backend);
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const { strategy } = makeHarness(backend);
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 
 		await loop.run();
 
@@ -288,8 +291,8 @@ describe("ModularAgentLoop provider attempts", () => {
 				throw new LLMError("forbidden", "backend-b", 403);
 			},
 		]);
-		const { harness, persisted } = makeHarness(backend);
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const { strategy, persisted } = makeHarness(backend);
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 
 		await loop.run();
 
@@ -309,9 +312,9 @@ describe("ModularAgentLoop provider attempts", () => {
 describe("ModularAgentLoop", () => {
 	it("persists a final assistant response and turn metrics", async () => {
 		const backend = new MockBackend([[{ type: "text", content: "hi" }, done()]]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -332,12 +335,12 @@ describe("ModularAgentLoop", () => {
 			],
 			[{ type: "text", content: "done" }, done()],
 		]);
-		const { harness, persisted } = makeHarness(backend, async () => ({
+		const { strategy, persisted } = makeHarness(backend, async () => ({
 			content: "result",
 			exitCode: 0,
 		}));
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -350,7 +353,7 @@ describe("ModularAgentLoop", () => {
 
 	it("lets model-error hooks retry through the base turn loop", async () => {
 		const backend = new MockBackend([]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
 		class RetryLoop extends TestAgentLoop {
 			private calls = 0;
@@ -368,7 +371,7 @@ describe("ModularAgentLoop", () => {
 			}
 		}
 
-		const loop = new RetryLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new RetryLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -379,7 +382,7 @@ describe("ModularAgentLoop", () => {
 
 	it("applies post-record stop decisions before final response persistence", async () => {
 		const backend = new MockBackend([[{ type: "text", content: "stop here" }, done()]]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
 		class StopAfterRecordLoop extends TestAgentLoop {
 			protected override afterRecord(): LoopTurnDecision {
@@ -387,7 +390,7 @@ describe("ModularAgentLoop", () => {
 			}
 		}
 
-		const loop = new StopAfterRecordLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new StopAfterRecordLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -403,7 +406,7 @@ describe("ModularAgentLoop", () => {
 				done(),
 			],
 		]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
 		class YieldingToolLoop extends TestAgentLoop {
 			protected override async handleToolCalls(): Promise<LoopTurnDecision> {
@@ -411,7 +414,7 @@ describe("ModularAgentLoop", () => {
 			}
 		}
 
-		const loop = new YieldingToolLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new YieldingToolLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.yielded).toBe(true);
@@ -428,7 +431,7 @@ describe("ModularAgentLoop", () => {
 			],
 			[{ type: "text", content: "done" }, done()],
 		]);
-		const { harness, persisted } = makeHarness(backend, async () => ({
+		const { strategy, persisted } = makeHarness(backend, async () => ({
 			content: "hook-result",
 			exitCode: 0,
 		}));
@@ -455,7 +458,7 @@ describe("ModularAgentLoop", () => {
 			}
 		}
 
-		const loop = new HookedToolLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new HookedToolLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -466,7 +469,7 @@ describe("ModularAgentLoop", () => {
 
 	it("records an error turn and alert when unhandled turn execution fails", async () => {
 		const backend = new MockBackend([]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
 		class FailingLoop extends TestAgentLoop {
 			protected override async callModel(): Promise<StreamChunk[]> {
@@ -474,7 +477,7 @@ describe("ModularAgentLoop", () => {
 			}
 		}
 
-		const loop = new FailingLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new FailingLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBe("fatal");
@@ -538,12 +541,12 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		// Same call every turn → duplicate-call breaker (threshold 12) trips before
 		// the default maxTurns. The base default onLoopGuardTripped surfaces an alert.
 		const backend = new ScriptedBackend([toolTurn("call", "lookup", { q: "x" })]);
-		const { harness, persisted } = makeHarness(backend, async () => ({
+		const { strategy, persisted } = makeHarness(backend, async () => ({
 			content: "ok",
 			exitCode: 0,
 		}));
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result).toMatchObject({
@@ -561,12 +564,12 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		const backend = new ScriptedBackend([
 			() => toolTurn(`call-${backend.calls.length}`, "lookup", { n: backend.calls.length }),
 		]);
-		const { harness, persisted } = makeHarness(backend, async () => ({
+		const { strategy, persisted } = makeHarness(backend, async () => ({
 			content: "boom",
 			exitCode: 1,
 		}));
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result).toMatchObject({
@@ -590,9 +593,9 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 			thinkingOnlyTurn("length"),
 			[{ type: "text", content: "answer" }, done()],
 		]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -610,9 +613,9 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 			thinkingOnlyTurn("stop"),
 			[{ type: "text", content: "answer" }, done()],
 		]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -626,9 +629,9 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 		// retries and then surface a terminal error rather than spinning forever or
 		// completing silently with a non-actionable turn.
 		const backend = new ScriptedBackend([thinkingOnlyTurn("stop")]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		// Bounded: original attempt + DEFAULT_DEGENERATE_RETRY_MAX (2) retries = 3 calls,
@@ -667,9 +670,9 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 				},
 			],
 		]);
-		const { harness } = makeHarness(backend);
+		const { strategy } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -684,9 +687,9 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 			},
 			[{ type: "text", content: "recovered" }, done()],
 		]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -701,9 +704,9 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 				throw new Error("malformed request");
 			},
 		]);
-		const { harness, persisted } = makeHarness(backend);
+		const { strategy, persisted } = makeHarness(backend);
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBe("malformed request");
@@ -728,12 +731,12 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 			),
 			[{ type: "text", content: "final answer" }, done()],
 		]);
-		const { harness, persisted } = makeHarness(backend, async () => ({
+		const { strategy, persisted } = makeHarness(backend, async () => ({
 			content: "ok",
 			exitCode: 0,
 		}));
 
-		const loop = new TestAgentLoop(harness, { threadId: "t1", userId: "u1" });
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
 		const result = await loop.run();
 
 		expect(result.error).toBeUndefined();
@@ -747,13 +750,13 @@ describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
 describe("ModularAgentLoop terminal outcomes", () => {
 	it("records a single error outcome when a guard stops the loop", async () => {
 		const backend = new ScriptedBackend([toolTurn("call", "lookup", { secret: "tool-argument" })]);
-		const { harness, persisted } = makeHarness(backend, async () => ({
+		const { strategy, persisted } = makeHarness(backend, async () => ({
 			content: "raw error body",
 			exitCode: 0,
 		}));
 
 		const loop = new TestAgentLoop(
-			harness,
+			strategy,
 			{ threadId: "t1", userId: "u1" },
 			{ loopGuards: { maxConsecutiveDuplicateToolCalls: 1 } },
 		);
