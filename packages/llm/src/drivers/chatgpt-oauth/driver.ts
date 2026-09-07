@@ -106,7 +106,6 @@ export class ChatGptOAuthDriver implements LLMBackend {
 						// rejects the request with 400 `{"detail":"Store must be set to
 						// false"}` otherwise. The @ai-sdk/openai Responses provider maps
 						// `providerOptions.openai.store` onto the body `store` field.
-						//
 						// Prompt caching: the endpoint has NO prompt_cache_breakpoint field
 						// (that knob is the Mantle/GPT-5.6 surface), so Bound's `{role:
 						// "cache"}` markers cannot ride this driver. Cache reuse rides the
@@ -121,6 +120,18 @@ export class ChatGptOAuthDriver implements LLMBackend {
 								...(params.threadId && { promptCacheKey: params.threadId }),
 							},
 						},
+						// Codex client parity (codex-rs/codex-api/src/requests/headers.rs
+						// build_session_headers): the reference client pins `session-id` /
+						// `thread-id` on every Responses request with the same conversation
+						// identity as prompt_cache_key. Suspected cache-partition affinity
+						// input on this endpoint — production gpt-6-astra traffic measured
+						// ~0% cached tokens with the body key alone.
+						...(params.threadId && {
+							headers: {
+								"session-id": params.threadId,
+								"thread-id": params.threadId,
+							},
+						}),
 						abortSignal: params.signal,
 					}).fullStream,
 				map: { estimateInputFromMessages: params.messages, coalescePrefixItems: true },
