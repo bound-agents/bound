@@ -267,21 +267,38 @@ describe("consistency exchange resume", () => {
 			return originalQuery(sql);
 		};
 		const pages: Array<{ pks: string[]; next_offset?: number }> = [];
+		let resolveInitialCompletion: () => void;
+		const initialCompletion = new Promise<void>((resolve) => {
+			resolveInitialCompletion = resolve;
+		});
+		let resolveResumedCompletion: () => void;
+		const resumedCompletion = new Promise<void>((resolve) => {
+			resolveResumedCompletion = resolve;
+		});
+		let resumed = false;
 		try {
 			hub.addPeer(
 				"spoke",
 				(frame) => {
 					const decoded = decodeFrame(frame, key);
 					if (decoded.ok && decoded.value.type === WsMessageType.CONSISTENCY_RESPONSE) {
-						const payload = decoded.value.payload as { pks: string[]; next_offset?: number };
+						const payload = decoded.value.payload as {
+							pks: string[];
+							next_offset?: number;
+							all_done: boolean;
+						};
 						pages.push(payload);
+						if (payload.all_done) {
+							if (resumed) resolveResumedCompletion();
+							else resolveInitialCompletion();
+						}
 					}
 					return true;
 				},
 				key,
 			);
 			hub.handleConsistencyRequest("spoke", { tables: ["semantic_memory"] });
-			await new Promise((resolve) => setTimeout(resolve, 20));
+			await initialCompletion;
 
 			expect(pages.flatMap((page) => page.pks)).toEqual([
 				"a",
@@ -299,11 +316,12 @@ describe("consistency exchange resume", () => {
 
 			pages.length = 0;
 			queries.length = 0;
+			resumed = true;
 			hub.handleConsistencyRequest("spoke", {
 				tables: ["semantic_memory"],
 				resume_offset: 2,
 			});
-			await new Promise((resolve) => setTimeout(resolve, 20));
+			await resumedCompletion;
 			expect(pages.flatMap((page) => page.pks)).toEqual(["c", "d", "e", "mem-1", "mem-2"]);
 			expect(queries.filter((sql) => sql.includes("SELECT id, modified_at"))).toContainEqual(
 				expect.stringContaining("OFFSET"),
@@ -341,21 +359,26 @@ describe("consistency exchange resume", () => {
 				now,
 			]);
 		const pages = new Map<string, string[]>();
+		let resolveCompletion: () => void;
+		const completion = new Promise<void>((resolve) => {
+			resolveCompletion = resolve;
+		});
 		try {
 			hub.addPeer(
 				"spoke",
 				(frame) => {
 					const d = decodeFrame(frame, key);
 					if (d.ok && d.value.type === WsMessageType.CONSISTENCY_RESPONSE) {
-						const x = d.value.payload as { table: string; pks: string[] };
+						const x = d.value.payload as { table: string; pks: string[]; all_done: boolean };
 						pages.set(x.table, [...(pages.get(x.table) ?? []), ...x.pks]);
+						if (x.all_done) resolveCompletion();
 					}
 					return true;
 				},
 				key,
 			);
 			hub.handleConsistencyRequest("spoke", { tables: ["messages", "hosts", "cluster_config"] });
-			await new Promise((r) => setTimeout(r, 40));
+			await completion;
 			expect(pages.get("messages")).toEqual(["m1", "m2", "m4", "m5", "m7"]);
 			expect(pages.get("hosts")).toEqual(["a", "b", "c", "d", "e"]);
 			expect(pages.get("cluster_config")).toEqual(["alpha", "beta", "delta", "gamma", "zeta"]);
