@@ -2,7 +2,12 @@ import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "@bou
 import { counter, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { getLlmStatusCode, isRateLimitStatus, isTransientLLMError } from "./error-classification";
-import type { LoopContextAssemblyResult, LoopModelResolution, LoopTurnMetrics } from "./extensions";
+import type {
+	LoopContextAssemblyResult,
+	LoopModelResolution,
+	LoopRuntime,
+	LoopTurnMetrics,
+} from "./extensions";
 import {
 	DEFAULT_LOOP_GUARD_THRESHOLDS,
 	type LoopGuardThresholds,
@@ -228,14 +233,7 @@ export abstract class ModularAgentLoop {
 	protected readonly guardThresholds: LoopGuardThresholds;
 
 	constructor(
-		protected readonly runtime: {
-			logger: {
-				debug(message: string, metadata?: Record<string, unknown>): void;
-				info(message: string, metadata?: Record<string, unknown>): void;
-				warn(message: string, metadata?: Record<string, unknown>): void;
-				error(message: string, metadata?: Record<string, unknown>): void;
-			};
-		},
+		protected readonly runtime: LoopRuntime,
 		protected readonly loopConfig: AgentLoopConfig,
 		protected readonly loopOptions: ModularAgentLoopOptions = {},
 	) {

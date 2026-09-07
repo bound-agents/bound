@@ -1,7 +1,6 @@
-import type { ContentBlock, LLMBackend, LLMMessage, ToolDefinition } from "@bound/llm";
+import type { LLMBackend, LLMMessage } from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
-import type { ParsedResponse, ParsedToolCall } from "./stream-parser";
-import type { AgentLoopConfig, ToolExecutionResult } from "./types";
+import type { ParsedResponse } from "./stream-parser";
 
 export interface LoopLogger {
 	debug(message: string, metadata?: Record<string, unknown>): void;
@@ -12,13 +11,6 @@ export interface LoopLogger {
 
 export interface LoopRuntime {
 	logger: LoopLogger;
-}
-
-export interface LoopContextAssemblyInput {
-	config: AgentLoopConfig;
-	modelId: string;
-	contextWindow: number;
-	tools: ToolDefinition[] | undefined;
 }
 
 export interface LoopContextAssemblyResult {
@@ -45,15 +37,4 @@ export interface LoopTurnMetrics {
 	response: ParsedResponse;
 	status?: "success" | "error" | "aborted";
 	contextDebug?: ContextDebugInfo;
-}
-
-export interface LoopPersistenceHooks {
-	recordTurn(metrics: LoopTurnMetrics): string | null | Promise<string | null>;
-	persistAssistantResponse(content: string | ContentBlock[], modelId: string): Promise<void> | void;
-	persistToolRoundTrip(input: {
-		modelId: string;
-		assistantBlocks: ContentBlock[];
-		results: Array<{ toolCall: ParsedToolCall; result: ToolExecutionResult }>;
-	}): Promise<void> | void;
-	persistAlert(content: string): Promise<void> | void;
 }
