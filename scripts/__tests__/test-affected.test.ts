@@ -4,6 +4,7 @@ import {
 	type WorkspaceGraph,
 	buildWorkspaceGraph,
 	determineAffectedPackages,
+	gateIgnoreArgs,
 	hasTestFiles,
 	isGlobalFile,
 	packageDirForFile,
@@ -213,5 +214,17 @@ describe("test-affected: hasTestFiles", () => {
 
 	it("returns false for a package without test files", () => {
 		expect(hasTestFiles("packages/docs", root)).toBe(false);
+	});
+});
+
+describe("test-affected: gateIgnoreArgs", () => {
+	it("excludes the Windows lowbox oracle, mirroring CI's unit-test selection", () => {
+		// CI's unit-test loop always passes
+		// --path-ignore-patterns='**/windows-lowbox-oracle.test.ts' because the
+		// oracle runs as its own dedicated step (it needs BOUND_LOWBOX_HELPER
+		// and a 30s per-test budget the gate never sets) — so locally the file
+		// could only ever fail the gate, never pass it. Same selection rule
+		// here keeps the local gate and CI agreeing.
+		expect(gateIgnoreArgs()).toEqual(["--path-ignore-patterns=**/windows-lowbox-oracle.test.ts"]);
 	});
 });

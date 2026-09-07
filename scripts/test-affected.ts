@@ -150,6 +150,18 @@ export function toTestPathArg(dir: string): string {
 }
 
 /**
+ * Ignore patterns every local `bun test` invocation passes, mirroring CI's
+ * unit-test phase selection (.github/workflows/ci.yml): the Windows lowbox
+ * oracle runs there as its own dedicated step with BOUND_LOWBOX_HELPER and a
+ * 30s per-test budget. The pre-commit gate has neither the env var nor the
+ * budget, so without the same exclusion the file could only ever fail the
+ * gate, never pass it.
+ */
+export function gateIgnoreArgs(): string[] {
+	return ["--path-ignore-patterns=**/windows-lowbox-oracle.test.ts"];
+}
+
+/**
  * True if a package directory contains any test files (files with `.test`,
  * `_test_`, `.spec`, or `_spec_` in the name). Package dirs without test files
  * (e.g. `packages/docs`) are skipped so `bun test` doesn't exit non-zero
@@ -263,7 +275,7 @@ export function run(): void {
 		// packages) is unaffected — it never trips the global-file branch.
 		let lastExit = 0;
 		for (const dir of testableDirs) {
-			const proc = Bun.spawnSync(["bun", "test", toTestPathArg(dir)], {
+			const proc = Bun.spawnSync(["bun", "test", toTestPathArg(dir), ...gateIgnoreArgs()], {
 				cwd: root,
 				stdout: "inherit",
 				stderr: "inherit",
@@ -292,11 +304,14 @@ export function run(): void {
 	//
 	// "no test files are affected" exits 0, so a dir whose tests are all
 	// unreachable is not a failure.
-	const proc = Bun.spawnSync(["bun", "test", ...testableDirs.map(toTestPathArg), "--changed"], {
-		cwd: root,
-		stdout: "inherit",
-		stderr: "inherit",
-	});
+	const proc = Bun.spawnSync(
+		["bun", "test", ...testableDirs.map(toTestPathArg), ...gateIgnoreArgs(), "--changed"],
+		{
+			cwd: root,
+			stdout: "inherit",
+			stderr: "inherit",
+		},
+	);
 	process.exit(proc.exitCode ?? 1);
 }
 
