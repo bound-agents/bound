@@ -2,13 +2,7 @@ import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "@bou
 import { counter, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { getLlmStatusCode, isRateLimitStatus, isTransientLLMError } from "./error-classification";
-import type {
-	LoopContextAssemblyInput,
-	LoopContextAssemblyResult,
-	LoopExtensions,
-	LoopModelResolution,
-	LoopTurnMetrics,
-} from "./extensions";
+import type { LoopContextAssemblyResult, LoopModelResolution, LoopTurnMetrics } from "./extensions";
 import {
 	DEFAULT_LOOP_GUARD_THRESHOLDS,
 	type LoopGuardThresholds,
@@ -165,10 +159,6 @@ interface LoopDecisionSpans {
 	turnSpan?: Span;
 }
 
-function textFromToolResult(result: ToolExecutionResult): string {
-	return result.content;
-}
-
 /** Assembles one assistant turn's `ContentBlock[]` — leading text (if any), thinking/redacted-thinking blocks, then a `tool_use` block per call — in the fixed order every supported provider expects. */
 export function buildAssistantToolCallBlocks(
 	textContent: string,
@@ -216,7 +206,7 @@ export function buildAssistantToolCallBlocks(
  * this runner gives extension agents a concrete loop without depending on the
  * main agent's database, context pipeline, scheduler, or native tools.
  */
-export class ModularAgentLoop {
+export abstract class ModularAgentLoop {
 	protected aborted = false;
 	protected messagesCreated = 0;
 	protected toolCallsMade = 0;
@@ -238,7 +228,14 @@ export class ModularAgentLoop {
 	protected readonly guardThresholds: LoopGuardThresholds;
 
 	constructor(
-		protected readonly loopExtensions: LoopExtensions,
+		protected readonly runtime: {
+			logger: {
+				debug(message: string, metadata?: Record<string, unknown>): void;
+				info(message: string, metadata?: Record<string, unknown>): void;
+				warn(message: string, metadata?: Record<string, unknown>): void;
+				error(message: string, metadata?: Record<string, unknown>): void;
+			};
+		},
 		protected readonly loopConfig: AgentLoopConfig,
 		protected readonly loopOptions: ModularAgentLoopOptions = {},
 	) {
@@ -740,33 +737,11 @@ export class ModularAgentLoop {
 		return { action: "continue" };
 	}
 
-	protected resolveModel(): LoopModelResolution | Promise<LoopModelResolution> {
-		return this.loopExtensions.resolveModel(this.loopConfig.modelId);
-	}
+	protected abstract resolveModel(): LoopModelResolution | Promise<LoopModelResolution>;
 
-	protected async prepareFrame(input: {
+	protected abstract prepareFrame(input: {
 		resolution: PreparedLoopFrame["resolution"];
-	}): Promise<Omit<PreparedLoopFrame, "resolution">> {
-		const registeredTools = this.loopConfig.noTools
-			? []
-			: this.loopExtensions.listTools(this.loopConfig);
-		const toolDefinitions: ToolDefinition[] = registeredTools.map((tool) => tool.toolDefinition);
-		const assembled = await this.assembleContext({
-			config: this.loopConfig,
-			modelId: input.resolution.modelId,
-			contextWindow: input.resolution.max_context ?? 200_000,
-			tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
-		});
-		return {
-			assembled,
-			messages: [...assembled.messages],
-			toolDefinitions,
-		};
-	}
-
-	protected assembleContext(input: LoopContextAssemblyInput): Promise<LoopContextAssemblyResult> {
-		return this.loopExtensions.assembleContext(input);
-	}
+	}): Promise<Omit<PreparedLoopFrame, "resolution">>;
 
 	protected async callModel(frame: PreparedLoopFrame, _turn: number): Promise<StreamChunk[]> {
 		const chunks: StreamChunk[] = [];
@@ -880,40 +855,6 @@ export class ModularAgentLoop {
 		};
 	}
 
-	protected async collectModelStream(
-		stream: LoopModelStream,
-		chunks: StreamChunk[],
-		frame: PreparedLoopFrame,
-		turn: number,
-		attempt: number,
-	): Promise<void> {
-		const source =
-			stream.useSilenceTimeout === false
-				? stream.chunks
-				: this.withSilenceTimeout(
-						stream.chunks,
-						stream.silenceTimeoutMs ??
-							this.loopOptions.silenceTimeoutMs ??
-							DEFAULT_SILENCE_TIMEOUT_MS,
-						stream.onSilenceHeartbeat ?? this.loopConfig.onActivity,
-					);
-		for await (const chunk of source) {
-			if (this.shouldAbort()) break;
-			if (this.shouldYield()) {
-				this.onModelStreamYield(frame, turn, attempt);
-				this.aborted = true;
-				break;
-			}
-			if (chunk.type === "heartbeat") {
-				this.loopConfig.onActivity?.();
-				continue;
-			}
-			await this.afterModelStreamChunk(chunk, chunks, frame, turn, attempt);
-			this.loopConfig.onStreamChunk?.(chunk);
-			chunks.push(chunk);
-		}
-	}
-
 	protected afterModelStreamChunk(
 		_chunk: StreamChunk,
 		_chunks: StreamChunk[],
@@ -972,7 +913,7 @@ export class ModularAgentLoop {
 			const statusCode = getLlmStatusCode(error);
 			const isServerFault = statusCode !== undefined && statusCode >= 500;
 			const backoffMs = isServerFault ? 1000 * 2 ** (this.transportRetries - 1) : 0;
-			this.loopExtensions.context.logger.warn("[loop] Transient model error, retrying", {
+			this.runtime.logger.warn("[loop] Transient model error, retrying", {
 				attempt: this.transportRetries,
 				max: maxTransientRetries,
 				backoffMs,
@@ -1088,7 +1029,7 @@ export class ModularAgentLoop {
 		}
 		const degenerateRetryMax = this.loopOptions.degenerateRetryMax ?? DEFAULT_DEGENERATE_RETRY_MAX;
 		if (this.degenerateRetries >= degenerateRetryMax) {
-			this.loopExtensions.context.logger.warn(
+			this.runtime.logger.warn(
 				"[loop] Degenerate turn (no actionable output) persisted after retries; surfacing error",
 				{
 					finishReason: parsed.finishReason ?? null,
@@ -1103,7 +1044,7 @@ export class ModularAgentLoop {
 			};
 		}
 		this.degenerateRetries++;
-		this.loopExtensions.context.logger.warn(
+		this.runtime.logger.warn(
 			"[loop] Degenerate turn (no actionable output), notifying and retrying with same budget",
 			{
 				finishReason: parsed.finishReason ?? null,
@@ -1124,28 +1065,11 @@ export class ModularAgentLoop {
 	 */
 	protected notifyDegenerateTurn(_parsed: ParsedResponse): void {}
 
-	protected async handleFinalResponse(
+	/** Persist a terminal assistant response using the host's complete response strategy. */
+	protected abstract handleFinalResponse(
 		parsed: ParsedResponse,
 		frame: PreparedLoopFrame,
-	): Promise<void> {
-		if (parsed.textContent || parsed.thinking || parsed.thinkingEncryptedContent) {
-			const content = this.buildAssistantToolCallBlocks(
-				parsed.textContent,
-				{
-					thinking: parsed.thinking,
-					signature: parsed.thinkingSignature,
-					redactedData: parsed.thinkingRedactedData,
-					encryptedContent: parsed.thinkingEncryptedContent,
-				},
-				[],
-			);
-			await this.persistAssistantResponse(
-				content.length > 0 ? content : parsed.textContent,
-				frame.resolution.modelId,
-			);
-			this.messagesCreated++;
-		}
-	}
+	): Promise<void>;
 
 	protected async handleToolCalls(
 		parsed: ParsedResponse,
@@ -1310,7 +1234,7 @@ export class ModularAgentLoop {
 		try {
 			await this.persistAlert(`[Agent loop guard] ${reason}`);
 		} catch (error) {
-			this.loopExtensions.context.logger.warn("[loop] Failed to persist guard alert", {
+			this.runtime.logger.warn("[loop] Failed to persist guard alert", {
 				reason,
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -1346,19 +1270,12 @@ export class ModularAgentLoop {
 		return { action: "continue" };
 	}
 
-	protected async executeToolRoundTrip(
+	/** Execute a complete tool round, including host-specific dispatch and awaits. */
+	protected abstract executeToolRoundTrip(
 		parsed: ParsedResponse,
-		_frame: PreparedLoopFrame,
-		_turn: number,
-	): Promise<LoopToolExecutionBatch> {
-		const results: LoopToolResult[] = [];
-		for (const toolCall of parsed.toolCalls) {
-			this.toolCallsMade++;
-			const result = await this.executeTool(toolCall);
-			results.push({ toolCall, result });
-		}
-		return { results, deferred: [] };
-	}
+		frame: PreparedLoopFrame,
+		turn: number,
+	): Promise<LoopToolExecutionBatch>;
 
 	protected afterToolExecution(
 		_parsed: ParsedResponse,
@@ -1369,39 +1286,13 @@ export class ModularAgentLoop {
 		return { action: "continue" };
 	}
 
-	protected async persistToolMessages(
+	/** Persist a complete tool round before another model request may begin. */
+	protected abstract persistToolMessages(
 		parsed: ParsedResponse,
 		frame: PreparedLoopFrame,
 		batch: LoopToolExecutionBatch,
-		_turn: number,
-	): Promise<void> {
-		const assistantBlocks = this.buildAssistantToolCallBlocks(
-			parsed.textContent,
-			{
-				thinking: parsed.thinking,
-				signature: parsed.thinkingSignature,
-				redactedData: parsed.thinkingRedactedData,
-				encryptedContent: parsed.thinkingEncryptedContent,
-			},
-			parsed.toolCalls,
-		);
-		frame.messages.push({ role: "tool_call", content: assistantBlocks });
-
-		await this.persistToolRoundTrip({
-			modelId: frame.resolution.modelId,
-			assistantBlocks,
-			results: batch.results,
-		});
-		this.messagesCreated++;
-		for (const { toolCall, result } of batch.results) {
-			frame.messages.push({
-				role: "tool_result",
-				content: textFromToolResult(result),
-				tool_use_id: toolCall.id,
-			});
-			this.messagesCreated++;
-		}
-	}
+		turn: number,
+	): Promise<void>;
 
 	protected afterToolPersistence(
 		_parsed: ParsedResponse,
@@ -1412,32 +1303,9 @@ export class ModularAgentLoop {
 		return { action: "continue" };
 	}
 
-	protected executeTool(toolCall: ParsedToolCall): Promise<ToolExecutionResult> {
-		return this.loopExtensions.executeTool(toolCall);
-	}
+	protected abstract recordTurn(metrics: LoopTurnMetrics): Promise<string | null> | string | null;
 
-	protected recordTurn(metrics: LoopTurnMetrics): Promise<string | null> | string | null {
-		return this.loopExtensions.persistence.recordTurn(metrics);
-	}
-
-	protected persistAssistantResponse(
-		content: string | ContentBlock[],
-		modelId: string,
-	): Promise<void> | void {
-		return this.loopExtensions.persistence.persistAssistantResponse(content, modelId);
-	}
-
-	protected persistToolRoundTrip(input: {
-		modelId: string;
-		assistantBlocks: ContentBlock[];
-		results: Array<{ toolCall: ParsedToolCall; result: ToolExecutionResult }>;
-	}): Promise<void> | void {
-		return this.loopExtensions.persistence.persistToolRoundTrip(input);
-	}
-
-	protected persistAlert(content: string): Promise<void> | void {
-		return this.loopExtensions.persistence.persistAlert(content);
-	}
+	protected abstract persistAlert(content: string): Promise<void> | void;
 
 	protected shouldAbort(): boolean {
 		return this.aborted;
@@ -1448,7 +1316,7 @@ export class ModularAgentLoop {
 	}
 
 	protected parseResponseChunks(chunks: StreamChunk[]) {
-		return parseResponseChunks(chunks, { logger: this.loopExtensions.context.logger });
+		return parseResponseChunks(chunks, { logger: this.runtime.logger });
 	}
 
 	protected withSilenceTimeout<T>(
@@ -1486,7 +1354,6 @@ export class ModularAgentLoop {
 			outcome: "completed",
 			...extra,
 		};
-		void this.loopExtensions.afterRun?.(result);
 		return result;
 	}
 }

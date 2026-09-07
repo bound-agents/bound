@@ -1,12 +1,7 @@
-import type { ContentBlock, LLMBackend, LLMMessage, ModelRouter, ToolDefinition } from "@bound/llm";
+import type { ContentBlock, LLMBackend, LLMMessage, ToolDefinition } from "@bound/llm";
 import type { ContextDebugInfo } from "@bound/shared";
 import type { ParsedResponse, ParsedToolCall } from "./stream-parser";
-import type {
-	AgentLoopConfig,
-	AgentLoopResult,
-	RegisteredTool,
-	ToolExecutionResult,
-} from "./types";
+import type { AgentLoopConfig, ToolExecutionResult } from "./types";
 
 export interface LoopLogger {
 	debug(message: string, metadata?: Record<string, unknown>): void;
@@ -15,9 +10,7 @@ export interface LoopLogger {
 	error(message: string, metadata?: Record<string, unknown>): void;
 }
 
-export interface LoopHostContext {
-	siteId: string;
-	hostName: string;
+export interface LoopRuntime {
 	logger: LoopLogger;
 }
 
@@ -63,15 +56,4 @@ export interface LoopPersistenceHooks {
 		results: Array<{ toolCall: ParsedToolCall; result: ToolExecutionResult }>;
 	}): Promise<void> | void;
 	persistAlert(content: string): Promise<void> | void;
-}
-
-export interface LoopExtensions {
-	context: LoopHostContext;
-	modelRouter: ModelRouter;
-	resolveModel(modelId: string | undefined): LoopModelResolution;
-	assembleContext(input: LoopContextAssemblyInput): Promise<LoopContextAssemblyResult>;
-	listTools(config: AgentLoopConfig): RegisteredTool[];
-	executeTool(toolCall: ParsedToolCall): Promise<ToolExecutionResult>;
-	persistence: LoopPersistenceHooks;
-	afterRun?(result: AgentLoopResult): Promise<void> | void;
 }

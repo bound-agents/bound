@@ -5,7 +5,7 @@ import {
 } from "@bound/core";
 import type { ContentBlock } from "@bound/llm";
 import type { ContextDebugInfo, ContextSection, SyncConfig } from "@bound/shared";
-import { countContentTokens, countTokens, formatError } from "@bound/shared";
+import { countContentTokens, formatError } from "@bound/shared";
 import { context, trace } from "@opentelemetry/api";
 
 import {
@@ -33,7 +33,6 @@ import {
 	rebuildWarmSections,
 } from "./context-assembly";
 import { resolveAdaptiveTruncationTarget } from "./inflation-ratio";
-import { resolveTargetCapabilities } from "./model-resolution";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 import { extractAssistantSeedText, extractSummaryAndMemories } from "./summary-extraction";
 import { compactStoredMessagesInPlace, computeRecentWindow } from "./warm-compaction";
@@ -284,26 +283,18 @@ export class MainAgentLoop extends BoundAgentLoop {
 		resolution: BoundPreparedFrame["resolution"];
 	}): Promise<Omit<BoundPreparedFrame, "resolution">> {
 		const resolution = input.resolution;
-		let relayInfo: BoundPreparedFrame["relayInfo"];
-		if (resolution.kind === "remote" && resolution.hosts.length > 0) {
-			const firstHost = resolution.hosts[0];
-			relayInfo = {
-				remoteHost: firstHost.host_name,
-				localHost: this.ctx.hostName,
-				model: resolution.modelId,
-				provider: "remote",
-			};
-		}
-
-		const resolvedCaps = resolveTargetCapabilities(resolution, this.modelRouter);
-		const cacheMarkerCaps = resolvedCaps;
-		const contextWindow = resolution.max_context;
-		const mergedTools = this.getMergedTools();
-		const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
-		const resolvedModelForDebug = getResolvedModelId(resolution, this.config.modelId);
+		const {
+			relayInfo,
+			resolvedCaps,
+			cacheMarkerCaps,
+			contextWindow,
+			mergedTools,
+			toolTokenEstimate,
+			resolvedModelForDebug,
+			maxOutputTokens,
+		} = this.prepareSharedFrameInputs(resolution);
 		const threadInterface = this.config.platform ?? "web";
 		const cacheTtl = selectCacheTtl(threadInterface);
-		const maxOutputTokens = this.resolvedMaxOutputTokens(resolution);
 		const baseTruncationTarget = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 		const { target: truncationTargetTokens, inflation: measuredInflation } =
 			resolveAdaptiveTruncationTarget(this.ctx.db, this.config.threadId, baseTruncationTarget);
@@ -662,10 +653,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 		};
 	}
 
-	protected override async beforeTurn(turn: number, frame: BoundPreparedFrame): Promise<void> {
-		this.currentTurnId = null;
-		this.relayMetadataRef = {};
-		this.config.onActivity?.();
+	protected override async prepareTurn(turn: number, frame: BoundPreparedFrame): Promise<void> {
 		if (turn > 1) {
 			const changed = refreshModelHintAtTurnBoundary(
 				this.config,
@@ -697,7 +685,6 @@ export class MainAgentLoop extends BoundAgentLoop {
 				frame.cacheMarkerCaps ?? undefined,
 			);
 		}
-		this.setPhase("LLM_CALL");
 	}
 
 	/**

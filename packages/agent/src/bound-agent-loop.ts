@@ -22,7 +22,6 @@ import type {
 } from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import {
-	type LoopExtensions,
 	type LoopGuardReason,
 	type LoopModelStream,
 	type LoopToolExecutionBatch,
@@ -53,6 +52,7 @@ import {
 	appendToolDuration,
 	capToolResultContent,
 	clientResultPayloadSchema,
+	countTokens,
 	errorPayloadSchema,
 	formatError,
 	injectTraceContext,
@@ -102,6 +102,7 @@ import {
 	type ModelResolution,
 	resolveModel,
 	resolveSameTierFallback,
+	resolveTargetCapabilities,
 	waitForModelResolution,
 } from "./model-resolution";
 import { readUnionResponseEntry } from "./relay-await-helpers";
@@ -185,40 +186,6 @@ export {
  * string is defined by this repo's tool-suggestion text.
  */
 const ROUTING_SUGGESTION_MARKER = /is valid for the "[^"]+" tool, not "[^"]+"\. Call /;
-
-function createBoundLoopExtensions(
-	ctx: AppContext,
-	modelRouter: ModelRouter,
-	config: AgentLoopConfig,
-): LoopExtensions {
-	return {
-		context: {
-			siteId: ctx.siteId,
-			hostName: ctx.hostName,
-			logger: ctx.logger,
-		},
-		modelRouter,
-		resolveModel: () => ({ kind: "error", error: "BoundAgentLoop uses adapter model resolution" }),
-		assembleContext: async () => {
-			throw new Error("BoundAgentLoop uses adapter context assembly");
-		},
-		listTools: () => [],
-		executeTool: async () => {
-			throw new Error("BoundAgentLoop uses adapter tool dispatch");
-		},
-		persistence: {
-			recordTurn: async () => null,
-			persistAssistantResponse: async () => {},
-			persistToolRoundTrip: async () => {},
-			persistAlert: async (content) => {
-				ctx.logger.warn("[agent-loop] Base loop alert hook invoked by Bound adapter", {
-					threadId: config.threadId,
-					content,
-				});
-			},
-		},
-	};
-}
 
 function containsRoutingSuggestion(content: string): boolean {
 	return ROUTING_SUGGESTION_MARKER.test(content);
@@ -348,7 +315,7 @@ export interface BoundPreparedFrame extends PreparedLoopFrame {
 	cacheTtl: ReturnType<typeof selectCacheTtl>;
 }
 
-export class BoundAgentLoop extends ModularAgentLoop {
+export abstract class BoundAgentLoop extends ModularAgentLoop {
 	private filesChanged = 0;
 	private yielded = false;
 	protected lastModelResolution: ModelResolution | null = null;
@@ -386,7 +353,7 @@ export class BoundAgentLoop extends ModularAgentLoop {
 		protected modelRouter: ModelRouter,
 		protected config: AgentLoopConfig,
 	) {
-		super(createBoundLoopExtensions(ctx, modelRouter, config), config, {
+		super({ logger: ctx.logger }, config, {
 			silenceTimeoutMs: config.silenceTimeoutMs ?? SILENCE_TIMEOUT_MS,
 			maxTransientRetries: MAX_SILENCE_RETRIES,
 			degenerateRetryMax: MAX_DEGENERATE_RETRIES,
@@ -404,6 +371,42 @@ export class BoundAgentLoop extends ModularAgentLoop {
 				? resolution.maxOutputTokens
 				: undefined;
 		return clampMaxOutputTokens(this.effectiveMaxOutputTokens(), backendCap);
+	}
+
+	/** Shared, policy-free model-derived inputs for Main and Aux frame assembly. */
+	protected prepareSharedFrameInputs(resolution: BoundPreparedFrame["resolution"]) {
+		const firstRemoteHost = resolution.kind === "remote" ? resolution.hosts[0] : undefined;
+		const resolvedCaps = resolveTargetCapabilities(resolution, this.modelRouter);
+		const mergedTools = this.getMergedTools();
+		const contextWindow = resolution.max_context;
+		return {
+			relayInfo: firstRemoteHost
+				? {
+						remoteHost: firstRemoteHost.host_name,
+						localHost: this.ctx.hostName,
+						model: resolution.modelId,
+						provider: "remote",
+					}
+				: undefined,
+			resolvedCaps,
+			cacheMarkerCaps: resolvedCaps,
+			contextWindow,
+			mergedTools,
+			toolTokenEstimate: mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0,
+			resolvedModelForDebug: getResolvedModelId(resolution, this.config.modelId),
+			maxOutputTokens: this.resolvedMaxOutputTokens(resolution),
+		};
+	}
+
+	/** Bound owns the reset/activity/phase boundary; subclasses only prepare policy state. */
+	protected async prepareTurn(_turn: number, _frame: BoundPreparedFrame): Promise<void> {}
+
+	protected override async beforeTurn(turn: number, frame: BoundPreparedFrame): Promise<void> {
+		this.currentTurnId = null;
+		this.relayMetadataRef = {};
+		this.config.onActivity?.();
+		await this.prepareTurn(turn, frame);
+		this.setPhase("LLM_CALL");
 	}
 
 	protected override beforeRun(): void {

@@ -8,12 +8,11 @@ import { countTokens, injectTraceContext } from "@bound/shared";
 import type { ContextDebugInfo, SyncConfig } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 
-import { getResolvedModelId, parseContentBlocks } from "./agent-loop-utils";
+import { parseContentBlocks } from "./agent-loop-utils";
 import { BoundAgentLoop, type BoundPreparedFrame } from "./bound-agent-loop";
 import { buildCacheMarkers, coldPathPlaceCacheMarker } from "./cache-marker";
 import { selectCacheTtl } from "./cache-prediction";
 import { assembleContext, computeBaseTruncationTarget, realTimeClock } from "./context-assembly";
-import { resolveTargetCapabilities } from "./model-resolution";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 
 /** Poll cadence and ceiling for the inline client-tool wait. */
@@ -38,24 +37,16 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		resolution: BoundPreparedFrame["resolution"];
 	}): Promise<Omit<BoundPreparedFrame, "resolution">> {
 		const resolution = input.resolution;
-		let relayInfo: BoundPreparedFrame["relayInfo"];
-		if (resolution.kind === "remote" && resolution.hosts.length > 0) {
-			const firstHost = resolution.hosts[0];
-			relayInfo = {
-				remoteHost: firstHost.host_name,
-				localHost: this.ctx.hostName,
-				model: resolution.modelId,
-				provider: "remote",
-			};
-		}
-
-		const resolvedCaps = resolveTargetCapabilities(resolution, this.modelRouter);
-		const cacheMarkerCaps = resolvedCaps;
-		const contextWindow = resolution.max_context;
-		const mergedTools = this.getMergedTools();
-		const toolTokenEstimate = mergedTools ? countTokens(JSON.stringify(mergedTools)) : 0;
-		const resolvedModelForDebug = getResolvedModelId(resolution, this.config.modelId);
-		const maxOutputTokens = this.resolvedMaxOutputTokens(resolution);
+		const {
+			relayInfo,
+			resolvedCaps,
+			cacheMarkerCaps,
+			contextWindow,
+			mergedTools,
+			toolTokenEstimate,
+			resolvedModelForDebug,
+			maxOutputTokens,
+		} = this.prepareSharedFrameInputs(resolution);
 		const truncationTargetTokens = computeBaseTruncationTarget(contextWindow, maxOutputTokens);
 		const cacheTtl = selectCacheTtl("aux");
 		const assemblyClock = realTimeClock();
@@ -134,31 +125,6 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			measuredInflation: null,
 			cacheTtl,
 		};
-	}
-
-	/**
-	 * Per-turn reset + phase entry for the aux path.
-	 *
-	 * `setPhase("LLM_CALL")` lives in `MainAgentLoop.beforeTurn`, and AuxAgentLoop
-	 * extends BoundAgentLoop directly — the base hook is a no-op, so the aux loop
-	 * was jumping ASSEMBLE_CONTEXT/TOOL_PERSIST → PARSE_RESPONSE and logging an
-	 * "Invalid state transition" warning on every single turn.
-	 *
-	 * The resets matter beyond the warning: without them `currentTurnId` and
-	 * `relayMetadataRef` leak across turns, and `onActivity` never fires, so the
-	 * caller's silence-timeout heartbeat gets no pulse while an aux is working.
-	 *
-	 * Deliberately NOT copied from MainAgentLoop: warm-tail refresh and rolling
-	 * cache-marker maintenance. Aux frames have no cached-turn state; instead,
-	 * afterToolPersistence performs a full cold rebuild after every tool round.
-	 * Each rebuilt request gets a fresh fixed marker, so caching remains enabled
-	 * without weakening aux's current-transcript reassembly guarantee.
-	 */
-	protected override beforeTurn(_turn: number, _frame: BoundPreparedFrame): void {
-		this.currentTurnId = null;
-		this.relayMetadataRef = {};
-		this.config.onActivity?.();
-		this.setPhase("LLM_CALL");
 	}
 
 	/**
