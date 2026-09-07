@@ -101,25 +101,25 @@ export function clearColumnCache(): void {
 	}
 }
 
+function parseReducerRowData(event: ChangeLogEntry): RowData | undefined {
+	if (!validateTableName(event.table_name)) return;
+
+	const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
+	if (!parseResult.ok) return;
+
+	const value = parseResult.value;
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as RowData)
+		: undefined;
+}
+
 export function applyAppendOnlyReducer(
 	db: Database,
 	event: ChangeLogEntry,
 	options?: ReducerOptions,
 ): { applied: boolean } {
-	// Validate table name
-	if (!validateTableName(event.table_name)) {
-		return { applied: false };
-	}
-
-	const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
-	if (!parseResult.ok) {
-		return { applied: false };
-	}
-	const value = parseResult.value;
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return { applied: false };
-	}
-	const rowData = value as RowData;
+	const rowData = parseReducerRowData(event);
+	if (!rowData) return { applied: false };
 
 	if (violatesMessageRoleInvariant(event, rowData, options?.logger)) {
 		return { applied: false };
@@ -188,20 +188,8 @@ export function applyLWWReducer(
 	event: ChangeLogEntry,
 	options?: ReducerOptions,
 ): { applied: boolean } {
-	// Validate table name
-	if (!validateTableName(event.table_name)) {
-		return { applied: false };
-	}
-
-	const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
-	if (!parseResult.ok) {
-		return { applied: false };
-	}
-	const value = parseResult.value;
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return { applied: false };
-	}
-	const rowData = value as RowData;
+	const rowData = parseReducerRowData(event);
+	if (!rowData) return { applied: false };
 
 	// Heal-on-receive (issue #105): a peer may push a memory_edges row whose
 	// `relation` is not in the canonical set — legacy data, a relation that was
@@ -348,17 +336,11 @@ export function replayEvents(
 	db.exec("BEGIN");
 	try {
 		for (const event of events) {
-			const parseResult = parseJsonUntyped(event.row_data, `${event.table_name}.${event.row_id}`);
-			if (!parseResult.ok) {
+			const rowData = parseReducerRowData(event);
+			if (!rowData) {
 				skipped++;
 				continue; // Skip malformed events rather than crashing the batch
 			}
-			const value = parseResult.value;
-			if (!value || typeof value !== "object" || Array.isArray(value)) {
-				skipped++;
-				continue;
-			}
-			const rowData = value as RowData;
 
 			const result = applyEvent(db, event, { logger: options?.logger, diagnosticSamples });
 

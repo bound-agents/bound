@@ -706,6 +706,18 @@ describe("reducers", () => {
 			expect(result.skipped).toBe(1);
 		});
 
+		it("skips non-object row_data in replayEvents", () => {
+			const event: ChangeLogEntry = {
+				hlc: "2026-03-22T10:00:00.000Z_0001_test",
+				table_name: "semantic_memory",
+				row_id: "array",
+				site_id: "remote-site",
+				timestamp: "2026-03-22T10:00:00Z",
+				row_data: "[]",
+			};
+			expect(replayEvents(db, [event])).toEqual({ applied: 0, skipped: 1 });
+		});
+
 		it("returns applied:false for malformed JSON in applyAppendOnlyReducer", () => {
 			const result = applyAppendOnlyReducer(db, {
 				hlc: "2026-03-22T10:00:00.000Z_0001_test",
