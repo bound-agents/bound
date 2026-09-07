@@ -3,116 +3,28 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { TypedEventEmitter } from "@bound/shared";
 import { WsMessageType, decodeFrame } from "../ws-frames.js";
 import { WsTransport } from "../ws-transport.js";
+import { createSyncTestSchema } from "./test-harness.js";
 
 function createTestSchema(db: Database): void {
-	db.run("PRAGMA journal_mode = WAL");
-	db.run("PRAGMA foreign_keys = ON");
+	createSyncTestSchema(db, (db) => {
+		db.run(`
+			CREATE TABLE hosts (
+				site_id TEXT PRIMARY KEY,
+				host_name TEXT NOT NULL,
+				modified_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			)
+		`);
 
-	db.run(`
-		CREATE TABLE change_log (
-			hlc TEXT PRIMARY KEY,
-			table_name TEXT NOT NULL,
-			row_id TEXT NOT NULL,
-			site_id TEXT NOT NULL,
-			timestamp TEXT NOT NULL,
-			row_data TEXT NOT NULL
-		)
-	`);
-
-	db.run(`
-		CREATE TABLE sync_state (
-			peer_site_id TEXT PRIMARY KEY,
-			last_received TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
-			last_sent TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
-			last_confirmed TEXT NOT NULL DEFAULT '0000-00-00T00:00:00.000Z_0000_0000',
-			sync_errors INTEGER DEFAULT 0,
-			last_sync_at TEXT
-		)
-	`);
-
-	db.run(`
-		CREATE TABLE semantic_memory (
-			id TEXT PRIMARY KEY,
-			key TEXT NOT NULL,
-			value TEXT NOT NULL,
-			source TEXT,
-			created_at TEXT NOT NULL,
-			modified_at TEXT NOT NULL,
-			last_accessed_at TEXT,
-			tier TEXT DEFAULT 'default',
-			deleted INTEGER DEFAULT 0
-		)
-	`);
-
-	db.run(`
-		CREATE TABLE tasks (
-			id TEXT PRIMARY KEY,
-			type TEXT NOT NULL,
-			status TEXT NOT NULL,
-			trigger_spec TEXT NOT NULL,
-			payload TEXT,
-			created_at TEXT NOT NULL,
-			created_by TEXT,
-			thread_id TEXT,
-			claimed_by TEXT,
-			claimed_at TEXT,
-			lease_id TEXT,
-			next_run_at TEXT,
-			last_run_at TEXT,
-			run_count INTEGER DEFAULT 0,
-			max_runs INTEGER,
-			requires TEXT,
-			model_hint TEXT,
-			no_history INTEGER DEFAULT 0,
-			inject_mode TEXT DEFAULT 'results',
-			depends_on TEXT,
-			require_success INTEGER DEFAULT 0,
-			alert_threshold INTEGER DEFAULT 3,
-			consecutive_failures INTEGER DEFAULT 0,
-			event_depth INTEGER DEFAULT 0,
-			no_quiescence INTEGER DEFAULT 0,
-			heartbeat_at TEXT,
-			result TEXT,
-			error TEXT,
-			modified_at TEXT NOT NULL,
-			deleted INTEGER DEFAULT 0
-		) STRICT
-	`);
-
-	db.run(`
-		CREATE TABLE hosts (
-			site_id TEXT PRIMARY KEY,
-			host_name TEXT NOT NULL,
-			modified_at TEXT NOT NULL,
-			deleted INTEGER DEFAULT 0
-		)
-	`);
-
-	db.run(`
-		CREATE TABLE cluster_config (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
-			modified_at TEXT NOT NULL,
-			deleted INTEGER DEFAULT 0
-		)
-	`);
-
-	db.run(`
-		CREATE TABLE messages (
-			id TEXT PRIMARY KEY,
-			thread_id TEXT NOT NULL,
-			role TEXT NOT NULL,
-			content TEXT NOT NULL,
-			model_id TEXT,
-			tool_name TEXT,
-			exit_code INTEGER,
-			metadata TEXT,
-			created_at TEXT NOT NULL,
-			modified_at TEXT,
-			host_origin TEXT NOT NULL,
-			deleted INTEGER DEFAULT 0
-		) STRICT
-	`);
+		db.run(`
+			CREATE TABLE cluster_config (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL,
+				modified_at TEXT NOT NULL,
+				deleted INTEGER DEFAULT 0
+			)
+		`);
+	});
 }
 
 function insertMessageRole(db: Database, id: string, role: string): void {
