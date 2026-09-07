@@ -1,7 +1,8 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ConnectorHandleRow } from "@bound/shared";
-import { applySchema, insertRow } from "../../../index";
+import { createCoreTestDb } from "../../../__tests__/test-database";
+import { insertRow } from "../../../index";
 import { findDarkConnectorHandles } from "../find-dark-connector-handles";
 
 const SITE = "site-test";
@@ -78,8 +79,7 @@ describe("findDarkConnectorHandles", () => {
 	let db: Database;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
+		db = createCoreTestDb();
 	});
 
 	afterEach(() => db.close());

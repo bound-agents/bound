@@ -1,6 +1,7 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applyMetricsSchema, applySchema, insertRow, softDelete } from "../../../index";
+import { createCoreTestDb } from "../../../__tests__/test-database";
+import { insertRow, softDelete } from "../../../index";
 import { listFileModificationNotices } from "../file-modification-notices";
 
 const SITE = "site-test";
@@ -96,9 +97,7 @@ describe("listFileModificationNotices", () => {
 	let db: Database;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		db = createCoreTestDb({ metrics: true });
 	});
 
 	afterEach(() => {

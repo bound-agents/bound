@@ -1,7 +1,8 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { SemanticMemory } from "@bound/shared";
-import { applyMetricsSchema, applySchema, insertRow, softDelete } from "../../index";
+import { createCoreTestDb } from "../../__tests__/test-database";
+import { applyMetricsSchema, insertRow, softDelete } from "../../index";
 import {
 	countActiveMemory,
 	countMemoryByKeyPrefix,
@@ -42,9 +43,7 @@ describe("semantic-memory repository finders", () => {
 	let db: Database;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		db = createCoreTestDb({ metrics: true });
 	});
 
 	afterEach(() => {
@@ -437,8 +436,7 @@ describe("semantic-memory repository finders", () => {
 		});
 
 		it("returns 0 when there are no pinned entries (zero-row aggregate)", () => {
-			const fresh = new Database(":memory:");
-			applySchema(fresh);
+			const fresh = createCoreTestDb();
 			applyMetricsSchema(fresh);
 			expect(countPinnedMemoryExcludingKeys(fresh, [])).toBe(0);
 			expect(countPinnedMemoryExcludingKeys(fresh, ["x"])).toBe(0);

@@ -4,7 +4,7 @@
 // response kinds + pending + target_site_id = self, so the requester consumes
 // exactly-once via the token-fenced claim/ack lifecycle. See
 // docs/design/specs/2026-08-31-durable-work-consolidation.md (R-DW10, R-DW13).
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { insertDurableWork } from "../durable-work";
 import { LOCAL_WORK_TARGET } from "../durable-work";
@@ -13,15 +13,14 @@ import {
 	readDurableResponseByRefId,
 	readDurableResponsesByStreamId,
 } from "../repositories/durable-work";
-import { applySchema } from "../schema";
+import { createCoreTestDb } from "./test-database";
 
 let db: Database;
 const SELF = "self-site";
 const PEER = "peer-site";
 
 beforeEach(() => {
-	db = new Database(":memory:");
-	applySchema(db);
+	db = createCoreTestDb();
 });
 
 /** Insert a pending durable response row targeted at `target`. */

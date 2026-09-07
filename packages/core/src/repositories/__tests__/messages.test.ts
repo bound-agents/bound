@@ -1,7 +1,8 @@
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Message } from "@bound/shared";
-import { applyMetricsSchema, applySchema, insertRow, softDelete } from "../../index";
+import { createCoreTestDb } from "../../__tests__/test-database";
+import { applyMetricsSchema, insertRow, softDelete } from "../../index";
 import {
 	countAssistantMessages,
 	countLiveAssistantMessagesByThread,
@@ -69,9 +70,7 @@ describe("messages repository finders", () => {
 	let db: Database;
 
 	beforeEach(() => {
-		db = new Database(":memory:");
-		applySchema(db);
-		applyMetricsSchema(db);
+		db = createCoreTestDb({ metrics: true });
 	});
 
 	afterEach(() => {
@@ -251,8 +250,7 @@ describe("messages repository finders", () => {
 		});
 
 		it("countAssistantMessages is 0 with no assistant rows", () => {
-			const fresh = new Database(":memory:");
-			applySchema(fresh);
+			const fresh = createCoreTestDb();
 			applyMetricsSchema(fresh);
 			insertRow(fresh, "messages", makeMessage({ id: "only-user", role: "user" }), SITE);
 			expect(countAssistantMessages(fresh)).toBe(0);

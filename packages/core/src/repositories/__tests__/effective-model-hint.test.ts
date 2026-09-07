@@ -1,11 +1,9 @@
-import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { applySchema } from "../../schema";
+import { createCoreTestDb } from "../../__tests__/test-database";
 import { resolveEffectiveModelHint } from "../effective-model-hint";
 
 function setup() {
-	const db = new Database(":memory:");
-	applySchema(db);
+	const db = createCoreTestDb();
 	const now = new Date().toISOString();
 	db.run("INSERT INTO users (id, display_name, first_seen_at, modified_at) VALUES ('u','U',?,?)", [
 		now,

@@ -30,15 +30,14 @@
  *      and no others.
  */
 
-import Database from "bun:sqlite";
+import type Database from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import fc from "fast-check";
-import { applySchema } from "../schema";
 import { getSyncedTableSchemas } from "../schema-introspection";
+import { createCoreTestDb } from "./test-database";
 
 function freshDb(): Database {
-	const db = new Database(":memory:");
-	applySchema(db);
+	const db = createCoreTestDb();
 	return db;
 }
 

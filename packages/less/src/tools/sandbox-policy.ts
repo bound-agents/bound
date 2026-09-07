@@ -302,25 +302,52 @@ export function computeWritableRoots(cwd: string, cfg: ResolvedSandboxConfig): s
  * need. Carved out of the otherwise-writable cwd by {@link buildPolicy} (the mxc
  * kernel guard) and {@link checkWritePath} (the in-process file-tool guard).
  *
- * Returns realpath-resolved, *existing* paths only: a bubblewrap `--ro-bind` of
- * a missing source aborts the sandbox, and a non-repo cwd (or a worktree/submodule
- * whose `.git` is a file, not a dir) simply has nothing to bind.
+ * Returns existing canonical paths on POSIX: a bubblewrap `--ro-bind` of a
+ * missing source aborts the sandbox, and a non-repo cwd (or a worktree/submodule
+ * whose `.git` is a file, not a dir) simply has nothing to bind. Windows also
+ * retains existing lexical control-surface paths alongside their canonical targets
+ * so lowbox can reject a hooks-root reparse point before it follows that point.
  *
- * The protected path set is platform-independent. POSIX shell confinement
- * consumes it as read-only bind paths; the bound-owned Windows lowbox helper
- * enforces the same carve-out through scoped DACLs. Keeping it here also makes
- * the in-process file tools refuse writes consistently on every platform.
+ * POSIX shell confinement consumes canonical paths as read-only binds. The
+ * bound-owned Windows lowbox helper enforces the same carve-out through scoped
+ * DACLs, using both lexical and canonical paths. Keeping it here also makes the
+ * in-process file tools refuse writes consistently on every platform.
  */
 export function computeGitProtectedPaths(
 	cwd: string,
 	_platform?: NodeJS.Platform,
 	metadata?: GitWorktreeMetadata,
 ): string[] {
-	if (metadata) return metadata.protectedPaths;
+	if (metadata) {
+		if (_platform !== "win32") return metadata.protectedPaths;
+		const protectedPaths = new Set(metadata.protectedPaths);
+		// Session metadata retains canonical paths for POSIX readonly binds. On
+		// Windows add the un-resolved Git control-surface names back before handing
+		// them to lowbox, so its native reparse-point check sees the junction itself.
+		for (const base of new Set([join(cwd, ".git"), metadata.gitdir, metadata.commondir])) {
+			for (const rel of ["hooks", "config", "config.worktree"] as const) {
+				const lexicalPath = join(base, rel);
+				try {
+					realpathSync(lexicalPath);
+					protectedPaths.add(lexicalPath);
+				} catch {
+					// Lowbox must not receive a missing protected path.
+				}
+			}
+		}
+		return [...protectedPaths];
+	}
 	const protectedPaths: string[] = [];
 	for (const rel of ["hooks", "config", "config.worktree"] as const) {
+		const lexicalPath = join(cwd, ".git", rel);
 		try {
-			protectedPaths.push(realpathSync(join(cwd, ".git", rel)));
+			const resolvedPath = realpathSync(lexicalPath);
+			// Lowbox receives DACL targets, not POSIX-style bind mounts. Keep its
+			// lexical root too: resolving a hooks-root reparse point first would
+			// otherwise hand the native helper only its target, bypassing the root
+			// it must reject. POSIX continues to consume the canonical bind target.
+			if (_platform === "win32") protectedPaths.push(lexicalPath);
+			protectedPaths.push(resolvedPath);
 		} catch {
 			// Missing paths are never bound: a missing readonly bind aborts mxc.
 		}
