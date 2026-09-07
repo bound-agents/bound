@@ -93,13 +93,20 @@ describe("ChatGptOAuthDriver prompt-cache routing", () => {
 		expect(body.prompt_cache_key).toBe("thread-123");
 		expect(body.store).toBe(false);
 		expect(request.headers.get("chatgpt-account-id")).toBe("acct_123");
+		// Codex client parity (codex-rs/codex-api/src/requests/headers.rs
+		// build_session_headers): every Responses request pins the session
+		// identity headers alongside the body prompt_cache_key.
+		expect(request.headers.get("session-id")).toBe("thread-123");
+		expect(request.headers.get("thread-id")).toBe("thread-123");
 		// Markers must NOT ride this surface — the field is not on the codex
 		// allowlist and would 400 like temperature/top_p do.
 		expect(JSON.stringify(body)).not.toContain("prompt_cache_breakpoint");
 	});
 
-	it("omits the cache key when no threadId is present", async () => {
-		const { body } = await captureChat({});
+	it("omits the cache key and session headers when no threadId is present", async () => {
+		const { request, body } = await captureChat({});
 		expect("prompt_cache_key" in body).toBe(false);
+		expect(request.headers.get("session-id")).toBeNull();
+		expect(request.headers.get("thread-id")).toBeNull();
 	});
 });
