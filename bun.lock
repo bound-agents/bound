@@ -13,6 +13,7 @@
         "@types/bun": "latest",
         "abbrev": "3.0.1",
         "node-gyp": "11.4.0",
+        "nopt": "8.1.0",
         "typescript": "6.0.2",
       },
     },
