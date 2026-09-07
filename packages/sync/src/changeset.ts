@@ -9,6 +9,19 @@ export interface Changeset {
 	source_hlc_end: string;
 }
 
+function createChangeset(
+	events: ChangeLogEntry[],
+	fallbackHlc: string,
+	sourceSiteId: string,
+): Changeset {
+	return {
+		events,
+		source_site_id: sourceSiteId,
+		source_hlc_start: events.length > 0 ? events[0].hlc : fallbackHlc,
+		source_hlc_end: events.length > 0 ? events[events.length - 1].hlc : fallbackHlc,
+	};
+}
+
 export function fetchOutboundChangeset(
 	db: Database,
 	peerSiteId: string,
@@ -31,15 +44,7 @@ export function fetchOutboundChangeset(
 		)
 		.all(lastSent) as ChangeLogEntry[];
 
-	const sourceHlcStart = events.length > 0 ? events[0].hlc : lastSent;
-	const sourceHlcEnd = events.length > 0 ? events[events.length - 1].hlc : lastSent;
-
-	return {
-		events,
-		source_site_id: siteId,
-		source_hlc_start: sourceHlcStart,
-		source_hlc_end: sourceHlcEnd,
-	};
+	return createChangeset(events, lastSent, siteId);
 }
 
 export function fetchInboundChangeset(
@@ -57,15 +62,7 @@ export function fetchInboundChangeset(
 		)
 		.all(sinceHlc, requesterSiteId) as ChangeLogEntry[];
 
-	const sourceHlcStart = events.length > 0 ? events[0].hlc : sinceHlc;
-	const sourceHlcEnd = events.length > 0 ? events[events.length - 1].hlc : sinceHlc;
-
-	return {
-		events,
-		source_site_id: "",
-		source_hlc_start: sourceHlcStart,
-		source_hlc_end: sourceHlcEnd,
-	};
+	return createChangeset(events, sinceHlc, "");
 }
 
 /** Default max chunk size in bytes (10 MB plaintext — safe for Cloudflare/proxy limits). */
