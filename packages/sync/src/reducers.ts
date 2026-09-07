@@ -1,5 +1,9 @@
 import type { Database, SQLQueryBindings } from "bun:sqlite";
-import { createChangeLogEntry, normalizeRelationValue } from "@bound/core";
+import {
+	createChangeLogEntry,
+	getPkColumn as getCorePkColumn,
+	normalizeRelationValue,
+} from "@bound/core";
 import type { ChangeLogEntry, Logger, SyncedTableName, TypedEventEmitter } from "@bound/shared";
 import { TABLE_REDUCER_MAP, parseJsonUntyped } from "@bound/shared";
 
@@ -60,11 +64,7 @@ interface TableInfo {
 	pk: number;
 }
 
-const PK_COLUMN_MAP: Record<string, string> = { hosts: "site_id", cluster_config: "key" };
-
-export function getPkColumn(tableName: string): string {
-	return PK_COLUMN_MAP[tableName] || "id";
-}
+export const getPkColumn = getCorePkColumn as (tableName: string) => string;
 
 // Validate table name - must be a known synced table
 export function validateTableName(tableName: unknown): tableName is SyncedTableName {
