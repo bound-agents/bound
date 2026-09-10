@@ -57,6 +57,97 @@ function clampLine(text: string): string {
  */
 const LIVE_PROGRAM_ROWS = 6;
 
+/**
+ * Fixed-chrome rows in the dynamic (live) region that are NOT a live Yard
+ * card: the rounded input frame (top border + content + bottom border = 3),
+ * the status bar (1), and the action bar (1). Mirrors `DYNAMIC_CHROME_ROWS`
+ * in ToolCallCard so both budget helpers reserve the same non-card chrome.
+ */
+const DYNAMIC_CHROME_ROWS = 5;
+
+/** One-row cushion for rounding and the occasional banner / ctrl-C hint. */
+const SAFETY_ROWS = 1;
+
+/**
+ * Minimum rows a live Yard card occupies once rendered: the `Yard · running`
+ * header (1), at least one graph/effect row (1), and the card's marginBottom
+ * (1). A card clamped to its `maxGraphRows` still never renders shorter than
+ * this, so the region budget charges each visible card this floor.
+ */
+const MIN_LIVE_CARD_ROWS = 3;
+
+/**
+ * Shared row budget for the WHOLE dynamic Yard region — the live Yard cards
+ * plus the thinking/aux indicator lines that sit alongside them. Derived from
+ * the live terminal height so the region never outgrows the viewport and Ink
+ * stops reflowing every frame (#263: N concurrent Yard cards, each clamped
+ * only individually, jointly exceeded `termRows` and the dynamic region
+ * flickered on every repaint).
+ *
+ * Pure function of terminal rows so it stays unit-testable.
+ */
+export function computeYardRegionBudget(termRows: number): number {
+	return Math.max(MIN_LIVE_CARD_ROWS, termRows - DYNAMIC_CHROME_ROWS - SAFETY_ROWS);
+}
+
+export interface YardRegionPartition<T> {
+	/** The newest cards that fit the region budget, rendered fully (each still
+	 * individually clamped by `maxGraphRows`), in the caller's original order. */
+	visible: T[];
+	/** How many older cards were collapsed into the `+N more running` line. */
+	collapsedCount: number;
+	/** Per-card graph-row clamp so each visible card's own height stays bounded
+	 * to its fair share of the region budget. */
+	maxGraphRows: number;
+}
+
+/**
+ * Collapse-overflow policy for the live Yard region (#263). Given the ordered
+ * live Yard trees (oldest → newest, as `useYardExecutions` yields them), a
+ * count of non-card indicator lines sharing the region, and the shared region
+ * budget, render the NEWEST cards fully while they fit and collapse the
+ * remainder into ONE `+N more running` summary line. The region's total
+ * rendered height never exceeds `budget`.
+ *
+ * A single live Yard is unaffected: it always fits (the budget floor is one
+ * card) and renders with the same `maxGraphRows` a lone card received before
+ * this change, so single-Yard rendering is visually unchanged.
+ *
+ * Pure function of (yards, indicatorRows, budget) so it stays unit-testable.
+ */
+export function partitionLiveYards<T>(
+	yards: T[],
+	indicatorRows: number,
+	budget: number,
+): YardRegionPartition<T> {
+	const safeBudget = Math.max(MIN_LIVE_CARD_ROWS, budget);
+	const indicators = Math.max(0, indicatorRows);
+	if (yards.length === 0) {
+		return { visible: [], collapsedCount: 0, maxGraphRows: safeBudget };
+	}
+	// Rows left for cards after the always-present indicator lines. Keep room
+	// for at least one card so a run is never fully hidden.
+	const cardBudget = Math.max(MIN_LIVE_CARD_ROWS, safeBudget - indicators);
+	// How many whole cards fit at the per-card floor. If not all fit, one row
+	// goes to the `+N more running` collapse line, shrinking the card budget.
+	let capacity = Math.floor(cardBudget / MIN_LIVE_CARD_ROWS);
+	if (capacity >= yards.length) {
+		return {
+			visible: yards,
+			collapsedCount: 0,
+			maxGraphRows: Math.max(1, Math.floor(cardBudget / yards.length)),
+		};
+	}
+	// Reserve one row for the collapse line, then recompute capacity.
+	capacity = Math.max(1, Math.floor((cardBudget - 1) / MIN_LIVE_CARD_ROWS));
+	const visibleCount = Math.min(capacity, yards.length);
+	return {
+		visible: yards.slice(yards.length - visibleCount),
+		collapsedCount: yards.length - visibleCount,
+		maxGraphRows: Math.max(1, Math.floor((cardBudget - 1) / visibleCount)),
+	};
+}
+
 type NodeState = YardTreeSnapshot["nodes"][number];
 
 function label(node: NodeState): string {
