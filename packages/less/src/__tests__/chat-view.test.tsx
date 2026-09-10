@@ -901,3 +901,94 @@ describe("buildTurnActivityMap", () => {
 		expect(buildTurnActivityMap(messages).get("a1")).toBeUndefined();
 	});
 });
+
+describe("ChatView live Yard region overflow (#263)", () => {
+	// A minimal EventEmitter-shaped client stub: ChatView's useYardExecutions
+	// only needs client.on/off for the "yard:execution" channel. We drive the
+	// tree-root started events directly so N live cards exist concurrently.
+	function makeYardClient(): {
+		client: Pick<NonNullable<ChatViewProps["client"]>, "on" | "off">;
+		emit: (event: unknown) => void;
+	} {
+		// Channel-scoped like the real client: only "yard:execution" listeners
+		// receive our emitted events, so co-mounted hooks (e.g. useSessionHud's
+		// "context:debug" listener) never see a mis-shaped payload.
+		const listeners = new Set<(event: unknown) => void>();
+		const client = {
+			on: vi.fn((channel: string, fn: (event: unknown) => void) => {
+				if (channel === "yard:execution") listeners.add(fn);
+			}),
+			off: vi.fn((channel: string, fn: (event: unknown) => void) => {
+				if (channel === "yard:execution") listeners.delete(fn);
+			}),
+		} as unknown as Pick<NonNullable<ChatViewProps["client"]>, "on" | "off">;
+		return {
+			client,
+			emit: (event) => {
+				for (const fn of listeners) fn(event);
+			},
+		};
+	}
+
+	function liveYardEvent(threadId: string, n: number): Record<string, unknown> {
+		return {
+			thread_id: threadId,
+			trace_id: `trace-${n}`,
+			run_id: `run-${n}`,
+			node_id: `run-${n}`,
+			parent_id: null,
+			seq: 1,
+			phase: "started",
+			node: { kind: "run", depth: 0 },
+			input_preview: `{"n":${n}}`,
+		};
+	}
+
+	it("caps the dynamic region and shows a +N more line with several live yards", async () => {
+		const { client, emit } = makeYardClient();
+		const { lastFrame } = render(
+			React.createElement(
+				ChatView,
+				makeProps({ client: client as ChatViewProps["client"], isProcessing: true }),
+			),
+		);
+		await tick();
+		// ink-testing's stub stdout exposes no rows, so useTerminalSize falls back
+		// to its 24-row default. Eight concurrent runs cannot all fit that budget,
+		// so the region collapses the oldest into one "+N more running" line.
+		const count = 8;
+		for (let n = 0; n < count; n++) emit(liveYardEvent("thread-123", n));
+		await tick();
+		const frame = lastFrame() ?? "";
+		// The overflow collapse line appears and accounts for every hidden run:
+		// visible cards + N-more = the full live set, so no run is dropped.
+		const more = frame.match(/\+(\d+) more running/);
+		expect(more).not.toBeNull();
+		const collapsed = Number(more?.[1]);
+		const visibleCount = (frame.match(/Yard · running/g) ?? []).length;
+		expect(visibleCount).toBeGreaterThan(0);
+		expect(visibleCount + collapsed).toBe(count);
+		// The bounded region renders fewer cards than the live set — the fix is
+		// engaged, not a no-op that renders all eight.
+		expect(visibleCount).toBeLessThan(count);
+		// The newest run survives; the oldest is collapsed.
+		expect(frame).toContain(`{"n":${count - 1}}`);
+		expect(frame).not.toContain('{"n":0}');
+	});
+
+	it("renders a single live yard card without a collapse line", async () => {
+		const { client, emit } = makeYardClient();
+		const { lastFrame } = render(
+			React.createElement(
+				ChatView,
+				makeProps({ client: client as ChatViewProps["client"], isProcessing: true }),
+			),
+		);
+		await tick();
+		emit(liveYardEvent("thread-123", 7));
+		await tick();
+		const frame = lastFrame() ?? "";
+		expect(frame).toContain('{"n":7}');
+		expect(frame).not.toMatch(/more running/);
+	});
+});

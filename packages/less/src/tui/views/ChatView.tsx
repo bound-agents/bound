@@ -15,6 +15,8 @@ import {
 	ToolCallCard,
 	YardExecutionCard,
 	computeStdoutRowBudget,
+	computeYardRegionBudget,
+	partitionLiveYards,
 } from "../components";
 import {
 	analyzeToolCallContent,
@@ -798,16 +800,42 @@ export function ChatView({
 					{/* A compact read/search run carries no bottom margin (its rows
 					    stack); supply the turn-separating gap before the dynamic area. */}
 					{layout.endsInCompactRun && <Box height={1} />}
-					{yardExecutions.live.map((tree) => (
-						<Box key={`yard-live:${tree.traceId}:${tree.runId}`} marginBottom={1}>
-							<YardExecutionCard
-								tree={tree}
-								running
-								terminalColumns={termColumns}
-								maxGraphRows={Math.max(4, termRows - 10)}
-							/>
-						</Box>
-					))}
+					{(() => {
+						// #263: N concurrent live Yard cards, each clamped only
+						// individually, jointly exceeded termRows and Ink reflowed
+						// the dynamic region every frame. Compute one shared row
+						// budget for the whole dynamic Yard region (cards + the
+						// thinking/aux indicator line that shares it) and collapse
+						// the overflow: render the newest cards fully while they fit
+						// (each still individually clamped by maxGraphRows) and fold
+						// the remainder into one "+N more running" line. A single live
+						// Yard is unchanged — it always fits and keeps its budget.
+						const indicatorRows = liveYard && visibleInFlight.length === 0 ? 1 : 0;
+						const { visible, collapsedCount, maxGraphRows } = partitionLiveYards(
+							yardExecutions.live,
+							indicatorRows,
+							computeYardRegionBudget(termRows),
+						);
+						return (
+							<>
+								{visible.map((tree) => (
+									<Box key={`yard-live:${tree.traceId}:${tree.runId}`} marginBottom={1}>
+										<YardExecutionCard
+											tree={tree}
+											running
+											terminalColumns={termColumns}
+											maxGraphRows={maxGraphRows}
+										/>
+									</Box>
+								))}
+								{collapsedCount > 0 && (
+									<Box marginBottom={1}>
+										<Text dimColor>… +{collapsedCount} more running</Text>
+									</Box>
+								)}
+							</>
+						);
+					})()}
 					{/* Banners */}
 					{bannerMessage && bannerType && (
 						<Box marginBottom={1}>

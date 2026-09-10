@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { render } from "ink-testing-library";
 import React from "react";
 import type { YardTreeSnapshot } from "../../hooks/useYardExecutions";
-import { YardExecutionCard } from "../YardExecutionCard";
+import {
+	YardExecutionCard,
+	computeYardRegionBudget,
+	partitionLiveYards,
+} from "../YardExecutionCard";
 
 type YardNode = YardTreeSnapshot["nodes"][number];
 
@@ -72,5 +76,61 @@ describe("YardExecutionCard program and graph accounting", () => {
 		const capped = frame(tree(nodes, "a\nb\nc\nd\ne\nf\ng"), { maxGraphRows: 1 });
 		expect(capped).toContain("… +");
 		expect(capped).toContain("more effects");
+	});
+});
+
+describe("computeYardRegionBudget", () => {
+	it("reserves fixed dynamic-region chrome from the terminal height", () => {
+		// termRows - DYNAMIC_CHROME_ROWS(5) - SAFETY_ROWS(1).
+		expect(computeYardRegionBudget(40)).toBe(34);
+		expect(computeYardRegionBudget(20)).toBe(14);
+	});
+
+	it("never drops below one card's floor on a tiny terminal", () => {
+		expect(computeYardRegionBudget(4)).toBe(3);
+		expect(computeYardRegionBudget(0)).toBe(3);
+	});
+});
+
+describe("partitionLiveYards", () => {
+	const yards = ["a", "b", "c", "d", "e"];
+
+	it("renders every card fully when they all fit the budget", () => {
+		const { visible, collapsedCount } = partitionLiveYards(yards.slice(0, 2), 0, 40);
+		expect(visible).toEqual(["a", "b"]);
+		expect(collapsedCount).toBe(0);
+	});
+
+	it("leaves a single live yard unchanged with the whole card budget", () => {
+		// One card, no collapse, and its per-card graph clamp equals the whole
+		// card budget — visually identical to the pre-#263 lone-card path.
+		const { visible, collapsedCount, maxGraphRows } = partitionLiveYards(["only"], 0, 30);
+		expect(visible).toEqual(["only"]);
+		expect(collapsedCount).toBe(0);
+		expect(maxGraphRows).toBe(30);
+	});
+
+	it("collapses the oldest cards and keeps the newest when the budget is exceeded", () => {
+		// budget 10, floor 3/card → after reserving 1 collapse row, (10-1)/3 = 3
+		// cards fit; the newest three survive, the oldest two collapse.
+		const { visible, collapsedCount } = partitionLiveYards(yards, 0, 10);
+		expect(visible).toEqual(["c", "d", "e"]);
+		expect(collapsedCount).toBe(2);
+	});
+
+	it("charges indicator lines against the shared budget before cards", () => {
+		// budget 10 minus 2 indicator rows = 8 card rows; (8-1)/3 = 2 cards fit.
+		const { visible, collapsedCount } = partitionLiveYards(yards, 2, 10);
+		expect(visible).toEqual(["d", "e"]);
+		expect(collapsedCount).toBe(3);
+	});
+
+	it("never hides every run and keeps the region within budget", () => {
+		// Pathologically small budget: still show one card, collapse the rest,
+		// and the rendered height (1 card floor + 1 collapse row) stays <= budget.
+		const { visible, collapsedCount, maxGraphRows } = partitionLiveYards(yards, 0, 3);
+		expect(visible.length).toBe(1);
+		expect(collapsedCount).toBe(4);
+		expect(maxGraphRows).toBeGreaterThanOrEqual(1);
 	});
 });
