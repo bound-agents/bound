@@ -182,6 +182,7 @@ export {
 
 // Export skill seeding
 export { seedBundledSkills } from "./seed-skills";
+export { isBuiltinSkillId } from "./builtin-skill-ids";
 
 // Export skill utilities
 export {

@@ -37,7 +37,8 @@ Bound ships a small set of skills embedded in the binary and seeded on startup:
 write skills), `yard-recipes` (orchestration recipes for the `yard` tool), and
 `aux-agents` (doctrine for designing auxiliary-agent identities). Seeding is
 idempotent and respects operator retirement — a bundled skill you delete stays
-deleted. The `yard` and `aux` tool descriptions point the agent at the matching
+deleted. Removal is CLI/API-only (`boundctl skill delete` or `DELETE /api/skills/:id`);
+the web UI hides the **Delete** button for bundled skills. The `yard` and `aux` tool descriptions point the agent at the matching
 skill, so deep guidance lives in an activatable body instead of permanently
 occupying every turn's context.
 
