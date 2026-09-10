@@ -67,7 +67,14 @@ const configSchema = z
 		model: z.string().nullable().default(null),
 		contextFiles: z
 			.array(z.string())
-			.default(["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"]),
+			.default([
+				"README.md",
+				"CONTRIBUTING.md",
+				"AGENTS.md",
+				"AGENTS.local.md",
+				"CLAUDE.md",
+				"CLAUDE.local.md",
+			]),
 		shell: z.string().optional(),
 		sandbox: z.union([z.boolean(), sandboxConfigSchema]).default(true),
 	})
@@ -138,7 +145,14 @@ export async function loadConfig(configDir: string): Promise<Loaded<Config>> {
 			return {
 				url: "http://localhost:3001",
 				model: null,
-				contextFiles: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"],
+				contextFiles: [
+					"README.md",
+					"CONTRIBUTING.md",
+					"AGENTS.md",
+					"AGENTS.local.md",
+					"CLAUDE.md",
+					"CLAUDE.local.md",
+				],
 				sandbox: true,
 				_raw: {},
 			};
@@ -149,7 +163,14 @@ export async function loadConfig(configDir: string): Promise<Loaded<Config>> {
 			return {
 				url: "http://localhost:3001",
 				model: null,
-				contextFiles: ["README.md", "CONTRIBUTING.md", "AGENTS.md", "CLAUDE.md"],
+				contextFiles: [
+					"README.md",
+					"CONTRIBUTING.md",
+					"AGENTS.md",
+					"AGENTS.local.md",
+					"CLAUDE.md",
+					"CLAUDE.local.md",
+				],
 				sandbox: true,
 				_raw: {},
 			};

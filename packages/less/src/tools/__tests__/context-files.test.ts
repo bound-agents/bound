@@ -43,6 +43,11 @@ describe("isContextFile", () => {
 		expect(isContextFile("GUIDE.md", "/repo", ["GUIDE.md"])).toBe(true);
 		expect(isContextFile("README.md", "/repo", ["GUIDE.md"])).toBe(false);
 	});
+
+	it("matches the developer-local variants in the default set", () => {
+		expect(isContextFile("AGENTS.local.md", "/repo")).toBe(true);
+		expect(isContextFile("CLAUDE.local.md", "/repo")).toBe(true);
+	});
 });
 
 describe("contextFileStaleNote", () => {
@@ -80,52 +85,124 @@ describe("collectContextFiles XML delineation", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
-});
 
-describe("write/edit context-file steering note", () => {
-	it("write tool appends the stale note when the target is a context file", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ctxwrite-"));
+	it("injects both AGENTS.md and AGENTS.local.md when both are present", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-agents-local-"));
 		try {
-			const write = createWriteTool("host", undefined, CONTEXT_FILE_CANDIDATES);
-			const result = await write({ file_path: "README.md", content: "# Hi\n" }, undefined, dir);
-			const text = blockText(result as never);
-			expect(text).toContain("Wrote");
-			expect(text).toContain("injected into your system prompt as a context file");
-			expect(text).toContain("do not re-read");
+			writeFileSync(join(dir, "AGENTS.md"), "agents content");
+			writeFileSync(join(dir, "AGENTS.local.md"), "agents-local content");
+			const result = await collectContextFiles(dir);
+			expect(result).toContain('path="AGENTS.md"');
+			expect(result).toContain('path="AGENTS.local.md"');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	it("write tool omits the note for a non-context file", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ctxwrite2-"));
+	it("injects AGENTS.local.md even when it is the only agent-family file", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-only-agents-local-"));
 		try {
-			const write = createWriteTool("host", undefined, CONTEXT_FILE_CANDIDATES);
-			const result = await write({ file_path: "src/index.ts", content: "x\n" }, undefined, dir);
-			const text = blockText(result as never);
-			expect(text).toContain("Wrote");
-			expect(text).not.toContain("context file");
+			writeFileSync(join(dir, "AGENTS.local.md"), "agents-local content");
+			const result = await collectContextFiles(dir);
+			expect(result).toContain('path="AGENTS.local.md"');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
-	it("edit tool appends the stale note when the target is a context file", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ctxedit-"));
+	it("skips CLAUDE.local.md when AGENTS.local.md is present", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-local-skip-"));
 		try {
-			writeFileSync(join(dir, "AGENTS.md"), "old line\n");
-			const edit = createEditTool("host", undefined, CONTEXT_FILE_CANDIDATES);
-			const anchor = `1:${computeLineHash("old line")}`;
-			const result = await edit(
-				{ file_path: "AGENTS.md", edits: [{ start: anchor, end: anchor, content: "new line" }] },
-				undefined,
-				dir,
-			);
-			const text = blockText(result as never);
-			expect(text).toContain("Edited");
-			expect(text).toContain("injected into your system prompt as a context file");
+			writeFileSync(join(dir, "AGENTS.local.md"), "agents-local content");
+			writeFileSync(join(dir, "CLAUDE.local.md"), "claude-local content");
+			const result = await collectContextFiles(dir);
+			expect(result).toContain('path="AGENTS.local.md"');
+			expect(result).not.toContain('path="CLAUDE.local.md"');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("injects CLAUDE.local.md when only the CLAUDE family is present", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-claude-local-"));
+		try {
+			writeFileSync(join(dir, "CLAUDE.md"), "claude content");
+			writeFileSync(join(dir, "CLAUDE.local.md"), "claude-local content");
+			const result = await collectContextFiles(dir);
+			expect(result).toContain('path="CLAUDE.md"');
+			expect(result).toContain('path="CLAUDE.local.md"');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	describe("write/edit context-file steering note", () => {
+		it("write tool appends the stale note when the target is a context file", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "ctxwrite-"));
+			try {
+				const write = createWriteTool("host", undefined, CONTEXT_FILE_CANDIDATES);
+				const result = await write({ file_path: "README.md", content: "# Hi\n" }, undefined, dir);
+				const text = blockText(result as never);
+				expect(text).toContain("Wrote");
+				expect(text).toContain("injected into your system prompt as a context file");
+				expect(text).toContain("do not re-read");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("write tool omits the note for a non-context file", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "ctxwrite2-"));
+			try {
+				const write = createWriteTool("host", undefined, CONTEXT_FILE_CANDIDATES);
+				const result = await write({ file_path: "src/index.ts", content: "x\n" }, undefined, dir);
+				const text = blockText(result as never);
+				expect(text).toContain("Wrote");
+				expect(text).not.toContain("context file");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("edit tool appends the stale note when the target is a context file", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "ctxedit-"));
+			try {
+				writeFileSync(join(dir, "AGENTS.md"), "old line\n");
+				const edit = createEditTool("host", undefined, CONTEXT_FILE_CANDIDATES);
+				const anchor = `1:${computeLineHash("old line")}`;
+				const result = await edit(
+					{ file_path: "AGENTS.md", edits: [{ start: anchor, end: anchor, content: "new line" }] },
+					undefined,
+					dir,
+				);
+				const text = blockText(result as never);
+				expect(text).toContain("Edited");
+				expect(text).toContain("injected into your system prompt as a context file");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("edit tool appends the stale note when the target is a local context file", async () => {
+			const dir = mkdtempSync(join(tmpdir(), "ctxedit-local-"));
+			try {
+				writeFileSync(join(dir, "AGENTS.local.md"), "old line\n");
+				const edit = createEditTool("host", undefined, CONTEXT_FILE_CANDIDATES);
+				const anchor = `1:${computeLineHash("old line")}`;
+				const result = await edit(
+					{
+						file_path: "AGENTS.local.md",
+						edits: [{ start: anchor, end: anchor, content: "new line" }],
+					},
+					undefined,
+					dir,
+				);
+				const text = blockText(result as never);
+				expect(text).toContain("Edited");
+				expect(text).toContain("injected into your system prompt as a context file");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
 	});
 });

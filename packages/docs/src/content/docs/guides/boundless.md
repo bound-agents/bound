@@ -113,6 +113,27 @@ Client configuration lives in `~/.bound/less/`:
 | `config.js` / `config.json` | Server URL, default model, injected context files, and shell override. The optional JS base is overlaid by writable JSON preferences. |
 | `mcp.js` / `mcp.json` | Local MCP servers, separate from the server's `mcp.json`. The optional JS base is overlaid by writable JSON preferences. |
 
+### Context files
+
+On session start, boundless injects the content of well-known project instruction files
+from the working directory into the system prompt, wrapped in a frozen `<context-files>`
+block. The default set is `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `AGENTS.local.md`,
+`CLAUDE.md`, and `CLAUDE.local.md`; override it with the `contextFiles` list in
+`config.json`.
+
+`AGENTS.local.md` and `CLAUDE.local.md` are developer-local companions read **in addition
+to** their repo-scoped base file — use them for per-developer instructions that shouldn't
+be committed. They match `*.local.md` in the repo's `.gitignore`, so they stay untracked.
+
+`AGENTS.md` is the cross-agent open standard and wins over the Claude-specific fallback: when
+`AGENTS.md` is present, `CLAUDE.md` is skipped, and the same rule applies to the local pair
+(`CLAUDE.local.md` is skipped when `AGENTS.local.md` is present). The two pairs are
+independent — `AGENTS.md` does not suppress `CLAUDE.local.md`.
+
+The injected copy is held frozen for prompt-cache stability and is not refreshed when the
+agent edits the file mid-session; after a write or edit to one of these files, trust the
+tool result rather than re-reading to confirm the change landed.
+
 ## Read status and tool output
 
 Large shell results may be shortened or offloaded before they reach the transcript.
