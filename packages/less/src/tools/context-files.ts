@@ -3,12 +3,21 @@ import { join, resolve } from "node:path";
 /**
  * The standard context files that boundless auto-injects when present in the
  * working directory. These are project-level instruction files for agents.
+ *
+ * `AGENTS.local.md` / `CLAUDE.local.md` are the developer-local companions to
+ * the repo-scoped files: read IN ADDITION to their base file (they are
+ * gitignored via `*.local.md`, so they carry per-developer overrides that
+ * shouldn't be committed). Each local variant is paired directly after its base
+ * so the base is collected first, and the CLAUDE→AGENTS open-standard-wins skip
+ * (see collectContextFiles) applies in parallel to the local pair.
  */
 export const CONTEXT_FILE_CANDIDATES = [
 	"README.md",
 	"CONTRIBUTING.md",
 	"AGENTS.md",
+	"AGENTS.local.md",
 	"CLAUDE.md",
+	"CLAUDE.local.md",
 ] as const;
 
 /**
@@ -70,11 +79,16 @@ export async function collectContextFiles(cwd: string, candidates?: string[]): P
 		// AGENTS.md is the cross-agent open standard; CLAUDE.md is the
 		// Claude-specific fallback (typically just `@AGENTS.md`). When AGENTS.md is
 		// present, injecting CLAUDE.md too is redundant duplication on the wire —
-		// skip it. AGENTS.md precedes CLAUDE.md in CONTEXT_FILE_CANDIDATES, so it's
+		// skip it. The same precedence applies to the developer-local pair:
+		// CLAUDE.local.md is skipped when AGENTS.local.md is present. Each AGENTS
+		// variant precedes its CLAUDE counterpart in CONTEXT_FILE_CANDIDATES, so it's
 		// already been collected here if present-and-non-empty. A custom candidate
-		// list that omits AGENTS.md never trips this, so an explicit CLAUDE.md
-		// request is still honored.
+		// list that omits the AGENTS variant never trips this, so an explicit
+		// CLAUDE.md / CLAUDE.local.md request is still honored.
 		if (filename === "CLAUDE.md" && included.has("AGENTS.md")) {
+			continue;
+		}
+		if (filename === "CLAUDE.local.md" && included.has("AGENTS.local.md")) {
 			continue;
 		}
 

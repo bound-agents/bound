@@ -203,3 +203,7 @@ pnpm-workspace.yaml
 !/packages/agent/scripts/persona-lab/fault-bands.example.json
 /packages/agent/scripts/persona-lab/*.out.md
 /packages/agent/scripts/persona-lab/logs/
+
+# Developer-local agent context files (read in addition to the repo-scoped
+# AGENTS.md/CLAUDE.md, never committed) — see packages/less context-files.
+*.local.md
