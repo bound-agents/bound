@@ -2049,6 +2049,114 @@ describe("metrics routes", () => {
 				}
 			});
 
+			it("proportionally splits cost_usd for a price-function model (zero statics, cost > 0)", async () => {
+				// Regression for #266: a model priced by a `price(turn)` callback appears
+				// in the pricing map with all four `price_per_m_*` undefined/0 (the callback
+				// is not forwarded to the metrics route). Static reconstruction would then
+				// compute $0 for every component while the persisted cost_usd is correct.
+				// The route must fall through to the proportional split so components sum
+				// to cost_usd instead of collapsing to $0.
+				const app = createMetricsRoutes(db, [
+					{
+						id: "dynamic-model",
+						// No static prices — mirrors a `backend.price(turn)` snapshot.
+					},
+				]);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-dynamic",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"dynamic-model",
+					100,
+					200,
+					300,
+					400,
+					2.0,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const rows = (json.tokens as Record<string, unknown>).costByModelTimeline as Array<
+					Record<string, unknown>
+				>;
+				const row = rows.find((r) => r.model_id === "dynamic-model");
+				expect(row).toBeDefined();
+				// 100/1000, 200/1000, 300/1000, 400/1000 of $2.00.
+				expect(row?.cost_input_usd).toBeCloseTo(0.2, 6);
+				expect(row?.cost_output_usd).toBeCloseTo(0.4, 6);
+				expect(row?.cost_cache_read_usd).toBeCloseTo(0.6, 6);
+				expect(row?.cost_cache_write_usd).toBeCloseTo(0.8, 6);
+				// Components sum to cost_usd — not $0.
+				const sum =
+					(row?.cost_input_usd as number) +
+					(row?.cost_output_usd as number) +
+					(row?.cost_cache_read_usd as number) +
+					(row?.cost_cache_write_usd as number);
+				expect(sum).toBeCloseTo(2.0, 6);
+				expect(sum).toBeGreaterThan(0);
+			});
+
+			it("uses static reconstruction when a model carries a single nonzero static price", async () => {
+				// A model with only price_per_m_input set (others undefined) still counts as
+				// statically priced: the input component reconstructs from the static price
+				// and the others are 0 (no fall-through to proportional split).
+				const app = createMetricsRoutes(db, [
+					{
+						id: "input-only",
+						price_per_m_input: 10,
+					},
+				]);
+				const from = new Date("2026-05-18T00:00:00Z").toISOString();
+				const to = new Date("2026-05-19T00:00:00Z").toISOString();
+
+				db.prepare(
+					`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+					tokens_cache_read, tokens_cache_write, cost_usd, status, context_debug)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				).run(
+					"turn-input-only",
+					"thread-1",
+					"2026-05-18T12:00:00Z",
+					"input-only",
+					1_000_000,
+					500,
+					0,
+					0,
+					10,
+					"ok",
+					null,
+				);
+
+				const response = await app.fetch(
+					new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+				);
+				expect(response.status).toBe(200);
+				const json = (await response.json()) as Record<string, unknown>;
+				const rows = (json.tokens as Record<string, unknown>).costByModelTimeline as Array<
+					Record<string, unknown>
+				>;
+				const row = rows.find((r) => r.model_id === "input-only");
+				expect(row).toBeDefined();
+				// Static reconstruction: 1M input @ $10 = $10, output component stays $0
+				// (NOT proportionally split from cost_usd).
+				expect(row?.cost_input_usd).toBeCloseTo(10, 6);
+				expect(row?.cost_output_usd).toBe(0);
+				expect(row?.cost_cache_read_usd).toBe(0);
+				expect(row?.cost_cache_write_usd).toBe(0);
+			});
+
 			it("uses pricing for known models and falls back for unknown models in the same response", async () => {
 				const app = createMetricsRoutes(db, [
 					{
