@@ -580,6 +580,9 @@ export function routeRelayRequest(
 		// A dispatch:"sync" request whose source_site is absent is dead-lettered at
 		// the hub guard (#253); every RPC request kind routes through here.
 		source_site: params.sourceSiteId,
+		// Carry the active OTEL trace carrier so the consumer's receive span parents
+		// under the producer's request span across the durable spool hop (#261).
+		trace_context: params.traceContext ?? null,
 	});
 	return { path: selfTargeted ? "local" : "durable", id, inserted };
 }
@@ -665,6 +668,9 @@ export function routeRelayResponse(
 		// responses correlate by ref_id and never hit the sync-dispatch guard, but
 		// the row still carries an unambiguous origin (#253).
 		source_site: params.sourceSiteId,
+		// Carry the responder's active trace carrier so the requester's awaiter can
+		// parent its delivery span under the response span across the hop (#261).
+		trace_context: params.traceContext ?? null,
 	});
 	return { path: selfTargeted ? "local" : "durable", id, inserted };
 }

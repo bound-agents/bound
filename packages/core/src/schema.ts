@@ -878,13 +878,15 @@ export function applySchema(db: Database): void {
 			ref_id TEXT,
 			source_site TEXT,
 			received_at TEXT,
-			stream_id TEXT
+			stream_id TEXT,
+			trace_context TEXT
 		) STRICT
 	`);
 	ensureColumn(db, "durable_work", "ref_id");
 	ensureColumn(db, "durable_work", "source_site");
 	ensureColumn(db, "durable_work", "received_at");
 	ensureColumn(db, "durable_work", "stream_id");
+	ensureColumn(db, "durable_work", "trace_context");
 	// #253 reconnect auto-redrive budget: a persistent per-row cap on how many times
 	// a transfer-exhausted dead letter may be reclassified back to pending, so the
 	// reconnect leg cannot resurrect the same row forever. Local-only, added via

@@ -51,6 +51,7 @@ export interface DurableWorkRow {
 	source_site: string | null;
 	received_at: string | null;
 	stream_id: string | null;
+	trace_context: string | null;
 }
 
 export interface NewDurableWork {
@@ -64,6 +65,7 @@ export interface NewDurableWork {
 	source_site?: string | null;
 	received_at?: string | null;
 	stream_id?: string | null;
+	trace_context?: string | null;
 }
 
 export class InvalidDurableWorkRowError extends Error {
@@ -117,8 +119,8 @@ export function insertDurableWork(db: Database, row: NewDurableWork): boolean {
 		const now = new Date().toISOString();
 		const result = db.run(
 			`INSERT OR IGNORE INTO durable_work
-			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, ref_id, source_site, received_at, stream_id)
-			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)`,
+			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, ref_id, source_site, received_at, stream_id, trace_context)
+			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				row.id,
 				row.target_site_id,
@@ -131,6 +133,7 @@ export function insertDurableWork(db: Database, row: NewDurableWork): boolean {
 				row.source_site ?? null,
 				row.received_at ?? null,
 				row.stream_id ?? null,
+				row.trace_context ?? null,
 			],
 		);
 		const inserted = result.changes === 1;
