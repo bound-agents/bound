@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { Skill } from "@bound/shared";
+import type { SkillResponse } from "@bound/shared";
 import { onDestroy, onMount } from "svelte";
 import Btn from "../components/Btn.svelte";
 import DataTable from "../components/DataTable.svelte";
@@ -10,8 +10,9 @@ import SkillEditModal from "../components/SkillEditModal.svelte";
 import { client } from "../lib/bound";
 import { renderMarkdown } from "../lib/markdown";
 import { mermaid } from "../lib/mermaid";
+import { deleteControlsFor } from "./skills-view-logic";
 
-let skills: Skill[] = $state([]);
+let skills: SkillResponse[] = $state([]);
 let loading = $state(true);
 let expandedId = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -229,33 +230,35 @@ $effect.pre(() => {
 			>
 				Edit
 			</Btn>
-			{#if showDeleteConfirm[skill.id as string]}
-				<Btn
-					size="sm"
-					variant="danger"
-					disabled={actionInProgress === `${skill.id}:delete`}
-					onclick={() => deleteSkill(skill.id as string)}
-				>
-					Confirm Delete
-				</Btn>
-				<Btn
-					size="sm"
-					onclick={() => {
-						showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: false };
-					}}
-				>
-					Cancel
-				</Btn>
-			{:else}
-				<Btn
-					size="sm"
-					variant="danger"
-					onclick={() => {
-						showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: true };
-					}}
-				>
-					Delete
-				</Btn>
+			{#if deleteControlsFor(skill, showDeleteConfirm[skill.id as string] ?? false).showDeleteBranch}
+				{#if deleteControlsFor(skill, showDeleteConfirm[skill.id as string] ?? false).controls === "confirm-cancel"}
+					<Btn
+						size="sm"
+						variant="danger"
+						disabled={actionInProgress === `${skill.id}:delete`}
+						onclick={() => deleteSkill(skill.id as string)}
+					>
+						Confirm Delete
+					</Btn>
+					<Btn
+						size="sm"
+						onclick={() => {
+							showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: false };
+						}}
+					>
+						Cancel
+					</Btn>
+				{:else}
+					<Btn
+						size="sm"
+						variant="danger"
+						onclick={() => {
+							showDeleteConfirm = { ...showDeleteConfirm, [skill.id as string]: true };
+						}}
+					>
+						Delete
+					</Btn>
+				{/if}
 			{/if}
 		</div>
 	</div>

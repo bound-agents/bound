@@ -5,6 +5,7 @@ import type {
 	AgentFile,
 	Message,
 	Skill,
+	SkillResponse,
 	Task,
 	Thread,
 } from "@bound/shared";
@@ -938,13 +939,13 @@ export class BoundClient {
 
 	// ---- Skills ----
 
-	async listSkills(): Promise<Skill[]> {
+	async listSkills(): Promise<SkillResponse[]> {
 		return this.fetchJson("/api/skills");
 	}
 
 	async getSkill(
 		id: string,
-	): Promise<{ skill: Skill; content: string; files: { path: string; size: number }[] }> {
+	): Promise<{ skill: SkillResponse; content: string; files: { path: string; size: number }[] }> {
 		return this.fetchJson(`/api/skills/${id}`);
 	}
 

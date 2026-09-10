@@ -86,6 +86,8 @@ Deactivation affects that thread only.
 2. Select the skill you want to remove.
 3. Choose **Delete** and confirm the action.
 
+Bundled (built-in) skills have no **Delete** button in the web UI — remove them with the CLI or API instead (see below).
+
 ### Delete with the CLI
 
 1. Open a terminal.

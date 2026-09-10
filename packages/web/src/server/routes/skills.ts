@@ -1,6 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { deleteSkill, importSkillFromFiles, parseFrontmatter } from "@bound/agent";
+import {
+	deleteSkill,
+	importSkillFromFiles,
+	isBuiltinSkillId,
+	parseFrontmatter,
+} from "@bound/agent";
 import {
 	findFileContentByPathActive,
 	findSkillById,
@@ -24,7 +29,11 @@ export function createSkillsRoutes(db: Database): Hono {
 	// GET / - List all skills
 	app.get("/", (c) => {
 		try {
-			return c.json(listSkills(db));
+			const skills = listSkills(db).map((skill) => ({
+				...skill,
+				is_builtin: isBuiltinSkillId(skill.id),
+			}));
+			return c.json(skills);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json(
@@ -74,7 +83,7 @@ export function createSkillsRoutes(db: Database): Hono {
 			});
 
 			return c.json({
-				skill,
+				skill: { ...skill, is_builtin: isBuiltinSkillId(skill.id) },
 				content: skillMdContent,
 				files: relativeFiles,
 			});

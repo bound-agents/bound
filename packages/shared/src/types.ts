@@ -320,6 +320,16 @@ export interface Skill extends SoftDeletable {
 }
 
 /**
+ * A skill as returned by the web `/api/skills` routes: the DB row plus a
+ * computed `is_builtin` flag (true for bundled skills, whose deletion control
+ * the UI hides). Not a stored column — derived from the deterministic ID via
+ * `isBuiltinSkillId` in the server route.
+ */
+export interface SkillResponse extends Skill {
+	is_builtin: boolean;
+}
+
+/**
  * A durable, persona-scoped auxiliary-agent identity (#201). Each invocation is
  * ephemeral, but the identity — its persona, tool allowlist, default model, and
  * memory namespace — persists across invocations and syncs cluster-wide (shaped

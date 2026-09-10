@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { Database as BunDatabase } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
+import { isBuiltinSkillId } from "@bound/agent";
+import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
 import { Hono } from "hono";
 import { createSkillsRoutes } from "../routes/skills";
 
@@ -111,5 +113,62 @@ describe("GET /api/skills/:id — content lookup via skill_root", () => {
 		const paths = json.files.map((f) => f.path).sort();
 		expect(paths).toContain("SKILL.md");
 		expect(paths).toContain("references/guide.md");
+	});
+});
+
+describe("is_builtin classification on skills routes (#269)", () => {
+	let db: Database;
+	let app: Hono;
+
+	// Deterministic IDs assigned by seedBundledSkill: deterministicUUID(NAMESPACE, name).
+	const builtinName = "bound-reference";
+	const builtinId = deterministicUUID(BOUND_NAMESPACE, builtinName);
+
+	beforeEach(() => {
+		db = createTestDb();
+		app = new Hono();
+		app.route("/", createSkillsRoutes(db));
+	});
+
+	it("predicate marks bundled IDs true and a random UUID false", () => {
+		expect(isBuiltinSkillId(builtinId)).toBe(true);
+		expect(isBuiltinSkillId(deterministicUUID(BOUND_NAMESPACE, "not-a-bundled-skill"))).toBe(false);
+	});
+
+	it("GET / marks a bundled skill is_builtin=true and an imported skill false", async () => {
+		// Bundled skill: deterministic name-based ID, seeded skill_root, null creator.
+		insertSkill(db, builtinId, builtinName, `/home/user/skills/${builtinName}`);
+		// Operator-imported skill: shares the /home/user/skills root AND a null
+		// created_by_thread, so neither can be the discriminator — only the ID is.
+		insertSkill(db, "imported-1", "my-imported-skill", "/home/user/skills/my-imported-skill");
+
+		const res = await app.request("/");
+		expect(res.status).toBe(200);
+		const rows = (await res.json()) as Array<{ id: string; is_builtin: boolean }>;
+		const byId = new Map(rows.map((r) => [r.id, r.is_builtin]));
+		expect(byId.get(builtinId)).toBe(true);
+		expect(byId.get("imported-1")).toBe(false);
+	});
+
+	it("GET /:id marks a bundled skill is_builtin=true", async () => {
+		insertSkill(db, builtinId, builtinName, `/home/user/skills/${builtinName}`);
+		insertFile(db, `/home/user/skills/${builtinName}/SKILL.md`, "# Bound reference");
+
+		const res = await app.request(`/${builtinId}`);
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { skill: { is_builtin: boolean } };
+		expect(json.skill.is_builtin).toBe(true);
+	});
+
+	it("GET /:id marks an imported skill is_builtin=false, independent of content hash", async () => {
+		// content_hash is NULL here (insertSkill writes NULL); classification must not
+		// depend on it. An imported skill under the shared root stays false.
+		insertSkill(db, "imported-2", "another-import", "/home/user/skills/another-import");
+		insertFile(db, "/home/user/skills/another-import/SKILL.md", "# Imported");
+
+		const res = await app.request("/imported-2");
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { skill: { is_builtin: boolean } };
+		expect(json.skill.is_builtin).toBe(false);
 	});
 });
