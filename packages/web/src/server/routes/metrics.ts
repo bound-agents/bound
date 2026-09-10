@@ -459,7 +459,21 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				let costCacheRead: number;
 				let costCacheWrite: number;
 
-				if (pricing) {
+				// Only reconstruct from static per-token prices when the snapshot
+				// actually carries at least one nonzero `price_per_m_*`. A model
+				// priced by a `price(turn)` callback appears in the map with all
+				// four statics undefined/0 (the callback is not forwarded here), so
+				// static reconstruction would compute $0 for every component while
+				// the persisted `cost_usd` is correct. Fall through to the
+				// proportional split in that case so components sum to `cost_usd`.
+				const hasStaticPrice =
+					!!pricing &&
+					((pricing.price_per_m_input ?? 0) > 0 ||
+						(pricing.price_per_m_output ?? 0) > 0 ||
+						(pricing.price_per_m_cache_read ?? 0) > 0 ||
+						(pricing.price_per_m_cache_write ?? 0) > 0);
+
+				if (pricing && hasStaticPrice) {
 					costInput = (row.tokens_in * (pricing.price_per_m_input ?? 0)) / 1_000_000;
 					costOutput = (row.tokens_out * (pricing.price_per_m_output ?? 0)) / 1_000_000;
 					costCacheRead = (row.cache_read * (pricing.price_per_m_cache_read ?? 0)) / 1_000_000;
