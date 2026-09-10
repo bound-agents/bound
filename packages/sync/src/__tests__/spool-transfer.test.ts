@@ -23,7 +23,7 @@ function createDb(): Database {
 			claim_state TEXT NOT NULL DEFAULT 'pending' CHECK (claim_state IN ('pending', 'processing', 'transferring', 'consumed', 'dead_letter')),
 			claim_token TEXT, claimed_at TEXT, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT,
 			created_at TEXT NOT NULL, expires_at TEXT, dead_lettered_at TEXT, consumed_at TEXT,
-			ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT, reclassify_count INTEGER NOT NULL DEFAULT 0
+			ref_id TEXT, source_site TEXT, received_at TEXT, stream_id TEXT, trace_context TEXT, reclassify_count INTEGER NOT NULL DEFAULT 0
 		) STRICT;
 		CREATE TABLE hosts (
 			site_id TEXT PRIMARY KEY, host_name TEXT NOT NULL, version TEXT NOT NULL,
@@ -72,6 +72,7 @@ function seedPendingRow(
 			source_site: overrides.source_site ?? null,
 			received_at: overrides.received_at ?? null,
 			stream_id: overrides.stream_id ?? null,
+			trace_context: overrides.trace_context ?? null,
 		});
 	} finally {
 		setDurableWorkEventBus(null);

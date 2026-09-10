@@ -950,6 +950,9 @@ export class WsTransport {
 				stream_id: row.stream_id,
 				expires_at: row.expires_at,
 				received_at: row.received_at,
+				// Carry the OTEL trace carrier byte-for-byte so a hub-forwarded or
+				// peer-delivered row's consumer span parents correctly across the hop (#261).
+				trace_context: row.trace_context,
 				// The row is `transferring` with its generation token retained
 				// (begun by beginDurableWorkTransfer, or resumed with the same token on
 				// reconnect). Ship the token so the receiver echoes it in the ack and
@@ -1257,6 +1260,7 @@ export class WsTransport {
 					source_site: backfilledSourceSite,
 					received_at: entry.received_at ?? null,
 					stream_id: entry.stream_id ?? null,
+					trace_context: entry.trace_context ?? null,
 				});
 			} catch (error) {
 				if (!(error instanceof InvalidDurableWorkRowError)) {

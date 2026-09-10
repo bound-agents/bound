@@ -482,7 +482,7 @@ export class RelayProcessor {
 				expires_at: claimed.expires_at ?? new Date(Date.now() + 5 * 60 * 1000).toISOString(),
 				received_at: claimed.received_at ?? claimed.created_at,
 				processed: 0,
-				trace_context: null,
+				trace_context: claimed.trace_context,
 			};
 			try {
 				// dispatchActiveEntry is the shared core: it owns handler dispatch,

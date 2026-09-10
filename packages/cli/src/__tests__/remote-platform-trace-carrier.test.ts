@@ -6,29 +6,19 @@ import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-ho
 import { createRemotePlatformRequest } from "../commands/start/server.js";
 
 /**
- * Objection 6 (#253) — remote-platform trace-carrier coverage, durable rewrite.
+ * Objection 6 (#253) / #261 — remote-platform trace-carrier coverage, durable path.
  *
- * The original test (deleted in the demolition) asserted the producer stamped the
- * active OTEL trace carrier into the `relay_outbox.trace_context` column and that the
- * awaiter resolved from a seeded `relay_inbox` `result` row. Both stores are gone; the
- * producer now writes a peer-targeted `durable_work` row via `routeRelayRequest`.
- *
- * FINDING (severity upgrade, see 253-o6-trace-carrier-finding.md): the demolition lost
- * trace-carrier carriage AT THE PRODUCER, not merely on the processing path.
- * `createRemotePlatformRequest` still computes `traceContext:
+ * The producer (`createRemotePlatformRequest`) computes `traceContext:
  * serializeRelayTraceCarrier(injectRelayTraceCarrier())` and passes it to
- * `routeRelayRequest`, but `routeRelayRequest`'s `insertDurableWork` call never
- * references `params.traceContext`, `NewDurableWork` has no `trace_context` field, and
- * the `durable_work` table has no `trace_context` column. So the carrier is silently
- * discarded for every durable relay request and response.
+ * `routeRelayRequest`, which now persists it onto the `durable_work.trace_context`
+ * column (#261). The carrier survives the durable hop so the consumer's receive
+ * span parents under the producer's request span.
  *
- * This test therefore pins two things:
- *   1. what DOES survive — the producer writes a well-formed `platform_request` durable
- *      row targeted at the fresh remote host, carrying the request payload (GREEN);
- *   2. the regression — that row carries NO trace carrier (there is nowhere on the row
- *      to hold one). When the fix lands (add a `trace_context` column + thread it
- *      through), the second assertion flips and this test must be updated to assert the
- *      carrier survives instead.
+ * This test pins:
+ *   1. the producer writes a well-formed `platform_request` durable row targeted at
+ *      the fresh remote host, carrying the request payload;
+ *   2. that row carries the serialized OTEL trace carrier in `trace_context`, equal
+ *      to the traceparent for the active span context.
  */
 
 let openDbs: Database[] = [];
@@ -155,7 +145,7 @@ describe("remote platform request trace carrier (durable)", () => {
 		expect(payload.params).toEqual({ name: "discord_list_channels" });
 	});
 
-	it("FINDING: the durable row carries NO trace carrier (producer-level loss, #253 follow-up)", async () => {
+	it("stamps the active OTEL trace carrier onto the durable row's trace_context (#261)", async () => {
 		context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
 		const db = makeDb();
 		const localSiteId = "local-site";
@@ -169,11 +159,13 @@ describe("remote platform request trace carrier (durable)", () => {
 			optionalConfig: undefined,
 		} as never);
 
+		const traceId = "0af7651916cd43dd8448eb211c80319c";
+		const spanId = "b7ad6b7169203331";
 		let pending: Promise<unknown> | undefined;
 		await context.with(
 			trace.setSpanContext(context.active(), {
-				traceId: "0af7651916cd43dd8448eb211c80319c",
-				spanId: "b7ad6b7169203331",
+				traceId,
+				spanId,
 				traceFlags: 1,
 				isRemote: false,
 			}),
@@ -189,12 +181,17 @@ describe("remote platform request trace carrier (durable)", () => {
 		settleAwaiter(db, localSiteId, requestRow?.id ?? "");
 		await pending;
 
-		// The durable_work row physically cannot carry a trace carrier: there is no
-		// trace_context column, and routeRelayRequest discards params.traceContext.
-		// Assert the regression explicitly so a fix (add the column, thread it through,
-		// read it in processPendingDurableWork's entry build) flips this test red and
-		// forces it to be rewritten to assert survival.
+		// The trace carrier now has a column to live on: assert it survives the
+		// producer's insert, equal to the serialized W3C traceparent for the active span.
 		const cols = db.query("PRAGMA table_info(durable_work)").all() as Array<{ name: string }>;
-		expect(cols.some((c) => c.name === "trace_context")).toBe(false);
+		expect(cols.some((c) => c.name === "trace_context")).toBe(true);
+		const row = db
+			.query(
+				"SELECT trace_context FROM durable_work WHERE kind = 'platform_request' AND target_site_id = ?",
+			)
+			.get(remoteSiteId) as { trace_context: string | null } | null;
+		expect(row?.trace_context).toBeTruthy();
+		const carrier = JSON.parse(row?.trace_context ?? "{}") as { traceparent?: string };
+		expect(carrier.traceparent).toBe(`00-${traceId}-${spanId}-01`);
 	});
 });
