@@ -159,7 +159,9 @@ export function createStatusRoutes(
 			const freshTs = host.modified_at ?? host.online_at;
 			const isStale = !freshTs || Date.now() - new Date(freshTs).getTime() > STALE_THRESHOLD_MS;
 
-			// AC5.5: Same model ID on multiple hosts → separate entries
+			// #271: same-id models across hosts (or local+remote) collapse to one
+			// entry in the final dedup below. The router resolves the provider
+			// dynamically per call, so the display list carries one row per id.
 			for (const modelId of modelIds) {
 				remoteModels.push({
 					id: modelId,
@@ -171,8 +173,22 @@ export function createStatusRoutes(
 			}
 		}
 
+		// #271: A model provided by multiple backends/hosts (pooled backends, or
+		// the same id local + remote / on two remotes) must appear once. Dedup the
+		// concatenated list by id, keeping the first-seen entry. localModels come
+		// first, so a model present both locally and remotely resolves to the local
+		// annotation (via/status "local"). This is presentational only — routing
+		// (resolveModel/ModelRouter) re-picks an eligible provider per call.
+		const deduped: ClusterModelInfo[] = [];
+		const seenModelIds = new Set<string>();
+		for (const model of [...localModels, ...remoteModels]) {
+			if (seenModelIds.has(model.id)) continue;
+			seenModelIds.add(model.id);
+			deduped.push(model);
+		}
+
 		return c.json({
-			models: [...localModels, ...remoteModels],
+			models: deduped,
 			default: resolved?.default ?? "",
 		});
 	});
