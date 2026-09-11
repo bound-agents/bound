@@ -157,8 +157,8 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 		});
 	});
 
-	describe("AC5.5: Same model on multiple hosts listed separately", () => {
-		it("lists shared model from each host with different host annotations", async () => {
+	describe("#271: Duplicate model ids collapse to one entry", () => {
+		it("lists a model shared across two remote hosts exactly once", async () => {
 			const now = new Date().toISOString();
 			db.prepare(
 				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
@@ -175,8 +175,70 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 			};
 
 			const sharedModels = body.models.filter((m) => m.id === "shared-model");
-			expect(sharedModels).toHaveLength(2);
-			expect(sharedModels.map((m) => m.host).sort()).toEqual(["host-a", "host-b"]);
+			expect(sharedModels).toHaveLength(1);
+		});
+
+		it("collapses a model present both locally and remotely, keeping the local annotation", async () => {
+			// local-gpt is a local backend (seeded in beforeEach); advertise the same
+			// id from a remote host. The API must return one entry, local-first.
+			const now = new Date().toISOString();
+			db.prepare(
+				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
+			).run("remote-dup-site", "remote-dup-host", JSON.stringify(["local-gpt"]), now, now);
+
+			const res = await app.fetch(new Request("http://localhost/models"));
+
+			const body = (await res.json()) as {
+				models: Array<{ id: string; provider: string; via: string; status: string }>;
+			};
+
+			const dupModels = body.models.filter((m) => m.id === "local-gpt");
+			expect(dupModels).toHaveLength(1);
+			expect(dupModels[0].via).toBe("local");
+			expect(dupModels[0].status).toBe("local");
+			expect(dupModels[0].provider).toBe("openai");
+		});
+
+		it("collapses two local backends sharing an id, keeping the first-seen provider", async () => {
+			// Pooled backends: same id, distinct providers. Fresh route with two such
+			// local backends — the API returns one entry, provider = first-seen.
+			const pooledApp = createStatusRoutes(db, eventBus, localHostName, localSiteId, {
+				models: [
+					{ id: "opus", provider: "anthropic" },
+					{ id: "opus", provider: "bedrock-mantle" },
+				],
+				default: "opus",
+			});
+
+			const res = await pooledApp.fetch(new Request("http://localhost/models"));
+
+			const body = (await res.json()) as {
+				models: Array<{ id: string; provider: string }>;
+				default: string;
+			};
+
+			const opusModels = body.models.filter((m) => m.id === "opus");
+			expect(opusModels).toHaveLength(1);
+			expect(opusModels[0].provider).toBe("anthropic");
+			expect(body.default).toBe("opus");
+		});
+
+		it("preserves distinct model ids across local and remote (dedup is by id, not lossy)", async () => {
+			const now = new Date().toISOString();
+			db.prepare(
+				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
+			).run("distinct-site", "distinct-host", JSON.stringify(["remote-only-model"]), now, now);
+
+			const res = await app.fetch(new Request("http://localhost/models"));
+
+			const body = (await res.json()) as {
+				models: Array<{ id: string }>;
+			};
+
+			const ids = body.models.map((m) => m.id);
+			expect(ids).toContain("local-claude");
+			expect(ids).toContain("local-gpt");
+			expect(ids).toContain("remote-only-model");
 		});
 	});
 
