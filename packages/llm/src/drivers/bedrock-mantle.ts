@@ -153,16 +153,26 @@ function toReasoningEffort(
  * Mantle's `openai.` model IDs bypass the SDK's reasoning-model detection, so `forceReasoning` preserves
  * `reasoningEffort`. `store: false` satisfies zero retention; GPT-5.x requires `promptCacheRetention: "24h"`.
  * See the Mantle cache gotcha for 5.4/5.5 exact-match behavior and 5.6 breakpoints.
+ *
+ * `reasoningSummary: null` is load-bearing, not decoration. @ai-sdk/openai defaults `reasoning.summary`
+ * to `"detailed"` whenever a request is treated as a reasoning model AND carries a non-`none` effort
+ * (openai-responses-language-model resolvedReasoningSummary). Because `forceReasoning: true` forces the
+ * former and our effort mapping supplies the latter, the SDK would emit `reasoning.summary` on every
+ * effort-bearing Mantle turn — which the Bedrock-Mantle Responses endpoint rejects with
+ * `400 Unsupported parameter: 'reasoning.summary'` (it uses encrypted reasoning, not summaries). Pinning
+ * `null` (the SDK checks `!== undefined`, schema is `.nullish()`) takes the explicit branch and drops the
+ * field from the wire body. `undefined` would fall back into the `"detailed"` default and NOT fix it.
  */
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
 	reasoningDisabled = false,
-): Record<string, string | boolean> {
+): Record<string, string | boolean | null> {
 	const reasoningEffort = reasoningDisabled ? "none" : toReasoningEffort(effort);
 	return {
 		store: false,
 		promptCacheRetention: "24h",
 		forceReasoning: true,
+		reasoningSummary: null,
 		...(reasoningEffort && { reasoningEffort }),
 	};
 }

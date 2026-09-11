@@ -243,6 +243,30 @@ describe("buildMantleOpenAIOptions", () => {
 		// uses the API default, which is correct — we just don't override it.
 		expect(opts.forceReasoning).toBe(true);
 	});
+
+	// Regression #272: @ai-sdk/openai defaults `reasoning.summary` to "detailed"
+	// on any reasoning-model request carrying a non-`none` effort. Because this
+	// driver force-reasons every Mantle `openai.` id AND supplies an effort, the
+	// SDK would emit `reasoning.summary` on the wire — which the Bedrock-Mantle
+	// Responses endpoint rejects with 400 `Unsupported parameter:
+	// 'reasoning.summary'`. The options MUST pin `reasoningSummary: null` so the
+	// SDK takes the explicit branch (it checks `!== undefined`) and drops the
+	// field. `undefined` would fall back into the "detailed" default and NOT fix
+	// it, so assert the value is exactly `null`.
+	it("pins reasoningSummary null so the SDK's 'detailed' default never fires (effort-bearing)", () => {
+		const opts = buildMantleOpenAIOptions("high", false);
+		expect(opts.reasoningSummary).toBe(null);
+		expect(opts.reasoningEffort).toBe("high");
+		expect(opts.forceReasoning).toBe(true);
+	});
+
+	it("pins reasoningSummary null even on the thinking-disabled path", () => {
+		// effort "none" alone already suppresses the summary in the SDK, but the
+		// driver asserts it unconditionally (belt-and-suspenders across SDK bumps).
+		const opts = buildMantleOpenAIOptions("high", true);
+		expect(opts.reasoningSummary).toBe(null);
+		expect(opts.reasoningEffort).toBe("none");
+	});
 });
 
 describe("withEmptyRetry", () => {
