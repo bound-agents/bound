@@ -35,11 +35,11 @@ number or an ISO 8601 duration string, and both resolve to the same value:
 ```
 
 `PT30S`, `PT5M`, `PT1H30M`, and `PT0.5S` all parse. Existing numeric configs are
-unaffected — the string is a spelling of the number, not a separate mode.
+unaffected: the string is a spelling of the number and resolves to the same value.
 
 Durations carrying days or larger (`P1D`, `P2W`, `P1M`) are rejected: a day is
 23, 24, or 25 hours across a DST boundary, so converting one needs a calendar
-reference the config layer has no way to supply. Write `PT24H` when you mean 24
+reference the config layer has no way to supply. Write `PT24H` for 24
 hours. Negative durations and sub-millisecond precision are rejected too.
 
 Fields documented as `int >= 0` keep `0` as their disabled sentinel; `PT0S`
@@ -64,7 +64,7 @@ works there as well.
 
 Every operator config supports a JavaScript alternative: `allowlist.js`, `model_backends.js`, `network.js`, `platforms.js`, `sync.js`, `keyring.js`, `mcp.js`, and `memory.js`. When both forms exist, Bound selects `.js`; it never falls back to JSON after a selected JavaScript file fails to evaluate or validate. This keeps a broken override visible and makes startup/reload transactional: the previous loaded configuration remains active on a hot reload.
 
-A JavaScript file is an ESM-like module that `export default`s one object. Comments and helper declarations (for example a shared pricing function assigned to a `const`) may precede the export. Bound evaluates it in a bounded QuickJS runtime, expands `${NAME}` and `${NAME:-default}` strings, then applies the same strict Zod schema as JSON. JavaScript is configuration, not a general plugin surface: `model_backends.js` alone may contain `backend.price(turn)` callbacks; all other config values must be data.
+A JavaScript file is an ESM-like module that `export default`s one object. Comments and helper declarations (for example a shared pricing function assigned to a `const`) may precede the export. Bound evaluates it in a bounded QuickJS runtime, expands `${NAME}` and `${NAME:-default}` strings, then applies the same strict Zod schema as JSON. JavaScript serves as configuration within a constrained surface: `model_backends.js` alone may contain `backend.price(turn)` callbacks; all other config values must be data.
 
 ## `allowlist.js` / `allowlist.json`
 
@@ -104,7 +104,7 @@ must be `""`.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `id` | string (non-empty) | — | Logical alias you route to (e.g. `"opus"`). Distinct from `model`. |
+| `id` | string (non-empty) | — | Logical alias the router resolves (e.g. `"opus"`). Distinct from `model`. |
 | `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`, `umans`, `chatgpt-oauth`. |
 | `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model id for the selected `provider_mode` (for example, `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). **Omitted for `umans`** (the model lineup is fetched at runtime — see below). |
 | `provider_mode` | enum `anthropic`\|`openai_responses` | — | Required for `bedrock-mantle`. Selects the Mantle protocol surface: Anthropic Messages (`/anthropic/v1/messages`) or OpenAI Responses (`/openai/v1/responses`). |
@@ -114,12 +114,12 @@ must be `""`.
 | `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
 | `context_window` | int > 0 | — | Token budget bound for context assembly. **Omitted for `umans`** (fetched per-model). |
-| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. **Omitted and rejected for `umans`.** |
+| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. Omitted and rejected for `umans`. |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
-| `price` | function | absent | Optional `price(turn)` callback returning this turn’s USD cost. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to static pricing. When `price` is set, the static `price_per_m_*` fields may be omitted entirely — they default to `0` and only matter as the fallback when the callback fails. |
+| `price` | function | absent | Optional `price(turn)` callback returning this turn's USD cost. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to static pricing. When `price` is set, the static `price_per_m_*` fields may be omitted entirely — they default to `0` and only matter as the fallback when the callback fails. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
 | `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |
@@ -146,7 +146,7 @@ object:
 
 `tool` mode cannot set `effort`. It emits `Thinking complete - please continue your work.` after a `think` call and does not require the model to invoke that tool.
 
-**Cache-warming block** (`cache_warming`) — opt-in periodic "warm poke" that
+**Cache-warming block** (`cache_warming`) — opt-in periodic poke that
 keeps the prompt cache hot on active threads so the next real message lands on a
 cache-read instead of a cache-write. Off by default.
 
@@ -155,7 +155,7 @@ cache-read instead of a cache-write. Off by default.
 | `enabled` | bool | `false` | Master toggle. |
 | `max_pokes` | int ≥ 0 | `3` | Maximum pokes per thread since its last real activity. `0` disables warming on this backend even with `enabled: true`. |
 
-The poke *window* is not configured — it is derived per-thread from that thread's backend
+The poke window is not configured — it is derived per-thread from that thread's backend
 `cache_ttl` (a poke fires only when the cache would otherwise lapse before the next scan).
 
 ### Price callback

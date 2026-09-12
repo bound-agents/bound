@@ -44,7 +44,7 @@ The endpoint accepts the subset of the Responses schema that maps to Bound model
 | `instructions` | string | — | Maps to the system prompt. |
 | `tools` | tool[] | — | Responses-flat function tools: `{ type: "function", name, description?, parameters }`. |
 | `tool_choice` | string \| object | `"auto"` | Forwarded to the driver when tools are present. Echoed on the response for strict software development kit (SDK) parsers. |
-| `parallel_tool_calls` | boolean | `true` | Echoed on the response; not yet forwarded to the driver. |
+| `parallel_tool_calls` | boolean | `true` | Echoed on the response. The driver ignores it for now. |
 | `reasoning.effort` | string | per-model | Maps to effort (`low`, `medium`, `high`, `xhigh`, or `max` for Anthropic). |
 | `max_output_tokens` | number | per-model | Caps output length. Clamped to the model's own maximum-output ceiling. |
 | `temperature` | number | per-model | Sampling temperature. |
@@ -154,7 +154,7 @@ The endpoint sends a heartbeat every 5 seconds while it waits for the first mode
 | Requested model is unavailable | `503` |
 | Streaming fails after the SSE response starts | Terminal `response.failed` event |
 
-Unrecognized request fields are ignored, not errors.
+Unrecognized request fields are ignored and produce a normal response.
 
 ## Model resolution
 
@@ -170,7 +170,7 @@ table lists failures for unknown or unavailable models.
 
 The default web server listens only on loopback. Bound accepts and ignores a bearer token so
 clients that require an API-key value can connect. That ignored value is a compatibility
-placeholder, not authentication: Bound does not validate it or use it to authorize the
+placeholder for compatibility only: Bound does not validate it or use it to authorize the
 request. Do not treat a dummy API key as access control. See
 [Security boundaries](/bound/concepts/security-boundaries/) before exposing the endpoint
 beyond its default network boundary.

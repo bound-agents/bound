@@ -4,8 +4,8 @@ description: Look up native agent tools, grouped actions, and the other sources 
 ---
 
 Bound supplies native tools to its agent loop. This page is a scan-first behavioral index:
-it explains what each tool is for, not its request shape. Exact structured schemas are
-supplied to the model at runtime.
+it explains what each tool is for and leaves the request shape to the runtime, where exact
+structured schemas are supplied to the model.
 
 For lifecycle, scheduling, and connector context, see [Agent system](/bound/concepts/agent-system/).
 
@@ -27,7 +27,7 @@ For lifecycle, scheduling, and connector context, see [Agent system](/bound/conc
 | `hostinfo` | Displays registered-host and capability information. |
 | `connector` | Manages connector access when platform connectors make it available. |
 | `aux` | Defines, changes, invokes, and retires durable auxiliary-agent identities. |
-| `yard` | Internally coordinates substantial, bounded, multi-stage work and retains intermediate findings during a run. You ask for an outcome rather than authoring a workflow. See [Work orchestration with Yards](/bound/guides/orchestrate-with-yard/). |
+| `yard` | Internally coordinates substantial, bounded, multi-stage work and retains intermediate findings during a run. It takes a requested outcome and derives the workflow itself. See [Work orchestration with Yards](/bound/guides/orchestrate-with-yard/). |
 
 `connector` is conditionally available where configured platform connectors support it.
 Native tools are distinct from the other tool sources described in [Tool sources](#tool-sources).

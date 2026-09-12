@@ -49,6 +49,7 @@ task page, its conceptual explanation, and its reference material.
 - Use the em dash in moderation. Do not give every clause a dash-gloss, and do not pack a sentence with both a parenthetical and a dash-pair aside.
 - State what holds. Avoid corrective tails ("X, not Y"), "not just X" framing, and negation-defined restatements ("X does A; it does not B").
 - Documentation is end-state: no incident dates, no references to CI or verification infrastructure, and no issue-tracker references.
+
 ## Product terminology
 
 - Use **Bound** for the project, product, or system.

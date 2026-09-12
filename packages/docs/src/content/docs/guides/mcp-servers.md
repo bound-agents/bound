@@ -77,7 +77,7 @@ Apply the change without restarting Bound:
 boundctl config reload mcp
 ```
 
-You can restart Bound instead.
+Restarting Bound applies the change too.
 
 ## 3. Verify
 

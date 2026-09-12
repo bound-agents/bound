@@ -5,8 +5,8 @@ description: Understand how Bound agents coordinate bounded, multi-stage work an
 
 Some requests need more than one bounded step: for example, auditing several areas, comparing
 independent sources, or making a change that requires investigation, implementation, and review.
-You ask for the outcome in ordinary language. The agent decides whether that shape fits the work;
-you do not author or control its internal workflow.
+Ask for the outcome in ordinary language. The agent decides whether that shape fits the work;
+it authors and controls its own internal workflow.
 
 When it does, the agent sets up a **Yard**—a trainyard-like, bounded coordination plan that routes
 focused errands through the work and gathers their results.
@@ -40,12 +40,12 @@ A substantial request can therefore take a recognizable shape:
 4. **Targeted repair** — a failed check or review finding goes back only to the relevant scope,
    rather than restarting all of the work.
 
-These are possible shapes, not a fixed ceremony. A request may need only one specialist, or it may
+These are possible shapes rather than a fixed ceremony. A request may need only one specialist, or it may
 stop after investigation when the evidence does not support a change.
 
 ### An illustrative internal plan
 
-The agent, not you, writes and runs a Yard program. This simplified example shows the recognizable
+The agent writes and runs a Yard program on its own. This simplified example shows the recognizable
 shape of a request to compare two options: two auxiliary agents investigate in parallel, then the
 main agent synthesizes their findings.
 
@@ -97,7 +97,7 @@ The final response should identify:
 - blockers and remaining risks;
 - resulting artifacts, such as changed files, reports, or other deliverables.
 
-This reporting boundary lets you evaluate the delivered outcome without needing access to, or control
+This reporting boundary keeps the delivered outcome evaluable without needing access to, or control
 over, the internal workflow.
 
 ## Reloading execution panels
@@ -106,4 +106,4 @@ Yard keeps execution lifecycle events in server memory only while a run is activ
 
 Completed executions reload from the persisted Yard tool-call program and paired tool result. The UI derives literal `tool`, `infer`, `aux`, `all`, `sequence`, and nested `yard` structure without evaluating the program. Straight-line yields form the chain. `sequence` members show their source ordinal, and `all` groups show a parallel `×N` tag. Conditional, loop, and `try` yields remain dynamic regions rather than asserted execution paths.
 
-Nodes use **Pending**, **Running**, **Complete**, **Failed**, and **Settled** status. **Settled** means the historical run terminated; it does not prove each effect succeeded. Select a node to inspect its source arguments and unified formatted value; selection remains highlighted until you press Escape or click the canvas. No execution-history table, sync surface, route, or client API is used.
+Nodes use **Pending**, **Running**, **Complete**, **Failed**, and **Settled** status. **Settled** means the historical run terminated; it does not prove each effect succeeded. Select a node to inspect its source arguments and unified formatted value; selection remains highlighted until Escape is pressed or the canvas is clicked. No execution-history table, sync surface, route, or client API is used.

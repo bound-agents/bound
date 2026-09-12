@@ -21,12 +21,12 @@ Bound is experimental and does not yet provide production stability guarantees.
 
 ## What Bound does
 
-Bound gives you a persistent personal agent whose messages, memory, files, skills, and tasks
-remain available through the web UI, Discord, and the `boundless` terminal client. You can
-run Bound on one host or use optional multi-host operation to make models, tools, and
+Bound provides a persistent personal agent whose messages, memory, files, skills, and tasks
+remain available through the web UI, Discord, and the `boundless` terminal client. Run Bound
+on one host, or use optional multi-host operation to make models, tools, and
 interfaces on different machines available to the same agent.
 
-## What you can do
+## Capabilities
 
 - **Continue your work:** Carry context and durable memory across conversations and
   interfaces.

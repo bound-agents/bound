@@ -3,8 +3,8 @@ title: Work lifecycle and reliability
 description: How Bound moves work from intake through execution, state replication, and completion.
 ---
 
-The stages below are a common way to analyze Bound work, not a sequence that every
-source follows in full. Depending on the source, Bound may validate and authorize a
+The stages below are a common way to analyze Bound work; they describe the full path a
+source can take, and any given source runs the subset that applies to it. Depending on the source, Bound may validate and authorize a
 trigger, deduplicate it where supported, persist or enqueue durable work, select a host,
 run an agent loop, call a model and tools, and persist the result. Selected state can
 replicate to other hosts, while each source defines its own completion, failure, and retry

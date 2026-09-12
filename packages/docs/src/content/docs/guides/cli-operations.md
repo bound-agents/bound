@@ -155,7 +155,7 @@ Preview a point-in-time restore:
 boundctl restore --before TIMESTAMP --preview
 ```
 
-Replace `TIMESTAMP` with the point-in-time cutoff you want to inspect. After reviewing the
+Replace `TIMESTAMP` with the point-in-time cutoff to inspect. After reviewing the
 preview, apply the restore with the same timestamp and table selection:
 
 ```text
@@ -328,4 +328,4 @@ embedded Bun CLI mode to execute a read-only probe against the staged package tr
 every grammar used by the structure reader, parses one harmless declaration per grammar, and therefore
 exercises each package's actual `bindings/node/index.js` loader—not daemon liveness alone. The test
 needs Docker, so local development without Docker validates the static Dockerfile/workflow contract;
-the runtime image check runs in release CI.
+the runtime image check requires a Docker environment to execute the probe against the staged package tree.

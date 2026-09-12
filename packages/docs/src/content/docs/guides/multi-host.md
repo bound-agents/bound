@@ -20,7 +20,7 @@ supported backend needed on that host.
 - The hub's public key and reachable sync URL
 - A supported model backend for each host that provides inference
 
-If you haven't installed Bound yet, complete the installation step in the
+If Bound is not yet installed, complete the installation step in the
 [quick start](/bound/guides/quick-start/#1-install-bound) on each machine.
 
 ## 1. Initialize the hub
@@ -70,7 +70,7 @@ On the hub, start Bound with a bind address reachable by the spoke:
 BIND_HOST=0.0.0.0 bound start
 ```
 
-The sync server listens on port `3000` by default. Keep the process running while you connect
+The sync server listens on port `3000` by default. Keep the process running while connecting
 the spoke.
 
 :::danger[Protect the sync server]
@@ -99,9 +99,9 @@ Do not treat a configured hub name or recorded designation as proof of connectiv
 
 ## 5. Optionally record the cluster hub designation
 
-After the connection works, you can record the hub's host name in synchronized cluster
-configuration. Run this against the local data/config context whose cluster you intend to
-update:
+After the connection works, record the hub's host name in synchronized cluster
+configuration. Run this against the local data/config context whose cluster is being
+updated:
 
 ```bash
 boundctl set-hub hub-host
@@ -111,7 +111,7 @@ boundctl set-hub hub-host
 `cluster_config.cluster_hub`. It does not configure `sync.json` or `keyring.json`, validate the
 target name or URL, test reachability, or connect any peer.
 
-Use `--wait` only when you also want to wait for registered peers' sync timestamps after the
+Use `--wait` to also wait for registered peers' sync timestamps after the
 write:
 
 ```bash
@@ -130,7 +130,7 @@ connection before proceeding to the next host.
 
 ## Non-automatic hub replacement
 
-Hub replacement is a coordinated maintenance procedure, not automatic failover. Schedule a
+Hub replacement is a coordinated maintenance procedure that an operator runs deliberately. The cluster continues to serve the current hub until that procedure completes. Schedule a
 maintenance window; the commands below do not provide an atomic transition or rollback.
 
 1. Prepare a replacement hub that is reachable from every affected spoke, including the
@@ -175,7 +175,7 @@ catch-up.
 
 ### A model doesn't appear under a host
 
-Confirm that you initialized that host with the intended backend and that the host appears
+Confirm that the host was initialized with the intended backend and that the host appears
 online in **Network**.
 
 ### Optional: tune a slow inference relay

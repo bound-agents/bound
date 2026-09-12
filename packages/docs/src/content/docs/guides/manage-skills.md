@@ -3,11 +3,11 @@ title: Manage skills
 description: Import, inspect, activate, deactivate, delete, and restore reusable agent instructions.
 ---
 
-This guide shows how to manage a skill artifact and activate it for one thread. Importing a skill adds it to the catalog; it does not activate the skill.
+This guide shows how to manage a skill artifact and activate it for one thread. Activation is per-thread and opt-in; importing a skill only stages the artifact in the catalog.
 
 ## Prerequisites
 
-Before you begin, make sure you have:
+This guide requires:
 
 - A running Bound instance.
 - A valid skill directory containing a `SKILL.md` file.
@@ -15,7 +15,7 @@ Before you begin, make sure you have:
 
 ## Expected outcome
 
-You will import a reusable skill, inspect it, activate and deactivate it for a single thread, delete it, and restore it when needed.
+The steps below import a reusable skill, inspect it, activate and deactivate it for a single thread, delete it, and restore it.
 
 ## Import a skill
 
@@ -56,14 +56,14 @@ Use the displayed name in subsequent activation, deletion, and restore steps.
 
 ## Activate a skill for a thread
 
-1. Open the thread where you want to use the skill.
+1. Open the target thread.
 2. Ask the agent:
 
 ```text
 Activate the <name> skill for this thread.
 ```
 
-Activation is per-thread. Importing a skill makes it available for activation, but does not activate it in any thread.
+Activation is per-thread and opt-in. Importing a skill stages it for activation; a separate activation step enables it in a given thread.
 
 For related agent capabilities, see [Agent tools](/bound/reference/agent-tools/).
 
@@ -83,7 +83,7 @@ Deactivation affects that thread only.
 ### Delete in the web UI
 
 1. Open **Connections > Skills**.
-2. Select the skill you want to remove.
+2. Select the skill to remove.
 3. Choose **Delete** and confirm the action.
 
 Bundled (built-in) skills have no **Delete** button in the web UI — remove them with the CLI or API instead (see below).
@@ -102,7 +102,7 @@ Deletion soft-deletes the catalog artifact and its files. It does not make claim
 ## Restore a skill
 
 1. Re-import the skill directory using the same skill name.
-2. Activate it again in any thread where you need it.
+2. Activate it again in any thread that needs it.
 
 ## Verify the workflow
 

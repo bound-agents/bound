@@ -207,3 +207,6 @@ pnpm-workspace.yaml
 # Developer-local agent context files (read in addition to the repo-scoped
 # AGENTS.md/CLAUDE.md, never committed) — see packages/less context-files.
 *.local.md
+
+# Local Vale calibration workbench (binary + per-rule reports; fixtures live in packages/docs/vale/fixtures)
+.vale-demo/

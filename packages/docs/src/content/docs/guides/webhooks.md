@@ -17,13 +17,13 @@ Use this guide to receive a signed event from GitHub and process it with Bound.
 2. Enter a unique name.
 3. Choose the `github` signature format.
 4. Save the webhook.
-5. Save the generated secret where you configure the sending service.
+5. Save the generated secret in the sending service's configuration.
 
 A successful create automatically creates a system-owned delivery thread and a pending
 linked event task. Bound stores those links as `thread_id` and `task_id` on the webhook
 source.
 
-You can also set optional task behavior when you create the webhook:
+Optional task behavior can also be set at create time:
 
 - `prompt`, mapped to the linked event task's `system_prompt_addition`
 - `model_hint`, applied to the linked event task and its delivery thread
@@ -40,8 +40,8 @@ which listens on port `3000` by default. A URL has this form:
 http://your-hub-host:3000/webhook/github
 ```
 
-If a reverse proxy fronts the hub, route this path to the hub's sync server, not the web API
-on port `3001`.
+If a reverse proxy fronts the hub, route this path to the hub's sync server on port `3000`,
+which handles webhook delivery. The web API on port `3001` does not.
 
 The create response does not include a delivery URL. API clients can request candidate URLs
 with `GET /api/webhooks/:id/urls`, choose one reachable by the sender, and configure the
@@ -153,7 +153,7 @@ delivery for this format unless the cluster-wide unauthenticated-webhook switch 
 Enable it only behind a network boundary that prevents untrusted requests.
 :::
 
-You can enable that switch in **Connections > Webhooks** or through the API:
+Enable that switch in **Connections > Webhooks** or through the API:
 
 ```bash
 curl -X PUT http://localhost:3001/api/webhooks/unauthenticated-switch \
@@ -175,7 +175,7 @@ Design task actions to tolerate retries.
 
 ### The sender can't reach Bound
 
-Confirm that the delivery URL uses the reachable sync server on port `3000`. If you use a
+Confirm that the delivery URL uses the reachable sync server on port `3000`. Behind a
 reverse proxy, confirm that the webhook path routes to the sync server rather than the web
 API on port `3001`.
 

@@ -18,7 +18,7 @@ instructions for a particular errand. A broadly useful identity such as a terse,
 evidence-focused scout can therefore handle unrelated investigations without creating a
 new identity for each topic.
 
-Only the main agent invokes auxiliary agents. You can ask it to define or use an identity,
+Only the main agent invokes auxiliary agents. The operator can ask it to define or use an identity,
 and it decides whether delegation is useful. See [Agent
 tools](/bound/reference/agent-tools/) for actions, parameters, and current limits.
 
@@ -39,7 +39,7 @@ namespace, so different identities can use the same descriptive key without coll
 
 Visibility is intentionally asymmetric:
 
-- An auxiliary identity reads its own memory, not the main agent's or a sibling's memory.
+- An auxiliary identity reads only its own memory; the main agent's memory and a sibling identity's memory stay out of reach.
 - The main agent can read and write an auxiliary identity's memory by naming that identity.
 
 This boundary keeps the subordinate context narrow while allowing the main agent to retain
@@ -57,8 +57,8 @@ An invocation inherits the dispatching thread's surface context as well as its e
 client tools. A Boundless invocation therefore receives the same working directory, Git
 context, and injected context files as its parent; connector and web invocations preserve
 their corresponding platform context. The auxiliary persona **replaces** the main agent's
-persona in the child thread's system prompt — the identity speaks as itself, not as the
-main agent with a persona appended. Inheritance does not remove orchestration restrictions,
+persona in the child thread's system prompt — the identity speaks as itself, with no main-agent
+persona appended. Inheritance does not remove orchestration restrictions,
 and host access still follows
 the [sandbox and filesystem model](/bound/concepts/sandbox/). [Security
 boundaries](/bound/concepts/security-boundaries/) places these identity and capability limits

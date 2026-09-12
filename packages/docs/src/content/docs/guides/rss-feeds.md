@@ -77,7 +77,7 @@ unspecified, for both IPv4 and IPv6 (including IPv4-mapped IPv6 forms such as
 plus every redirect hop — shares one 30-second deadline, and the response body is
 capped while streaming, so a slow or oversized endpoint cannot hold a poll open or
 exhaust memory. A feed pointed at a blocked address fails its poll with a
-"not publicly routable" error and delivers nothing.
+`not publicly routable` error and delivers nothing.
 
 ## Edit or delete the feed
 
@@ -115,9 +115,9 @@ Only the elected RSS leader polls feeds. Bound stores up to 500 seen item identi
 synchronized feed row so that a replacement leader can continue without replaying recent
 items. This bounded history is not a general exactly-once guarantee.
 
-After a 15-minute grace window, every host reconciles its own local RSS, webhook, and connector intake. A live binding is re-emitted locally as an event wakeup; repeated emissions are safe because the scheduler claims the task once and only marks intake processed after its wakeup is durable. A deleted feed or connector handle’s orphaned intake is dead-lettered. This local recovery is not leader-gated: a host that has since lost connector leadership can still drain connector intake it accepted. Diagnostic reconciliation without an event bus raises an advisory instead.
+After a 15-minute grace window, every host reconciles its own local RSS, webhook, and connector intake. A live binding is re-emitted locally as an event wakeup; repeated emissions are safe because the scheduler claims the task once and only marks intake processed after its wakeup is durable. A deleted feed or connector handle's orphaned intake is dead-lettered. This local recovery is not leader-gated: a host that has since lost connector leadership can still drain connector intake it accepted. Diagnostic reconciliation without an event bus raises an advisory instead.
 
-Durable RSS intake is local to the host that accepted the item. If an RSS leader dies permanently after advancing the synchronized seen cursor, a successor cannot read that host’s local durable rows. A synced pending-delivery ledger would be required to close that residual cross-host loss window.
+Durable RSS intake is local to the host that accepted the item. If an RSS leader dies permanently after advancing the synchronized seen cursor, a successor cannot read that host's local durable rows. A synced pending-delivery ledger would be required to close that residual cross-host loss window.
 
 For how polling work proceeds, read [Work lifecycle](/bound/concepts/work-lifecycle/). For
 how hosts share feed state, read [Synchronization](/bound/concepts/sync/).
