@@ -13,7 +13,7 @@ Windows, download the appropriate binary from the
 - macOS or Linux
 - [Ollama](https://ollama.com), installed and running with a usable model available
 
-This tutorial uses Ollama so that you can complete the setup without API credentials.
+This tutorial uses Ollama so that the setup completes without API credentials.
 
 ## 1. Install Bound
 
@@ -36,7 +36,7 @@ mkdir -p ~/.local/bin
 mv bound ~/.local/bin/
 ```
 
-Ensure that `~/.local/bin` is on your `PATH` when you use the non-privileged installation.
+Ensure that `~/.local/bin` is on the `PATH` for the non-privileged installation.
 
 Confirm that your shell can run the binary:
 
@@ -79,8 +79,8 @@ internal component or persistence behavior.
 
 ## Use another backend
 
-The following commands are alternatives to `bound init --ollama`, not sequential steps. Run
-only the command for the backend you want to configure:
+The following commands are alternatives to `bound init --ollama`; each configures a different backend independently rather than running in sequence. Run
+only the command for the target backend:
 
 ```bash
 bound init --bedrock --region us-east-1
@@ -110,6 +110,6 @@ Confirm that `bound start` is still running, then open `http://localhost:3001` a
 
 ### A message doesn't receive a response
 
-Confirm that Ollama is running and has a usable model available. If you selected an
+Confirm that Ollama is running and has a usable model available. For an
 API-backed preset instead, confirm that its documented credential is available in the
-environment where you started Bound.
+environment where Bound was started.

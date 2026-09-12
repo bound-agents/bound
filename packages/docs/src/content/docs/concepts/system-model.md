@@ -9,26 +9,11 @@ or available only while a client is connected.
 
 ## Relationship model
 
-```text
-                         Bound cluster
-+----------------------------------------------------------------+
-|  hub <---------------- sync ----------------> spoke host       |
-|   |                                               |            |
-|   |  selected durable state                        |            |
-|   +-----------------------------------------------+            |
-|                                                                |
-|  trigger host                                                   |
-|  +----------------------------------------------------------+  |
-|  | persistent agent -> thread -> task -> agent loop         |  |
-|  |                         |                                |  |
-|  |                    client session                         |  |
-|  +-------------------------+--------------------------------+  |
-|                            |                                   |
-|                    inference or tool relay                      |
-|                            v                                   |
-|                backend/model, tool server, or live client      |
-+----------------------------------------------------------------+
-```
+A cluster arranges these parts around a sync link and a relay path:
+
+- **Hub and spokes.** The hub and each spoke host exchange selected durable state over a sync link.
+- **Trigger host.** One host receives a trigger and owns the resulting work. On it, a persistent agent holds a thread, a thread carries a task, and a task drives the agent loop. A client session can attach to that thread.
+- **Relay.** From the agent loop, an inference or tool relay reaches a backend or model, a tool server, or a live client to serve the request.
 
 The **trigger host** is the host that receives a trigger and owns the resulting agent
 loop.

@@ -4,8 +4,8 @@ description: Current package boundaries, runtime composition, persistence, sync,
 ---
 
 This implementation reference maps Bound's packages to their runtime roles and summarizes
-how those parts compose on a host. These details describe the implementation, not stable
-product guarantees. For the product-level model, see [System
+how those parts compose on a host. These details describe the implementation and can change
+as packages evolve. For the product-level model, see [System
 model](/bound/concepts/system-model/).
 
 ## Package map
@@ -33,16 +33,14 @@ A host composes the persistence, sync, inference, agent, platform, and interface
 A message moves through those parts as follows:
 
 ```text
-User sends message (web UI / Discord / boundless / webhook / RSS)
-  ↓
-Agent loop activates:
+A user sends a message (web UI / Discord / boundless / webhook / RSS), which activates the agent loop:
   1. Load files into the virtual filesystem
-  2. Assemble context (persona, memory, skills, history → LLM prompt)
-  3. Call the LLM (local backend or relayed to a remote host)
-  4. Parse response — text or tool calls
-  5. Execute tools (local, relayed to a remote host, or via boundless)
+  2. Assemble context (persona, memory, skills, history) into the LLM prompt
+  3. Call the LLM on a local backend or relay it to a remote host
+  4. Parse the response into text or tool calls
+  5. Execute tools locally, relayed to a remote host, or via boundless
   6. Persist results (messages, files, memory)
-  7. Check for more queued messages → loop or idle
+  7. Check for more queued messages, then loop or idle
 ```
 
 See [Work lifecycle](/bound/concepts/work-lifecycle/) for the lifecycle semantics behind

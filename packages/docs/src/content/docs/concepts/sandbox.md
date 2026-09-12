@@ -38,10 +38,10 @@ rather than to the replicated virtual filesystem.
 
 Reads can reach files that the client process's operating-system permissions allow. Writes
 and shell commands are subject to OS-level write confinement: writes are limited to the
-client's working directory and allowed temporary directories. macOS uses seatbelt, Linux uses
-bubblewrap, and Windows uses Bound's one-shot AppContainer lowbox. On Windows, the CI oracle
-proves allowed-root writes, sibling/traversal/junction denial, descendant-tree cancellation,
-and watcher-owned profile, ACL, and journal cleanup. `.git/config` and `.git/hooks` remain
+bubblewrap, and Windows uses Bound's one-shot AppContainer lowbox. On Windows, writes
+inside an allowed root succeed, while sibling, traversal, and junction paths outside it are
+denied; cancelling an operation cancels its descendant tree, and the watcher cleans up the
+profile, ACL, and journal it owns. `.git/config` and `.git/hooks` remain
 read-only on every platform while Git's index, refs, logs, and objects remain writable. This
 boundary does not make client files part of the virtual filesystem or replicate them to other
 Bound hosts.

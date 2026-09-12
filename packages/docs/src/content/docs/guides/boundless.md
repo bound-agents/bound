@@ -14,7 +14,7 @@ thread and make host-side file and shell tools available to that thread.
 
 ## 1. Open the working directory
 
-In a terminal, change to the directory you want the agent to work with. The client registers
+In a terminal, change to the directory the agent should work with. The client registers
 tools against this real working directory.
 
 ## 2. Start a live session
@@ -27,7 +27,7 @@ boundless
 
 By default, the client connects to `http://localhost:3001` and creates a thread for the
 current working directory. The client session is the live connection; the thread is the
-conversation that you can resume later.
+conversation that can be resumed later.
 
 ## 3. Verify the live session
 
@@ -35,7 +35,7 @@ Check the status area for the connection state, thread ID, selected model, MCP s
 and working directory. Send a message in the terminal UI and confirm that the thread
 responds.
 
-Copy the full thread ID if you want to resume this thread later.
+Copy the full thread ID to resume this thread later.
 
 ## Work with local files and commands
 
@@ -51,7 +51,7 @@ The client registers these tools against the working directory:
 
 Anchored reads let the agent address exact lines without reproducing their full text.
 
-The file tools guard the Bound system database (#207): `boundless_write`, `boundless_edit`,
+The file tools guard the Bound system database: `boundless_write`, `boundless_edit`,
 and a satellite-target `boundless_copy` refuse paths that look like the system database
 (`bound.db` and its WAL/SHM siblings, or SQLite files under a `data/` directory) — direct
 writes bypass soft-deletion and sync triggers. Reads of those paths succeed but carry a note
@@ -101,7 +101,7 @@ Pass the full thread ID shown in the status area:
 boundless --attach <thread-id>
 ```
 
-Replace `<thread-id>` with the thread you want to resume. This starts a new live client
+Replace `<thread-id>` with the target thread. This starts a new live client
 session attached to that thread.
 
 ## Configuration files
@@ -196,12 +196,12 @@ Windows commands do not fall back to mxc or a persisted sandbox session. Bound c
 one-shot AppContainer profile and lowbox token for each command, then a watcher owns process-
 tree cancellation and profile/ACL/journal cleanup. A policy that prevents an unprivileged
 user from calling `CreateAppContainerProfile` makes this backend unavailable. Restore
-unprivileged profile creation, or set `sandbox.onUnavailable` to `"passthrough"` only if you
-intend to run commands without write confinement; the tool reports `ran UNSANDBOXED`.
+unprivileged profile creation, or set `sandbox.onUnavailable` to `"passthrough"` to
+run commands without write confinement; the tool reports `ran UNSANDBOXED`.
 
-The Windows CI confinement matrix validates writes inside allowed roots; denial of sibling,
-traversal, and junction escapes; read-only `.git/config` and `.git/hooks` including nested
-existing hooks; descendant-tree cancellation; and watcher-owned cleanup.
+The Windows backend confines writes to allowed roots and denies sibling,
+traversal, and junction escapes; keeps `.git/config` and `.git/hooks` read-only including nested
+existing hooks; cancels the descendant process tree; and performs watcher-owned cleanup.
 
 ## Related concepts
 

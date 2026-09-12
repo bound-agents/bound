@@ -69,7 +69,7 @@ See [Sandbox and filesystems](/bound/concepts/sandbox/) for the operation-level 
 
 ## Limits of these controls
 
-These controls are not interchangeable. Loopback binding is a deployment boundary, not
+These controls are not interchangeable. Loopback binding is a deployment boundary; it does not provide
 application-level authentication, and the Responses API does not provide bearer-token
 authentication. Encryption protects transport but does not authorize every connected party.
 Tool confirmation does not sandbox a tool. Write confinement does not prevent reading data

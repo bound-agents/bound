@@ -23,8 +23,8 @@ broader trust model.
 
 Writes to synchronized tables create change-log entries. Connected hosts exchange new
 entries, and reconnection lets a host drain entries it missed while disconnected. As a
-result, cluster-wide views should be understood as converging views of replicated state,
-not as a claim that every host observes every write at the same instant.
+result, treat cluster-wide views as converging views of replicated state:
+each host observes every write eventually, though not necessarily at the same instant.
 
 Conflict handling depends on the kind of table. Most synchronized tables use
 last-writer-wins resolution based on a hybrid logical clock. Append-only tables, including

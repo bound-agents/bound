@@ -3,11 +3,11 @@ title: Connect an ACP editor
 description: Optionally connect an ACP-compatible editor to Bound through boundless for agent sessions with editor-managed tools.
 ---
 
-Boundless can optionally run as an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) agent, letting you use Bound from an ACP-compatible editor. Bound continues to provide inference, memory, and model routing; your editor remains responsible for workspace tools and their permission prompts.
+Boundless can optionally run as an [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) agent, exposing Bound to an ACP-compatible editor. Bound continues to provide inference, memory, and model routing; the editor remains responsible for workspace tools and their permission prompts.
 
 ## Prerequisites
 
-Before connecting an editor, make sure you have:
+Before connecting an editor, confirm the following are in place:
 
 - A running Bound server.
 - The `boundless` command available on your `PATH`.
