@@ -1,0 +1,4 @@
+extends: existence
+level: error
+message: "Docs are end-state — '%s' is operational history; incidents and dates live in the repo, not user docs."
+raw: '\b20\d{2}-\d{2}-\d{2}\b|\boracle\b'

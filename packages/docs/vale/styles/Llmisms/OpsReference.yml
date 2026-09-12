@@ -1,0 +1,5 @@
+extends: existence
+level: error
+ignorecase: true
+message: "Reference to ops or test infrastructure ('%s') — describe system behavior, not its verification or incident history."
+raw: '\bCI\b|\boutage of\b'

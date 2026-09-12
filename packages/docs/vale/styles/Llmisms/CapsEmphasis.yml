@@ -1,0 +1,6 @@
+extends: existence
+level: error
+ignorecase: false
+message: "ALL-CAPS emphasis — fix the sentence so it doesn't need shouting."
+raw:
+  - '\b(?:NOT|NEVER|ALWAYS|ONLY|ANY|ALL|NONE|NOTHING|CANNOT|WILL NOT|DO NOT|DOES NOT|PROVABLY|DELIBERATELY|EXPLICITLY|PRECISELY|EXACTLY|STILL|ALSO|JUST|EVERY)\b'

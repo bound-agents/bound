@@ -1,0 +1,8 @@
+extends: existence
+level: error
+ignorecase: true
+message: "Negative parallelism ('not just X, it's Y') — state Y directly."
+tokens:
+  - not just
+  - not merely
+  - more than just

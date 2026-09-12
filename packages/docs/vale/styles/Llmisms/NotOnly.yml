@@ -1,0 +1,7 @@
+extends: existence
+level: error
+ignorecase: true
+scope: sentence
+message: "'Not only X but also Y' — plain 'X and Y' is usually stronger."
+raw:
+  - '\bnot only\b[^.!?]{1,120}?\bbut (?:also|too)\b'

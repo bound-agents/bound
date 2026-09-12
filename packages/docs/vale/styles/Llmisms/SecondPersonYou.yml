@@ -1,0 +1,5 @@
+extends: existence
+level: error
+ignorecase: true
+message: "Second person 'you' — use the imperative or make the system the actor."
+raw: '\b(?:you|yours)\b'

@@ -1,0 +1,4 @@
+extends: existence
+level: error
+message: "Corrective tail ('X, not Y') — strike the negation and state what holds."
+raw: '(?:,|;|—)\s+not\s+'

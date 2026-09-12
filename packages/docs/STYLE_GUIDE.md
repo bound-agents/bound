@@ -43,6 +43,12 @@ task page, its conceptual explanation, and its reference material.
 - State limitations and security consequences explicitly.
 - Use contractions when they make a sentence sound natural.
 
+- Use ASCII punctuation: straight quotes (' and "), and three dots (...). Do not use curly quotes or the ellipsis character.
+- Avoid second person except the possessive "your" for operator-owned things ("your configuration"). Prefer the imperative or make the system the actor.
+- Do not use emphasis markup (bold, italics, ALL CAPS) for stress. Bold is reserved for list-entry lead-ins and terms defined on the same page.
+- Use the em dash in moderation. Do not give every clause a dash-gloss, and do not pack a sentence with both a parenthetical and a dash-pair aside.
+- State what holds. Avoid corrective tails ("X, not Y"), "not just X" framing, and negation-defined restatements ("X does A; it does not B").
+- Documentation is end-state: no incident dates, no references to CI or verification infrastructure, and no issue-tracker references.
 ## Product terminology
 
 - Use **Bound** for the project, product, or system.
@@ -54,6 +60,10 @@ task page, its conceptual explanation, and its reference material.
 
 Keep the terminology list small. Add a Vale rule only when a correction is objective and
 repeated often enough to automate.
+
+The `Llmisms` Vale style (packages/docs/vale/styles/Llmisms) enforces the voice rules above.
+Error-level findings fail the docs build; suggestion-level findings advise. Calibration
+fixtures live in packages/docs/vale/fixtures/.
 
 ## Titles and headings
 

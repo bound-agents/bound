@@ -1,0 +1,5 @@
+extends: existence
+level: error
+scope: raw
+message: "Bold negation/pronoun — emphasis cannot carry the distinction; state it in the sentence."
+raw: '\*\*(?:not|never|any|no|all|only|always|still|also|just|precisely|exactly|provably|deliberately|explicitly|genuinely|nothing|every|it|this|that|these|those|very)\*\*'

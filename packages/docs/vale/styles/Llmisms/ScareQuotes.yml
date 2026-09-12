@@ -1,0 +1,4 @@
+extends: existence
+level: error
+message: "Scare quotes — use a code span for literal strings, bold for UI labels, or cut the quoting."
+raw: '"[^"\n]{2,70}"'

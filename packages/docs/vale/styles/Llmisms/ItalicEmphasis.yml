@@ -1,0 +1,6 @@
+extends: existence
+level: error
+scope: raw
+message: "Italic emphasis — same rule as bold; italics are not for stressing a word."
+raw:
+  - '\s\*[a-z][^*\s][^*]{0,60}\*'

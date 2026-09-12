@@ -1,0 +1,5 @@
+extends: existence
+level: suggestion
+scope: sentence
+message: "Overloaded sentence — parenthetical and dash-pair asides in one breath; split it."
+raw: '(?:\([^)\n]{1,120}\)[^.!?]{0,180}—[^—\n]{1,120}—|—[^—\n]{1,120}—[^!?(]{0,180}\()'

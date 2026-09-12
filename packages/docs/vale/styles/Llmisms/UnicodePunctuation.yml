@@ -1,0 +1,4 @@
+extends: existence
+level: error
+message: "Unicode quotation mark ('%s') — ASCII standard: straight quotes. (Em-dashes are handled by other rules.)"
+raw: '[’‘“”…]'
