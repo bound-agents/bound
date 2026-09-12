@@ -61,7 +61,6 @@ jobs:
 
       - name: Review prose with Vale
         uses: vale-cli/vale-action@v2.1.2
-        uses: vale-cli/vale-action@v2.1.2
         with:
           version: 3.17.1
           files: packages/docs/src/content/docs
