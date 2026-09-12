@@ -1,0 +1,5 @@
+extends: existence
+level: suggestion
+scope: raw
+message: "Mid-sentence bold — keep only for list-entry leads and terms defined on this page."
+raw: '[a-z,;:)][^*\n]{0,3}\*\*[a-z][^*\n]{2,40}\*\*'

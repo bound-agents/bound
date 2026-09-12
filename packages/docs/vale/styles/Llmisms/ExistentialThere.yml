@@ -1,0 +1,7 @@
+extends: sequence
+level: suggestion
+message: "Existential opener ('there is/are') — lead with the actual subject."
+tokens:
+  - pattern: '(?i)\bthere\b'
+  - pattern: '(?i)\b(?:is|are|was|were)\b'
+    target: true

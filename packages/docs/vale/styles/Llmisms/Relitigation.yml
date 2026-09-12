@@ -1,0 +1,5 @@
+extends: existence
+level: suggestion
+ignorecase: true
+message: "Relitigation — the docs are end-state; state each fact once, no 'again' / 'as noted above' restatements."
+raw: '\bagain, |once again|as (?:mentioned|noted|discussed|stated) above|to repeat,'

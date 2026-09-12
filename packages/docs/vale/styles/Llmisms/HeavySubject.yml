@@ -1,0 +1,4 @@
+extends: existence
+level: suggestion
+message: "Subject buried under modifiers, verb arriving late — lead with the actor and the verb."
+raw: '(?i)\b(?:A|An|The)\s+[a-z][a-z-]*(?:\s+(?!is|are|was|were|be|been|being|has|have|had|do|does|did|can|will|would|may|might|must|should|not|no)[a-z][a-z-]+){0,2}\s+(?:pointed|targeted|referenced|described|listed|marked|defined|written|held|sent|queued|stored|classified|identified|restored|accepted|rejected|dropped|bound|trusted|promoted|removed|linked|associated|configured|restricted|allowed|denied|blocked)\b|\b(?:a|an|the)\s+[a-z][a-z-]+\s+(?:that|which|whose)\s+[^.;:!?]{6,70}?\b(?:has|have|can|could|will|would|may|might|must|should|remains)\b|\b(?:a|an|the)\s+[a-z][a-z-]+\s+(?:with|without|of|for|from|under|over|across|between|during|after|before|at|in|on)\s+[^.;:!?\n]{3,60}\s+(?:keeps|retains|carries|holds|treats|records|reports|returns|stores|delivers|leaves|makes|takes|gives|puts|sends)\b'

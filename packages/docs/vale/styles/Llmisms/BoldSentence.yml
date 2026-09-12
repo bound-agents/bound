@@ -1,0 +1,5 @@
+extends: existence
+level: error
+scope: raw
+message: "Full-clause bold — bold is for list-entry leads and defined terms, not stressed sentences."
+raw: '[a-z,;)][^*\n]{0,3}\*\*[^*\n]{18,}[.!?]\*\*'

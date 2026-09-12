@@ -1,0 +1,5 @@
+extends: existence
+level: suggestion
+message: "'your' — keep only where the thing is genuinely operator-owned (config, keys, deployment); else system-as-actor."
+raw:
+  - '\byour\b'

@@ -1,0 +1,6 @@
+extends: existence
+level: error
+ignorecase: true
+message: "'%s' — cut the self-applied virtue label; the clause either shows the check or it doesn't."
+raw:
+  - '\bgenuine(?:ly)?\b'

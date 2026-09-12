@@ -1,0 +1,4 @@
+extends: existence
+level: suggestion
+message: "Stacked declarative with pronoun subject — name the noun or connect the cause."
+raw: '(?m)(?:^|[.!?]\s)(?:Its|Their)\s+[a-z]'

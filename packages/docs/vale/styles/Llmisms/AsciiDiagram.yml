@@ -1,0 +1,5 @@
+extends: existence
+level: error
+scope: raw
+message: "ASCII-art diagram — replace with a proper diagram tool or prose."
+raw: '(?m)^\s*\+[-]{6,}\+\s*$|(?m)^\s*[↓↑]\s*$'

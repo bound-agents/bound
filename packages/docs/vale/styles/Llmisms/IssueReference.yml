@@ -1,0 +1,5 @@
+extends: existence
+level: error
+message: "'%s' — bare tracker reference; describe the behavior, don't cite the issue."
+raw:
+  - '#[0-9]+'

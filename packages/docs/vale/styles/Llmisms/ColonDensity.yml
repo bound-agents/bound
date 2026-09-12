@@ -1,0 +1,6 @@
+extends: occurrence
+level: suggestion
+scope: paragraph
+token: ':'
+max: 3
+message: "Colon lead-in density — a colon-led elaboration is fine in moderation; restructure when a paragraph leans on it this often."

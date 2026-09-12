@@ -1,0 +1,8 @@
+extends: sequence
+level: suggestion
+message: "Passive voice ('%s') — name the actor and make it the subject."
+tokens:
+  - pattern: '(?i)\b(?:is|are|was|were|be|been|being)\b'
+  - tag: 'RB|RBR|RBS'
+  - tag: 'VBN'
+    target: true

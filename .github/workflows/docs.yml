@@ -60,7 +60,7 @@ jobs:
         run: bun run check
 
       - name: Review prose with Vale
-        continue-on-error: true
+        uses: vale-cli/vale-action@v2.1.2
         uses: vale-cli/vale-action@v2.1.2
         with:
           version: 3.17.1

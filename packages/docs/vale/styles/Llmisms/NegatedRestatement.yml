@@ -1,0 +1,4 @@
+extends: existence
+level: suggestion
+message: "Negation-defined restatement ('X does A; it does not B') — state what holds instead of scoping by negation."
+raw: '(?m);\s+it does not\b|,\s+but does not\b|(?:^|[.!?]\s)It does not\b'
