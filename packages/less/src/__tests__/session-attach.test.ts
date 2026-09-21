@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "bun:test";
 import type { BoundClient } from "@bound/client";
 import type { Message } from "@bound/shared";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";

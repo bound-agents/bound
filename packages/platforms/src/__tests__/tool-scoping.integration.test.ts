@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { Server } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import type { PlatformRegisteredTool } from "../mcp-registry";
@@ -71,11 +71,6 @@ async function createMockMcpServer(
 		instructions ? { instructions } : undefined,
 	);
 
-	// Define request schema for tools/list
-	const listToolsSchema = z.object({
-		method: z.literal("tools/list"),
-	});
-
 	// Define request schema for tools/call - using proper MCP schema structure
 	const callToolSchema = z.object({
 		method: z.literal("tools/call"),
@@ -92,7 +87,7 @@ async function createMockMcpServer(
 	};
 
 	// Add handler for tools/list
-	await server.setRequestHandler(listToolsSchema, async () => ({
+	await server.setRequestHandler("tools/list", { params: z.object({}).optional() }, async () => ({
 		tools: tools.map((t) => ({
 			name: t.name,
 			description: t.description,
@@ -102,10 +97,14 @@ async function createMockMcpServer(
 	}));
 
 	// Add handler for tools/call
-	await server.setRequestHandler(callToolSchema, async (_request) => ({
-		content: [{ type: "text", text: "Called tool" }],
-		isError: false,
-	}));
+	await server.setRequestHandler(
+		"tools/call",
+		{ params: callToolSchema.shape.params },
+		async (_params) => ({
+			content: [{ type: "text", text: "Called tool" }],
+			isError: false,
+		}),
+	);
 
 	return server;
 }

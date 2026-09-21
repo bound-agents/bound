@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult } from "@modelcontextprotocol/server";
 import { McpAppHost } from "../mcp-app-host";
 import {
 	type McpAppInstance,

@@ -16,9 +16,7 @@
  * SDK's documented stateless deployment shape and keeps the fixture free of
  * session bookkeeping.
  */
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 export interface EchoToolSpec {
@@ -68,7 +66,10 @@ export async function startEchoMcpServer(tools: EchoToolSpec[]): Promise<EchoMcp
 			}
 			server.registerTool(
 				spec.name,
-				{ description: spec.description ?? `echo ${spec.name}`, inputSchema },
+				{
+					description: spec.description ?? `echo ${spec.name}`,
+					inputSchema: z.object(inputSchema),
+				},
 				async (args: Record<string, unknown>) => {
 					lastArgs.set(spec.name, args);
 					const hexDump = spec.stringParams
@@ -80,7 +81,7 @@ export async function startEchoMcpServer(tools: EchoToolSpec[]): Promise<EchoMcp
 						})
 						.join(" ");
 					return {
-						content: [{ type: "text", text: `${JSON.stringify(args)}\n${hexDump}` }],
+						content: [{ type: "text" as const, text: `${JSON.stringify(args)}\n${hexDump}` }],
 					};
 				},
 			);

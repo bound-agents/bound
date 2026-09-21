@@ -164,7 +164,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -214,7 +214,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -255,7 +255,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -312,7 +312,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -376,7 +376,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -435,7 +435,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -496,7 +496,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -556,7 +556,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -615,7 +615,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([
@@ -671,7 +671,7 @@ describe("buildToolSet", () => {
 		const mcpTools = new Map<
 			string,
 			{
-				tools: import("@modelcontextprotocol/sdk/types.js").Tool[];
+				tools: import("@modelcontextprotocol/client").Tool[];
 				config: import("../config").McpServerConfig;
 			}
 		>([

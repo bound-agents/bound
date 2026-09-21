@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sniffImageMediaType } from "@bound/llm";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { ChannelType, PermissionFlagsBits } from "discord.js";
 import { z } from "zod";
 import type { PlatformCommandSpec } from "../platform-commands.js";
@@ -161,24 +161,19 @@ export function createDiscordServer(
 	const interactionStore = new Map<string, StoredInteraction>();
 	const recentMessageIds = new Set<string>();
 
-	// events/* are bound-specific; not in the MCP SDK schema set, so we declare them here.
-	// All other request/notification types use SDK-provided schemas via registerTool.
-	const eventsListSchema = z.object({ method: z.literal("events/list") });
-	const eventsStreamSchema = z.object({
-		method: z.literal("events/stream"),
-		params: z.object({
-			event: z.string(),
-			params: z.record(z.string(), z.unknown()).optional(),
-			cursor: z.string().optional(),
-		}),
+	// events/* are bound-specific; not in the MCP SDK schema set, so we declare
+	// their params schemas here and register them via the v2 custom-method form
+	// setRequestHandler(method, { params }, handler) — the handler receives the
+	// parsed params directly, not the request envelope. events/list takes none.
+	const eventsStreamParams = z.object({
+		event: z.string(),
+		params: z.record(z.string(), z.unknown()).optional(),
+		cursor: z.string().optional(),
 	});
-	const eventsPollSchema = z.object({
-		method: z.literal("events/poll"),
-		params: z.object({
-			event: z.string(),
-			params: z.record(z.string(), z.unknown()).optional(),
-			cursor: z.string().optional(),
-		}),
+	const eventsPollParams = z.object({
+		event: z.string(),
+		params: z.record(z.string(), z.unknown()).optional(),
+		cursor: z.string().optional(),
 	});
 
 	// Cleanup expired interactions every 60 seconds
@@ -247,7 +242,7 @@ export function createDiscordServer(
 	}
 
 	// Handle events/list request
-	server.setRequestHandler(eventsListSchema, async () => {
+	server.setRequestHandler("events/list", { params: z.object({}) }, async () => {
 		return {
 			events: [
 				{
@@ -278,9 +273,8 @@ export function createDiscordServer(
 	});
 
 	// Handle events/stream request
-	server.setRequestHandler(eventsStreamSchema, async (request) => {
-		const params = request.params || {};
-		const eventName = params.event as string;
+	server.setRequestHandler("events/stream", { params: eventsStreamParams }, async (params) => {
+		const eventName = params.event;
 		const eventParams = (params.params as Record<string, unknown>) || {};
 
 		// Validate event name
@@ -311,7 +305,7 @@ export function createDiscordServer(
 
 		// If cursor provided, replay buffered events. Cursors are snowflake
 		// strings — compare via BigInt to avoid Number precision loss above 2^53.
-		const cursor = params.cursor as string | undefined;
+		const cursor = params.cursor;
 		if (cursor) {
 			const matchingEvents = eventBuffer.filter(
 				(e) =>
@@ -336,11 +330,10 @@ export function createDiscordServer(
 	});
 
 	// Handle events/poll request
-	server.setRequestHandler(eventsPollSchema, async (request) => {
-		const params = request.params || {};
-		const eventName = params.event as string;
+	server.setRequestHandler("events/poll", { params: eventsPollParams }, async (params) => {
+		const eventName = params.event;
 		const eventParams = (params.params as Record<string, unknown>) || {};
-		const cursorStr = params.cursor as string | undefined;
+		const cursorStr = params.cursor;
 
 		// Validate event name
 		if (eventName !== "message.received" && eventName !== "interaction.received") {
@@ -385,10 +378,10 @@ export function createDiscordServer(
 			description:
 				"Send a message to a Discord channel — a DM or a guild text channel. " +
 				"Returns an error if content exceeds 2000 characters.",
-			inputSchema: {
+			inputSchema: z.object({
 				channel_id: z.string().describe("The Discord channel ID to send to (DM or guild channel)"),
 				content: z.string().describe("Message content (must be <= 2000 chars)"),
-			},
+			}),
 		},
 		async ({ channel_id, content }) => {
 			if (content.length > 2000) {
@@ -440,10 +433,10 @@ export function createDiscordServer(
 		"discord_respond_interaction",
 		{
 			description: "Respond to a Discord interaction by editing the ephemeral reply",
-			inputSchema: {
+			inputSchema: z.object({
 				callback_id: z.string().describe("The interaction callback ID from the event data"),
 				content: z.string().describe("Response content (max 2000 chars, will be truncated)"),
-			},
+			}),
 		},
 		async ({ callback_id, content }) => {
 			const storedData = interactionStore.get(callback_id);
@@ -497,7 +490,7 @@ export function createDiscordServer(
 				"entries by the presence of `user_id` vs `guild_id`. When `allowed_users` is empty the tool emits no " +
 				"DM entries (Discord exposes no 'list my DM channels' API to bots); guild channels are still listed. " +
 				"An empty array means the bot has neither an allowlist nor any visible guild text channels.",
-			inputSchema: {},
+			inputSchema: z.object({}),
 			annotations: {
 				readOnlyHint: true,
 			},

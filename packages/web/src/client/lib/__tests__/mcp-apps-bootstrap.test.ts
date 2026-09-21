@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Client, Tool } from "@modelcontextprotocol/client";
 import { type McpAppServer, connectMcpServers } from "../mcp-apps-bootstrap";
 
 function fakeClient(tools: Tool[]): Client {

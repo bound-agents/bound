@@ -1,13 +1,11 @@
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { Tool } from "@modelcontextprotocol/client";
 /**
  * MCP Server lifecycle manager.
  * Manages per-server state (spawn, connect, disconnect, enumerate).
  * Implements AC6.1, AC6.2, AC6.6, AC6.7.
  */
-
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 
@@ -221,7 +219,7 @@ export class McpServerManager {
 			// For stdio transports, check if process still alive after 2s and send SIGKILL
 			if (isStdioTransport(state.transport)) {
 				// Note: Accessing StdioClientTransport.process is an internal SDK detail.
-				// This implementation verified against @modelcontextprotocol/sdk v1.0+.
+				// This implementation verified against @modelcontextprotocol/client (SDK v2).
 				// If the SDK changes this field location, this will need updating.
 				const processField = state.transport as {
 					process?: {

@@ -1,4 +1,6 @@
+import type { Client } from "@modelcontextprotocol/client";
 import { isToolVisibilityAppOnly } from "@modelcontextprotocol/ext-apps/app-bridge";
+
 // One-time bootstrap that turns the web UI into an MCP Apps *renderer* (NOT a
 // tool provider). App-bearing servers are sourced from the agent-side mcp.json
 // — the agent connects to them server-side and calls their tools as usual, so
@@ -10,7 +12,6 @@ import { isToolVisibilityAppOnly } from "@modelcontextprotocol/ext-apps/app-brid
 // AppBridge.callServerTool callbacks back to the server. The render trigger
 // watches the conversation message stream for results on tools the capability
 // inventory flags as UI-bearing (see mcp-app-store / McpAppPanel).
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { McpAppHost, connectToMcpServer } from "./mcp-app-host";
 import { mcpAppHost } from "./mcp-app-store";
 

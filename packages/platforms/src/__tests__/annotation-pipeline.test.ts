@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
 

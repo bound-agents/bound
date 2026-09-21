@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { Server } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { connectorHandleId } from "../connector-handle-id.js";
 import { createConnectorHandle } from "../connector-handle.js";
@@ -78,21 +78,9 @@ describe("Connector Tool", () => {
 			version: "1.0.0",
 		});
 
-		// Define request schemas
-		const listRequestSchema = z.object({
-			method: z.literal("events/list"),
-		});
-
-		const streamRequestSchema = z.object({
-			method: z.literal("events/stream"),
-		});
-
-		const pollRequestSchema = z.object({
-			method: z.literal("events/poll"),
-		});
-
+		// Register events/* handlers directly with method-string custom form.
 		// Add request handlers
-		await server.setRequestHandler(listRequestSchema, async () => ({
+		await server.setRequestHandler("events/list", { params: z.object({}) }, async () => ({
 			events: [
 				{
 					name: "message.received",
@@ -117,12 +105,20 @@ describe("Connector Tool", () => {
 			],
 		}));
 
-		await server.setRequestHandler(streamRequestSchema, async () => ({}));
+		await server.setRequestHandler(
+			"events/stream",
+			{ params: z.object({}).passthrough() },
+			async () => ({}),
+		);
 
-		await server.setRequestHandler(pollRequestSchema, async () => ({
-			events: [],
-			nextPollSeconds: 2,
-		}));
+		await server.setRequestHandler(
+			"events/poll",
+			{ params: z.object({}).passthrough() },
+			async () => ({
+				events: [],
+				nextPollSeconds: 2,
+			}),
+		);
 	});
 
 	describe("AC2.1: list action returns all connected servers", () => {
@@ -520,7 +516,8 @@ describe("Connector Tool", () => {
 			// stream failure and roll the just-created rows back.
 			const rejectingServer = new Server({ name: "rejector", version: "1.0.0" });
 			await rejectingServer.setRequestHandler(
-				z.object({ method: z.literal("events/list") }),
+				"events/list",
+				{ params: z.object({}) },
 				async () => ({
 					events: [
 						{
@@ -532,7 +529,8 @@ describe("Connector Tool", () => {
 				}),
 			);
 			await rejectingServer.setRequestHandler(
-				z.object({ method: z.literal("events/stream") }),
+				"events/stream",
+				{ params: z.object({}).passthrough() },
 				async () => {
 					const err = new Error(
 						"Cannot subscribe to channel hidden: bot lacks View Channel permission",
