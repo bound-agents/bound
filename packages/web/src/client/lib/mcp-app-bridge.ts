@@ -64,7 +64,7 @@ interface ResourceContent {
 
 /**
  * Minimal resource-reading surface getUiResource depends on. The real
- * `@modelcontextprotocol/sdk` `Client` satisfies this; tests inject a fake.
+ * `@modelcontextprotocol/client` `Client` satisfies this; tests inject a fake.
  */
 export interface UiResourceClient {
 	readResource(params: { uri: string }): Promise<{ contents: ResourceContent[] }>;

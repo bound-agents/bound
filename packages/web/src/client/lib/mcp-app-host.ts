@@ -49,7 +49,7 @@ export const MCP_APPS_HOST_CAPABILITIES = {
 
 /**
  * Minimal MCP client surface the host manager depends on. The real
- * `@modelcontextprotocol/sdk` `Client` satisfies this; tests inject a fake.
+ * `@modelcontextprotocol/client` `Client` satisfies this; tests inject a fake.
  */
 export interface McpClientLike {
 	callTool(params: {
