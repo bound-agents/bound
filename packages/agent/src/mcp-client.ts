@@ -1,12 +1,10 @@
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { Prompt, Resource, Tool } from "@modelcontextprotocol/client";
 /**
  * MCP Client for connecting to and managing external MCP servers.
  * Implements lifecycle management per spec §7.2.
  */
-
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Prompt, Resource, Tool } from "@modelcontextprotocol/sdk/types.js";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 export interface MCPServerConfig {
 	name: string;

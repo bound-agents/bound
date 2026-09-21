@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { PlatformMcpRegistry, setPlatformTelemetry } from "../mcp-registry.js";
 
@@ -58,8 +58,8 @@ class SimpleEventBus {
  * executePlatformRequest produces in production.
  */
 async function makeRemoteRouter(serverFactory: () => McpServer) {
-	const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
-	const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+	const { Client } = await import("@modelcontextprotocol/client");
+	const { InMemoryTransport } = await import("@modelcontextprotocol/server");
 	const server = serverFactory();
 	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 	const client = new Client({ name: "test-relay-client", version: "1.0.0" }, { capabilities: {} });

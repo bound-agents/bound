@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { EXTENSION_ID } from "@modelcontextprotocol/ext-apps/server";
-import type { CallToolResult, Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, Tool } from "@modelcontextprotocol/server";
 import {
 	MCP_APPS_HOST_CAPABILITIES,
 	MCP_UI_EXTENSION_ID,

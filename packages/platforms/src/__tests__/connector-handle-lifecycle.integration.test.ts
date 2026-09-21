@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { Client } from "@modelcontextprotocol/client";
+import { Server } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { createConnectorHandle } from "../connector-handle.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
@@ -97,12 +97,20 @@ describe("Connector Handle Lifecycle", () => {
 		});
 
 		// Add request handlers for events/stream and events/poll
-		await server.setRequestHandler(streamRequestSchema, async () => ({}));
+		await server.setRequestHandler(
+			"events/stream",
+			{ params: streamRequestSchema.shape.params },
+			async () => ({}),
+		);
 
-		await server.setRequestHandler(pollRequestSchema, async () => ({
-			events: [],
-			nextPollSeconds: 2,
-		}));
+		await server.setRequestHandler(
+			"events/poll",
+			{ params: pollRequestSchema.shape.params },
+			async () => ({
+				events: [],
+				nextPollSeconds: 2,
+			}),
+		);
 	});
 
 	afterEach(() => {});
@@ -809,18 +817,22 @@ describe("Connector Handle Lifecycle", () => {
 				}),
 			});
 
-			await server.setRequestHandler(pollRequestSchema, async () => ({
-				events: [
-					{
-						eventId: "poll-event-1",
-						name: "test.event",
-						timestamp: now,
-						data: { message: "poll response" },
-						cursor: "1",
-					},
-				],
-				nextPollSeconds: 2,
-			}));
+			await server.setRequestHandler(
+				"events/poll",
+				{ params: pollRequestSchema.shape.params },
+				async () => ({
+					events: [
+						{
+							eventId: "poll-event-1",
+							name: "test.event",
+							timestamp: now,
+							data: { message: "poll response" },
+							cursor: "1",
+						},
+					],
+					nextPollSeconds: 2,
+				}),
+			);
 
 			// Register server and activate poll subscription
 			await registry.registerServer("test-server", server);

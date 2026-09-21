@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { Logger, ToolCallPayload, TypedEventEmitter } from "@bound/shared";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";
 

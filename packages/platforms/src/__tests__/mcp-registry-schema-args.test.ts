@@ -3,6 +3,8 @@
 // commit e028985 ("fix(agent): pass valid Zod v4 schema to MCP client.request()")
 // patched ONE of FOUR call sites that were passing `{} as never` as the
 // result-validation schema argument. The MCP SDK's safeParse dispatches on
+import { Server } from "@modelcontextprotocol/server";
+
 // the presence of `_zod`; without it, the v3 fallback path calls
 // `({}).safeParse(...)` and throws `TypeError: v3Schema.safeParse is not a
 // function`. The connector tool exercises this through the real SDK and
@@ -19,7 +21,6 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { z } from "zod";
 import { createConnectorHandle } from "../connector-handle.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
@@ -123,11 +124,19 @@ describe("PlatformMcpRegistry — client.request() schema arg validity", () => {
 			}),
 		});
 
-		await server.setRequestHandler(streamSchema, async () => ({}));
-		await server.setRequestHandler(pollSchema, async () => ({
-			events: [],
-			nextPollSeconds: 99999, // long enough that we don't reschedule mid-test
-		}));
+		await server.setRequestHandler(
+			"events/stream",
+			{ params: streamSchema.shape.params },
+			async () => ({}),
+		);
+		await server.setRequestHandler(
+			"events/poll",
+			{ params: pollSchema.shape.params },
+			async () => ({
+				events: [],
+				nextPollSeconds: 99999, // long enough that we don't reschedule mid-test
+			}),
+		);
 	});
 
 	function setupHandleAndTask(deliveryMode: "push" | "poll"): {

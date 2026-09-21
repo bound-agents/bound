@@ -1,5 +1,8 @@
 // The browser is both an MCP Apps *host* and a bound tool-provider *client*
 // (the boundless pattern). This module is the host half's connection manager:
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { CallToolResult, ClientCapabilities, Tool } from "@modelcontextprotocol/client";
+
 // it connects to the MCP App servers handed to the browser by
 // GET /api/mcp-apps, lists their tools, maps each to a bound ToolDefinition so
 // the agent can call them, and dispatches an inbound bound tool call to the
@@ -7,10 +10,6 @@
 // flagged here; the iframe/AppBridge rendering glue lives in mcp-app-bridge.ts.
 import type { ToolCallRequest, ToolCallResult, ToolDefinition } from "@bound/client";
 import { getToolUiResourceUri } from "@modelcontextprotocol/ext-apps/app-bridge";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { CallToolResult, ClientCapabilities, Tool } from "@modelcontextprotocol/sdk/types.js";
-
 /** Bedrock caps tool names at 64 chars; keep generated names within that. */
 const TOOL_NAME_MAX = 64;
 const TOOL_NAME_PREFIX = "mcp";

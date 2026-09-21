@@ -9,10 +9,9 @@ import {
 	histogram,
 	injectTraceContext,
 } from "@bound/shared";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { Client } from "@modelcontextprotocol/client";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
+import type { McpServer, Server } from "@modelcontextprotocol/server";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import {
@@ -227,35 +226,6 @@ interface ActiveSubscription {
 }
 
 /**
- * Schema for `notifications/events/event` — the push-mode payload an MCP
- * platform server sends to wake up a streaming subscription.
- *
- * Module-scoped so the same instance is reused across `setNotificationHandler`
- * calls; the SDK keys its handler map on the literal `method`, so passing a
- * fresh schema per call would overwrite the previous handler unnecessarily.
- *
- * Why we don't validate the inner shape: the SDK already validates `method`
- * against the literal during `getMethodLiteral`, and the event payload's
- * shape is owned by the MCP server we're talking to (the `McpEvent`
- * interface). Keeping `params` as a passthrough avoids tying notification
- * dispatch to bound-side struct-evolution churn.
- */
-const eventsEventNotificationSchema = z.object({
-	method: z.literal("notifications/events/event"),
-	params: z.object({}).passthrough(),
-});
-
-/**
- * Schema for `notifications/tools/list_changed` — a server tells us its tool
- * list has shifted and we should re-discover. Module-scoped for the same
- * reasons as `eventsEventNotificationSchema`.
- */
-const toolsListChangedNotificationSchema = z.object({
-	method: z.literal("notifications/tools/list_changed"),
-	params: z.object({}).passthrough().optional(),
-});
-
-/**
  * Manages MCP server instances for platform connectors.
  * Creates InMemoryTransport pairs, connects clients to servers,
  * and manages the lifecycle of platform MCP connections.
@@ -402,36 +372,40 @@ export class PlatformMcpRegistry {
 		//     re-discovery.
 		// Using `setNotificationHandler` is the supported entry point and
 		// survives SDK internal renames.
-		client.setNotificationHandler(eventsEventNotificationSchema, (notification) => {
-			const event = notification.params as unknown as McpEvent;
-			// Route to every active subscription on this server whose
-			// event_name matches AND whose event_args filter matches the
-			// event's data. The server already filters per-subscription and
-			// tags its notification with a subscriptionId, but the registry
-			// discards that tag (startStreamSubscription ignores the
-			// events/stream response), so routing on (serverName, eventName)
-			// alone fanned one event out to EVERY same-named subscription:
-			// with a DM handle and a guild handle both on message.received,
-			// one Discord message woke both event threads and both replied.
-			// Applying the same params match here (eventMatchesParams, the
-			// connector-side semantics) keeps each event on its own line.
-			for (const sub of this.activeSubscriptions.values()) {
-				if (
-					sub.serverName === name &&
-					sub.eventName === event.name &&
-					eventMatchesParams(sub.params, event.data)
-				) {
-					sub.buffer.push(event);
-					if (!sub.flushTimer) {
-						sub.flushTimer = setTimeout(() => {
-							this.flushBuffer(sub);
-						}, 2000);
+		client.setNotificationHandler(
+			"notifications/events/event",
+			{ params: z.object({}).passthrough() },
+			(params) => {
+				const event = params as unknown as McpEvent;
+				// Route to every active subscription on this server whose
+				// event_name matches AND whose event_args filter matches the
+				// event's data. The server already filters per-subscription and
+				// tags its notification with a subscriptionId, but the registry
+				// discards that tag (startStreamSubscription ignores the
+				// events/stream response), so routing on (serverName, eventName)
+				// alone fanned one event out to EVERY same-named subscription:
+				// with a DM handle and a guild handle both on message.received,
+				// one Discord message woke both event threads and both replied.
+				// Applying the same params match here (eventMatchesParams, the
+				// connector-side semantics) keeps each event on its own line.
+				for (const sub of this.activeSubscriptions.values()) {
+					if (
+						sub.serverName === name &&
+						sub.eventName === event.name &&
+						eventMatchesParams(sub.params, event.data)
+					) {
+						sub.buffer.push(event);
+						if (!sub.flushTimer) {
+							sub.flushTimer = setTimeout(() => {
+								this.flushBuffer(sub);
+							}, 2000);
+						}
 					}
 				}
-			}
-		});
+			},
+		);
 
-		client.setNotificationHandler(toolsListChangedNotificationSchema, async () => {
+		client.setNotificationHandler("notifications/tools/list_changed", async () => {
 			// Re-discover tools when the server signals its list changed.
 			await this.discoverTools(entry);
 		});

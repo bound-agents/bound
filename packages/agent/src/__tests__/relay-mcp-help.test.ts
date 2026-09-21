@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import type { Logger, ToolCallPayload } from "@bound/shared";
 import { TypedEventEmitter } from "@bound/shared";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import { formatMcpHelp } from "../mcp-bridge";
 import type { MCPClient } from "../mcp-client";
 import { RelayProcessor } from "../relay-processor";

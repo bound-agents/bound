@@ -14,8 +14,7 @@ import { updateRow } from "@bound/core";
 import type { CommandContext, CommandDefinition, CommandResult } from "@bound/sandbox";
 import { loopContextStorage } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-
+import type { Tool } from "@modelcontextprotocol/server";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion";
 import type { MCPClient } from "./mcp-client";
 import { type EligibleHost, findEligibleHosts, routeRelayRequest } from "./relay-router";

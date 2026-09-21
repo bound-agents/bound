@@ -5,7 +5,7 @@ import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
 import type { Logger } from "@bound/shared";
 import { TypedEventEmitter as RealTypedEventEmitter } from "@bound/shared";
-import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { Server } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { type ConnectorHandleRecord, createConnectorHandle } from "../connector-handle.js";
 import { PlatformMcpRegistry } from "../mcp-registry.js";
@@ -20,8 +20,6 @@ const createMockLogger = (): Logger => ({
 
 // Helper to create a mock MCP server
 const createMockMcpServer = async (name: string): Promise<Server> => {
-	const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
-
 	const server = new Server({
 		name,
 		version: "1.0.0",
@@ -31,11 +29,7 @@ const createMockMcpServer = async (name: string): Promise<Server> => {
 	(server as any)._capabilities = { tools: {} };
 
 	// Add a mock tool
-	const listRequestSchema = z.object({
-		method: z.literal("tools/list"),
-	});
-
-	await server.setRequestHandler(listRequestSchema, async () => ({
+	await server.setRequestHandler("tools/list", { params: z.object({}).optional() }, async () => ({
 		tools: [
 			{
 				name: `${name}_test_tool`,
@@ -51,11 +45,7 @@ const createMockMcpServer = async (name: string): Promise<Server> => {
 	}));
 
 	// Add a mock events/list handler
-	const eventsListSchema = z.object({
-		method: z.literal("events/list"),
-	});
-
-	await server.setRequestHandler(eventsListSchema, async () => ({
+	await server.setRequestHandler("events/list", { params: z.object({}) }, async () => ({
 		events: [
 			{
 				name: "test_event",

@@ -1,4 +1,6 @@
 // Host-side glue that renders an MCP App in the bound web UI and wires its
+import type { CallToolResult, Client } from "@modelcontextprotocol/client";
+
 // ext-apps AppBridge to the in-page MCP SDK client. Adapted from the ext-apps
 // reference (examples/basic-host/src/implementation.ts) with one structural
 // change for our single-origin (:3001) constraint: there is NO separate
@@ -25,8 +27,6 @@ import {
 	PostMessageTransport,
 	RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { APP_FRAME_SANDBOX, buildAppFrameSrcdoc, frameAllowAttribute } from "./mcp-app-frame";
 
 const IMPLEMENTATION = { name: "bound web MCP Apps host", version: "1.0.0" };

@@ -1,5 +1,7 @@
 // The browser dispatches the agent's MCP tool calls (the boundless pattern). For
 // UI-bearing tools (ext-apps `_meta.ui.resourceUri`) the call ALSO renders an
+import type { CallToolResult } from "@modelcontextprotocol/server";
+
 // app iframe. This module owns the bridge between the tool-call dispatch path
 // and the Svelte render layer:
 //
@@ -14,7 +16,6 @@
 //    consumes), and returns the flattened textual result the agent loop needs.
 import type { ToolCallRequest, ToolCallResult } from "@bound/client";
 import { stripToolDuration } from "@bound/shared/strings";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { writable } from "svelte/store";
 import type { UiResourceClient } from "./mcp-app-bridge";
 import { type McpAppHost, callToolResultToContent } from "./mcp-app-host";

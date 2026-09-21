@@ -7,8 +7,8 @@ import {
 	registerAppResource,
 	registerAppTool,
 } from "@modelcontextprotocol/ext-apps/server";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 const PORT = Number(process.env.MCP_APP_PORT ?? 8788);
@@ -166,7 +166,7 @@ const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse
 		return;
 	}
 
-	const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+	const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 	res.on("close", () => {
 		void transport.close();
 	});

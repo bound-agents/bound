@@ -52,7 +52,7 @@ import {
 	parseJsonSafe,
 	parseJsonUntyped,
 } from "@bound/shared";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import {
 	EMPTY,

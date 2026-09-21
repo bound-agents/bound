@@ -12,8 +12,7 @@
  *   - local path  → mcp-bridge.ts generateMCPCommands (callTool directly)
  *   - relay path  → relay-processor.ts executeToolCall (forwarded tool_call)
  */
-
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 
 /** Attempt to parse a string as JSON; returns undefined on failure. */
 export function parseJsonValue(value: string): unknown {

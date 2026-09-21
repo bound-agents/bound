@@ -1,8 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Logger, PlatformConnectorConfig } from "@bound/shared";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import { createDiscordServer } from "../connectors/discord-server";
 import type { PlatformCommandInvocation, PlatformCommandSpec } from "../platform-commands";
@@ -687,10 +685,7 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const result = await mcpClient.request(
-			{ method: "tools/list", params: {} },
-			ListToolsResultSchema,
-		);
+		const result = await mcpClient.request({ method: "tools/list", params: {} });
 
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
@@ -698,19 +693,16 @@ describe("Discord MCP Server", () => {
 
 		// AC2.1: Execute the tool and verify it sends to the correct channel
 
-		const callResult = await mcpClient.request(
-			{
-				method: "tools/call",
-				params: {
-					name: "discord_send_message",
-					arguments: {
-						channel_id: "ch-1",
-						content: "Hello from agent",
-					},
+		const callResult = await mcpClient.request({
+			method: "tools/call",
+			params: {
+				name: "discord_send_message",
+				arguments: {
+					channel_id: "ch-1",
+					content: "Hello from agent",
 				},
 			},
-			CallToolResultSchema,
-		);
+		});
 
 		expect(callResult.content).toBeDefined();
 		expect(callResult.content.length).toBeGreaterThan(0);
@@ -747,10 +739,7 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const result = await mcpClient.request(
-			{ method: "tools/list", params: {} },
-			ListToolsResultSchema,
-		);
+		const result = await mcpClient.request({ method: "tools/list", params: {} });
 
 		expect(result.tools).toBeDefined();
 		const toolNames = result.tools.map((t: { name: string }) => t.name);
@@ -803,19 +792,16 @@ describe("Discord MCP Server", () => {
 		expect(actualCallbackId).toBeDefined();
 
 		// Now call the tool with the correct callback_id
-		const callResult = await mcpClient.request(
-			{
-				method: "tools/call",
-				params: {
-					name: "discord_respond_interaction",
-					arguments: {
-						callback_id: actualCallbackId,
-						content: "Response to interaction",
-					},
+		const callResult = await mcpClient.request({
+			method: "tools/call",
+			params: {
+				name: "discord_respond_interaction",
+				arguments: {
+					callback_id: actualCallbackId,
+					content: "Response to interaction",
 				},
 			},
-			CallToolResultSchema,
-		);
+		});
 
 		expect(callResult.content).toBeDefined();
 		expect(callResult.content.length).toBeGreaterThan(0);
@@ -886,19 +872,16 @@ describe("Discord MCP Server", () => {
 		server = discordServer;
 		client = mcpClient;
 
-		const callResult = await mcpClient.request(
-			{
-				method: "tools/call",
-				params: {
-					name: "discord_send_message",
-					arguments: {
-						channel_id: "ch-1",
-						content: "a".repeat(2001),
-					},
+		const callResult = await mcpClient.request({
+			method: "tools/call",
+			params: {
+				name: "discord_send_message",
+				arguments: {
+					channel_id: "ch-1",
+					content: "a".repeat(2001),
 				},
 			},
-			CallToolResultSchema,
-		);
+		});
 
 		expect(callResult.isError).toBe(true);
 		const contentBlock = callResult.content[0] as Record<string, unknown>;
@@ -916,19 +899,16 @@ describe("Discord MCP Server", () => {
 		client = mcpClient;
 
 		// Try to call with an expired callback_id that doesn't exist
-		const callResult = await mcpClient.request(
-			{
-				method: "tools/call",
-				params: {
-					name: "discord_respond_interaction",
-					arguments: {
-						callback_id: "expired-or-nonexistent-id",
-						content: "Response to expired interaction",
-					},
+		const callResult = await mcpClient.request({
+			method: "tools/call",
+			params: {
+				name: "discord_respond_interaction",
+				arguments: {
+					callback_id: "expired-or-nonexistent-id",
+					content: "Response to expired interaction",
 				},
 			},
-			CallToolResultSchema,
-		);
+		});
 
 		expect(callResult.content).toBeDefined();
 		expect(callResult.content.length).toBeGreaterThan(0);
@@ -1257,16 +1237,13 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{
-					method: "tools/call",
-					params: {
-						name: "discord_send_message",
-						arguments: { channel_id: "guild-ch-1", content: "to the guild" },
-					},
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: {
+					name: "discord_send_message",
+					arguments: { channel_id: "guild-ch-1", content: "to the guild" },
 				},
-				CallToolResultSchema,
-			);
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			expect((callResult.content[0] as { text: string }).text).toBe("sent");
@@ -1287,16 +1264,13 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{
-					method: "tools/call",
-					params: {
-						name: "discord_send_message",
-						arguments: { channel_id: "voice-ch", content: "nope" },
-					},
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: {
+					name: "discord_send_message",
+					arguments: { channel_id: "voice-ch", content: "nope" },
 				},
-				CallToolResultSchema,
-			);
+			});
 
 			expect(callResult.isError).toBe(true);
 			expect(String((callResult.content[0] as { text: string }).text)).toContain(
@@ -1319,10 +1293,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
@@ -1361,10 +1335,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
@@ -1534,10 +1508,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{ method: "tools/call", params: { name: "discord_list_channels", arguments: {} } },
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const parsed = JSON.parse((callResult.content[0] as { text: string }).text) as Array<
@@ -1563,13 +1537,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{
-					method: "tools/call",
-					params: { name: "discord_list_channels", arguments: {} },
-				},
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const text = (callResult.content[0] as { text: string }).text;
@@ -1589,13 +1560,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{
-					method: "tools/call",
-					params: { name: "discord_list_channels", arguments: {} },
-				},
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const text = (callResult.content[0] as { text: string }).text;
@@ -1620,13 +1588,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{
-					method: "tools/call",
-					params: { name: "discord_list_channels", arguments: {} },
-				},
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const text = (callResult.content[0] as { text: string }).text;
@@ -1665,13 +1630,10 @@ describe("Discord MCP Server", () => {
 			server = discordServer;
 			client = mcpClient;
 
-			const callResult = await mcpClient.request(
-				{
-					method: "tools/call",
-					params: { name: "discord_list_channels", arguments: {} },
-				},
-				CallToolResultSchema,
-			);
+			const callResult = await mcpClient.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 
 			expect(callResult.isError).toBeFalsy();
 			const text = (callResult.content[0] as { text: string }).text;
@@ -1700,13 +1662,10 @@ describe("Discord MCP Server", () => {
 			mockDiscordClient._setDMOverride("user-x", { id: "dm-x" });
 
 			const setup1 = await setupMCPConnection(config);
-			const res1 = await setup1.client.request(
-				{
-					method: "tools/call",
-					params: { name: "discord_list_channels", arguments: {} },
-				},
-				CallToolResultSchema,
-			);
+			const res1 = await setup1.client.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 			expect(JSON.parse((res1.content[0] as { text: string }).text)).toEqual([
 				{ user_id: "user-x", channel_id: "dm-x" },
 			]);
@@ -1723,13 +1682,10 @@ describe("Discord MCP Server", () => {
 			server = setup2.server;
 			client = setup2.client;
 
-			const res2 = await setup2.client.request(
-				{
-					method: "tools/call",
-					params: { name: "discord_list_channels", arguments: {} },
-				},
-				CallToolResultSchema,
-			);
+			const res2 = await setup2.client.request({
+				method: "tools/call",
+				params: { name: "discord_list_channels", arguments: {} },
+			});
 			expect(JSON.parse((res2.content[0] as { text: string }).text)).toEqual([
 				{ user_id: "user-x", channel_id: "dm-x" },
 			]);

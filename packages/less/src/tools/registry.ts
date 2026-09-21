@@ -1,6 +1,6 @@
 import type { Implementation } from "@agentclientprotocol/sdk";
 import type { ToolDefinition } from "@bound/client";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import type { McpServerConfig } from "../config";
 import type { McpServerManager } from "../mcp/manager";
 import { proxyToolCall } from "../mcp/proxy";

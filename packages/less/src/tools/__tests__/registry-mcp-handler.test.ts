@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/server";
 import type { McpServerConfig } from "../../config";
 import type { McpServerManager } from "../../mcp/manager";
 import { buildToolSet } from "../registry";
