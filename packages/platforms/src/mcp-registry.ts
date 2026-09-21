@@ -360,7 +360,8 @@ export class PlatformMcpRegistry {
 		//
 		// Earlier code monkey-patched `protocol._onNotification` (camelCase)
 		// directly. The SDK's actual internal name is `_onnotification`
-		// (lowercase) — see @modelcontextprotocol/sdk shared/protocol.js —
+		// (lowercase) — see the shared Protocol implementation bundled
+		// into @modelcontextprotocol/client —
 		// so the override silently created a phantom property and the
 		// real `_onnotification` continued to dispatch through
 		// `_notificationHandlers`. Without an entry there for our custom

@@ -5,7 +5,7 @@
 // single-origin sandbox model documented in mcp-app-frame.ts).
 // All DOM/iframe wiring is exercised by typecheck + manual smoke — bun:test has
 // no DOM env in the web package.
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { Client } from "@modelcontextprotocol/client";
 import { onDestroy, onMount } from "svelte";
 import { client } from "../lib/bound";
 import {
