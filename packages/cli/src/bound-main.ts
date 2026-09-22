@@ -42,6 +42,8 @@ OPTIONS:
   bound init --force               Overwrite existing config
 
   bound login --chatgpt            Sign in with ChatGPT (OAuth) for the chatgpt-oauth provider
+  bound login --challenge <id>     Resolve a raised MCP OAuth challenge (needs a running local daemon)
+  bound login --mcp <server>       Warm up an MCP server: raise-and-resolve its OAuth challenge now
 
   bound start                       Start the orchestrator
   bound start --reseed              Wipe local DB, request full hub snapshot, then catch up via changelog

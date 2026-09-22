@@ -438,6 +438,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		webServer = await createWebServer(appContext.db, appContext.eventBus, {
 			port: webPort,
 			host: webHost,
+			// Forwarded to the pending-MCP-challenges route so the web-chat consent
+			// card gates its live authorize flow on a loopback bind (R-MO27c).
+			webBindHost: webHost,
 			hostName: appContext.hostName,
 			operatorUserId,
 			// Live getter (not a boot snapshot): the /models discovery endpoint
