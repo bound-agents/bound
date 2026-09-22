@@ -81,6 +81,12 @@ export interface WebServerConfig {
 	 * R-MO17/R-MO27). Forwarded to `createWebApp` → the oauth-mcp callback route.
 	 */
 	oauthMcpBridge?: import("./routes/oauth-mcp").OauthMcpResolverBridge | null;
+	/**
+	 * The web server's bind host (WEB_BIND_HOST). Forwarded to the
+	 * pending-MCP-challenges route so the web-chat consent card gates its live
+	 * authorize flow on a loopback bind (R-MO27c).
+	 */
+	webBindHost?: string;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {

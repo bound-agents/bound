@@ -116,18 +116,33 @@ server's config, because it never syncs and never crosses the relay. See the
 [`auth` block reference](/bound/reference/configuration/#mcpjs--mcpjson) for every field.
 
 The first call to an OAuth server that has no token does not fail permanently. Bound raises a
-challenge, settles the call, and keeps the thread usable. Resolve the challenge from any host:
+challenge, settles the call, and keeps the thread usable. The settled tool result surfaces as a
+consent affordance on whichever surface the call ran on:
 
-- Run `bound login --challenge <id>` with the challenge id from the settled tool result.
+- **boundless / TUI** renders a `🔐 authorization required` notice naming the server, the demanded
+  scopes, and the challenge id, with the `bound login --challenge <id>` command inline. Nothing
+  blocks — the call already settled and the thread stays usable.
+- **web chat** renders a consent card at the top of the thread listing every pending challenge. On
+  a loopback web bind (`WEB_BIND_HOST` unset or loopback, the default) the card carries a live
+  **Authorize** button that opens your browser for consent. On a non-loopback bind (`0.0.0.0`, the
+  documented hub setting) the card carries no button — a loopback callback is unreachable from a
+  remote browser — and instead shows the `bound login --challenge <id>` instruction to run from a
+  local session.
+
+Resolve a challenge from any host:
+
+- Run `bound login --challenge <id>` with the challenge id from the settled tool result or a card.
 - Run `bound login --mcp <server>` to authorize a server before its first use.
-- Open the consent card in the web UI.
+- Click **Authorize** on the web consent card (loopback bind only).
 
 Each of these opens your browser for consent and requires a running local daemon: the daemon
 serves the loopback callback and transfers the authorization code to the host that owns the
-server. That owning host performs the token exchange and holds the token; the token never
-moves between hosts. When the grant resolves, the thread that raised the challenge is woken so
-the model can re-issue the call. See [CLI and operations](/bound/guides/cli-operations/#bound-login)
-for the command reference.
+server. That owning host performs the token exchange and holds the token in its own
+`config/mcp-auth.json`; the token never syncs and never crosses the relay, so custody is per-host.
+When the grant resolves, the thread that raised the challenge is woken so the model can re-issue
+the call. Consent affordances are not delivered over platform connectors (Discord) — a challenge
+raised from a connector thread still settles and resolves from the web card or the CLI. See
+[CLI and operations](/bound/guides/cli-operations/#bound-login) for the command reference.
 
 ## Use MCP Apps
 

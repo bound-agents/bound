@@ -7,6 +7,7 @@ import type React from "react";
 import { isShellToolName } from "../../tools/shell";
 import { PENDING_USER_MESSAGE_ID } from "../hooks/useMessages";
 import { tokens } from "../theme";
+import { parseAuthChallengeNotice } from "../util/auth-challenge";
 import { getImageGraphics, getImagePreview, parseImageDescription } from "../util/image-preview";
 import { linkifyPath } from "../util/osc8";
 import { tildifyPath, tildifyText } from "../util/path";
@@ -913,6 +914,50 @@ export function MessageBlock({
 							<Text dimColor> aux</Text>
 						</Text>
 						<Markdown text={clipped.text} />
+					</Box>
+				</StripeBox>
+			);
+		}
+
+		// MCP OAuth consent notice (R-MO27a): a settled `auth_challenge_raised`
+		// result renders as a distinct consent NOTICE — visually shaped like a
+		// client-tool confirmation, but mechanically just a rendered tool result.
+		// Nothing blocks: the call already settled (R-MO14), the thread stays
+		// usable, and this block only surfaces the resolution affordances. The
+		// notice keys off the formatter's text shape (parseAuthChallengeNotice).
+		const authNotice = parseAuthChallengeNotice(fullText);
+		if (authNotice) {
+			return (
+				<StripeBox color={tokens.systemStripe} width={stripeWidth}>
+					<Box flexDirection="column" paddingLeft={2}>
+						<Text bold color={tokens.systemStripe}>
+							🔐 authorization required
+						</Text>
+						<Text>
+							<Text dimColor>server: </Text>
+							<Text bold>{authNotice.serverName}</Text>
+						</Text>
+						<Text>
+							<Text dimColor>{authNotice.scopeLine}</Text>
+						</Text>
+						{authNotice.failureLine ? (
+							<Text color={tokens.failureIndicator}>{authNotice.failureLine}</Text>
+						) : null}
+						<Text>
+							<Text dimColor>challenge: </Text>
+							<Text>{authNotice.challengeId}</Text>
+						</Text>
+						<Box marginTop={1} flexDirection="column">
+							<Text>
+								<Text color={tokens.toolRequestMarker}>{"  • "}</Text>
+								<Text>{`bound login --challenge ${authNotice.challengeId}`}</Text>
+							</Text>
+							<Text>
+								<Text color={tokens.toolRequestMarker}>{"  • "}</Text>
+								<Text dimColor>or open the consent card in the web UI</Text>
+							</Text>
+							<Text dimColor>{"  This thread is woken when the challenge resolves."}</Text>
+						</Box>
 					</Box>
 				</StripeBox>
 			);

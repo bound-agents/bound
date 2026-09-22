@@ -8,6 +8,7 @@ import { createConnectorsRoutes } from "./connectors";
 import { createFilesRoutes } from "./files";
 import { createMcpRoutes } from "./mcp";
 import { createMcpAppsRoutes } from "./mcp-apps";
+import { createMcpChallengesRoutes } from "./mcp-challenges";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
@@ -86,6 +87,12 @@ export interface RoutesConfig {
 	 * no-awaited-attempt 400.
 	 */
 	oauthMcpBridge?: OauthMcpResolverBridge | null;
+	/**
+	 * The web server's actual bind host (WEB_BIND_HOST). Forwarded to the
+	 * pending-MCP-challenges route so it gates the live web-chat authorize flow
+	 * on a loopback bind (R-MO27c). Defaults to `localhost` when unset.
+	 */
+	webBindHost?: string;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -106,6 +113,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		mcpConfig,
 		modelRouter,
 		topologyRole,
+		webBindHost = "localhost",
 	} = config;
 
 	// The threads route only needs the default model id
@@ -124,6 +132,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		),
 		messages: createMessagesRoutes(db, eventBus),
 		oauthMcp: createOauthMcpRoutes(config.oauthMcpBridge ?? null),
+		mcpChallenges: createMcpChallengesRoutes(db, webBindHost, config.oauthMcpBridge ?? null),
 		connectors: createConnectorsRoutes(db),
 		files: createFilesRoutes(db),
 		memory: createMemoryRoutes(db),

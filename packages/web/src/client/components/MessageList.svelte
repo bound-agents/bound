@@ -9,6 +9,7 @@ import {
 import { anchorYardTrees } from "../lib/yard-anchoring";
 import type { YardTreeSnapshot } from "../lib/yard-execution";
 import McpAppPanel from "./McpAppPanel.svelte";
+import McpChallengeCard from "./McpChallengeCard.svelte";
 import MessageBubble from "./MessageBubble.svelte";
 import ReasoningBlock from "./ReasoningBlock.svelte";
 import ToolCallCard from "./ToolCallCard.svelte";
@@ -308,6 +309,7 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 
 <div class="board">
 	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
+		<McpChallengeCard />
 		{#snippet yardPanelRow(tree: YardTreeSnapshot)}
 			<div class="turn-row" data-message-role="tool_call"><div class="time-gutter mono"></div><div class="rail"><div class="rail-line" style="background: {lineColor}"></div><div class="rail-dot rail-dot-assistant" style="background: {lineColor}; border-color: {lineColor}"></div></div><div class="row-content"><YardExecutionPanel {tree} /></div></div>
 		{/snippet}

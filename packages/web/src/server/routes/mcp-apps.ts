@@ -139,9 +139,47 @@ export function createMcpAppsRoutes(
 	});
 
 	app.all("/proxy/:name", async (c) => {
+		// R-MO27b binding: the upstream URL and credential resolve SERVER-SIDE from
+		// the same `mcp.json` entry, keyed by the server identifier this route
+		// controls (the `:name` param is looked up in `httpServersByName`, built
+		// from local config — a browser-supplied URL is never fetched). A selector
+		// that does not resolve to exactly one configured server is rejected BEFORE
+		// any fetch (R-MO27b: "a browser-supplied selector that does not resolve to
+		// exactly one configured server is rejected before any fetch").
 		const server = httpServersByName.get(c.req.param("name"));
 		if (!server) {
 			return c.json({ error: `Unknown MCP App server: ${c.req.param("name")}` }, 404);
+		}
+
+		// R-MO27b token custody: for an OAuth-bearing server, the credential is a
+		// bound-owned token whose custody belongs to the OWNING host, which attaches
+		// it at its own edge (R-MO24, tokens never move). This proxy runs on the
+		// serving host and fetches upstream directly — correct ONLY when the serving
+		// host is the owner. Because `mcp.json` is a per-host local config, a server
+		// present in THIS host's `httpServersByName` IS owned by this host, so the
+		// direct fetch is the co-location case R-MO27b permits. An `auth`-bearing
+		// entry with no static `headers` has no credential to inject here at all:
+		// its token lives in `config/mcp-auth.json`, resolved by the owner's MCP
+		// bridge at request time, NOT in this route. Refuse rather than issue an
+		// unauthenticated upstream fetch that would 401 in a loop.
+		//
+		// OWNER-RELAY GAP (R-MO27b, filed): when the serving web host is NOT the
+		// owner, the app proxy must route the MCP call through the owning host over
+		// the R-UD12 tool relay, and the owner attaches its token at its own edge —
+		// the header-injection seam below then runs on the owner, not here. That is
+		// a structurally larger change (a new relay kind carrying a browser->owner
+		// MCP-app proxy request through durable_work); the current proxy only ever
+		// serves locally-owned servers, which is the only case its local
+		// `httpServersByName` can name. TODO(mcp-oauth owner-relay): add the
+		// cross-host app-proxy relay path here (packages/web/src/server/routes/
+		// mcp-apps.ts:141 `/proxy/:name`) once the relay kind lands.
+		if (server.auth?.type === "oauth" && !server.headers) {
+			return c.json(
+				{
+					error: `MCP App server "${server.name}" requires OAuth; its token is owner-held and cannot be attached by the app proxy. Resolve the challenge (bound login --mcp ${server.name}) so the owning host serves it.`,
+				},
+				503,
+			);
 		}
 
 		const forwardHeaders = new Headers();

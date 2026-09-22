@@ -255,4 +255,53 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 		const body = (await res.json()) as { error: string };
 		expect(body.error).toContain("ECONNREFUSED");
 	});
+
+	it("503s an OAuth-bearing server with no static headers (owner-held token, R-MO27b)", async () => {
+		// An `auth: { type: "oauth" }` entry whose token lives in config/mcp-auth.json
+		// (no static `headers`) has no credential this proxy can attach: custody
+		// belongs to the owning host, which attaches it at its own edge. The proxy
+		// must refuse rather than issue an unauthenticated upstream fetch.
+		let fetched = false;
+		const authConfig: McpConfig = {
+			servers: [
+				{
+					name: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+					auth: { type: "oauth" },
+				},
+			],
+		};
+		const app = createMcpAppsRoutes(db, authConfig, async () => {
+			fetched = true;
+			return new Response("ok", { status: 200 });
+		});
+		const res = await app.request("/proxy/linear", { method: "POST" });
+		expect(res.status).toBe(503);
+		expect(fetched).toBe(false);
+	});
+
+	it("proxies an OAuth-bearing server that DOES carry static headers (co-located owner)", async () => {
+		// A statically-headered entry has a credential the owner injects here — the
+		// co-location case R-MO27b permits. It proxies normally.
+		let seenAuth: string | null = null;
+		const authConfig: McpConfig = {
+			servers: [
+				{
+					name: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+					auth: { type: "oauth" },
+					headers: { Authorization: "Bearer owner-token" },
+				},
+			],
+		};
+		const app = createMcpAppsRoutes(db, authConfig, async (_url, init) => {
+			seenAuth = new Headers(init?.headers).get("authorization");
+			return new Response("ok", { status: 200 });
+		});
+		const res = await app.request("/proxy/linear", { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(seenAuth).toBe("Bearer owner-token");
+	});
 });

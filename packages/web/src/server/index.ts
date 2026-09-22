@@ -54,6 +54,12 @@ export interface WebAppConfig {
 	siteId?: string;
 	operatorUserId: string;
 	/**
+	 * The web server's bind host (WEB_BIND_HOST). Forwarded to the
+	 * pending-MCP-challenges route so the web-chat consent card gates its live
+	 * authorize flow on a loopback bind (R-MO27c).
+	 */
+	webBindHost?: string;
+	/**
 	 * The sync server's bind host and port (PORT/BIND_HOST env). Forwarded
 	 * to the webhooks route so it can enumerate the local webhook delivery
 	 * URL — webhook ingestion is on the sync port (3000), distinct from the
@@ -174,6 +180,7 @@ export async function createWebApp(
 		mcpConfig: config.mcpConfig,
 		modelRouter: config.modelRouter,
 		oauthMcpBridge: config.oauthMcpBridge ?? null,
+		webBindHost: config.webBindHost,
 	};
 
 	const app = new Hono();
