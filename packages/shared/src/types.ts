@@ -37,8 +37,8 @@ export type SyncedTableName =
 	| "webhooks"
 	| "rss_feeds"
 	| "client_sessions"
+	| "mcp_auth_challenges"
 	| "turns";
-
 export type ReducerType = "lww" | "append-only";
 
 /**
@@ -407,6 +407,34 @@ export interface ClientSession extends SoftDeletable {
 	modified_at: string; // ISO 8601
 }
 
+/**
+ * A synced (LWW) row recording an unmet OAuth authorization demand for an http
+ * MCP server. MCP OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md, §5,
+ * R-MO6/R-MO7. Challenge identity is one deterministic row per
+ * `(owning site_id, MCP server name)`. Carries the DEMAND, never a secret
+ * (R-MO7): no `client_secret`, PKCE verifier, authorization code, or token.
+ * `status` transitions are owner-only and guarded/terminal-wins (R-MO8a) —
+ * see packages/core/src/repositories/mcp-auth-challenges.ts.
+ */
+export interface McpAuthChallenge extends SoftDeletable {
+	id: string;
+	server_name: string;
+	owning_site_id: string;
+	server_url: string;
+	/** Space-delimited scope demand parsed from the 401/403. */
+	scope_demand: string;
+	/** Space-delimited scope set currently granted at raise time (empty for a first-use 401). */
+	granted_scopes: string;
+	/** RFC 9728 `resource_metadata` hint if the challenge advertised one, else null. */
+	resource_metadata_hint: string | null;
+	/** Config-declared `client_id` if any (R-MO3, non-secret), else null. */
+	client_id: string | null;
+	status: "pending" | "resolved" | "failed";
+	/** Terminal OAuth error code when `status` is `failed`, else null. */
+	failure_reason: string | null;
+	modified_at: string; // ISO 8601
+}
+
 export interface Turn extends SoftDeletable {
 	id: string;
 	thread_id: string | null;
@@ -444,6 +472,7 @@ export interface SyncedTableRowMap {
 	webhooks: Webhook;
 	rss_feeds: RssFeed;
 	client_sessions: ClientSession;
+	mcp_auth_challenges: McpAuthChallenge;
 	turns: Turn;
 }
 
@@ -505,6 +534,7 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	webhooks: "lww",
 	rss_feeds: "lww",
 	client_sessions: "lww",
+	mcp_auth_challenges: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
 	// for local-only columns (context_debug, relay_target, relay_latency_ms)

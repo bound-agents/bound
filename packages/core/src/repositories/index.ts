@@ -39,6 +39,7 @@ export * from "./client-sessions";
 export * from "./webhooks";
 export * from "./create-webhook-binding";
 export * from "./rss-feeds";
+export * from "./mcp-auth-challenges";
 export * from "./change-log";
 export * from "./host-meta";
 export * from "./sync-state";

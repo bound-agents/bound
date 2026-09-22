@@ -26,6 +26,7 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"rss_feeds",
 	"turns",
 	"client_sessions",
+	"mcp_auth_challenges",
 ];
 
 describe("getSyncedTableSchemas", () => {

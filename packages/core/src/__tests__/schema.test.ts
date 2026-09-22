@@ -58,6 +58,7 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("memory_edges");
 		expect(tableNames).toContain("connector_handles");
 		expect(tableNames).toContain("webhooks");
+		expect(tableNames).toContain("mcp_auth_challenges");
 		expect(tableNames).toContain("change_log");
 		expect(tableNames).toContain("sync_state");
 		expect(tableNames).toContain("host_meta");
@@ -69,11 +70,12 @@ describe("Database Schema", () => {
 		// FTS5 virtual table + its shadow tables
 		expect(tableNames).toContain("semantic_memory_fts");
 
-		// 24 base tables (relay_outbox/relay_inbox retired at release N+1; includes
-		// local-only row_state_hashes cache, durable_work, and local_flags) + FTS5
-		// virtual table + 5 FTS5 shadow tables = 30
+		// 25 base tables (relay_outbox/relay_inbox retired at release N+1; includes
+		// local-only row_state_hashes cache, durable_work, and local_flags; +
+		// mcp_auth_challenges at MCP OAuth slice 1) + FTS5
+		// virtual table + 5 FTS5 shadow tables = 31
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(25); // 24 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(26); // 25 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -256,10 +258,11 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 30 tables (24 base after relay_outbox/relay_inbox retired at
-		// release N+1, incl. local-only durable_work, local_flags, row_state_hashes
-		// cache, + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(30);
+		// Still exactly 31 tables (25 base after relay_outbox/relay_inbox retired at
+		// release N+1 and mcp_auth_challenges added at MCP OAuth slice 1, incl.
+		// local-only durable_work, local_flags, row_state_hashes cache, + 1 FTS5
+		// virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(31);
 
 		db.close();
 	});

@@ -490,11 +490,27 @@ const mcpServerStdioSchema = mcpServerBaseSchema
 	})
 	.strict();
 
+// The `auth` block enables OAuth 2.1 authorization-code + PKCE for an http MCP
+// server (MCP OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md, R-MO1).
+// `client_id` is non-secret and may appear in synced challenge rows (R-MO3);
+// `client_secret` is a secret that lives only in the owning host's config
+// (R-MO4). Declared on the http member only — a `stdio` entry rejects `auth`
+// because the strict stdio member does not extend it (R-MO1: OAuth is http-only).
+const mcpAuthSchema = z
+	.object({
+		type: z.literal("oauth"),
+		scopes: z.array(z.string()).optional(),
+		client_id: z.string().optional(),
+		client_secret: z.string().optional(),
+	})
+	.strict();
+
 const mcpServerHttpSchema = mcpServerBaseSchema
 	.extend({
 		transport: z.literal("http"),
 		url: z.string().url(),
 		headers: z.record(z.string(), z.string()).optional(),
+		auth: mcpAuthSchema.optional(),
 	})
 	.strict();
 

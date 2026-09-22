@@ -1096,8 +1096,93 @@ describe("Config schemas", () => {
 					},
 				],
 			};
-			const result = mcpSchema.safeParse(config);
-			expect(result.success).toBe(true);
+			expect(mcpSchema.safeParse(config).success).toBe(true);
+		});
+
+		// MCP OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md, R-MO1/R-MO3/R-MO4/R-MO5.
+		describe("http `auth` OAuth block (MCP OAuth slice 1)", () => {
+			it("parses a full oauth auth block on an http entry", () => {
+				const config = {
+					servers: [
+						{
+							name: "web",
+							url: "https://mcp.example.com",
+							transport: "http",
+							auth: {
+								type: "oauth",
+								scopes: ["read", "write"],
+								client_id: "client-123",
+								client_secret: "shhh",
+							},
+						},
+					],
+				};
+				expect(mcpSchema.safeParse(config).success).toBe(true);
+			});
+
+			it("parses an oauth auth block with only the required `type`", () => {
+				const config = {
+					servers: [
+						{
+							name: "web",
+							url: "https://mcp.example.com",
+							transport: "http",
+							auth: { type: "oauth" },
+						},
+					],
+				};
+				expect(mcpSchema.safeParse(config).success).toBe(true);
+			});
+
+			it("still parses an http entry with no auth block (existing configs)", () => {
+				const config = {
+					servers: [{ name: "web", url: "https://mcp.example.com", transport: "http" }],
+				};
+				expect(mcpSchema.safeParse(config).success).toBe(true);
+			});
+
+			it("rejects an unknown subfield inside the auth block (strict mode)", () => {
+				const config = {
+					servers: [
+						{
+							name: "web",
+							url: "https://mcp.example.com",
+							transport: "http",
+							auth: { type: "oauth", audience: "nope" },
+						},
+					],
+				};
+				expect(mcpSchema.safeParse(config).success).toBe(false);
+			});
+
+			it("rejects an auth `type` other than oauth", () => {
+				const config = {
+					servers: [
+						{
+							name: "web",
+							url: "https://mcp.example.com",
+							transport: "http",
+							auth: { type: "apikey" },
+						},
+					],
+				};
+				expect(mcpSchema.safeParse(config).success).toBe(false);
+			});
+
+			it("rejects an auth block on a stdio entry (OAuth is http-only, R-MO1)", () => {
+				const config = {
+					servers: [
+						{
+							name: "filesystem",
+							command: "node",
+							transport: "stdio",
+							auth: { type: "oauth" },
+						},
+					],
+				};
+				// The strict stdio member does not extend `auth`, so it is an unknown key there.
+				expect(mcpSchema.safeParse(config).success).toBe(false);
+			});
 		});
 	});
 });
