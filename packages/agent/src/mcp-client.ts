@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import type { Prompt, Resource, Tool } from "@modelcontextprotocol/client";
+import type { OAuthClientProvider, Prompt, Resource, Tool } from "@modelcontextprotocol/client";
 /**
  * MCP Client for connecting to and managing external MCP servers.
  * Implements lifecycle management per spec §7.2.
@@ -15,6 +15,27 @@ export interface MCPServerConfig {
 	headers?: Record<string, string>;
 	allow_tools?: string[];
 	confirm?: string[];
+	/**
+	 * OAuth 2.1 authorization-code + PKCE config for an http MCP server (MCP
+	 * OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md, R-MO1). Its presence
+	 * switches the server onto the provider-driven auth path; its absence leaves
+	 * the server on the static-`headers` bearer path unchanged (R-MO2).
+	 * `client_secret` is an owner-host secret and never syncs (R-MO4).
+	 */
+	auth?: {
+		type: "oauth";
+		scopes?: string[];
+		client_id?: string;
+		client_secret?: string;
+	};
+	/**
+	 * The v2 SDK OAuth provider wired into the http transport when `auth` is
+	 * present (R-MO2). Constructed by the connect site (which holds the db +
+	 * token store) and injected here so `MCPClient` stays free of custody
+	 * concerns. Servers without `auth` leave this unset and keep exact current
+	 * transport behavior.
+	 */
+	authProvider?: OAuthClientProvider;
 }
 
 export type { Tool, Resource, Prompt };
@@ -189,6 +210,13 @@ export class MCPClient {
 			}
 			const transport = new StreamableHTTPClientTransport(new URL(this.serverConfig.url), {
 				requestInit: this.serverConfig.headers ? { headers: this.serverConfig.headers } : undefined,
+				// Wire the OAuth provider ONLY for servers whose config has
+				// auth:{type:"oauth"} (R-MO2). Servers without an auth block leave
+				// authProvider unset and keep exact current transport behavior. A
+				// provider-held token outranks any configured Authorization header
+				// per v2 header precedence, so a static header is a fallback until a
+				// provider token exists.
+				authProvider: this.serverConfig.authProvider,
 			});
 			await this.client.connect(transport);
 		}
@@ -200,6 +228,19 @@ export class MCPClient {
 			await this.client.close();
 			this.connected = false;
 		}
+	}
+
+	/**
+	 * Re-run connect/initialize for this one server (R-MO13b). Slice 3 calls
+	 * this on challenge resolution so the next call rides an authenticated
+	 * session rather than re-failing on a client that never established one
+	 * (R-MO13). A fresh {@link Client} is built because the SDK client cannot
+	 * be reused across a closed transport.
+	 */
+	async reconnect(): Promise<void> {
+		await this.disconnect();
+		this.client = new Client({ name: "bound", version: "0.0.1" });
+		await this.connect();
 	}
 
 	async listTools(): Promise<Tool[]> {
