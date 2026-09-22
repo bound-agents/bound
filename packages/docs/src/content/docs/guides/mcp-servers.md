@@ -87,6 +87,48 @@ Restarting Bound applies the change too.
 
 For multi-host installations, see the [System model](/bound/concepts/system-model/).
 
+## Authenticate with OAuth
+
+An `http` server that returns `401` with an authorization challenge, or steps up scope with
+`403 insufficient_scope`, needs an OAuth 2.1 grant. Add an `auth` block of `type: "oauth"` to
+switch that server off the static-`headers` path:
+
+```json
+{
+  "servers": [
+    {
+      "name": "acme",
+      "transport": "http",
+      "url": "https://mcp.acme.com/mcp",
+      "auth": {
+        "type": "oauth",
+        "scopes": ["read", "write"],
+        "client_id": "your-registered-client-id"
+      }
+    }
+  ]
+}
+```
+
+Omit `client_id` to register a public client with the authorization server at consent time.
+Set `client_secret` for a confidential client; declare it only on the host that owns this
+server's config, because it never syncs and never crosses the relay. See the
+[`auth` block reference](/bound/reference/configuration/#mcpjs--mcpjson) for every field.
+
+The first call to an OAuth server that has no token does not fail permanently. Bound raises a
+challenge, settles the call, and keeps the thread usable. Resolve the challenge from any host:
+
+- Run `bound login --challenge <id>` with the challenge id from the settled tool result.
+- Run `bound login --mcp <server>` to authorize a server before its first use.
+- Open the consent card in the web UI.
+
+Each of these opens your browser for consent and requires a running local daemon: the daemon
+serves the loopback callback and transfers the authorization code to the host that owns the
+server. That owning host performs the token exchange and holds the token; the token never
+moves between hosts. When the grant resolves, the thread that raised the challenge is woken so
+the model can re-issue the call. See [CLI and operations](/bound/guides/cli-operations/#bound-login)
+for the command reference.
+
 ## Use MCP Apps
 
 MCP Apps are optional and let compatible servers return interactive UI for supported tool

@@ -85,7 +85,7 @@ describe("Phase 1 Integration", async () => {
 			)
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(33); // relay_outbox/relay_inbox retired at release N+1; + agents (#201) + local-only row_state_hashes cache + local_flags + mcp_auth_challenges (MCP OAuth slice 1) = 33
+		expect(tables.length).toBe(34); // relay_outbox/relay_inbox retired at release N+1; + agents (#201) + local-only row_state_hashes cache + local_flags + mcp_auth_challenges (MCP OAuth slice 1) + local-only mcp_auth_waiters (MCP OAuth slice 3) = 34
 
 		const tableNames = tables.map((t) => t.name);
 		const expectedTables = [

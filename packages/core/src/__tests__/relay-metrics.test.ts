@@ -88,11 +88,12 @@ describe("Relay Metrics", () => {
 				.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 				.all() as Array<{ name: string }>;
 
-			// 25 base tables (relay_outbox/relay_inbox retired at release N+1; still
+			// 26 base tables (relay_outbox/relay_inbox retired at release N+1; still
 			// includes local-only row_state_hashes cache, durable_work, and local_flags;
-			// + mcp_auth_challenges at MCP OAuth slice 1)
-			// + 1 FTS5 virtual table + 5 FTS5 shadow tables = 31
-			expect(tables.length).toBe(31);
+			// + mcp_auth_challenges at MCP OAuth slice 1; + local-only mcp_auth_waiters at
+			// MCP OAuth slice 3)
+			// + 1 FTS5 virtual table + 5 FTS5 shadow tables = 32
+			expect(tables.length).toBe(32);
 
 			db.close();
 		});

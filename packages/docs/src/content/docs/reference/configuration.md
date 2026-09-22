@@ -305,6 +305,25 @@ confirmation).
 Unknown keys on one transport do not slip through via the other — each variant is strict
 independently.
 
+**OAuth for `http` servers.** An `http` server may carry an optional `auth` block of
+`type: "oauth"` for the OAuth 2.1 authorization-code flow with PKCE. Its absence leaves the
+server on the static-`headers` bearer path. When a token has been obtained, it supplies the
+`Authorization` header and outranks a configured `headers` entry, so a configured header
+serves as a fallback until a token exists.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `type` | `"oauth"` | Selects the OAuth path. |
+| `scopes` | optional array&lt;string&gt; | Requested scope set. The authorization server is authoritative on the granted scope. |
+| `client_id` | optional string | A pre-registered client id, or a Client-ID-Metadata-Document https URL. Non-secret; it may appear in synced challenge rows. Omit it to register a public client dynamically at resolution time. |
+| `client_secret` | optional string | A confidential-client secret. Declare it only in the owning host's config. It never syncs and never crosses the relay. |
+
+A server that returns `401` or steps up scope with `403 insufficient_scope` raises a
+challenge instead of failing permanently. Resolve it with `bound login --challenge <id>` or
+`bound login --mcp <server>`, or from the web UI consent card. See the
+[MCP servers guide](/bound/guides/mcp-servers/#authenticate-with-oauth) for the procedure.
+Tokens live in a per-host `config/mcp-auth.json` written by the machinery, not in `mcp.json`.
+
 **MCP Apps.** A configured HTTP server that advertises the
 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) `io.modelcontextprotocol/ui`
 capability can render UI-bearing tool results inline in the web UI. There is no separate

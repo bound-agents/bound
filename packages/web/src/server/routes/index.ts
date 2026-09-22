@@ -11,6 +11,7 @@ import { createMcpAppsRoutes } from "./mcp-apps";
 import { createMemoryRoutes } from "./memory";
 import { createMessagesRoutes } from "./messages";
 import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
+import { type OauthMcpResolverBridge, createOauthMcpRoutes } from "./oauth-mcp";
 import { createPersonaRoutes } from "./persona";
 import { createResponsesRoutes } from "./responses";
 import { createRssFeedsRoutes } from "./rss";
@@ -77,6 +78,14 @@ export interface RoutesConfig {
 	modelRouter?: ModelRouter | null;
 	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
 	topologyRole?: "hub" | "spoke";
+	/**
+	 * The resolving host's in-process MCP OAuth resolver bridge (MCP OAuth RFC
+	 * §8, R-MO17/R-MO27). Backs `GET /oauth/mcp/callback`: correlates a callback
+	 * `state` to the awaited attempt and forwards its outcome to the owner. Null
+	 * on a host running no resolver — the route still mounts, every callback is a
+	 * no-awaited-attempt 400.
+	 */
+	oauthMcpBridge?: OauthMcpResolverBridge | null;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -114,6 +123,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			activeLoops,
 		),
 		messages: createMessagesRoutes(db, eventBus),
+		oauthMcp: createOauthMcpRoutes(config.oauthMcpBridge ?? null),
 		connectors: createConnectorsRoutes(db),
 		files: createFilesRoutes(db),
 		memory: createMemoryRoutes(db),

@@ -3,7 +3,7 @@
  * and hub site ID resolution.
  */
 
-import { RelayProcessor } from "@bound/agent";
+import { RelayProcessor, reconcileWaitersOnBoot } from "@bound/agent";
 import type { MCPClient } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { resolveRelayConfig } from "@bound/core";
@@ -74,6 +74,38 @@ export async function initRelay(
 
 	const relayProcessorHandle = relayProcessor.start();
 	appContext.logger.info("[relay] Relay processor started");
+
+	// MCP OAuth settle-and-wake (R-MO16/R-MO16b). When a challenge row reaches a
+	// terminal status via the sync change event, wake every local thread waiting
+	// on it; a boot-time reconciliation sweep catches challenges that resolved
+	// while this requester was down. The wake rides routeNotificationWakeup, so a
+	// thread whose live session is on another host wakes there (no #91 detached
+	// loop). topologyRole is left undefined here (resolved per-wake by the router).
+	appContext.eventBus.on("changelog:written", (entry) => {
+		if (entry.tableName !== "mcp_auth_challenges") return;
+		// The change event does not carry the row id, so sweep every unconsumed
+		// waiter whose challenge is now terminal — cheap (indexed, requester-local)
+		// and idempotent via the notification fence.
+		try {
+			reconcileWaitersOnBoot(appContext.db, appContext.eventBus, appContext.siteId);
+		} catch (err) {
+			appContext.logger.warn("[mcp-oauth] wake sweep on challenge sync failed", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	});
+	// Boot-time reconciliation (R-MO16b): a requester restart during the consent
+	// window loses no wake.
+	try {
+		const woken = reconcileWaitersOnBoot(appContext.db, appContext.eventBus, appContext.siteId);
+		if (woken > 0) {
+			appContext.logger.info("[mcp-oauth] boot reconciliation woke waiting threads", { woken });
+		}
+	} catch (err) {
+		appContext.logger.warn("[mcp-oauth] boot waiter reconciliation failed", {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
 
 	// Determine hub siteId from keyring (for spoke-side validation)
 	let hubSiteId: string | undefined;

@@ -210,3 +210,40 @@ export {
 	type DurableWorkRegistration,
 } from "./durable-work-registry";
 export { createWorkspoolCommand } from "./workspool-command";
+
+// MCP OAuth slice 3 — resolver flow, handoff, owner exchange, settle-and-wake.
+// (Slices 1+2: challenge repo in @bound/core; token store + provider + raise here.)
+export {
+	McpChallengeResolver,
+	type ResolverAttempt,
+	type ResolverServerConfig,
+	type ResolverError,
+	resolverCallbackUrl,
+	canonicalResource,
+	unionAttemptScopes,
+} from "./mcp-auth/resolver";
+export {
+	writeHandoff,
+	handoffIdempotencyKey,
+	type HandoffOutcome,
+} from "./mcp-auth/handoff";
+export {
+	consumeHandoff,
+	classifyAuthorizeError,
+	type OwnerServerConfig,
+	type ExchangeOutcome,
+	type McpAuthHandoffPayload,
+} from "./mcp-auth/owner-exchange";
+export {
+	upsertWaiter,
+	consumeWaiter,
+	findUnconsumedWaiters,
+	findAllUnconsumedWaiters,
+	type McpAuthWaiter,
+} from "./mcp-auth/waiters";
+export {
+	wakeWaitersForChallenge,
+	reconcileWaitersOnBoot,
+	formatWakeText,
+	type McpAuthWakePayload,
+} from "./mcp-auth/wake";

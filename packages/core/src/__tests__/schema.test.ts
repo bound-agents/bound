@@ -32,7 +32,7 @@ describe("Database Schema", () => {
 		db.close();
 	});
 
-	it("applies schema successfully creating all 22 tables + FTS5", () => {
+	it("applies schema successfully creating all base tables + FTS5", () => {
 		const db = createDatabase(dbPath);
 		applySchema(db);
 
@@ -68,14 +68,18 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("dispatch_queue");
 
 		// FTS5 virtual table + its shadow tables
-		expect(tableNames).toContain("semantic_memory_fts");
+		// Still exactly 32 tables (26 base after relay_outbox/relay_inbox retired at
+		// release N+1, mcp_auth_challenges added at MCP OAuth slice 1, and local-only
+		// mcp_auth_waiters added at MCP OAuth slice 3, incl. local-only durable_work,
+		// local_flags, row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(32);
 
-		// 25 base tables (relay_outbox/relay_inbox retired at release N+1; includes
+		// 26 base tables (relay_outbox/relay_inbox retired at release N+1; includes
 		// local-only row_state_hashes cache, durable_work, and local_flags; +
-		// mcp_auth_challenges at MCP OAuth slice 1) + FTS5
-		// virtual table + 5 FTS5 shadow tables = 31
+		// mcp_auth_challenges at MCP OAuth slice 1; + local-only mcp_auth_waiters at
+		// MCP OAuth slice 3) + FTS5 virtual table + 5 FTS5 shadow tables = 32
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(26); // 25 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(27); // 26 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -258,11 +262,12 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 31 tables (25 base after relay_outbox/relay_inbox retired at
-		// release N+1 and mcp_auth_challenges added at MCP OAuth slice 1, incl.
-		// local-only durable_work, local_flags, row_state_hashes cache, + 1 FTS5
-		// virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(31);
+		// Still exactly 32 tables (25 base after relay_outbox/relay_inbox retired at
+		// release N+1, mcp_auth_challenges added at MCP OAuth slice 1, and
+		// local-only mcp_auth_waiters added at MCP OAuth slice 3, incl. local-only
+		// durable_work, local_flags, row_state_hashes cache, + 1 FTS5 virtual + 5
+		// FTS5 shadow)
+		expect(tables.length).toBe(32);
 
 		db.close();
 	});

@@ -200,3 +200,25 @@ export function raiseAuthChallenge(
 				} as never),
 	};
 }
+
+/**
+ * Write the requester-local durable waiter for a settled `auth_challenge_raised`
+ * result (R-MO14/R-MO15). The SETTLE POINT — where the loop catches
+ * {@link AuthChallengeRaisedError} and persists the tool result — calls this
+ * with the settling thread so the terminal-status wake (R-MO16) and boot sweep
+ * (R-MO16b) have a durable record to consume. Upsert-never-append, keyed
+ * `(challenge_id, thread_id)` (the store enforces it). Imported lazily by the
+ * bridge integration; kept here so the raise module owns the full settle seam.
+ *
+ * NOTE (slice 3): the v2 provider is not yet wired into the MCP bridge, so the
+ * loop-side catch that INVOKES this does not exist on main today. This is the
+ * function that catch calls; wiring the catch is bridge-integration work.
+ */
+export function writeSettleWaiter(
+	db: Database,
+	challengeId: string,
+	threadId: string,
+	upsert: (db: Database, challengeId: string, threadId: string) => void,
+): void {
+	upsert(db, challengeId, threadId);
+}

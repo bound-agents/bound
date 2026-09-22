@@ -953,6 +953,30 @@ export function applySchema(db: Database): void {
 		ON relay_cycles(created_at)
 	`);
 
+	// 21. mcp_auth_waiters (non-replicated, local-only): a requester's durable
+	// record that a thread is waiting on an MCP OAuth challenge to reach a
+	// terminal status (MCP OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md
+	// §7, R-MO15/R-MO16b). Requester-LOCAL — the requester consumes its own
+	// record — so it never syncs (invariant #3 lane); the challenge row itself is
+	// the only synced artifact. Keyed by (challenge_id, thread_id): a second
+	// settle for the same pair UPSERTs (INSERT OR REPLACE), never appends, so a
+	// re-driven settle leaves exactly one record. The boot sweep (R-MO16b) reads
+	// unconsumed rows; `consumed_at` fences a wake to exactly-once.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS mcp_auth_waiters (
+			challenge_id TEXT NOT NULL,
+			thread_id TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			consumed_at TEXT,
+			PRIMARY KEY (challenge_id, thread_id)
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_mcp_auth_waiters_challenge
+		ON mcp_auth_waiters(challenge_id)
+	`);
+
 	// stream_id column migration (idempotent — ignore if column already exists).
 	// relay_outbox/relay_inbox were retired at release N+1; relay_cycles is
 	// retained telemetry and always migrated.

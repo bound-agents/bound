@@ -26,10 +26,17 @@ import { FileTokenStore } from "@bound/llm";
 
 export interface LoginArgs {
 	chatgpt?: boolean;
+	/** `bound login --challenge <id>`: claim a previously-raised MCP OAuth challenge (R-MO27e). */
+	challenge?: string;
+	/** `bound login --mcp <server>`: raise-and-resolve an MCP server's challenge for warm-up (R-MO27e). */
+	mcp?: string;
 	configDir?: string;
 	/** Injectable for tests — defaults to opening the OS browser. */
-	/** Injectable for tests — defaults to opening the OS browser. */
 	openBrowser?: (url: string) => void;
+	/** Injectable for tests — the daemon base URL (defaults to the local web router). */
+	daemonUrl?: string;
+	/** Injectable for tests — fetch against the daemon. */
+	fetchImpl?: typeof fetch;
 }
 
 /** The loopback callback binds this host:port; must match the registered redirect_uri. */
@@ -120,8 +127,22 @@ function awaitCallback(expectedState: string): Promise<string> {
 }
 
 export async function runLogin(args: LoginArgs): Promise<void> {
+	// MCP OAuth challenge resolution (R-MO27e/R-MO28): `bound login --challenge <id>`
+	// or `bound login --mcp <server>`. Both act THROUGH a running local daemon —
+	// the daemon reads the synced challenge, its web router serves the canonical
+	// callback (R-MO27), and its sync process writes and transfers the durable_work
+	// handoff. A bare CLI on a daemon-less machine cannot resolve a challenge.
+	if (args.challenge || args.mcp) {
+		await runMcpLogin(args);
+		return;
+	}
 	if (!args.chatgpt) {
-		console.error("Usage: bound login --chatgpt [--config-dir <dir>]");
+		console.error(
+			"Usage:\n" +
+				"  bound login --chatgpt [--config-dir <dir>]\n" +
+				"  bound login --challenge <id> [--url <daemon>]\n" +
+				"  bound login --mcp <server> [--url <daemon>]",
+		);
 		process.exit(1);
 	}
 	const configDir = args.configDir || "config";
@@ -154,4 +175,75 @@ export async function runLogin(args: LoginArgs): Promise<void> {
 	console.log(
 		'Add a backend with `provider: "chatgpt-oauth"` to config/model_backends.js to use it.',
 	);
+}
+
+/**
+ * Default daemon web-router base (WEB_PORT, loopback). The CLI acts through the
+ * daemon: it serves the canonical callback and transfers the handoff (R-MO27e).
+ */
+const DEFAULT_DAEMON_URL = "http://localhost:3001";
+
+/**
+ * `bound login --challenge <id>` / `--mcp <server>` (R-MO27e/R-MO28). REQUIRES a
+ * running local daemon: the CLI verifies the daemon is reachable, then hands the
+ * resolution to it. The daemon reads the synced challenge, its in-process
+ * resolver mints the per-attempt authorize URL, its web router catches the
+ * loopback callback (R-MO27), and its sync process writes and transfers the
+ * durable_work handoff to the owning host. A bare CLI on a daemon-less machine
+ * cannot resolve a challenge — it errors actionably.
+ *
+ * PKCE/state primitives are reused from the generalized `@bound/llm` auth-core
+ * (generatePkce/generateState), NOT the hardcoded port-1455 chatgpt listener
+ * (R-MO28): the resolver, not the CLI, binds the callback.
+ */
+export async function runMcpLogin(args: LoginArgs): Promise<void> {
+	const daemonUrl = args.daemonUrl ?? DEFAULT_DAEMON_URL;
+	const fetchImpl = args.fetchImpl ?? globalThis.fetch;
+
+	// A running local daemon is a hard prerequisite (R-MO27e). Probe the web
+	// router's status endpoint; a connection failure is the actionable error.
+	try {
+		const probe = await fetchImpl(`${daemonUrl}/api/status`, { method: "GET" });
+		if (!probe.ok && probe.status >= 500) {
+			throw new Error(`daemon returned ${probe.status}`);
+		}
+	} catch (e) {
+		throw new Error(
+			`bound login --${args.challenge ? "challenge" : "mcp"} requires a running local daemon at ${daemonUrl}, but it is unreachable (${e instanceof Error ? e.message : String(e)}). Start it with \`bound start\` and retry — the daemon serves the OAuth callback and transfers the handoff.`,
+		);
+	}
+
+	const target = args.challenge
+		? { kind: "challenge" as const, value: args.challenge }
+		: { kind: "mcp" as const, value: args.mcp ?? "" };
+
+	// The daemon owns the claim + authorize-URL mint (its in-process resolver
+	// holds the per-attempt state and binds the callback). Instruct it to begin
+	// resolution and surface the authorize URL for the operator's browser.
+	const body =
+		target.kind === "challenge" ? { challenge_id: target.value } : { server_name: target.value };
+	const res = await fetchImpl(`${daemonUrl}/oauth/mcp/claim`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) {
+		const detail = await res.text().catch(() => "");
+		throw new Error(
+			`daemon could not claim the ${target.kind === "challenge" ? `challenge ${target.value}` : `challenge for server ${target.value}`}: ${res.status} ${detail}`.trim(),
+		);
+	}
+	const claim = (await res.json()) as { authorize_url?: string; challenge_id?: string };
+	if (!claim.authorize_url) {
+		throw new Error("daemon did not return an authorize URL for the claim");
+	}
+
+	console.log(
+		`Resolving MCP authorization${claim.challenge_id ? ` (challenge ${claim.challenge_id})` : ""}…`,
+	);
+	console.log(`If your browser doesn't open, visit this URL:\n\n  ${claim.authorize_url}\n`);
+	console.log(
+		"After you consent, the daemon catches the callback and hands the code to the owning host. Watch the thread that raised the challenge — it is woken on resolution.",
+	);
+	(args.openBrowser ?? openInBrowser)(claim.authorize_url);
 }

@@ -48,6 +48,7 @@ import {
 	inferenceRequestPayloadSchema,
 	injectTraceContext,
 	intakePayloadSchema,
+	mcpAuthHandoffPayloadSchema,
 	notifyWakeupPayloadSchema,
 	parseJsonSafe,
 	parseJsonUntyped,
@@ -220,6 +221,14 @@ export class RelayProcessor {
 	private readonly intakeReconciliationNotBeforeMs: number;
 	private readonly now: () => number;
 	private mcpConfirmGates = new Map<string, string[]>();
+	/**
+	 * Owner-side MCP OAuth handoff consumer (MCP OAuth RFC §8, R-MO20). Injected
+	 * after startup by the connect site that holds the token store + MCP config
+	 * (avoids circular init order, mirrors the other registry setters). Unset
+	 * hosts dead-letter an mcp_auth_handoff row (no owner context to exchange in).
+	 */
+	private mcpAuthHandoffConsumer: ((payload: Record<string, unknown>) => Promise<void>) | null =
+		null;
 
 	/**
 	 * Typed handler map — every HandledRequestKind MUST have an entry.
@@ -249,6 +258,7 @@ export class RelayProcessor {
 		intake: (entry) => this.handleIntake(entry),
 		notify_wakeup: (entry) => this.handleNotifyWakeup(entry),
 		client_tool: (entry) => this.handleClientTool(entry),
+		mcp_auth_handoff: (entry) => this.handleMcpAuthHandoff(entry),
 	};
 
 	constructor(
@@ -299,6 +309,16 @@ export class RelayProcessor {
 	/** Inject the file reader (e.g. ClusterFs.readFileBuffer) for virtual FS support in platform tools. */
 	setFileReader(fn: (path: string) => Promise<Uint8Array>): void {
 		this.fileReader = fn;
+	}
+
+	/**
+	 * Inject the owner-side MCP OAuth handoff consumer (R-MO20). Wired after
+	 * startup by the connect site that holds the token store + MCP config, so the
+	 * relay-processor stays free of custody concerns (mirrors the other registry
+	 * setters). Left unset on hosts with no owner context.
+	 */
+	setMcpAuthHandoffConsumer(fn: (payload: Record<string, unknown>) => Promise<void>): void {
+		this.mcpAuthHandoffConsumer = fn;
 	}
 
 	start(
@@ -1068,6 +1088,34 @@ export class RelayProcessor {
 			payload: payload.payload,
 			idempotency_key: entry.idempotency_key ?? payload.idempotency_key,
 		});
+		return null;
+	}
+
+	/**
+	 * Owner-side MCP OAuth handoff consumer (R-MO20). The resolver caught an
+	 * authorize-leg outcome and shipped it here (this host owns the challenge's
+	 * server config + token custody). The injected consumer validates issuer +
+	 * resource, byte-replays redirect_uri + resource on the token POST, exchanges
+	 * with the owner's own credentials, saves the bundle, and flips the challenge
+	 * row. A host with no owner context (consumer unset) has nothing to exchange
+	 * in, so the row dead-letters via the thrown error's typed catch.
+	 */
+	private async handleMcpAuthHandoff(entry: RelayInboxEntry): Promise<null> {
+		const payloadResult = parseJsonSafe(mcpAuthHandoffPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.logger.error("Invalid relay payload", {
+				kind: entry.kind,
+				error: payloadResult.error,
+				entryId: entry.id,
+			});
+			throw new PayloadParseError();
+		}
+		if (!this.mcpAuthHandoffConsumer) {
+			throw new Error(
+				`no MCP OAuth owner-exchange consumer wired on ${this.siteId}; cannot consume mcp_auth_handoff`,
+			);
+		}
+		await this.mcpAuthHandoffConsumer(payloadResult.value as Record<string, unknown>);
 		return null;
 	}
 
