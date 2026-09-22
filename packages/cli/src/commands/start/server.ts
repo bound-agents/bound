@@ -159,6 +159,56 @@ export function createRemotePlatformRequest(
 	};
 }
 
+/**
+ * Build the cross-host MCP-App proxy relay dispatcher (R-MO27b LEG B). The web
+ * MCP-Apps route calls this when a browser reaches an app-bearing server owned
+ * by a peer: relay the JSON-RPC request to `ownerSiteId` over the
+ * `mcp_app_proxy` durable-work kind and await the owner's response over the
+ * `response:<requestId>` awaiter. Bounds the wait to the relay inference timeout
+ * (`sync.relay.inference_timeout_ms`, default 300s) and throws on expiry so the
+ * route maps it to a 504. Tokens never cross the relay; the owner attaches its
+ * own at its own edge, and the payload the route built carries no browser
+ * credential.
+ */
+export function createMcpAppProxyRelay(
+	deps: Pick<AppContext, "db" | "siteId" | "eventBus" | "optionalConfig">,
+): (
+	ownerSiteId: string,
+	payload: {
+		server_name: string;
+		method: string;
+		headers: Record<string, string>;
+		body_base64: string;
+	},
+) => Promise<{ status: number; headers: Record<string, string>; body_base64: string }> {
+	return async (ownerSiteId, payload) => {
+		const relayCfg = resolveTopologyRole(deps.optionalConfig);
+		const syncCfg = deps.optionalConfig.sync;
+		const timeoutMs =
+			syncCfg?.ok &&
+			typeof (syncCfg.value as { relay?: { inference_timeout_ms?: number } }).relay
+				?.inference_timeout_ms === "number"
+				? (syncCfg.value as { relay: { inference_timeout_ms: number } }).relay.inference_timeout_ms
+				: 300_000;
+		const routed = routeRelayRequest(deps.db, {
+			targetSiteId: ownerSiteId,
+			sourceSiteId: deps.siteId,
+			kind: "mcp_app_proxy",
+			payload: JSON.stringify(payload),
+			timeoutMs,
+			traceContext: serializeRelayTraceCarrier(injectRelayTraceCarrier()) ?? undefined,
+			topologyRole: relayCfg,
+		});
+		if (routed.path === "error") throw new Error(routed.reason);
+		const result = (await awaitPlatformRequestResponse(
+			{ db: deps.db, siteId: deps.siteId },
+			routed.id,
+			{ deadline: Date.now() + timeoutMs, targetSiteId: ownerSiteId },
+		)) as { status: number; headers: Record<string, string>; body_base64: string };
+		return result;
+	};
+}
+
 export function formatNotification(payload: Record<string, unknown>): string {
 	switch (payload.type) {
 		case "task_complete":
@@ -356,6 +406,12 @@ export interface ServerDeps {
 	 * host with no oauth-configured MCP server.
 	 */
 	oauthMcpBridge?: OauthMcpResolverBridge | null;
+	/**
+	 * Co-location token accessor (R-MO27b LEG A). Forwarded to the web server so the
+	 * MCP-Apps proxy attaches the owner's OAuth token at this host's fetch edge for a
+	 * locally-owned app-bearing server. Null on a host with no oauth MCP server.
+	 */
+	getMcpAppAccessToken?: import("@bound/web").WebServerConfig["getMcpAppAccessToken"] | null;
 }
 
 export async function initServer(deps: ServerDeps): Promise<ServerResult> {
@@ -369,6 +425,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		clusterFsObj,
 		relayProcessor,
 		oauthMcpBridge,
+		getMcpAppAccessToken,
 	} = deps;
 
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
@@ -494,6 +551,10 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			modelRouter,
 			topologyRole: resolveTopologyRole(appContext.optionalConfig),
 			oauthMcpBridge: oauthMcpBridge ?? null,
+			// R-MO27b LEG A: attach the owner's OAuth token at this host's fetch edge.
+			getMcpAppAccessToken: getMcpAppAccessToken ?? undefined,
+			// R-MO27b LEG B: relay a browser MCP-App proxy request to the owning host.
+			relayMcpAppProxy: createMcpAppProxyRelay(appContext),
 		});
 		await webServer.start();
 

@@ -811,6 +811,7 @@ describe("API Routes", () => {
 
 			const configuredApp = await createWebApp(db, eventBus, {
 				operatorUserId: "test-operator",
+				siteId: "site-a",
 				mcpConfig: {
 					servers: [
 						{
@@ -831,7 +832,7 @@ describe("API Routes", () => {
 			expect(body.servers[0]).toEqual({
 				name: "github",
 				transport: "http",
-				proxyPath: "/api/mcp-apps/proxy/github",
+				proxyPath: "/api/mcp-apps/proxy/site-a/github",
 				tools: [{ name: "get_me", uiResourceUri: "ui://github-mcp-server/get-me" }],
 			});
 			// The real url and auth headers must not leak to the browser.

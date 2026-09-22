@@ -48,6 +48,7 @@ import {
 	inferenceRequestPayloadSchema,
 	injectTraceContext,
 	intakePayloadSchema,
+	mcpAppProxyPayloadSchema,
 	mcpAuthHandoffPayloadSchema,
 	notifyWakeupPayloadSchema,
 	parseJsonSafe,
@@ -231,6 +232,20 @@ export class RelayProcessor {
 		null;
 
 	/**
+	 * Owner-side MCP-App proxy consumer (R-MO27b LEG B). Wired after startup by the
+	 * connect site that holds the token store + MCP config. Left unset on hosts
+	 * with no owner context — a relayed mcp_app_proxy row then relays back an error.
+	 */
+	private mcpAppProxyConsumer:
+		| ((payload: {
+				server_name: string;
+				method: string;
+				headers: Record<string, string>;
+				body_base64: string;
+		  }) => Promise<{ status: number; headers: Record<string, string>; body_base64: string }>)
+		| null = null;
+
+	/**
 	 * Typed handler map — every HandledRequestKind MUST have an entry.
 	 * Adding a new kind to RELAY_KIND_REGISTRY with dispatch "sync" or "async"
 	 * without adding a handler here is a compile error.
@@ -259,6 +274,7 @@ export class RelayProcessor {
 		notify_wakeup: (entry) => this.handleNotifyWakeup(entry),
 		client_tool: (entry) => this.handleClientTool(entry),
 		mcp_auth_handoff: (entry) => this.handleMcpAuthHandoff(entry),
+		mcp_app_proxy: (entry) => this.handleMcpAppProxy(entry),
 	};
 
 	constructor(
@@ -319,6 +335,22 @@ export class RelayProcessor {
 	 */
 	setMcpAuthHandoffConsumer(fn: (payload: Record<string, unknown>) => Promise<void>): void {
 		this.mcpAuthHandoffConsumer = fn;
+	}
+
+	/**
+	 * Inject the owner-side MCP-App proxy consumer (R-MO27b LEG B). Wired after
+	 * startup by the connect site holding the token store + MCP config. Left unset
+	 * on hosts with no owner context.
+	 */
+	setMcpAppProxyConsumer(
+		fn: (payload: {
+			server_name: string;
+			method: string;
+			headers: Record<string, string>;
+			body_base64: string;
+		}) => Promise<{ status: number; headers: Record<string, string>; body_base64: string }>,
+	): void {
+		this.mcpAppProxyConsumer = fn;
 	}
 
 	start(
@@ -1116,6 +1148,60 @@ export class RelayProcessor {
 			);
 		}
 		await this.mcpAuthHandoffConsumer(payloadResult.value as Record<string, unknown>);
+		await this.mcpAuthHandoffConsumer(payloadResult.value as Record<string, unknown>);
+		return null;
+	}
+
+	/**
+	 * Owner-side MCP-App proxy consumer (R-MO27b LEG B). The serving web host
+	 * relayed a browser MCP-App proxy request here because THIS host owns the
+	 * app-bearing server's config + token custody. The injected consumer resolves
+	 * the upstream URL from the owner's own config, attaches the owner's own token
+	 * at its own edge (tokens never move, R-MO24), performs the fetch, and returns
+	 * status/headers/body. We relay that back over the `response:<requestId>`
+	 * awaiter as a `result`. The browser NEVER supplied a credential (the serving
+	 * host stripped cookies/authorization before relaying), so none is echoed.
+	 * Returns null — the handler writes its own response (like handleClientTool).
+	 */
+	private async handleMcpAppProxy(entry: RelayInboxEntry): Promise<null> {
+		const payloadResult = parseJsonSafe(mcpAppProxyPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.logger.error("Invalid relay payload", {
+				kind: entry.kind,
+				error: payloadResult.error,
+				entryId: entry.id,
+			});
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
+			);
+			throw new PayloadParseError();
+		}
+		if (!this.mcpAppProxyConsumer) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({
+					error: `no MCP-App proxy consumer wired on ${this.siteId}; cannot serve mcp_app_proxy`,
+					retriable: false,
+				}),
+			);
+			return null;
+		}
+		try {
+			const result = await this.mcpAppProxyConsumer(payloadResult.value);
+			this.writeResponse(entry, "result", JSON.stringify(result));
+		} catch (err) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({
+					error: `mcp_app_proxy upstream fetch failed: ${err instanceof Error ? err.message : String(err)}`,
+					retriable: true,
+				}),
+			);
+		}
 		return null;
 	}
 

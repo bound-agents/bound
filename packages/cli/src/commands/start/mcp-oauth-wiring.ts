@@ -17,6 +17,8 @@
  */
 
 import {
+	type CoLocationServerConfig,
+	type CoLocationTokenResult,
 	type ExchangeOutcome,
 	type MCPServerConfig,
 	McpChallengeResolver,
@@ -28,6 +30,8 @@ import {
 	type ResolverServerConfig,
 	consumeHandoff,
 	defaultMcpAuthPath,
+	getCoLocationAccessToken,
+	handleOwnerMcpAppProxy,
 	writeHandoff,
 } from "@bound/agent";
 import type { AppContext } from "@bound/core";
@@ -64,6 +68,30 @@ export interface McpOAuthWiring {
 	 * Consumes both LOCAL_WORK_TARGET (self-owned) and peer-transferred handoffs.
 	 */
 	consumeHandoffPayload: (payload: Record<string, unknown>) => Promise<void>;
+	/**
+	 * Co-location token accessor (R-MO27b LEG A). Returns a live access token for a
+	 * locally-configured oauth server, running the refresh path. The MCP-Apps proxy
+	 * calls this to attach `Authorization: Bearer` at THIS host's fetch edge when it
+	 * is the server's owner. `no_bundle` / lost-grant surface so the route can 401
+	 * naming the pending challenge instead of an unauthenticated upstream fetch.
+	 */
+	getAccessTokenForServer(serverName: string): Promise<CoLocationTokenResult>;
+	/**
+	 * Owner-side MCP-App proxy consumer (R-MO27b LEG B). Runs on the OWNING host of
+	 * an app-bearing server when the serving web host relays a `mcp_app_proxy` row
+	 * here: resolves the upstream URL from its own config, attaches its own token,
+	 * performs the fetch, and returns the upstream status/headers/body. The owner
+	 * NEVER receives or echoes a browser credential (the relay strips them).
+	 */
+	handleMcpAppProxy(
+		payload: {
+			server_name: string;
+			method: string;
+			headers: Record<string, string>;
+			body_base64: string;
+		},
+		fetchImpl?: typeof globalThis.fetch,
+	): Promise<{ status: number; headers: Record<string, string>; body_base64: string }>;
 }
 
 /** Read the oauth-configured http servers out of the live MCP config. */
@@ -179,6 +207,35 @@ export function createMcpOAuthWiring(
 		}
 	};
 
+	// LEG A + LEG B (R-MO27b) delegate to the shared owner-side co-location helper
+	// in @bound/agent (which holds the MCP SDK dependency), so this CLI package
+	// stays free of a direct `@modelcontextprotocol/client` import. `resolveOwnerConfig`
+	// reads the owner's live config (url + client credentials it holds) at call time.
+	const getAccessTokenForServer = (
+		serverName: string,
+	): ReturnType<typeof getCoLocationAccessToken> =>
+		getCoLocationAccessToken(
+			store,
+			serverName,
+			resolveOwnerConfig as (name: string) => CoLocationServerConfig | null,
+		);
+
+	const handleMcpAppProxy = (
+		payload: {
+			server_name: string;
+			method: string;
+			headers: Record<string, string>;
+			body_base64: string;
+		},
+		fetchImpl?: typeof globalThis.fetch,
+	): Promise<{ status: number; headers: Record<string, string>; body_base64: string }> =>
+		handleOwnerMcpAppProxy(
+			store,
+			resolveOwnerConfig as (name: string) => CoLocationServerConfig | null,
+			payload,
+			fetchImpl,
+		);
+
 	// The bridge the web callback route holds (R-MO17/R-MO19/R-MO27). forwardOutcome
 	// writes the handoff to the owning host; a self-owned challenge targets
 	// LOCAL_WORK_TARGET and is consumed in-process by the same relay lane.
@@ -218,8 +275,14 @@ export function createMcpOAuthWiring(
 			};
 		},
 	};
-
-	return { store, providerFor, bridge, consumeHandoffPayload };
+	return {
+		store,
+		providerFor,
+		bridge,
+		consumeHandoffPayload,
+		getAccessTokenForServer,
+		handleMcpAppProxy,
+	};
 }
 
 /** The owning `site_id` of a challenge row, or null if the row is absent. */

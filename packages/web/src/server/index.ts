@@ -108,6 +108,16 @@ export interface WebAppConfig {
 	 * R-MO17/R-MO27). Forwarded to the oauth-mcp callback route via RoutesConfig.
 	 */
 	oauthMcpBridge?: OauthMcpResolverBridge | null;
+	/**
+	 * Co-location token accessor (R-MO27b LEG A). Forwarded to RoutesConfig for the
+	 * MCP-Apps proxy's owner-token attach on a locally-owned app-bearing server.
+	 */
+	getMcpAppAccessToken?: import("./routes/mcp-apps").GetAccessTokenForServer;
+	/**
+	 * Cross-host relay dispatcher (R-MO27b LEG B). Forwarded to RoutesConfig for the
+	 * MCP-Apps proxy's relay to a peer-owned app-bearing server.
+	 */
+	relayMcpAppProxy?: import("./routes/mcp-apps").RelayMcpAppProxy;
 }
 
 export interface SyncAppConfig {
@@ -181,6 +191,8 @@ export async function createWebApp(
 		modelRouter: config.modelRouter,
 		oauthMcpBridge: config.oauthMcpBridge ?? null,
 		webBindHost: config.webBindHost,
+		getMcpAppAccessToken: config.getMcpAppAccessToken,
+		relayMcpAppProxy: config.relayMcpAppProxy,
 	};
 
 	const app = new Hono();

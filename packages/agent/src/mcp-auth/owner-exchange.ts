@@ -271,7 +271,7 @@ export async function consumeHandoff(
  * raises `OAuthError` / `OAuthClientFlowError` whose message or `.errorCode`
  * carries the code; fall back to scanning the message for the terminal codes.
  */
-function extractOAuthErrorCode(e: unknown): string | undefined {
+export function extractOAuthErrorCode(e: unknown): string | undefined {
 	if (typeof e === "object" && e !== null) {
 		const rec = e as Record<string, unknown>;
 		if (typeof rec.errorCode === "string") return rec.errorCode;

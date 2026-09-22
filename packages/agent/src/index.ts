@@ -230,10 +230,18 @@ export {
 export {
 	consumeHandoff,
 	classifyAuthorizeError,
+	extractOAuthErrorCode,
 	type OwnerServerConfig,
 	type ExchangeOutcome,
 	type McpAuthHandoffPayload,
 } from "./mcp-auth/owner-exchange";
+export {
+	buildOwnerRefreshFn,
+	getCoLocationAccessToken,
+	handleOwnerMcpAppProxy,
+	type CoLocationServerConfig,
+	type CoLocationTokenResult,
+} from "./mcp-auth/co-location";
 export {
 	upsertWaiter,
 	consumeWaiter,
@@ -259,7 +267,10 @@ export {
 	McpTokenStore,
 	defaultMcpAuthPath,
 	classifyTokenEndpointError,
+	bundleFromStoredTokens,
 	type McpTokenBundle,
+	type RefreshError,
+	type RefreshFn,
 } from "./mcp-auth/token-store";
 export {
 	RaiseDebouncer,

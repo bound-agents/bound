@@ -638,6 +638,15 @@ export const RELAY_KIND_REGISTRY = {
 	// flips the challenge row out-of-band; no synchronous response rides back.
 	mcp_auth_handoff: { dispatch: "async" },
 
+	// `mcp_app_proxy` relays a browser MCP-App proxy request (JSON-RPC body + an
+	// allow-listed MCP header subset, NEVER a browser credential) to the OWNING
+	// host of an app-bearing http server, so the owner resolves the upstream URL +
+	// token from its own config/store and attaches the token at its own edge
+	// (MCP OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md §11, R-MO27b; tokens
+	// never move, R-MO24). async: the owner fetches and ships back status/headers/
+	// body over the `response:<requestId>` awaiter, same as platform_request.
+	mcp_app_proxy: { dispatch: "async" },
+
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor
 	// consumer. The relay-processor must NOT markProcessed these.
 	//
