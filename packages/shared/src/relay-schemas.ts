@@ -84,6 +84,43 @@ export const clientToolPayloadSchema = z.object({
 	timeout_ms: z.number().int().positive(),
 });
 
+/**
+ * `mcp_app_proxy` payload (MCP OAuth RFC §11, R-MO27b). Carries a browser MCP-App
+ * proxy request from the SERVING web host to the OWNING host of an app-bearing
+ * http server, so the owner resolves the upstream URL + credential from ITS OWN
+ * config/token store and attaches the token at its own edge (tokens never move,
+ * R-MO24). The serving host forwards only the JSON-RPC request body and an
+ * ALLOW-LISTED subset of MCP protocol headers — NEVER a browser cookie or
+ * Authorization header (the owner mints its own). The transport the browser
+ * drives is Streamable HTTP request/response POST (verified against
+ * mcp-app-host.ts `StreamableHTTPClientTransport` + mcp-apps-bootstrap.ts
+ * `listTools`/`callTool`); there is no standalone server→client GET SSE stream to
+ * carry, so this kind is request/response only. A POST whose response is
+ * `text/event-stream` returns its framed body in `body_base64` verbatim.
+ */
+export const mcpAppProxyPayloadSchema = z.object({
+	/** The MCP server name the owner keys its config + token bundle by. */
+	server_name: z.string().min(1),
+	/** HTTP method the browser issued (POST for JSON-RPC; GET/DELETE for session ops). */
+	method: z.string().min(1),
+	/** Allow-listed request headers only (accept, content-type, mcp-session-id, mcp-protocol-version). */
+	headers: z.record(z.string(), z.string()),
+	/** Base64-encoded request body (JSON-RPC), or empty for a bodyless method. */
+	body_base64: z.string(),
+});
+
+/**
+ * `mcp_app_proxy` RESPONSE payload the owning host relays back over the
+ * `response:<requestId>` awaiter. Carries the upstream HTTP status, an
+ * allow-listed response-header subset, and the base64 body. The serving host
+ * replays these to the browser verbatim; the credential the owner attached is
+ * NEVER echoed back (it was never in a browser-facing field).
+ */
+export const mcpAppProxyResponsePayloadSchema = z.object({
+	status: z.number().int().min(100).max(599),
+	headers: z.record(z.string(), z.string()),
+	body_base64: z.string(),
+});
 export const clientResultPayloadSchema = z.object({
 	call_id: z.string().min(1),
 	content: z.string(),

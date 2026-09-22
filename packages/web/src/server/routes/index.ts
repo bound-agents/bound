@@ -93,6 +93,18 @@ export interface RoutesConfig {
 	 * on a loopback bind (R-MO27c). Defaults to `localhost` when unset.
 	 */
 	webBindHost?: string;
+	/**
+	 * Co-location token accessor (R-MO27b LEG A). Lets the MCP-Apps proxy attach
+	 * the owner's own OAuth token at THIS host's fetch edge for a locally-owned
+	 * app-bearing server. Absent on hosts with no oauth-configured MCP server.
+	 */
+	getMcpAppAccessToken?: import("./mcp-apps").GetAccessTokenForServer;
+	/**
+	 * Cross-host relay dispatcher (R-MO27b LEG B). Relays a browser MCP-App proxy
+	 * request to the owning host over the `mcp_app_proxy` durable-work kind and
+	 * awaits the response. Absent when this host cannot relay.
+	 */
+	relayMcpAppProxy?: import("./mcp-apps").RelayMcpAppProxy;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -149,7 +161,14 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		tasks: createTasksRoutes(db),
 		advisories: createAdvisoriesRoutes(db, operatorUserId),
 		mcp: createMcpRoutes(db),
-		mcpApps: createMcpAppsRoutes(db, mcpConfig ?? null),
+		mcpApps: createMcpAppsRoutes(
+			db,
+			mcpConfig ?? null,
+			siteId,
+			undefined,
+			config.getMcpAppAccessToken,
+			config.relayMcpAppProxy,
+		),
 		webhooks: createWebhooksRoutes(db, {
 			syncBindHost,
 			syncPort,

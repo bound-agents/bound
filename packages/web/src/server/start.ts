@@ -87,6 +87,16 @@ export interface WebServerConfig {
 	 * authorize flow on a loopback bind (R-MO27c).
 	 */
 	webBindHost?: string;
+	/**
+	 * Co-location token accessor (R-MO27b LEG A) forwarded to RoutesConfig so the
+	 * MCP-Apps proxy can attach the owner's OAuth token at this host's fetch edge.
+	 */
+	getMcpAppAccessToken?: import("./routes/mcp-apps").GetAccessTokenForServer;
+	/**
+	 * Cross-host relay dispatcher (R-MO27b LEG B) forwarded to RoutesConfig so the
+	 * MCP-Apps proxy can relay to a peer-owned app-bearing server over the spool.
+	 */
+	relayMcpAppProxy?: import("./routes/mcp-apps").RelayMcpAppProxy;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -180,6 +190,8 @@ export async function createWebServer(
 		modelRouter: config.modelRouter,
 		topologyRole: config.topologyRole,
 		oauthMcpBridge: config.oauthMcpBridge ?? null,
+		getMcpAppAccessToken: config.getMcpAppAccessToken,
+		relayMcpAppProxy: config.relayMcpAppProxy,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

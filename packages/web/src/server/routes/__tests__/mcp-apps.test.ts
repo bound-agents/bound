@@ -2,12 +2,16 @@ import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
 import type { McpConfig } from "@bound/shared";
-import { createMcpAppsRoutes } from "../mcp-apps";
+import { type GetAccessTokenForServer, createMcpAppsRoutes } from "../mcp-apps";
+
+const LOCAL_SITE = "site-local";
 
 /**
  * Seed a hosts row carrying an `mcp_capabilities` inventory. The capture
  * (updateHostMCPInfo) records per-tool `uiResourceUri` bindings for UI-bearing
  * tools; the route reads them to decide which servers are MCP-App-bearing.
+ * `mcp_servers` records the set of server names that host configures — the
+ * ownership signal the route joins for location transparency (R-MO27b).
  */
 function seedHost(
 	db: Database,
@@ -47,7 +51,7 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 	});
 
 	it("returns only http servers that carry an MCP-App tool binding, with the bindings", async () => {
-		seedHost(db, "site-a", "alpha", {
+		seedHost(db, LOCAL_SITE, "alpha", {
 			github: {
 				serverInfo: { name: "github-mcp-server" },
 				tools: [
@@ -76,7 +80,7 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 			],
 		};
 
-		const app = createMcpAppsRoutes(db, mcpConfig);
+		const app = createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE);
 		const res = await app.request("/");
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as {
@@ -94,7 +98,8 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 		expect(body.servers[0]).toEqual({
 			name: "github",
 			transport: "http",
-			proxyPath: "/api/mcp-apps/proxy/github",
+			// The proxyPath carries the owning site_id (R-MO27b).
+			proxyPath: `/api/mcp-apps/proxy/${LOCAL_SITE}/github`,
 			tools: [{ name: "get_me", uiResourceUri: "ui://github-mcp-server/get-me" }],
 		});
 		// Secrets and the real upstream URL never reach the browser.
@@ -104,7 +109,7 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 
 	it("unions tool bindings across hosts (a server is app-bearing if any host saw the binding)", async () => {
 		// alpha's capture predates the /insiders flip — no binding yet.
-		seedHost(db, "site-a", "alpha", {
+		seedHost(db, LOCAL_SITE, "alpha", {
 			github: { serverInfo: { name: "github-mcp-server" }, tools: [{ name: "get_me" }] },
 		});
 		// bravo captured the binding.
@@ -119,7 +124,9 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 			servers: [{ name: "github", transport: "http", url: "https://example/mcp" }],
 		};
 
-		const body = (await (await createMcpAppsRoutes(db, mcpConfig).request("/")).json()) as {
+		const body = (await (
+			await createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE).request("/")
+		).json()) as {
 			servers: Array<{ name: string; tools: Array<{ name: string; uiResourceUri: string }> }>;
 		};
 		expect(body.servers).toHaveLength(1);
@@ -129,7 +136,7 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 	});
 
 	it("percent-encodes server names with unsafe path characters", async () => {
-		seedHost(db, "site-a", "alpha", {
+		seedHost(db, LOCAL_SITE, "alpha", {
 			"my server/v2": {
 				serverInfo: {},
 				tools: [{ name: "render", uiResourceUri: "ui://x/render" }],
@@ -138,34 +145,52 @@ describe("createMcpAppsRoutes GET / (app-bearing servers from mcp.json)", () => 
 		const mcpConfig: McpConfig = {
 			servers: [{ name: "my server/v2", transport: "http", url: "https://example.com/mcp" }],
 		};
-		const body = (await (await createMcpAppsRoutes(db, mcpConfig).request("/")).json()) as {
+		const body = (await (
+			await createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE).request("/")
+		).json()) as {
 			servers: Array<{ proxyPath: string }>;
 		};
-		expect(body.servers[0].proxyPath).toBe("/api/mcp-apps/proxy/my%20server%2Fv2");
+		expect(body.servers[0].proxyPath).toBe(`/api/mcp-apps/proxy/${LOCAL_SITE}/my%20server%2Fv2`);
+	});
+
+	it("includes an app-bearing server configured only on a peer host, carrying the peer site", async () => {
+		seedHost(db, "site-peer", "peer", {
+			"remote-only": { serverInfo: {}, tools: [{ name: "t", uiResourceUri: "ui://remote/t" }] },
+		});
+		const body = (await (
+			await createMcpAppsRoutes(db, { servers: [] } as McpConfig, LOCAL_SITE).request("/")
+		).json()) as {
+			servers: Array<{ name: string; proxyPath: string }>;
+		};
+		expect(body.servers).toHaveLength(1);
+		expect(body.servers[0].name).toBe("remote-only");
+		expect(body.servers[0].proxyPath).toBe("/api/mcp-apps/proxy/site-peer/remote-only");
 	});
 
 	it("returns an empty server list when mcp.json is absent", async () => {
-		const res = await createMcpAppsRoutes(db, null).request("/");
+		const res = await createMcpAppsRoutes(db, null, LOCAL_SITE).request("/");
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { servers: unknown[] };
 		expect(body.servers).toEqual([]);
 	});
 
 	it("returns an empty server list when no configured server is app-bearing", async () => {
-		seedHost(db, "site-a", "alpha", {
+		seedHost(db, LOCAL_SITE, "alpha", {
 			github: { serverInfo: {}, tools: [{ name: "get_me" }] },
 		});
 		const mcpConfig: McpConfig = {
 			servers: [{ name: "github", transport: "http", url: "https://example/mcp" }],
 		};
-		const body = (await (await createMcpAppsRoutes(db, mcpConfig).request("/")).json()) as {
+		const body = (await (
+			await createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE).request("/")
+		).json()) as {
 			servers: unknown[];
 		};
 		expect(body.servers).toEqual([]);
 	});
 });
 
-describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http servers)", () => {
+describe("createMcpAppsRoutes ALL /proxy/:site/:name (local owner, LEG A)", () => {
 	let db: Database;
 	const mcpConfig: McpConfig = {
 		servers: [
@@ -183,11 +208,18 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 	beforeEach(() => {
 		db = new Database(":memory:");
 		applySchema(db);
+		seedHost(db, LOCAL_SITE, "alpha", {
+			github: {
+				serverInfo: { name: "github-mcp-server" },
+				tools: [{ name: "get_me", uiResourceUri: "ui://github-mcp-server/get-me" }],
+			},
+			linear: { serverInfo: {}, tools: [{ name: "t", uiResourceUri: "ui://linear/t" }] },
+		});
 	});
 
 	it("forwards the request to the real upstream URL and injects configured headers", async () => {
 		let seen: { url: string; method: string; auth: string | null; body: string } | undefined;
-		const app = createMcpAppsRoutes(db, mcpConfig, async (url, init) => {
+		const app = createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE, async (url, init) => {
 			seen = {
 				url: String(url),
 				method: init?.method ?? "GET",
@@ -200,7 +232,7 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 			});
 		});
 
-		const res = await app.request("/proxy/github", {
+		const res = await app.request(`/proxy/${LOCAL_SITE}/github`, {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
@@ -218,7 +250,7 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 	});
 
 	it("strips upstream CORS and hop-by-hop response headers", async () => {
-		const app = createMcpAppsRoutes(db, mcpConfig, async () => {
+		const app = createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE, async () => {
 			return new Response("ok", {
 				status: 200,
 				headers: {
@@ -228,39 +260,69 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 				},
 			});
 		});
-		const res = await app.request("/proxy/github", { method: "POST" });
+		const res = await app.request(`/proxy/${LOCAL_SITE}/github`, { method: "POST" });
 		expect(res.headers.get("access-control-allow-origin")).toBeNull();
 		expect(res.headers.get("content-encoding")).toBeNull();
 		expect(res.headers.get("content-type")).toBe("text/plain");
 	});
 
 	it("404s an unknown server name", async () => {
-		const res = await createMcpAppsRoutes(db, mcpConfig).request("/proxy/nope", { method: "POST" });
+		const res = await createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE).request(
+			`/proxy/${LOCAL_SITE}/nope`,
+			{ method: "POST" },
+		);
 		expect(res.status).toBe(404);
 	});
 
 	it("404s a stdio server (not proxyable)", async () => {
-		const res = await createMcpAppsRoutes(db, mcpConfig).request("/proxy/metacog", {
-			method: "POST",
-		});
+		const res = await createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE).request(
+			`/proxy/${LOCAL_SITE}/metacog`,
+			{ method: "POST" },
+		);
 		expect(res.status).toBe(404);
 	});
 
 	it("502s when the upstream fetch throws", async () => {
-		const app = createMcpAppsRoutes(db, mcpConfig, async () => {
+		const app = createMcpAppsRoutes(db, mcpConfig, LOCAL_SITE, async () => {
 			throw new Error("ECONNREFUSED");
 		});
-		const res = await app.request("/proxy/github", { method: "POST" });
+		const res = await app.request(`/proxy/${LOCAL_SITE}/github`, { method: "POST" });
 		expect(res.status).toBe(502);
 		const body = (await res.json()) as { error: string };
 		expect(body.error).toContain("ECONNREFUSED");
 	});
 
-	it("503s an OAuth-bearing server with no static headers (owner-held token, R-MO27b)", async () => {
-		// An `auth: { type: "oauth" }` entry whose token lives in config/mcp-auth.json
-		// (no static `headers`) has no credential this proxy can attach: custody
-		// belongs to the owning host, which attaches it at its own edge. The proxy
-		// must refuse rather than issue an unauthenticated upstream fetch.
+	it("attaches the owner's OAuth token when the accessor holds a live grant", async () => {
+		// An `auth: { type: "oauth" }` entry whose token lives in the owner's store:
+		// the proxy attaches Authorization: Bearer at this fetch edge (LEG A).
+		let seenAuth: string | null = null;
+		const authConfig: McpConfig = {
+			servers: [
+				{
+					name: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+					auth: { type: "oauth" },
+				},
+			],
+		};
+		const getToken: GetAccessTokenForServer = async () => ({ ok: true, value: "owner-token" });
+		const app = createMcpAppsRoutes(
+			db,
+			authConfig,
+			LOCAL_SITE,
+			async (_url, init) => {
+				seenAuth = new Headers(init?.headers).get("authorization");
+				return new Response("ok", { status: 200 });
+			},
+			getToken,
+		);
+		const res = await app.request(`/proxy/${LOCAL_SITE}/linear`, { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(seenAuth).toBe("Bearer owner-token");
+	});
+
+	it("401s an OAuth-bearing server with no live grant, never fetching unauthenticated", async () => {
 		let fetched = false;
 		const authConfig: McpConfig = {
 			servers: [
@@ -272,18 +334,28 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 				},
 			],
 		};
-		const app = createMcpAppsRoutes(db, authConfig, async () => {
-			fetched = true;
-			return new Response("ok", { status: 200 });
+		const getToken: GetAccessTokenForServer = async () => ({
+			ok: false,
+			error: { kind: "no_bundle" },
 		});
-		const res = await app.request("/proxy/linear", { method: "POST" });
-		expect(res.status).toBe(503);
+		const app = createMcpAppsRoutes(
+			db,
+			authConfig,
+			LOCAL_SITE,
+			async () => {
+				fetched = true;
+				return new Response("ok", { status: 200 });
+			},
+			getToken,
+		);
+		const res = await app.request(`/proxy/${LOCAL_SITE}/linear`, { method: "POST" });
+		expect(res.status).toBe(401);
 		expect(fetched).toBe(false);
 	});
 
 	it("proxies an OAuth-bearing server that DOES carry static headers (co-located owner)", async () => {
 		// A statically-headered entry has a credential the owner injects here — the
-		// co-location case R-MO27b permits. It proxies normally.
+		// co-location case R-MO27b permits. It proxies normally with the static header.
 		let seenAuth: string | null = null;
 		const authConfig: McpConfig = {
 			servers: [
@@ -296,11 +368,11 @@ describe("createMcpAppsRoutes ALL /proxy/:name (sourced from mcp.json http serve
 				},
 			],
 		};
-		const app = createMcpAppsRoutes(db, authConfig, async (_url, init) => {
+		const app = createMcpAppsRoutes(db, authConfig, LOCAL_SITE, async (_url, init) => {
 			seenAuth = new Headers(init?.headers).get("authorization");
 			return new Response("ok", { status: 200 });
 		});
-		const res = await app.request("/proxy/linear", { method: "POST" });
+		const res = await app.request(`/proxy/${LOCAL_SITE}/linear`, { method: "POST" });
 		expect(res.status).toBe(200);
 		expect(seenAuth).toBe("Bearer owner-token");
 	});

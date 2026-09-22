@@ -97,6 +97,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// exchange the code for a token.
 	if (mcpOAuth) {
 		relayProcessor.setMcpAuthHandoffConsumer(mcpOAuth.consumeHandoffPayload);
+		// LEG B (R-MO27b): the owning host consumes a relayed browser MCP-App proxy
+		// request, resolves URL + token from its own config/store, and returns the
+		// upstream response over the response:<requestId> awaiter.
+		relayProcessor.setMcpAppProxyConsumer(mcpOAuth.handleMcpAppProxy);
 	}
 
 	// Initialize wsClient reference for SIGHUP callback

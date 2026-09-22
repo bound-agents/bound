@@ -150,6 +150,20 @@ MCP Apps are optional and let compatible servers return interactive UI for suppo
 results in the web UI. See the [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps)
 for server support and implementation details.
 
+The web UI reaches an app-bearing server through a same-origin proxy (`/api/mcp-apps/proxy/...`),
+not a direct browser connection — most MCP servers do not enable CORS for browser origins, and
+the proxy dodges that. The proxy is **location-transparent**: an app-bearing server configured on
+any host in the cluster renders in the web UI, not only servers on the host serving the page. When
+the serving host owns the server it fetches upstream directly; when another host owns it, the call
+rides the cluster relay to that host, which resolves the upstream URL and attaches any credential at
+its own edge. Upstream URLs and auth tokens never reach the browser, and a browser cookie or
+`Authorization` header is never forwarded upstream.
+
+For an OAuth-authenticated app server (see [Authenticate with OAuth](#authenticate-with-oauth)),
+the owning host attaches its own token when it proxies the call. If no valid grant is held yet, the
+proxy returns `401` and the app panel surfaces the pending authorization; resolve it with
+`bound login --mcp <server>` and reload the app.
+
 ## Troubleshoot the connection
 
 ### Configuration doesn't load
