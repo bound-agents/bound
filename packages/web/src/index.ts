@@ -12,3 +12,7 @@ export {
 	type SyncServerConfig,
 } from "./server/start";
 export { createWebSocketHandler, type WebSocketConfig } from "./server/websocket";
+export {
+	type OauthMcpResolverBridge,
+	OAUTH_MCP_CALLBACK_PATH,
+} from "./server/routes/oauth-mcp";

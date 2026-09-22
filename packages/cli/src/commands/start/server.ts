@@ -72,13 +72,13 @@ import {
 } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
+import type { OauthMcpResolverBridge } from "@bound/web";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { resolveThreadModel, runLocalAgentLoop } from "../../lib/message-handler";
 import type { AgentLoopFactory } from "./agent-factory.js";
 import { resolvePlatformToolsForThread } from "./platform-tools.js";
 import { createWsTransportHolderStubs } from "./wire-ws-transport-holder.js";
 export type { AgentLoopFactory } from "./agent-factory.js";
-
 const getTracer = () => trace.getTracer("bound.web");
 
 function injectRelayTraceCarrier(): Record<string, string> | null {
@@ -349,6 +349,13 @@ export interface ServerDeps {
 		setThreadExecutor(executor: ThreadExecutor): void;
 		setWsRegistry(registry: ClientToolResolver): void;
 	};
+	/**
+	 * The resolving host's in-process MCP OAuth resolver bridge (slice 3.5,
+	 * R-MO17/R-MO27). Threaded to `createWebServer` so `GET /oauth/mcp/callback`
+	 * and `POST /oauth/mcp/claim` correlate callbacks to live attempts. Null on a
+	 * host with no oauth-configured MCP server.
+	 */
+	oauthMcpBridge?: OauthMcpResolverBridge | null;
 }
 
 export async function initServer(deps: ServerDeps): Promise<ServerResult> {
@@ -361,6 +368,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		hubSiteId,
 		clusterFsObj,
 		relayProcessor,
+		oauthMcpBridge,
 	} = deps;
 
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
@@ -482,6 +490,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			clusterFs: clusterFsObj?.fs ?? null,
 			modelRouter,
 			topologyRole: resolveTopologyRole(appContext.optionalConfig),
+			oauthMcpBridge: oauthMcpBridge ?? null,
 		});
 		await webServer.start();
 

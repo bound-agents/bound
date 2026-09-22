@@ -76,6 +76,11 @@ export interface WebServerConfig {
 	modelRouter?: ModelRouter | null;
 	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
 	topologyRole?: "hub" | "spoke";
+	/**
+	 * The resolving host's in-process MCP OAuth resolver bridge (slice 3.5,
+	 * R-MO17/R-MO27). Forwarded to `createWebApp` → the oauth-mcp callback route.
+	 */
+	oauthMcpBridge?: import("./routes/oauth-mcp").OauthMcpResolverBridge | null;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -168,6 +173,7 @@ export async function createWebServer(
 		mcpConfig: config.mcpConfig,
 		modelRouter: config.modelRouter,
 		topologyRole: config.topologyRole,
+		oauthMcpBridge: config.oauthMcpBridge ?? null,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

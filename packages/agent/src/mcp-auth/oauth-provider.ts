@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import type { ChallengeDemand } from "@bound/core";
 import type {
 	OAuthClientMetadata,
+	OAuthDiscoveryState,
 	StoredOAuthClientInformation,
 	StoredOAuthTokens,
 } from "@modelcontextprotocol/client";
@@ -224,11 +225,13 @@ export class McpOAuthProvider {
 		return v;
 	}
 
-	async saveDiscoveryState(state: unknown): Promise<void> {
+	async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
 		await this.store.saveDiscoveryState(this.server.name, state);
 	}
 
-	discoveryState(): unknown {
-		return this.store.getBundle(this.server.name)?.discoveryState;
+	discoveryState(): OAuthDiscoveryState | undefined {
+		return this.store.getBundle(this.server.name)?.discoveryState as
+			| OAuthDiscoveryState
+			| undefined;
 	}
 }

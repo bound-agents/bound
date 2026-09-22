@@ -19,6 +19,7 @@ import {
 	toRouterConfig,
 	wireBackendReadiness,
 } from "./inference.js";
+import { createMcpOAuthWiring } from "./mcp-oauth-wiring.js";
 import { initMcp, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
@@ -40,8 +41,33 @@ export async function runStart(args: StartArgs): Promise<void> {
 	// before the site ID existed, so its span processor started empty.
 	setTelemetrySiteId(appContext.siteId);
 
-	// Phase 2: MCP connections and command generation
-	const { mcpClientsMap, mcpCommands, mcpServerNames, confirmGates } = await initMcp(appContext);
+	// Phase 2: MCP connections and command generation. MCP OAuth wiring (slice
+	// 3.5) is constructed first so oauth-configured servers get their provider
+	// (R-MO2) at connect time; a `reconnect` deferral lets the owner-exchange
+	// consumer re-run connect after a resolved grant (R-MO13b) once the client
+	// map exists. Null when no http server declares an `auth` block.
+	let reloadMcpForReconnect: ((serverName: string) => Promise<void>) | null = null;
+	const mcpOAuth = createMcpOAuthWiring(appContext, configDir, (serverName) =>
+		reloadMcpForReconnect?.(serverName),
+	);
+	const { mcpClientsMap, mcpCommands, mcpServerNames, confirmGates } = await initMcp(
+		appContext,
+		mcpOAuth
+			? (server) => ({ ...server, authProvider: mcpOAuth.providerFor(server) ?? undefined })
+			: undefined,
+	);
+	// A resolved grant re-runs connect for the one server so the next call rides
+	// an authenticated session; a reconnect failure does not un-resolve the grant.
+	reloadMcpForReconnect = async (serverName: string): Promise<void> => {
+		const existing = mcpClientsMap.get(serverName);
+		if (!existing) return;
+		try {
+			await existing.disconnect();
+		} catch {
+			// Best-effort teardown before reconnect.
+		}
+		await existing.connect();
+	};
 
 	// Phase 3: Sandbox, command registry, VFS hydration
 	const { sandbox, clusterFsObj, commandContext } = await initSandbox(
@@ -63,6 +89,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 		clusterFsObj,
 		confirmGates,
 	);
+
+	// MCP OAuth (slice 3.5): wire the owner-exchange handoff consumer so incoming
+	// mcp_auth_handoff durable_work rows are consumed (R-MO19/R-MO20) — both
+	// self-owned (LOCAL_WORK_TARGET) and peer-transferred. Without this the
+	// relay-processor logs "no MCP OAuth owner-exchange consumer wired" and cannot
+	// exchange the code for a token.
+	if (mcpOAuth) {
+		relayProcessor.setMcpAuthHandoffConsumer(mcpOAuth.consumeHandoffPayload);
+	}
 
 	// Initialize wsClient reference for SIGHUP callback
 	let wsClient: {
@@ -92,6 +127,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 					hubSiteId,
 					clusterFsObj,
 					relayProcessor,
+					oauthMcpBridge: mcpOAuth?.bridge ?? null,
 				})
 			: {
 					webServer: null,
