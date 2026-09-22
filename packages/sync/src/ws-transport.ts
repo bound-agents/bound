@@ -243,6 +243,7 @@ const SNAPSHOT_TABLE_ORDER: SyncedTableName[] = [
 	"webhooks",
 	"rss_feeds",
 	"client_sessions",
+	"mcp_auth_challenges",
 	"files",
 	"advisories",
 	"skills",

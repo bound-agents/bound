@@ -639,6 +639,38 @@ export function applySchema(db: Database): void {
 		ON client_sessions(connection_id) WHERE deleted = 0
 	`);
 
+	// 14c. mcp_auth_challenges (synced, LWW) — an unmet OAuth authorization
+	// demand for an http MCP server (MCP OAuth RFC
+	// docs/design/specs/2026-09-21-mcp-oauth.md, §5, R-MO6/R-MO9). Challenge
+	// identity is one deterministic row per (owning site_id, MCP server name).
+	// The row carries the DEMAND (server URL, scope demand, currently-granted
+	// scopes, resource_metadata hint, client_id) — never a secret (R-MO7): no
+	// client_secret, PKCE verifier, authorization code, or token. `status`
+	// transitions are owner-only and guarded/terminal-wins (R-MO8a) — see
+	// repositories/mcp-auth-challenges.ts and docs/design/sync-protocol.md.
+	// No expiry column (R-MO8): staleness is authorization-server-owned.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS mcp_auth_challenges (
+			id                     TEXT PRIMARY KEY,
+			server_name            TEXT NOT NULL,
+			owning_site_id         TEXT NOT NULL,
+			server_url             TEXT NOT NULL,
+			scope_demand           TEXT NOT NULL,
+			granted_scopes         TEXT NOT NULL,
+			resource_metadata_hint TEXT,
+			client_id              TEXT,
+			status                 TEXT NOT NULL,
+			failure_reason         TEXT,
+			deleted                INTEGER NOT NULL DEFAULT 0,
+			modified_at            TEXT NOT NULL
+		) STRICT
+	`);
+
+	db.run(`
+		CREATE INDEX IF NOT EXISTS idx_mcp_auth_challenges_status
+		ON mcp_auth_challenges(status) WHERE deleted = 0
+	`);
+
 	// 15. change_log (non-replicated, local-only)
 	// Migration: if old seq-based table exists, migrate to HLC-based table
 	migrateChangeLogToHlc(db);

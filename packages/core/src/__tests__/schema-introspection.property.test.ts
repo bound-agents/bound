@@ -112,7 +112,6 @@ describe("getSyncedTableSchemas — property tests", () => {
 			{ numRuns: 30 },
 		);
 	});
-
 	it("D5: every name in the synced list appears, no extras", () => {
 		const db = freshDb();
 		const schemas = getSyncedTableSchemas(db);
@@ -128,6 +127,7 @@ describe("getSyncedTableSchemas — property tests", () => {
 			"connector_handles",
 			"files",
 			"hosts",
+			"mcp_auth_challenges",
 			"memory_edges",
 			"messages",
 			"rss_feeds",

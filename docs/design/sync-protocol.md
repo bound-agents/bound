@@ -234,6 +234,23 @@ const result = applyLWWReducer(db, {
 // { applied: true }
 ```
 
+### Guarded status on `mcp_auth_challenges` (owner-only, terminal-wins)
+
+The `mcp_auth_challenges` table (MCP OAuth RFC `docs/design/specs/2026-09-21-mcp-oauth.md`, §5, R-MO8a) is a plain LWW synced table at the reducer level, but its `status` column is **not** written by blind LWW from arbitrary hosts. Every `status` transition is written **by the owning host alone** — the host that owns the MCP server config and holds the token — through the guarded transition API in `packages/core/src/repositories/mcp-auth-challenges.ts` (`raiseChallenge` / `markResolved` / `markFailed` / `reRaise`). Resolvers (the hosts that catch the OAuth callback) never write `status`; they only feed an attempt outcome to the owner over a `durable_work` handoff, and the owner performs the transition.
+
+The legal transitions are:
+
+| From | To | Guard |
+|---|---|---|
+| `pending` | `resolved` | successful code-for-token exchange (idempotent on an already-`resolved` row) |
+| `pending` | `failed` | terminal authorization-server rejection; **dropped without effect if the row is already `resolved`** |
+| `failed` | `pending` | a later use of the server raises a fresh demand |
+| `resolved` | `pending` | grant death the owner itself observes on refresh (`invalid_grant` / `invalid_client`) |
+
+`resolved` is **terminal-wins**: the `markFailed` guard reads the current row and refuses to overwrite a `resolved` row, so a stale or concurrent attempt's failure can never un-resolve a grant the owner already obtained. Once one consent attempt resolves, a later attempt's decline is inert. The single exception is the owner flipping `resolved → pending` when its own refresh proves the grant dead — that reflects authorization-server ground truth, not a race.
+
+Why plain LWW blind-write is not used for `status`: a resolver-fed `failed` outcome arriving later (higher `modified_at`) than a concurrent `resolved` would win under raw LWW and silently un-resolve a live grant, wasting the operator's consent. The guard runs before the write, on the owner, so the terminal-wins rule holds regardless of `modified_at` ordering. The demand fields (`server_url`, `scope_demand`, `granted_scopes`, `resource_metadata_hint`, `client_id`) are likewise owner-written; a re-raise refreshes them so a resolver reads the demand as the owner sees it now, rather than a stale snapshot. The row carries **no secret** (R-MO7): no `client_secret`, PKCE verifier, authorization code, or token.
+
 ### `applyAppendOnlyReducer(db, event): { applied: boolean }`
 
 Append-only strategy, with a hybrid path for redaction events that include `modified_at`.

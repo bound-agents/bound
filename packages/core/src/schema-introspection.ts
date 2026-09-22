@@ -40,6 +40,7 @@ const SYNCED_TABLE_NAMES: readonly SyncedTableName[] = [
 	"webhooks",
 	"rss_feeds",
 	"client_sessions",
+	"mcp_auth_challenges",
 	"turns",
 ];
 
