@@ -247,3 +247,27 @@ export {
 	formatWakeText,
 	type McpAuthWakePayload,
 } from "./mcp-auth/wake";
+export {
+	McpOAuthProvider,
+	AuthChallengeRaisedError,
+	MCP_OAUTH_CALLBACK_PATH,
+	MCP_OAUTH_CALLBACK_URL,
+	type McpOAuthServerConfig,
+	type ObservedChallenge,
+} from "./mcp-auth/oauth-provider";
+export {
+	McpTokenStore,
+	defaultMcpAuthPath,
+	classifyTokenEndpointError,
+	type McpTokenBundle,
+} from "./mcp-auth/token-store";
+export {
+	RaiseDebouncer,
+	raiseAuthChallenge,
+	parseWwwAuthenticate,
+	formatAuthChallengeRaised,
+	writeSettleWaiter,
+	RAISE_DEBOUNCE_MS,
+	type RaiseOutcome,
+	type ParsedAuthChallenge,
+} from "./mcp-auth/raise";

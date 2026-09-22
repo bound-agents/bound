@@ -19,6 +19,7 @@ import {
 	type RoutesConfig,
 	registerRoutes,
 } from "./routes/index";
+import type { OauthMcpResolverBridge } from "./routes/oauth-mcp";
 
 type AssetMap = Map<string, { content: string; contentType: string }>;
 
@@ -96,6 +97,11 @@ export interface WebAppConfig {
 	modelRouter?: ModelRouter | null;
 	/** This host's cluster role, for durable-relay routing on POST /api/inference. */
 	topologyRole?: "hub" | "spoke";
+	/**
+	 * The resolving host's in-process MCP OAuth resolver bridge (slice 3.5,
+	 * R-MO17/R-MO27). Forwarded to the oauth-mcp callback route via RoutesConfig.
+	 */
+	oauthMcpBridge?: OauthMcpResolverBridge | null;
 }
 
 export interface SyncAppConfig {
@@ -167,6 +173,7 @@ export async function createWebApp(
 		clusterFs: config.clusterFs,
 		mcpConfig: config.mcpConfig,
 		modelRouter: config.modelRouter,
+		oauthMcpBridge: config.oauthMcpBridge ?? null,
 	};
 
 	const app = new Hono();

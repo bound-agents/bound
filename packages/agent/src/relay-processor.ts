@@ -116,7 +116,7 @@ import { reconcileStaleWebhookIntake } from "./webhook-intake-reconciler.js";
 const DEFAULT_POLL_INTERVAL_MS = 500;
 const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const DURABLE_RELAY_MAX_ATTEMPTS = DURABLE_WORK_MAX_ATTEMPTS;
-
+import { AuthChallengeRaisedError } from "./mcp-auth/oauth-provider.js";
 /** Allow event handlers to claim pre-existing durable intake after daemon startup. */
 export const INTAKE_RECONCILIATION_STARTUP_GRACE_MS = 20 * 60 * 1000;
 
@@ -1454,7 +1454,28 @@ export class RelayProcessor {
 		const { subcommand: _, ...toolArgs } = payload.args;
 		const inputSchema = entry.tool.inputSchema;
 		const coercedArgs = coerceArgsFromSchema(toolArgs, inputSchema);
-		const result = await client.callTool(subcommand, coercedArgs);
+		let result: Awaited<ReturnType<typeof client.callTool>>;
+		try {
+			result = await client.callTool(subcommand, coercedArgs);
+		} catch (error) {
+			// R-MO11: an oauth-configured server on the OWNING host raised a challenge
+			// instead of running. Settle the RELAYED call the same way the local path
+			// does — return the actionable auth_challenge_raised text as a SUCCESS
+			// result (exit_code 0), never a relay error — so the requester persists it
+			// as an ordinary tool result and writes its local waiter (R-MO14/R-MO15).
+			// The requester never dangles across the consent step (R-MO11). The typed
+			// error class travels by name; owner and requester share @bound/agent.
+			if (error instanceof AuthChallengeRaisedError) {
+				const settled: ResultPayload = {
+					stdout: error.outcomeText,
+					stderr: "",
+					exit_code: 0,
+					execution_ms: 0,
+				};
+				return JSON.stringify(settled);
+			}
+			throw error;
+		}
 		const resultPayload: ResultPayload = {
 			stdout: result.content,
 			// Mirror the local dispatch path: a failed call echoes the tool's

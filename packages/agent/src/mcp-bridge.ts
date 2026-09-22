@@ -16,10 +16,11 @@ import { loopContextStorage } from "@bound/sandbox";
 import { formatError } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/server";
 import { coerceArgsFromSchema } from "./mcp-arg-coercion";
+import { AuthChallengeRaisedError } from "./mcp-auth/oauth-provider";
+import { upsertWaiter } from "./mcp-auth/waiters";
 import type { MCPClient } from "./mcp-client";
 import { type EligibleHost, findEligibleHosts, routeRelayRequest } from "./relay-router";
 import { persistBinaryResource } from "./tool-result-images";
-
 /**
  * Cap a description string to maxLen characters, truncating with "…" if needed.
  */
@@ -532,6 +533,30 @@ export async function generateMCPCommands(
 						exitCode: result.isError ? 1 : 0,
 					};
 				} catch (error) {
+					// R-MO11/R-MO14/R-MO15: an oauth-configured server whose call hit a
+					// 401/403 raised a challenge instead of running. The provider threw
+					// AuthChallengeRaisedError carrying the actionable outcome text. Settle
+					// the call IMMEDIATELY as an ordinary tool result (exitCode 0 — NOT a
+					// generic error, so it is not sanitized or retried), and write the
+					// requester-local durable waiter binding (challenge_id, thread_id) so the
+					// terminal-status wake (R-MO16) and boot sweep (R-MO16b) can wake this
+					// thread when consent resolves. Kind-agnostic: this catch fires for both
+					// the local dispatch path here and the relayed equivalent, which rethrows
+					// the typed error across the relay.
+					if (error instanceof AuthChallengeRaisedError) {
+						const threadId = loopContextStorage.getStore()?.threadId;
+						if (threadId) {
+							try {
+								upsertWaiter(ctx.db, error.challengeId, threadId);
+							} catch {
+								// A waiter-write failure must not turn the settled result into an
+								// error; the challenge row still syncs and the boot sweep can
+								// recover on the next terminal-status change. Fall through to the
+								// settled result either way.
+							}
+						}
+						return { stdout: error.outcomeText, stderr: "", exitCode: 0 };
+					}
 					const message = formatError(error);
 					return {
 						stdout: "",

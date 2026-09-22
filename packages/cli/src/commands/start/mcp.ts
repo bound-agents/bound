@@ -70,13 +70,18 @@ type McpConnectionAttempt = ({ ok: true } & ConnectedMcpServer) | ({ ok: false }
 async function connectMcpServer(
 	serverCfg: MCPServerConfig,
 	createClient: McpClientFactory,
+	provideAuth?: (server: MCPServerConfig) => MCPServerConfig,
 ): Promise<McpConnectionAttempt> {
 	let client: MCPClient | null = null;
 	try {
-		client = createClient(serverCfg);
+		// Wire the OAuth provider onto the config before the client is built, so a
+		// server with auth:{type:"oauth"} rides the provider-driven path (R-MO2).
+		// Servers without an auth block pass through unchanged (byte-identical).
+		const effectiveCfg = provideAuth ? provideAuth(serverCfg) : serverCfg;
+		client = createClient(effectiveCfg);
 		await client.connect();
 		const tools = await client.listTools();
-		return { ok: true, serverCfg, client, tools };
+		return { ok: true, serverCfg: effectiveCfg, client, tools };
 	} catch (error) {
 		if (client?.isConnected()) {
 			try {
@@ -96,10 +101,11 @@ export async function connectConfiguredMcpServers(
 	serverConfigs: MCPServerConfig[],
 	logger: Logger,
 	createClient: McpClientFactory = (serverCfg) => new MCPClient(serverCfg),
+	provideAuth?: (server: MCPServerConfig) => MCPServerConfig,
 ): Promise<Map<string, MCPClient>> {
 	const mcpClientsMap = new Map<string, MCPClient>();
 	const attempts = await Promise.all(
-		serverConfigs.map((serverCfg) => connectMcpServer(serverCfg, createClient)),
+		serverConfigs.map((serverCfg) => connectMcpServer(serverCfg, createClient, provideAuth)),
 	);
 
 	for (const attempt of attempts) {
@@ -118,7 +124,10 @@ export async function connectConfiguredMcpServers(
 	return mcpClientsMap;
 }
 
-export async function initMcp(appContext: AppContext): Promise<McpResult> {
+export async function initMcp(
+	appContext: AppContext,
+	provideAuth?: (server: MCPServerConfig) => MCPServerConfig,
+): Promise<McpResult> {
 	// 8. MCP connections — build a named Map so the agent loop can look up clients by server name
 	appContext.logger.info("Initializing MCP servers...");
 	let mcpClientsMap = new Map<string, MCPClient>();
@@ -129,7 +138,12 @@ export async function initMcp(appContext: AppContext): Promise<McpResult> {
 
 			appContext.logger.info(`[mcp] Found ${mcpConfig.servers.length} server(s) in config`);
 
-			mcpClientsMap = await connectConfiguredMcpServers(mcpConfig.servers, appContext.logger);
+			mcpClientsMap = await connectConfiguredMcpServers(
+				mcpConfig.servers as unknown as MCPServerConfig[],
+				appContext.logger,
+				undefined,
+				provideAuth,
+			);
 		} else {
 			appContext.logger.info("[mcp] No MCP servers configured");
 		}
