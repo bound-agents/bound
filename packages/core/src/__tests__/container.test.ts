@@ -115,7 +115,7 @@ describe("DI Container", async () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		expect(tables.length).toBe(33); // relay_outbox/relay_inbox retired at release N+1; + agents (#201) + local-only row_state_hashes cache + local_flags + mcp_auth_challenges (MCP OAuth slice 1) + 1 FTS5 virtual + 5 FTS5 shadow
+		expect(tables.length).toBe(34); // relay_outbox/relay_inbox retired at release N+1; + agents (#201) + local-only row_state_hashes cache + local_flags + mcp_auth_challenges (MCP OAuth slice 1) + local-only mcp_auth_waiters (MCP OAuth slice 3) + 1 FTS5 virtual + 5 FTS5 shadow
 		testDb.close();
 	});
 });

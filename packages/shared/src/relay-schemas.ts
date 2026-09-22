@@ -43,6 +43,39 @@ export const notifyWakeupPayloadSchema = z.object({
 	idempotency_key: z.string().min(1).optional(),
 });
 
+/**
+ * `mcp_auth_handoff` payload (MCP OAuth RFC §8, R-MO19). Carries a resolver's
+ * caught authorize-leg outcome to the owning host, which alone performs the
+ * code-for-token exchange (R-MO20). Exactly one of `code` (success) or `error`
+ * (authorize-leg error, RFC 6749 §4.1.2.1) is set. NEVER a token, NEVER a
+ * client_secret (R-MO29/R-MO30). All fields byte-replayed on the owner's token
+ * POST; the owner re-derives nothing (R-MO19/R-MO20).
+ */
+export const mcpAuthHandoffPayloadSchema = z.object({
+	/** The deterministic challenge id this outcome resolves (R-MO6). */
+	challenge_id: z.string().min(1),
+	/** The MCP server name (owner keys its config + token bundle by this). */
+	server_name: z.string().min(1),
+	/** Per-attempt CSRF state the resolver awaited; carried for owner-side traceability. */
+	state: z.string().min(1),
+	/** Authorization code on the success path; absent on the error path. */
+	code: z.string().min(1).optional(),
+	/** PKCE verifier that produced the authorize challenge; present with `code`. */
+	code_verifier: z.string().min(1).optional(),
+	/** Exact redirect_uri string used at /authorize; byte-replayed on the token POST. */
+	redirect_uri: z.string().min(1).optional(),
+	/** Canonical RFC 8707 resource used at /authorize; byte-replayed and owner-confirmed. */
+	resource: z.string().optional(),
+	/** Authorization-server issuer the resolver discovered; owner independently re-validates. */
+	issuer: z.string().min(1).optional(),
+	/** Registration client_id used (config-declared or DCR result); NEVER a secret. */
+	client_id: z.string().min(1).optional(),
+	/** Authorize-leg error code (RFC 6749 §4.1.2.1) on the error path; owner classifies it. */
+	error: z.string().min(1).optional(),
+	/** Optional authorize-leg error_description for the failure_reason surface. */
+	error_description: z.string().optional(),
+});
+
 export const clientToolPayloadSchema = z.object({
 	thread_id: z.string().min(1),
 	call_id: z.string().min(1),
@@ -277,6 +310,7 @@ export const RELAY_PAYLOAD_SCHEMAS = {
 	inference_part: inferenceRequestPartPayloadSchema,
 	intake: intakePayloadSchema,
 	notify_wakeup: notifyWakeupPayloadSchema,
+	mcp_auth_handoff: mcpAuthHandoffPayloadSchema,
 	client_tool: clientToolPayloadSchema,
 	result: resultPayloadSchema,
 	error: errorPayloadSchema,

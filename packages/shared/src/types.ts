@@ -629,6 +629,15 @@ export const RELAY_KIND_REGISTRY = {
 	// must not ping-pong the wakeup) and wakes the loop beside the session.
 	notify_wakeup: { dispatch: "async" },
 
+	// `mcp_auth_handoff` carries a resolver's caught OAuth outcome (code + PKCE
+	// verifier + exact redirect_uri + canonical resource + issuer + registration
+	// client_id, OR an authorize-leg error code) to the owning host, which alone
+	// performs the code-for-token exchange with its own client credentials
+	// (MCP OAuth RFC docs/design/specs/2026-09-21-mcp-oauth.md §8, R-MO19/R-MO20).
+	// NEVER a token and NEVER a client_secret. async: the owner exchanges and
+	// flips the challenge row out-of-band; no synchronous response rides back.
+	mcp_auth_handoff: { dispatch: "async" },
+
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor
 	// consumer. The relay-processor must NOT markProcessed these.
 	//

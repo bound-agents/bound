@@ -88,10 +88,14 @@ EXAMPLES:
 
 	if (command === "login") {
 		const loginConfigIdx = args.indexOf("--config-dir");
+		const challengeIdx = args.indexOf("--challenge");
+		const mcpIdx = args.indexOf("--mcp");
 		const { runLogin } = await import("./commands/login.js");
 		try {
 			await runLogin({
 				chatgpt: args.includes("--chatgpt"),
+				challenge: challengeIdx !== -1 ? args[challengeIdx + 1] : undefined,
+				mcp: mcpIdx !== -1 ? args[mcpIdx + 1] : undefined,
 				configDir: loginConfigIdx !== -1 ? args[loginConfigIdx + 1] : "config",
 			});
 		} catch (error) {
