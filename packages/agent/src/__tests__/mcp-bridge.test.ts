@@ -59,6 +59,14 @@ function makeMockClient(
 		getServerDescription: () => undefined,
 		getServerInstructions: () => undefined,
 		getServerInfo: () => undefined,
+		// A real server that returns prompts/resources advertises those
+		// capabilities in its InitializeResult; mirror that so the capability-gated
+		// capture in updateHostMCPInfo actually probes them.
+		getServerCapabilities: () => ({
+			tools: {},
+			...(prompts.length > 0 ? { prompts: {} } : {}),
+			...(resources.length > 0 ? { resources: {} } : {}),
+		}),
 	} as unknown as MCPClient;
 }
 

@@ -3,6 +3,7 @@
  */
 
 import {
+	AuthChallengeRaisedError,
 	MCPClient,
 	generateMCPCommands,
 	generateRemoteMCPProxyCommands,
@@ -65,7 +66,16 @@ interface FailedMcpServer {
 	error: unknown;
 }
 
-type McpConnectionAttempt = ({ ok: true } & ConnectedMcpServer) | ({ ok: false } & FailedMcpServer);
+interface PendingAuthMcpServer {
+	serverCfg: MCPServerConfig;
+	client: MCPClient;
+	challengeId: string;
+}
+
+type McpConnectionAttempt =
+	| ({ ok: true } & ConnectedMcpServer)
+	| ({ ok: false; pendingAuth: true } & PendingAuthMcpServer)
+	| ({ ok: false; pendingAuth?: false } & FailedMcpServer);
 
 async function connectMcpServer(
 	serverCfg: MCPServerConfig,
@@ -83,6 +93,21 @@ async function connectMcpServer(
 		const tools = await client.listTools();
 		return { ok: true, serverCfg: effectiveCfg, client, tools };
 	} catch (error) {
+		// R-MO13: a connect-time 401/403 from an oauth-configured server makes the
+		// provider raise a challenge and throw AuthChallengeRaisedError. That is NOT
+		// a dead connect failure — the server is pending auth. Keep the client (its
+		// transport is already torn down by the throw, but reconnect() rebuilds it,
+		// R-MO13b) so the caller can hold it in a reconnectable state and surface a
+		// consent affordance instead of logging a bare WARN.
+		if (error instanceof AuthChallengeRaisedError && client) {
+			return {
+				ok: false,
+				pendingAuth: true,
+				serverCfg,
+				client,
+				challengeId: error.challengeId,
+			};
+		}
 		if (client?.isConnected()) {
 			try {
 				await client.disconnect();
@@ -113,6 +138,14 @@ export async function connectConfiguredMcpServers(
 			mcpClientsMap.set(attempt.serverCfg.name, attempt.client);
 			logger.info(
 				`[mcp] Connected to server: ${attempt.serverCfg.name} (${attempt.serverCfg.transport}), tools: ${attempt.tools.map((t) => t.name).join(", ") || "(none)"}`,
+			);
+		} else if (attempt.pendingAuth) {
+			// R-MO13: a raised challenge, not a dead connect. Hold the client so the
+			// server is reconnectable once consent resolves (R-MO13b), and surface the
+			// challenge id at INFO rather than a bare WARN.
+			mcpClientsMap.set(attempt.serverCfg.name, attempt.client);
+			logger.info(
+				`[mcp] Server ${attempt.serverCfg.name} needs authorization; raised challenge ${attempt.challengeId}. Run \`bound login ${attempt.serverCfg.name}\` or use the Connections consent card.`,
 			);
 		} else {
 			logger.warn(`[mcp] Failed to connect to ${attempt.serverCfg.name}`, {
@@ -250,6 +283,16 @@ export interface McpReloadConfig {
 	oldConfig: McpConfig;
 	/** New MCP config to apply. */
 	newConfig: McpConfig;
+	/**
+	 * OAuth provider wiring hook (R-MO2), mirroring the startup path. For an
+	 * oauth-configured server this returns the config with `authProvider` stamped
+	 * on so a connect-time 401 raises a challenge instead of dead-failing (R-MO13).
+	 * Servers without an `auth` block pass through unchanged. Omit on hosts with no
+	 * oauth-configured server (the whole feature stays inert).
+	 */
+	provideAuth?: (server: MCPServerConfig) => MCPServerConfig;
+	/** Client factory override for tests; defaults to `new MCPClient(cfg)`. */
+	createClient?: McpClientFactory;
 }
 
 /**
@@ -260,6 +303,12 @@ export interface McpReloadResult {
 	removed: string[];
 	changed: string[];
 	failed: string[];
+	/**
+	 * Servers whose connect-time 401 raised an OAuth challenge (R-MO13). They are
+	 * in the client map and reconnectable once consent resolves (R-MO13b) — not a
+	 * dead failure, not a usable add, so they are reported distinctly.
+	 */
+	pendingAuth: string[];
 }
 
 /**
@@ -289,7 +338,13 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 	const logger = appContext.logger;
 
 	const diff = diffMcpConfigs(oldConfig, newConfig);
-	const result: McpReloadResult = { added: [], removed: [], changed: [], failed: [] };
+	const result: McpReloadResult = {
+		added: [],
+		removed: [],
+		changed: [],
+		failed: [],
+		pendingAuth: [],
+	};
 
 	if (diff.added.length === 0 && diff.removed.length === 0 && diff.changed.length === 0) {
 		logger.info("[mcp-reload] No MCP server changes detected");
@@ -325,8 +380,11 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 	// Phase 2: Connect new and changed servers concurrently
 	const serversToConnect = [...diff.added, ...diff.changed];
 	const addedNames = new Set(diff.added.map((serverCfg) => serverCfg.name));
+	const reloadCreateClient = config.createClient ?? ((cfg) => new MCPClient(cfg));
 	const connectionAttempts = await Promise.all(
-		serversToConnect.map((serverCfg) => connectMcpServer(serverCfg, (cfg) => new MCPClient(cfg))),
+		serversToConnect.map((serverCfg) =>
+			connectMcpServer(serverCfg, reloadCreateClient, config.provideAuth),
+		),
 	);
 	for (const attempt of connectionAttempts) {
 		if (attempt.ok) {
@@ -347,6 +405,20 @@ export async function reloadMcpServers(config: McpReloadConfig): Promise<McpRelo
 			} else {
 				result.changed.push(attempt.serverCfg.name);
 			}
+		} else if (attempt.pendingAuth) {
+			// R-MO13: a raised challenge, not a dead connect. Hold the client so the
+			// server is reconnectable once consent resolves (R-MO13b), and surface the
+			// challenge id at INFO. Reported in pendingAuth, NOT added/changed/failed:
+			// the server has no tools yet but is not a dead failure either.
+			mcpClientsMap.set(attempt.serverCfg.name, attempt.client);
+			mcpServerNames.add(attempt.serverCfg.name);
+			if (attempt.serverCfg.confirm && attempt.serverCfg.confirm.length > 0) {
+				confirmGates.set(attempt.serverCfg.name, attempt.serverCfg.confirm);
+			}
+			result.pendingAuth.push(attempt.serverCfg.name);
+			logger.info(
+				`[mcp-reload] Server ${attempt.serverCfg.name} needs authorization; raised challenge ${attempt.challengeId}. Run \`bound login ${attempt.serverCfg.name}\` or use the Connections consent card.`,
+			);
 		} else {
 			logger.warn(`[mcp-reload] Failed to connect to ${attempt.serverCfg.name}`, {
 				error: formatError(attempt.error),

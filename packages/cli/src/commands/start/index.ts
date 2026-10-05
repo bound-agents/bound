@@ -174,6 +174,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 				},
 				oldConfig,
 				newConfig,
+				// R-MO2/R-MO13: thread the SAME oauth provider wiring the startup path uses
+				// (shared store + raise debouncer, R-MO22) so an oauth server added or
+				// changed via SIGHUP raises a challenge on a connect-time 401 instead of
+				// dead-failing. Undefined when no oauth-configured server exists.
+				provideAuth: mcpOAuth
+					? (server) => ({ ...server, authProvider: mcpOAuth.providerFor(server) ?? undefined })
+					: undefined,
 			});
 		},
 		onModelBackendsChanged: async (_oldConfig, newConfig) => {

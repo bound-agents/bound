@@ -1,5 +1,11 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import type { OAuthClientProvider, Prompt, Resource, Tool } from "@modelcontextprotocol/client";
+import type {
+	OAuthClientProvider,
+	Prompt,
+	Resource,
+	ServerCapabilities,
+	Tool,
+} from "@modelcontextprotocol/client";
 /**
  * MCP Client for connecting to and managing external MCP servers.
  * Implements lifecycle management per spec §7.2.
@@ -379,5 +385,17 @@ export class MCPClient {
 			title: (info as { title?: string }).title,
 			version: info.version,
 		};
+	}
+
+	/**
+	 * The server's self-reported capabilities from its InitializeResult, if
+	 * available (only after connect()). Callers gate optional list* calls on this
+	 * so they don't invoke listPrompts()/listResources() on a server that never
+	 * advertised the capability — the SDK answers that with an empty list AND a
+	 * `console.debug` warning per call, which floods operator output on every
+	 * capability sweep.
+	 */
+	getServerCapabilities(): ServerCapabilities | undefined {
+		return this.client.getServerCapabilities();
 	}
 }
