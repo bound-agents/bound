@@ -1043,19 +1043,33 @@ export async function updateHostMCPInfo(
 						// serverInfo capture failed — leave it unset for this server.
 					}
 
+					// Gate the optional list* calls on the server's advertised
+					// capabilities. The SDK answers listPrompts()/listResources() on a
+					// server that never advertised the capability with an empty list AND a
+					// `console.debug` warning per call — which floods operator output on
+					// every capability sweep (one pair per server per reload). getServerInfo
+					// may be undefined if the handshake is malformed; treat unknown as
+					// not-advertised so we stay quiet rather than probe-and-warn.
+					const caps = client.getServerCapabilities?.();
+					const advertisesPrompts = Boolean(caps?.prompts);
+					const advertisesResources = Boolean(caps?.resources);
 					const [toolsResult, promptsResult, resourcesResult] = await Promise.all([
 						client.listTools().then(
 							(tools) => ({ ok: true as const, tools }),
 							() => ({ ok: false as const }),
 						),
-						client.listPrompts().then(
-							(prompts) => ({ ok: true as const, prompts }),
-							() => ({ ok: false as const }),
-						),
-						client.listResources().then(
-							(resources) => ({ ok: true as const, resources }),
-							() => ({ ok: false as const }),
-						),
+						advertisesPrompts
+							? client.listPrompts().then(
+									(prompts) => ({ ok: true as const, prompts }),
+									() => ({ ok: false as const }),
+								)
+							: Promise.resolve({ ok: false as const }),
+						advertisesResources
+							? client.listResources().then(
+									(resources) => ({ ok: true as const, resources }),
+									() => ({ ok: false as const }),
+								)
+							: Promise.resolve({ ok: false as const }),
 					]);
 
 					// Best-effort listTools — never fail the metadata update on a

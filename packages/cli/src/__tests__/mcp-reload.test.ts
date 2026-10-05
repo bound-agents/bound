@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { MCPClient, MCPServerConfig } from "@bound/agent";
+import { AuthChallengeRaisedError } from "@bound/agent";
 import type { Tool } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import type { Logger, McpConfig } from "@bound/shared";
@@ -402,6 +403,117 @@ describe("reloadMcpServers", () => {
 		});
 
 		expect(confirmGates.has("server")).toBe(false);
+		cleanup();
+	});
+
+	// R-MO13: a connect-time 401 from an oauth-configured server on the RELOAD path
+	// must raise a challenge and leave the server reconnectable, NOT dead-fail like a
+	// plain connect error. The reload path must thread the same provideAuth hook the
+	// startup path uses so the oauth provider is stamped as authProvider before
+	// connect (bound-agents/bound MCP OAuth RFC, slice 3.5 wiring parity).
+	it("raises a challenge instead of dead-failing an oauth server whose connect 401s", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		const mcpClientsMap = new Map<string, MCPClient>();
+		const mcpServerNames = new Set<string>();
+		const confirmGates = new Map<string, string[]>();
+
+		const oldConfig: McpConfig = { servers: [] };
+		const newConfig: McpConfig = {
+			servers: [
+				{
+					name: "oauth-server",
+					transport: "http",
+					url: "https://mcp.example.com/mcp",
+					auth: { type: "oauth" },
+				},
+			],
+		};
+
+		// The provideAuth hook stands in for mcpOAuth.providerFor: it marks the
+		// server oauth-configured. The mock client's connect() throws the typed
+		// AuthChallengeRaisedError the real provider throws from
+		// redirectToAuthorization on a connect-time 401.
+		let provideAuthCalled = false;
+		const provideAuth = (server: MCPServerConfig): MCPServerConfig => {
+			provideAuthCalled = true;
+			return { ...server, authProvider: {} as never };
+		};
+
+		const result = await reloadMcpServers({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates,
+			sandbox: null,
+			commandContext: {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				mcpClients: mcpClientsMap,
+			},
+			oldConfig,
+			newConfig,
+			provideAuth,
+			createClient: (config) =>
+				({
+					...makeMockClient(config, [], false),
+					connect: async () => {
+						throw new AuthChallengeRaisedError(
+							"challenge-abc",
+							"Authorization required for oauth-server. Run `bound login oauth-server`.",
+						);
+					},
+				}) as unknown as MCPClient,
+		});
+
+		// The hook was threaded through (regression guard for the missing-arg bug).
+		expect(provideAuthCalled).toBe(true);
+		// A raised challenge is NOT a failed connect: the server is pending auth,
+		// reconnectable once consent resolves (R-MO13b).
+		expect(result.failed).not.toContain("oauth-server");
+		expect(result.added).not.toContain("oauth-server");
+		cleanup();
+	});
+
+	// A plain (non-oauth) connect failure still lands in `failed` — the
+	// pending-auth classification must not swallow ordinary connect errors.
+	it("still reports a non-oauth connect failure as failed", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		const mcpClientsMap = new Map<string, MCPClient>();
+		const mcpServerNames = new Set<string>();
+		const confirmGates = new Map<string, string[]>();
+
+		const oldConfig: McpConfig = { servers: [] };
+		const newConfig: McpConfig = {
+			servers: [{ name: "broken", transport: "stdio", command: "nope" }],
+		};
+
+		const result = await reloadMcpServers({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates,
+			sandbox: null,
+			commandContext: {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				mcpClients: mcpClientsMap,
+			},
+			oldConfig,
+			newConfig,
+			createClient: (config) =>
+				({
+					...makeMockClient(config, [], false),
+					connect: async () => {
+						throw new Error("connection refused");
+					},
+				}) as unknown as MCPClient,
+		});
+
+		expect(result.failed).toContain("broken");
 		cleanup();
 	});
 });
