@@ -13,6 +13,7 @@ import {
 	ANTHROPIC_ENVELOPE,
 	BEDROCK_PERMISSIVE_ENVELOPE,
 	MAX_TOOL_USE_ID_LENGTH,
+	OPENAI_RESPONSES_ENVELOPE,
 	PERMISSIVE_ENVELOPE,
 	mapChunks,
 	mapError,
@@ -1867,6 +1868,93 @@ describe("toModelMessages — full recovery on a corrupted live shape", () => {
 		// Bedrock toolUse.name: [a-zA-Z0-9_-]+, length <= 64
 		expect(assistantMsg.content[0].toolName).toMatch(/^[a-zA-Z0-9_-]+$/);
 		expect(assistantMsg.content[0].toolName.length).toBeLessThanOrEqual(64);
+	});
+});
+
+describe("toModelMessages — OpenAI Responses reserved tool-name collision", () => {
+	// Live incident (gpt-5.6-sol, 2026-10-10): the Responses endpoint rejected a
+	// 108-message all-text request with `Invalid 'input': value did not match any
+	// expected variant`. Root cause reproduced against the installed
+	// @ai-sdk/openai Responses converter: a historical client tool literally named
+	// `tool_search` collides with OpenAI's RESERVED server-tool name. The
+	// converter special-cases `resolvedToolName === 'tool_search'` on assistant
+	// tool-call parts and emits a provider-defined `tool_search_call` item
+	// INSTEAD of a plain `function_call`, while the matching text tool_result
+	// flows through the generic branch as a `function_call_output`. The output's
+	// call_id then has no preceding `function_call` — only a `tool_search_call`,
+	// which pairs with `tool_search_output`, not `function_call_output`. The
+	// Responses `input` union rejects the orphaned output.
+	//
+	// The fix: the OpenAI Responses envelope escapes OpenAI's reserved
+	// server-tool names at the read boundary, so a Bound client tool named
+	// `tool_search` reaches the wire as a non-reserved name and converts to a
+	// plain function_call / function_call_output pair.
+
+	// OpenAI's reserved Responses server-tool names (see
+	// @ai-sdk/openai convert-to-openai-responses-input.ts special-cases).
+	const RESERVED = ["tool_search", "shell", "local_shell", "apply_patch", "computer"];
+
+	it("escapes reserved OpenAI tool names on tool_use (name) under OPENAI_RESPONSES_ENVELOPE", () => {
+		for (const reserved of RESERVED) {
+			const out = toModelMessages(
+				[
+					{ role: "user", content: "go" },
+					{
+						role: "tool_call",
+						content: [{ type: "tool_use", id: "call_x", name: reserved, input: {} }],
+					},
+					{ role: "tool_result", tool_use_id: "call_x", content: "result text" },
+				],
+				{ targetEnvelope: OPENAI_RESPONSES_ENVELOPE },
+			);
+			const assistantMsg = out.find((m) => m.role === "assistant") as {
+				content: Array<{ type: string; toolName: string }>;
+			};
+			const toolMsg = out.find((m) => m.role === "tool") as {
+				content: Array<{ toolName: string }>;
+			};
+			const wireName = assistantMsg.content[0].toolName;
+			// The reserved name is escaped so the converter does not special-case it.
+			expect(RESERVED).not.toContain(wireName);
+			// Call and result still resolve to the SAME escaped name (pairing intact).
+			expect(toolMsg.content[0].toolName).toBe(wireName);
+		}
+	});
+
+	it("leaves reserved names UNTOUCHED under PERMISSIVE_ENVELOPE (chat/completions path has no collision)", () => {
+		// openai-compatible and opencode-go speak /chat/completions, which has no
+		// reserved server-tool names — escaping there would be gratuitously lossy.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_call",
+					content: [{ type: "tool_use", id: "call_x", name: "tool_search", input: {} }],
+				},
+			],
+			{ targetEnvelope: PERMISSIVE_ENVELOPE },
+		);
+		const assistantMsg = out.find((m) => m.role === "assistant") as {
+			content: Array<{ toolName: string }>;
+		};
+		expect(assistantMsg.content[0].toolName).toBe("tool_search");
+	});
+
+	it("a non-reserved name is byte-identical under OPENAI_RESPONSES_ENVELOPE", () => {
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "go" },
+				{
+					role: "tool_call",
+					content: [{ type: "tool_use", id: "call_x", name: "grep", input: {} }],
+				},
+			],
+			{ targetEnvelope: OPENAI_RESPONSES_ENVELOPE },
+		);
+		const assistantMsg = out.find((m) => m.role === "assistant") as {
+			content: Array<{ toolName: string }>;
+		};
+		expect(assistantMsg.content[0].toolName).toBe("grep");
 	});
 });
 

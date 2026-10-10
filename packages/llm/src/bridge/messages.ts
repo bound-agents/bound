@@ -250,7 +250,38 @@ export interface WireEnvelope {
 	idMaxLength: number;
 	/** Hard cap on tool_use.name length. */
 	nameMaxLength: number;
+	/**
+	 * Tool names the TARGET's wire converter reserves for provider-defined
+	 * server tools. A Bound client tool whose name collides with one of these
+	 * is escaped (suffixed `_fn`) at the read boundary so the converter emits a
+	 * plain function_call/function_call_output pair instead of a mismatched
+	 * provider-tool item. Empty/absent on envelopes with no reserved names.
+	 */
+	reservedToolNames?: ReadonlySet<string>;
 }
+
+/**
+ * OpenAI's Responses API reserves these tool names for its provider-defined
+ * server tools. `@ai-sdk/openai`'s Responses input converter
+ * (convert-to-openai-responses-input.ts) special-cases an assistant tool-call
+ * part BY NAME when `resolvedToolName` is one of these — most dangerously
+ * `tool_search`, which fires unconditionally (the others gate on a matching
+ * `has*Tool` flag). A Bound client tool literally named `tool_search` is then
+ * serialized as a `tool_search_call` item while its text result still becomes
+ * a generic `function_call_output`, orphaning the output (no preceding
+ * `function_call` with that `call_id`) and tripping the Responses `input`
+ * union rejection `Invalid 'input': value did not match any expected variant`.
+ */
+export const OPENAI_RESPONSES_RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"tool_search",
+	"shell",
+	"local_shell",
+	"apply_patch",
+	"computer",
+]);
+
+/** Suffix appended to a reserved tool name to disambiguate it on the wire. */
+export const RESERVED_TOOL_NAME_SUFFIX = "_fn";
 
 // Anthropic API + Claude-on-Bedrock: strict charset on both id and name.
 export const ANTHROPIC_ENVELOPE: WireEnvelope = {
@@ -276,13 +307,30 @@ export const BEDROCK_PERMISSIVE_ENVELOPE: WireEnvelope = {
 // advertise an id-charset constraint and accept arbitrary tool_call.id
 // strings. The (?!) regex never matches, so the rewrite branch never fires;
 // only the length cap survives as a defensive backstop against runaway
-// upstream leaks.
+// upstream leaks. These speak /chat/completions, which has NO reserved
+// server-tool names, so `reservedToolNames` is intentionally absent.
 export const PERMISSIVE_ENVELOPE: WireEnvelope = {
 	name: "permissive",
 	idIllegalChars: /(?!)/g,
 	nameIllegalChars: /(?!)/g,
 	idMaxLength: 256,
 	nameMaxLength: 256,
+};
+
+// OpenAI Responses API (Mantle GPT-5.x via @ai-sdk/openai `.responses()`).
+// Same permissive charset as PERMISSIVE_ENVELOPE — the Responses endpoint does
+// not constrain tool_call.id/name charset — but it DOES reserve a set of
+// provider-defined server-tool names (see OPENAI_RESPONSES_RESERVED_TOOL_NAMES).
+// A Bound client tool whose name collides with one is escaped at the read
+// boundary so the Responses input converter emits a plain function_call /
+// function_call_output pair instead of a mismatched provider-tool item.
+export const OPENAI_RESPONSES_ENVELOPE: WireEnvelope = {
+	name: "openai-responses",
+	idIllegalChars: /(?!)/g,
+	nameIllegalChars: /(?!)/g,
+	idMaxLength: 256,
+	nameMaxLength: 256,
+	reservedToolNames: OPENAI_RESPONSES_RESERVED_TOOL_NAMES,
 };
 
 /**
@@ -323,8 +371,16 @@ export function sanitizeToolUseId(id: string, envelope: WireEnvelope = ANTHROPIC
 }
 
 // Envelope-aware sister of sanitizeToolUseId for tool names. Same
-// rewrite-only-on-violation contract. Falls back to "unknown" if the result
-// is empty.
+// rewrite-only-on-violation contract. Two transforms, in order: (1) charset
+// rewrite + length cap, then (2) reserved-name escaping. A name that matches
+// one of the envelope's `reservedToolNames` (OpenAI Responses server-tool
+// names) is suffixed with `_fn` so the target's wire converter serializes it
+// as a plain function tool rather than special-casing it as a provider-defined
+// server tool (which orphans its function_call_output and trips the Responses
+// `input` union rejection). The suffix is deterministic, so the same name
+// escapes identically at every site (assistant tool_use, tool_result name
+// resolution via toolNameById, and the live toolset via toToolSet). Falls back
+// to "unknown" if the charset result is empty.
 export function sanitizeToolNameForEnvelope(
 	name: string,
 	envelope: WireEnvelope = ANTHROPIC_ENVELOPE,
@@ -336,7 +392,14 @@ export function sanitizeToolNameForEnvelope(
 	}
 	envelope.nameIllegalChars.lastIndex = 0;
 	if (out.length > envelope.nameMaxLength) out = out.slice(0, envelope.nameMaxLength);
-	return out || "unknown";
+	out = out || "unknown";
+	// Reserved-name escaping runs AFTER the charset/length transform so the
+	// collision check sees the same string the wire converter would. A reserved
+	// name is pure ASCII and short, so neither prior transform alters it.
+	if (envelope.reservedToolNames?.has(out)) {
+		out = `${out}${RESERVED_TOOL_NAME_SUFFIX}`;
+	}
+	return out;
 }
 
 /**
