@@ -995,7 +995,7 @@ function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "docume
  * shapes we care about here:
  *   - `{ type: "text", value: string }` — single text payload, the common
  *     case for shell/connector/database tools that return strings.
- *   - `{ type: "content", value: Array<{type:"text"} | {type:"media"}> }`
+ *   - `{ type: "content", value: Array<{type:"text"} | {type:"file"}> }`
  *     — required to preserve images, which MCP tools (vision-enabled
  *     servers, Discord image fetches, etc.) routinely return alongside
  *     text. Without this shape, the model never sees the image.
@@ -1004,7 +1004,19 @@ function documentUnavailablePlaceholder(b: Extract<ContentBlock, { type: "docume
  *   - If every block is text → keep the simple `{type:"text"}` shape for
  *     back-compat with providers that may treat the two shapes differently.
  *   - If any block is non-text → emit `{type:"content"}` so images and
- *     other media survive the trip to the model.
+ *     other media survive the trip to the model. Media items MUST be
+ *     ai@7 canonical file items with tagged inline data —
+ *     `{type:"file", data: {type:"data", data}, mediaType}`: the
+ *     ai@6-era `{type:"media"}` item is not in ai@7's ModelMessage[]
+ *     prompt schema, so a single stale item fails the whole prompt at
+ *     validatePrompt (InvalidPromptError) before any provider call — and
+ *     because the block lives in persisted history, one bad item wedged
+ *     its thread on every subsequent assembly (thread 10e34ac9,
+ *     2026-10-10). Downstream, ai's mapToolResultOutput maps `file`
+ *     items via convertPartToLanguageModelPart: the base64 string passes
+ *     through zero-copy as `{type:"data"}` inline data and mediaType
+ *     forwards to the provider adapter (Anthropic maps image/* to a
+ *     base64 image content block in the tool_result).
  *
  * file_ref images and documents route through `resolveFileRef`
  * (defense-in-depth — by the time we reach here, context-assembly's
@@ -1026,7 +1038,8 @@ function buildToolResultOutput(
 	| {
 			type: "content";
 			value: Array<
-				{ type: "text"; text: string } | { type: "media"; data: string; mediaType: string }
+				| { type: "text"; text: string }
+				| { type: "file"; data: { type: "data"; data: string }; mediaType: string }
 			>;
 	  } {
 	const hasNonText = blocks.some((b) => b.type !== "text");
@@ -1041,7 +1054,8 @@ function buildToolResultOutput(
 	}
 
 	const items: Array<
-		{ type: "text"; text: string } | { type: "media"; data: string; mediaType: string }
+		| { type: "text"; text: string }
+		| { type: "file"; data: { type: "data"; data: string }; mediaType: string }
 	> = [];
 	for (const b of blocks) {
 		if (b.type === "text") {
@@ -1049,9 +1063,17 @@ function buildToolResultOutput(
 		} else if (b.type === "image") {
 			const resolved = resolveImageSource(b.source, resolveFileRef);
 			if (resolved) {
+				// ai@7 canonical file item — see the shape note above. The item's
+				// `data` is a discriminated union (taggedFileDataSchema) — it must
+				// carry the {type:"data"} tag; a bare string or Uint8Array fails
+				// the schema (bare inline data is only legal on user/assistant
+				// filePartSchema, which unions in fileInlineDataSchema). Not
+				// `{type:"media"}` either: that ai@6 item type fails ai@7's prompt
+				// schema and wedges the thread (InvalidPromptError before any
+				// provider call, re-triggered by the persisted history).
 				items.push({
-					type: "media",
-					data: resolved.data,
+					type: "file",
+					data: { type: "data", data: resolved.data },
 					mediaType: resolved.mediaType,
 				});
 			} else {
@@ -1061,20 +1083,20 @@ function buildToolResultOutput(
 			// Documents in tool_result content (e.g. the MCP `resource` path
 			// when the tool returns a binary blob persisted as a file_ref)
 			// degrade through the same three-tier ladder as user-content
-			// documents: base64 → media item, file_ref → resolve+media,
+			// documents: base64 → file item, file_ref → resolve+file item,
 			// otherwise text_representation, otherwise placeholder.
 			if (b.source.type === "base64") {
 				items.push({
-					type: "media",
-					data: b.source.data,
+					type: "file",
+					data: { type: "data", data: b.source.data },
 					mediaType: b.source.media_type,
 				});
 			} else if (b.source.type === "file_ref" && resolveFileRef) {
 				const data = resolveFileRef(b.source.file_id);
 				if (data) {
 					items.push({
-						type: "media",
-						data,
+						type: "file",
+						data: { type: "data", data },
 						mediaType: b.source.media_type ?? "application/octet-stream",
 					});
 				} else if (b.text_representation) {

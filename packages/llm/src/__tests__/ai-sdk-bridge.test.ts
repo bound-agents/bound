@@ -7,6 +7,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { InvalidPromptError, generateText } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import {
 	ANTHROPIC_ENVELOPE,
 	BEDROCK_PERMISSIVE_ENVELOPE,
@@ -2171,7 +2173,7 @@ describe("toModelMessages — tool_result with non-text content", () => {
 		expect(output.type).toBe("content");
 		expect(output.value).toEqual([
 			{ type: "text", text: "screenshot:" },
-			{ type: "media", data, mediaType: "image/png" },
+			{ type: "file", data: { type: "data", data }, mediaType: "image/png" },
 		]);
 	});
 
@@ -2208,7 +2210,7 @@ describe("toModelMessages — tool_result with non-text content", () => {
 		expect(output.type).toBe("content");
 		expect(output.value).toEqual([
 			{ type: "text", text: "got it" },
-			{ type: "media", data, mediaType: "image/jpeg" },
+			{ type: "file", data: { type: "data", data }, mediaType: "image/jpeg" },
 		]);
 	});
 
@@ -2269,7 +2271,7 @@ describe("toModelMessages — tool_result with non-text content", () => {
 		expect(output.type).toBe("content");
 		expect(output.value).toEqual([
 			{ type: "text", text: "screenshot:" },
-			{ type: "media", data, mediaType: "image/png" },
+			{ type: "file", data: { type: "data", data }, mediaType: "image/png" },
 		]);
 	});
 
@@ -2304,7 +2306,7 @@ describe("toModelMessages — tool_result with non-text content", () => {
 		expect(output.type).toBe("content");
 		expect(output.value).toEqual([
 			{ type: "text", text: "here is the report:" },
-			{ type: "media", data, mediaType: "application/pdf" },
+			{ type: "file", data: { type: "data", data }, mediaType: "application/pdf" },
 		]);
 	});
 
@@ -2339,7 +2341,7 @@ describe("toModelMessages — tool_result with non-text content", () => {
 		expect(output.type).toBe("content");
 		expect(output.value).toEqual([
 			{ type: "text", text: "data:" },
-			{ type: "media", data, mediaType: "text/csv" },
+			{ type: "file", data: { type: "data", data }, mediaType: "text/csv" },
 		]);
 	});
 
@@ -2408,6 +2410,85 @@ describe("toModelMessages — tool_result with non-text content", () => {
 	});
 });
 
+describe("toModelMessages — ai@7 prompt-schema compatibility", () => {
+	// Regression (thread 10e34ac9, 2026-10-10): tool_result image/document
+	// blocks were emitted as ai@6-era {type:"media"} items, which ai@7's
+	// ModelMessage[] prompt schema rejects. Validation fails inside
+	// generateText BEFORE any provider call, and because the block lives in
+	// persisted history, every subsequent assembly re-failed — the thread
+	// wedged permanently across model switches. These tests drive the real
+	// prompt validator (generateText + a mock model), not shape-pinning.
+	it("tool_result file items pass the SDK's real prompt validation (generateText)", async () => {
+		const data = Buffer.from("png-bytes").toString("base64");
+		const messages = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "screenshot", input: {} }],
+			},
+			{
+				role: "tool_result",
+				tool_use_id: "c1",
+				content: [
+					{ type: "text", text: "screenshot:" },
+					{ type: "image", source: { type: "base64", media_type: "image/png", data } },
+				],
+			},
+		]);
+
+		const model = new MockLanguageModelV4({
+			doGenerate: async () => ({
+				content: [{ type: "text", text: "ok" }],
+				finishReason: { unified: "stop", raw: "stop" },
+				usage: {
+					inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+					outputTokens: { total: 1, text: 1, reasoning: 0 },
+				},
+			}),
+		});
+
+		const result = await generateText({ model, messages });
+		expect(result.text).toBe("ok");
+		// The prompt reached doGenerate — i.e. it passed validatePrompt's
+		// ModelMessage[] schema gate inside generateText.
+		expect(model.doGenerateCalls).toHaveLength(1);
+	});
+
+	// Control: the exact ai@6 shape this regression replaced must keep
+	// failing the schema, so the test above stays a real guard rather than
+	// a tautology if the bridge ever regresses back to {type:"media"}.
+	it("control: a {type:'media'} tool-result item fails the SDK's prompt validation", async () => {
+		const messages = toModelMessages([
+			{ role: "user", content: "go" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "c1", name: "screenshot", input: {} }],
+			},
+			{ role: "tool_result", tool_use_id: "c1", content: "r" },
+		]);
+		// Splice the legacy ai@6 item into the tool result output by hand.
+		const tool = messages[messages.length - 1] as {
+			content: Array<{ output: unknown }>;
+		};
+		tool.content[0].output = {
+			type: "content",
+			value: [{ type: "media", data: "aGk=", mediaType: "image/png" }],
+		};
+
+		const model = new MockLanguageModelV4({
+			doGenerate: async () => ({
+				content: [{ type: "text", text: "ok" }],
+				finishReason: { unified: "stop", raw: "stop" },
+				usage: {
+					inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+					outputTokens: { total: 1, text: 1, reasoning: 0 },
+				},
+			}),
+		});
+
+		expect(generateText({ model, messages })).rejects.toThrow(InvalidPromptError);
+	});
+});
 describe("toModelMessages — cache marker", () => {
 	it("attaches bedrock cachePoint to previous message", () => {
 		const out = toModelMessages(

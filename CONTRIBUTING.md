@@ -156,6 +156,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Yard's `input` can arrive as JSON text, not a value](docs/gotchas.md#yards-input-can-arrive-as-json-text-not-a-value)
 - [`bun add` / `bun install` fail against the global cache under the boundless sandbox](docs/gotchas.md#bun-add--bun-install-fail-against-the-global-cache-under-the-boundless-sandbox)
 - [`bun --cwd <pkg> run <script>` silently no-ops](docs/gotchas.md#bun---cwd-pkg-run-script-silently-no-ops)
+- [Tool-result content items must be ai@7 `file` items or the thread wedges](docs/gotchas.md#tool-result-content-items-must-be-ai7-file-items-or-the-thread-wedges)
 
 ## Recurring Checklists
 
