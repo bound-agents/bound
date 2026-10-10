@@ -232,6 +232,14 @@ export async function createWebApp(
 	app.route("/api/persona", routes.persona);
 	app.route("/v1/responses", routes.responses);
 
+	// MCP OAuth challenge resolution (MCP OAuth RFC §8/§11, R-MO17/R-MO27/R-MO27e).
+	// `POST /oauth/mcp/claim` + `GET /oauth/mcp/callback` back `bound login`; the
+	// consent-card list surface mounts at `/api/mcp-challenges`. These factories
+	// are built in registerRoutes but, like the /api/mcp-apps regression guarded in
+	// routes.integration.test.ts, 404 in the browser unless mounted here.
+	app.route("/oauth/mcp", routes.oauthMcp);
+	app.route("/api/mcp-challenges", routes.mcpChallenges);
+
 	// Serve static Svelte SPA assets
 	const assets = await loadEmbeddedAssets();
 	if (assets.size > 0) {

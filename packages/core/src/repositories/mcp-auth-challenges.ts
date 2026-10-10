@@ -97,6 +97,34 @@ export function findPendingChallenges(db: Database): McpAuthChallenge[] {
 }
 
 /**
+ * All live challenges for a given MCP server name, across every owning site.
+ * The `(owning site_id, server name)` identity means at most one row per site,
+ * so more than one row here is a genuine multi-site ambiguity the caller must
+ * disambiguate (R-MO17 name-based claim). Ordered by owning site for a stable
+ * disambiguation list.
+ */
+export function findChallengesByServerName(db: Database, serverName: string): McpAuthChallenge[] {
+	return db
+		.query(
+			"SELECT * FROM mcp_auth_challenges WHERE server_name = ? AND deleted = 0 ORDER BY owning_site_id",
+		)
+		.all(serverName) as McpAuthChallenge[];
+}
+
+/**
+ * All live challenges whose status is `pending` or `failed`, for surfaces that
+ * render per-server authorization state (the Connections MCP-server rows want
+ * both: a pending demand is actionable, a failed one shows the last reason).
+ */
+export function findActionableChallenges(db: Database): McpAuthChallenge[] {
+	return db
+		.query(
+			"SELECT * FROM mcp_auth_challenges WHERE status IN ('pending', 'failed') AND deleted = 0",
+		)
+		.all() as McpAuthChallenge[];
+}
+
+/**
  * Like {@link findChallengeById} but INCLUDES soft-deleted rows — used by the
  * deterministic-id raise path, which must see a tombstoned row to restore it.
  */

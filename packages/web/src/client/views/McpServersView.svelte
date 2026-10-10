@@ -57,6 +57,65 @@ let loading = $state(true);
 let expandedName = $state<string | null>(null);
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 
+// Per-server MCP OAuth authorization state (MCP OAuth RFC §11, R-MO27c). A
+// pending challenge is an unmet demand the row surfaces as an Authorize
+// affordance (loopback: a live claim button; non-loopback: the CLI
+// instruction); a failed one shows the last failure reason.
+interface ServerChallenge {
+	challengeId: string;
+	serverName: string;
+	scopeDemand: string;
+	failureReason: string | null;
+	status: string;
+}
+let challengesByServer = $state<Record<string, ServerChallenge>>({});
+let challengeLoopback = $state(false);
+let challengeCanResolve = $state(false);
+let claimState = $state<Record<string, "claiming" | { error: string }>>({});
+
+async function loadChallenges(): Promise<void> {
+	try {
+		const res = await fetch("/api/mcp-challenges/by-server");
+		if (res.ok) {
+			const body = (await res.json()) as {
+				servers: Record<string, ServerChallenge>;
+				loopback: boolean;
+				canResolve: boolean;
+			};
+			challengesByServer = body.servers;
+			challengeLoopback = body.loopback;
+			challengeCanResolve = body.canResolve;
+		}
+	} catch {
+		// Transient fetch failure — keep the last good snapshot.
+	}
+}
+
+async function authorize(challengeId: string): Promise<void> {
+	claimState = { ...claimState, [challengeId]: "claiming" };
+	try {
+		const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(challengeId)}/claim`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+		});
+		const body = (await res.json().catch(() => ({}))) as {
+			authorizeUrl?: string;
+			error?: string;
+		};
+		if (!res.ok || !body.authorizeUrl) {
+			throw new Error(body.error ?? `claim failed (${res.status})`);
+		}
+		window.open(body.authorizeUrl, "_blank", "noopener");
+		const { [challengeId]: _dropped, ...rest } = claimState;
+		claimState = rest;
+	} catch (e) {
+		claimState = {
+			...claimState,
+			[challengeId]: { error: e instanceof Error ? e.message : String(e) },
+		};
+	}
+}
+
 async function loadServers(): Promise<void> {
 	try {
 		const res = await fetch("/api/mcp/servers");
@@ -72,7 +131,11 @@ async function loadServers(): Promise<void> {
 
 onMount(() => {
 	loadServers();
-	pollInterval = setInterval(loadServers, 30000);
+	loadChallenges();
+	pollInterval = setInterval(() => {
+		loadServers();
+		loadChallenges();
+	}, 30000);
 });
 
 onDestroy(() => {
@@ -182,6 +245,15 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 										⚠ divergent
 									</span>
 								{/if}
+								{#if challengesByServer[server.name]?.status === "pending"}
+									<span class="auth-badge pending" title="This server needs OAuth authorization">
+										🔐 needs authorization
+									</span>
+								{:else if challengesByServer[server.name]?.status === "failed"}
+									<span class="auth-badge failed" title="The last OAuth authorization attempt failed">
+										🔐 authorization failed
+									</span>
+								{/if}
 							</span>
 							<span class="server-meta">
 								{serverSummary(server)}
@@ -191,6 +263,40 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 
 						{#if expanded}
 							<div class="server-detail">
+								{#if challengesByServer[server.name]}
+									{@const ch = challengesByServer[server.name]}
+									<div class="auth-affordance" class:failed={ch.status === "failed"}>
+										<p class="auth-line">
+											{#if ch.status === "failed"}
+												The last authorization attempt failed{ch.failureReason ? `: ${ch.failureReason}` : "."}
+											{:else if ch.scopeDemand}
+												This server needs authorization. Scopes: <code>{ch.scopeDemand}</code>
+											{:else}
+												This server needs authorization before its tools can run.
+											{/if}
+										</p>
+										{#if challengeLoopback && challengeCanResolve}
+											<button
+												type="button"
+												class="auth-button"
+												onclick={() => authorize(ch.challengeId)}
+												disabled={claimState[ch.challengeId] === "claiming"}
+											>
+												{claimState[ch.challengeId] === "claiming" ? "Opening…" : "Authorize"}
+											</button>
+										{:else}
+											<div class="auth-cli">
+												Resolve from a local session:
+												<code>bound login --challenge {ch.challengeId}</code>
+											</div>
+										{/if}
+										{#if claimState[ch.challengeId] && typeof claimState[ch.challengeId] === "object"}
+											<p class="auth-error">
+												{(claimState[ch.challengeId] as { error: string }).error}
+											</p>
+										{/if}
+									</div>
+								{/if}
 								<h3 class="subsection">Available on</h3>
 								<div class="host-chips">
 									{#each server.hosts as host (host.site_id)}
@@ -393,6 +499,77 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 		letter-spacing: 0.04em;
 		padding: 2px 6px;
 		border: 1px solid color-mix(in srgb, #b3261e 40%, transparent);
+		color: #b3261e;
+	}
+
+	.auth-badge {
+		font-size: 10px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 2px 6px;
+		border: 1px solid currentColor;
+	}
+
+	.auth-badge.pending {
+		color: var(--accent-2, #b26a00);
+		border-color: color-mix(in srgb, var(--accent, #b26a00) 50%, transparent);
+	}
+
+	.auth-badge.failed {
+		color: #b3261e;
+		border-color: color-mix(in srgb, #b3261e 40%, transparent);
+	}
+
+	.auth-affordance {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 8px 10px;
+		margin-bottom: 4px;
+		border: 1px solid color-mix(in srgb, var(--accent, #b26a00) 40%, transparent);
+		background: color-mix(in srgb, var(--accent, #b26a00) 6%, transparent);
+	}
+
+	.auth-affordance.failed {
+		border-color: color-mix(in srgb, #b3261e 40%, transparent);
+		background: color-mix(in srgb, #b3261e 6%, transparent);
+	}
+
+	.auth-line {
+		margin: 0;
+		font-size: 12px;
+		color: var(--ink-2);
+	}
+
+	.auth-button {
+		align-self: flex-start;
+		font: inherit;
+		font-size: 12px;
+		padding: 4px 12px;
+		cursor: pointer;
+		border: 1px solid var(--accent, #b26a00);
+		background: none;
+		color: var(--accent-2, #b26a00);
+	}
+
+	.auth-button:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.auth-cli {
+		font-size: 11px;
+		color: var(--ink-3);
+	}
+
+	.auth-cli code,
+	.auth-line code {
+		font-family: var(--font-mono, monospace);
+	}
+
+	.auth-error {
+		margin: 0;
+		font-size: 12px;
 		color: #b3261e;
 	}
 

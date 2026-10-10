@@ -32,9 +32,15 @@ import {
 	defaultMcpAuthPath,
 	getCoLocationAccessToken,
 	handleOwnerMcpAppProxy,
+	raiseAuthChallenge,
 	writeHandoff,
 } from "@bound/agent";
-import type { AppContext } from "@bound/core";
+import {
+	type AppContext,
+	type ChallengeDemand,
+	findChallengeById,
+	findChallengesByServerName,
+} from "@bound/core";
 import type { OauthMcpResolverBridge } from "@bound/web";
 
 /** The oauth-relevant slice of an http MCP server, extracted from `MCPServerConfig`. */
@@ -128,12 +134,15 @@ function oauthServers(appContext: AppContext): Map<string, OauthServerEntry> {
  * `reconnect` re-runs MCP connect for a server that resolved connect-time auth
  * (R-MO13b); wired by the caller against the live client map.
  * `webPort` is the daemon's loopback callback port (R-MO27); injected for tests.
+ * `fetchFn` is the HTTP client the resolver uses for live discovery/DCR at claim
+ * time; defaults to `globalThis.fetch` and is injected for tests.
  */
 export function createMcpOAuthWiring(
 	appContext: AppContext,
 	configDir: string,
 	reconnect: (serverName: string) => Promise<void> | void,
 	webPort = 3001,
+	fetchFn: typeof fetch = globalThis.fetch,
 ): McpOAuthWiring | null {
 	const servers = oauthServers(appContext);
 	if (servers.size === 0) return null;
@@ -175,7 +184,7 @@ export function createMcpOAuthWiring(
 		if (!s) return null;
 		return { name: s.name, url: s.url, scopes: s.scopes, clientId: s.clientId };
 	};
-	const resolver = new McpChallengeResolver(db, resolveResolverConfig, globalThis.fetch, webPort);
+	const resolver = new McpChallengeResolver(db, resolveResolverConfig, fetchFn, webPort);
 
 	// The owner reads its own config (url + client credentials it holds, R-MO4)
 	// to perform the code-for-token exchange (R-MO20).
@@ -236,7 +245,70 @@ export function createMcpOAuthWiring(
 			fetchImpl,
 		);
 
-	// The bridge the web callback route holds (R-MO17/R-MO19/R-MO27). forwardOutcome
+	// Map a login target (`--challenge <id>` or `--mcp <server>`) to the one
+	// challenge id the resolver should claim (R-MO17 name-based claim). A
+	// challenge id passes straight through. A server name resolves to its single
+	// live challenge; with none, it raises first when the server is locally
+	// oauth-configured (pre-authorization before first use) and errors actionably
+	// otherwise. All error strings are operator-facing — they surface verbatim as
+	// the CLI failure text.
+	const resolveClaimTarget = (target: {
+		challengeId?: string;
+		serverName?: string;
+	}): { ok: true; challengeId: string } | { ok: false; error: string } => {
+		if (target.challengeId) {
+			return { ok: true, challengeId: target.challengeId };
+		}
+		const serverName = target.serverName;
+		if (!serverName) {
+			return { ok: false, error: "claim requires a challenge id or a server name" };
+		}
+
+		const rows = findChallengesByServerName(db, serverName);
+		if (rows.length > 1) {
+			// Multiple owning sites configure this name; the operator must say which
+			// one by challenge id (R-MO6 identity is per owning site).
+			const list = rows
+				.map((r) => `  • ${r.id} (owned by site ${r.owning_site_id}, ${r.status})`)
+				.join("\n");
+			return {
+				ok: false,
+				error: `server "${serverName}" has challenges on more than one host; re-run with the specific challenge id:\n${list}`,
+			};
+		}
+		if (rows.length === 1) {
+			return { ok: true, challengeId: rows[0].id };
+		}
+
+		// No existing challenge. Raise one if this host locally oauth-configures the
+		// server (pre-authorization), else send the operator to the config.
+		const entry = servers.get(serverName);
+		if (!entry) {
+			return {
+				ok: false,
+				error: `no MCP server named "${serverName}" is configured with OAuth on this host; add it to ${configDir}/mcp.json with auth:{type:"oauth"}, or run from the host that owns it`,
+			};
+		}
+		const demand: ChallengeDemand = {
+			serverName: entry.name,
+			owningSiteId: siteId,
+			serverUrl: entry.url,
+			scopeDemand: entry.scopes?.join(" ") ?? "",
+			grantedScopes: "",
+			clientId: entry.clientId ?? null,
+		};
+		const outcome = raiseAuthChallenge(db, demand, siteId, debouncer);
+		// A fresh pre-auth raise always lands pending; confirm the row before claiming.
+		const raised = findChallengeById(db, outcome.challengeId);
+		if (!raised || raised.status !== "pending") {
+			return {
+				ok: false,
+				error: `could not raise a pending challenge for "${serverName}" (its last attempt is ${raised?.status ?? "missing"}); resolve the prior failure or retry`,
+			};
+		}
+		return { ok: true, challengeId: outcome.challengeId };
+	};
+
 	// writes the handoff to the owning host; a self-owned challenge targets
 	// LOCAL_WORK_TARGET and is consumed in-process by the same relay lane.
 	const bridge: OauthMcpResolverBridge = {
@@ -258,13 +330,14 @@ export function createMcpOAuthWiring(
 		): Promise<
 			{ ok: true; authorizeUrl: string; challengeId: string } | { ok: false; error: string }
 		> {
-			if (!target.challengeId) {
-				return {
-					ok: false,
-					error: "claim by server_name is not yet supported; pass a challenge_id",
-				};
+			// Resolve the challenge id this login targets, then claim it exactly like
+			// claim-by-id. `bound login --mcp <server>` passes a server name; we map it
+			// to the one challenge id to claim (R-MO17 name-based claim).
+			const resolved = resolveClaimTarget(target);
+			if (!resolved.ok) {
+				return { ok: false, error: resolved.error };
 			}
-			const result = await resolver.claim(target.challengeId);
+			const result = await resolver.claim(resolved.challengeId);
 			if (!result.ok) {
 				return { ok: false, error: result.error.detail };
 			}

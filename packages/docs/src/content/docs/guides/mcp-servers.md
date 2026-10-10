@@ -128,6 +128,9 @@ consent affordance on whichever surface the call ran on:
   documented hub setting) the card carries no button — a loopback callback is unreachable from a
   remote browser — and instead shows the `bound login --challenge <id>` instruction to run from a
   local session.
+- **Connections > MCP Servers** carries a per-server authorization badge: a `🔐 needs authorization`
+  (pending) or `🔐 authorization failed` (failed) marker on the server row, with the same Authorize
+  button (loopback) or `bound login --challenge <id>` instruction (non-loopback) in the expanded detail.
 
 Resolve a challenge from any host:
 

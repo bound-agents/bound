@@ -228,10 +228,34 @@ export async function runMcpLogin(args: LoginArgs): Promise<void> {
 		body: JSON.stringify(body),
 	});
 	if (!res.ok) {
-		const detail = await res.text().catch(() => "");
-		throw new Error(
-			`daemon could not claim the ${target.kind === "challenge" ? `challenge ${target.value}` : `challenge for server ${target.value}`}: ${res.status} ${detail}`.trim(),
-		);
+		const what =
+			target.kind === "challenge" ? `challenge ${target.value}` : `server ${target.value}`;
+		// The daemon returns a JSON `{ error }` body for a handled claim failure
+		// (no such server, not oauth-configured, multi-site ambiguity). A bare
+		// status text ("Not Found") means the route itself did not match — a
+		// daemon too old to serve the claim endpoint. Distinguish the two so the
+		// operator knows whether to fix config or update the binary, and never
+		// double-print the status (the old `${status} ${text}` rendered "404 404
+		// Not Found").
+		const raw = await res.text().catch(() => "");
+		let detail = raw.trim();
+		try {
+			const parsed = JSON.parse(raw) as { error?: string };
+			if (parsed?.error) detail = parsed.error;
+		} catch {
+			/* non-JSON body (route-level status text) — use the trimmed text */
+		}
+		if (res.status === 404) {
+			throw new Error(
+				`daemon at ${daemonUrl} has no MCP OAuth claim endpoint (404) — it is older than the \`bound login --${target.kind === "challenge" ? "challenge" : "mcp"}\` support. Rebuild and reinstall the daemon (\`just install\`), restart it, and retry.`,
+			);
+		}
+		if (res.status === 503) {
+			throw new Error(
+				`daemon at ${daemonUrl} runs no MCP OAuth resolver, so it cannot claim the ${what}${detail ? ` (${detail})` : ""}. Run \`bound login\` on the host that configures this server.`,
+			);
+		}
+		throw new Error(`daemon could not claim the ${what}: ${detail || `HTTP ${res.status}`}`);
 	}
 	const claim = (await res.json()) as { authorize_url?: string; challenge_id?: string };
 	if (!claim.authorize_url) {

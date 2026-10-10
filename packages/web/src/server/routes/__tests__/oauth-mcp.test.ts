@@ -31,11 +31,13 @@ class FakeBridge implements OauthMcpResolverBridge {
 	forwardOutcome(attempt: ResolverAttempt, outcome: unknown): void {
 		this.forwarded.push({ attempt, outcome });
 	}
-	async claimForLogin() {
+	claims: Array<{ challengeId?: string; serverName?: string }> = [];
+	async claimForLogin(target: { challengeId?: string; serverName?: string }) {
+		this.claims.push(target);
 		return {
 			ok: true as const,
 			authorizeUrl: "https://as.example.com/authorize",
-			challengeId: "chal-1",
+			challengeId: target.challengeId ?? "chal-for-name",
 		};
 	}
 }
@@ -115,6 +117,20 @@ describe("POST /oauth/mcp/claim (R-MO27e)", () => {
 		const body = (await res.json()) as { authorize_url: string; challenge_id: string };
 		expect(body.authorize_url).toContain("/authorize");
 		expect(body.challenge_id).toBe("chal-1");
+	});
+
+	it("claim by server_name forwards the name to the bridge and returns its challenge id", async () => {
+		bridge = new FakeBridge("live-state");
+		const res = await app(bridge).request("/claim", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ server_name: "sentry" }),
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { authorize_url: string; challenge_id: string };
+		expect(body.authorize_url).toContain("/authorize");
+		expect(body.challenge_id).toBe("chal-for-name");
+		expect(bridge.claims).toEqual([{ challengeId: undefined, serverName: "sentry" }]);
 	});
 
 	it("claim with neither field → 400", async () => {
