@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import {
 	type AppContext,
 	DURABLE_WORK_MAX_ATTEMPTS,
+	LOCAL_WORK_TARGET,
 	type ThreadExecutor,
 	acknowledgeBatch,
 	acknowledgeDurableWork,
@@ -463,7 +464,18 @@ export class RelayProcessor {
 			if (registration.consumer !== "relay" || !relayKind || relayKind.dispatch === "response")
 				continue;
 
-			const claimed = claimLocalDurableWork(this.db, this.siteId, registration.kind);
+			// A relay-consumer kind can arrive here under two targets: a peer-transferred
+			// row addressed to this host's own site id, and a self-targeted row written to
+			// the LOCAL_WORK_TARGET sentinel (the in-process loopback path — AGENTS.md
+			// "Self-targeted requests use LOCAL_WORK_TARGET and are consumed in-process").
+			// mcp_auth_handoff for a self-owned challenge is the latter; claiming only
+			// `this.siteId` would strand it `pending` forever. Try the site id first, then
+			// the sentinel, so both land in the same per-kind dispatch below.
+			const claimed =
+				claimLocalDurableWork(this.db, this.siteId, registration.kind) ??
+				(this.siteId === LOCAL_WORK_TARGET
+					? null
+					: claimLocalDurableWork(this.db, LOCAL_WORK_TARGET, registration.kind));
 			if (!claimed) continue;
 
 			// Cancel is deliberately excluded from HandledRequestKind (its abort logic
@@ -1147,7 +1159,6 @@ export class RelayProcessor {
 				`no MCP OAuth owner-exchange consumer wired on ${this.siteId}; cannot consume mcp_auth_handoff`,
 			);
 		}
-		await this.mcpAuthHandoffConsumer(payloadResult.value as Record<string, unknown>);
 		await this.mcpAuthHandoffConsumer(payloadResult.value as Record<string, unknown>);
 		return null;
 	}
