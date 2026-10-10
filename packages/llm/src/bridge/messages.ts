@@ -514,7 +514,22 @@ export function toModelMessages(
 					});
 				}
 			}
-			result.push({ role: "assistant", content: parts as never });
+			// One model response can be persisted as adjacent tool_call rows when
+			// parallel calls arrive as separate stream events. Keep that batch as one
+			// assistant message: the following tool-result run answers the whole
+			// batch. Splitting it makes enforceToolPairCompleteness synthesize results
+			// between calls and discard the real earlier results.
+			const previousSource = messages[i - 1];
+			const lastEmitted = result[result.length - 1];
+			if (
+				previousSource?.role === "tool_call" &&
+				lastEmitted?.role === "assistant" &&
+				Array.isArray(lastEmitted.content)
+			) {
+				(lastEmitted.content as unknown[]).push(...parts);
+			} else {
+				result.push({ role: "assistant", content: parts as never });
+			}
 			continue;
 		}
 

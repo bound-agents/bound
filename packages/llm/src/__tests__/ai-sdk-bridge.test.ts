@@ -56,6 +56,32 @@ describe("toModelMessages — basic role mapping", () => {
 		]);
 	});
 
+	it("keeps adjacent persisted tool calls in one parallel batch", () => {
+		const out = toModelMessages([
+			{ role: "user", content: "go" },
+			{ role: "tool_call", content: [{ type: "tool_use", id: "a", name: "first", input: {} }] },
+			{ role: "tool_call", content: [{ type: "tool_use", id: "b", name: "second", input: {} }] },
+			{ role: "tool_result", tool_use_id: "a", content: "first result" },
+			{ role: "tool_result", tool_use_id: "b", content: "second result" },
+		]);
+
+		expect(out).toHaveLength(3);
+		expect(out[1]).toMatchObject({
+			role: "assistant",
+			content: [
+				{ type: "tool-call", toolCallId: "a", toolName: "first" },
+				{ type: "tool-call", toolCallId: "b", toolName: "second" },
+			],
+		});
+		expect(out[2]).toMatchObject({
+			role: "tool",
+			content: [
+				{ type: "tool-result", toolCallId: "a", output: { type: "text", value: "first result" } },
+				{ type: "tool-result", toolCallId: "b", output: { type: "text", value: "second result" } },
+			],
+		});
+	});
+
 	it("passes string system content through", () => {
 		const out = toModelMessages([
 			{ role: "user", content: "hi" },
