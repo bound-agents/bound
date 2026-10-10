@@ -5,7 +5,17 @@
 // docs/design/specs/2026-08-31-durable-work-consolidation.md (R-DW5/6, R-DW14).
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applySchema, claimLocalDurableWork, deadLetterExpiredDurableWork } from "@bound/core";
+import {
+	LOCAL_WORK_TARGET,
+	applySchema,
+	claimLocalDurableWork,
+	deadLetterExpiredDurableWork,
+	getDurableWork,
+	insertDurableWork,
+} from "@bound/core";
+import type { Logger, TypedEventEmitter } from "@bound/shared";
+import type { MCPClient } from "../mcp-client";
+import { RelayProcessor } from "../relay-processor";
 import { routeRelayRequest, routeRelayResponse, shouldRouteRelayDurable } from "../relay-router";
 
 let db: Database;
@@ -417,5 +427,84 @@ describe("routeRelayResponse write behavior", () => {
 		chunk(1);
 		expect(chunk(0).inserted).toBe(false); // redelivered seq 0 fenced
 		expect(durableRows()).toHaveLength(2);
+	});
+});
+
+// Regression (2026-10-10): a self-owned MCP OAuth challenge writes its
+// resolver→owner handoff to the LOCAL_WORK_TARGET sentinel (handoff.ts), but the
+// durable-work consumer lane claimed only rows addressed to `this.siteId`. The
+// self-targeted mcp_auth_handoff therefore sat `pending` forever — the owner
+// exchange never ran, markResolved never fired, and the Connections badge stayed
+// "needs authorization" after a successful consent. processPendingDurableWork
+// must claim BOTH the site-id-targeted and the LOCAL_WORK_TARGET-targeted rows.
+describe("processPendingDurableWork claims self-targeted (LOCAL_WORK_TARGET) rows", () => {
+	const SITE = "owner-site";
+
+	const mockLogger = (): Logger => ({
+		info: () => {},
+		warn: () => {},
+		error: () => {},
+		debug: () => {},
+	});
+	const mockEventBus = (): TypedEventEmitter => new (require("@bound/shared").TypedEventEmitter)();
+
+	const buildProcessor = (): RelayProcessor =>
+		new RelayProcessor(db, SITE, new Map<string, MCPClient>(), null, mockLogger(), mockEventBus());
+
+	const seedLocalHandoff = (challengeId: string): string => {
+		const id = `handoff-${challengeId}`;
+		insertDurableWork(db, {
+			id,
+			target_site_id: LOCAL_WORK_TARGET,
+			kind: "mcp_auth_handoff",
+			payload: JSON.stringify({
+				challenge_id: challengeId,
+				server_name: "sentry",
+				state: "state-abc",
+				code: "auth-code",
+				code_verifier: "verifier",
+				redirect_uri: "http://localhost:3001/oauth/mcp/callback",
+			}),
+			idempotency_key: `mcp-oauth-handoff:${challengeId}:state-abc`,
+			source_site: SITE,
+			ref_id: challengeId,
+			expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+		});
+		return id;
+	};
+
+	it("dispatches a self-targeted mcp_auth_handoff to the wired consumer exactly once", async () => {
+		const rowId = seedLocalHandoff("ch-1");
+		const processor = buildProcessor();
+		let calls = 0;
+		let seenChallenge: string | undefined;
+		processor.setMcpAuthHandoffConsumer(async (payload) => {
+			calls++;
+			seenChallenge = payload.challenge_id as string;
+		});
+
+		await (
+			processor as unknown as { processPendingDurableWork: () => Promise<void> }
+		).processPendingDurableWork();
+
+		// Consumer fired exactly once (the historical double-await is also fixed).
+		expect(calls).toBe(1);
+		expect(seenChallenge).toBe("ch-1");
+		// Row was token-fenced acked, not left pending to rot.
+		expect(getDurableWork(db, rowId)?.claim_state).toBe("consumed");
+	});
+
+	it("leaves no LOCAL_WORK_TARGET handoff claimable after a processing pass", async () => {
+		seedLocalHandoff("ch-2");
+		const processor = buildProcessor();
+		processor.setMcpAuthHandoffConsumer(async () => {});
+
+		await (
+			processor as unknown as { processPendingDurableWork: () => Promise<void> }
+		).processPendingDurableWork();
+
+		// Nothing left for either target to claim — the sentinel row was drained.
+		expect(claimLocalDurableWork(db, LOCAL_WORK_TARGET, "mcp_auth_handoff")).toBeNull();
+		expect(claimLocalDurableWork(db, SITE, "mcp_auth_handoff")).toBeNull();
 	});
 });

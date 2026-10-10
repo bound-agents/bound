@@ -1,4 +1,5 @@
 <script lang="ts">
+import { LockKeyhole, ShieldAlert } from "lucide-svelte";
 import { onDestroy, onMount } from "svelte";
 import Page from "../components/Page.svelte";
 import SectionHeader from "../components/SectionHeader.svelte";
@@ -247,11 +248,11 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 								{/if}
 								{#if challengesByServer[server.name]?.status === "pending"}
 									<span class="auth-badge pending" title="This server needs OAuth authorization">
-										🔐 needs authorization
+										<LockKeyhole size={12} aria-hidden="true" /> needs authorization
 									</span>
 								{:else if challengesByServer[server.name]?.status === "failed"}
 									<span class="auth-badge failed" title="The last OAuth authorization attempt failed">
-										🔐 authorization failed
+										<ShieldAlert size={12} aria-hidden="true" /> authorization failed
 									</span>
 								{/if}
 							</span>

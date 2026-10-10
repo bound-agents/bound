@@ -1,4 +1,6 @@
 <script lang="ts">
+import { LockKeyhole } from "lucide-svelte";
+
 // The web-chat consent card for pending MCP OAuth challenges (R-MO27c).
 //
 // A pending challenge is an unmet authorization demand for an http MCP server.
@@ -84,7 +86,7 @@ $effect(() => {
 		{#each challenges as ch (ch.challengeId)}
 			<article class="challenge">
 				<header>
-					<span class="lock" aria-hidden="true">🔐</span>
+					<span class="lock" aria-hidden="true"><LockKeyhole size={14} /></span>
 					<span class="title">Authorization required</span>
 					<span class="server">{ch.serverName}</span>
 				</header>
