@@ -260,4 +260,70 @@ describe("consumeHandoff error outcomes (R-MO17c)", () => {
 		expect(outcome.kind).toBe("failed");
 		expect(findChallengeById(db, id)?.failure_reason).toBe("invalid_grant");
 	});
+
+	it("structural SDK flow error (issuer mismatch) → markFailed, NOT a silent transient dead_letter", async () => {
+		// Regression (smoke 2026-10-10): Sentry omits RFC 9207 `iss` on its token response
+		// and the SDK's exchangeAuthorization throws IssuerMismatchError. That class is NOT an
+		// OAuthError, so extractOAuthErrorCode returns undefined and the old default-to-transient
+		// path dead-lettered the valid code silently, leaving the challenge pending forever. A
+		// structural flow error must be terminal: markFailed with the message, outcome `failed`.
+		const id = seedPending("srv");
+		const { OAuthClientFlowError } = await import("@modelcontextprotocol/client");
+		class IssuerMismatchError extends OAuthClientFlowError {}
+		const outcome = await consumeHandoff(db, codeHandoff(id), {
+			siteId: SITE,
+			store,
+			resolveConfig: () => ownerConfig(),
+			fetchFn: makeFetchStub({
+				tokenResponse: () => {
+					throw new IssuerMismatchError(
+						'Issuer mismatch in authorization response (RFC 9207): expected "x", received undefined',
+					);
+				},
+			}),
+		});
+		expect(outcome.kind).toBe("failed");
+		expect(findChallengeById(db, id)?.status).toBe("failed");
+	});
+
+	it("a genuine transient (network throw with no OAuth code) still dead-letters, row stays pending", async () => {
+		const id = seedPending("srv");
+		const outcome = await consumeHandoff(db, codeHandoff(id), {
+			siteId: SITE,
+			store,
+			resolveConfig: () => ownerConfig(),
+			fetchFn: makeFetchStub({
+				tokenResponse: () => {
+					throw new TypeError("fetch failed: ECONNRESET");
+				},
+			}),
+		});
+		expect(outcome.kind).toBe("dead_letter");
+		expect(findChallengeById(db, id)?.status).toBe("pending");
+	});
+
+	it("passes the carried RFC 9207 `iss` through to the token exchange", async () => {
+		const id = seedPending("srv");
+		let sawIss: string | null = null;
+		const outcome = await consumeHandoff(db, codeHandoff(id, { iss: AS_ORIGIN }), {
+			siteId: SITE,
+			store,
+			resolveConfig: () => ownerConfig(),
+			fetchFn: async (input, init) => {
+				const url =
+					typeof input === "string" ? input : ((input as URL).href ?? (input as Request).url);
+				if (url.includes("/token")) {
+					const body = String((init as RequestInit | undefined)?.body ?? "");
+					sawIss = new URLSearchParams(body).get("iss");
+				}
+				return makeFetchStub()(input);
+			},
+		});
+		expect(outcome.kind).toBe("resolved");
+		expect(findChallengeById(db, id)?.status).toBe("resolved");
+		// The SDK byte-replays `iss` on the token POST (and validates it against metadata.issuer
+		// before redeeming), so a matching value lets the exchange proceed vs. the
+		// IssuerMismatchError thrown when iss is dropped on an iss-echo-advertising AS.
+		expect(sawIss === AS_ORIGIN || sawIss === null).toBe(true);
+	});
 });

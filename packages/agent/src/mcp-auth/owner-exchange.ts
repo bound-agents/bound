@@ -3,6 +3,7 @@ import { type McpAuthChallenge, findChallengeById, markFailed, markResolved } fr
 import type { mcpAuthHandoffPayloadSchema } from "@bound/shared";
 import {
 	type AuthorizationServerMetadata,
+	OAuthClientFlowError,
 	type OAuthClientInformationMixed,
 	assertSecureTokenEndpoint,
 	discoverAuthorizationServerMetadata,
@@ -209,6 +210,10 @@ export async function consumeHandoff(
 			metadata: asMetadata,
 			clientInformation,
 			authorizationCode: payload.code,
+			// RFC 9207 §2.4: re-validate the callback-echoed issuer the resolver carried. The
+			// SDK throws IssuerMismatchError when the AS advertises iss-echo support but no iss
+			// is supplied, so byte-replaying what the authorize leg saw is mandatory, not optional.
+			iss: payload.iss,
 			codeVerifier: payload.code_verifier,
 			redirectUri: payload.redirect_uri,
 			resource: payload.resource ? new URL(payload.resource) : undefined,
@@ -256,6 +261,17 @@ export async function consumeHandoff(
 			markFailed(db, payload.challenge_id, reason, deps.siteId);
 			return { kind: "failed", reason };
 		}
+		// A structural SDK flow error (issuer mix-up, insecure endpoint, malformed response)
+		// is NOT an OAuth error body and NOT a transport blip: it is a terminal mis-request
+		// retry cannot cure. The owner ALREADY independently validated the issuer above
+		// (R-MO20), so a response-iss failure here is a deterministic answer, not a retryable
+		// outage. Mark failed with the error message rather than silently discarding the code
+		// into a transient dead-letter (which left the challenge pending with no trace).
+		if (isTerminalExchangeThrow(e)) {
+			const reason = e instanceof Error ? e.message : String(e);
+			markFailed(db, payload.challenge_id, reason, deps.siteId);
+			return { kind: "failed", reason };
+		}
 		// Transient token-endpoint failure: leave the row pending, dead-letter the
 		// handoff row for redrive (the code is likely dead, but the row is not our
 		// to un-resolve; a fresh use raises a fresh challenge, R-MO21).
@@ -282,6 +298,21 @@ export function extractOAuthErrorCode(e: unknown): string | undefined {
 		if (msg.includes(code)) return code;
 	}
 	return undefined;
+}
+
+/**
+ * True when an exchange throw is a STRUCTURAL SDK flow error — an issuer mix-up
+ * (RFC 9207), an insecure/mismatched token endpoint, or an authorization-server
+ * mismatch — rather than an OAuth error body or a transport blip. These all
+ * subclass {@link OAuthClientFlowError}, which the SDK deliberately keeps OUTSIDE
+ * `OAuthError` so its retry path never swallows them: a mix-up is fatal to the
+ * flow, not a retryable credential problem. We treat them as terminal here so a
+ * valid code is never silently discarded into a transient dead-letter (which left
+ * the challenge pending with no trace). The owner already independently validated
+ * the issuer upstream (R-MO20), so a response-iss failure is a deterministic answer.
+ */
+function isTerminalExchangeThrow(e: unknown): boolean {
+	return e instanceof OAuthClientFlowError;
 }
 
 export type { McpAuthChallenge };

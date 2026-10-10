@@ -93,6 +93,31 @@ describe("writeHandoff (R-MO19)", () => {
 		expect(raw).not.toContain("refresh_token");
 	});
 
+	it("carries the RFC 9207 `iss` when the code outcome supplies it, omits it otherwise", () => {
+		writeHandoff(db, {
+			attempt: attempt({ state: "with-iss" }),
+			outcome: { kind: "code", code: "the-code", iss: "https://as.example.com" },
+			ownerSiteId: "site-a",
+			localSiteId: "site-a",
+		});
+		writeHandoff(db, {
+			attempt: attempt({ state: "no-iss" }),
+			outcome: { kind: "code", code: "the-code" },
+			ownerSiteId: "site-a",
+			localSiteId: "site-a",
+		});
+		const rows = db
+			.query(
+				"SELECT payload FROM durable_work WHERE kind = 'mcp_auth_handoff' ORDER BY idempotency_key",
+			)
+			.all() as { payload: string }[];
+		const payloads = rows.map((r) => JSON.parse(r.payload) as Record<string, unknown>);
+		const withIss = payloads.find((p) => p.state === "with-iss");
+		const noIss = payloads.find((p) => p.state === "no-iss");
+		expect(withIss?.iss).toBe("https://as.example.com");
+		expect(noIss?.iss).toBeUndefined();
+	});
+
 	it("error outcome carries the error code, no code/verifier", () => {
 		writeHandoff(db, {
 			attempt: attempt(),

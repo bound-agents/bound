@@ -38,7 +38,7 @@ export interface OauthMcpResolverBridge {
 	forwardOutcome(
 		attempt: ResolverAttempt,
 		outcome:
-			| { kind: "code"; code: string }
+			| { kind: "code"; code: string; iss?: string }
 			| { kind: "error"; error: string; errorDescription?: string },
 	): void;
 	/**
@@ -69,6 +69,9 @@ export function createOauthMcpRoutes(bridge: OauthMcpResolverBridge | null): Hon
 		const code = c.req.query("code");
 		const error = c.req.query("error");
 		const errorDescription = c.req.query("error_description");
+		// RFC 9207 §2.4: an AS that advertises `authorization_response_iss_parameter_supported`
+		// echoes `iss` on the redirect. Carry it to the owner so its token POST re-validates it
+		// (dropping it makes the SDK's exchange throw IssuerMismatchError on such servers).
 
 		// R-MO31: `state` is the precondition of forwarding. Missing → 400, no outcome.
 		if (!state) {
@@ -101,7 +104,7 @@ export function createOauthMcpRoutes(bridge: OauthMcpResolverBridge | null): Hon
 		// Success path: a state-matched code. Hand off to the owner for exchange
 		// (R-MO19). NEVER exchange here (R-MO17c).
 		if (code) {
-			bridge?.forwardOutcome(attempt, { kind: "code", code });
+			bridge?.forwardOutcome(attempt, { kind: "code", code, iss: c.req.query("iss") });
 			return c.text(
 				`Authorization received for "${attempt.serverName}". You can close this tab and return to your terminal.`,
 				200,
