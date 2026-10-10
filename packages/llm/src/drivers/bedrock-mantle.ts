@@ -48,7 +48,14 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { Logger } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 import { streamText } from "ai";
-import { ANTHROPIC_ENVELOPE, PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import {
+	ANTHROPIC_ENVELOPE,
+	PERMISSIVE_ENVELOPE,
+	isResponsesInputRejection,
+	summarizeRequestShape,
+	toModelMessages,
+	toToolSet,
+} from "../bridge";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
 import {
@@ -391,17 +398,35 @@ export class BedrockMantleDriver implements LLMBackend {
 				},
 			});
 
-		yield* withEmptyRetry(runAttempt, {
-			maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-			isAborted: () => params.signal?.aborted ?? false,
-			providerName: PROVIDER_NAME,
-			modelId,
-			onRetry: (attempt) =>
-				this.logger?.warn?.(
-					`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-					{ model: modelId },
-				),
-		});
+		try {
+			yield* withEmptyRetry(runAttempt, {
+				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+				isAborted: () => params.signal?.aborted ?? false,
+				providerName: PROVIDER_NAME,
+				modelId,
+				onRetry: (attempt) =>
+					this.logger?.warn?.(
+						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+						{ model: modelId },
+					),
+			});
+		} catch (err) {
+			// Responses request-body rejection (`Invalid 'input': value did not
+			// match any expected variant` and the broader invalid-`input` 400
+			// family) fires at the OpenAI wire AFTER the SDK's local validatePrompt
+			// passes — the serialized `input` item that failed is not recoverable
+			// from any persisted record. Emit a privacy-safe structural summary of
+			// the messages that produced the request so the next occurrence is
+			// diagnosable (kinds/roles/counts/output-forms only; never text, data,
+			// args, or results). Re-throw unchanged — this is a pure observation.
+			if (isResponsesInputRejection(err)) {
+				this.logger?.warn?.(`[${PROVIDER_NAME}] Responses request rejected: invalid input shape`, {
+					model: modelId,
+					requestShape: summarizeRequestShape(params.messages),
+				});
+			}
+			throw err;
+		}
 	}
 
 	capabilities(): BackendCapabilities {
