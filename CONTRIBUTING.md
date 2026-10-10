@@ -148,6 +148,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Thread `interface` tag](docs/gotchas.md#thread-interface-tag)
 - [Cross-provider `tool_use` portability (id and name)](docs/gotchas.md#cross-provider-tool_use-portability-id-and-name)
 - [`thinking`-signature portability](docs/gotchas.md#thinking-signature-portability)
+- [OpenAI Responses reserves tool names (`tool_search`, `shell`, …)](docs/gotchas.md#openai-responses-reserves-tool-names-tool_search-shell-)
 - [`boundless_bash` runs inside a filesystem sandbox by default](docs/gotchas.md#boundless_bash-runs-inside-a-filesystem-sandbox-by-default)
 - [Mantle GPT-5.x automatic prompt cache is exact-match, not prefix](docs/gotchas.md#mantle-gpt-5x-automatic-prompt-cache-is-exact-match-not-prefix)
 - [`@ai-sdk/openai` injects `reasoning.summary` on Mantle Responses turns](docs/gotchas.md#ai-sdkopenai-injects-reasoningsummary-on-mantle-responses-turns)

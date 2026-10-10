@@ -50,7 +50,7 @@ import { context } from "@opentelemetry/api";
 import { streamText } from "ai";
 import {
 	ANTHROPIC_ENVELOPE,
-	PERMISSIVE_ENVELOPE,
+	OPENAI_RESPONSES_ENVELOPE,
 	isResponsesInputRejection,
 	summarizeRequestShape,
 	toModelMessages,
@@ -331,7 +331,7 @@ export class BedrockMantleDriver implements LLMBackend {
 		const messages = toModelMessages(params.messages, {
 			cacheProvider: breakpointsSupported ? "openai" : null,
 			resolveFileRef: params.resolveFileRef,
-			targetEnvelope: PERMISSIVE_ENVELOPE,
+			targetEnvelope: OPENAI_RESPONSES_ENVELOPE,
 			// Replay native OpenAI reasoning state (store:false encrypted content)
 			// so GPT-5.x reconstructs its prior chain-of-thought across turns —
 			// tool-call-justification continuity. buildReasoningPart keeps thinking
