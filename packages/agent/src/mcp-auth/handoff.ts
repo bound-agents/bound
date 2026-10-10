@@ -24,7 +24,7 @@ import type { ResolverAttempt } from "./resolver";
 
 /** The outcome the resolver forwards: a caught code, or an authorize-leg error. */
 export type HandoffOutcome =
-	| { kind: "code"; code: string }
+	| { kind: "code"; code: string; iss?: string }
 	| { kind: "error"; error: string; errorDescription?: string };
 
 /**
@@ -76,6 +76,8 @@ export function writeHandoff(
 	if (outcome.kind === "code") {
 		payload.code = outcome.code;
 		payload.code_verifier = attempt.codeVerifier;
+		// RFC 9207 §2.4: carry the callback `iss` so the owner's exchange re-validates it.
+		if (outcome.iss) payload.iss = outcome.iss;
 	} else {
 		payload.error = outcome.error;
 		if (outcome.errorDescription) payload.error_description = outcome.errorDescription;

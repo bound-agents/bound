@@ -147,7 +147,7 @@ export function createMcpOAuthWiring(
 	const servers = oauthServers(appContext);
 	if (servers.size === 0) return null;
 
-	const { db, siteId } = appContext;
+	const { db, siteId, logger } = appContext;
 	const store = new McpTokenStore(defaultMcpAuthPath(configDir));
 	const debouncer = new RaiseDebouncer();
 
@@ -209,7 +209,27 @@ export function createMcpOAuthWiring(
 			resolveConfig: resolveOwnerConfig,
 			reconnect,
 		});
-		if (outcome.kind === "dead_letter") {
+		// Make every exchange disposition observable (no silent discard). A `dropped`
+		// or transient `dead_letter` leaves the challenge pending BY DESIGN; without this
+		// the operator sees a stuck "needs authorization" badge with nothing in the logs.
+		const challengeId = String(payload.challenge_id ?? "");
+		const server = String(payload.server_name ?? "");
+		if (outcome.kind === "resolved") {
+			logger.info("[mcp-oauth] handoff resolved", {
+				challengeId,
+				server,
+				grantedScopes: outcome.grantedScopes,
+			});
+		} else if (outcome.kind === "failed") {
+			logger.warn("[mcp-oauth] handoff failed", { challengeId, server, reason: outcome.reason });
+		} else if (outcome.kind === "dropped") {
+			logger.warn("[mcp-oauth] handoff dropped", { challengeId, server, reason: outcome.reason });
+		} else {
+			logger.error("[mcp-oauth] handoff dead-lettered", {
+				challengeId,
+				server,
+				reason: outcome.reason,
+			});
 			// A dead-letter throw surfaces to the durable-work claim so the row is
 			// not acked (R-MO21 redrive). resolved/failed/dropped are terminal acks.
 			throw new Error(`mcp_auth_handoff dead-lettered: ${outcome.reason}`);

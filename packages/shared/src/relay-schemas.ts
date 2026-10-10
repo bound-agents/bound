@@ -68,6 +68,13 @@ export const mcpAuthHandoffPayloadSchema = z.object({
 	resource: z.string().optional(),
 	/** Authorization-server issuer the resolver discovered; owner independently re-validates. */
 	issuer: z.string().min(1).optional(),
+	/**
+	 * RFC 9207 §2.4 `iss` echoed on the authorize-leg redirect, carried verbatim so the
+	 * owner's token POST re-validates it against the issuer it independently discovered. An
+	 * AS that advertises `authorization_response_iss_parameter_supported` (e.g. Sentry) sends
+	 * `iss` on the callback; dropping it makes the SDK's exchange throw IssuerMismatchError.
+	 */
+	iss: z.string().min(1).optional(),
 	/** Registration client_id used (config-declared or DCR result); NEVER a secret. */
 	client_id: z.string().min(1).optional(),
 	/** Authorize-leg error code (RFC 6749 §4.1.2.1) on the error path; owner classifies it. */
