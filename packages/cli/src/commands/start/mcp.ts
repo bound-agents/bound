@@ -312,6 +312,97 @@ export interface McpReloadResult {
 }
 
 /**
+ * Config for an in-place reconnect of one server whose OAuth challenge resolved.
+ */
+export interface McpReconnectConfig {
+	appContext: AppContext;
+	/** The shared mutable client map — read, not mutated (the server stays in it). */
+	mcpClientsMap: Map<string, MCPClient>;
+	/** The current server names set — read for remote-proxy regen. */
+	mcpServerNames: Set<string>;
+	/** Confirm gates map — read for command regen. */
+	confirmGates: Map<string, string[]>;
+	/** The sandbox instance (for bash.registerCommand). */
+	// biome-ignore lint/suspicious/noExplicitAny: sandbox type is opaque from createSandbox
+	sandbox: any;
+	/** Command context for createDefineCommands. */
+	commandContext: CommandContext;
+	/** The server whose grant just resolved. */
+	serverName: string;
+}
+
+/**
+ * Reconnect one server in place after its OAuth challenge resolved (R-MO13b + §7),
+ * then refresh the capability surface so the newly-authorized tools become visible
+ * WITHOUT a daemon restart. Reconnect alone re-establishes the client session; it
+ * does NOT re-list tools into the sandbox command registry or rewrite
+ * `hosts.mcp_capabilities` (the web UI Connections view's source), so this runs the
+ * same post-connect refresh that {@link reloadMcpServers} Phase 3+4 does:
+ *
+ * - re-run connect/initialize for the parked client
+ * - regenerate this host's MCP commands from the live client map and re-register
+ *   them in the sandbox bash dispatch (registerCommand replaces by name)
+ * - rebuild `appContext.commandRegistry` (the help system)
+ * - rewrite `hosts.mcp_capabilities` / `mcp_tools` via updateHostMCPInfo
+ *
+ * Idempotent: resolution for an already-connected server re-lists the same tools
+ * and rewrites the same rows (a harmless no-op in effect). A reconnect FAILURE does
+ * not un-resolve the grant — the client stays in the map, parked and reconnectable,
+ * so the next use retries (R-MO13b). Logs one INFO on success (server + tool count)
+ * and one WARN with reason on failure.
+ */
+export async function reconnectResolvedMcpServer(config: McpReconnectConfig): Promise<void> {
+	const { appContext, mcpClientsMap, mcpServerNames, confirmGates, sandbox, commandContext } =
+		config;
+	const { serverName } = config;
+	const logger = appContext.logger;
+	const existing = mcpClientsMap.get(serverName);
+	if (!existing) return;
+	try {
+		try {
+			await existing.disconnect();
+		} catch {
+			// Best-effort teardown before reconnect.
+		}
+		await existing.connect();
+
+		// Regenerate commands from the full client map and re-register in bash.
+		const { commands: mcpCommands } = await generateMCPCommands(mcpClientsMap, confirmGates);
+		if (sandbox?.bash) {
+			const registeredCommands = createDefineCommands(mcpCommands, commandContext);
+			for (const cmd of registeredCommands) {
+				sandbox.bash.registerCommand(cmd);
+			}
+		}
+		const { commands: remoteMcpCommands } = generateRemoteMCPProxyCommands(
+			appContext.db,
+			appContext.siteId,
+			mcpServerNames,
+		);
+		const allDefinitions = [...mcpCommands, ...remoteMcpCommands];
+		appContext.commandRegistry = allDefinitions.map((d) => ({
+			name: d.name,
+			description: d.description,
+		}));
+
+		// Rewrite the host capability inventory so the web UI Connections view and the
+		// MCP Apps list see the tools without a restart.
+		await updateHostMCPInfo(appContext.db, appContext.siteId, mcpClientsMap, logger);
+
+		const toolCount = existing.isConnected() ? (await existing.listTools()).length : 0;
+		logger.info("[mcp-oauth] reconnected server after resolved grant", {
+			server: serverName,
+			toolCount,
+		});
+	} catch (error) {
+		logger.warn("[mcp-oauth] reconnect after resolved grant failed", {
+			server: serverName,
+			error: formatError(error),
+		});
+	}
+}
+
+/**
  * Hot-reload MCP servers after a config change.
  *
  * Diffs old vs new config, then:

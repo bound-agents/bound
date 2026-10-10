@@ -20,7 +20,7 @@ import {
 	wireBackendReadiness,
 } from "./inference.js";
 import { createMcpOAuthWiring } from "./mcp-oauth-wiring.js";
-import { initMcp, reloadMcpServers } from "./mcp.js";
+import { initMcp, reconnectResolvedMcpServer, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
 import { initScheduler, setupGracefulShutdown } from "./scheduler.js";
@@ -56,18 +56,13 @@ export async function runStart(args: StartArgs): Promise<void> {
 			? (server) => ({ ...server, authProvider: mcpOAuth.providerFor(server) ?? undefined })
 			: undefined,
 	);
-	// A resolved grant re-runs connect for the one server so the next call rides
-	// an authenticated session; a reconnect failure does not un-resolve the grant.
-	reloadMcpForReconnect = async (serverName: string): Promise<void> => {
-		const existing = mcpClientsMap.get(serverName);
-		if (!existing) return;
-		try {
-			await existing.disconnect();
-		} catch {
-			// Best-effort teardown before reconnect.
-		}
-		await existing.connect();
-	};
+	// A resolved grant re-runs connect for the one server so the next call rides an
+	// authenticated session, then refreshes the capability surface in place so the
+	// web UI Connections view, the sandbox MCP commands, and hosts.mcp_capabilities
+	// pick up the server's tools without a daemon restart (R-MO13b + §7). Defined
+	// after Phase 3 so `sandbox` + `commandContext` are in scope; the callback is
+	// late-bound through the mutable `let` and only fires at resolution time (the
+	// relay-processor wires the handoff consumer in Phase 5, after this is set).
 
 	// Phase 3: Sandbox, command registry, VFS hydration
 	const { sandbox, clusterFsObj, commandContext } = await initSandbox(
@@ -76,6 +71,22 @@ export async function runStart(args: StartArgs): Promise<void> {
 		mcpCommands,
 		mcpServerNames,
 	);
+	reloadMcpForReconnect = (serverName: string): Promise<void> =>
+		reconnectResolvedMcpServer({
+			appContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates,
+			sandbox,
+			commandContext: commandContext ?? {
+				db: appContext.db,
+				siteId: appContext.siteId,
+				eventBus: appContext.eventBus,
+				logger: appContext.logger,
+				mcpClients: mcpClientsMap,
+			},
+			serverName,
+		});
 
 	// Phase 4: Model router and inference setup
 	const { modelRouter } = await initInference(appContext, commandContext);

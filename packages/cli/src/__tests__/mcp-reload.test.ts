@@ -8,6 +8,7 @@ import { TypedEventEmitter } from "@bound/shared";
 import {
 	connectConfiguredMcpServers,
 	diffMcpConfigs,
+	reconnectResolvedMcpServer,
 	reloadMcpServers,
 } from "../commands/start/mcp";
 
@@ -514,6 +515,139 @@ describe("reloadMcpServers", () => {
 		});
 
 		expect(result.failed).toContain("broken");
+		cleanup();
+	});
+});
+
+describe("reconnectResolvedMcpServer (R-MO13b + §7 smoke 2026-10-10)", () => {
+	// A resolved OAuth grant must reconnect the parked client IN PLACE and refresh
+	// the capability surface — re-list tools, re-register sandbox commands, and
+	// rewrite hosts.mcp_capabilities — so the web UI Connections view and the
+	// sandbox see the server's tools WITHOUT a daemon restart. Reconnect-only (the
+	// pre-fix behavior) re-established the session but left the inventory stale.
+	const commandCtx = (
+		appContext: { db: unknown; siteId: string; eventBus: unknown; logger: unknown },
+		map: Map<string, MCPClient>,
+	) => ({
+		db: appContext.db,
+		siteId: appContext.siteId,
+		eventBus: appContext.eventBus,
+		logger: appContext.logger,
+		mcpClients: map,
+	});
+
+	it("reconnects, re-lists tools, and updates the host capability inventory", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		let connectCalls = 0;
+		const registeredCommandNames: string[] = [];
+		const sandbox = {
+			bash: {
+				registerCommand: (cmd: { name: string }) => {
+					registeredCommandNames.push(cmd.name);
+				},
+			},
+		};
+		const client = {
+			...makeMockClient({ name: "sentry", transport: "http", url: "https://mcp.sentry.dev/mcp" }, [
+				{ name: "find_issues" } as Tool,
+				{ name: "get_issue" } as Tool,
+			]),
+			isConnected: () => true,
+			getServerDescription: () => "Sentry MCP",
+			getServerInstructions: () => undefined,
+			getServerInfo: () => ({ name: "sentry", version: "1.0.0" }),
+			getServerCapabilities: () => ({ tools: {} }),
+			connect: async () => {
+				connectCalls++;
+			},
+		} as unknown as MCPClient;
+
+		const mcpClientsMap = new Map<string, MCPClient>([["sentry", client]]);
+		const mcpServerNames = new Set(["sentry"]);
+		const confirmGates = new Map<string, string[]>();
+
+		await reconnectResolvedMcpServer({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates,
+			sandbox,
+			commandContext: commandCtx(appContext, mcpClientsMap),
+			serverName: "sentry",
+		});
+
+		// Reconnect ran, and the sandbox got a command re-registered for the server.
+		expect(connectCalls).toBe(1);
+		expect(registeredCommandNames).toContain("sentry");
+
+		// hosts.mcp_capabilities now carries the server's tools — the web UI source.
+		const row = appContext.db
+			.query("SELECT mcp_tools, mcp_capabilities FROM hosts WHERE site_id = ?")
+			.get(appContext.siteId) as { mcp_tools: string | null; mcp_capabilities: string | null };
+		expect(row.mcp_tools ?? "").toContain("sentry");
+		const caps = JSON.parse(row.mcp_capabilities ?? "{}");
+		expect(caps.sentry?.tools?.map((t: { name: string }) => t.name).sort()).toEqual([
+			"find_issues",
+			"get_issue",
+		]);
+		cleanup();
+	});
+
+	it("is a no-op for a server not in the client map (idempotent)", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		const mcpClientsMap = new Map<string, MCPClient>();
+		const mcpServerNames = new Set<string>();
+		const confirmGates = new Map<string, string[]>();
+
+		// No throw, no host row write for an unknown server.
+		await reconnectResolvedMcpServer({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates,
+			sandbox: null,
+			commandContext: commandCtx(appContext, mcpClientsMap),
+			serverName: "never-configured",
+		});
+
+		const row = appContext.db
+			.query("SELECT mcp_tools FROM hosts WHERE site_id = ?")
+			.get(appContext.siteId) as { mcp_tools: string | null };
+		expect(row.mcp_tools ?? "").not.toContain("never-configured");
+		cleanup();
+	});
+
+	it("leaves the client parked (does not throw) when reconnect fails", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		const client = {
+			...makeMockClient(
+				{ name: "sentry", transport: "http", url: "https://mcp.sentry.dev/mcp" },
+				[],
+				false,
+			),
+			isConnected: () => false,
+			connect: async () => {
+				throw new Error("transport refused");
+			},
+		} as unknown as MCPClient;
+
+		const mcpClientsMap = new Map<string, MCPClient>([["sentry", client]]);
+		const mcpServerNames = new Set(["sentry"]);
+		const confirmGates = new Map<string, string[]>();
+
+		// A reconnect failure does not throw and does not un-resolve the grant: the
+		// client stays in the map, parked and reconnectable (R-MO13b).
+		await reconnectResolvedMcpServer({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates,
+			sandbox: null,
+			commandContext: commandCtx(appContext, mcpClientsMap),
+			serverName: "sentry",
+		});
+
+		expect(mcpClientsMap.get("sentry")).toBe(client);
 		cleanup();
 	});
 });
