@@ -142,3 +142,52 @@ describe("POST /api/mcp-challenges/:id/claim — live authorize flow (R-MO27c)",
 		expect(res.status).toBe(400);
 	});
 });
+
+describe("GET /api/mcp-challenges/by-server — per-server state (R-MO27c)", () => {
+	function markFailed(challengeId: string, reason = "access_denied"): void {
+		db.run("UPDATE mcp_auth_challenges SET status = 'failed', failure_reason = ? WHERE id = ?", [
+			reason,
+			challengeId,
+		]);
+	}
+
+	it("returns pending and failed challenges keyed by server name", async () => {
+		seedPending("linear", "read");
+		const failedId = seedPending("github", "repo");
+		markFailed(failedId);
+		const app = createMcpChallengesRoutes(db, "localhost", new FakeBridge(true));
+		const res = await app.request("/by-server");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			servers: Record<
+				string,
+				{ challengeId: string; serverName: string; status: string; failureReason: string | null }
+			>;
+			loopback: boolean;
+			canResolve: boolean;
+		};
+		expect(body.servers.linear).toMatchObject({ serverName: "linear", status: "pending" });
+		expect(body.servers.github).toMatchObject({
+			serverName: "github",
+			status: "failed",
+			failureReason: "access_denied",
+		});
+		expect(body.loopback).toBe(true);
+		expect(body.canResolve).toBe(true);
+	});
+
+	it("omits resolved challenges and reports non-loopback disposition", async () => {
+		const resolvedId = seedPending("notion");
+		db.run("UPDATE mcp_auth_challenges SET status = 'resolved' WHERE id = ?", [resolvedId]);
+		const app = createMcpChallengesRoutes(db, "0.0.0.0", new FakeBridge(true));
+		const res = await app.request("/by-server");
+		const body = (await res.json()) as {
+			servers: Record<string, unknown>;
+			loopback: boolean;
+			canResolve: boolean;
+		};
+		expect(body.servers.notion).toBeUndefined();
+		expect(body.loopback).toBe(false);
+		expect(body.canResolve).toBe(false);
+	});
+});

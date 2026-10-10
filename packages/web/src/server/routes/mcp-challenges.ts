@@ -16,7 +16,7 @@
 // authorize affordance and instead directs the operator to `bound login
 // --challenge <id>` from a local session.
 import type { Database } from "bun:sqlite";
-import { findPendingChallenges } from "@bound/core";
+import { findActionableChallenges, findPendingChallenges } from "@bound/core";
 import { Hono } from "hono";
 import type { OauthMcpResolverBridge } from "./oauth-mcp";
 
@@ -80,6 +80,39 @@ export function createMcpChallengesRoutes(
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json({ error: "Failed to list pending challenges", details: message }, 500);
+		}
+	});
+
+	// GET /by-server — per-server authorization state for the Connections MCP-server
+	// rows (R-MO27c). Unlike `GET /` (pending only, for the thread-top consent card),
+	// this carries BOTH pending and failed challenges keyed by server name: a pending
+	// row is an actionable demand, a failed one shows the last failure. The row
+	// renders a badge + affordance (loopback: an Authorize button reusing the claim
+	// path; non-loopback: the `bound login --challenge <id>` instruction).
+	app.get("/by-server", (c) => {
+		try {
+			const byServer: Record<string, PendingChallengeView & { status: string }> = {};
+			for (const r of findActionableChallenges(db)) {
+				// One live row per (owning site, server name); the server row shows a
+				// single state, preferring a pending demand over a stale failure.
+				const existing = byServer[r.server_name];
+				if (existing && existing.status === "pending" && r.status !== "pending") continue;
+				byServer[r.server_name] = {
+					challengeId: r.id,
+					serverName: r.server_name,
+					scopeDemand: r.scope_demand,
+					failureReason: r.failure_reason,
+					status: r.status,
+				};
+			}
+			return c.json({
+				servers: byServer,
+				loopback,
+				canResolve: loopback && bridge !== null,
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to list per-server challenges", details: message }, 500);
 		}
 	});
 
