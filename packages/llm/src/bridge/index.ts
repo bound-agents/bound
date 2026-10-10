@@ -31,3 +31,9 @@ export {
 export { type MapChunksOptions, mapChunks } from "./stream";
 export { toToolSet } from "./tools";
 export { mapError } from "./errors";
+export {
+	type MessageShapeSummary,
+	type RequestShapeSummary,
+	isResponsesInputRejection,
+	summarizeRequestShape,
+} from "./request-diagnostics";
