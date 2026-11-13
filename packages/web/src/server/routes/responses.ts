@@ -214,11 +214,28 @@ export function createResponsesRoutes(
 			);
 		};
 
-		const stream = withTransientRetry(createStream, {
-			maxRetries: RESPONSES_MAX_TRANSIENT_RETRIES,
-			signal: c.req.raw.signal,
+		// Log every terminal failure with request-size context. Without this the
+		// only trace of a rejected request was the client's error text: a
+		// "prompt is too long" left nothing in bound.log to compare the provider's
+		// token count against what the caller actually sent.
+		const stream = withFailureLog(
+			withTransientRetry(createStream, {
+				maxRetries: RESPONSES_MAX_TRANSIENT_RETRIES,
+				signal: c.req.raw.signal,
+				log,
+			}),
 			log,
-		});
+			{
+				model: modelId,
+				kind: resolution.kind,
+				stream: body.stream === true,
+				inputItems: Array.isArray(body.input) ? body.input.length : 1,
+				messages: messages.length,
+				inputChars: JSON.stringify(body.input ?? "").length,
+				instructionsChars: system?.length ?? 0,
+				tools: tools?.length ?? 0,
+			},
+		);
 
 		if (body.stream) {
 			return streamSSE(c, async (sse) => {
@@ -270,8 +287,10 @@ interface ResponsesInputItem {
 	call_id?: string;
 	name?: string;
 	arguments?: string;
-	// function_call_output items: { type: "function_call_output", call_id, output }
-	output?: string;
+	// function_call_output items: { type: "function_call_output", call_id, output }.
+	// `output` is a string OR an array of input_text / input_image / input_file
+	// parts (screenshots, file reads) — the same part vocabulary as message content.
+	output?: string | ResponsesContentPart[];
 	// reasoning items: { type: "reasoning", id, summary: [{ type: "summary_text",
 	// text }], encrypted_content? } — summary text + provider-encrypted state.
 	summary?: Array<{ type?: string; text?: string }>;
@@ -389,10 +408,16 @@ export function inputToMessages(input: ResponsesInput | undefined): LLMMessage[]
 		}
 		if (itemType === "function_call_output") {
 			if (!item.call_id) continue;
+			// Parts arrays MUST go through the same part translation as message
+			// content. Passed through raw, the Responses part objects
+			// (`input_image` etc.) aren't ContentBlocks, so the bridge's
+			// tool_result builder JSON-stringifies them — a base64 screenshot then
+			// reaches the provider as text, inflating a ~1.5K-token image into
+			// hundreds of thousands of tokens ("prompt is too long").
 			messages.push({
 				role: "tool_result",
 				tool_use_id: item.call_id,
-				content: item.output ?? "",
+				content: partsToContent(item.output),
 			});
 			continue;
 		}
@@ -447,7 +472,9 @@ function mapInputRole(role: ResponsesInputItem["role"]): LLMMessage["role"] {
  * back to a single string so the common (text-only) path stays a plain string
  * message — the shape the bridge and every downstream test already expect.
  */
-function partsToContent(content: ResponsesInputItem["content"]): string | ContentBlock[] {
+function partsToContent(
+	content: string | ResponsesContentPart[] | undefined,
+): string | ContentBlock[] {
 	if (content === undefined) return "";
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
@@ -1262,6 +1289,30 @@ async function* withTransientRetry(
 			});
 			attempt++;
 		}
+	}
+}
+
+/**
+ * Pass chunks through unchanged; on a terminal error, log it with the
+ * request-size context before re-throwing. The context carries sizes and
+ * counts only, never request content.
+ */
+async function* withFailureLog(
+	stream: AsyncIterable<StreamChunk>,
+	log: Logger,
+	context: Record<string, unknown>,
+): AsyncIterable<StreamChunk> {
+	try {
+		yield* stream;
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		log.error("RESPONSES: request failed", {
+			...context,
+			errorType: classifyErrorType(message),
+			statusCode: err instanceof LLMError ? err.statusCode : undefined,
+			error: message,
+		});
+		throw err;
 	}
 }
 

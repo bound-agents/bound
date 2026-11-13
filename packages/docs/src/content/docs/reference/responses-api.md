@@ -60,7 +60,7 @@ Tool calls, tool results, and reasoning are standalone item types without `role`
 |-----------|--------|---------|
 | Message | `role`, `content` | A conversation message with the supplied role |
 | `function_call` | `type`, `call_id`, `name`, `arguments` | A function the model asks the caller to run |
-| `function_call_output` | `type`, `call_id`, `output` | The caller-provided result for the matching function call |
+| `function_call_output` | `type`, `call_id`, `output` | The caller-provided result for the matching function call. `output` is a string or a parts array; parts use the same handling as message content below, so an `input_image` screenshot reaches the model as an image rather than as text. |
 | `reasoning` | `type`, `summary`, `encrypted_content` | A reasoning item from an earlier response, replayed as part of the conversation. The endpoint attaches it to the assistant turn that follows it. |
 
 Replay `reasoning` items exactly as an earlier response returned them. For models that return

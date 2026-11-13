@@ -115,11 +115,72 @@ describe("inputToMessages — function_call / function_call_output translation",
 		expect(messages).toHaveLength(1);
 		expect(messages[0].tool_use_id).toBe("fc_1");
 	});
-
 	it("handles function_call_output with missing output as empty string", () => {
 		const input = [{ type: "function_call_output", call_id: "fc_1" }];
 		const messages = inputToMessages(input);
 		expect(messages[0].content).toBe("");
+	});
+
+	// The Responses spec allows `output` to be an array of input_text /
+	// input_image / input_file parts. Passing that array through raw made the
+	// bridge JSON-stringify every unrecognized part, so a base64 screenshot
+	// reached the provider as hundreds of thousands of characters of TEXT
+	// ("prompt is too long" at a fraction of the real context size).
+	it("collapses an all-text function_call_output parts array to a string", () => {
+		const input = [
+			{
+				type: "function_call_output",
+				call_id: "fc_1",
+				output: [
+					{ type: "input_text", text: "line one\n" },
+					{ type: "input_text", text: "line two" },
+				],
+			},
+		] as never;
+		const messages = inputToMessages(input);
+		expect(messages[0].content).toBe("line one\nline two");
+	});
+
+	it("maps input_image parts in function_call_output to image blocks, not raw parts", () => {
+		const png = `iVBORw0KGgo${"A".repeat(1000)}`;
+		const input = [
+			{
+				type: "function_call_output",
+				call_id: "fc_1",
+				output: [
+					{ type: "input_text", text: "captured" },
+					{ type: "input_image", image_url: `data:image/png;base64,${png}` },
+				],
+			},
+		] as never;
+		const messages = inputToMessages(input);
+		const blocks = messages[0].content as Array<Record<string, unknown>>;
+		expect(Array.isArray(blocks)).toBe(true);
+		expect(blocks).toEqual([
+			{ type: "text", text: "captured" },
+			{ type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+		]);
+	});
+
+	it("never forwards raw Responses part types inside a tool_result", () => {
+		const input = [
+			{
+				type: "function_call_output",
+				call_id: "fc_1",
+				output: [
+					{
+						type: "input_file",
+						file_data: "data:application/pdf;base64,JVBERi0=",
+						filename: "a.pdf",
+					},
+					{ type: "input_image", image_url: "https://example.com/x.png" },
+				],
+			},
+		] as never;
+		const blocks = inputToMessages(input)[0].content as Array<{ type: string }>;
+		for (const b of blocks) {
+			expect(["text", "image", "document"]).toContain(b.type);
+		}
 	});
 
 	it("still handles plain message items (string input)", () => {
