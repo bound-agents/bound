@@ -31,12 +31,38 @@ function getArgValue(args: string[], flag: string): string | undefined {
 	return idx !== -1 ? args[idx + 1] : undefined;
 }
 
-async function main() {
-	const args = process.argv.slice(2);
+/**
+ * Output sinks, injectable for in-process tests. Production wires these to the
+ * real `console` via {@link defaultCliIO}. A test passes capturing writers and
+ * runs {@link main} with no spawned child, so Bun's coverage instrumentation
+ * actually sees the parsing and dispatch.
+ */
+export interface CliIO {
+	log: (message: string) => void;
+	error: (message: string) => void;
+}
+
+/** Production IO: the real console. */
+export function defaultCliIO(): CliIO {
+	return {
+		log: (m) => console.log(m),
+		error: (m) => console.error(m),
+	};
+}
+
+/**
+ * Real `boundctl` entry point. Parses argv (WITHOUT the leading `node`/`bun` +
+ * script path — pass `process.argv.slice(2)`), dispatches to the matching
+ * command, and RETURNS an exit code instead of calling `process.exit` inside
+ * the tested path. The thin {@link boundctl.ts} launcher maps the return to
+ * `process.exit`. Behavior (output text, exit codes, DB handles closed) is
+ * identical to the prior inline implementation.
+ */
+export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<number> {
 	const command = args[0];
 
 	if (!command || command === "--help" || command === "-h") {
-		console.log(`
+		io.log(`
 boundctl - Bound orchestrator management CLI
 
 USAGE:
@@ -111,14 +137,14 @@ EXAMPLES:
   boundctl drain new-hub --timeout 180
   boundctl db vacuum
 `);
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "set-hub") {
 		const hostName = args[1];
 		if (!hostName) {
-			console.error("Error: host-name is required");
-			process.exit(1);
+			io.error("Error: host-name is required");
+			return 1;
 		}
 
 		const timeoutStr = getArgValue(args, "--timeout");
@@ -126,8 +152,8 @@ EXAMPLES:
 		if (timeoutStr) {
 			const parsed = Number.parseInt(timeoutStr, 10);
 			if (Number.isNaN(parsed) || parsed <= 0) {
-				console.error("Error: --timeout must be a positive integer");
-				process.exit(1);
+				io.error("Error: --timeout must be a positive integer");
+				return 1;
 			}
 			timeout = parsed;
 		}
@@ -142,10 +168,10 @@ EXAMPLES:
 		try {
 			await runSetHub(setHubArgs);
 		} catch (error) {
-			console.error("set-hub failed:", error);
-			process.exit(1);
+			io.error(`set-hub failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "set-persona") {
@@ -157,10 +183,10 @@ EXAMPLES:
 		try {
 			await runSetPersona(setPersonaArgs);
 		} catch (error) {
-			console.error("set-persona failed:", error);
-			process.exit(1);
+			io.error(`set-persona failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "stop") {
@@ -171,10 +197,10 @@ EXAMPLES:
 		try {
 			await runStop(stopArgs);
 		} catch (error) {
-			console.error("stop failed:", error);
-			process.exit(1);
+			io.error(`stop failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "resume") {
@@ -185,17 +211,17 @@ EXAMPLES:
 		try {
 			await runResume(resumeArgs);
 		} catch (error) {
-			console.error("resume failed:", error);
-			process.exit(1);
+			io.error(`resume failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "restore") {
 		const beforeIndex = args.indexOf("--before");
 		if (beforeIndex === -1) {
-			console.error("Error: --before <timestamp> is required");
-			process.exit(1);
+			io.error("Error: --before <timestamp> is required");
+			return 1;
 		}
 
 		const restoreArgs: {
@@ -219,23 +245,23 @@ EXAMPLES:
 		try {
 			await runRestore(restoreArgs);
 		} catch (error) {
-			console.error("restore failed:", error);
-			process.exit(1);
+			io.error(`restore failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "config") {
 		const subCommand = args[1];
 		if (subCommand !== "reload") {
-			console.error("Error: unknown config subcommand. Use 'config reload <target>'");
-			process.exit(1);
+			io.error("Error: unknown config subcommand. Use 'config reload <target>'");
+			return 1;
 		}
 
 		const target = args[2];
 		if (!target) {
-			console.error("Error: target is required. Example: boundctl config reload mcp");
-			process.exit(1);
+			io.error("Error: target is required. Example: boundctl config reload mcp");
+			return 1;
 		}
 
 		const configReloadArgs = {
@@ -246,10 +272,10 @@ EXAMPLES:
 		try {
 			await runConfigReload(configReloadArgs);
 		} catch (error) {
-			console.error("config reload failed:", error);
-			process.exit(1);
+			io.error(`config reload failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "sync-status") {
@@ -260,10 +286,10 @@ EXAMPLES:
 		try {
 			await runSyncStatus(syncStatusArgs);
 		} catch (error) {
-			console.error("sync-status failed:", error);
-			process.exit(1);
+			io.error(`sync-status failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "consistency-check") {
@@ -276,17 +302,19 @@ EXAMPLES:
 		try {
 			await runConsistencyCheck(consistencyArgs);
 		} catch (error) {
-			console.error("consistency-check failed:", error);
-			process.exit(1);
+			io.error(
+				`consistency-check failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "drain") {
 		const newHub = args[1];
 		if (!newHub) {
-			console.error("Error: new-hub is required");
-			process.exit(1);
+			io.error("Error: new-hub is required");
+			return 1;
 		}
 
 		const timeoutStr = getArgValue(args, "--timeout");
@@ -294,8 +322,8 @@ EXAMPLES:
 		if (timeoutStr) {
 			const parsed = Number.parseInt(timeoutStr, 10);
 			if (Number.isNaN(parsed) || parsed <= 0) {
-				console.error("Error: --timeout must be a positive integer");
-				process.exit(1);
+				io.error("Error: --timeout must be a positive integer");
+				return 1;
 			}
 			timeout = parsed;
 		}
@@ -309,10 +337,10 @@ EXAMPLES:
 		try {
 			await runDrain(drainArgs);
 		} catch (error) {
-			console.error("drain failed:", error);
-			process.exit(1);
+			io.error(`drain failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "skill") {
@@ -325,59 +353,59 @@ EXAMPLES:
 				const verbose = args.includes("--verbose");
 				skillList(db, { verbose });
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "view") {
 				const name = args[2];
 				if (!name) {
-					console.error("Error: skill name is required. Usage: boundctl skill view <name>");
+					io.error("Error: skill name is required. Usage: boundctl skill view <name>");
 					db.close();
-					process.exit(1);
+					return 1;
 				}
 				skillView(db, name);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "delete") {
 				const name = args[2];
 				if (!name) {
-					console.error(
+					io.error(
 						'Error: skill name is required. Usage: boundctl skill delete <name> [--reason "..."]',
 					);
 					db.close();
-					process.exit(1);
+					return 1;
 				}
 				const reason = getArgValue(args, "--reason");
 				const siteId = getSiteId(db);
 				skillDelete(db, siteId, name, reason);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "import") {
 				const localPath = args[2];
 				if (!localPath) {
-					console.error("Error: path is required. Usage: boundctl skill import <path>");
+					io.error("Error: path is required. Usage: boundctl skill import <path>");
 					db.close();
-					process.exit(1);
+					return 1;
 				}
 				const siteId = getSiteId(db);
 				await skillImport(db, siteId, localPath);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			// Unknown subcommand
-			console.error(`Error: unknown skill subcommand '${subcommand}'.`);
-			console.error("Available: list, view, delete, import");
+			io.error(`Error: unknown skill subcommand '${subcommand}'.`);
+			io.error("Available: list, view, delete, import");
 			db.close();
-			process.exit(1);
+			return 1;
 		} catch (error) {
-			console.error("skill command failed:", error);
+			io.error(`skill command failed: ${error instanceof Error ? error.message : String(error)}`);
 			db.close();
-			process.exit(1);
+			return 1;
 		}
 	}
 
@@ -391,66 +419,66 @@ EXAMPLES:
 			if (subcommand === "create") {
 				webhookCreate(db, siteId, args.slice(2));
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "list") {
 				webhookList(db);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "delete") {
 				const name = args[2];
 				if (!name) {
-					console.error("Usage: boundctl webhook delete <name>");
+					io.error("Usage: boundctl webhook delete <name>");
 					db.close();
-					process.exit(1);
+					return 1;
 				}
 				webhookDelete(db, siteId, name);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "update") {
 				webhookUpdate(db, siteId, args.slice(2));
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "rotate-secret") {
 				const name = args[2];
 				if (!name) {
-					console.error("Usage: boundctl webhook rotate-secret <name>");
+					io.error("Usage: boundctl webhook rotate-secret <name>");
 					db.close();
-					process.exit(1);
+					return 1;
 				}
 				webhookRotateSecret(db, siteId, name);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "allow-unauthenticated") {
 				webhookSetUnauthenticated(db, siteId, true);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
 			if (subcommand === "disallow-unauthenticated") {
 				webhookSetUnauthenticated(db, siteId, false);
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
-			console.error(
+			io.error(
 				"Usage: boundctl webhook {create|list|delete|update|rotate-secret|allow-unauthenticated|disallow-unauthenticated}",
 			);
 			db.close();
-			process.exit(1);
+			return 1;
 		} catch (error) {
-			console.error("webhook command failed:", error);
+			io.error(`webhook command failed: ${error instanceof Error ? error.message : String(error)}`);
 			db.close();
-			process.exit(1);
+			return 1;
 		}
 	}
 
@@ -464,18 +492,18 @@ EXAMPLES:
 			if (subcommand === "update") {
 				taskUpdate(db, siteId, args.slice(2));
 				db.close();
-				process.exit(0);
+				return 0;
 			}
 
-			console.error(
+			io.error(
 				"Usage: boundctl task update <id> [--no-history|--history] [--model <id>] [--alert-threshold <n>]",
 			);
 			db.close();
-			process.exit(1);
+			return 1;
 		} catch (error) {
-			console.error("task command failed:", error);
+			io.error(`task command failed: ${error instanceof Error ? error.message : String(error)}`);
 			db.close();
-			process.exit(1);
+			return 1;
 		}
 	}
 
@@ -486,7 +514,7 @@ EXAMPLES:
 		if (subCommand === "vacuum") {
 			const db = openBoundDB(dataDir);
 			try {
-				console.log("Running VACUUM...");
+				io.log("Running VACUUM...");
 				// Raw read justification: PRAGMA page_count reads SQLite file metadata.
 				const before = db.query("PRAGMA page_count").get() as { page_count: number };
 				// Raw read justification: PRAGMA freelist_count reads SQLite file metadata.
@@ -503,32 +531,27 @@ EXAMPLES:
 				const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size;
 				const reclaimedPages = before.page_count - after.page_count;
 				const reclaimedBytes = reclaimedPages * pageSize;
-				console.log("VACUUM complete.");
-				console.log(`  Pages before: ${before.page_count} (${freeListBefore.freelist_count} free)`);
-				console.log(`  Pages after:  ${after.page_count}`);
-				console.log(
+				io.log("VACUUM complete.");
+				io.log(`  Pages before: ${before.page_count} (${freeListBefore.freelist_count} free)`);
+				io.log(`  Pages after:  ${after.page_count}`);
+				io.log(
 					`  Reclaimed:    ${reclaimedPages} pages (${(reclaimedBytes / 1024 / 1024).toFixed(1)}MB)`,
 				);
 			} catch (error) {
-				console.error("VACUUM failed:", error);
+				io.error(`VACUUM failed: ${error instanceof Error ? error.message : String(error)}`);
 				db.close();
-				process.exit(1);
+				return 1;
 			}
 			db.close();
-			process.exit(0);
+			return 0;
 		}
 
-		console.error(`Unknown db subcommand: ${subCommand}`);
-		console.error("Available: vacuum");
-		process.exit(1);
+		io.error(`Unknown db subcommand: ${subCommand}`);
+		io.error("Available: vacuum");
+		return 1;
 	}
 
-	console.error(`Unknown command: ${command}`);
-	console.error('Run "boundctl --help" for usage information');
-	process.exit(1);
+	io.error(`Unknown command: ${command}`);
+	io.error('Run "boundctl --help" for usage information');
+	return 1;
 }
-
-main().catch((error) => {
-	console.error("Fatal error:", error);
-	process.exit(1);
-});

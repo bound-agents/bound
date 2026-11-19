@@ -12,12 +12,38 @@
 
 import { runInit } from "./commands/init.js";
 
-async function main() {
-	const args = process.argv.slice(2);
+/**
+ * Output sinks + environment, injectable for in-process tests. Production wires
+ * these to the real `console` and `process.env` via {@link defaultCliIO}. A
+ * test passes capturing writers and runs {@link main} with no spawned child, so
+ * Bun's coverage instrumentation actually sees the parsing and dispatch.
+ */
+export interface CliIO {
+	log: (message: string) => void;
+	error: (message: string) => void;
+}
+
+/** Production IO: the real console. */
+export function defaultCliIO(): CliIO {
+	return {
+		log: (m) => console.log(m),
+		error: (m) => console.error(m),
+	};
+}
+
+/**
+ * Real `bound` entry point. Parses argv (WITHOUT the leading `node`/`bun` +
+ * script path — pass `process.argv.slice(2)`), dispatches to the matching
+ * command, and RETURNS an exit code instead of calling `process.exit` inside
+ * the tested path. The thin {@link bound.ts} launcher maps the return to
+ * `process.exit`. Behavior (output text, exit codes) is identical to the prior
+ * inline implementation.
+ */
+export async function main(args: string[], io: CliIO = defaultCliIO()): Promise<number> {
 	const command = args[0];
 
 	if (!command || command === "--help" || command === "-h") {
-		console.log(`
+		io.log(`
 bound - Bound agent system CLI
 
 USAGE:
@@ -55,7 +81,7 @@ EXAMPLES:
   bound init --opencode-go
   bound init --hub --name hub-node  # Initialize relay hub
 `);
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "init") {
@@ -82,10 +108,10 @@ EXAMPLES:
 		try {
 			await runInit(initArgs);
 		} catch (error) {
-			console.error("Init failed:", error);
-			process.exit(1);
+			io.error(`Init failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "login") {
@@ -101,10 +127,10 @@ EXAMPLES:
 				configDir: loginConfigIdx !== -1 ? args[loginConfigIdx + 1] : "config",
 			});
 		} catch (error) {
-			console.error("Login failed:", error instanceof Error ? error.message : String(error));
-			process.exit(1);
+			io.error(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
+			return 1;
 		}
-		process.exit(0);
+		return 0;
 	}
 
 	if (command === "start") {
@@ -124,7 +150,7 @@ EXAMPLES:
 
 		try {
 			await runStart(startArgs);
-			process.exit(0);
+			return 0;
 		} catch (error) {
 			// createLogger is idempotent; bootstrap may or may not have already
 			// materialized the pino root, either way we reuse it here.
@@ -132,16 +158,11 @@ EXAMPLES:
 				error: error instanceof Error ? error.message : String(error),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
-			process.exit(1);
+			return 1;
 		}
 	}
 
-	console.error(`Unknown command: ${command}`);
-	console.error('Run "bound --help" for usage information');
-	process.exit(1);
+	io.error(`Unknown command: ${command}`);
+	io.error('Run "bound --help" for usage information');
+	return 1;
 }
-
-main().catch((error) => {
-	console.error("Fatal error:", error);
-	process.exit(1);
-});

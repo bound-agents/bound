@@ -3,12 +3,16 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	type Baseline,
+	addUnloadedSources,
 	compareAgainstBaseline,
+	estimateUnloaded,
 	floorFor,
 	isCountedSource,
+	lcovSourceFiles,
 	listTestablePackages,
 	measureCommand,
 	nextBaseline,
+	packageSourceFiles,
 	parseLcov,
 	toMeasured,
 } from "../validate-coverage";
@@ -50,6 +54,7 @@ describe("validate-coverage: parseLcov", () => {
 		].join("");
 		expect(parseLcov(lcov, "core")).toEqual({
 			files: 2,
+			unloadedFiles: 0,
 			linesFound: 20,
 			linesHit: 10,
 			functionsFound: 8,
@@ -73,6 +78,78 @@ describe("validate-coverage: parseLcov", () => {
 			lines: 100,
 			functions: 100,
 		});
+	});
+});
+
+describe("validate-coverage: unloaded files", () => {
+	it("reads the loaded set from lcov SF lines, normalized", () => {
+		const lcov =
+			record("./packages/core/src/a.ts", 1, 1, 0, 0) +
+			record("packages\\core\\src\\b.ts", 1, 1, 0, 0);
+		expect([...lcovSourceFiles(lcov)]).toEqual([
+			"packages/core/src/a.ts",
+			"packages/core/src/b.ts",
+		]);
+	});
+
+	it("estimates executable lines and functions, ignoring types, comments and re-exports", () => {
+		const source = [
+			"// a comment",
+			'import { x } from "./x";',
+			'export type { T } from "./t";',
+			"export {",
+			"\tfoo,",
+			"\tbar as baz,",
+			'} from "./foo";',
+			"interface Shape { a: number }",
+			"export function add(a: number, b: number): number {",
+			"\treturn a + b;",
+			"}",
+			"export const double = (n: number) => n * 2;",
+			"class Box {",
+			"\tget size() {",
+			"\t\treturn 1;",
+			"\t}",
+			"}",
+		].join("\n");
+		const estimate = estimateUnloaded(source);
+		expect(estimate.functions).toBe(3);
+		expect(estimate.lines).toBeGreaterThanOrEqual(6);
+		expect(estimate.lines).toBeLessThanOrEqual(10);
+	});
+
+	it("counts a types-only or re-export-only file as nothing", () => {
+		expect(estimateUnloaded('export type { A } from "./a";\ninterface B { c: string }\n')).toEqual({
+			lines: 0,
+			functions: 0,
+		});
+		expect(estimateUnloaded('export * from "./a";\nexport { b } from "./b";\n')).toEqual({
+			lines: 0,
+			functions: 0,
+		});
+	});
+
+	it("adds files no test loaded at 0% and lists .svelte files as unmeasured", () => {
+		const totals = parseLcov(record("packages/web/src/a.ts", 10, 10, 2, 2), "web");
+		const sources: Record<string, string> = {
+			"packages/web/src/a.ts": "export const a = () => 1;",
+			"packages/web/src/b.ts": "export function b() {\n\treturn 2;\n}",
+			"packages/web/src/types.ts": "export interface T { x: number }",
+			"packages/web/src/App.svelte": "<script>let x = 1;</script>",
+		};
+		const unmeasured = addUnloadedSources(
+			totals,
+			Object.keys(sources),
+			new Set(["packages/web/src/a.ts"]),
+			(file) => sources[file],
+		);
+		expect(unmeasured).toEqual(["packages/web/src/App.svelte"]);
+		expect(totals.files).toBe(2);
+		expect(totals.unloadedFiles).toBe(1);
+		expect(totals.linesHit).toBe(10);
+		expect(totals.linesFound).toBeGreaterThan(10);
+		expect(totals.functionsFound).toBe(3);
+		expect(totals.functionsHit).toBe(2);
 	});
 });
 
@@ -190,6 +267,15 @@ describe("validate-coverage: repository wiring", () => {
 		expect(packages).toContain("core");
 		expect(packages).toContain("loop");
 		expect(packages).not.toContain("docs");
+	});
+
+	it("lists tracked production source only", () => {
+		const files = packageSourceFiles(root, "sandbox");
+		expect(files.length).toBeGreaterThan(0);
+		expect(files.every((file) => file.startsWith("packages/sandbox/src/"))).toBe(true);
+		expect(files.some((file) => file.includes("/__tests__/"))).toBe(false);
+		// Generated (gitignored) runtime bundles are not tracked source.
+		expect(files.some((file) => file.includes("/_runtime/"))).toBe(false);
 	});
 
 	it("has a baseline floor for every testable package", () => {

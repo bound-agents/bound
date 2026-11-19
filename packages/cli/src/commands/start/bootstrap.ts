@@ -103,13 +103,37 @@ export interface BootstrapResult {
 	appContext: AppContext;
 	keypair: Awaited<ReturnType<typeof ensureKeypair>>;
 	configDir: string;
+	/**
+	 * Removes this process's PID lockfile if it still owns it. Registered on
+	 * `process.on("exit"|"SIGINT"|"SIGTERM")` by `runStart`; `startNode` calls
+	 * it from `NodeHandle.stop()` instead, so an in-process boot leaves no
+	 * process-level signal listeners behind.
+	 */
+	removePidFile: () => void;
+}
+
+export interface BootstrapOptions {
+	/**
+	 * When true (the `runStart` production path), register `process.on` exit /
+	 * SIGINT / SIGTERM handlers that remove the PID lockfile and `process.exit`.
+	 * When false (the default, used by `startNode` and the in-process boot
+	 * tests), no signal or exit listeners are registered and a conflicting live
+	 * PID throws instead of calling `process.exit(1)` — so a test harness can
+	 * boot and tear down a node without killing its own process or leaking
+	 * listeners across repeated boots.
+	 */
+	installSignalHandlers?: boolean;
 }
 
 export async function loadStartupModelBackends(configDir: string) {
 	return loadModelBackendsConfig(configDir);
 }
 
-export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
+export async function initBootstrap(
+	args: StartArgs,
+	options: BootstrapOptions = {},
+): Promise<BootstrapResult> {
+	const installSignalHandlers = options.installSignalHandlers ?? false;
 	const configDir = args.configDir || "config";
 	// Data directory is assumed to be a sibling of the config directory, matching
 	// the layout produced by `bound init` and the convention used by other
@@ -188,7 +212,12 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 					pidFile,
 					hint: `If this is stale, remove ${pidFile} and try again.`,
 				});
-				process.exit(1);
+				// Throw instead of process.exit so startNode (and the in-process boot
+				// tests) can surface a conflicting-PID failure as a catchable error
+				// rather than killing the host process. runStart's catch path exits 1.
+				throw new Error(
+					`Another bound process (pid ${existingPid}) is already using ${pidFile}. If this is stale, remove it and try again.`,
+				);
 			}
 			bootstrapLogger.warn("Cleaning up stale PID lockfile", { existingPid });
 		}
@@ -206,15 +235,22 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 			// Best-effort cleanup
 		}
 	};
-	process.on("exit", removePidFile);
-	process.on("SIGINT", () => {
-		removePidFile();
-		process.exit(0);
-	});
-	process.on("SIGTERM", () => {
-		removePidFile();
-		process.exit(0);
-	});
+	// Signal + exit handlers that remove the lockfile and exit are the
+	// production `runStart` path only. Under startNode they are omitted so a
+	// test can boot and tear down repeatedly without registering process-level
+	// listeners (which would accumulate across boots) or killing its own
+	// process; NodeHandle.stop() calls removePidFile directly instead.
+	if (installSignalHandlers) {
+		process.on("exit", removePidFile);
+		process.on("SIGINT", () => {
+			removePidFile();
+			process.exit(0);
+		});
+		process.on("SIGTERM", () => {
+			removePidFile();
+			process.exit(0);
+		});
+	}
 
 	const dbPath = join(dataDir, "bound.db");
 
@@ -505,7 +541,7 @@ export async function initBootstrap(args: StartArgs): Promise<BootstrapResult> {
 		}
 	}
 
-	return { appContext, keypair, configDir };
+	return { appContext, keypair, configDir, removePidFile };
 }
 
 export { INTERRUPTED_TOOL_USE_SCAN_SQL };

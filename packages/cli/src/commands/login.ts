@@ -35,8 +35,20 @@ export interface LoginArgs {
 	openBrowser?: (url: string) => void;
 	/** Injectable for tests — the daemon base URL (defaults to the local web router). */
 	daemonUrl?: string;
-	/** Injectable for tests — fetch against the daemon. */
+	/** Injectable for tests — fetch against the daemon (and the token endpoint). */
 	fetchImpl?: typeof fetch;
+	/**
+	 * Injectable for tests — the loopback callback port. Production binds the
+	 * fixed {@link CALLBACK_PORT} the registered redirect_uri names; tests pass
+	 * `0` to let the OS assign a free ephemeral port and avoid collisions.
+	 */
+	callbackPort?: number;
+	/**
+	 * Injectable for tests — resolves once the callback server is listening, with
+	 * the actually-bound port. Lets a test drive the redirect without racing the
+	 * server's bind. Production leaves this unset.
+	 */
+	onCallbackListening?: (port: number) => void;
 }
 
 /** The loopback callback binds this host:port; must match the registered redirect_uri. */
@@ -70,7 +82,11 @@ function openInBrowser(url: string): void {
  * redirect_uri names; rejects if that port is already bound (a stale server or
  * another login already running).
  */
-function awaitCallback(expectedState: string): Promise<string> {
+function awaitCallback(
+	expectedState: string,
+	port: number,
+	onListening?: (boundPort: number) => void,
+): Promise<string> {
 	return new Promise((resolvePromise, reject) => {
 		let server: ReturnType<typeof Bun.serve> | undefined;
 		const timeout = setTimeout(
@@ -82,7 +98,7 @@ function awaitCallback(expectedState: string): Promise<string> {
 		);
 		try {
 			server = Bun.serve({
-				port: CALLBACK_PORT,
+				port,
 				hostname: "localhost",
 				fetch(req) {
 					const url = new URL(req.url);
@@ -115,6 +131,7 @@ function awaitCallback(expectedState: string): Promise<string> {
 					);
 				},
 			});
+			if (onListening && server.port != null) onListening(server.port);
 		} catch (e) {
 			clearTimeout(timeout);
 			reject(
@@ -154,7 +171,11 @@ export async function runLogin(args: LoginArgs): Promise<void> {
 	const state = generateState();
 	const authorizeUrl = buildAuthorizeUrl({ pkce, state });
 
-	const callbackPromise = awaitCallback(state);
+	const callbackPromise = awaitCallback(
+		state,
+		args.callbackPort ?? CALLBACK_PORT,
+		args.onCallbackListening,
+	);
 
 	console.log("Opening your browser to sign in with ChatGPT…");
 	console.log(`If it doesn't open, visit this URL:\n\n  ${authorizeUrl}\n`);
@@ -163,7 +184,7 @@ export async function runLogin(args: LoginArgs): Promise<void> {
 
 	const code = await callbackPromise;
 	const tokens = await exchangeCodeForTokens(
-		{ fetch: globalThis.fetch },
+		{ fetch: args.fetchImpl ?? globalThis.fetch },
 		{
 			code,
 			codeVerifier: pkce.verifier,

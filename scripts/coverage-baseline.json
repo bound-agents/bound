@@ -6,8 +6,8 @@
 			"functions": 90
 		},
 		"cli": {
-			"lines": 38,
-			"functions": 69
+			"lines": 72,
+			"functions": 77
 		},
 		"client": {
 			"lines": 38,
@@ -46,8 +46,8 @@
 			"functions": 88
 		},
 		"web": {
-			"lines": 81,
-			"functions": 89
+			"lines": 77,
+			"functions": 82
 		}
 	}
 }

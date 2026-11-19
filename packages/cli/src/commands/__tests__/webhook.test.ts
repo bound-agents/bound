@@ -1,11 +1,13 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { applySchema } from "@bound/core";
+import { applySchema, findClusterConfigValueByKey } from "@bound/core";
+import { WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY } from "@bound/shared";
 import {
 	webhookCreate,
 	webhookDelete,
 	webhookList,
 	webhookRotateSecret,
+	webhookSetUnauthenticated,
 	webhookUpdate,
 } from "../webhook.js";
 
@@ -574,5 +576,80 @@ describe("webhook commands", () => {
 				webhookUpdate(db, SITE_ID, ["--name", "ambiguous", "--no-history", "--history"]);
 			}).toThrow(/mutually exclusive/);
 		});
+	});
+});
+
+describe("webhook unauthenticated gate (#195)", () => {
+	let db: Database;
+	let originalLog: typeof console.log;
+
+	beforeEach(() => {
+		originalLog = console.log;
+		db = new Database(":memory:");
+		applySchema(db);
+		console.log = () => {};
+	});
+
+	afterEach(() => {
+		console.log = originalLog;
+		if (db) db.close();
+	});
+
+	function collectOutput(): string[] {
+		const output: string[] = [];
+		console.log = (message: string) => output.push(message);
+		return output;
+	}
+
+	it("refuses --format none when the cluster gate is off (default)", () => {
+		expect(() => {
+			webhookCreate(db, SITE_ID, ["--name", "unauth-hook", "--format", "none"]);
+		}).toThrow(/Unauthenticated webhooks \(--format none\) are disabled/);
+		// Nothing persisted.
+		expect(db.prepare("SELECT COUNT(*) AS n FROM webhooks").get()).toEqual({ n: 0 });
+	});
+
+	it("webhookSetUnauthenticated(true) flips the cluster_config gate and warns", () => {
+		const output = collectOutput();
+		webhookSetUnauthenticated(db, SITE_ID, true);
+
+		const row = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+		expect(row?.value).toBe("true");
+		const joined = output.join("\n");
+		expect(joined).toContain("now ALLOWED cluster-wide");
+	});
+
+	it("webhookSetUnauthenticated(false) disables the gate (default-state message)", () => {
+		// First enable, then disable — exercises the UPDATE (un-tombstone) path too.
+		webhookSetUnauthenticated(db, SITE_ID, true);
+		const output = collectOutput();
+		webhookSetUnauthenticated(db, SITE_ID, false);
+
+		const row = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+		expect(row?.value).toBe("false");
+		// Exactly one row for the key (UPDATE, not a second INSERT).
+		const count = db
+			.prepare("SELECT COUNT(*) AS n FROM cluster_config WHERE key = ?")
+			.get(WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY) as { n: number };
+		expect(count.n).toBe(1);
+		expect(output.join("\n")).toContain("now DISABLED cluster-wide");
+	});
+
+	it("allows creating a --format none webhook once the gate is enabled", () => {
+		webhookSetUnauthenticated(db, SITE_ID, true);
+		expect(() => {
+			webhookCreate(db, SITE_ID, ["--name", "now-allowed", "--format", "none"]);
+		}).not.toThrow();
+		const wh = db
+			.prepare("SELECT signature_format FROM webhooks WHERE name = ?")
+			.get("now-allowed") as { signature_format: string } | null;
+		expect(wh?.signature_format).toBe("none");
+	});
+
+	it("refuses webhookUpdate --format none when the gate is off", () => {
+		webhookCreate(db, SITE_ID, ["--name", "to-none", "--format", "github"]);
+		expect(() => {
+			webhookUpdate(db, SITE_ID, ["--name", "to-none", "--format", "none"]);
+		}).toThrow(/Unauthenticated webhooks \(--format none\) are disabled/);
 	});
 });

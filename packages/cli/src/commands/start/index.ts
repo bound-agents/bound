@@ -8,6 +8,7 @@ export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { HandleMessageTracker } from "@bound/agent";
 import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
+import type { AppContext } from "@bound/core";
 import { markAwsCredentialCacheStale } from "@bound/llm";
 import { registerSighupHandler } from "../../sighup.js";
 import { createAgentLoopFactory } from "./agent-factory.js";
@@ -23,18 +24,77 @@ import { createMcpOAuthWiring } from "./mcp-oauth-wiring.js";
 import { initMcp, reconnectResolvedMcpServer, reloadMcpServers } from "./mcp.js";
 import { initRelay } from "./relay.js";
 import { initSandbox } from "./sandbox.js";
-import { initScheduler, setupGracefulShutdown } from "./scheduler.js";
+import { initScheduler } from "./scheduler.js";
 import { initServer } from "./server.js";
 import { initSync } from "./sync.js";
-import { initTelemetry, setTelemetrySiteId } from "./telemetry.js";
+import { initTelemetry, setTelemetrySiteId, shutdownTelemetry } from "./telemetry.js";
 import { createWsTransportHolderStubs, wireWsTransportHolder } from "./wire-ws-transport-holder.js";
 
-export async function runStart(args: StartArgs): Promise<void> {
+/**
+ * Explicit network binding options for an in-process boot. Each defaults to the
+ * production environment-variable behavior (`PORT`/`WEB_PORT`/`BIND_HOST`/
+ * `WEB_BIND_HOST`) so `runStart` is byte-for-byte unchanged, while a test can
+ * pass `syncPort: 0` / `webPort: 0` to request OS-assigned ephemeral ports and
+ * read the real bound ports back from `NodeHandle`.
+ */
+export interface StartNodeOptions {
+	/** Sync-server port. Defaults to `process.env.PORT` or 3000. Pass 0 for ephemeral. */
+	syncPort?: number;
+	/** Web-server port. Defaults to `process.env.WEB_PORT` or 3001. Pass 0 for ephemeral. */
+	webPort?: number;
+	/** Sync-server bind host. Defaults to `process.env.BIND_HOST` or "localhost". */
+	syncHost?: string;
+	/** Web-server bind host. Defaults to `process.env.WEB_BIND_HOST` or "localhost". */
+	webHost?: string;
+	/**
+	 * When true, register `process.on` SIGINT/SIGTERM/exit signal + PID-lockfile
+	 * handlers (the production `runStart` path). Default false: `startNode`
+	 * returns a live `NodeHandle` with no process-level listeners, so a test can
+	 * boot and `stop()` repeatedly in one process.
+	 */
+	installSignalHandlers?: boolean;
+}
+
+/**
+ * A running Bound node. `startNode` resolves this once every subsystem is wired
+ * and both servers are listening; `stop()` tears the whole node down (servers,
+ * scheduler, heartbeat, pruning, relay processor, sync/ws transport, MCP
+ * clients, span tracker, telemetry, PID lockfile) so the host process can exit
+ * cleanly with no dangling timers, sockets, or listeners.
+ */
+export interface NodeHandle {
+	appContext: AppContext;
+	/** Real listening port of the web server (OS-assigned when `webPort: 0`), or null if no web server booted. */
+	webPort: number | null;
+	/** Real listening port of the sync server (OS-assigned when `syncPort: 0`), or null if no sync server booted. */
+	syncPort: number | null;
+	/** Base URL for the web server (`http://<webHost>:<webPort>`), or null if no web server booted. */
+	webUrl: string | null;
+	stop(): Promise<void>;
+}
+
+/**
+ * Boot every Bound subsystem in dependency order and return a live
+ * {@link NodeHandle}. This is the whole body of what `bound start` does MINUS
+ * the process-lifetime signal plumbing: no `process.exit`, no `process.on`
+ * signal/exit registration (unless `installSignalHandlers` is set), and nothing
+ * that would stop a second node booting in the same process. `runStart` is a
+ * thin wrapper that boots with signal handlers and blocks until a shutdown
+ * signal fires.
+ */
+export async function startNode(
+	args: StartArgs,
+	options: StartNodeOptions = {},
+): Promise<NodeHandle> {
+	const installSignalHandlers = options.installSignalHandlers ?? false;
+
 	// Phase 0: Telemetry (must be first so all subsequent operations are traced)
 	initTelemetry("bound");
 
 	// Phase 1: Bootstrap (config, DB, keypair, users, host, crash recovery)
-	const { appContext, keypair, configDir } = await initBootstrap(args);
+	const { appContext, keypair, configDir, removePidFile } = await initBootstrap(args, {
+		installSignalHandlers,
+	});
 
 	// Now that bootstrap has derived the site ID from the host keypair, stamp it
 	// onto every subsequently-traced span (issue #152). initTelemetry ran at Phase 0
@@ -143,6 +203,12 @@ export async function runStart(args: StartArgs): Promise<void> {
 					clusterFsObj,
 					relayProcessor,
 					oauthMcpBridge: mcpOAuth?.bridge ?? null,
+					ports: {
+						syncPort: options.syncPort,
+						webPort: options.webPort,
+						syncHost: options.syncHost,
+						webHost: options.webHost,
+					},
 				})
 			: {
 					webServer: null,
@@ -262,27 +328,93 @@ export async function runStart(args: StartArgs): Promise<void> {
 			)
 		: { schedulerHandle: null };
 
-	const webPort = process.env.WEB_PORT || "3001";
+	const webServer = serverResult.webServer;
+	const syncServer = serverResult.syncServer;
+	const realWebPort = webServer ? webServer.port() : null;
+	const realSyncPort = syncServer ? syncServer.port() : null;
+	const webHost = options.webHost ?? process.env.WEB_BIND_HOST ?? "localhost";
+	const webUrl = realWebPort !== null ? `http://${webHost}:${realWebPort}` : null;
+
 	appContext.logger.info(`
 Bound is running!
 Operator: ${appContext.config.allowlist.default_web_user}
-
-Open http://localhost:${webPort} in your browser to start chatting.
-
+${webUrl ? `\nOpen ${webUrl} in your browser to start chatting.\n` : ""}
 Press Ctrl+C to stop.
 `);
 
-	// Keep process alive until shutdown signal
-	await setupGracefulShutdown(appContext, {
-		heartbeatHandle,
-		schedulerHandle,
-		pruningHandle,
-		relayProcessorHandle,
-		mcpClientsMap,
-		webServer: serverResult.webServer,
-		syncServer: serverResult.syncServer,
-		wsClient,
-		wsTransport,
-		handleMessageTracker: serverResult.handleMessageTracker,
+	// Build the single teardown path. This is exactly the body of the former
+	// setupGracefulShutdown shutdown handler, minus the signal registration:
+	// everything that holds the process open (servers, scheduler, heartbeat,
+	// pruning, relay processor, ws transport + changelog bus, ws client, MCP
+	// clients, span tracker, telemetry) is stopped here, plus the PID lockfile.
+	// runStart drives it from a signal; startNode callers (tests) drive it from
+	// NodeHandle.stop(). Idempotent via the `stopped` latch so a double stop() or
+	// a stop() racing a signal does not double-free.
+	let stopped = false;
+	const stop = async (): Promise<void> => {
+		if (stopped) return;
+		stopped = true;
+		heartbeatHandle?.stop();
+		schedulerHandle?.stop();
+		pruningHandle?.stop();
+		relayProcessorHandle?.stop();
+		if (wsTransport) {
+			wsTransport.stop();
+			const { setChangelogEventBus } = await import("@bound/core");
+			setChangelogEventBus(null);
+		}
+		wsClient?.close();
+		for (const [, client] of mcpClientsMap) {
+			try {
+				await client.disconnect();
+			} catch {
+				// Ignore disconnect errors during shutdown
+			}
+		}
+		if (webServer) await webServer.stop();
+		if (syncServer) await syncServer.stop();
+		// Stop the watchdog and end any still-open turn / dispatch spans so
+		// BatchSpanProcessor exports them on final flush. Must run BEFORE
+		// shutdownTelemetry.
+		serverResult.handleMessageTracker?.stopWatchdog();
+		serverResult.handleMessageTracker?.endAllOpenSpans("shutdown");
+		await shutdownTelemetry();
+		// Remove the PID lockfile last. Under runStart the process.on("exit")
+		// handler also calls this (idempotent by PID guard); under startNode this is
+		// the only caller.
+		removePidFile();
+	};
+
+	return {
+		appContext,
+		webPort: realWebPort,
+		syncPort: realSyncPort,
+		webUrl,
+		stop,
+	};
+}
+
+/**
+ * Production `bound start`: boot a node with full process-lifetime signal
+ * wiring and block until SIGINT / SIGTERM fires, then tear it down. A thin
+ * wrapper over `startNode` — all subsystem init lives there.
+ */
+export async function runStart(args: StartArgs): Promise<void> {
+	const handle = await startNode(args, { installSignalHandlers: true });
+
+	// Keep the process alive until a shutdown signal arrives, then run the full
+	// node teardown and resolve. bootstrap.ts already registered the PID-lockfile
+	// process.on("exit"|"SIGINT"|"SIGTERM") handlers under installSignalHandlers;
+	// these listeners add the graceful subsystem teardown on top.
+	await new Promise<void>((resolve) => {
+		const shutdown = (signal: string) => async () => {
+			handle.appContext.logger.info(
+				`\n${signal === "SIGINT" ? "Shutting down gracefully" : "Terminating"}...`,
+			);
+			await handle.stop();
+			resolve();
+		};
+		process.on("SIGINT", shutdown("SIGINT"));
+		process.on("SIGTERM", shutdown("SIGTERM"));
 	});
 }

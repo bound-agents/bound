@@ -276,3 +276,108 @@ describe("consumeHandoffPayload observability (smoke 2026-10-10)", () => {
 		expect(entry?.fields.challengeId).toBe(seeded.id);
 	});
 });
+
+describe("createMcpOAuthWiring — provider, co-location, and forwardOutcome", () => {
+	function wiringFor(logSink: LogCall[] = []) {
+		const wiring = createMcpOAuthWiring(
+			appContextWith([oauthServer("sentry")], logSink),
+			"config",
+			() => {},
+			3001,
+			makeFetchStub(),
+		);
+		if (!wiring) throw new Error("expected non-null wiring");
+		return wiring;
+	}
+
+	it("returns null wiring when no http server declares an oauth auth block", () => {
+		const wiring = createMcpOAuthWiring(
+			appContextWith([{ name: "plain", transport: "stdio", command: "x" }]),
+			"config",
+			() => {},
+			3001,
+			makeFetchStub(),
+		);
+		expect(wiring).toBeNull();
+	});
+
+	it("providerFor builds a provider for an oauth http server and null otherwise", () => {
+		const wiring = wiringFor();
+		const provider = wiring.providerFor({
+			name: "sentry",
+			transport: "http",
+			url: SERVER_URL,
+			auth: { type: "oauth", client_id: "cfg-client" },
+		} as unknown as MCPServerConfig);
+		expect(provider).not.toBeNull();
+
+		// A stdio server (no auth block) gets no provider.
+		const none = wiring.providerFor({
+			name: "plain",
+			transport: "stdio",
+			command: "x",
+		} as unknown as MCPServerConfig);
+		expect(none).toBeNull();
+	});
+
+	it("getAccessTokenForServer returns no_bundle for a configured server with no stored grant", async () => {
+		const wiring = wiringFor();
+		const result = await wiring.getAccessTokenForServer("sentry");
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error.kind).toBe("no_bundle");
+	});
+
+	it("getAccessTokenForServer returns not_oauth for a server this host does not configure", async () => {
+		const wiring = wiringFor();
+		const result = await wiring.getAccessTokenForServer("unknown-server");
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error.kind).toBe("not_oauth");
+	});
+
+	it("handleMcpAppProxy returns 502 for an unconfigured server", async () => {
+		const wiring = wiringFor();
+		const res = await wiring.handleMcpAppProxy({
+			server_name: "unknown-server",
+			method: "POST",
+			headers: {},
+			body_base64: "",
+		});
+		expect(res.status).toBe(502);
+	});
+
+	it("handleMcpAppProxy returns 401 for a configured server with no live grant", async () => {
+		const wiring = wiringFor();
+		const res = await wiring.handleMcpAppProxy({
+			server_name: "sentry",
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body_base64: "",
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it("forwardOutcome writes a handoff and discards the resolver attempt", async () => {
+		const seeded = seedChallenge("sentry", SITE);
+		const wiring = wiringFor();
+		// Claim to mint an attempt bound to a state the bridge can forward.
+		const claim = await wiring.bridge.claimForLogin({ challengeId: seeded.id });
+		expect(claim.ok).toBe(true);
+		if (!claim.ok) return;
+		const state = new URL(claim.authorizeUrl).searchParams.get("state");
+		expect(state).toBeTruthy();
+		const attempt = wiring.bridge.attemptForState(state as string);
+		expect(attempt).not.toBeNull();
+		if (!attempt) return;
+
+		wiring.bridge.forwardOutcome(attempt, { code: "authcode", state: state as string });
+
+		// A durable mcp_auth_handoff row now targets the owning site in-process.
+		const handoffCount = db
+			.query("SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'mcp_auth_handoff'")
+			.get() as { n: number };
+		expect(handoffCount.n).toBeGreaterThanOrEqual(1);
+
+		// The attempt was discarded — a second lookup for the same state returns null.
+		expect(wiring.bridge.attemptForState(state as string)).toBeNull();
+	});
+});

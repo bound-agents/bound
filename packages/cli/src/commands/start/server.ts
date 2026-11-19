@@ -412,6 +412,22 @@ export interface ServerDeps {
 	 * locally-owned app-bearing server. Null on a host with no oauth MCP server.
 	 */
 	getMcpAppAccessToken?: import("@bound/web").WebServerConfig["getMcpAppAccessToken"] | null;
+	/**
+	 * Explicit network binding, threaded from `startNode`. Each field defaults to
+	 * the production environment-variable behavior when omitted, so the `bound
+	 * start` path is unchanged. Tests pass `webPort: 0` / `syncPort: 0` for
+	 * OS-assigned ephemeral ports and read the real ports back from `ServerResult`.
+	 */
+	ports?: {
+		/** Sync server port. Default: `process.env.PORT` or 3000. */
+		syncPort?: number;
+		/** Web server port. Default: `process.env.WEB_PORT` or 3001. */
+		webPort?: number;
+		/** Sync server bind host. Default: `process.env.BIND_HOST` or "localhost". */
+		syncHost?: string;
+		/** Web server bind host. Default: `process.env.WEB_BIND_HOST` or "localhost". */
+		webHost?: string;
+	};
 }
 
 export async function initServer(deps: ServerDeps): Promise<ServerResult> {
@@ -426,6 +442,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		relayProcessor,
 		oauthMcpBridge,
 		getMcpAppAccessToken,
+		ports,
 	} = deps;
 
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
@@ -468,13 +485,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	try {
 		const modelBackends = appContext.config.modelBackends;
 
-		// Sync server: primary port, externally accessible for hub-spoke replication
-		const syncPort = Number.parseInt(process.env.PORT || "3000", 10);
-		const syncHost = process.env.BIND_HOST ?? "localhost";
+		// Sync server: primary port, externally accessible for hub-spoke replication.
+		// Explicit startNode options take precedence; otherwise the production env
+		// behavior is unchanged (PORT/BIND_HOST, defaults 3000/localhost).
+		const syncPort = ports?.syncPort ?? Number.parseInt(process.env.PORT || "3000", 10);
+		const syncHost = ports?.syncHost ?? process.env.BIND_HOST ?? "localhost";
 
 		// Web server: internal management interface
-		const webPort = Number.parseInt(process.env.WEB_PORT || "3001", 10);
-		const webHost = process.env.WEB_BIND_HOST ?? "localhost";
+		const webPort = ports?.webPort ?? Number.parseInt(process.env.WEB_PORT || "3001", 10);
+		const webHost = ports?.webHost ?? process.env.WEB_BIND_HOST ?? "localhost";
 
 		// Deduplicate models by ID — pooled backends (same ID, multiple providers)
 		// should appear as a single entry. Use the first provider for display.

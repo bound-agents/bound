@@ -18,6 +18,12 @@
  * package's total by a few hundredths between identical runs, and a floor at
  * the exact measurement would fail on that noise.
  *
+ * Files no test imports are absent from Bun's lcov report. They count here at
+ * 0%, with line and function totals estimated from the transpiled source
+ * (`estimateUnloaded`), so adding the first test for an untested file can
+ * only raise a package's total. `.svelte` components are not instrumented by
+ * Bun at all; they are listed as unmeasured rather than counted.
+ *
  * Measure SERIALLY. Under `bun test --parallel`, Bun's coverage report covers
  * only part of the executed code (packages/core measured 71.3% lines under
  * --parallel vs 85.0% serially, same tests, same exit code).
@@ -51,6 +57,8 @@ export function floorFor(actual: number, target: number): number {
 
 export interface Totals {
 	files: number;
+	/** Of `files`, how many no test loaded (counted at 0%). */
+	unloadedFiles: number;
 	linesFound: number;
 	linesHit: number;
 	functionsFound: number;
@@ -85,6 +93,7 @@ export function isCountedSource(sourceFile: string, pkg: string): boolean {
 export function parseLcov(text: string, pkg: string): Totals {
 	const totals: Totals = {
 		files: 0,
+		unloadedFiles: 0,
 		linesFound: 0,
 		linesHit: 0,
 		functionsFound: 0,
@@ -102,6 +111,88 @@ export function parseLcov(text: string, pkg: string): Totals {
 		totals.functionsHit += field("FNH");
 	}
 	return totals;
+}
+
+/** Normalized `SF:` paths in an lcov report. */
+export function lcovSourceFiles(text: string): Set<string> {
+	const files = new Set<string>();
+	for (const match of text.matchAll(/^SF:(.*)$/gm)) {
+		files.add(match[1].trim().replaceAll("\\", "/").replace(/^\.\//, ""));
+	}
+	return files;
+}
+
+const transpiler = new Bun.Transpiler({ loader: "tsx" });
+const IMPORT_OR_REEXPORT = /^\s*(import\s|export\s*(\*|\{[^}]*\})\s*from\s)/;
+// Lines of a multi-line `export { … } from` list: one name each, then the closer.
+const REEXPORT_LIST_LINE = /^\s*([\w$]+(\s+as\s+[\w$]+)?,?|export\s*\{|\}\s*from\s.*)\s*$/;
+const FUNCTION_TOKEN = /\bfunction\b|=>/g;
+const METHOD_HEADER =
+	/^\s*(async\s+)?(static\s+)?(get\s+|set\s+)?(?!(if|for|while|switch|catch|return)\b)[A-Za-z_$#][\w$]*\s*\([^)]*\)\s*\{\s*$/gm;
+
+/**
+ * Line and function counts for a file Bun never loaded, from its transpiled
+ * JS: types, comments and imports vanish the way they do from Bun's own
+ * counts. Calibrated against Bun's LF/FNF on the 469 loaded files in this
+ * repo: 0.96x lines and 0.99x functions in aggregate.
+ */
+export function estimateUnloaded(source: string): { lines: number; functions: number } {
+	const js = transpiler.transformSync(source);
+	const lines = js
+		.split("\n")
+		.filter(
+			(line) => line.trim() && !IMPORT_OR_REEXPORT.test(line) && !REEXPORT_LIST_LINE.test(line),
+		).length;
+	const functions =
+		(js.match(FUNCTION_TOKEN) ?? []).length + (js.match(METHOD_HEADER) ?? []).length;
+	return { lines, functions };
+}
+
+const SOURCE_EXTENSION = /\.(ts|tsx|js|jsx|mts|cts|mjs|cjs|svelte)$/;
+
+/**
+ * Tracked production source files of a package, by repo-relative path. Tracked
+ * only: generated artifacts (e.g. packages/sandbox/src/_runtime/, gitignored)
+ * are not code anyone writes tests for.
+ */
+export function packageSourceFiles(root: string, pkg: string): string[] {
+	const proc = Bun.spawnSync(["git", "ls-files", "-z", "--", `packages/${pkg}/src`], { cwd: root });
+	if (proc.exitCode !== 0) throw new Error(`git ls-files failed: ${proc.stderr.toString()}`);
+	return proc.stdout
+		.toString()
+		.split("\0")
+		.filter(
+			(file) =>
+				SOURCE_EXTENSION.test(file) && !file.endsWith(".d.ts") && isCountedSource(file, pkg),
+		)
+		.sort();
+}
+
+/**
+ * Adds every production file missing from the lcov report at 0% coverage.
+ * Returns the `.svelte` files, which Bun cannot instrument.
+ */
+export function addUnloadedSources(
+	totals: Totals,
+	sourceFiles: string[],
+	loaded: Set<string>,
+	readSource: (file: string) => string,
+): string[] {
+	const unmeasured: string[] = [];
+	for (const file of sourceFiles) {
+		if (loaded.has(file)) continue;
+		if (file.endsWith(".svelte")) {
+			unmeasured.push(file);
+			continue;
+		}
+		const { lines, functions } = estimateUnloaded(readSource(file));
+		if (lines === 0 && functions === 0) continue;
+		totals.files++;
+		totals.unloadedFiles++;
+		totals.linesFound += lines;
+		totals.functionsFound += functions;
+	}
+	return unmeasured;
 }
 
 function percent(hit: number, found: number): number {
@@ -277,14 +368,27 @@ function run(): void {
 	}
 
 	const measured: Record<string, Measured | undefined> = {};
+	const notes: string[] = [];
 	for (const pkg of packages) {
 		const lcovPath = join(coverageDir, pkg, "lcov.info");
 		if (!existsSync(lcovPath)) continue;
-		const totals = parseLcov(readFileSync(lcovPath, "utf8"), pkg);
+		const lcov = readFileSync(lcovPath, "utf8");
+		const totals = parseLcov(lcov, pkg);
+		const unmeasured = addUnloadedSources(
+			totals,
+			packageSourceFiles(root, pkg),
+			lcovSourceFiles(lcov),
+			(file) => readFileSync(join(root, file), "utf8"),
+		);
 		if (totals.files > 0) measured[pkg] = toMeasured(totals);
+		notes.push(
+			`${pkg}: ${totals.unloadedFiles} file(s) no test loads, counted at 0%${
+				unmeasured.length > 0 ? `; ${unmeasured.length} .svelte file(s) unmeasured` : ""
+			}`,
+		);
 	}
 
-	const table = renderTable(measured, baseline, packages);
+	const table = `${renderTable(measured, baseline, packages)}\n\n${notes.map((note) => `- ${note}`).join("\n")}`;
 	console.log(table);
 	if (process.env.GITHUB_STEP_SUMMARY) {
 		writeFileSync(process.env.GITHUB_STEP_SUMMARY, `${table}\n`, { flag: "a" });

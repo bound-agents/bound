@@ -159,3 +159,5 @@ Three Bun 1.4 behaviors make `bunfig.toml` unusable as a package coverage gate:
 Separately, `bun test --parallel` reports coverage for only part of the executed code. Same tests, same exit code: `packages/core` measured 71.3% lines under `--parallel` and 85.0% serially. Measure coverage serially.
 
 `scripts/validate-coverage.ts` sums each package's lcov report and holds the total at its floor in `scripts/coverage-baseline.json`.
+
+Bun's lcov report also omits every file no test imports, so an untested file is invisible rather than 0%. The ratchet adds those files back at 0% with line and function counts estimated from the transpiled source, which keeps a package's first test for an untested file from lowering its total. `.svelte` components are not instrumented at all and are listed as unmeasured.

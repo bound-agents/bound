@@ -48,4 +48,11 @@ if (
 	);
 }
 
-await import("./bound-main.js");
+const { main } = await import("./bound-main.js");
+try {
+	const code = await main(process.argv.slice(2));
+	process.exit(code);
+} catch (error) {
+	console.error("Fatal error:", error);
+	process.exit(1);
+}

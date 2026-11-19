@@ -108,6 +108,15 @@ export interface WebServer {
 	start(): Promise<void>;
 	stop(): Promise<void>;
 	address(): string;
+	/**
+	 * The real listening port, read back from the live `Bun.serve` instance
+	 * after `start()`. Differs from the configured `config.port` when the
+	 * caller passed `port: 0` to request an OS-assigned ephemeral port — the
+	 * in-process boot tests (`bound start` → `startNode`) pass `0` and dial
+	 * this value. Returns the configured port before `start()` or `0` if the
+	 * server is not currently listening.
+	 */
+	port(): number;
 	wsConnectionManager?: WsConnectionManager;
 	wsRegistry?: ConnectionRegistry;
 	emitToolCancel?: (
@@ -285,6 +294,12 @@ export async function createWebServer(
 			return `http://${host}:${port}`;
 		},
 
+		port(): number {
+			// The live OS-assigned port when `port: 0` was requested; the configured
+			// port once bound; 0 before start / after stop.
+			return server?.port ?? port;
+		},
+
 		wsRegistry: wsHandler.registry,
 		emitToolCancel: wsHandler.emitToolCancel,
 	};
@@ -372,6 +387,12 @@ export async function createSyncServer(
 
 		address(): string {
 			return `http://${host}:${port}`;
+		},
+
+		port(): number {
+			// The live OS-assigned port when `port: 0` was requested; the configured
+			// port once bound; 0 before start / after stop.
+			return server?.port ?? port;
 		},
 	};
 }

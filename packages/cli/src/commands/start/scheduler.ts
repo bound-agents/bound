@@ -1,6 +1,7 @@
 /**
- * Scheduler subsystem: cron task seeding, heartbeat seeding, scheduler start,
- * and graceful shutdown handlers.
+ * Scheduler subsystem: cron task seeding, heartbeat seeding, and scheduler
+ * start. Graceful shutdown now lives in the single NodeHandle.stop() teardown
+ * built in index.ts; this module no longer owns signal handlers.
  */
 
 import {
@@ -12,7 +13,6 @@ import {
 	seedHeartbeat,
 } from "@bound/agent";
 import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
-import type { MCPClient } from "@bound/agent";
 import { resolveTopologyRole, routeRelayRequest, serializeRelayTraceCarrier } from "@bound/agent";
 import { awaitPlatformRequestResponse } from "@bound/agent";
 import { type AppContext, findFreshPlatformHost } from "@bound/core";
@@ -26,33 +26,11 @@ import {
 } from "@bound/platforms";
 import { formatError, injectTraceContext } from "@bound/shared";
 import { resolvePlatformToolsForThread } from "./platform-tools.js";
-import { shutdownTelemetry } from "./telemetry.js";
 
 export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
 
 export interface SchedulerResult {
 	schedulerHandle: { stop: () => void } | null;
-}
-
-export interface ShutdownHandles {
-	heartbeatHandle: { stop: () => void } | null;
-	schedulerHandle: { stop: () => void } | null;
-	pruningHandle: { stop: () => void } | null;
-	relayProcessorHandle: { stop: () => void } | null;
-	mcpClientsMap: Map<string, MCPClient>;
-	webServer: { stop(): Promise<void> } | null;
-	syncServer: { stop(): Promise<void> } | null;
-	wsClient: { close: () => void } | null;
-	wsTransport: { start(): void; stop(): void } | undefined;
-	/**
-	 * Cross-handler-invocation span tracker. Stopped and flushed before
-	 * `shutdownTelemetry` so any open `agent.handle-message` and
-	 * `tool.dispatch` spans get exported in the OTLP final flush.
-	 */
-	handleMessageTracker: {
-		stopWatchdog(): void;
-		endAllOpenSpans(reason?: string): void;
-	} | null;
 }
 
 export function initScheduler(
@@ -220,53 +198,4 @@ export function initScheduler(
 	}
 
 	return { schedulerHandle };
-}
-
-/**
- * Register graceful shutdown handlers for SIGINT and SIGTERM.
- * Returns a Promise that resolves when a shutdown signal is received.
- */
-export function setupGracefulShutdown(
-	appContext: AppContext,
-	handles: ShutdownHandles,
-): Promise<void> {
-	return new Promise<void>((resolve) => {
-		const shutdown = async (signal: string) => {
-			appContext.logger.info(
-				`\n${signal === "SIGINT" ? "Shutting down gracefully" : "Terminating"}...`,
-			);
-			if (handles.heartbeatHandle) handles.heartbeatHandle.stop();
-			if (handles.schedulerHandle) handles.schedulerHandle.stop();
-			if (handles.pruningHandle) handles.pruningHandle.stop();
-			if (handles.relayProcessorHandle) handles.relayProcessorHandle.stop();
-			if (handles.wsTransport) {
-				handles.wsTransport.stop();
-				const { setChangelogEventBus } = await import("@bound/core");
-				setChangelogEventBus(null);
-			}
-			if (handles.wsClient) handles.wsClient.close();
-			// Disconnect MCP clients
-			for (const [, client] of handles.mcpClientsMap) {
-				try {
-					await client.disconnect();
-				} catch (_err) {
-					// Ignore disconnect errors during shutdown
-				}
-			}
-			if (handles.webServer) await handles.webServer.stop();
-			if (handles.syncServer) await handles.syncServer.stop();
-			// Stop the watchdog and end any still-open turn / dispatch spans
-			// so BatchSpanProcessor exports them on final flush. Ordering
-			// matters: this must run BEFORE shutdownTelemetry.
-			if (handles.handleMessageTracker) {
-				handles.handleMessageTracker.stopWatchdog();
-				handles.handleMessageTracker.endAllOpenSpans("shutdown");
-			}
-			await shutdownTelemetry();
-			resolve();
-		};
-
-		process.on("SIGINT", () => shutdown("SIGINT"));
-		process.on("SIGTERM", () => shutdown("SIGTERM"));
-	});
 }

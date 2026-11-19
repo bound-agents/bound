@@ -219,4 +219,91 @@ describe("bound init", () => {
 		expect(b.price_per_m_input).toBeUndefined();
 		process.env.UMANS_API_KEY = undefined;
 	});
+
+	it("creates the Bedrock preset with --bedrock (region set, no base_url/api_key)", async () => {
+		await runInit({ bedrock: true, region: "eu-west-1", configDir: tempDir });
+		const src = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
+		const mb = JSON.parse(src.replace(/^export default /, "").replace(/;\n?$/, ""));
+		const b = mb.backends[0];
+		expect(b.provider).toBe("bedrock");
+		expect(b.region).toBe("eu-west-1");
+		expect(b.model).toBe("anthropic.claude-3-5-sonnet-20241022-v2:0");
+		// Bedrock auths via SigV4 — no api_key, and base_url is suppressed for bedrock.
+		expect(b.api_key).toBeUndefined();
+		expect(b.base_url).toBeUndefined();
+		expect(mb.default).toBe("bedrock");
+	});
+
+	it("defaults the Bedrock region to us-east-1 when --region is omitted", async () => {
+		await runInit({ bedrock: true, configDir: tempDir });
+		const src = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
+		const mb = JSON.parse(src.replace(/^export default /, "").replace(/;\n?$/, ""));
+		expect(mb.backends[0].region).toBe("us-east-1");
+	});
+
+	it("creates the Cerebras preset with --cerebras", async () => {
+		process.env.CEREBRAS_API_KEY = "cb-key";
+		try {
+			await runInit({ cerebras: true, configDir: tempDir });
+			const src = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
+			const mb = JSON.parse(src.replace(/^export default /, "").replace(/;\n?$/, ""));
+			const b = mb.backends[0];
+			expect(b.provider).toBe("cerebras");
+			expect(b.base_url).toBe("https://api.cerebras.ai/v1");
+			expect(b.api_key).toBe("cb-key");
+		} finally {
+			process.env.CEREBRAS_API_KEY = undefined;
+		}
+	});
+
+	it("creates the z.AI preset with --zai", async () => {
+		process.env.ZAI_API_KEY = "zai-key";
+		try {
+			await runInit({ zai: true, configDir: tempDir });
+			const src = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
+			const mb = JSON.parse(src.replace(/^export default /, "").replace(/;\n?$/, ""));
+			const b = mb.backends[0];
+			expect(b.provider).toBe("zai");
+			expect(b.base_url).toBe("https://api.z.ai/api/coding/paas/v4");
+			expect(b.api_key).toBe("zai-key");
+		} finally {
+			process.env.ZAI_API_KEY = undefined;
+		}
+	});
+
+	it("warns (but still writes config) when a preset's API key env var is absent", async () => {
+		// An empty string is falsy under init's `if (!apiKey)` gate, so it drives the
+		// same "not found" warning as an absent var without the noDelete lint hit.
+		const prior = process.env.CEREBRAS_API_KEY;
+		process.env.CEREBRAS_API_KEY = "";
+		const warnLines: string[] = [];
+		logSpy.mockImplementation((msg?: unknown) => {
+			warnLines.push(String(msg ?? ""));
+		});
+		try {
+			await runInit({ cerebras: true, configDir: tempDir });
+		} finally {
+			if (prior === undefined) {
+				process.env.CEREBRAS_API_KEY = "";
+			} else {
+				process.env.CEREBRAS_API_KEY = prior;
+			}
+		}
+		expect(warnLines.join("\n")).toContain("CEREBRAS_API_KEY not found");
+		// Config is still written despite the missing key.
+		expect(existsSync(join(tempDir, "model_backends.js"))).toBe(true);
+	});
+
+	it("creates a hub-only config with --hub (empty backends, hub banner)", async () => {
+		const banner: string[] = [];
+		logSpy.mockImplementation((msg?: unknown) => {
+			banner.push(String(msg ?? ""));
+		});
+		await runInit({ hub: true, configDir: tempDir });
+		const src = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
+		const mb = JSON.parse(src.replace(/^export default /, "").replace(/;\n?$/, ""));
+		expect(mb.backends).toEqual([]);
+		expect(mb.default).toBe("");
+		expect(banner.join("\n")).toContain("Hub initialized successfully!");
+	});
 });

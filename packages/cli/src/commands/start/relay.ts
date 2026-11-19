@@ -139,7 +139,13 @@ export async function initRelay(
 						error: err instanceof Error ? err.message : String(err),
 					},
 				);
-				process.exit(1);
+				// R-SE19: key derivation failure is fatal. Throw instead of
+				// process.exit so startNode (and the in-process boot tests) surface it
+				// as a catchable error rather than killing the host process; runStart's
+				// top-level catch exits non-zero.
+				throw new Error(
+					`FATAL: Failed to initialize encryption key manager: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		}
 	}
