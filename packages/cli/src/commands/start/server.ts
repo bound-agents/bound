@@ -1255,16 +1255,18 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Proactive notifications: trigger inference for task completions
 		appContext.eventBus.on("task:completed", ({ task_id, result }) => {
+			// `tasks` has no `name` column; label the task by its trigger spec, the
+			// same convention memory-with-source uses for `task_name`.
 			const task = appContext.db
-				.query("SELECT id, name, thread_id FROM tasks WHERE id = ? AND deleted = 0")
-				.get(task_id) as { id: string; name: string; thread_id: string | null } | null;
+				.query("SELECT id, trigger_spec, thread_id FROM tasks WHERE id = ? AND deleted = 0")
+				.get(task_id) as { id: string; trigger_spec: string; thread_id: string | null } | null;
 
 			if (!task?.thread_id) return; // No thread to notify
 
 			const notificationPayload = {
 				type: "task_complete",
 				task_id: task.id,
-				task_name: task.name,
+				task_name: task.trigger_spec,
 				result: result ?? "completed",
 				notification_id: randomUUID(),
 			};

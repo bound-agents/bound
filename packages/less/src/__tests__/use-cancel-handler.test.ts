@@ -174,13 +174,18 @@ describe("useCancelHandler", () => {
 			});
 			return React.createElement(Text, null, "ok");
 		}
-		const { stdin, lastFrame } = render(React.createElement(Harness));
+		const { stdin, frames, stderr } = render(React.createElement(Harness));
 		await tick();
+		expect(frames.some((f) => f.includes("ok"))).toBe(true);
 
-		// No onGracefulExit — the default-undefined branch must not throw.
+		// No onGracefulExit: the default-undefined branch must go straight to
+		// exit() without throwing. Whether the unmounted frame is still "ok" or
+		// already empty depends on platform timing, so assert on errors, not on
+		// the post-exit frame. An unhandled rejection would also fail the test.
 		stdin.write("\x03");
 		stdin.write("\x03");
 		await tick();
-		expect(lastFrame()).toContain("ok");
+		expect(mockClient.cancelThread).not.toHaveBeenCalled();
+		expect(stderr.lastFrame() ?? "").toBe("");
 	});
 });

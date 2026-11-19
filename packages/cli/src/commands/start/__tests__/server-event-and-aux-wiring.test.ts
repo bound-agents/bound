@@ -634,12 +634,92 @@ describe("initServer — event listener wiring", () => {
 		cleanupTmpDir(tmpDir);
 	});
 
-	// NOTE: the `task:completed` listener (server.ts ~1231) is intentionally not
-	// exercised here. It queries `SELECT id, name, thread_id FROM tasks`, but the
-	// `tasks` table has no `name` column (confirmed via PRAGMA against the applied
-	// schema), so the handler throws on every DB; and no code anywhere in the
-	// repo emits `task:completed`. It is dead/broken code — reaching it would
-	// require a source fix outside this partition's scope.
+	it("routes task:completed to a local task_complete notification labelled by trigger spec", async () => {
+		const threadId = randomUUID();
+		seedThread(db, siteId, threadId, "web", "operator");
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId,
+				type: "cron",
+				status: "completed",
+				trigger_spec: "0 9 * * *",
+				thread_id: threadId,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+
+		const appContext = makeAppContext(db, siteId);
+		const agentLoopFactory = { createAuxLoopRunner: () => undefined };
+		result = await initServer(makeDeps(appContext, agentLoopFactory, makeRelayProcessor()));
+
+		const enqueued: string[] = [];
+		appContext.eventBus.on("notify:enqueued", ({ thread_id }) => enqueued.push(thread_id));
+
+		// Before the fix this handler queried a nonexistent `tasks.name` column
+		// and threw on every database.
+		expect(() =>
+			appContext.eventBus.emit("task:completed", { task_id: taskId, result: "ok" }),
+		).not.toThrow();
+
+		expect(enqueued).toContain(threadId);
+		const rows = db
+			.query("SELECT payload FROM durable_work WHERE kind = 'dispatch_message'")
+			.all() as { payload: string }[];
+		const notes = rows
+			.map(
+				(r) =>
+					JSON.parse(r.payload) as { thread_id: string; event_type: string; event_payload: string },
+			)
+			.filter((p) => p.thread_id === threadId && p.event_type === "notification")
+			.map((p) => JSON.parse(p.event_payload) as Record<string, unknown>);
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toMatchObject({
+			type: "task_complete",
+			task_id: taskId,
+			task_name: "0 9 * * *",
+			result: "ok",
+		});
+	});
+
+	it("ignores task:completed for a task with no thread", async () => {
+		const taskId = randomUUID();
+		const now = new Date().toISOString();
+		insertRow(
+			db,
+			"tasks",
+			{
+				id: taskId,
+				type: "deferred",
+				status: "completed",
+				trigger_spec: "5m",
+				thread_id: null,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			siteId,
+		);
+		const appContext = makeAppContext(db, siteId);
+		const agentLoopFactory = { createAuxLoopRunner: () => undefined };
+		result = await initServer(makeDeps(appContext, agentLoopFactory, makeRelayProcessor()));
+
+		const enqueued: string[] = [];
+		appContext.eventBus.on("notify:enqueued", ({ thread_id }) => enqueued.push(thread_id));
+		appContext.eventBus.emit("task:completed", { task_id: taskId, result: null });
+
+		expect(enqueued).toEqual([]);
+		const count = db
+			.query("SELECT count(*) AS n FROM durable_work WHERE kind = 'dispatch_message'")
+			.get() as { n: number };
+		expect(count.n).toBe(0);
+	});
 
 	it("drives handleThread on notify:enqueued (no pending work is a safe no-op)", async () => {
 		const threadId = randomUUID();

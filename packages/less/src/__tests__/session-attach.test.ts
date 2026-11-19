@@ -304,6 +304,63 @@ describe("performAttach", () => {
 		expect(result.lastUsedModelId).toBeNull();
 	});
 
+	it("annotates assistant messages with cache usage from the turn that produced them", async () => {
+		const msg = (id: string, role: string, created_at: string, metadata: string | null) =>
+			({
+				id,
+				thread_id: "thread1",
+				role,
+				content: "x",
+				model_id: null,
+				tool_name: null,
+				created_at,
+				modified_at: null,
+				host_origin: "local",
+				metadata,
+			}) as unknown as Message;
+		mockClient.listMessages = vi.fn(async () => [
+			// Before any turn: no turn at or before it, left untouched.
+			msg("a0", "assistant", "2026-04-18T00:00:00Z", null),
+			msg("u1", "user", "2026-04-18T00:00:10Z", null),
+			// Covered by the cache-hitting turn at :05; existing metadata is kept.
+			msg("a1", "assistant", "2026-04-18T00:00:20Z", JSON.stringify({ model: "m" })),
+			// Covered by the no-cache turn at :30, left untouched.
+			msg("a2", "assistant", "2026-04-18T00:00:40Z", null),
+			// Covered by the cache-writing turn at :50; malformed metadata is replaced.
+			msg("a3", "assistant", "2026-04-18T00:01:00Z", "{not json"),
+		]);
+		mockClient.getContextDebug = vi.fn(async () => [
+			{ created_at: "2026-04-18T00:00:05Z", tokens_cache_read: 1200, tokens_cache_write: 0 },
+			{ created_at: "2026-04-18T00:00:30Z", tokens_cache_read: 0, tokens_cache_write: 0 },
+			{ created_at: "2026-04-18T00:00:50Z", tokens_cache_read: null, tokens_cache_write: 300 },
+		]) as unknown as BoundClient["getContextDebug"];
+
+		const { messages } = await performAttach(baseParams());
+		const byId = new Map(messages.map((m) => [m.id, m]));
+
+		expect(byId.get("a0")?.metadata ?? null).toBeNull();
+		expect(byId.get("u1")?.metadata ?? null).toBeNull();
+		expect(JSON.parse(byId.get("a1")?.metadata ?? "null")).toEqual({
+			model: "m",
+			cache_usage: { read: 1200, write: 0 },
+		});
+		expect(byId.get("a2")?.metadata ?? null).toBeNull();
+		expect(JSON.parse(byId.get("a3")?.metadata ?? "null")).toEqual({
+			cache_usage: { read: 0, write: 300 },
+		});
+	});
+
+	it("still attaches when getContextDebug rejects", async () => {
+		mockClient.getContextDebug = vi.fn(async () => {
+			throw new Error("debug endpoint down");
+		}) as unknown as BoundClient["getContextDebug"];
+
+		const result = await performAttach(baseParams());
+
+		expect(result.messages).toHaveLength(4);
+		expect(result.messages.every((m) => !(m.metadata ?? "").includes("cache_usage"))).toBe(true);
+	});
+
 	function baseParams(): AttachParams {
 		return {
 			client: mockClient,
