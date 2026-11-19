@@ -160,4 +160,13 @@ Separately, `bun test --parallel` reports coverage for only part of the executed
 
 `scripts/validate-coverage.ts` sums each package's lcov report and holds the total at its floor in `scripts/coverage-baseline.json`.
 
-Bun's lcov report also omits every file no test imports, so an untested file is invisible rather than 0%. The ratchet adds those files back at 0% with line and function counts estimated from the transpiled source, which keeps a package's first test for an untested file from lowering its total. `.svelte` components are not instrumented at all and are listed as unmeasured.
+Bun's lcov report also omits every file no test imports, so an untested file is invisible rather than 0%. The ratchet adds those files back at 0% with line and function counts estimated from the transpiled source, which keeps a package's first test for an untested file from lowering its total. Unloaded `.svelte` components are compiled and estimated the same way.
+
+### `.svelte` imports under `bun test` need the preloaded svelte plugin
+
+Bun has no `.svelte` loader: without one, `import Btn from "./Btn.svelte"` resolves to the file's path string. The import succeeds, `expect(module).toBeDefined()` passes, and no component code runs, so coverage never sees the file. `scripts/svelte-test-plugin.ts` (preloaded by `scripts/test-preload.ts`) compiles each component with `generate: "client"`, as the Vite build does.
+
+The plugin also redirects svelte's server entry points to the browser builds. Bun's test runner resolves the package exports' `default` condition (`index-server.js`), where `mount` throws `lifecycle_function_unavailable`; Vite resolves `browser`. See `packages/web/src/client/__tests__/render-btn.test.ts` for mounting a component under jsdom.
+
+Bun attributes a compiled component's coverage to its `.svelte` path without applying the inline source map: line numbers in the coverage report are lines of the compiled JS, not the `.svelte` source. Totals and percentages are real. To read an uncovered range, compile the component (`compileSvelteModule`) and look up those lines in the output.
+

@@ -6,6 +6,7 @@ import {
 	addUnloadedSources,
 	compareAgainstBaseline,
 	estimateUnloaded,
+	estimateUnloadedSvelte,
 	floorFor,
 	isCountedSource,
 	lcovSourceFiles,
@@ -129,7 +130,7 @@ describe("validate-coverage: unloaded files", () => {
 		});
 	});
 
-	it("adds files no test loaded at 0% and lists .svelte files as unmeasured", () => {
+	it("adds files no test loaded at 0%, through the given estimator", () => {
 		const totals = parseLcov(record("packages/web/src/a.ts", 10, 10, 2, 2), "web");
 		const sources: Record<string, string> = {
 			"packages/web/src/a.ts": "export const a = () => 1;",
@@ -137,19 +138,27 @@ describe("validate-coverage: unloaded files", () => {
 			"packages/web/src/types.ts": "export interface T { x: number }",
 			"packages/web/src/App.svelte": "<script>let x = 1;</script>",
 		};
-		const unmeasured = addUnloadedSources(
+		addUnloadedSources(
 			totals,
 			Object.keys(sources),
 			new Set(["packages/web/src/a.ts"]),
 			(file) => sources[file],
+			(file, source) =>
+				file.endsWith(".svelte") ? { lines: 40, functions: 1 } : estimateUnloaded(source),
 		);
-		expect(unmeasured).toEqual(["packages/web/src/App.svelte"]);
-		expect(totals.files).toBe(2);
-		expect(totals.unloadedFiles).toBe(1);
+		expect(totals.files).toBe(3);
+		expect(totals.unloadedFiles).toBe(2);
 		expect(totals.linesHit).toBe(10);
-		expect(totals.linesFound).toBeGreaterThan(10);
-		expect(totals.functionsFound).toBe(3);
+		expect(totals.linesFound).toBeGreaterThan(50);
+		expect(totals.functionsFound).toBe(4);
 		expect(totals.functionsHit).toBe(2);
+	});
+
+	it("estimates a component as one function, scaled compiled lines", () => {
+		const js = "export default function C($anchor) {\n\tlet x = 1;\n\tconst y = () => x;\n}";
+		const estimate = estimateUnloadedSvelte(js);
+		expect(estimate.functions).toBe(1);
+		expect(estimate.lines).toBe(Math.round(estimateUnloaded(js).lines * 1.345));
 	});
 });
 

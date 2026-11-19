@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
+import { svelteTestPlugin } from "./svelte-test-plugin";
 
 // Register the just-bash worker-path rewrite as a runtime plugin so `bun test`
 // spawns the SHIMMED materialized worker — identical to the compiled `bound`
@@ -14,6 +15,10 @@ import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
 // `materializeSandboxRuntime()` inside `createSandbox()`. The onLoad hook is
 // lazy: it fires only when a test actually imports a just-bash worker chunk.
 Bun.plugin(justBashWorkerRewritePlugin());
+
+// Compile .svelte imports so component tests run real component code and
+// coverage measures it (see svelte-test-plugin.ts).
+Bun.plugin(svelteTestPlugin(join(import.meta.dir, "..")));
 
 if (!process.env.LOG_LEVEL) {
 	process.env.LOG_LEVEL = "silent";

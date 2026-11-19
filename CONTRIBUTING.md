@@ -159,6 +159,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [`bun --cwd <pkg> run <script>` silently no-ops](docs/gotchas.md#bun---cwd-pkg-run-script-silently-no-ops)
 - [Tool-result content items must be ai@7 `file` items or the thread wedges](docs/gotchas.md#tool-result-content-items-must-be-ai7-file-items-or-the-thread-wedges)
 - [Bun coverage thresholds are per-file, and `--parallel` under-reports coverage](docs/gotchas.md#bun-coverage-thresholds-are-per-file-and---parallel-under-reports-coverage)
+- [`.svelte` imports under `bun test` need the preloaded svelte plugin](docs/gotchas.md#svelte-imports-under-bun-test-need-the-preloaded-svelte-plugin)
 
 ## Recurring Checklists
 

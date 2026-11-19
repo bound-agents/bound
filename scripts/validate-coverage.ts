@@ -21,8 +21,9 @@
  * Files no test imports are absent from Bun's lcov report. They count here at
  * 0%, with line and function totals estimated from the transpiled source
  * (`estimateUnloaded`), so adding the first test for an untested file can
- * only raise a package's total. `.svelte` components are not instrumented by
- * Bun at all; they are listed as unmeasured rather than counted.
+ * only raise a package's total. `.svelte` components are compiled under test
+ * by scripts/svelte-test-plugin.ts (preloaded), so loaded components report
+ * real coverage; unloaded ones are compiled here and estimated the same way.
  *
  * Measure SERIALLY. Under `bun test --parallel`, Bun's coverage report covers
  * only part of the executed code (packages/core measured 71.3% lines under
@@ -43,6 +44,7 @@
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Glob } from "bun";
+import { compileSvelteModule, loadSvelteCompiler } from "./svelte-test-plugin";
 import { gateIgnoreArgs, hasTestFiles, pkgDirFromGlobMatch } from "./test-affected";
 
 export const BASELINE_PATH = "scripts/coverage-baseline.json";
@@ -169,30 +171,44 @@ export function packageSourceFiles(root: string, pkg: string): string[] {
 }
 
 /**
- * Adds every production file missing from the lcov report at 0% coverage.
- * Returns the `.svelte` files, which Bun cannot instrument.
+ * Bun's LF for a compiled component, per line of compiled JS that
+ * `estimateUnloaded` counts. Calibrated on the 28 components the web suite
+ * loads: 1.345x, leave-one-out median error 6.4%, p90 15%.
  */
+export const SVELTE_LINE_SCALE = 1.345;
+
+export type Estimate = { lines: number; functions: number };
+export type Estimator = (file: string, source: string) => Estimate;
+
+/**
+ * Estimates an unloaded `.svelte` component from its compiled JS. Bun reports
+ * one function per component (the component function; template closures are
+ * not counted), so functions is always 1.
+ */
+export function estimateUnloadedSvelte(compiledJs: string): Estimate {
+	return {
+		lines: Math.round(estimateUnloaded(compiledJs).lines * SVELTE_LINE_SCALE),
+		functions: 1,
+	};
+}
+
+/** Adds every production file missing from the lcov report at 0% coverage. */
 export function addUnloadedSources(
 	totals: Totals,
 	sourceFiles: string[],
 	loaded: Set<string>,
 	readSource: (file: string) => string,
-): string[] {
-	const unmeasured: string[] = [];
+	estimate: Estimator = (_file, source) => estimateUnloaded(source),
+): void {
 	for (const file of sourceFiles) {
 		if (loaded.has(file)) continue;
-		if (file.endsWith(".svelte")) {
-			unmeasured.push(file);
-			continue;
-		}
-		const { lines, functions } = estimateUnloaded(readSource(file));
+		const { lines, functions } = estimate(file, readSource(file));
 		if (lines === 0 && functions === 0) continue;
 		totals.files++;
 		totals.unloadedFiles++;
 		totals.linesFound += lines;
 		totals.functionsFound += functions;
 	}
-	return unmeasured;
 }
 
 function percent(hit: number, found: number): number {
@@ -340,7 +356,7 @@ function renderTable(
 	].join("\n");
 }
 
-function run(): void {
+async function run(): Promise<void> {
 	const root = resolve(import.meta.dir, "..");
 	const args = process.argv.slice(2);
 	const testable = listTestablePackages(root);
@@ -374,18 +390,22 @@ function run(): void {
 		if (!existsSync(lcovPath)) continue;
 		const lcov = readFileSync(lcovPath, "utf8");
 		const totals = parseLcov(lcov, pkg);
-		const unmeasured = addUnloadedSources(
+		const sourceFiles = packageSourceFiles(root, pkg);
+		const compile = sourceFiles.some((file) => file.endsWith(".svelte"))
+			? await loadSvelteCompiler(root)
+			: undefined;
+		addUnloadedSources(
 			totals,
-			packageSourceFiles(root, pkg),
+			sourceFiles,
 			lcovSourceFiles(lcov),
 			(file) => readFileSync(join(root, file), "utf8"),
+			(file, source) =>
+				compile && file.endsWith(".svelte")
+					? estimateUnloadedSvelte(compileSvelteModule(compile, file, source))
+					: estimateUnloaded(source),
 		);
 		if (totals.files > 0) measured[pkg] = toMeasured(totals);
-		notes.push(
-			`${pkg}: ${totals.unloadedFiles} file(s) no test loads, counted at 0%${
-				unmeasured.length > 0 ? `; ${unmeasured.length} .svelte file(s) unmeasured` : ""
-			}`,
-		);
+		notes.push(`${pkg}: ${totals.unloadedFiles} file(s) no test loads, counted at 0%`);
 	}
 
 	const table = `${renderTable(measured, baseline, packages)}\n\n${notes.map((note) => `- ${note}`).join("\n")}`;
@@ -418,5 +438,5 @@ function run(): void {
 }
 
 if (import.meta.main) {
-	run();
+	await run();
 }
