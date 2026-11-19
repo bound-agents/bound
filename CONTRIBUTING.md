@@ -92,7 +92,7 @@ For design rationale per package, see `docs/design/` — seven topic files cover
 - **Unit tests**: `*.test.ts` — alongside the code they cover (or under `__tests__/`)
 - **Integration tests**: `*.integration.test.ts`
 - **Runner**: `bun:test` (`describe` / `it` / `expect`)
-- **Coverage targets**: core/agent/sync/platforms 80%, web/cli 60%
+- **Coverage**: every package's total line and function coverage is held at a floor in `scripts/coverage-baseline.json` by `scripts/validate-coverage.ts` (the CI Coverage job). Floors ratchet up toward a 90% target and never down; a package that drops below its floor fails CI. When coverage rises, run `bun run scripts/validate-coverage.ts --measure --write-baseline` and commit the raised floors. Measure without `--parallel` — see the gotcha below.
 - **Test DBs**: prefer an in-memory DB (`new Database(":memory:")`) for unit tests that pass the `db` object directly and never reopen from a path — it sidesteps Windows `EBUSY` when a recursive `rmSync` races the still-closing SQLite WAL/SHM handle. When a file-backed DB is genuinely needed, build the path under `os.tmpdir()` (e.g. `join(tmpdir(), \`x-${randomBytes(4).toString("hex")}.db\`)`), never a hardcoded `/tmp/...` (which is not portable to Windows runners), and clean up with `rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })`.
 - **Multi-instance sync tests**: bind servers to an OS-assigned ephemeral port (`Bun.serve({ port: 0 })`, then read `server.port` back) rather than picking a random port and hoping it's free. A caller-chosen port races other clusters in the same run and — especially on Windows, where a just-closed listener lingers in `TIME_WAIT` — intermittently throws `EADDRINUSE` in `beforeEach`. The OS only hands out free ports, so collisions are impossible. Still give each cluster a unique `testRunId` to keep its on-disk DB/keypair paths from colliding. See `createWsTestCluster` in `packages/sync/src/__tests__/test-harness.ts`.
 - **Mock LLM**: implement the `LLMBackend` interface with `setTextResponse()` / `setToolThenTextResponse()` — see existing tests in `packages/agent`.
@@ -158,6 +158,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [`bun add` / `bun install` fail against the global cache under the boundless sandbox](docs/gotchas.md#bun-add--bun-install-fail-against-the-global-cache-under-the-boundless-sandbox)
 - [`bun --cwd <pkg> run <script>` silently no-ops](docs/gotchas.md#bun---cwd-pkg-run-script-silently-no-ops)
 - [Tool-result content items must be ai@7 `file` items or the thread wedges](docs/gotchas.md#tool-result-content-items-must-be-ai7-file-items-or-the-thread-wedges)
+- [Bun coverage thresholds are per-file, and `--parallel` under-reports coverage](docs/gotchas.md#bun-coverage-thresholds-are-per-file-and---parallel-under-reports-coverage)
 
 ## Recurring Checklists
 

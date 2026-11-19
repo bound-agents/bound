@@ -1,12 +1,8 @@
 [test]
-coverage = true
-coverageThreshold = { line = 0.6, function = 0.6 }
 # Exclude e2e tests from bun test runner (use Playwright instead)
 root = "packages"
 preload = ["./packages/core/src/reflect-preload.ts", "./scripts/test-preload.ts"]
 
-# Note: Per AC4.6, differentiated thresholds are needed:
-# core/agent/sync: 80% (line and function)
-# web/discord/cli: 60% (line and function)
-# bunfig.toml global threshold is the floor (60%).
-# Per-package thresholds enforced via CI scripts or package-level bunfig.toml overrides.
+# Coverage is gated by package total, not here: Bun's coverageThreshold applies
+# to every file and silently ignores misspelled keys. See
+# scripts/validate-coverage.ts and scripts/coverage-baseline.json.

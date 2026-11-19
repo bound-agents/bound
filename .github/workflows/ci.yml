@@ -52,6 +52,57 @@ jobs:
       - name: tsc (all packages)
         run: bun run typecheck
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    # Serial per-package measurement; the slowest package (agent) takes ~2 min.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Prepare Linux Tree-sitter native addons
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ curl ca-certificates
+          NODE_VERSION=22.15.0
+          NODE_HEADERS_SHA256=cda8bbbfb4f7fb19b65efd5faabc97ccea1e94422e7066b9a1e70280c1ca6453
+          HEADER_DIR="$RUNNER_TEMP/node-v${NODE_VERSION}"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/node-headers.tar.gz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-headers.tar.gz"
+          echo "${NODE_HEADERS_SHA256}  $RUNNER_TEMP/node-headers.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/node-headers.tar.gz" -C "$RUNNER_TEMP"
+          test -f "$HEADER_DIR/include/node/node_api.h"
+          export NODE_GYP_NODEDIR="$HEADER_DIR"
+          bun run scripts/tree-sitter-native-staging.ts
+
+      - name: Coverage ratchet
+        # Runs every package's tests serially with lcov coverage, then holds
+        # each package's TOTAL line/function coverage at its floor in
+        # scripts/coverage-baseline.json (target 90%). Not bunfig's
+        # coverageThreshold: that one is per-file. Not --parallel: Bun's
+        # parallel workers under-report coverage.
+        run: bun run scripts/validate-coverage.ts --measure
+
+      - name: Upload coverage
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: coverage/
+          if-no-files-found: ignore
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -149,7 +200,7 @@ jobs:
           TEST_TIMEOUT=15000
           if [ "$RUNNER_OS" = "Windows" ]; then TEST_TIMEOUT=30000; fi
           exit_code=0
-          for pkg in shared core sync sandbox llm agent platforms web client cli less; do
+          for pkg in shared core sync sandbox llm loop agent platforms web client cli less; do
             echo "::group::packages/$pkg"
             pkg_code=0
             # --parallel spreads a package's test FILES across worker processes

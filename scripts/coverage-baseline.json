@@ -1,0 +1,53 @@
+{
+	"target": 90,
+	"packages": {
+		"agent": {
+			"lines": 90,
+			"functions": 90
+		},
+		"cli": {
+			"lines": 38,
+			"functions": 69
+		},
+		"client": {
+			"lines": 38,
+			"functions": 38
+		},
+		"core": {
+			"lines": 84,
+			"functions": 85
+		},
+		"less": {
+			"lines": 85,
+			"functions": 87
+		},
+		"llm": {
+			"lines": 90,
+			"functions": 90
+		},
+		"loop": {
+			"lines": 90,
+			"functions": 81
+		},
+		"platforms": {
+			"lines": 90,
+			"functions": 86
+		},
+		"sandbox": {
+			"lines": 88,
+			"functions": 90
+		},
+		"shared": {
+			"lines": 90,
+			"functions": 78
+		},
+		"sync": {
+			"lines": 85,
+			"functions": 88
+		},
+		"web": {
+			"lines": 81,
+			"functions": 89
+		}
+	}
+}

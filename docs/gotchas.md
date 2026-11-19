@@ -147,3 +147,15 @@ Observed live (thread `10e34ac9`, 2026-10-10): a `boundless_read` on a JPEG retu
 Two schema subtleties worth keeping in hand when touching this code. First, the SDK's `outputSchema` is position-sensitive: the user/assistant `filePartSchema` accepts bare `string | Uint8Array | ArrayBuffer` inline data, but tool-result content items require the tagged discriminated union (`{ type: "data" | "url" | "reference" | "text", ... }`) — a bare string is valid one schema up and fatal here. Second, downstream mapping differs per adapter: `@ai-sdk/anthropic` converts `image/*` items into base64 image blocks (and `application/pdf` into a PDF document block, enabling the `pdfs-2024-09-25` beta) inside the Anthropic `tool_result` content, while `@ai-sdk/openai-compatible` JSON-stringifies the whole value array into the tool message — so images in tool results are model-visible on Anthropic-family legs and text-degraded on OpenAI-compatible ones.
 
 Guard: `packages/llm/src/__tests__/ai-sdk-bridge.test.ts` drives the real validator — `generateText` + `MockLanguageModelV4` — with one test asserting bridge output passes prompt validation and a control asserting the legacy `media` item still fails it, so a vocabulary regression fails a test instead of wedging a thread.
+
+### Bun coverage thresholds are per-file, and `--parallel` under-reports coverage
+
+Three Bun 1.4 behaviors make `bunfig.toml` unusable as a package coverage gate:
+
+- `coverageThreshold` keys are `lines` and `functions`. The singular `line` / `function` are ignored without a warning, so a misspelled threshold enforces nothing. bunfig carried `{ line = 0.6, function = 0.6 }` until the coverage ratchet replaced it: `packages/shared` passed it at 0.99 while its package total sat at 79% functions.
+- Spelled correctly, the threshold applies to every file, not the package total. One 0%-function helper (`packages/shared/src/assert.ts`) fails the package at `lines = 0.01`.
+- A `bunfig.toml` inside `packages/<pkg>/` is read only when `bun test` runs from that directory. CI and the pre-commit gate run `bun test packages/<pkg>` from the root, so package-level thresholds never fire.
+
+Separately, `bun test --parallel` reports coverage for only part of the executed code. Same tests, same exit code: `packages/core` measured 71.3% lines under `--parallel` and 85.0% serially. Measure coverage serially.
+
+`scripts/validate-coverage.ts` sums each package's lcov report and holds the total at its floor in `scripts/coverage-baseline.json`.
