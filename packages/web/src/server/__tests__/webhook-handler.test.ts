@@ -1065,3 +1065,90 @@ describe("handleWebhookRequest", () => {
 		expect(envelope.headers["x-slack-request-timestamp"]).toBe(timestamp);
 	});
 });
+
+describe("handleWebhookRequest — body limits and unauthenticated gate", () => {
+	let db: Database;
+	let siteId: string;
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		siteId = randomUUID();
+		applySchema(db);
+		db.run(
+			"INSERT INTO hosts (site_id, host_name, version, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
+			[siteId, "test-host", "1.0.0", new Date().toISOString(), 0],
+		);
+	});
+
+	function seedWebhook(name: string, format: string): void {
+		insertRow(
+			db,
+			"webhooks",
+			{
+				id: randomUUID(),
+				name,
+				secret: "s",
+				signature_format: format,
+				description: null,
+				task_id: randomUUID(),
+				thread_id: randomUUID(),
+				created_at: new Date().toISOString(),
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+			},
+			siteId,
+		);
+	}
+
+	test("rejects a body whose declared Content-Length exceeds the cap (404, no oracle)", async () => {
+		seedWebhook("big", "github");
+		const request = new Request("http://localhost:3000/webhook/big", {
+			method: "POST",
+			headers: { "content-length": String(MAX_WEBHOOK_BODY_BYTES + 1) },
+			body: "x",
+		});
+		const response = await handleWebhookRequest(request, "big", { db, siteId });
+		// readRequestBodyLimited returns {ok:false,413}, but the handler flattens
+		// every pre-signature rejection to 404 to avoid a name-enumeration oracle.
+		expect(response.status).toBe(404);
+	});
+
+	test("rejects a streamed body that exceeds the cap (404, no oracle)", async () => {
+		seedWebhook("stream", "github");
+		// A stream with no content-length header whose bytes exceed the cap.
+		const oversized = new Uint8Array(MAX_WEBHOOK_BODY_BYTES + 10).fill(65);
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(oversized);
+				controller.close();
+			},
+		});
+		const request = new Request("http://localhost:3000/webhook/stream", {
+			method: "POST",
+			body,
+			// @ts-expect-error Node/undici needs duplex for a stream body
+			duplex: "half",
+		});
+		const response = await handleWebhookRequest(request, "stream", { db, siteId });
+		expect(response.status).toBe(404);
+	});
+
+	test("404s a 'none' webhook while the cluster switch is off", async () => {
+		seedWebhook("unauth", "none");
+		const request = new Request("http://localhost:3000/webhook/unauth", {
+			method: "POST",
+			body: "{}",
+		});
+		const response = await handleWebhookRequest(request, "unauth", { db, siteId });
+		// The unauthenticated kill switch is off by default → identical 404 to a
+		// missing webhook (no name-enumeration oracle).
+		expect(response.status).toBe(404);
+	});
+
+	test("returns 404 for a non-POST method", async () => {
+		seedWebhook("getme", "none");
+		const request = new Request("http://localhost:3000/webhook/getme", { method: "GET" });
+		const response = await handleWebhookRequest(request, "getme", { db, siteId });
+		expect(response.status).toBe(404);
+	});
+});

@@ -156,15 +156,37 @@ export interface DomHarness {
 	teardown(): void;
 }
 
+/**
+ * One jsdom window for the whole test process. svelte's client runtime caches
+ * `window`, `document` and the Node/Element prototype getters the first time
+ * it touches the DOM (init_operations) and never re-reads them. A fresh window
+ * per test file would leave every later file rendering through the first
+ * file's dead prototypes, so files share this window and teardown resets it
+ * instead of closing it.
+ */
+let sharedDom: JSDOM | undefined;
+
+function acquireDom(url: string): JSDOM {
+	if (!sharedDom) {
+		// jsdom reports unimplemented APIs (layout, navigation) on its console;
+		// those are expected under test. Real script errors still throw.
+		sharedDom = new JSDOM("<!doctype html><html><head></head><body></body></html>", {
+			url,
+			pretendToBeVisual: true,
+			virtualConsole: new VirtualConsole(),
+		});
+	} else {
+		sharedDom.reconfigure({ url });
+		sharedDom.window.document.head.innerHTML = "";
+		sharedDom.window.document.body.innerHTML = "";
+		sharedDom.window.localStorage.clear();
+		sharedDom.window.sessionStorage.clear();
+	}
+	return sharedDom;
+}
+
 export function installDom(options: { url?: string } = {}): DomHarness {
-	const virtualConsole = new VirtualConsole();
-	// jsdom reports unimplemented APIs (layout, navigation) on its console;
-	// those are expected under test. Real script errors still throw.
-	const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", {
-		url: options.url ?? "http://localhost/",
-		pretendToBeVisual: true,
-		virtualConsole,
-	});
+	const dom = acquireDom(options.url ?? "http://localhost/");
 	const window = dom.window as unknown as Window & typeof globalThis;
 	const global = globalThis as Record<string, unknown>;
 	const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -294,6 +316,11 @@ export function installDom(options: { url?: string } = {}): DomHarness {
 	let tornDown = false;
 
 	const svelte = () => import("svelte");
+	// Resolved svelte module, captured on first mount so teardown can unmount
+	// synchronously — before the jsdom window/globals are torn down. Deferring
+	// the unmount to an async `import(...).then(...)` races global restoration:
+	// svelte's effect-teardown dereferences `document`, which is gone by then.
+	let svelteModule: Awaited<ReturnType<typeof svelte>> | null = null;
 
 	const settle = async (rounds = 5) => {
 		const { flushSync, tick } = await svelte();
@@ -313,7 +340,9 @@ export function installDom(options: { url?: string } = {}): DomHarness {
 			routes.push({ method: method.toUpperCase(), path, handler });
 		},
 		async mount(component, props = {}) {
-			const { mount, unmount } = await svelte();
+			const mod = await svelte();
+			svelteModule = mod;
+			const { mount, unmount } = mod;
 			const target = window.document.createElement("div");
 			window.document.body.appendChild(target);
 			const instance = mount(component as Parameters<typeof mount>[0], {
@@ -363,23 +392,26 @@ export function installDom(options: { url?: string } = {}): DomHarness {
 		teardown() {
 			if (tornDown) return;
 			tornDown = true;
-			// Synchronous unmount: teardown runs from afterAll/afterEach.
+			// Unmount synchronously while jsdom globals are still live. svelte's
+			// effect-teardown dereferences `document`; deferring to an async import
+			// would race the global restoration below and throw "document is not
+			// defined" as an unhandled rejection.
 			const pending = mounted.splice(0);
-			void svelte().then(({ unmount }) => {
+			if (svelteModule) {
 				for (const entry of pending) {
 					try {
-						unmount(entry.component);
+						svelteModule.unmount(entry.component);
 					} catch {
 						/* already gone */
 					}
 				}
-			});
+			}
 			for (const [key, descriptor] of saved) {
 				if (descriptor) Object.defineProperty(globalThis, key, descriptor);
 				else delete global[key];
 			}
 			saved.clear();
-			dom.window.close();
+			window.document.body.innerHTML = "";
 		},
 	};
 	return harness;

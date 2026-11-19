@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { CallToolResult } from "@modelcontextprotocol/server";
+import { get } from "svelte/store";
 import { McpAppHost } from "../mcp-app-host";
 import {
 	type McpAppInstance,
@@ -8,6 +9,7 @@ import {
 	type UiInstanceSink,
 	createToolCallHandler,
 	instancesForThread,
+	mcpAppInstances,
 	reconstructInstancesFromMessages,
 	removeInstance,
 	upsertInstance,
@@ -417,5 +419,45 @@ describe("reconstructInstancesFromMessages", () => {
 			{ role: "tool_result", tool_name: "tooluse_5", content: "[]", metadata: "{ not json" },
 		];
 		expect(reconstructInstancesFromMessages(messages, h, "t1")).toEqual([]);
+	});
+});
+
+describe("mcpAppInstances store", () => {
+	function storeInstance(callId: string, threadId: string): McpAppInstance {
+		return {
+			callId,
+			threadId,
+			boundName: "mcp__srv__tool",
+			serverName: "srv",
+			uiResourceUri: "ui://srv/app.html",
+			input: {},
+			client: { readResource: async () => ({ contents: [] }) },
+			resultPromise: Promise.resolve({ content: [] } as never),
+			createdAt: 1,
+		} as McpAppInstance;
+	}
+
+	afterEach(() => {
+		mcpAppInstances.clear();
+	});
+
+	it("register adds an instance observable via subscribe", () => {
+		mcpAppInstances.register(storeInstance("c1", "t1"));
+		expect(get(mcpAppInstances).c1?.callId).toBe("c1");
+	});
+
+	it("remove drops a registered instance", () => {
+		mcpAppInstances.register(storeInstance("c1", "t1"));
+		mcpAppInstances.register(storeInstance("c2", "t1"));
+		mcpAppInstances.remove("c1");
+		const map = get(mcpAppInstances);
+		expect(map.c1).toBeUndefined();
+		expect(map.c2?.callId).toBe("c2");
+	});
+
+	it("clear empties the store", () => {
+		mcpAppInstances.register(storeInstance("c1", "t1"));
+		mcpAppInstances.clear();
+		expect(get(mcpAppInstances)).toEqual({});
 	});
 });

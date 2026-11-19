@@ -42,6 +42,33 @@ describe("YardExecutionCache", () => {
 
 		expect(cache.forThread("thread-1")).toEqual([]);
 	});
+
+	it("keeps the first event for a seq and ignores a later duplicate", () => {
+		const cache = new YardExecutionCache();
+		cache.add(event({ seq: 1, phase: "started" }));
+		// A second event re-using seq 1 must not replace the first (dedup on seq).
+		cache.add(event({ seq: 1, phase: "completed", node_id: "dup" }));
+		const replayed = cache.forThread("thread-1");
+		expect(replayed).toHaveLength(1);
+		expect(replayed[0]).toMatchObject({ node_id: "run-1", phase: "started" });
+	});
+
+	it("isolates traces and filters forThread by thread id", () => {
+		const cache = new YardExecutionCache();
+		cache.add(event({ trace_id: "trace-a", thread_id: "thread-a", seq: 1 }));
+		cache.add(
+			event({
+				trace_id: "trace-b",
+				thread_id: "thread-b",
+				run_id: "run-b",
+				node_id: "run-b",
+				seq: 1,
+			}),
+		);
+		expect(cache.forThread("thread-a").map((e) => e.trace_id)).toEqual(["trace-a"]);
+		expect(cache.forThread("thread-b").map((e) => e.trace_id)).toEqual(["trace-b"]);
+		expect(cache.forThread("thread-missing")).toEqual([]);
+	});
 });
 
 describe("Yard execution websocket replay", () => {

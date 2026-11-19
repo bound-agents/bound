@@ -110,4 +110,56 @@ describe("sync WebSocket lifecycle wrapper", () => {
 			"close failed",
 		);
 	});
+
+	test("rejects an upgrade that is accepted without connection data", async () => {
+		// handleUpgrade resolves undefined (accepted) but never calls server.upgrade
+		// with data, so capturedData stays undefined and the attempt is rejected.
+		const handlers = {
+			handleUpgrade: async () => undefined,
+			websocket: { open() {}, message() {}, close() {} },
+		} as unknown as Handlers;
+		const instrumented = instrumentSyncWebSocketHandlers(handlers);
+		const response = await instrumented.handleUpgrade(new Request("http://localhost/sync/ws"), {
+			upgrade: () => true,
+		} as never);
+		// No data captured, but the upgrade was "accepted" — returns undefined and
+		// records a rejected attempt without throwing.
+		expect(response).toBeUndefined();
+	});
+
+	test("propagates and records a handleUpgrade that throws", async () => {
+		const boom = new Error("upgrade exploded");
+		const handlers = {
+			handleUpgrade: async () => {
+				throw boom;
+			},
+			websocket: { open() {}, message() {}, close() {} },
+		} as unknown as Handlers;
+		const instrumented = instrumentSyncWebSocketHandlers(handlers);
+		await expect(
+			instrumented.handleUpgrade(new Request("http://localhost/sync/ws"), {
+				upgrade: () => true,
+			} as never),
+		).rejects.toThrow("upgrade exploded");
+	});
+
+	test("propagates an open-handler error and marks the attempt", async () => {
+		const { handlers, data } = fixture(undefined, "open");
+		const instrumented = instrumentSyncWebSocketHandlers(handlers);
+		await instrumented.handleUpgrade(new Request("http://localhost/sync/ws"), {
+			upgrade: () => true,
+		} as never);
+		const socket = { data } as never;
+		expect(() => instrumented.websocket.open?.(socket)).toThrow("open failed");
+	});
+
+	test("treats a 500 upgrade response as an upgrade-stage rejection", async () => {
+		const serverError = new Response("Internal Error", { status: 500 });
+		const { handlers } = fixture(serverError);
+		const instrumented = instrumentSyncWebSocketHandlers(handlers);
+		const response = await instrumented.handleUpgrade(new Request("http://localhost/sync/ws"), {
+			upgrade: () => true,
+		} as never);
+		expect(response).toBe(serverError);
+	});
 });

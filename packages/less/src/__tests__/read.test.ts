@@ -386,3 +386,62 @@ describe("boundless_read_structure", () => {
 		expect(result.content[1]?.text).toContain("[truncated;");
 	});
 });
+
+describe("boundless_read — extra branches", () => {
+	let tempDir: string;
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `boundless-read-extra-${randomBytes(4).toString("hex")}`);
+		mkdirSync(tempDir, { recursive: true });
+	});
+	afterEach(() => {
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	});
+
+	it("returns an image ContentBlock for GIF files", async () => {
+		const gif = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00]);
+		writeFileSync(join(tempDir, "image.gif"), gif);
+		const result = await readTool(
+			{ file_path: "image.gif" },
+			new AbortController().signal,
+			tempDir,
+		);
+		const imageBlock = result.content.find((b) => b.type === "image");
+		expect(imageBlock?.source?.media_type).toBe("image/gif");
+	});
+
+	it("createReadTool threads the hostname into the provenance block", async () => {
+		const { createReadTool } = await import("../tools/read");
+		const tool = createReadTool("my-host");
+		writeFileSync(join(tempDir, "x.txt"), "hi");
+		const result = await tool({ file_path: "x.txt" }, new AbortController().signal, tempDir);
+		const prov = result.content[0] as { type: string; text: string };
+		expect(prov.text).toContain("my-host");
+	});
+
+	it("appends a db-read advisory note (not a block) when reading a sqlite file under data/", async () => {
+		// isBoundDbPath only flags a generic .sqlite/.db file as the system DB
+		// when its parent directory is named `data` (db-guard heuristic).
+		mkdirSync(join(tempDir, "data"), { recursive: true });
+		writeFileSync(join(tempDir, "data", "app.sqlite"), "plain text contents\n");
+		const result = await readTool(
+			{ file_path: "data/app.sqlite" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBeUndefined();
+		// provenance + dbNote + content = 3 blocks (the note is advisory, not an error)
+		const noteBlock = result.content.find(
+			(b) => b.type === "text" && /query|database|db-guard|sqlite/i.test(b.text ?? ""),
+		);
+		expect(noteBlock).toBeDefined();
+	});
+
+	it("surfaces a non-ENOENT read error (e.g. reading a directory)", async () => {
+		mkdirSync(join(tempDir, "adir"), { recursive: true });
+		const result = await readTool({ file_path: "adir" }, new AbortController().signal, tempDir);
+		expect(result.isError).toBe(true);
+		const text = result.content[1] as { type: string; text: string };
+		expect(text.text).toContain("Error:");
+		expect(text.text).not.toContain("ENOENT");
+	});
+});

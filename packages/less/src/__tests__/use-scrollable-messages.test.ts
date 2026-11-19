@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React from "react";
@@ -229,5 +229,106 @@ describe("useScrollableMessages", () => {
 		} finally {
 			process.stdout.isTTY = originalIsTTY;
 		}
+	});
+
+	it("scrolls with PageUp and PageDown by a full viewport page", async () => {
+		const messages = makeMessages(40);
+		const { lastFrame, stdin } = render(
+			React.createElement(ScrollHarness, { messages, viewportHeight: 12 }),
+		);
+		await tick();
+		expect(lastFrame()).toContain("offset:0");
+
+		// PageUp: ESC[5~. maxVisible = floor(12/3) = 4, so one page = +4 offset.
+		stdin.write("\x1B[5~");
+		await tick();
+		expect(lastFrame()).toContain("offset:4");
+		expect(lastFrame()).toContain("bottom:false");
+
+		// PageDown: ESC[6~ brings it back down a full page to the bottom.
+		stdin.write("\x1B[6~");
+		await tick();
+		expect(lastFrame()).toContain("offset:0");
+		expect(lastFrame()).toContain("bottom:true");
+	});
+
+	// The scroll-wheel path attaches a raw `data` listener to the *real*
+	// process.stdin (not Ink's capture stdin), gated on process.stdin.isTTY.
+	// ink-testing-library's stdin.write() feeds Ink's useInput, not this
+	// listener, so these cases drive process.stdin directly with the TTY flag on.
+	describe("mouse-wheel scrolling on a raw TTY stdin", () => {
+		let originalIsTTY: boolean | undefined;
+		beforeEach(() => {
+			originalIsTTY = process.stdin.isTTY;
+			(process.stdin as unknown as { isTTY: boolean }).isTTY = true;
+		});
+		afterEach(() => {
+			(process.stdin as unknown as { isTTY: boolean | undefined }).isTTY = originalIsTTY;
+		});
+
+		it("SGR wheel-up (btn 64) scrolls backward and wheel-down (btn 65) forward", async () => {
+			const messages = makeMessages(30);
+			const { lastFrame } = render(
+				React.createElement(ScrollHarness, { messages, viewportHeight: 12 }),
+			);
+			await tick();
+			expect(lastFrame()).toContain("offset:0");
+
+			// SGR wheel up: ESC[<64;x;yM
+			process.stdin.emit("data", Buffer.from("\x1B[<64;10;10M"));
+			await tick();
+			expect(lastFrame()).toContain("offset:1");
+			expect(lastFrame()).toContain("bottom:false");
+
+			// SGR wheel down: ESC[<65;x;yM
+			process.stdin.emit("data", Buffer.from("\x1B[<65;10;10M"));
+			await tick();
+			expect(lastFrame()).toContain("offset:0");
+			expect(lastFrame()).toContain("bottom:true");
+		});
+
+		it("consumes a non-wheel SGR mouse event without scrolling", async () => {
+			const messages = makeMessages(30);
+			const { lastFrame } = render(
+				React.createElement(ScrollHarness, { messages, viewportHeight: 12 }),
+			);
+			await tick();
+
+			// SGR left-click press (btn 0) — neither 64 nor 65, so offset unchanged.
+			process.stdin.emit("data", Buffer.from("\x1B[<0;5;5M"));
+			await tick();
+			expect(lastFrame()).toContain("offset:0");
+		});
+
+		it("legacy mouse-wheel up (byte 96) scrolls backward and down (byte 97) forward", async () => {
+			const messages = makeMessages(30);
+			const { lastFrame } = render(
+				React.createElement(ScrollHarness, { messages, viewportHeight: 12 }),
+			);
+			await tick();
+
+			// Legacy: ESC[M then (btn+32),(x+32),(y+32). Wheel up = 64 → char 96.
+			process.stdin.emit("data", Buffer.from("\x1B[M\x60\x21\x21"));
+			await tick();
+			expect(lastFrame()).toContain("offset:1");
+
+			// Wheel down = 65 → char 97.
+			process.stdin.emit("data", Buffer.from("\x1B[M\x61\x21\x21"));
+			await tick();
+			expect(lastFrame()).toContain("offset:0");
+		});
+
+		it("ignores a legacy mouse event that is not a wheel button", async () => {
+			const messages = makeMessages(30);
+			const { lastFrame } = render(
+				React.createElement(ScrollHarness, { messages, viewportHeight: 12 }),
+			);
+			await tick();
+
+			// Legacy left-click (btn 0 → char 32), not a wheel — offset unchanged.
+			process.stdin.emit("data", Buffer.from("\x1B[M\x20\x21\x21"));
+			await tick();
+			expect(lastFrame()).toContain("offset:0");
+		});
 	});
 });

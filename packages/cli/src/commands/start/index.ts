@@ -217,6 +217,7 @@ export async function startNode(
 					threadExecutor: new ThreadExecutor(appContext.db, appContext.logger),
 					platformMcpRegistry: null,
 					handleMessageTracker: new HandleMessageTracker({ watchdogIntervalMs: 0 }),
+					stopLeaderElections: () => {},
 					// Single-host fallback (no model router / no sync): the holder is never
 					// wired — initSync returns wsTransport: undefined by design — so these
 					// stubs are live forever. Benign mode keeps the pre-#253 semantics
@@ -358,6 +359,8 @@ Press Ctrl+C to stop.
 		schedulerHandle?.stop();
 		pruningHandle?.stop();
 		relayProcessorHandle?.stop();
+		// Leader-election intervals query the DB; stop them before it closes.
+		serverResult.stopLeaderElections();
 		if (wsTransport) {
 			wsTransport.stop();
 			const { setChangelogEventBus } = await import("@bound/core");

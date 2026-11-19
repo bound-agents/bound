@@ -352,6 +352,12 @@ export interface ServerResult {
 	threadExecutor: ThreadExecutor;
 	platformMcpRegistry: PlatformMcpRegistry | null;
 	handleMessageTracker: HandleMessageTracker;
+	/**
+	 * Stops every leader election initServer started (platform connectors,
+	 * RSS poller). Their ownership/staleness intervals hold the DB handle, so
+	 * the node's teardown must stop them before the DB closes. Idempotent.
+	 */
+	stopLeaderElections: () => void;
 	wsTransportHolder: {
 		addPeer: (
 			siteId: string,
@@ -431,6 +437,10 @@ export interface ServerDeps {
 }
 
 export async function initServer(deps: ServerDeps): Promise<ServerResult> {
+	const leaderElectionStops: Array<() => void> = [];
+	const stopLeaderElections = (): void => {
+		for (const stop of leaderElectionStops.splice(0)) stop();
+	};
 	const {
 		appContext,
 		modelRouter,
@@ -1560,6 +1570,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				appContext.logger,
 			);
 			await leaderElection.start();
+			leaderElectionStops.push(() => leaderElection.stop());
 			appContext.logger.info("[platforms-mcp] Leader election started");
 		} else {
 			appContext.logger.info("[platforms-mcp] No connectors configured, skipping leader election");
@@ -1692,6 +1703,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		await rssLeaderElection.start();
 		appContext.logger.info("[rss] Poller leader election started");
 		const stopRss = () => rssLeaderElection.stop();
+		leaderElectionStops.push(stopRss);
 		process.on("exit", stopRss);
 		process.on("SIGINT", stopRss);
 		process.on("SIGTERM", stopRss);
@@ -1704,6 +1716,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		threadExecutor,
 		platformMcpRegistry,
 		handleMessageTracker,
+		stopLeaderElections,
 		wsTransportHolder,
 	};
 }

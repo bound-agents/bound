@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getLineCode, getLineColor } from "../metro-lines";
+import { getLineCode, getLineColor, getLineCssVar, getLineName } from "../metro-lines";
 
 describe("getLineColor", () => {
 	it("returns valid distinct hex color for indices 0-9", () => {
@@ -41,5 +41,42 @@ describe("getLineCode", () => {
 		expect(getLineCode(11)).toBe(getLineCode(1));
 		// Index 20 should wrap to index 0 (Ginza = G)
 		expect(getLineCode(20)).toBe(getLineCode(0));
+	});
+});
+
+describe("getLineName", () => {
+	it("returns the canonical station-line name for indices 0-9", () => {
+		const expected = [
+			"Ginza",
+			"Marunouchi",
+			"Hibiya",
+			"Tozai",
+			"Chiyoda",
+			"Yurakucho",
+			"Hanzomon",
+			"Namboku",
+			"Fukutoshin",
+			"Oedo",
+		];
+		for (let i = 0; i < 10; i++) {
+			expect(getLineName(i)).toBe(expected[i]);
+		}
+	});
+
+	it("wraps around for indices >= 10", () => {
+		expect(getLineName(10)).toBe("Ginza");
+		expect(getLineName(13)).toBe("Tozai");
+	});
+});
+
+describe("getLineCssVar", () => {
+	it("renders the per-line CSS custom-property reference", () => {
+		expect(getLineCssVar(0)).toBe("var(--line-0)");
+		expect(getLineCssVar(9)).toBe("var(--line-9)");
+	});
+
+	it("wraps the index into the 0-9 range", () => {
+		expect(getLineCssVar(10)).toBe("var(--line-0)");
+		expect(getLineCssVar(15)).toBe("var(--line-5)");
 	});
 });

@@ -224,4 +224,35 @@ describe("reduceActiveAuxRuns", () => {
 	it("ignores aux:completed when its transient start frame was missed", () => {
 		expect(reduceActiveAuxRuns([], { type: "aux:completed", thread_id: THREAD })).toEqual([]);
 	});
+
+	it("adds a run on aux:started, replacing any prior entry for the same thread", () => {
+		const first = reduceActiveAuxRuns([], {
+			type: "aux:started",
+			thread_id: THREAD,
+			agent_name: "scout",
+		});
+		expect(first).toEqual([{ threadId: THREAD, agentName: "scout" }]);
+		// A second start for the same thread replaces rather than duplicates.
+		const second = reduceActiveAuxRuns(first, {
+			type: "aux:started",
+			thread_id: THREAD,
+			agent_name: "auditor",
+		});
+		expect(second).toEqual([{ threadId: THREAD, agentName: "auditor" }]);
+	});
+
+	it("ignores aux:started that carries no agent_name", () => {
+		const runs = [{ threadId: THREAD2, agentName: "keeper" }];
+		expect(reduceActiveAuxRuns(runs, { type: "aux:started", thread_id: THREAD })).toEqual(runs);
+	});
+
+	it("removes only the completed thread, leaving others running", () => {
+		const runs = [
+			{ threadId: THREAD, agentName: "scout" },
+			{ threadId: THREAD2, agentName: "auditor" },
+		];
+		expect(reduceActiveAuxRuns(runs, { type: "aux:completed", thread_id: THREAD })).toEqual([
+			{ threadId: THREAD2, agentName: "auditor" },
+		]);
+	});
 });

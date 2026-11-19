@@ -6,6 +6,7 @@ type SvelteCompiler = typeof import("svelte/compiler");
 type SvelteCompile = SvelteCompiler["compile"];
 
 let cachedCompile: SvelteCompile | undefined;
+let cachedCompileModule: SvelteCompiler["compileModule"] | undefined;
 
 /**
  * The svelte compiler, resolved from packages/web (the only package that
@@ -16,6 +17,7 @@ export async function loadSvelteCompiler(root: string): Promise<SvelteCompile> {
 		const entry = Bun.resolveSync("svelte/compiler", join(root, "packages/web"));
 		const compiler: SvelteCompiler = await import(entry);
 		cachedCompile = compiler.compile;
+		cachedCompileModule = compiler.compileModule;
 	}
 	return cachedCompile;
 }
@@ -28,6 +30,23 @@ export function compileSvelteModule(compile: SvelteCompile, path: string, source
 	const result = compile(source, { filename: path, generate: "client" });
 	const map = Buffer.from(JSON.stringify(result.js.map)).toString("base64");
 	return `${result.js.code}\n//# sourceMappingURL=data:application/json;base64,${map}`;
+}
+
+/**
+ * Compiles a runes module (`.svelte.js` / `.svelte.ts`). Libraries such as
+ * @xyflow/svelte ship their stores as runes modules; without compiling them,
+ * `$state`/`$derived` throw `rune_outside_svelte` at import.
+ */
+export function compileSvelteRunesModule(
+	compileModule: SvelteCompiler["compileModule"],
+	path: string,
+	source: string,
+): string {
+	const js = path.endsWith(".ts")
+		? new Bun.Transpiler({ loader: "ts" }).transformSync(source)
+		: source;
+	const result = compileModule(js, { filename: path, generate: "client" });
+	return result.js.code;
 }
 
 /**
@@ -58,6 +77,17 @@ export function svelteTestPlugin(root: string): BunPlugin {
 				contents: 'export * from "./index-client.js";',
 				loader: "js",
 			}));
+			build.onLoad({ filter: /\.svelte\.(js|ts)$/ }, async (args) => {
+				await loadSvelteCompiler(root);
+				return {
+					contents: compileSvelteRunesModule(
+						cachedCompileModule as SvelteCompiler["compileModule"],
+						args.path,
+						readFileSync(args.path, "utf8"),
+					),
+					loader: "js",
+				};
+			});
 			build.onLoad({ filter: /\.svelte$/ }, async (args) => {
 				const compile = await loadSvelteCompiler(root);
 				return {

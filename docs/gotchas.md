@@ -168,5 +168,9 @@ Bun has no `.svelte` loader: without one, `import Btn from "./Btn.svelte"` resol
 
 The plugin also redirects svelte's server entry points to the browser builds. Bun's test runner resolves the package exports' `default` condition (`index-server.js`), where `mount` throws `lifecycle_function_unavailable`; Vite resolves `browser`. See `packages/web/src/client/__tests__/render-btn.test.ts` for mounting a component under jsdom.
 
+Mount through `installDom()` in `packages/web/src/client/__tests__/harness/dom.ts`, never a private `new JSDOM()`. svelte's client runtime caches `window`, `document` and the Node/Element prototype getters the first time it renders (`init_operations`) and never re-reads them, so a second window breaks every later component test in the process with `undefined is not an object (evaluating 'Element.prototype')`. The harness keeps one window per process and resets it between files. For the same reason, prefer `spyOn(moduleNamespace, "fn")` over `mock.module()` in component tests: `mock.module` replaces the module for the whole process and breaks that module's own tests in later files.
+
+The plugin also compiles runes modules (`.svelte.js` / `.svelte.ts`) with `compileModule`. @xyflow/svelte ships its stores that way; uncompiled, they throw `rune_outside_svelte` at import.
+
 Bun attributes a compiled component's coverage to its `.svelte` path without applying the inline source map: line numbers in the coverage report are lines of the compiled JS, not the `.svelte` source. Totals and percentages are real. To read an uncovered range, compile the component (`compileSvelteModule`) and look up those lines in the output.
 

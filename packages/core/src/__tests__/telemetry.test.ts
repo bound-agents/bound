@@ -1,105 +1,223 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
+	type CoreTelemetry,
 	recordChangeLogPostcommitEvent,
 	recordChangeLogTransaction,
 	recordRelayOutboxOperation,
 	setCoreTelemetry,
 	withCoreSpan,
 } from "../telemetry";
-const noop = { add() {} };
-const noopSpan = {
-	addEvent() {},
-	recordException() {},
-	setAttribute() {},
-	setStatus() {},
-	end() {},
-};
-afterEach(() =>
-	setCoreTelemetry({
-		changeLogTransactions: noop,
-		changeLogPostcommitEvents: noop,
-		relayOutboxOperations: noop,
-		startSpan: () => noopSpan,
-	}),
-);
+
+interface SpanCall {
+	exception?: Error;
+	status?: { code: number; message?: string };
+	ended: boolean;
+}
+
+/**
+ * A recording CoreTelemetry double. Every counter add and span lifecycle event
+ * is captured so tests can assert the real control flow of withCoreSpan and the
+ * record* helpers rather than touching the global OTel SDK.
+ */
+function makeRecorder(): {
+	telemetry: CoreTelemetry;
+	counters: Record<string, Array<{ value: number; attributes?: Record<string, string | number> }>>;
+	histograms: Array<{ value: number; attributes?: Record<string, string> }>;
+	spans: SpanCall[];
+} {
+	const counters: Record<
+		string,
+		Array<{ value: number; attributes?: Record<string, string | number> }>
+	> = {
+		changeLogTransactions: [],
+		changeLogPostcommitEvents: [],
+		relayOutboxOperations: [],
+	};
+	const histograms: Array<{ value: number; attributes?: Record<string, string> }> = [];
+	const spans: SpanCall[] = [];
+
+	const telemetry: CoreTelemetry = {
+		changeLogTransactions: {
+			add(value, attributes) {
+				counters.changeLogTransactions.push({ value, attributes });
+			},
+		},
+		changeLogPostcommitEvents: {
+			add(value, attributes) {
+				counters.changeLogPostcommitEvents.push({ value, attributes });
+			},
+		},
+		relayOutboxOperations: {
+			add(value, attributes) {
+				counters.relayOutboxOperations.push({ value, attributes });
+			},
+		},
+		relayOutboxOperationDuration: {
+			record(value, attributes) {
+				histograms.push({ value, attributes });
+			},
+		},
+		startSpan() {
+			const call: SpanCall = { ended: false };
+			spans.push(call);
+			return {
+				recordException(error) {
+					call.exception = error;
+				},
+				setStatus(status) {
+					call.status = status;
+				},
+				end() {
+					call.ended = true;
+				},
+			};
+		},
+	};
+
+	return { telemetry, counters, histograms, spans };
+}
 
 describe("core telemetry", () => {
-	it("records bounded change-log and relay-outbox attributes", () => {
-		const calls: unknown[] = [];
-		setCoreTelemetry({
-			changeLogTransactions: { add: (value, attributes) => calls.push({ value, attributes }) },
-			changeLogPostcommitEvents: { add: (value, attributes) => calls.push({ value, attributes }) },
-			relayOutboxOperations: { add: (value, attributes) => calls.push({ value, attributes }) },
-			startSpan: () => noopSpan,
-		});
-		recordChangeLogTransaction("committed");
-		recordChangeLogPostcommitEvent("failed");
-		recordRelayOutboxOperation("read", "hit", 2);
-		expect(calls).toEqual([
-			{ value: 1, attributes: { outcome: "committed" } },
-			{ value: 1, attributes: { outcome: "failed" } },
-			{ value: 2, attributes: { operation: "read", outcome: "hit" } },
-		]);
+	afterEach(() => {
+		// Restore the noop telemetry so tests don't leak the OTel-backed default.
+		setCoreTelemetry();
 	});
 
-	it("creates one outer span and records aggregate events", () => {
-		const events: unknown[] = [];
-		let ended = 0;
-		setCoreTelemetry({
-			changeLogTransactions: noop,
-			changeLogPostcommitEvents: noop,
-			relayOutboxOperations: noop,
-			startSpan: (name) => ({
-				addEvent: (event, attributes) => events.push({ name, event, attributes }),
-				recordException() {},
-				end: () => ended++,
-			}),
+	describe("withCoreSpan — success path", () => {
+		it("runs the callback, marks OK, ends the span, and returns the value (fn-only overload)", () => {
+			const { telemetry, spans } = makeRecorder();
+			setCoreTelemetry(telemetry);
+
+			const result = withCoreSpan("changelog.transaction", (span) => {
+				expect(span).toBeDefined();
+				return 42;
+			});
+
+			expect(result).toBe(42);
+			expect(spans).toHaveLength(1);
+			// SpanStatusCode.OK === 1
+			expect(spans[0].status).toEqual({ code: 1 });
+			expect(spans[0].exception).toBeUndefined();
+			expect(spans[0].ended).toBe(true);
 		});
-		withCoreSpan("changelog.transaction", (span) => span.addEvent("committed", { entry_count: 1 }));
-		expect(events).toEqual([
-			{ name: "changelog.transaction", event: "committed", attributes: { entry_count: 1 } },
-		]);
-		expect(ended).toBe(1);
+
+		it("accepts the (name, attributes, fn) overload", () => {
+			const { telemetry, spans } = makeRecorder();
+			setCoreTelemetry(telemetry);
+
+			const result = withCoreSpan(
+				"relay_outbox.operation",
+				{ operation: "read", count: 3 },
+				() => "done",
+			);
+
+			expect(result).toBe("done");
+			expect(spans[0].status).toEqual({ code: 1 });
+			expect(spans[0].ended).toBe(true);
+		});
 	});
 
-	it("exports bounded attribution on detached relay-outbox root spans", () => {
-		const starts: unknown[] = [];
-		setCoreTelemetry({
-			changeLogTransactions: noop,
-			changeLogPostcommitEvents: noop,
-			relayOutboxOperations: noop,
-			relayOutboxOperationDuration: { record() {} },
-			startSpan: (name, attributes) => {
-				starts.push({ name, attributes });
-				return noopSpan;
-			},
+	describe("withCoreSpan — error path", () => {
+		it("records the exception, marks ERROR, ends the span, and rethrows", () => {
+			const { telemetry, spans } = makeRecorder();
+			setCoreTelemetry(telemetry);
+
+			const boom = new Error("kaboom");
+			expect(() =>
+				withCoreSpan("durable_work.operation", () => {
+					throw boom;
+				}),
+			).toThrow("kaboom");
+
+			expect(spans[0].exception).toBe(boom);
+			// SpanStatusCode.ERROR === 2
+			expect(spans[0].status).toEqual({ code: 2, message: "kaboom" });
+			// span is still ended via finally
+			expect(spans[0].ended).toBe(true);
 		});
 
-		withCoreSpan(
-			"relay_outbox.operation",
-			{
-				"relay.trigger": "push-write",
-				"relay.path": "outbox.write",
-				"relay.direction": "outbound",
-				"relay.kind": "tool_call",
-				"relay.carrier_state": "absent",
-				"relay.entry_count": 1,
-			},
-			() => undefined,
-		);
+		it("wraps a non-Error throw into an Error for recordException", () => {
+			const { telemetry, spans } = makeRecorder();
+			setCoreTelemetry(telemetry);
 
-		expect(starts).toEqual([
-			{
-				name: "relay_outbox.operation",
-				attributes: {
-					"relay.trigger": "push-write",
-					"relay.path": "outbox.write",
-					"relay.direction": "outbound",
-					"relay.kind": "tool_call",
-					"relay.carrier_state": "absent",
-					"relay.entry_count": 1,
-				},
-			},
-		]);
+			expect(() =>
+				withCoreSpan("changelog.transaction", () => {
+					throw "a string";
+				}),
+			).toThrow("a string");
+
+			expect(spans[0].exception).toBeInstanceOf(Error);
+			expect(spans[0].exception?.message).toBe("a string");
+			expect(spans[0].status).toEqual({ code: 2, message: "a string" });
+		});
+
+		it("throws TypeError when the attributes overload is given no callback", () => {
+			const { telemetry } = makeRecorder();
+			setCoreTelemetry(telemetry);
+			const twoArg = withCoreSpan as unknown as (name: string, attrs: object) => unknown;
+			expect(() => twoArg("changelog.transaction", { k: "v" })).toThrow(TypeError);
+		});
+	});
+
+	describe("record helpers route to the active telemetry", () => {
+		it("recordChangeLogTransaction adds 1 with the outcome attribute", () => {
+			const { telemetry, counters } = makeRecorder();
+			setCoreTelemetry(telemetry);
+			recordChangeLogTransaction("committed");
+			recordChangeLogTransaction("failed");
+			expect(counters.changeLogTransactions).toEqual([
+				{ value: 1, attributes: { outcome: "committed" } },
+				{ value: 1, attributes: { outcome: "failed" } },
+			]);
+		});
+
+		it("recordChangeLogPostcommitEvent adds 1 with the outcome attribute", () => {
+			const { telemetry, counters } = makeRecorder();
+			setCoreTelemetry(telemetry);
+			recordChangeLogPostcommitEvent("succeeded");
+			expect(counters.changeLogPostcommitEvents).toEqual([
+				{ value: 1, attributes: { outcome: "succeeded" } },
+			]);
+		});
+
+		it("recordRelayOutboxOperation adds count and skips the histogram when no duration given", () => {
+			const { telemetry, counters, histograms } = makeRecorder();
+			setCoreTelemetry(telemetry);
+			recordRelayOutboxOperation("read", "hit", 5);
+			expect(counters.relayOutboxOperations).toEqual([
+				{ value: 5, attributes: { operation: "read", outcome: "hit" } },
+			]);
+			expect(histograms).toHaveLength(0);
+		});
+
+		it("recordRelayOutboxOperation records the histogram when a duration is given", () => {
+			const { telemetry, counters, histograms } = makeRecorder();
+			setCoreTelemetry(telemetry);
+			recordRelayOutboxOperation("write", "inserted", 1, 12.5);
+			expect(counters.relayOutboxOperations).toEqual([
+				{ value: 1, attributes: { operation: "write", outcome: "inserted" } },
+			]);
+			expect(histograms).toEqual([
+				{ value: 12.5, attributes: { operation: "write", outcome: "inserted" } },
+			]);
+		});
+
+		it("defaults count to 1 when omitted", () => {
+			const { telemetry, counters } = makeRecorder();
+			setCoreTelemetry(telemetry);
+			recordRelayOutboxOperation("ack", "delivered");
+			expect(counters.relayOutboxOperations[0].value).toBe(1);
+		});
+	});
+
+	describe("setCoreTelemetry() with no argument installs noops", () => {
+		it("does not throw and spans still end under the noop implementation", () => {
+			setCoreTelemetry();
+			// record helpers are safe no-ops
+			expect(() => recordChangeLogTransaction("committed")).not.toThrow();
+			expect(() => recordRelayOutboxOperation("read", "miss", 1, 3)).not.toThrow();
+			// withCoreSpan still returns the callback value via the noop span
+			expect(withCoreSpan("changelog.transaction", () => "ok")).toBe("ok");
+		});
 	});
 });

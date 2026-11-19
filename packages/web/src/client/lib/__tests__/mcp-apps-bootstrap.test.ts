@@ -1,6 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import type { Client, Tool } from "@modelcontextprotocol/client";
-import { type McpAppServer, connectMcpServers } from "../mcp-apps-bootstrap";
+import { type McpAppServer, connectMcpServers, initMcpApps } from "../mcp-apps-bootstrap";
 
 function fakeClient(tools: Tool[]): Client {
 	return {
@@ -140,5 +140,67 @@ describe("connectMcpServers", () => {
 		);
 		expect(connectCalls).toBe(0);
 		expect(host.getToolDefinitions()).toEqual([]);
+	});
+});
+
+// initMcpApps / fetchMcpAppServers drive the one-time bootstrap: load the
+// server list over fetch, connect, and stow the host on the shared store.
+// `started` is module-level and latches true on the first call, so exactly one
+// invocation runs the body per process — that first call exercises the full
+// happy path (fetch → connect → host) and subsequent calls hit the idempotent
+// short-circuit.
+describe("initMcpApps", () => {
+	const realFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = realFetch;
+	});
+
+	it("fetches the server list, connects, and returns a populated host on first call", async () => {
+		// This is the first initMcpApps call in the process: started === false, so
+		// the whole body runs — fetchMcpAppServers over patched fetch, then
+		// connectMcpServers against the real connector (which will fail to reach the
+		// proxy path and skip, leaving an empty host). The point is line coverage of
+		// the fetch + connect + mcpAppHost.set path, not a live MCP connection.
+		globalThis.fetch = (async (input: unknown) => {
+			const url = String(input);
+			if (url.includes("/api/mcp-apps")) {
+				return new Response(
+					JSON.stringify({
+						servers: [{ name: "demo", transport: "http", proxyPath: "/api/mcp-apps/proxy/demo" }],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			// The in-page MCP connect attempt hits fetch too; fail it so the server is
+			// skipped and the host comes back empty but defined.
+			return new Response("no", { status: 502 });
+		}) as unknown as typeof fetch;
+
+		const host = await initMcpApps();
+		// A host object is returned (non-null) once a non-empty server list loads.
+		expect(host).not.toBeNull();
+		expect(host?.getToolDefinitions()).toEqual([]);
+	});
+
+	it("is idempotent — a later call short-circuits to null without fetching", async () => {
+		let fetched = false;
+		globalThis.fetch = (async () => {
+			fetched = true;
+			return new Response(JSON.stringify({ servers: [] }), { status: 200 });
+		}) as unknown as typeof fetch;
+		const host = await initMcpApps();
+		expect(host).toBeNull();
+		expect(fetched).toBe(false);
+	});
+
+	it("a call with an injected fetcher also short-circuits once started", async () => {
+		let called = false;
+		const host = await initMcpApps(async () => {
+			called = true;
+			return [];
+		});
+		expect(host).toBeNull();
+		expect(called).toBe(false);
 	});
 });

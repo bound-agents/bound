@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeTool } from "../tools/write";
+import { DISABLED_SANDBOX, type ResolvedSandboxConfig } from "../tools/sandbox-policy";
+import { createWriteTool, writeTool } from "../tools/write";
 
 describe("boundless_write", () => {
 	let tempDir: string;
@@ -178,5 +179,96 @@ describe("boundless_write", () => {
 		expect(existsSync(fullPath)).toBe(true);
 		const readContent = readFileSync(fullPath, "utf-8");
 		expect(readContent).toBe("");
+	});
+
+	it("rejects a missing file_path with a provenance-prefixed error", async () => {
+		const result = await writeTool({ content: "x" }, new AbortController().signal, tempDir);
+		expect(result.isError).toBe(true);
+		expect(result.content).toHaveLength(2);
+		const text = result.content[1] as { type: string; text: string };
+		expect(text.text).toContain("file_path is required");
+	});
+
+	it("rejects missing content with a provenance-prefixed error", async () => {
+		const result = await writeTool({ file_path: "a.txt" }, new AbortController().signal, tempDir);
+		expect(result.isError).toBe(true);
+		const text = result.content[1] as { type: string; text: string };
+		expect(text.text).toContain("content is required");
+	});
+
+	it("surfaces a write error (e.g. target path is a directory)", async () => {
+		// Make the resolved path an existing directory so renameSync/writeFileSync throws.
+		const dirPath = "a-dir";
+		mkdirSync(join(tempDir, dirPath), { recursive: true });
+		const result = await writeTool(
+			{ file_path: dirPath, content: "x" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		const text = result.content[1] as { type: string; text: string };
+		expect(text.text).toContain("Error:");
+	});
+
+	it("blocks a direct write to the bound system database", async () => {
+		const result = await writeTool(
+			{ file_path: "bound.db", content: "malicious" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect(existsSync(join(tempDir, "bound.db"))).toBe(false);
+	});
+
+	it("appends a context-file staleness note when writing an injected context file", async () => {
+		const tool = createWriteTool("host-1", DISABLED_SANDBOX, ["AGENTS.md"]);
+		const result = await tool(
+			{ file_path: "AGENTS.md", content: "# agents" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBeUndefined();
+		// provenance + wrote-bytes + stale note = 3 blocks
+		expect(result.content).toHaveLength(3);
+		const note = result.content[2] as { type: string; text: string };
+		expect(note.text).toContain("AGENTS.md");
+		expect(note.text.toLowerCase()).toContain("frozen");
+	});
+
+	it("denies a write outside the writable roots when the sandbox is enabled", async () => {
+		const sandbox: ResolvedSandboxConfig = {
+			enabled: true,
+			writablePaths: [tempDir],
+			network: "open",
+			onUnavailable: "error",
+		};
+		const tool = createWriteTool("host-1", sandbox);
+		// Absolute path outside both cwd (tempDir) and the default-granted
+		// tmpdir/root. homedir() is reliably outside tmpdir on every platform.
+		const outside = join(homedir(), `.boundless-deny-test-${randomBytes(4).toString("hex")}.txt`);
+		const result = await tool(
+			{ file_path: outside, content: "x" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect(existsSync(outside)).toBe(false);
+	});
+
+	it("allows a write inside the writable roots when the sandbox is enabled", async () => {
+		const sandbox: ResolvedSandboxConfig = {
+			enabled: true,
+			writablePaths: [tempDir],
+			network: "open",
+			onUnavailable: "error",
+		};
+		const tool = createWriteTool("host-1", sandbox);
+		const result = await tool(
+			{ file_path: "inside.txt", content: "ok" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(join(tempDir, "inside.txt"), "utf-8")).toBe("ok");
 	});
 });

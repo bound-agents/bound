@@ -162,6 +162,23 @@ describe("Connector Tool", () => {
 			expect(result).toContain("remote-platform");
 			expect(result).toContain("Connected platform servers:");
 		});
+
+		it("reports no servers when neither the local registry nor hosts.platforms has any", async () => {
+			// No local registrations and no hosts rows: the empty-set branch.
+			const tool = createConnectorTool({ registry, db, siteId });
+			const result = (await tool.execute?.({ action: "list" })) as string;
+			expect(result).toBe("No platform servers connected.");
+		});
+
+		it("returns a schema error when the action is not one of the known actions", async () => {
+			// Drives the execute() safeParse-failure arm: a bogus action fails the
+			// connector schema, and the issues are surfaced as an Error string
+			// rather than throwing.
+			const tool = createConnectorTool({ registry, db, siteId });
+			const result = (await tool.execute?.({ action: "not-a-real-action" })) as string;
+			expect(result).toContain('Error: invalid parameters for "connector":');
+			expect(result).toContain("action");
+		});
 	});
 
 	describe("AC2.2: channels action returns events with bindings list", () => {

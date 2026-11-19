@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCopyTool } from "../tools/copy";
 
@@ -318,5 +318,158 @@ describe("boundless_copy", () => {
 
 		expect(result.isError).toBe(true);
 		expect((result.content[1] as { text: string }).text).toContain("HTTP 500");
+	});
+});
+
+describe("boundless_copy — guards", () => {
+	let tempDir: string;
+	let originalFetch: typeof fetch;
+	beforeEach(() => {
+		tempDir = join(tmpdir(), `boundless-copy-guard-${randomBytes(4).toString("hex")}`);
+		mkdirSync(tempDir, { recursive: true });
+		originalFetch = globalThis.fetch;
+	});
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		if (tempDir) rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	});
+
+	it("blocks a satellite-target copy onto the bound system database", async () => {
+		const src = join(tempDir, "src.txt");
+		writeFileSync(src, "payload");
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{ source: "satellite", source_path: src, target: "satellite", target_path: "bound.db" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[1] as { text: string }).text).toMatch(/bound system database|refusing/i);
+		expect(existsSync(join(tempDir, "bound.db"))).toBe(false);
+	});
+
+	it("appends a db-read advisory when the satellite source is the system database", async () => {
+		// Source under data/ named like the system DB triggers the read advisory,
+		// but the copy still succeeds (read is advised, not blocked).
+		mkdirSync(join(tempDir, "data"), { recursive: true });
+		const src = join(tempDir, "data", "app.db");
+		writeFileSync(src, "rows");
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{ source: "satellite", source_path: src, target: "satellite", target_path: "out.txt" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBeUndefined();
+		const note = result.content.find(
+			(b) => b.type === "text" && /query|database|db-guard/i.test(b.text ?? ""),
+		);
+		expect(note).toBeDefined();
+		expect(existsSync(join(tempDir, "out.txt"))).toBe(true);
+	});
+
+	it("denies a satellite-target write outside the writable roots when the sandbox is enabled", async () => {
+		const src = join(tempDir, "src.txt");
+		writeFileSync(src, "payload");
+		const sandbox = {
+			enabled: true,
+			writablePaths: [tempDir],
+			network: "open",
+			onUnavailable: "error",
+		} as const;
+		const tool = createCopyTool({
+			hostname: HOSTNAME,
+			boundUrl: BOUND_URL,
+			sandbox: sandbox as unknown as Parameters<typeof createCopyTool>[0]["sandbox"],
+		});
+		const outside = join(homedir(), `.boundless-copy-deny-${randomBytes(4).toString("hex")}.txt`);
+		const result = await tool(
+			{ source: "satellite", source_path: src, target: "satellite", target_path: outside },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect(existsSync(outside)).toBe(false);
+	});
+
+	it("surfaces a main-source fetch network failure", async () => {
+		globalThis.fetch = mock(async () => {
+			throw new Error("econnrefused");
+		}) as unknown as typeof fetch;
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{ source: "main", source_path: "/vfs/a.txt", target: "satellite", target_path: "out.txt" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[1] as { text: string }).text).toMatch(/request failed/i);
+	});
+
+	it("maps a main-source 404 to a not-found error", async () => {
+		globalThis.fetch = mock(
+			async () => new Response(null, { status: 404 }),
+		) as unknown as typeof fetch;
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{
+				source: "main",
+				source_path: "/vfs/missing.txt",
+				target: "satellite",
+				target_path: "out.txt",
+			},
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[1] as { text: string }).text).toMatch(/not found/i);
+	});
+
+	it("surfaces a main-source non-ok HTTP error with the response detail", async () => {
+		globalThis.fetch = mock(
+			async () => new Response("it is a directory", { status: 400 }),
+		) as unknown as typeof fetch;
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{ source: "main", source_path: "/vfs/dir", target: "satellite", target_path: "out.txt" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[1] as { text: string }).text).toMatch(/HTTP 400/i);
+	});
+
+	it("copies main -> satellite, GETting the VFS and writing bytes locally", async () => {
+		const payload = Buffer.from("vfs-bytes");
+		globalThis.fetch = mock(async (url: string | URL | Request) => {
+			expect(String(url)).toContain("/api/sandbox/file");
+			const ab = new ArrayBuffer(payload.byteLength);
+			new Uint8Array(ab).set(payload);
+			return new Response(ab, { status: 200 });
+		}) as unknown as typeof fetch;
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{ source: "main", source_path: "/vfs/a.txt", target: "satellite", target_path: "local.txt" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(readFileSync(join(tempDir, "local.txt"), "utf-8")).toBe("vfs-bytes");
+	});
+
+	it("surfaces a main-target network failure on the PUT", async () => {
+		const src = join(tempDir, "src.txt");
+		writeFileSync(src, "payload");
+		globalThis.fetch = mock(async () => {
+			throw new Error("put-econnrefused");
+		}) as unknown as typeof fetch;
+		const tool = createCopyTool({ hostname: HOSTNAME, boundUrl: BOUND_URL });
+		const result = await tool(
+			{ source: "satellite", source_path: src, target: "main", target_path: "/vfs/out.txt" },
+			new AbortController().signal,
+			tempDir,
+		);
+		expect(result.isError).toBe(true);
+		expect((result.content[1] as { text: string }).text).toMatch(/request failed/i);
 	});
 });

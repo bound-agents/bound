@@ -141,3 +141,129 @@ describe("useMessages — optimistic user message", () => {
 		expect(h.api.messages[0].id).toBe("real-1");
 	});
 });
+
+describe("useMessages — server broadcast reconciliation", () => {
+	function makeMessage(overrides: Partial<Message>): Message {
+		return {
+			id: "m",
+			thread_id: "t-1",
+			role: "assistant",
+			content: "",
+			model_id: null,
+			tool_name: null,
+			created_at: new Date().toISOString(),
+			modified_at: null,
+			host_origin: "h-1",
+			deleted: 0,
+			exit_code: null,
+			metadata: null,
+			...overrides,
+		};
+	}
+
+	it("deduplicates a message broadcast twice by id", async () => {
+		const client = createMockClient();
+		const h = renderUseMessages(client);
+		await tick();
+
+		const msg = makeMessage({ id: "dup-1", role: "assistant", content: "once" });
+		client.emit("message:created", msg);
+		client.emit("message:created", msg);
+		await tick();
+
+		expect(h.api.messages.filter((m) => m.id === "dup-1").length).toBe(1);
+	});
+
+	it("replaces a pending tool_call placeholder (no id) with the real tool_call", async () => {
+		const client = createMockClient();
+		const h = renderUseMessages(client);
+		await tick();
+
+		// Seed an id-less placeholder for a running tool.
+		h.api.appendMessage(
+			makeMessage({ id: undefined as unknown as string, role: "tool_call", tool_name: "read" }),
+		);
+		await tick();
+		expect(h.api.messages.length).toBe(1);
+
+		// The real tool_call with the same tool_name and an id replaces it in place.
+		client.emit(
+			"message:created",
+			makeMessage({ id: "tc-1", role: "tool_call", tool_name: "read", content: "args" }),
+		);
+		await tick();
+		expect(h.api.messages.length).toBe(1);
+		expect(h.api.messages[0].id).toBe("tc-1");
+	});
+
+	it("appends a tool_call when no matching placeholder exists", async () => {
+		const client = createMockClient();
+		const h = renderUseMessages(client);
+		await tick();
+
+		client.emit(
+			"message:created",
+			makeMessage({ id: "tc-1", role: "tool_call", tool_name: "edit" }),
+		);
+		await tick();
+		expect(h.api.messages.length).toBe(1);
+		expect(h.api.messages[0].id).toBe("tc-1");
+	});
+
+	it("appends tool_result messages", async () => {
+		const client = createMockClient();
+		const h = renderUseMessages(client);
+		await tick();
+
+		client.emit(
+			"message:created",
+			makeMessage({ id: "tr-1", role: "tool_result", content: "done" }),
+		);
+		await tick();
+		expect(h.api.messages.length).toBe(1);
+		expect(h.api.messages[0].role).toBe("tool_result");
+	});
+
+	it("updateMessage merges partial updates onto the matching id", async () => {
+		const client = createMockClient();
+		const h = renderUseMessages(client);
+		await tick();
+
+		h.api.appendMessage(makeMessage({ id: "a", content: "before" }));
+		await tick();
+		h.api.updateMessage("a", { content: "after" });
+		await tick();
+		expect(h.api.messages[0].content).toBe("after");
+	});
+
+	it("replaceMessages swaps the entire list", async () => {
+		const client = createMockClient();
+		const h = renderUseMessages(client);
+		await tick();
+
+		h.api.appendMessage(makeMessage({ id: "a" }));
+		await tick();
+		h.api.replaceMessages([makeMessage({ id: "x" }), makeMessage({ id: "y" })]);
+		await tick();
+		expect(h.api.messages.map((m) => m.id)).toEqual(["x", "y"]);
+	});
+
+	it("detaches the message:created listener on unmount", async () => {
+		const offCalls: string[] = [];
+		const client = {
+			on() {},
+			off(event: string) {
+				offCalls.push(event);
+			},
+		} as unknown as BoundClient;
+		function Harness() {
+			useMessages(client, []);
+			return React.createElement(Text, null, "ok");
+		}
+		const { unmount } = render(React.createElement(Harness));
+		await tick();
+		unmount();
+		await tick();
+		expect(offCalls).toContain("message:created");
+	});
+});

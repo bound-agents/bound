@@ -137,4 +137,50 @@ describe("useCancelHandler", () => {
 
 		expect(smRef?.turnActive).toBe(false);
 	});
+
+	it("runs onGracefulExit then exits on the second idle Ctrl-C within 2s", async () => {
+		const mockClient = createMockClient();
+		const onGracefulExit = vi.fn(async () => {});
+		function Harness() {
+			useCancelHandler({
+				client: mockClient as unknown as BoundClient,
+				threadId: "t1",
+				abortAll: vi.fn(),
+				dismissModal: () => false,
+				showHint: vi.fn(),
+				onGracefulExit,
+			});
+			return React.createElement(Text, null, "ok");
+		}
+		const { stdin } = render(React.createElement(Harness));
+		await tick();
+
+		// Idle double Ctrl-C within the 2s window reaches the graceful-exit branch.
+		stdin.write("\x03");
+		stdin.write("\x03");
+		await tick();
+		expect(onGracefulExit).toHaveBeenCalledTimes(1);
+	});
+
+	it("still exits without throwing when no onGracefulExit is provided", async () => {
+		const mockClient = createMockClient();
+		function Harness() {
+			useCancelHandler({
+				client: mockClient as unknown as BoundClient,
+				threadId: "t1",
+				abortAll: vi.fn(),
+				dismissModal: () => false,
+				showHint: vi.fn(),
+			});
+			return React.createElement(Text, null, "ok");
+		}
+		const { stdin, lastFrame } = render(React.createElement(Harness));
+		await tick();
+
+		// No onGracefulExit — the default-undefined branch must not throw.
+		stdin.write("\x03");
+		stdin.write("\x03");
+		await tick();
+		expect(lastFrame()).toContain("ok");
+	});
 });

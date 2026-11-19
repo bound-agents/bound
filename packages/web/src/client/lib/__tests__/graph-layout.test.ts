@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { assert } from "@bound/shared";
 import type { MemoryGraphEdge, MemoryGraphNode } from "../api";
-import { computeInitialLayout, simulationStep } from "../graph-layout";
+import { computeInitialLayout, simulationStep, updateOpacity } from "../graph-layout";
 
 describe("computeInitialLayout", () => {
 	describe("empty input", () => {
@@ -414,5 +414,181 @@ describe("simulationStep", () => {
 		}
 
 		expect(energy).toBeLessThan(10);
+	});
+
+	it("applies edge attraction between separated non-pinned nodes", () => {
+		// Two default nodes joined by an edge, placed far apart so the
+		// edge-attraction branch (dist > 60) fires and pulls them together.
+		const nodes: MemoryGraphNode[] = [
+			{
+				key: "a",
+				value: "v",
+				tier: "default",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date().toISOString(),
+			},
+			{
+				key: "b",
+				value: "v",
+				tier: "default",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date().toISOString(),
+			},
+		];
+		const edges: MemoryGraphEdge[] = [
+			{
+				sourceKey: "a",
+				targetKey: "b",
+				relation: "related_to",
+				modifiedAt: new Date().toISOString(),
+			},
+		];
+		const layout = computeInitialLayout(nodes, edges, 1000, 800);
+		const a = layout.nodeMap.get("a");
+		const b = layout.nodeMap.get("b");
+		assert(a !== undefined && b !== undefined);
+		// Force them far apart to guarantee dist > 60.
+		a.x = 50;
+		a.y = 400;
+		b.x = 950;
+		b.y = 400;
+		a.vx = 0;
+		a.vy = 0;
+		b.vx = 0;
+		b.vy = 0;
+		simulationStep(layout.nodes, layout.edges, layout.nodeMap, 1000, 800, 1.0);
+		// Attraction gives a a positive x-velocity (pulled right toward b) and b a
+		// negative one (pulled left toward a); repulsion at that distance is tiny.
+		expect(a.vx).toBeGreaterThan(0);
+		expect(b.vx).toBeLessThan(0);
+	});
+
+	it("skips edge attraction when either endpoint is pinned", () => {
+		const nodes: MemoryGraphNode[] = [
+			{
+				key: "pin",
+				value: "v",
+				tier: "pinned",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date().toISOString(),
+			},
+			{
+				key: "def",
+				value: "v",
+				tier: "default",
+				source: null,
+				sourceThreadTitle: null,
+				lineIndex: 0,
+				modifiedAt: new Date().toISOString(),
+			},
+		];
+		const edges: MemoryGraphEdge[] = [
+			{
+				sourceKey: "pin",
+				targetKey: "def",
+				relation: "related_to",
+				modifiedAt: new Date().toISOString(),
+			},
+		];
+		const layout = computeInitialLayout(nodes, edges, 1000, 800);
+		const def = layout.nodeMap.get("def");
+		assert(def !== undefined);
+		def.x = 950;
+		def.y = 400;
+		def.vx = 0;
+		def.vy = 0;
+		const pin = layout.nodeMap.get("pin");
+		assert(pin !== undefined);
+		pin.x = 50;
+		pin.y = 400;
+		simulationStep(layout.nodes, layout.edges, layout.nodeMap, 1000, 800, 1.0);
+		const withPinnedEdge = def.vx;
+		// Re-run the identical geometry but with NO edges: if edge attraction were
+		// NOT skipped for the pinned endpoint, def would be pulled left (toward the
+		// pin) and withPinnedEdge.vx would be more negative than the no-edge
+		// baseline. Because attraction IS skipped, the two match exactly.
+		const noEdge = (() => {
+			const l = computeInitialLayout(nodes, [], 1000, 800);
+			const d = l.nodeMap.get("def");
+			const p = l.nodeMap.get("pin");
+			assert(d !== undefined && p !== undefined);
+			d.x = 950;
+			d.y = 400;
+			d.vx = 0;
+			d.vy = 0;
+			p.x = 50;
+			p.y = 400;
+			simulationStep(l.nodes, l.edges, l.nodeMap, 1000, 800, 1.0);
+			return d.vx;
+		})();
+		expect(withPinnedEdge).toBeCloseTo(noEdge, 10);
+	});
+});
+
+describe("updateOpacity", () => {
+	function node(
+		key: string,
+		source: string | null,
+	): MemoryGraphNode & {
+		x: number;
+		y: number;
+		vx: number;
+		vy: number;
+		radius: number;
+		opacity: number;
+		color: string;
+	} {
+		return {
+			key,
+			value: "v",
+			tier: "default",
+			source,
+			sourceThreadTitle: null,
+			lineIndex: 0,
+			modifiedAt: new Date().toISOString(),
+			x: 0,
+			y: 0,
+			vx: 0,
+			vy: 0,
+			radius: 5,
+			opacity: 0,
+			color: "#fff",
+		};
+	}
+
+	it("sets every node fully opaque when nothing is hovered", () => {
+		const nodes = [node("a", "t1"), node("b", null)];
+		const edges = [{ sourceKey: "a", targetKey: "b", relation: "related_to", opacity: 0 }];
+		const map = new Map(nodes.map((n) => [n.key, n]));
+		updateOpacity(nodes as never, edges as never, map as never, null);
+		expect(nodes[0].opacity).toBe(1.0);
+		expect(nodes[1].opacity).toBe(1.0);
+		expect(edges[0].opacity).toBe(1.0);
+	});
+
+	it("dims sourceless nodes and non-matching nodes when a thread is hovered", () => {
+		const match = node("a", "t1");
+		const other = node("b", "t2");
+		const sourceless = node("c", null);
+		const nodes = [match, other, sourceless];
+		const edges = [
+			{ sourceKey: "a", targetKey: "b", relation: "related_to", opacity: 0 },
+			{ sourceKey: "a", targetKey: "missing", relation: "related_to", opacity: 0 },
+		];
+		const map = new Map(nodes.map((n) => [n.key, n]));
+		updateOpacity(nodes as never, edges as never, map as never, "t1");
+		expect(match.opacity).toBe(1.0);
+		expect(other.opacity).toBe(0.15);
+		expect(sourceless.opacity).toBe(0.4);
+		// Edge opacity is the min of its endpoints; the second edge references a
+		// missing node and is left untouched.
+		expect(edges[0].opacity).toBe(0.15);
+		expect(edges[1].opacity).toBe(0);
 	});
 });
