@@ -31,6 +31,34 @@ export type AgentLoopFactory = (config: AgentLoopConfig) => MainAgentLoop;
 
 export interface SchedulerResult {
 	schedulerHandle: { stop: () => void } | null;
+	/**
+	 * The unified connector tool built for this node, or null when no platform
+	 * MCP registry was supplied. Exposed so callers (and tests) can reach the
+	 * tool's `remotePlatformRequest`-backed actions without reconstructing the
+	 * closure; `index.ts` ignores this field (reads only `schedulerHandle`).
+	 */
+	connectorTool: PlatformRegisteredTool | null;
+	/**
+	 * The modelRouter-gated resolver closures handed to the `Scheduler` — model
+	 * validation, default/tier resolution, and post-run title generation — plus
+	 * the platformMcpRegistry-gated platform-tool and platform-instructions
+	 * resolvers. The model closures are null when no `modelRouter` was supplied
+	 * (all four then `undefined`); the two platform closures are `undefined` when
+	 * no `platformMcpRegistry` was supplied. Exposed so callers (and tests) can
+	 * drive these closures directly instead of waiting out the scheduler's 30s
+	 * poll to reach them through a task run; `index.ts` ignores this field (reads
+	 * only `schedulerHandle`).
+	 */
+	resolvers: {
+		modelValidator?: (
+			modelId: string,
+		) => { ok: true } | { ok: false; error: string; permanent?: boolean };
+		modelDefaultResolver?: () => string;
+		modelTierResolver?: (modelId: string) => number | null;
+		generateTitle?: (threadId: string) => Promise<void>;
+		platformToolResolver?: (threadId: string) => PlatformRegisteredTool[];
+		platformInstructionsResolver?: (threadId: string) => string | undefined;
+	} | null;
 }
 
 export function initScheduler(
@@ -62,9 +90,15 @@ export function initScheduler(
 	// 17. Scheduler
 	appContext.logger.info("Starting scheduler...");
 	let schedulerHandle: { stop: () => void } | null = null;
+	// Create unified connector tool (replaces 4 dispatcher-specific tools). Hoisted
+	// to function scope so it can be returned for callers/tests that drive its
+	// remotePlatformRequest-backed actions; null when no platform registry exists.
+	let connectorTool: PlatformRegisteredTool | null = null;
+	// Hoisted to function scope alongside connectorTool so the built resolver
+	// closures can be returned for callers/tests that drive them directly; null
+	// until the scheduler is wired, and all fields undefined with no modelRouter.
+	let resolvers: SchedulerResult["resolvers"] = null;
 	try {
-		// Create unified connector tool (replaces 4 dispatcher-specific tools)
-		let connectorTool: PlatformRegisteredTool | null = null;
 		if (platformMcpRegistry) {
 			const connectorCtx: ConnectorToolContext = {
 				registry: platformMcpRegistry,
@@ -130,58 +164,62 @@ export function initScheduler(
 			};
 		}
 
+		resolvers = {
+			modelValidator: modelRouter
+				? (modelId: string) => {
+						const resolution = resolveModel(modelId, modelRouter, appContext.db, appContext.siteId);
+						if (resolution.kind === "error") {
+							return {
+								ok: false as const,
+								error: resolution.error,
+								// Permanent iff the model is registered nowhere in the cluster
+								// (decommissioned). Drives poison-pill parking in the scheduler:
+								// a permanent failure parks the task instead of rescheduling it
+								// forever. A transient/capability reason stays retryable.
+								permanent: resolution.reason === "unknown-model",
+							};
+						}
+						return { ok: true as const };
+					}
+				: undefined,
+			modelDefaultResolver: modelRouter ? () => modelRouter.getDefaultId() : undefined,
+			modelTierResolver: modelRouter
+				? (modelId: string) =>
+						resolveModelTier(modelId, modelRouter, appContext.db, appContext.siteId)
+				: undefined,
+			generateTitle:
+				modelRouter && modelRouter.listBackends().length > 0
+					? async (threadId: string) => {
+							const result = await generateThreadTitle(
+								appContext.db,
+								threadId,
+								modelRouter.getDefault(),
+								appContext.siteId,
+							);
+							if (result.ok) {
+								appContext.logger.info(`[scheduler] Thread title: ${result.value}`);
+							}
+						}
+					: undefined,
+			platformToolResolver: platformMcpRegistry
+				? (threadId: string) =>
+						resolvePlatformToolsForThread(platformMcpRegistry, threadId, connectorTool)
+				: undefined,
+			platformInstructionsResolver: platformMcpRegistry
+				? (threadId: string) => platformMcpRegistry.getInstructionsForThread(threadId)
+				: undefined,
+		};
+
 		const scheduler = new Scheduler(
 			appContext,
 			agentLoopFactory,
 			{
-				modelValidator: modelRouter
-					? (modelId: string) => {
-							const resolution = resolveModel(
-								modelId,
-								modelRouter,
-								appContext.db,
-								appContext.siteId,
-							);
-							if (resolution.kind === "error") {
-								return {
-									ok: false as const,
-									error: resolution.error,
-									// Permanent iff the model is registered nowhere in the cluster
-									// (decommissioned). Drives poison-pill parking in the scheduler:
-									// a permanent failure parks the task instead of rescheduling it
-									// forever. A transient/capability reason stays retryable.
-									permanent: resolution.reason === "unknown-model",
-								};
-							}
-							return { ok: true as const };
-						}
-					: undefined,
-				modelDefaultResolver: modelRouter ? () => modelRouter.getDefaultId() : undefined,
-				modelTierResolver: modelRouter
-					? (modelId: string) =>
-							resolveModelTier(modelId, modelRouter, appContext.db, appContext.siteId)
-					: undefined,
-				generateTitle:
-					modelRouter && modelRouter.listBackends().length > 0
-						? async (threadId: string) => {
-								const result = await generateThreadTitle(
-									appContext.db,
-									threadId,
-									modelRouter.getDefault(),
-									appContext.siteId,
-								);
-								if (result.ok) {
-									appContext.logger.info(`[scheduler] Thread title: ${result.value}`);
-								}
-							}
-						: undefined,
-				platformToolResolver: platformMcpRegistry
-					? (threadId: string) =>
-							resolvePlatformToolsForThread(platformMcpRegistry, threadId, connectorTool)
-					: undefined,
-				platformInstructionsResolver: platformMcpRegistry
-					? (threadId: string) => platformMcpRegistry.getInstructionsForThread(threadId)
-					: undefined,
+				modelValidator: resolvers.modelValidator,
+				modelDefaultResolver: resolvers.modelDefaultResolver,
+				modelTierResolver: resolvers.modelTierResolver,
+				generateTitle: resolvers.generateTitle,
+				platformToolResolver: resolvers.platformToolResolver,
+				platformInstructionsResolver: resolvers.platformInstructionsResolver,
 			},
 			sandbox?.bash,
 		);
@@ -197,5 +235,5 @@ export function initScheduler(
 		});
 	}
 
-	return { schedulerHandle };
+	return { schedulerHandle, connectorTool, resolvers };
 }

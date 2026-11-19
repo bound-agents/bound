@@ -358,6 +358,15 @@ export interface ServerResult {
 	 * the node's teardown must stop them before the DB closes. Idempotent.
 	 */
 	stopLeaderElections: () => void;
+	/**
+	 * Stops the two background scan intervals initServer started (the stale
+	 * client-tool-call expiry scan and, when cache-warming is enabled, the
+	 * warm-poke driver) and removes the process-exit listeners that back them.
+	 * These intervals hold the event loop open, so a caller that boots many
+	 * servers in one process (the test suite) must stop them or the process
+	 * never exits. Idempotent; a no-op when the web server failed to start.
+	 */
+	stopScanIntervals: () => void;
 	wsTransportHolder: {
 		addPeer: (
 			siteId: string,
@@ -434,6 +443,19 @@ export interface ServerDeps {
 		/** Web server bind host. Default: `process.env.WEB_BIND_HOST` or "localhost". */
 		webHost?: string;
 	};
+	/**
+	 * Override periods for the two background scan intervals (milliseconds).
+	 * Defaults to the production constants (expiry scan 60s, warm-poke scan
+	 * `WARM_POKE_SCAN_INTERVAL_MS`). Injected only by tests that need the scans
+	 * to fire within a deterministic window; production omits it and the timing
+	 * is unchanged.
+	 */
+	scanIntervals?: {
+		/** Period of the stale client-tool-call expiry scan. Default 60000. */
+		expiryScanIntervalMs?: number;
+		/** Period of the cache-warming poke driver. Default WARM_POKE_SCAN_INTERVAL_MS. */
+		warmPokeScanIntervalMs?: number;
+	};
 }
 
 export async function initServer(deps: ServerDeps): Promise<ServerResult> {
@@ -441,6 +463,9 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 	const stopLeaderElections = (): void => {
 		for (const stop of leaderElectionStops.splice(0)) stop();
 	};
+	// Teardown for the two background scan intervals, assigned once the web
+	// server (which owns them) has started. No-op until then.
+	let stopScanIntervals: () => void = () => {};
 	const {
 		appContext,
 		modelRouter,
@@ -453,6 +478,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		oauthMcpBridge,
 		getMcpAppAccessToken,
 		ports,
+		scanIntervals,
 	} = deps;
 
 	// Wire the factory into the relay processor so process relays run with full sandbox + tools.
@@ -1280,7 +1306,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Task 1: Periodic TTL-based expiry scan for stale client tool calls
 		const CLIENT_TOOL_CALL_TTL_MS = 5 * 60 * 1000; // 5 minutes default
-		const EXPIRY_SCAN_INTERVAL_MS = 60 * 1000; // Scan every 60 seconds
+		const EXPIRY_SCAN_INTERVAL_MS = scanIntervals?.expiryScanIntervalMs ?? 60 * 1000; // Scan every 60 seconds
 
 		const expiryScanInterval = setInterval(() => {
 			try {
@@ -1399,6 +1425,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				if (!ttl) return null;
 				return { ttlMs: parseDurationMs(ttl), maxPokes: warmCfg.maxPokes };
 			};
+			const WARM_POKE_SCAN_INTERVAL_MS_EFFECTIVE =
+				scanIntervals?.warmPokeScanIntervalMs ?? WARM_POKE_SCAN_INTERVAL_MS;
 			warmPokeInterval = setInterval(() => {
 				try {
 					const targets = selectWarmPokeTargets(appContext.db, {
@@ -1423,14 +1451,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						error: formatError(error),
 					});
 				}
-			}, WARM_POKE_SCAN_INTERVAL_MS);
+			}, WARM_POKE_SCAN_INTERVAL_MS_EFFECTIVE);
 		}
 
-		// Clean up on server stop — store interval ID for cleanup
+		// Clean up on server stop — clear both scan intervals and detach the
+		// process-exit listeners that back them. Exposed on ServerResult as
+		// `stopScanIntervals` so a caller booting many servers in one process
+		// (the test suite) can reclaim the event loop; also fired on real exit.
 		const cleanup = () => {
 			clearInterval(expiryScanInterval);
 			if (warmPokeInterval) clearInterval(warmPokeInterval);
+			process.off("exit", cleanup);
+			process.off("SIGINT", cleanup);
+			process.off("SIGTERM", cleanup);
 		};
+		stopScanIntervals = cleanup;
 		process.on("exit", cleanup);
 		process.on("SIGINT", cleanup);
 		process.on("SIGTERM", cleanup);
@@ -1717,6 +1752,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 		platformMcpRegistry,
 		handleMessageTracker,
 		stopLeaderElections,
+		stopScanIntervals,
 		wsTransportHolder,
 	};
 }

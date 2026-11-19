@@ -118,6 +118,7 @@ EXAMPLES:
 		const loginConfigIdx = args.indexOf("--config-dir");
 		const challengeIdx = args.indexOf("--challenge");
 		const mcpIdx = args.indexOf("--mcp");
+		const urlIdx = args.indexOf("--url");
 		const { runLogin } = await import("./commands/login.js");
 		try {
 			await runLogin({
@@ -125,6 +126,7 @@ EXAMPLES:
 				challenge: challengeIdx !== -1 ? args[challengeIdx + 1] : undefined,
 				mcp: mcpIdx !== -1 ? args[mcpIdx + 1] : undefined,
 				configDir: loginConfigIdx !== -1 ? args[loginConfigIdx + 1] : "config",
+				daemonUrl: urlIdx !== -1 ? args[urlIdx + 1] : undefined,
 			});
 		} catch (error) {
 			io.error(`Login failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -364,4 +364,88 @@ describe("validateWebhookSignature", () => {
 		const result = validateWebhookSignature(format, secret, headers, body);
 		expect(result.valid).toBe(false);
 	});
+
+	// ──────────────────────────────────────────────────────────────────
+	// "none" format: unauthenticated shape-check always passes
+	// ──────────────────────────────────────────────────────────────────
+	test("none format always reports valid regardless of headers/body", () => {
+		const body = Buffer.from("anything at all");
+		// No signature headers present — the shape-check still passes because
+		// authorization for "none" is enforced by the caller's unauthenticated
+		// gate, not here.
+		const result = validateWebhookSignature("none", "ignored-secret", new Headers({}), body);
+		expect(result.valid).toBe(true);
+	});
+
+	// ──────────────────────────────────────────────────────────────────
+	// Outer catch: a header accessor that throws is contained as invalid
+	// ──────────────────────────────────────────────────────────────────
+	test("returns invalid (does not throw) when header access throws", () => {
+		const body = Buffer.from("payload");
+		// A Headers-shaped object whose get() throws models a malformed request
+		// object; the top-level try/catch must contain it and report invalid.
+		const throwingHeaders = {
+			get() {
+				throw new Error("header access boom");
+			},
+		} as unknown as Headers;
+		const result = validateWebhookSignature("github", "secret", throwingHeaders, body);
+		expect(result.valid).toBe(false);
+	});
+
+	// ──────────────────────────────────────────────────────────────────
+	// Malformed signature shapes per format (regex / hex guards)
+	// ──────────────────────────────────────────────────────────────────
+	test("Slack format returns invalid when signature is not v0=<64 hex>", () => {
+		const body = Buffer.from('{"type":"event_callback"}');
+		const timestamp = Math.floor(Date.now() / 1000).toString();
+		const headers = new Headers({
+			// Missing the v0= prefix — fails the /^v0=([a-f0-9]{64})$/ match.
+			"X-Slack-Signature": "deadbeef",
+			"X-Slack-Request-Timestamp": timestamp,
+		});
+		const result = validateWebhookSignature("slack", "secret", headers, body);
+		expect(result.valid).toBe(false);
+	});
+
+	test("Raw format returns invalid when signature is not exactly 64 hex chars", () => {
+		const body = Buffer.from("raw payload data");
+		const timestamp = Math.floor(Date.now() / 1000).toString();
+		const headers = new Headers({
+			// Present, fresh timestamp, but the signature is too short to be a
+			// SHA-256 hex digest — fails the /^[a-f0-9]{64}$/ guard before HMAC.
+			"X-Webhook-Signature": "abc123",
+			"X-Webhook-Timestamp": timestamp,
+		});
+		const result = validateWebhookSignature("raw", "secret", headers, body);
+		expect(result.valid).toBe(false);
+	});
+
+	test("Raw format returns invalid when timestamp is non-numeric", () => {
+		const body = Buffer.from("raw payload data");
+		const secret = "secret";
+		// A non-digit timestamp fails isFreshUnixTimestamp's /^\d+$/ guard, so the
+		// request is rejected before any HMAC computation.
+		const hmac = createHmac("sha256", secret).update("not-a-number.").update(body).digest("hex");
+		const headers = new Headers({
+			"X-Webhook-Signature": hmac,
+			"X-Webhook-Timestamp": "not-a-number",
+		});
+		const result = validateWebhookSignature("raw", secret, headers, body);
+		expect(result.valid).toBe(false);
+	});
+
+	test("GitHub format rejects a signature whose hex length differs from the digest", () => {
+		// The regex requires 64 hex chars, so a provided value that is valid hex
+		// but the wrong length is caught by the format regex; this asserts the
+		// end-to-end rejection stays false rather than throwing in the
+		// constant-time comparison's length guard.
+		const secret = "secret";
+		const body = Buffer.from("body");
+		const headers = new Headers({
+			"X-Hub-Signature-256": `sha256=${"a".repeat(63)}`,
+		});
+		const result = validateWebhookSignature("github", secret, headers, body);
+		expect(result.valid).toBe(false);
+	});
 });

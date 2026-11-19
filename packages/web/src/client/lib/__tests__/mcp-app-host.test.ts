@@ -266,3 +266,65 @@ describe("McpAppHost.resolveByServerTool", () => {
 		expect(host.resolveByServerTool("nope", "get_me")).toBeUndefined();
 	});
 });
+
+describe("connectToMcpServer", () => {
+	it("connects a client over the given transport and negotiates server identity", async () => {
+		const { connectToMcpServer } = await import("../mcp-app-host");
+		const { McpServer, InMemoryTransport } = await import("@modelcontextprotocol/server");
+		const { z } = await import("zod/v4");
+
+		const server = new McpServer({ name: "fixture-server", version: "2.3.4" });
+		server.registerTool(
+			"echo",
+			{ description: "echoes back", inputSchema: z.object({ msg: z.string() }) },
+			async ({ msg }) => ({ content: [{ type: "text", text: String(msg) }] }),
+		);
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		await server.server.connect(serverTransport);
+
+		// connectToMcpServer builds the Client, connects it over the injected
+		// transport, and returns it ready to use — so the real handshake ran and
+		// the server's identity + tools came back over the wire.
+		const client = await connectToMcpServer(
+			new URL("http://unused.example/mcp"),
+			undefined,
+			() => clientTransport as unknown as McpClientTransport,
+		);
+		try {
+			expect(client.getServerVersion()).toMatchObject({ name: "fixture-server", version: "2.3.4" });
+			const tools = await client.listTools();
+			expect(tools.tools.map((t) => t.name)).toContain("echo");
+			const result = await client.callTool({ name: "echo", arguments: { msg: "pong" } });
+			expect(callToolResultToContent(result as CallToolResult)).toBe("pong");
+		} finally {
+			await client.close();
+			await server.close();
+		}
+	});
+
+	it("advertises the MCP Apps UI host capability to the server on connect", async () => {
+		const { connectToMcpServer } = await import("../mcp-app-host");
+		const { McpServer, InMemoryTransport } = await import("@modelcontextprotocol/server");
+
+		const server = new McpServer({ name: "cap-probe", version: "1.0.0" });
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		await server.server.connect(serverTransport);
+
+		const client = await connectToMcpServer(
+			new URL("http://unused.example/mcp"),
+			{ authorization: "Bearer tok" },
+			() => clientTransport as unknown as McpClientTransport,
+		);
+		try {
+			// The server sees the client's declared capabilities after the handshake;
+			// the UI extension is how a UI-capable client negotiates MCP Apps support.
+			const caps = server.server.getClientCapabilities() as
+				| { extensions?: Record<string, unknown> }
+				| undefined;
+			expect(caps?.extensions?.[MCP_UI_EXTENSION_ID]).toBeDefined();
+		} finally {
+			await client.close();
+			await server.close();
+		}
+	});
+});

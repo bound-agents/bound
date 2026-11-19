@@ -4,7 +4,10 @@ import type { ConnectorHandleRow } from "@bound/shared";
 import { createCoreTestDb } from "../../__tests__/test-database";
 import { insertRow, softDelete } from "../../index";
 import {
+	findActiveConnectorHandleByThreadId,
 	findConnectorHandleById,
+	findConnectorHandleForSyncNotification,
+	findConnectorHandleIncludingDeleted,
 	findConnectorHandleServerNameByTaskId,
 	listActiveConnectorHandles,
 	listConnectorHandlesByServer,
@@ -155,6 +158,112 @@ describe("connector-handles repository", () => {
 			softDelete(db, "connector_handles", "old", SITE_ID);
 
 			expect(findConnectorHandleServerNameByTaskId(db, "task-5")?.server_name).toBe("slack");
+		});
+	});
+
+	describe("findConnectorHandleIncludingDeleted", () => {
+		it("returns a live row", () => {
+			seedHandle(db, { id: "h1" });
+			expect(findConnectorHandleIncludingDeleted(db, "h1")?.id).toBe("h1");
+		});
+
+		it("returns a soft-deleted tombstone (no deleted filter) so creators can resurrect it", () => {
+			seedHandle(db, { id: "h1" });
+			softDelete(db, "connector_handles", "h1", SITE_ID);
+			const row = findConnectorHandleIncludingDeleted(db, "h1");
+			expect(row?.id).toBe("h1");
+			expect(row?.deleted).toBe(1);
+		});
+
+		it("returns null for an id that never existed", () => {
+			expect(findConnectorHandleIncludingDeleted(db, "ghost")).toBeNull();
+		});
+	});
+
+	describe("findActiveConnectorHandleByThreadId", () => {
+		function seedTask(
+			taskId: string,
+			threadId: string,
+			opts: { deleted?: number; status?: string } = {},
+		): void {
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "event",
+					status: opts.status ?? "active",
+					trigger_spec: "{}",
+					thread_id: threadId,
+					created_at: TS,
+					deleted: opts.deleted ?? 0,
+					modified_at: TS,
+				},
+				SITE_ID,
+			);
+		}
+
+		it("resolves the handle whose event task owns the thread, projecting a server:event name", () => {
+			seedTask("task-1", "thread-1");
+			seedHandle(db, {
+				id: "h1",
+				server_name: "discord",
+				event_name: "message",
+				task_id: "task-1",
+			});
+
+			const found = findActiveConnectorHandleByThreadId(db, "thread-1");
+			expect(found).toEqual({ id: "h1", name: "discord:message", task_id: "task-1" });
+		});
+
+		it("returns null when no handle's task owns the thread", () => {
+			seedTask("task-1", "thread-1");
+			seedHandle(db, { id: "h1", task_id: "task-1" });
+			expect(findActiveConnectorHandleByThreadId(db, "other-thread")).toBeNull();
+		});
+
+		it("ignores a soft-deleted handle", () => {
+			seedTask("task-1", "thread-1");
+			seedHandle(db, { id: "h1", task_id: "task-1" });
+			softDelete(db, "connector_handles", "h1", SITE_ID);
+			expect(findActiveConnectorHandleByThreadId(db, "thread-1")).toBeNull();
+		});
+
+		it("ignores a soft-deleted task binding", () => {
+			seedTask("task-1", "thread-1", { deleted: 1 });
+			seedHandle(db, { id: "h1", task_id: "task-1" });
+			expect(findActiveConnectorHandleByThreadId(db, "thread-1")).toBeNull();
+		});
+
+		it("ignores a cancelled task binding", () => {
+			seedTask("task-1", "thread-1", { status: "cancelled" });
+			seedHandle(db, { id: "h1", task_id: "task-1" });
+			expect(findActiveConnectorHandleByThreadId(db, "thread-1")).toBeNull();
+		});
+	});
+
+	describe("findConnectorHandleForSyncNotification", () => {
+		it("returns id/server_name/deleted for a live handle", () => {
+			seedHandle(db, { id: "h1", server_name: "discord" });
+			expect(findConnectorHandleForSyncNotification(db, "h1")).toEqual({
+				id: "h1",
+				server_name: "discord",
+				deleted: 0,
+			});
+		});
+
+		it("includes tombstones so callers can suppress activation of deleted handles", () => {
+			seedHandle(db, { id: "h1", server_name: "slack" });
+			softDelete(db, "connector_handles", "h1", SITE_ID);
+			expect(findConnectorHandleForSyncNotification(db, "h1")).toEqual({
+				id: "h1",
+				server_name: "slack",
+				deleted: 1,
+			});
+		});
+
+		it("returns null for an unknown id", () => {
+			expect(findConnectorHandleForSyncNotification(db, "ghost")).toBeNull();
 		});
 	});
 });

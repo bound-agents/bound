@@ -284,4 +284,51 @@ describe("boundless_bash", () => {
 			expect(result.content[1].text).toContain("Exit code: 0");
 		});
 	});
+
+	describe("argument validation and cwd resolution", () => {
+		it("returns an error result when no command is supplied", async () => {
+			const tool = createBashTool("test-host", shell, DISABLED_SANDBOX);
+			const result = await tool({}, new AbortController().signal, tempDir);
+			expect(result.isError).toBe(true);
+			expect(result.content[1].text).toContain("command is required");
+		});
+
+		it("returns an error result when command is not a string", async () => {
+			const tool = createBashTool("test-host", shell, DISABLED_SANDBOX);
+			const result = await tool(
+				{ command: 123 as unknown as string },
+				new AbortController().signal,
+				tempDir,
+			);
+			expect(result.isError).toBe(true);
+			expect(result.content[1].text).toContain("command is required and must be a string");
+		});
+
+		it("resolves a relative cwd arg against the session cwd", async () => {
+			// Create a subdir under tempDir; pass it as a RELATIVE cwd arg. The
+			// command should run there (printCwd reports the resolved absolute path).
+			const sub = "nested-run-dir";
+			mkdirSync(join(tempDir, sub), { recursive: true });
+			const tool = createBashTool("test-host", shell, DISABLED_SANDBOX);
+			const result = await tool(
+				{ command: cmd.printCwd, cwd: sub },
+				new AbortController().signal,
+				tempDir,
+			);
+			expect(result.isError).toBeUndefined();
+			// The reported working directory ends with the nested subdir.
+			expect(normalizeEol(result.content[1].text)).toContain(sub);
+		});
+
+		it("runs in the session cwd when the cwd arg is an empty string", async () => {
+			const tool = createBashTool("test-host", shell, DISABLED_SANDBOX);
+			const result = await tool(
+				{ command: cmd.printCwd, cwd: "" },
+				new AbortController().signal,
+				tempDir,
+			);
+			expect(result.isError).toBeUndefined();
+			expect(result.content[1].text).toContain("Exit code: 0");
+		});
+	});
 });

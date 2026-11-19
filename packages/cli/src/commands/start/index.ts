@@ -71,6 +71,16 @@ export interface NodeHandle {
 	/** Base URL for the web server (`http://<webHost>:<webPort>`), or null if no web server booted. */
 	webUrl: string | null;
 	stop(): Promise<void>;
+	/**
+	 * Test-only seams. Undefined in production shape consumers never read it;
+	 * `startNode` populates it so in-process boot tests can drive the live MCP
+	 * client map (teardown disconnect loop) and the late-bound MCP OAuth
+	 * resolve-reconnect wrapper without reaching into module internals.
+	 */
+	__test?: {
+		mcpClients: Map<string, { disconnect(): Promise<void> }>;
+		reloadMcpForReconnect(serverName: string): Promise<void>;
+	};
 }
 
 /**
@@ -394,6 +404,11 @@ Press Ctrl+C to stop.
 		syncPort: realSyncPort,
 		webUrl,
 		stop,
+		__test: {
+			mcpClients: mcpClientsMap,
+			reloadMcpForReconnect: (serverName: string): Promise<void> =>
+				reloadMcpForReconnect?.(serverName) ?? Promise.resolve(),
+		},
 	};
 }
 

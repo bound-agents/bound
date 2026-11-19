@@ -19,25 +19,51 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { MXC_EMBEDDED_ASSETS, MXC_RUNTIME_HASH } from "../_mxc/embedded";
 
-let ensured = false;
+/** Mutable once-per-process latch for {@link ensureMxcRuntime}; tests pass their own. */
+interface EnsureLatch {
+	done: boolean;
+}
+const moduleLatch: EnsureLatch = { done: false };
+
+/** Test-only injection seam for {@link ensureMxcRuntime}. Production passes nothing. */
+export interface EnsureMxcRuntimeDeps {
+	/** Isolated latch so a test exercises the body without tripping the module latch. */
+	latch?: EnsureLatch;
+	/** Override the embedded asset list (default: the generated importer). */
+	assets?: ReadonlyArray<{ name: string; arch: string; executable: boolean; path: string }>;
+	/** Root under which `<hash>/<arch>/<name>` is materialized (default: `~/.bound/less/mxc-runtime`). */
+	baseDir?: string;
+	/** Content-hash subdirectory (default: the generated hash). */
+	hash?: string;
+}
 
 /**
  * Idempotently stage the embedded mxc binary and set `MXC_BIN_DIR`. Safe to
  * call on every spawn / availability check — the first call does the work, the
  * rest return immediately. Respects a pre-set `MXC_BIN_DIR` (operator override)
  * and no-ops when there are no embedded assets.
+ *
+ * The `deps` seam is for tests only: production calls it with no argument, so
+ * `ensured`, `MXC_BIN_DIR`, the embedded-asset list, and the home directory all
+ * resolve exactly as before. A test passes an isolated latch, a temp base dir,
+ * and a synthetic asset list to exercise the materialization path without
+ * touching the real `~/.bound` or the once-per-process latch.
  */
-export function ensureMxcRuntime(): void {
-	if (ensured) return;
-	ensured = true;
+export function ensureMxcRuntime(deps: EnsureMxcRuntimeDeps = {}): void {
+	const latch = deps.latch ?? moduleLatch;
+	if (latch.done) return;
+	latch.done = true;
 
 	// Operator already pointed mxc at a binary directory — don't second-guess it.
 	if (process.env.MXC_BIN_DIR) return;
+	const assets = deps.assets ?? MXC_EMBEDDED_ASSETS;
 	// Nothing embedded (empty importer): the SDK resolves from node_modules.
-	if (!MXC_EMBEDDED_ASSETS || MXC_EMBEDDED_ASSETS.length === 0) return;
+	if (!assets || assets.length === 0) return;
 
-	const root = join(homedir(), ".bound", "less", "mxc-runtime", MXC_RUNTIME_HASH);
-	for (const asset of MXC_EMBEDDED_ASSETS) {
+	const baseDir = deps.baseDir ?? join(homedir(), ".bound", "less", "mxc-runtime");
+	const hash = deps.hash ?? MXC_RUNTIME_HASH;
+	const root = join(baseDir, hash);
+	for (const asset of assets) {
 		const dest = join(root, asset.arch, asset.name);
 		if (existsSync(dest)) continue;
 		mkdirSync(dirname(dest), { recursive: true });

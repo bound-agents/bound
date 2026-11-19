@@ -239,19 +239,46 @@ export class McpAppHost {
 	}
 }
 
+/** A transport the SDK `Client` can connect over. Injected in tests. */
+export interface McpClientTransport {
+	start(): Promise<void>;
+	send(message: unknown, options?: unknown): Promise<void>;
+	close(): Promise<void>;
+}
+
+/**
+ * Factory for the transport `connectToMcpServer` connects over. The default
+ * opens a Streamable HTTP transport to `serverUrl` with `headers` attached to
+ * every request; tests inject an in-memory transport to exercise the connect
+ * path without a network listener. `requestInit` is undefined when no headers
+ * are supplied so the SDK keeps its own defaults.
+ */
+export type McpTransportFactory = (
+	serverUrl: URL,
+	headers?: Record<string, string>,
+) => McpClientTransport;
+
+const defaultTransportFactory: McpTransportFactory = (serverUrl, headers) => {
+	const requestInit = headers ? { headers } : undefined;
+	return new StreamableHTTPClientTransport(serverUrl, {
+		requestInit,
+	}) as unknown as McpClientTransport;
+};
+
 /**
  * Connect to an MCP server over Streamable HTTP. Returns the connected SDK
  * client. Optional `headers` are attached to every transport request. In the
  * web UI's renderer path these are injected server-side by the same-origin
- * proxy, so the browser never sees upstream auth tokens.
+ * proxy, so the browser never sees upstream auth tokens. `makeTransport` is
+ * injectable for tests; production uses the default Streamable HTTP factory.
  */
 export async function connectToMcpServer(
 	serverUrl: URL,
 	headers?: Record<string, string>,
+	makeTransport: McpTransportFactory = defaultTransportFactory,
 ): Promise<Client> {
-	const requestInit = headers ? { headers } : undefined;
 	const clientOptions = { capabilities: MCP_APPS_HOST_CAPABILITIES as ClientCapabilities };
 	const client = new Client(IMPLEMENTATION, clientOptions);
-	await client.connect(new StreamableHTTPClientTransport(serverUrl, { requestInit }));
+	await client.connect(makeTransport(serverUrl, headers) as Parameters<Client["connect"]>[0]);
 	return client;
 }

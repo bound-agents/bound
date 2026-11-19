@@ -21,6 +21,7 @@ import {
 	updateRow,
 } from "../../index";
 import {
+	findActiveWebhookByThreadId,
 	findWebhookByName,
 	findWebhookDeletedFlagById,
 	findWebhookIdAndTaskIdByName,
@@ -232,6 +233,47 @@ describe("webhooks repository finders", () => {
 			expect(findWebhookDeletedFlagById(db, "wh-restore")).toEqual({ deleted: 0 });
 			// And now the deleted=0 siblings see it again.
 			expect(findWebhookByName(db, "restore")?.id).toBe("wh-restore");
+		});
+	});
+
+	describe("findActiveWebhookByThreadId", () => {
+		function seedTask(taskId: string, threadId: string, opts: { deleted?: number } = {}): void {
+			insertRow(
+				db,
+				"tasks",
+				{
+					id: taskId,
+					type: "event",
+					status: "active",
+					trigger_spec: "{}",
+					thread_id: threadId,
+					created_at: TS,
+					deleted: opts.deleted ?? 0,
+					modified_at: TS,
+				} as unknown as Task,
+				SITE_ID,
+			);
+		}
+
+		it("returns id/name/task_id for a live webhook whose thread_id matches", () => {
+			seedTask("task-1", "thread-1");
+			insertWebhook({ id: "wh-1", name: "deploy", task_id: "task-1", thread_id: "thread-1" });
+			expect(findActiveWebhookByThreadId(db, "thread-1")).toEqual({
+				id: "wh-1",
+				name: "deploy",
+				task_id: "task-1",
+			});
+		});
+
+		it("returns null when no webhook owns the thread", () => {
+			insertWebhook({ id: "wh-1", thread_id: "thread-1" });
+			expect(findActiveWebhookByThreadId(db, "other-thread")).toBeNull();
+		});
+
+		it("ignores a soft-deleted webhook (deleted = 0 filter)", () => {
+			insertWebhook({ id: "wh-1", thread_id: "thread-1" });
+			softDelete(db, "webhooks", "wh-1", SITE_ID);
+			expect(findActiveWebhookByThreadId(db, "thread-1")).toBeNull();
 		});
 	});
 });

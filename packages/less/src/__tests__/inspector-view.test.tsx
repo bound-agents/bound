@@ -259,4 +259,69 @@ describe("InspectorView rendering", () => {
 		await tick();
 		expect(closed).toBe(true);
 	});
+
+	it("renders a non-user/assistant/tool role (developer) with the fallback glyph", async () => {
+		const messages = [makeMessage({ role: "developer", content: "injected system context" })];
+		const { lastFrame } = render(
+			React.createElement(InspectorView, { messages, onClose: () => {} }),
+		);
+		await tick();
+		const frame = lastFrame() ?? "";
+		// Other-role items get the ◦ glyph and the first non-empty content line.
+		expect(frame).toContain("\u25e6");
+		expect(frame).toContain("injected system context");
+	});
+
+	it("falls back to (empty) for a message whose body is all whitespace", async () => {
+		const messages = [makeMessage({ role: "user", content: "   \n\t\n  " })];
+		const { lastFrame } = render(
+			React.createElement(InspectorView, { messages, onClose: () => {} }),
+		);
+		await tick();
+		expect(lastFrame() ?? "").toContain("(empty)");
+	});
+
+	it("scrolls the detail body with the arrow, page, and g/G keys", async () => {
+		// A body taller than the viewport (default test terminal is 24 rows; the
+		// inspector reserves 9 rows of chrome -> ~15 visible) so scrolling moves.
+		const body = Array.from({ length: 60 }, (_, i) => `row-${i}`).join("\n");
+		const messages = [makeMessage({ role: "tool_result", tool_name: "cq", content: body })];
+		const { lastFrame, stdin } = render(
+			React.createElement(InspectorView, { messages, onClose: () => {} }),
+		);
+		await tick();
+		stdin.write("\r"); // open detail
+		await tick();
+		expect(lastFrame() ?? "").toContain("row-0");
+
+		// G jumps to the bottom: the last rows become visible, row-0 scrolls off.
+		stdin.write("G");
+		await tick();
+		const atBottom = lastFrame() ?? "";
+		expect(atBottom).toContain("row-59");
+		expect(atBottom).not.toContain("row-0");
+		// A "more above" indicator appears once scrolled down.
+		expect(atBottom).toContain("more");
+
+		// g returns to the top.
+		stdin.write("g");
+		await tick();
+		expect(lastFrame() ?? "").toContain("row-0");
+
+		// PageDown then PageUp exercises the paged branches.
+		stdin.write("\x1b[6~"); // PageDown
+		await tick();
+		const paged = lastFrame() ?? "";
+		expect(paged).not.toContain("row-0");
+		stdin.write("\x1b[5~"); // PageUp
+		await tick();
+		expect(lastFrame() ?? "").toContain("row-0");
+
+		// Down arrow then Up arrow exercises the single-line branches.
+		stdin.write("\x1b[B"); // Down
+		await tick();
+		stdin.write("\x1b[A"); // Up
+		await tick();
+		expect(lastFrame() ?? "").toContain("row-0");
+	});
 });

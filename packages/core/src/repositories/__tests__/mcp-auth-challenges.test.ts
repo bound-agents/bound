@@ -4,8 +4,10 @@ import { createCoreTestDb } from "../../__tests__/test-database";
 import {
 	type ChallengeDemand,
 	challengeId,
+	findActionableChallenges,
 	findChallengeById,
 	findChallengeByServer,
+	findChallengesByServerName,
 	findPendingChallenges,
 	markFailed,
 	markResolved,
@@ -193,6 +195,41 @@ describe("mcp-auth-challenges repository", () => {
 			const pending = findPendingChallenges(db);
 			expect(pending).toHaveLength(1);
 			expect(pending[0]?.server_name).toBe("a");
+		});
+
+		it("findChallengesByServerName returns every live row for the name across owning sites, ordered by site", () => {
+			raiseChallenge(db, demand({ serverName: "shared", owningSiteId: "site-b" }), "site-b");
+			raiseChallenge(db, demand({ serverName: "shared", owningSiteId: "site-a" }), "site-a");
+			raiseChallenge(db, demand({ serverName: "other", owningSiteId: "site-a" }), "site-a");
+
+			const rows = findChallengesByServerName(db, "shared");
+			expect(rows.map((r) => r.owning_site_id)).toEqual(["site-a", "site-b"]);
+		});
+
+		it("findChallengesByServerName excludes soft-deleted rows and returns [] when none match", () => {
+			const id = raiseChallenge(db, demand({ serverName: "gone" }), OWNER);
+			markResolved(db, id, OWNER);
+			// Still present (resolved, not deleted) — findChallengesByServerName filters on deleted only.
+			expect(findChallengesByServerName(db, "gone")).toHaveLength(1);
+			expect(findChallengesByServerName(db, "never-raised")).toEqual([]);
+		});
+
+		it("findActionableChallenges returns pending and failed rows but not resolved ones", () => {
+			raiseChallenge(db, demand({ serverName: "pending-one" }), OWNER);
+			const failedId = raiseChallenge(db, demand({ serverName: "failed-one" }), OWNER);
+			markFailed(db, failedId, OWNER, "boom");
+			const resolvedId = raiseChallenge(db, demand({ serverName: "resolved-one" }), OWNER);
+			markResolved(db, resolvedId, OWNER);
+
+			const actionable = findActionableChallenges(db);
+			const names = actionable.map((r) => r.server_name).sort();
+			expect(names).toEqual(["failed-one", "pending-one"]);
+		});
+
+		it("findActionableChallenges returns [] when every challenge is resolved", () => {
+			const id = raiseChallenge(db, demand(), OWNER);
+			markResolved(db, id, OWNER);
+			expect(findActionableChallenges(db)).toEqual([]);
 		});
 	});
 });

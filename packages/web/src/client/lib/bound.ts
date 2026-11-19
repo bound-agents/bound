@@ -39,7 +39,15 @@ client.on("aux:completed", bridgeEvent("aux:completed"));
 
 /** Connect the WebSocket. Safe to call multiple times. */
 export function connectWebSocket(): void {
-	client.connect();
+	// Fire-and-forget: the reconnect loop owns retries, so connect()'s promise is
+	// advisory. Swallow its rejection (10s connect timeout, or a pre-open socket
+	// error) so it can't surface as an unhandled rejection — in production it is
+	// unobserved, and under `bun test` an unhandled rejection from a jsdom socket
+	// that never opens gets attributed to whatever sibling test is running when
+	// the timer fires (e.g. browser-bundle's long Vite-build await). Wrap in
+	// Promise.resolve so a test spy that stubs connect() with a non-Promise
+	// return (SystemMap.test.ts spies on client.connect) doesn't throw here.
+	Promise.resolve(client.connect()).catch(() => {});
 }
 
 /** Subscribe to real-time events for a thread. */

@@ -56,6 +56,10 @@ function toolCallContent(name: string, id: string, text?: string): string {
 
 describe("MessageList", () => {
 	it("renders the empty state when there are no messages and emptyText is set", async () => {
+		// First mount in the file pays a one-time module-compilation cost through the
+		// shared jsdom window (MessageList statically imports YardExecutionPanel →
+		// SvelteFlow → Shiki); under a loaded concurrent run that cold compile can
+		// cross the 5000ms default, so this test takes a wider budget.
 		const Comp = await load();
 		const { target } = await dom.mount(Comp, {
 			messages: [],
@@ -65,7 +69,7 @@ describe("MessageList", () => {
 		const empty = target.querySelector(".empty-state");
 		expect(empty).not.toBeNull();
 		expect(empty?.textContent).toContain("No messages yet");
-	});
+	}, 15000);
 
 	it("renders a user and an assistant message as rows with time gutters", async () => {
 		const Comp = await load();
@@ -343,12 +347,151 @@ describe("MessageList", () => {
 		expect(active).not.toBeNull();
 	});
 
-	// The yard execution panel (YardExecutionPanel → @xyflow/svelte SvelteFlow)
-	// and the MCP app panel (McpAppPanel, which needs a live UiResourceClient +
-	// resultPromise) cannot mount under jsdom: SvelteFlow's store constructs a
-	// `$derived` rune at instantiation, which the Bun test runtime rejects with
-	// `rune_outside_svelte`. Their anchoring logic (anchorYardTrees /
-	// anchoredInstances) is exercised by the pure unit tests in
-	// lib/__tests__/yard-anchoring and lib/__tests__/message-grouping; the
-	// MessageList template rows that render those panels need a real browser.
+	// --- Yard execution + MCP app panel rows ---
+	// Round 1 claimed these could not mount under jsdom (@xyflow/svelte
+	// rune_outside_svelte). Round 2 proved that false: the svelte-test-plugin now
+	// compiles .svelte.js/.svelte.ts runes modules, so SvelteFlow mounts and
+	// renders YardExecutionPanel's graph. SvelteFlow keeps scheduling rAFs under
+	// jsdom so settle() never fully quiesces — give these rows explicit long
+	// timeouts and read the DOM once it has rendered.
+	const PANEL_TIMEOUT = 30000;
+
+	function yardTree(over: Record<string, unknown> = {}) {
+		return {
+			traceId: "yardtrace0001",
+			runId: "run0",
+			phase: "completed",
+			nodes: [
+				{
+					id: "run0",
+					parentId: null,
+					node: { kind: "run", depth: 0 },
+					phase: "completed",
+					seq: 0,
+					startSeq: 0,
+				},
+			],
+			...over,
+		};
+	}
+
+	it(
+		"anchors a yard panel beneath the tool_call row carrying its tool_use id",
+		async () => {
+			const Comp = await load();
+			const { target } = await dom.mount(Comp, {
+				messages: [
+					msg({
+						id: "tc",
+						role: "tool_call",
+						tool_name: "yard",
+						content: toolCallContent("yard", "call-yard"),
+						created_at: "2026-01-01T10:00:00.000Z",
+					}),
+				],
+				yardTrees: [yardTree({ toolCallId: "call-yard" })],
+			});
+			// SvelteFlow never idles; poll the DOM after it has had time to render.
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			await dom.settle(4);
+			// The yard panel renders inside a tool_call turn row, driven by the
+			// yardPanelRow snippet, with the shared assistant rail dot.
+			const panel = target.querySelector(".yard-execution-panel");
+			expect(panel).not.toBeNull();
+			expect(target.querySelector(".svelte-flow")).not.toBeNull();
+			// It sits in a row that also holds the tool card for the same call.
+			const panelRow = panel?.closest(".turn-row");
+			expect(panelRow?.querySelector(".rail-dot-assistant")).not.toBeNull();
+		},
+		PANEL_TIMEOUT,
+	);
+
+	it(
+		"renders an unanchored yard tree as a trailing panel row",
+		async () => {
+			const Comp = await load();
+			const { target } = await dom.mount(Comp, {
+				messages: [msg({ id: "u", role: "user", content: "hi" })],
+				// No message carries this call id, so the tree falls to the trailing slot.
+				yardTrees: [yardTree({ traceId: "orphan01", phase: "started", toolCallId: "absent" })],
+			});
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			await dom.settle(4);
+			const panel = target.querySelector(".yard-execution-panel");
+			expect(panel).not.toBeNull();
+			// The trailing panel is the last turn row in the stream, after the user row.
+			const rows = [...target.querySelectorAll(".turn-row")];
+			const last = rows.at(-1);
+			expect(last?.querySelector(".yard-execution-panel")).not.toBeNull();
+		},
+		PANEL_TIMEOUT,
+	);
+
+	it(
+		"anchors an MCP app panel beneath the tool_call row carrying its callId",
+		async () => {
+			const Comp = await load();
+			// A minimal McpAppInstance. McpAppPanel.onMount reads the ui:// resource via
+			// instance.client; a stub whose readResource rejects lands the panel in its
+			// error state (it does not throw), which is all this test needs — the point
+			// is that MessageList's anchoredInstances/panelRow placed the panel at all.
+			const instance = {
+				callId: "call-mcp",
+				threadId: "t1",
+				boundName: "srv__render",
+				serverName: "srv",
+				uiResourceUri: "ui://srv/app",
+				input: {},
+				client: { readResource: async () => Promise.reject(new Error("stub")) },
+				resultPromise: Promise.resolve({ content: [] }),
+				createdAt: Date.now(),
+			};
+			const { target } = await dom.mount(Comp, {
+				messages: [
+					msg({
+						id: "tc",
+						role: "tool_call",
+						tool_name: "srv__render",
+						content: toolCallContent("srv__render", "call-mcp"),
+						created_at: "2026-01-01T10:00:00.000Z",
+					}),
+				],
+				appInstances: [instance],
+			});
+			await dom.settle(6);
+			// The panelRow snippet placed an McpAppPanel into a tool_call turn row.
+			const mcpPanel = target.querySelector(".mcp-app");
+			expect(mcpPanel).not.toBeNull();
+			expect(mcpPanel?.closest(".turn-row")?.querySelector(".rail-dot-assistant")).not.toBeNull();
+		},
+		PANEL_TIMEOUT,
+	);
+
+	it(
+		"renders an unanchored MCP app instance as a trailing panel row",
+		async () => {
+			const Comp = await load();
+			const instance = {
+				callId: "no-match",
+				threadId: "t1",
+				boundName: "srv__render",
+				serverName: "srv",
+				uiResourceUri: "ui://srv/app",
+				input: {},
+				client: { readResource: async () => Promise.reject(new Error("stub")) },
+				resultPromise: Promise.resolve({ content: [] }),
+				createdAt: Date.now(),
+			};
+			const { target } = await dom.mount(Comp, {
+				messages: [msg({ id: "u", role: "user", content: "hi" })],
+				appInstances: [instance],
+			});
+			await dom.settle(6);
+			const panel = target.querySelector(".mcp-app");
+			expect(panel).not.toBeNull();
+			const rows = [...target.querySelectorAll(".turn-row")];
+			expect(rows.at(-1)?.querySelector(".mcp-app")).not.toBeNull();
+		},
+		PANEL_TIMEOUT,
+	);
 });

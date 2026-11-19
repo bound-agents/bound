@@ -5,9 +5,11 @@ import { createCoreTestDb } from "../../__tests__/test-database";
 import { applyMetricsSchema, insertRow, softDelete } from "../../index";
 import {
 	countAssistantMessages,
+	countBackgroundToolCallsByThread,
 	countLiveAssistantMessagesByThread,
 	countLiveMessagesByThread,
 	countMessagesByThread,
+	findBackgroundAuxSeed,
 	findFirstLiveUserMessageByThreadSince,
 	findFirstMessageContentByThreadAndRole,
 	findLatestAssistantMessageContent,
@@ -21,6 +23,7 @@ import {
 	findMessageRoleById,
 	findPairedToolResultId,
 	findToolResultByThreadAndCallId,
+	findUnresolvedBackgroundPlaceholder,
 	getLatestChangeLogHlcForRows,
 	listDistinctToolNamesByThread,
 	listLiveAssistantMessagesWithMetadataByThreadSince,
@@ -38,7 +41,6 @@ import {
 	listRecentLiveMessageContentByThread,
 	listToolNameCountsByThread,
 } from "../messages";
-
 const SITE = "site-A";
 const THREAD = "thread-1";
 const OTHER_THREAD = "thread-2";
@@ -914,6 +916,117 @@ describe("messages repository finders", () => {
 
 		it("misses cleanly when no result exists yet", () => {
 			expect(findToolResultByThreadAndCallId(db, THREAD, "never")).toBeNull();
+		});
+
+		describe("countBackgroundToolCallsByThread", () => {
+			it("counts live tool_result rows still carrying the background marker", () => {
+				seed(db, {
+					id: "bg1",
+					role: "tool_result",
+					metadata: JSON.stringify({ background: true }),
+				});
+				seed(db, {
+					id: "bg2",
+					role: "tool_result",
+					metadata: JSON.stringify({ background: true }),
+				});
+				expect(countBackgroundToolCallsByThread(db, THREAD)).toBe(2);
+			});
+
+			it("ignores resolved tool_result rows whose background marker was stripped", () => {
+				seed(db, {
+					id: "resolved",
+					role: "tool_result",
+					metadata: JSON.stringify({ other: 1 }),
+				});
+				expect(countBackgroundToolCallsByThread(db, THREAD)).toBe(0);
+			});
+
+			it("ignores soft-deleted background placeholders", () => {
+				seed(db, {
+					id: "bg1",
+					role: "tool_result",
+					metadata: JSON.stringify({ background: true }),
+				});
+				softDelete(db, "messages", "bg1", SITE);
+				expect(countBackgroundToolCallsByThread(db, THREAD)).toBe(0);
+			});
+
+			it("returns 0 for a thread with no background placeholders", () => {
+				expect(countBackgroundToolCallsByThread(db, "thread-empty")).toBe(0);
+			});
+		});
+
+		describe("findBackgroundAuxSeed", () => {
+			it("returns the parent thread/call ids and instructions for the oldest seed user message", () => {
+				seed(db, {
+					id: "seed",
+					role: "user",
+					content: "do the thing",
+					created_at: "2026-01-01T00:00:00.000Z",
+					metadata: JSON.stringify({
+						background_parent: { thread_id: "parent-t", call_id: "call-9" },
+					}),
+				});
+				expect(findBackgroundAuxSeed(db, THREAD)).toEqual({
+					parentThreadId: "parent-t",
+					parentCallId: "call-9",
+					instructions: "do the thing",
+				});
+			});
+
+			it("returns null for a foreground thread whose user message has no background_parent", () => {
+				seed(db, { id: "plain", role: "user", content: "hi" });
+				expect(findBackgroundAuxSeed(db, THREAD)).toBeNull();
+			});
+
+			it("picks the earliest seed when several carry the marker", () => {
+				seed(db, {
+					id: "later",
+					role: "user",
+					content: "second",
+					created_at: "2026-01-02T00:00:00.000Z",
+					metadata: JSON.stringify({
+						background_parent: { thread_id: "p", call_id: "c-late" },
+					}),
+				});
+				seed(db, {
+					id: "earlier",
+					role: "user",
+					content: "first",
+					created_at: "2026-01-01T00:00:00.000Z",
+					metadata: JSON.stringify({
+						background_parent: { thread_id: "p", call_id: "c-early" },
+					}),
+				});
+				expect(findBackgroundAuxSeed(db, THREAD)?.parentCallId).toBe("c-early");
+			});
+		});
+
+		describe("findUnresolvedBackgroundPlaceholder", () => {
+			it("returns the placeholder id while it still carries the background marker", () => {
+				seed(db, {
+					id: "ph1",
+					role: "tool_result",
+					tool_name: "call-1",
+					metadata: JSON.stringify({ background: true }),
+				});
+				expect(findUnresolvedBackgroundPlaceholder(db, THREAD, "call-1")).toEqual({ id: "ph1" });
+			});
+
+			it("returns null once the marker has been stripped (resolved)", () => {
+				seed(db, {
+					id: "ph1",
+					role: "tool_result",
+					tool_name: "call-1",
+					metadata: JSON.stringify({ resolved: true }),
+				});
+				expect(findUnresolvedBackgroundPlaceholder(db, THREAD, "call-1")).toBeNull();
+			});
+
+			it("returns null for a call id with no placeholder", () => {
+				expect(findUnresolvedBackgroundPlaceholder(db, THREAD, "never")).toBeNull();
+			});
 		});
 	});
 });

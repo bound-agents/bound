@@ -219,6 +219,24 @@ describe("ALL /proxy/:site/:name — LEG A (local owner)", () => {
 		expect(res.status).toBe(404);
 		expect(fetched).toBe(false);
 	});
+
+	it("oauth local server with no token accessor wired: 503, never fetches", async () => {
+		seedHost(db, LOCAL_SITE, { servers: ["gh"], capabilities: APP_BINDING });
+		let fetched = false;
+		const fetchImpl: FetchImpl = async () => {
+			fetched = true;
+			return new Response("{}", { status: 200 });
+		};
+		// getAccessTokenForServer omitted -> the host has no way to mint the Bearer.
+		const app = createMcpAppsRoutes(db, localConfig(), LOCAL_SITE, fetchImpl);
+		const res = await app.fetch(
+			new Request(`http://localhost/proxy/${LOCAL_SITE}/gh`, { method: "POST", body: "{}" }),
+		);
+		expect(res.status).toBe(503);
+		expect(fetched).toBe(false);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("no token accessor is wired");
+	});
 });
 
 describe("ALL /proxy/:site/:name — LEG B (peer owner relay)", () => {
@@ -337,5 +355,55 @@ describe("ALL /proxy/:site/:name — LEG B (peer owner relay)", () => {
 			new Request(`http://localhost/proxy/${PEER_SITE}/remote`, { method: "POST", body: "{}" }),
 		);
 		expect(res.status).toBe(504);
+	});
+
+	it("peer-owned server with no relay dispatcher wired: 502", async () => {
+		seedHost(db, PEER_SITE, {
+			servers: ["remote"],
+			capabilities: { remote: { tools: [{ name: "t", uiResourceUri: "ui://remote/t" }] } },
+		});
+		// relayMcpAppProxy omitted -> the selector resolves to a peer owner this host
+		// cannot reach, so the proxy refuses rather than fetching upstream directly.
+		const app = createMcpAppsRoutes(db, { servers: [] } as McpConfig, LOCAL_SITE);
+		const res = await app.fetch(
+			new Request(`http://localhost/proxy/${PEER_SITE}/remote`, { method: "POST", body: "{}" }),
+		);
+		expect(res.status).toBe(502);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain("no relay dispatcher wired");
+	});
+});
+
+describe("createMcpAppsRoutes — malformed synced JSON columns", () => {
+	it("tolerates a host row with malformed mcp_capabilities and mcp_servers (GET /)", async () => {
+		// Write a host row directly with non-JSON capability + server columns so both
+		// collectAppBindings and collectServerOwners hit their parse-catch arms.
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: PEER_SITE,
+				host_name: PEER_SITE,
+				version: null,
+				sync_url: null,
+				mcp_servers: "{not json",
+				mcp_tools: null,
+				models: null,
+				online_at: "2026-09-22T00:00:00.000Z",
+				modified_at: new Date().toISOString(),
+				deleted: 0,
+				platforms: null,
+				mcp_tool_annotations: null,
+				mcp_capabilities: "{also not json",
+				commit_hash: null,
+			},
+			PEER_SITE,
+		);
+		const app = createMcpAppsRoutes(db, { servers: [] } as McpConfig, LOCAL_SITE);
+		const res = await app.fetch(new Request("http://localhost/", { method: "GET" }));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { servers: unknown[] };
+		// A malformed row contributes no bindings and no ownership -> no servers.
+		expect(body.servers).toEqual([]);
 	});
 });

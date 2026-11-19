@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import type { ResolverAttempt } from "@bound/agent";
 import { applySchema, raiseChallenge } from "@bound/core";
 import { createMcpChallengesRoutes, isLoopbackBind } from "../mcp-challenges";
@@ -103,6 +103,22 @@ describe("GET /api/mcp-challenges — enumeration + loopback gating (R-MO27c)", 
 		expect(body.loopback).toBe(true);
 		expect(body.canResolve).toBe(false);
 	});
+
+	it("returns 500 with the error detail when the pending-challenge read throws", async () => {
+		const app = createMcpChallengesRoutes(db, "localhost", new FakeBridge(true));
+		const spy = spyOn(db, "query").mockImplementation(() => {
+			throw new Error("db is busy");
+		});
+		try {
+			const res = await app.request("/");
+			expect(res.status).toBe(500);
+			const body = (await res.json()) as { error: string; details: string };
+			expect(body.error).toBe("Failed to list pending challenges");
+			expect(body.details).toBe("db is busy");
+		} finally {
+			spy.mockRestore();
+		}
+	});
 });
 
 describe("POST /api/mcp-challenges/:id/claim — live authorize flow (R-MO27c)", () => {
@@ -189,5 +205,21 @@ describe("GET /api/mcp-challenges/by-server — per-server state (R-MO27c)", () 
 		expect(body.servers.notion).toBeUndefined();
 		expect(body.loopback).toBe(false);
 		expect(body.canResolve).toBe(false);
+	});
+
+	it("returns 500 with the error detail when the actionable-challenge read throws", async () => {
+		const app = createMcpChallengesRoutes(db, "localhost", new FakeBridge(true));
+		const spy = spyOn(db, "query").mockImplementation(() => {
+			throw new Error("table is locked");
+		});
+		try {
+			const res = await app.request("/by-server");
+			expect(res.status).toBe(500);
+			const body = (await res.json()) as { error: string; details: string };
+			expect(body.error).toBe("Failed to list per-server challenges");
+			expect(body.details).toBe("table is locked");
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

@@ -16,6 +16,7 @@ import {
 	listModelUsageInRange,
 	listStablePrefixDriftTurnsSince,
 	listTurnInflationRatiosByThread,
+	sumTurnCostByThread,
 	sumTurnCostForDate,
 } from "../turns";
 
@@ -785,5 +786,30 @@ describe("findLatestCacheHitRateInRange", () => {
 		expect(
 			findLatestCacheHitRateInRange(db, "2030-01-01T00:00:00.000Z", "2030-12-31T00:00:00.000Z"),
 		).toBeNull();
+	});
+});
+
+describe("sumTurnCostByThread", () => {
+	it("sums cost_usd across every non-deleted turn for the thread", () => {
+		seed({ id: "t1", thread_id: "thread-1", cost_usd: 0.25 });
+		seed({ id: "t2", thread_id: "thread-1", cost_usd: 0.75 });
+		seed({ id: "t3", thread_id: "thread-2", cost_usd: 9.99 });
+		expect(sumTurnCostByThread(db, "thread-1")).toEqual({ total: 1 });
+	});
+
+	it("excludes soft-deleted turns from the sum", () => {
+		seed({ id: "t1", thread_id: "thread-1", cost_usd: 1 });
+		seed({ id: "t2", thread_id: "thread-1", cost_usd: 2 });
+		softDelete(db, "turns", "t2", SITE);
+		expect(sumTurnCostByThread(db, "thread-1")).toEqual({ total: 1 });
+	});
+
+	it("returns total null when the thread has no turns", () => {
+		expect(sumTurnCostByThread(db, "thread-empty")).toEqual({ total: null });
+	});
+
+	it("returns total null when every turn's cost_usd is null", () => {
+		seed({ id: "t1", thread_id: "thread-1", cost_usd: null });
+		expect(sumTurnCostByThread(db, "thread-1")).toEqual({ total: null });
 	});
 });

@@ -117,3 +117,14 @@ export async function initMcpApps(
 	mcpAppHost.set(host);
 	return host;
 }
+
+/**
+ * Test-only: clear the one-time `started` latch so the next `initMcpApps` call
+ * runs the full body again. Production never resets it. A test that mounts a
+ * component whose onMount fires `initMcpApps` (e.g. App.svelte) must call this
+ * in teardown, or it latches `started` process-wide and a LATER sibling file's
+ * "first call" bootstrap test short-circuits to null.
+ */
+export function __resetMcpAppsForTests(): void {
+	started = false;
+}

@@ -152,6 +152,59 @@ describe("boundctl main() — DB-backed command dispatch", () => {
 		expect(code).toBe(1);
 		expect(errors.join("\n")).toContain("Unknown db subcommand");
 	});
+
+	// These guards read the skill/webhook name positionally from args[2]; passing
+	// `--data-dir <dir>` would be consumed AS that positional name (mixed
+	// positional+flag parsing, see docs/gotchas.md), defeating the missing-name
+	// branch. Instead chdir into the fixture tmp so the default `data` dataDir
+	// resolves against the seeded DB, and leave the positional slot genuinely empty.
+	function inFixtureCwd<T>(fn: () => T): T {
+		const origCwd = process.cwd();
+		process.chdir(tmp);
+		try {
+			return fn();
+		} finally {
+			process.chdir(origCwd);
+		}
+	}
+
+	it("'skill view' with no name errors, closes the DB, and returns 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await inFixtureCwd(() => main(["skill", "view"], io));
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("skill name is required");
+		expect(errors.join("\n")).toContain("boundctl skill view <name>");
+	});
+
+	it("'skill delete' with no name errors, closes the DB, and returns 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await inFixtureCwd(() => main(["skill", "delete"], io));
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("skill name is required");
+		expect(errors.join("\n")).toContain("boundctl skill delete <name>");
+	});
+
+	it("'skill import' with no path errors, closes the DB, and returns 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await inFixtureCwd(() => main(["skill", "import"], io));
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("path is required");
+		expect(errors.join("\n")).toContain("boundctl skill import <path>");
+	});
+
+	it("'webhook delete' with no name errors, closes the DB, and returns 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await inFixtureCwd(() => main(["webhook", "delete"], io));
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("Usage: boundctl webhook delete <name>");
+	});
+
+	it("'webhook rotate-secret' with no name errors, closes the DB, and returns 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await inFixtureCwd(() => main(["webhook", "rotate-secret"], io));
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("Usage: boundctl webhook rotate-secret <name>");
+	});
 });
 
 describe("boundctl defaultCliIO", () => {
@@ -170,5 +223,97 @@ describe("boundctl defaultCliIO", () => {
 			console.error = origError;
 		}
 		expect(seen).toEqual(["log:a", "err:b"]);
+	});
+});
+
+describe("boundctl main() — command handler error arms", () => {
+	// These exercise each DB-backed command's `catch (error)` arm, which the
+	// happy-path and validation-guard tests never reach. The commands resolve a
+	// `data` directory as a sibling of `--config-dir` and openBoundDB() creates a
+	// fresh bound.db there with only an empty host_meta table. getSiteId() then
+	// returns "unknown", so set-hub/stop/resume/drain/sync-status each throw
+	// "Failed to read site_id" — caught and mapped to the per-command failure
+	// message + exit 1. config reload throws earlier, on the unsupported target.
+	let tmp: string;
+	let configDir: string;
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), `boundctl-err-${randomBytes(4).toString("hex")}-`));
+		configDir = join(tmp, "config");
+		mkdirSync(configDir);
+		// Leave the sibling `data` dir absent; openBoundDB creates an empty DB
+		// (host_meta only, no site_id row) so getSiteId returns "unknown".
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	});
+
+	it("set-hub maps a thrown command to 'set-hub failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await main(["set-hub", "myhub", "--config-dir", configDir], io);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("set-hub failed:");
+	});
+
+	it("stop maps a thrown command to 'stop failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await main(["stop", "--config-dir", configDir], io);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("stop failed:");
+	});
+
+	it("resume maps a thrown command to 'resume failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await main(["resume", "--config-dir", configDir], io);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("resume failed:");
+	});
+
+	it("drain maps a thrown command to 'drain failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await main(["drain", "newhub", "--config-dir", configDir], io);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("drain failed:");
+	});
+
+	it("sync-status maps a thrown command to 'sync-status failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		const code = await main(["sync-status", "--config-dir", configDir], io);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("sync-status failed:");
+	});
+
+	it("config reload maps an unsupported target to 'config reload failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		// `reload` passes the subcommand guard; an unsupported target reaches
+		// runConfigReload, which throws before opening the DB.
+		const code = await main(["config", "reload", "bogus-target", "--config-dir", configDir], io);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("config reload failed:");
+		expect(errors.join("\n")).toContain("unsupported config target");
+	});
+
+	it("restore parses --tables and maps the thrown command to 'restore failed' and exit 1", async () => {
+		const { io, errors } = captureIO();
+		// --tables exercises the args.slice(...).filter((a) => !a.startsWith("--"))
+		// arrow (the trailing --preview is filtered out); runRestore then throws on
+		// the uninitialized DB, hitting the restore catch arm.
+		const code = await main(
+			[
+				"restore",
+				"--before",
+				"2099-01-01T00:00:00Z",
+				"--tables",
+				"messages",
+				"threads",
+				"--preview",
+				"--config-dir",
+				configDir,
+			],
+			io,
+		);
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toContain("restore failed:");
 	});
 });

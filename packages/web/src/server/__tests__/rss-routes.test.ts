@@ -233,5 +233,146 @@ describe("rss-feeds routes", () => {
 			};
 			expect(task.status).toBe("cancelled");
 		});
+
+		it("404s when deleting a feed that does not exist", async () => {
+			const app = createRssFeedsRoutes(db);
+			const response = await app.fetch(
+				new Request("http://localhost/no-such-feed", { method: "DELETE" }),
+			);
+			expect(response.status).toBe(404);
+		});
+	});
+
+	describe("POST / validation edge cases", () => {
+		it("rejects a missing name with 400", async () => {
+			const app = createRssFeedsRoutes(db);
+			// Body omits `name` entirely, so the `!name` guard fires before the
+			// regex check — a distinct branch from the "invalid name" case.
+			const response = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: JSON.stringify({ url: "https://example.com/feed.xml" }),
+				}),
+			);
+			expect(response.status).toBe(400);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("name is required");
+		});
+
+		it("rejects a non-integer poll interval with 400", async () => {
+			const app = createRssFeedsRoutes(db);
+			// A number that fails the Number.isInteger half of validatePollInterval
+			// (floor check is exercised elsewhere); reaches the create-side 400.
+			const response = await app.fetch(
+				new Request("http://localhost/", {
+					method: "POST",
+					body: createBody({ poll_interval_seconds: 90.5 }),
+				}),
+			);
+			expect(response.status).toBe(400);
+		});
+	});
+
+	describe("PATCH /:id validation edge cases", () => {
+		it("404s when patching a feed that does not exist", async () => {
+			const app = createRssFeedsRoutes(db);
+			const response = await app.fetch(
+				new Request("http://localhost/no-such-feed", {
+					method: "PATCH",
+					body: JSON.stringify({ description: "x" }),
+				}),
+			);
+			expect(response.status).toBe(404);
+		});
+
+		it("rejects a non-boolean no_history with 400", async () => {
+			const app = createRssFeedsRoutes(db);
+			const created = await app.fetch(
+				new Request("http://localhost/", { method: "POST", body: createBody() }),
+			);
+			const { id } = (await created.json()) as { id: string };
+
+			const response = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ no_history: "yes" }),
+				}),
+			);
+			expect(response.status).toBe(400);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("no_history must be a boolean");
+		});
+
+		it("rejects a non-http(s) url with 400", async () => {
+			const app = createRssFeedsRoutes(db);
+			const created = await app.fetch(
+				new Request("http://localhost/", { method: "POST", body: createBody() }),
+			);
+			const { id } = (await created.json()) as { id: string };
+
+			const response = await app.fetch(
+				new Request(`http://localhost/${id}`, {
+					method: "PATCH",
+					body: JSON.stringify({ url: "file:///etc/passwd" }),
+				}),
+			);
+			expect(response.status).toBe(400);
+		});
+	});
+
+	describe("error handling — surfaces a 500 with details when a query fails", () => {
+		it("GET / (list) returns 500 when the DB is unavailable", async () => {
+			const app = createRssFeedsRoutes(db);
+			db.close();
+			const response = await app.fetch(new Request("http://localhost/"));
+			expect(response.status).toBe(500);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("Failed to list RSS feeds");
+		});
+
+		it("GET /:id returns 500 when the DB is unavailable", async () => {
+			const app = createRssFeedsRoutes(db);
+			db.close();
+			const response = await app.fetch(new Request("http://localhost/some-id"));
+			expect(response.status).toBe(500);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("Failed to get RSS feed");
+		});
+
+		it("POST / returns 500 when a write fails mid-create", async () => {
+			const app = createRssFeedsRoutes(db);
+			db.close();
+			const response = await app.fetch(
+				new Request("http://localhost/", { method: "POST", body: createBody() }),
+			);
+			expect(response.status).toBe(500);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("Failed to create RSS feed");
+		});
+
+		it("PATCH /:id returns 500 when a lookup fails", async () => {
+			const app = createRssFeedsRoutes(db);
+			db.close();
+			const response = await app.fetch(
+				new Request("http://localhost/some-id", {
+					method: "PATCH",
+					body: JSON.stringify({ description: "x" }),
+				}),
+			);
+			expect(response.status).toBe(500);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("Failed to update RSS feed");
+		});
+
+		it("DELETE /:id returns 500 when a lookup fails", async () => {
+			const app = createRssFeedsRoutes(db);
+			db.close();
+			const response = await app.fetch(
+				new Request("http://localhost/some-id", { method: "DELETE" }),
+			);
+			expect(response.status).toBe(500);
+			const json = (await response.json()) as { error: string };
+			expect(json.error).toBe("Failed to delete RSS feed");
+		});
 	});
 });

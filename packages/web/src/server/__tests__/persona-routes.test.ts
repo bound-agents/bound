@@ -134,4 +134,33 @@ describe("persona routes — GET/POST /api/persona", () => {
 		});
 		expect(res.status).toBe(400);
 	});
+
+	it("GET surfaces a 500 with details when the underlying query fails", async () => {
+		// Close the DB out from under the route so the SELECT throws inside the
+		// handler, exercising the GET catch path (reports the error, not a crash).
+		db.close();
+		const res = await app.request("/");
+		expect(res.status).toBe(500);
+		const json = (await res.json()) as { error: string; details: string };
+		expect(json.error).toBe("Failed to read persona");
+		expect(typeof json.details).toBe("string");
+		expect(json.details.length).toBeGreaterThan(0);
+	});
+
+	it("POST surfaces a 500 with details when the write fails", async () => {
+		// A well-formed, in-bounds persona that passes every validation gate, so
+		// the handler reaches the insert/update path — then the closed DB makes
+		// that write throw, exercising the POST catch path.
+		db.close();
+		const res = await app.request("/", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ persona: "A valid persona string." }),
+		});
+		expect(res.status).toBe(500);
+		const json = (await res.json()) as { error: string; details: string };
+		expect(json.error).toBe("Failed to set persona");
+		expect(typeof json.details).toBe("string");
+		expect(json.details.length).toBeGreaterThan(0);
+	});
 });

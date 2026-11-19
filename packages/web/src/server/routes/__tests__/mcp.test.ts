@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
 import { createMcpRoutes } from "../mcp";
 
@@ -288,5 +288,22 @@ describe("createMcpRoutes GET /servers", () => {
 		const body = (await (await app.request("/servers")).json()) as ServersResponse;
 		expect(body.servers.map((s) => s.name)).toEqual(["atproto", "metacog"]);
 		// xray is deleted — tavily must not appear.
+	});
+
+	it("returns 500 with the error detail when the hosts read throws", async () => {
+		const app = createMcpRoutes(db);
+		// Force the synchronous read inside GET /servers to throw so the catch arm runs.
+		const spy = spyOn(db, "query").mockImplementation(() => {
+			throw new Error("db is busy");
+		});
+		try {
+			const res = await app.request("/servers");
+			expect(res.status).toBe(500);
+			const body = (await res.json()) as { error: string; details: string };
+			expect(body.error).toBe("Failed to list MCP servers");
+			expect(body.details).toBe("db is busy");
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });

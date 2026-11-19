@@ -24,16 +24,22 @@ function makeAttempt(state: string): ResolverAttempt {
 
 class FakeBridge implements OauthMcpResolverBridge {
 	forwarded: Array<{ attempt: ResolverAttempt; outcome: unknown }> = [];
-	constructor(private readonly liveState: string | null) {}
+	claims: Array<{ challengeId?: string; serverName?: string }> = [];
+	constructor(
+		private readonly liveState: string | null,
+		private readonly claimOk: boolean = true,
+	) {}
 	attemptForState(state: string): ResolverAttempt | null {
 		return this.liveState !== null && state === this.liveState ? makeAttempt(state) : null;
 	}
 	forwardOutcome(attempt: ResolverAttempt, outcome: unknown): void {
 		this.forwarded.push({ attempt, outcome });
 	}
-	claims: Array<{ challengeId?: string; serverName?: string }> = [];
 	async claimForLogin(target: { challengeId?: string; serverName?: string }) {
 		this.claims.push(target);
+		if (!this.claimOk) {
+			return { ok: false as const, error: "no such challenge" };
+		}
 		return {
 			ok: true as const,
 			authorizeUrl: "https://as.example.com/authorize",
@@ -141,6 +147,32 @@ describe("POST /oauth/mcp/claim (R-MO27e)", () => {
 			body: JSON.stringify({}),
 		});
 		expect(res.status).toBe(400);
+	});
+
+	it("invalid JSON body → 400", async () => {
+		bridge = new FakeBridge("live-state");
+		const res = await app(bridge).request("/claim", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: "{not valid json",
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("invalid JSON body");
+		// A malformed body never reaches the bridge.
+		expect(bridge.claims).toHaveLength(0);
+	});
+
+	it("surfaces a bridge claim failure as 400 with its error", async () => {
+		const failBridge = new FakeBridge("live-state", false);
+		const res = await app(failBridge).request("/claim", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ challenge_id: "chal-1" }),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toBe("no such challenge");
 	});
 
 	it("no resolver on this host → 503", async () => {

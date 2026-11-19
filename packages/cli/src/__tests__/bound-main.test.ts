@@ -80,23 +80,25 @@ describe("bound main()", () => {
 		});
 	});
 
-	it("routes 'login' to runLogin and surfaces its failure as exit 1", async () => {
-		// `login` with no subflag flags makes runLogin print usage and
-		// process.exit(1) internally. main() catches nothing special here; the
-		// internal exit throws under our stub so we assert the mapped behavior by
-		// routing through the real catch path with a reachable-but-failing flag.
+	it("routes 'login --mcp' to runLogin and maps a dead daemon to exit 1", async () => {
+		// `login --mcp <server>` routes through runMcpLogin, which probes the
+		// daemon's /api/status before claiming. main() now parses --url into
+		// daemonUrl, so we point it at a guaranteed-closed ephemeral port: bind a
+		// Bun.serve on port 0, read the assigned port, then stop it. The connect
+		// refuses immediately (no 5-min probe hang), runMcpLogin throws the
+		// "requires a running local daemon" error, main()'s catch maps it to exit 1
+		// with a "Login failed" diagnostic — deterministic on any host, running
+		// daemon or not.
+		const probe = Bun.serve({ port: 0, hostname: "localhost", fetch: () => new Response("ok") });
+		const deadUrl = `http://localhost:${probe.port}`;
+		probe.stop(true);
+
 		const { io, errors } = captureIO();
-		// `--mcp` with an unreachable daemon throws inside runMcpLogin → caught →
-		// returns 1 with a "Login failed" diagnostic. Point at a closed port.
-		const code = await main(["login", "--mcp", "nope", "--url", "http://localhost:1"], io);
-		// `--url` is not parsed by main (only --config-dir/--challenge/--mcp are),
-		// so the daemon defaults to localhost:3001. Whether that is reachable in
-		// the test env varies; assert the contract: failure → 1 + diagnostic.
-		if (code === 1) {
-			expect(errors.join("\n")).toContain("Login failed");
-		} else {
-			expect(code).toBe(0);
-		}
+		const code = await main(["login", "--mcp", "nope", "--url", deadUrl], io);
+		expect(code).toBe(1);
+		const joined = errors.join("\n");
+		expect(joined).toContain("Login failed");
+		expect(joined).toContain("requires a running local daemon");
 	});
 
 	it("defaultCliIO wires to the real console without throwing", () => {

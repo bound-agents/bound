@@ -2,10 +2,14 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import {
 	type ConsistencyEntry,
+	compareAllTables,
+	countUnsyncableLocalOnly,
 	getBackfillableEntriesSorted,
 	getBackfillablePksSorted,
+	getLocalPksSorted,
 	hashRow,
 	mergeDiffEntries,
+	mergeDiffPks,
 	syncableRowPredicate,
 	syncableWhereClause,
 } from "../consistency.js";
@@ -355,5 +359,181 @@ describe("syncable-row filter symmetry (invariant #19; non-converging backfill r
 		const diff = mergeDiffEntries(localEntries, remoteEntries);
 		expect(diff.remoteOnly).toEqual([]);
 		expect(diff.localOnly).toEqual([]);
+	});
+});
+
+describe("getLocalPksSorted / getBackfillablePksSorted (real synced tables)", () => {
+	function makeMessagesDb(): Database {
+		const db = new Database(":memory:");
+		db.exec(`
+			CREATE TABLE messages (
+				id TEXT PRIMARY KEY,
+				role TEXT NOT NULL,
+				content TEXT,
+				modified_at TEXT NOT NULL,
+				deleted INTEGER NOT NULL DEFAULT 0
+			);
+		`);
+		db.exec(`
+			INSERT INTO messages (id, role, content, modified_at) VALUES ('m2', 'user', 'b', '2026-01-02T00:00:00Z');
+			INSERT INTO messages (id, role, content, modified_at) VALUES ('m1', 'assistant', 'a', '2026-01-01T00:00:00Z');
+			INSERT INTO messages (id, role, content, modified_at) VALUES ('sys', 'system', 'forbidden', '2026-01-03T00:00:00Z');
+		`);
+		return db;
+	}
+
+	test("getLocalPksSorted returns ALL pks ascending, including unsyncable system rows", () => {
+		const db = makeMessagesDb();
+		expect(getLocalPksSorted(db, "messages")).toEqual(["m1", "m2", "sys"]);
+	});
+
+	test("getBackfillablePksSorted drops the role='system' row", () => {
+		const db = makeMessagesDb();
+		expect(getBackfillablePksSorted(db, "messages")).toEqual(["m1", "m2"]);
+	});
+
+	test("getLocalPksSorted on a table with no syncable filter returns every row", () => {
+		const db = new Database(":memory:");
+		db.exec("CREATE TABLE turns (id TEXT PRIMARY KEY, modified_at TEXT NOT NULL);");
+		db.exec(`
+			INSERT INTO turns (id, modified_at) VALUES ('t2', '2026-01-02T00:00:00Z');
+			INSERT INTO turns (id, modified_at) VALUES ('t1', '2026-01-01T00:00:00Z');
+		`);
+		expect(getLocalPksSorted(db, "turns")).toEqual(["t1", "t2"]);
+		expect(getBackfillablePksSorted(db, "turns")).toEqual(["t1", "t2"]);
+	});
+});
+
+describe("mergeDiffPks (PK-set three-way diff)", () => {
+	test("classifies interleaved local-only, remote-only, and matching pks", () => {
+		const diff = mergeDiffPks(["a", "c", "e"], ["b", "c", "d"]);
+		expect(diff.localOnly).toEqual(["a", "e"]);
+		expect(diff.remoteOnly).toEqual(["b", "d"]);
+		expect(diff.matching).toBe(1);
+	});
+
+	test("drains a longer local tail into localOnly", () => {
+		const diff = mergeDiffPks(["a", "b", "c", "d"], ["a"]);
+		expect(diff.localOnly).toEqual(["b", "c", "d"]);
+		expect(diff.remoteOnly).toEqual([]);
+		expect(diff.matching).toBe(1);
+	});
+
+	test("drains a longer remote tail into remoteOnly", () => {
+		const diff = mergeDiffPks(["a"], ["a", "b", "c"]);
+		expect(diff.localOnly).toEqual([]);
+		expect(diff.remoteOnly).toEqual(["b", "c"]);
+		expect(diff.matching).toBe(1);
+	});
+
+	test("two empty inputs produce an empty diff", () => {
+		expect(mergeDiffPks([], [])).toEqual({ localOnly: [], remoteOnly: [], matching: 0 });
+	});
+});
+
+describe("countUnsyncableLocalOnly", () => {
+	function dbWithMessages(rows: Array<{ id: string; role: string }>): Database {
+		const db = new Database(":memory:");
+		db.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, role TEXT NOT NULL);");
+		for (const r of rows) {
+			db.query("INSERT INTO messages (id, role) VALUES (?, ?)").run(r.id, r.role);
+		}
+		return db;
+	}
+
+	test("returns [] for an empty local-only set without touching the db", () => {
+		const db = dbWithMessages([]);
+		expect(countUnsyncableLocalOnly(db, [])).toEqual([]);
+	});
+
+	test("reports the count of role='system' rows among the local-only pks", () => {
+		const db = dbWithMessages([
+			{ id: "a", role: "user" },
+			{ id: "b", role: "system" },
+			{ id: "c", role: "system" },
+		]);
+		const result = countUnsyncableLocalOnly(db, ["a", "b", "c"]);
+		expect(result).toEqual([
+			{ table: "messages", count: 2, reason: "role='system' (invariant #19, hub rejects these)" },
+		]);
+	});
+
+	test("returns [] when the local-only set has no system rows", () => {
+		const db = dbWithMessages([
+			{ id: "a", role: "user" },
+			{ id: "b", role: "assistant" },
+		]);
+		expect(countUnsyncableLocalOnly(db, ["a", "b"])).toEqual([]);
+	});
+
+	test("ignores a pk that does not resolve to a messages row", () => {
+		const db = dbWithMessages([{ id: "a", role: "system" }]);
+		// 'missing' has no row → null role → not counted; only 'a' counts.
+		const result = countUnsyncableLocalOnly(db, ["a", "missing"]);
+		expect(result).toEqual([
+			{ table: "messages", count: 1, reason: "role='system' (invariant #19, hub rejects these)" },
+		]);
+	});
+});
+
+describe("compareAllTables", () => {
+	function dbWithUsers(ids: string[]): Database {
+		const db = new Database(":memory:");
+		db.exec("CREATE TABLE users (id TEXT PRIMARY KEY, modified_at TEXT);");
+		for (const id of ids) {
+			db.query("INSERT INTO users (id, modified_at) VALUES (?, ?)").run(id, "2026-01-01T00:00:00Z");
+		}
+		return db;
+	}
+
+	test("a table absent from the remote map lands entirely in localOnly", () => {
+		const db = dbWithUsers(["u1", "u2"]);
+		const [diff] = compareAllTables(db, new Map(), ["users"]);
+		expect(diff.table).toBe("users");
+		expect(diff.localCount).toBe(2);
+		expect(diff.remoteCount).toBe(0);
+		expect(diff.localOnly).toEqual(["u1", "u2"]);
+		expect(diff.remoteOnly).toEqual([]);
+		expect(diff.matching).toBe(0);
+	});
+
+	test("diffs local pks against a present remote entry", () => {
+		const db = dbWithUsers(["u1", "u2"]);
+		const remote = new Map([["users", { count: 2, pks: ["u2", "u3"] }]]);
+		const [diff] = compareAllTables(db, remote, ["users"]);
+		expect(diff.localCount).toBe(2);
+		expect(diff.remoteCount).toBe(2);
+		expect(diff.localOnly).toEqual(["u1"]);
+		expect(diff.remoteOnly).toEqual(["u3"]);
+		expect(diff.matching).toBe(1);
+	});
+
+	test("defaults to the full synced-table list when no subset is given", () => {
+		const db = new Database(":memory:");
+		// Create every table compareAllTables enumerates so getLocalPksSorted can query each.
+		const tables = [
+			"users",
+			"threads",
+			"messages",
+			"semantic_memory",
+			"tasks",
+			"files",
+			"hosts",
+			"cluster_config",
+			"advisories",
+			"skills",
+			"memory_edges",
+			"turns",
+		];
+		for (const t of tables) {
+			const pk = t === "hosts" ? "site_id" : t === "cluster_config" ? "key" : "id";
+			db.exec(`CREATE TABLE ${t} (${pk} TEXT PRIMARY KEY, role TEXT, modified_at TEXT);`);
+		}
+		const diffs = compareAllTables(db, new Map());
+		expect(diffs.map((d) => d.table)).toEqual(tables);
+		for (const d of diffs) {
+			expect(d.localCount).toBe(0);
+			expect(d.remoteCount).toBe(0);
+		}
 	});
 });

@@ -2224,4 +2224,23 @@ describe("metrics routes", () => {
 			});
 		});
 	});
+
+	describe("error handling", () => {
+		it("surfaces a 500 with details when a metrics query fails", async () => {
+			const app = createMetricsRoutes(db);
+			const from = "2026-05-01T00:00:00Z";
+			const to = "2026-05-02T00:00:00Z";
+			// Close the DB so the first prepared query throws inside the handler,
+			// exercising the outer catch (reports the error instead of crashing).
+			db.close();
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+			expect(response.status).toBe(500);
+			const json = (await response.json()) as { error: string; details: string };
+			expect(json.error).toBe("Failed to get metrics");
+			expect(typeof json.details).toBe("string");
+			expect(json.details.length).toBeGreaterThan(0);
+		});
+	});
 });
