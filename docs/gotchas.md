@@ -148,13 +148,15 @@ Two schema subtleties worth keeping in hand when touching this code. First, the 
 
 Guard: `packages/llm/src/__tests__/ai-sdk-bridge.test.ts` drives the real validator — `generateText` + `MockLanguageModelV4` — with one test asserting bridge output passes prompt validation and a control asserting the legacy `media` item still fails it, so a vocabulary regression fails a test instead of wedging a thread.
 
-### Bun coverage thresholds are per-file, and `--parallel` under-reports coverage
+### Bun coverage thresholds are per-file, `--parallel` under-reports, and 1.4.0 over-reports
 
 Three Bun 1.4 behaviors make `bunfig.toml` unusable as a package coverage gate:
 
 - `coverageThreshold` keys are `lines` and `functions`. The singular `line` / `function` are ignored without a warning, so a misspelled threshold enforces nothing. bunfig carried `{ line = 0.6, function = 0.6 }` until the coverage ratchet replaced it: `packages/shared` passed it at 0.99 while its package total sat at 79% functions.
 - Spelled correctly, the threshold applies to every file, not the package total. One 0%-function helper (`packages/shared/src/assert.ts`) fails the package at `lines = 0.01`.
 - A `bunfig.toml` inside `packages/<pkg>/` is read only when `bun test` runs from that directory. CI and the pre-commit gate run `bun test packages/<pkg>` from the root, so package-level thresholds never fire.
+
+Bun 1.4.0 over-reports line coverage: its hit counts are wrong and it credits lines that never ran. A five-line function called 1,000 times reported hits of 12 and 21 and credited its closing brace; in `packages/sync/src/ws-transport.ts` it credited the frame-splitting branch of `encodeChangelogFrames`, which no test reaches. The same 491 sync tests measured 93.2% lines under 1.4.0 and 83.9% under 1.4.5. Measure with the Bun version CI pins (`bun-version` in `.github/workflows/ci.yml`, currently 1.4.5); floors written from a 1.4.0 run fail CI.
 
 Separately, `bun test --parallel` reports coverage for only part of the executed code. Same tests, same exit code: `packages/core` measured 71.3% lines under `--parallel` and 85.0% serially. Measure coverage serially.
 
