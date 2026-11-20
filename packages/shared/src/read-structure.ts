@@ -307,8 +307,7 @@ const extractCppStructure = parserExtractorWithName(
 );
 
 /**
- * See docs/evidence/read-structure-grammar-probes.json and
- * packages/shared/scripts/probe-read-structure-grammars.ts. C#, PHP, Lua,
+ * See packages/shared/scripts/probe-read-structure-grammars.ts. C#, PHP, Lua,
  * and SQL remain scanner-backed because their locked bindings fail the
  * synchronous Bun loading path. Kotlin, C, and C++ passed that probe and use
  * parser extractors.
