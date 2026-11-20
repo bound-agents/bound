@@ -15,8 +15,8 @@
  * logic.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
@@ -188,4 +188,78 @@ describe("bound start — single-node in-process boot", () => {
 		const assistant = messages.find((m) => m.role === "assistant");
 		expect(assistant).toBeDefined();
 	}, 20_000);
+});
+
+describe("bound start — NodeHandle.stop() closes the owned DB before teardown", () => {
+	let tempDir: string | null = null;
+	let fake: ReturnType<typeof startFakeOpenAiServer> | null = null;
+
+	afterEach(() => {
+		fake?.stop();
+		fake = null;
+		// Belt-and-braces: if the assertion raw-rm already ran this is a no-op; if
+		// the test threw before it, fall back to the tolerant helper so a leaked
+		// handle does not poison a later test's temp dir. Uses the tolerant path
+		// here deliberately — the raw-rm assertion lives inside the `it`.
+		if (tempDir) cleanupTmpDirSync(tempDir);
+		tempDir = null;
+	});
+
+	it("lets a raw rmSync of the config/data dir succeed after stop() — no leaked SQLite handle", async () => {
+		tempDir = mkdtempSync(join(tmpdir(), "bound-boot-dbclose-"));
+		const configDir = join(tempDir, "config");
+
+		fake = startFakeOpenAiServer("unused");
+
+		await runInit({ ollama: true, name: "dbclose-operator", configDir });
+		const modelBackendsPath = join(configDir, "model_backends.js");
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(
+			modelBackendsPath,
+			`export default ${JSON.stringify(
+				{
+					backends: [
+						{
+							id: "fake",
+							provider: "openai-compatible",
+							model: "fake-model",
+							context_window: 8192,
+							tier: 3,
+							base_url: fake.baseUrl,
+							api_key: "test-key",
+						},
+					],
+					default: "fake",
+				},
+				null,
+				2,
+			)};\n`,
+		);
+
+		const node = await startNode(
+			{ configDir },
+			{ webPort: 0, syncPort: 0, webHost: "localhost", syncHost: "localhost" },
+		);
+		const db = node.appContext.db;
+		await node.stop();
+
+		// Directly observable on every platform: stop() must have closed the
+		// node-owned bun:sqlite handle. A closed Database throws on any query, so
+		// this probe fails on the pre-fix code (handle still open) and passes once
+		// stop() calls appContext.db.close(). This is the assertion that makes the
+		// regression visible on macOS, where POSIX unlink-while-open means the raw
+		// rm below cannot reproduce the Windows EBUSY on its own.
+		expect(() => db.query("SELECT 1").get()).toThrow();
+
+		// Raw removal — deliberately NOT cleanupTmpDirSync. The tolerant helper
+		// swallows EBUSY, which would mask a DB handle that stop() failed to close.
+		// On the pre-fix code (no appContext.db.close()) the open bun:sqlite
+		// DB/WAL/SHM handles hold a Windows mandatory lock on bound.db under
+		// tempDir, so this rmSync throws EBUSY and the test fails — proving the
+		// leak. With db.close() wired into stop() the handle is released and this
+		// succeeds everywhere.
+		expect(() => rmSync(tempDir as string, { recursive: true, force: true })).not.toThrow();
+		// The raw rm removed the dir, so skip the afterEach fallback.
+		tempDir = null;
+	}, 60_000);
 });

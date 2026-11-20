@@ -365,38 +365,51 @@ Press Ctrl+C to stop.
 	const stop = async (): Promise<void> => {
 		if (stopped) return;
 		stopped = true;
-		unregisterSighup();
-		heartbeatHandle?.stop();
-		schedulerHandle?.stop();
-		pruningHandle?.stop();
-		relayProcessorHandle?.stop();
-		// Leader-election intervals query the DB; stop them before it closes.
-		serverResult.stopLeaderElections();
-		if (wsTransport) {
-			wsTransport.stop();
-			const { setChangelogEventBus } = await import("@bound/core");
-			setChangelogEventBus(null);
-		}
-		wsClient?.close();
-		for (const [, client] of mcpClientsMap) {
-			try {
-				await client.disconnect();
-			} catch {
-				// Ignore disconnect errors during shutdown
+		// Everything that touches the node-owned DB (workers, clients, servers,
+		// telemetry) must stop before we close the handle. The close itself and the
+		// PID-file removal run in a finally so a mid-teardown throw above cannot leak
+		// the open bun:sqlite handle — a leaked handle holds a Windows mandatory lock
+		// on bound.db/-wal/-shm and makes a recursive rm of the data dir fail EBUSY,
+		// which under the serial Windows CI lane cascades into later start tests.
+		try {
+			unregisterSighup();
+			heartbeatHandle?.stop();
+			schedulerHandle?.stop();
+			pruningHandle?.stop();
+			relayProcessorHandle?.stop();
+			// Leader-election intervals query the DB; stop them before it closes.
+			serverResult.stopLeaderElections();
+			if (wsTransport) {
+				wsTransport.stop();
+				const { setChangelogEventBus } = await import("@bound/core");
+				setChangelogEventBus(null);
 			}
+			wsClient?.close();
+			for (const [, client] of mcpClientsMap) {
+				try {
+					await client.disconnect();
+				} catch {
+					// Ignore disconnect errors during shutdown
+				}
+			}
+			if (webServer) await webServer.stop();
+			if (syncServer) await syncServer.stop();
+			// Stop the watchdog and end any still-open turn / dispatch spans so
+			// BatchSpanProcessor exports them on final flush. Must run BEFORE
+			// shutdownTelemetry.
+			serverResult.handleMessageTracker?.stopWatchdog();
+			serverResult.handleMessageTracker?.endAllOpenSpans("shutdown");
+			await shutdownTelemetry();
+		} finally {
+			// Close the node-owned DB handle after all DB users, clients, servers and
+			// telemetry have stopped, and before removing the PID lockfile. In the
+			// finally so a stop-side failure above cannot leak the handle.
+			appContext.db.close();
+			// Remove the PID lockfile last. Under runStart the process.on("exit")
+			// handler also calls this (idempotent by PID guard); under startNode this is
+			// the only caller.
+			removePidFile();
 		}
-		if (webServer) await webServer.stop();
-		if (syncServer) await syncServer.stop();
-		// Stop the watchdog and end any still-open turn / dispatch spans so
-		// BatchSpanProcessor exports them on final flush. Must run BEFORE
-		// shutdownTelemetry.
-		serverResult.handleMessageTracker?.stopWatchdog();
-		serverResult.handleMessageTracker?.endAllOpenSpans("shutdown");
-		await shutdownTelemetry();
-		// Remove the PID lockfile last. Under runStart the process.on("exit")
-		// handler also calls this (idempotent by PID guard); under startNode this is
-		// the only caller.
-		removePidFile();
 	};
 
 	return {
