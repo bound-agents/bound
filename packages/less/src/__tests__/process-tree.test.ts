@@ -152,7 +152,31 @@ const canManageProcesses = (() => {
 	}
 })();
 
-const sandboxLive = canManageProcesses && (await checkSandboxAvailable()).supported;
+// The sandboxed case runs only where a sandboxed command demonstrably runs
+// and writes, and only on macOS: seatbelt shares the host pid space, while a
+// Linux bubblewrap pid namespace would make the pid the child records name a
+// different host process.
+async function sandboxedCommandRuns(): Promise<boolean> {
+	if (!canManageProcesses || process.platform !== "darwin") return false;
+	if (!(await checkSandboxAvailable()).supported) return false;
+	const dir = mkdtempSync(join(tmpdir(), "tree-kill-probe-"));
+	try {
+		const marker = join(dir, "ran");
+		await bashToolWithStreaming(
+			{ command: `echo ok > "${marker}"`, timeout: 10_000 },
+			new AbortController().signal,
+			dir,
+			undefined,
+			"test",
+			resolveShell(undefined),
+			{ enabled: true, writablePaths: [], network: "open", onUnavailable: "error" },
+		);
+		return existsSync(marker);
+	} finally {
+		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+	}
+}
+const sandboxLive = await sandboxedCommandRuns();
 const SANDBOXED: ResolvedSandboxConfig = {
 	enabled: true,
 	writablePaths: [],
