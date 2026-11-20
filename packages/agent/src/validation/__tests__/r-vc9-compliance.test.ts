@@ -183,16 +183,6 @@ describe("checkR_VC9", () => {
 		const result = checkR_VC9(key, value, freq);
 		expect(result.pass).toBe(false);
 	});
-
-	it("drops ISO-8601 dates from slug before checking", () => {
-		const key = "_summary:agent-eval-2026-04-16";
-		const value = "Agent evaluation entry";
-		const result = checkR_VC9(key, value, freq);
-		// "2026-04-16" as a whole matches ISO-8601 regex, so is dropped.
-		// Digit-boundary splits may produce "2026" (4 chars, kept).
-		// But the key extraction should not include the full ISO date.
-		expect(result.slugTokens).not.toContain("2026-04-16");
-	});
 });
 
 describe("checkR_VC9b", () => {

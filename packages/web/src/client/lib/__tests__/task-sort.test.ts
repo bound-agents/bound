@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { STATUS_WEIGHT, sortTasks } from "../task-sort";
+import { sortTasks } from "../task-sort";
 
 interface Task {
 	id: string;
@@ -9,16 +9,6 @@ interface Task {
 }
 
 describe("sortTasks", () => {
-	it("should export STATUS_WEIGHT map", () => {
-		expect(STATUS_WEIGHT).toBeDefined();
-		expect(STATUS_WEIGHT.running).toBe(0);
-		expect(STATUS_WEIGHT.failed).toBe(1);
-		expect(STATUS_WEIGHT.pending).toBe(2);
-		expect(STATUS_WEIGHT.claimed).toBe(2);
-		expect(STATUS_WEIGHT.cancelled).toBe(3);
-		expect(STATUS_WEIGHT.completed).toBe(4);
-	});
-
 	it("should sort by next_run_at descending as primary sort", () => {
 		const tasks: Task[] = [
 			{

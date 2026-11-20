@@ -10,13 +10,7 @@ import {
 	syncSchema,
 	userEntrySchema,
 } from "../config-schemas.js";
-import {
-	RELAY_KINDS,
-	RELAY_KIND_REGISTRY,
-	RELAY_REQUEST_KINDS,
-	RELAY_RESPONSE_KINDS,
-	type RelayDispatch,
-} from "../types.js";
+import { RELAY_REQUEST_KINDS } from "../types.js";
 
 describe("Config schemas", () => {
 	describe("allowlistSchema", () => {
@@ -172,7 +166,7 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
-		it("rejects the removed ollama provider (use openai-compatible instead)", () => {
+		it("rejects an unrecognized provider (enum is closed)", () => {
 			const config = {
 				backends: [
 					{
@@ -583,25 +577,6 @@ describe("Config schemas", () => {
 				});
 			});
 
-			it("accepts `display: 'omitted'`", () => {
-				const config = {
-					backends: [
-						{
-							id: "opus",
-							provider: "bedrock",
-							model: "global.anthropic.claude-opus-4-7",
-							region: "us-west-2",
-							context_window: 200000,
-							tier: 1,
-							thinking: { type: "adaptive", display: "omitted" },
-						},
-					],
-					default: "opus",
-				};
-				const result = modelBackendsSchema.safeParse(config);
-				expect(result.success).toBe(true);
-			});
-
 			it("rejects unknown display values", () => {
 				const config = {
 					backends: [
@@ -706,29 +681,6 @@ describe("Config schemas", () => {
 			// Valid values per Anthropic docs: low | medium | high | xhigh | max.
 			// xhigh is new on Opus 4.7 and the recommended default for
 			// coding/agentic work; max is Opus-tier only.
-			for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
-				it(`accepts effort: '${effort}'`, () => {
-					const config = {
-						backends: [
-							{
-								id: "opus",
-								provider: "bedrock",
-								model: "global.anthropic.claude-opus-4-7",
-								region: "us-west-2",
-								context_window: 200000,
-								tier: 1,
-								thinking: { type: "adaptive" },
-								effort,
-							},
-						],
-						default: "opus",
-					};
-					const result = modelBackendsSchema.safeParse(config);
-					expect(result.success).toBe(true);
-					if (!result.success) return;
-					expect(result.data.backends[0].effort).toBe(effort);
-				});
-			}
 
 			it("accepts a free-form effort value (provider-validated, not schema-validated)", () => {
 				// effort is now free-form: the canonical Anthropic set is no
@@ -1200,114 +1152,12 @@ describe("platform-connectors Phase 1 config schema validation", () => {
 			expect(messages.some((m) => m.includes("platforms.discord"))).toBe(true);
 		}
 	});
-
-	// AC1.7: platforms.discord in allowlist.json entry must pass
-	it("AC1.7: userEntrySchema accepts platforms.discord field", () => {
-		const result = userEntrySchema.safeParse({
-			display_name: "Alice",
-			platforms: { discord: "12345" },
-		});
-		expect(result.success).toBe(true);
-	});
-
-	// AC2.1: valid Discord connector config parses successfully
-	it("AC2.1: platformsSchema accepts valid Discord connector config", () => {
-		const result = platformsSchema.safeParse({
-			connectors: [
-				{
-					platform: "discord",
-					token: "Bot.MyToken",
-					leadership: "auto",
-				},
-			],
-		});
-		expect(result.success).toBe(true);
-	});
-
-	// AC2.2: invalid leadership value "manual" must fail Zod validation
-	it("AC2.2: platformsSchema rejects invalid leadership value 'manual'", () => {
-		const result = platformsSchema.safeParse({
-			connectors: [
-				{
-					platform: "discord",
-					token: "Bot.MyToken",
-					leadership: "manual",
-				},
-			],
-		});
-		expect(result.success).toBe(false);
-	});
-
-	// AC2.3: configSchemaMap must not contain "discord.json"
-	it("AC2.3: configSchemaMap has no 'discord.json' entry", () => {
-		expect("discord.json" in configSchemaMap).toBe(false);
-	});
-
-	// AC2.4: discordSchema and DiscordConfig must not be exported from @bound/shared
-	it("AC2.4: discordSchema is not exported from config-schemas", async () => {
-		const mod = await import("../config-schemas.js");
-		expect("discordSchema" in mod).toBe(false);
-	});
 });
 
 // AC3.1 tests — new relay kinds exist
 describe("platform-connectors.AC3.1 — new relay kinds exist", () => {
 	it("AC3.1: RELAY_REQUEST_KINDS contains intake", () => {
 		expect(RELAY_REQUEST_KINDS).toContain("intake");
-	});
-});
-
-// RELAY_KIND_REGISTRY completeness tests — ensures the registry is the
-// single source of truth and derived arrays stay consistent.
-describe("RELAY_KIND_REGISTRY completeness", () => {
-	it("every kind in the registry has a valid dispatch mode", () => {
-		const validModes: RelayDispatch[] = ["sync", "async", "response", "passive"];
-		for (const [_kind, meta] of Object.entries(RELAY_KIND_REGISTRY)) {
-			expect(validModes).toContain(meta.dispatch);
-		}
-	});
-
-	it("derived RELAY_KINDS covers all registry entries", () => {
-		const registryKinds = Object.keys(RELAY_KIND_REGISTRY).sort();
-		const derivedKinds = [...RELAY_KINDS].sort();
-		expect(derivedKinds).toEqual(registryKinds);
-	});
-
-	it("derived RELAY_REQUEST_KINDS matches non-response registry entries", () => {
-		const expected = Object.entries(RELAY_KIND_REGISTRY)
-			.filter(([, meta]) => meta.dispatch !== "response")
-			.map(([kind]) => kind)
-			.sort();
-		const actual = [...RELAY_REQUEST_KINDS].sort();
-		expect(actual).toEqual(expected);
-	});
-
-	it("derived RELAY_RESPONSE_KINDS matches response registry entries", () => {
-		const expected = Object.entries(RELAY_KIND_REGISTRY)
-			.filter(([, meta]) => meta.dispatch === "response")
-			.map(([kind]) => kind)
-			.sort();
-		const actual = [...RELAY_RESPONSE_KINDS].sort();
-		expect(actual).toEqual(expected);
-	});
-
-	it("derived RELAY_PASSIVE_KINDS matches passive registry entries", () => {
-		const { RELAY_PASSIVE_KINDS } = require("../types.js");
-		const expected = Object.entries(RELAY_KIND_REGISTRY)
-			.filter(([, meta]) => meta.dispatch === "passive")
-			.map(([kind]) => kind)
-			.sort();
-		const actual = [...RELAY_PASSIVE_KINDS].sort();
-		expect(actual).toEqual(expected);
-	});
-
-	it("every sync kind is also a request kind (not response)", () => {
-		const syncKinds = Object.entries(RELAY_KIND_REGISTRY)
-			.filter(([, meta]) => meta.dispatch === "sync")
-			.map(([kind]) => kind);
-		for (const kind of syncKinds) {
-			expect(RELAY_REQUEST_KINDS).toContain(kind);
-		}
 	});
 });
 

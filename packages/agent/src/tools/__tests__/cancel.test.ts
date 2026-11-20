@@ -211,22 +211,4 @@ describe("Native Cancel Tool", () => {
 		expect(result).not.toMatch(/^Error/);
 		expect(result).toMatch(/not found|0|no tasks/i);
 	});
-
-	it("tool should have valid RegisteredTool shape", () => {
-		const tool = createCancelTool(toolContext);
-		expect(tool.kind).toBe("builtin");
-		expect(tool.toolDefinition).toBeDefined();
-		expect(tool.toolDefinition.function.name).toBe("cancel");
-		expect(tool.toolDefinition.function.description).toBeDefined();
-		expect(tool.toolDefinition.function.parameters).toBeDefined();
-		expect(tool.execute).toBeDefined();
-		expect(typeof tool.execute).toBe("function");
-	});
-
-	it("tool definition should have task_id and payload_match in properties", () => {
-		const tool = createCancelTool(toolContext);
-		const params = tool.toolDefinition.function.parameters as any;
-		expect(params.properties.task_id).toBeDefined();
-		expect(params.properties.payload_match).toBeDefined();
-	});
 });

@@ -425,17 +425,14 @@ describe("sanitizeToolPairs — property tests", () => {
 		expect(elapsedMs).toBeLessThan(500);
 	});
 
-	// Regression: extractToolUseIds is total and idempotent.
-	it("T-helper: extractToolUseIds totality + idempotence", () => {
+	// Regression: extractToolUseIds is total — never throws, always returns a
+	// string[] — for arbitrary (incl. non-JSON) content.
+	it("T-helper: extractToolUseIds totality", () => {
 		fc.assert(
 			fc.property(fc.string({ maxLength: 200 }), (content) => {
 				const ids = extractToolUseIds(content);
 				if (!Array.isArray(ids)) return false;
-				if (!ids.every((s) => typeof s === "string")) return false;
-				// Idempotence: extracting from a re-serialized JSON containing
-				// only the extracted ids returns the same set (or a subset
-				// when the input was non-parseable in the first place).
-				return true;
+				return ids.every((s) => typeof s === "string");
 			}),
 			{ numRuns: 100 },
 		);

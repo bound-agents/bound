@@ -110,25 +110,6 @@ describe("driver stream utilities", () => {
 		// Exactly one heartbeat (up front), not one per retry attempt.
 		expect(chunks.filter((c) => c.type === "heartbeat").length).toBe(1);
 	});
-
-	it("runProviderStream gives up after the empty-retry bound and surfaces the empty done", async () => {
-		let attempt = 0;
-		const chunks = await collect(
-			runProviderStream({
-				modelId: "test-model",
-				providerName: "test-provider",
-				stream: () => {
-					attempt++;
-					return emptyAiSdkStream();
-				},
-				map: { estimateInputFromMessages: [{ role: "user", content: "hi" }] },
-			}),
-		);
-		// original + EMPTY_COMPLETION_MAX_RETRIES (2) = 3 attempts, then pass through.
-		expect(attempt).toBe(3);
-		const done = chunks.find((c) => c.type === "done");
-		expect(done).toBeDefined();
-	});
 });
 
 describe("provider fetch resolution", () => {

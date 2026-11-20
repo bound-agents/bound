@@ -77,27 +77,6 @@ describe("Relay Metrics", () => {
 			db.close();
 		});
 
-		it("allows idempotent application of schema (relay_cycles)", () => {
-			const db = createDatabase(dbPath);
-
-			// Apply schema twice
-			applySchema(db);
-			applySchema(db);
-
-			const tables = db
-				.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-				.all() as Array<{ name: string }>;
-
-			// 26 base tables (relay_outbox/relay_inbox retired at release N+1; still
-			// includes local-only row_state_hashes cache, durable_work, and local_flags;
-			// + mcp_auth_challenges at MCP OAuth slice 1; + local-only mcp_auth_waiters at
-			// MCP OAuth slice 3)
-			// + 1 FTS5 virtual table + 5 FTS5 shadow tables = 32
-			expect(tables.length).toBe(32);
-
-			db.close();
-		});
-
 		it("applies metrics schema twice without error (idempotent)", () => {
 			const db = createDatabase(dbPath);
 

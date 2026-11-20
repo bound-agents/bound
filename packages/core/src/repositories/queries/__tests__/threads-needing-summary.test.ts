@@ -2,7 +2,7 @@ import type Database from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Message, Thread } from "@bound/shared";
 import { createCoreTestDb } from "../../../__tests__/test-database";
-import { insertRow, softDelete, updateRow } from "../../../index";
+import { insertRow, softDelete } from "../../../index";
 import { listThreadsNeedingSummary } from "../threads-needing-summary";
 
 const SITE_ID = "site-test";
@@ -81,16 +81,6 @@ describe("threads-needing-summary finder", () => {
 			expect(rows).toEqual([{ id: "t-1" }]);
 		});
 
-		it("projects only the `id` column (exact key set the call site destructures)", () => {
-			seedThread(db, { id: "t-1", title: "ignored", summary: null });
-			seedMessage(db, { id: "m-1", thread_id: "t-1", role: "assistant" });
-
-			const rows = listThreadsNeedingSummary(db, 50);
-			expect(rows).toHaveLength(1);
-			expect(Object.keys(rows[0])).toEqual(["id"]);
-			expect(rows[0]).toEqual({ id: "t-1" });
-		});
-
 		it("returns [] when there are no threads", () => {
 			expect(listThreadsNeedingSummary(db, 50)).toEqual([]);
 		});
@@ -155,23 +145,6 @@ describe("threads-needing-summary finder", () => {
 			seedThread(db, { id: "t-summarized", summary: "already done" });
 			seedMessage(db, { id: "m-a", thread_id: "t-summarized", role: "assistant" });
 
-			expect(listThreadsNeedingSummary(db, 50)).toEqual([]);
-		});
-
-		it("excludes a thread whose summary was set to a non-null value via updateRow", () => {
-			seedThread(db, { id: "t-late-summary" });
-			seedMessage(db, { id: "m-a", thread_id: "t-late-summary", role: "assistant" });
-			// Before summarizing, it is a candidate.
-			expect(listThreadsNeedingSummary(db, 50)).toEqual([{ id: "t-late-summary" }]);
-
-			updateRow(
-				db,
-				"threads",
-				"t-late-summary",
-				{ summary: "now summarized", modified_at: "2026-02-02T00:00:00.000Z" },
-				SITE_ID,
-			);
-			// After summarizing, it drops out.
 			expect(listThreadsNeedingSummary(db, 50)).toEqual([]);
 		});
 

@@ -338,13 +338,6 @@ export function resolveDelegationMessageId(
 	return { delegationMessageId, insertedMessageIds };
 }
 
-/**
- * Re-export `isUserFacingInterface` for backward compatibility with existing
- * imports (notably the unit test). The single source of truth lives in
- * `@bound/shared`.
- */
-export { isUserFacingInterface };
-
 export interface ServerResult {
 	webServer: Awaited<ReturnType<typeof createWebServer>> | null;
 	syncServer: Awaited<ReturnType<typeof createSyncServer>> | null;

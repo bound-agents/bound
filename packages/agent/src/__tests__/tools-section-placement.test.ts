@@ -36,22 +36,6 @@ describe("placeToolsAfterSystem (#97)", () => {
 		]);
 	});
 
-	it("renders tools left of the history boundary so it falls inside the cached region", () => {
-		// The cached region is everything up to (and including) the system
-		// cachePoint, which sits at the end of the stable prefix — i.e. just
-		// before `history`. After reordering, `tools` must precede `history`.
-		const sections: ContextSection[] = [
-			{ name: "system", tokens: 5000 },
-			{ name: "history", tokens: 80000 },
-			{ name: "tools", tokens: 2000 },
-		];
-		placeToolsAfterSystem(sections);
-		const toolsIdx = sections.findIndex((s) => s.name === "tools");
-		const historyIdx = sections.findIndex((s) => s.name === "history");
-		expect(toolsIdx).toBeLessThan(historyIdx);
-		expect(toolsIdx).toBe(1);
-	});
-
 	it("is a no-op when there is no tools section", () => {
 		const sections: ContextSection[] = [
 			{ name: "system", tokens: 5000 },

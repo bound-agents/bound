@@ -1,11 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	HALF_OUTPUT_BYTES,
-	compareBytewise,
-	escapeXmlAttr,
-	safeSlice,
-	truncateStreamOutput,
-} from "../strings";
+import { compareBytewise, escapeXmlAttr, safeSlice, truncateStreamOutput } from "../strings";
 
 describe("truncateStreamOutput", () => {
 	it("returns input unchanged when within budget", () => {
@@ -29,10 +23,6 @@ describe("truncateStreamOutput", () => {
 		const out = truncateStreamOutput(input, 30);
 		// Every retained run of content is whole euro signs — no replacement char.
 		expect(out).not.toContain("\uFFFD");
-	});
-
-	it("exposes the shared 50KB per-stream budget", () => {
-		expect(HALF_OUTPUT_BYTES).toBe(50000);
 	});
 });
 

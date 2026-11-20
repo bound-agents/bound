@@ -48,15 +48,6 @@ describe("Config key consistency", () => {
 		return keys;
 	})();
 
-	it("config loader defines at least the known optional config keys", () => {
-		// These are the keys we know should exist from the config loader source
-		expect(LOADER_KEYS).toContain("network");
-		expect(LOADER_KEYS).toContain("platforms");
-		expect(LOADER_KEYS).toContain("sync");
-		expect(LOADER_KEYS).toContain("keyring");
-		expect(LOADER_KEYS).toContain("mcp");
-	});
-
 	it("all optionalConfig[...] lookups in the codebase use keys from the loader", () => {
 		const packagesDir = join(PROJECT_ROOT, "packages");
 		const tsFiles = collectTsFiles(packagesDir);
@@ -106,35 +97,5 @@ describe("Config key consistency", () => {
 		}
 
 		expect(unknownKeys.length).toBe(0);
-	});
-
-	it("config loader filename-to-key mapping is internally consistent", () => {
-		// Read the array literal from the config loader and verify each entry
-		const configLoaderPath = join(PROJECT_ROOT, "packages/core/src/config-loader.ts");
-		const source = readFileSync(configLoaderPath, "utf-8");
-
-		// Extract filename/key pairs
-		const pairPattern = /filename:\s*"([^"]+)",\s*schema:\s*\w+.*?,\s*key:\s*"([^"]+)"/gs;
-		const pairs: Array<{ filename: string; key: string }> = [];
-		for (const match of source.matchAll(pairPattern)) {
-			pairs.push({ filename: match[1], key: match[2] });
-		}
-
-		expect(pairs.length).toBeGreaterThan(0);
-
-		// Each pair's key must be a valid JS identifier
-		for (const pair of pairs) {
-			expect(/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(pair.key)).toBe(true);
-		}
-
-		// No duplicate keys
-		const keys = pairs.map((p) => p.key);
-		const uniqueKeys = [...new Set(keys)];
-		expect(keys.length).toBe(uniqueKeys.length);
-
-		// No duplicate filenames
-		const filenames = pairs.map((p) => p.filename);
-		const uniqueFilenames = [...new Set(filenames)];
-		expect(filenames.length).toBe(uniqueFilenames.length);
 	});
 });

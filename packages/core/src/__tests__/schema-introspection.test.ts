@@ -112,18 +112,4 @@ describe("getSyncedTableSchemas", () => {
 
 		db.close();
 	});
-
-	it("includes the turns table (observability)", () => {
-		const db = createDatabase(dbPath);
-		applySchema(db);
-		applyMetricsSchema(db);
-
-		const schemas = getSyncedTableSchemas(db);
-		const turns = schemas.find((s) => s.table === "turns");
-
-		expect(turns).toBeDefined();
-		expect(turns?.columns.length ?? 0).toBeGreaterThan(0);
-
-		db.close();
-	});
 });

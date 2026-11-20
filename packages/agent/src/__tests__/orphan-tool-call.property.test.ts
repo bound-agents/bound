@@ -27,7 +27,6 @@
  *   O5 Lone tool_result is orphan — a tool_result without any
  *      preceding tool_call is an orphan.
  *
- *   O6 Determinism — same input returns same output.
  */
 
 import { describe, it } from "bun:test";
@@ -124,25 +123,6 @@ describe("hasOrphanedToolCall — property tests", () => {
 				return hasOrphanedToolCall(msgs) === true;
 			}),
 			{ numRuns: 50 },
-		);
-	});
-
-	it("O6: determinism — same input returns same output", () => {
-		fc.assert(
-			fc.property(
-				fc.uniqueArray(toolUseId, { minLength: 1, maxLength: 5 }),
-				fc.boolean(),
-				(ids, includeAllResults) => {
-					const msgs: LLMMessage[] = [
-						toolCallMsg(ids),
-						...(includeAllResults ? ids.map(toolResultMsg) : []),
-					];
-					const a = hasOrphanedToolCall(msgs);
-					const b = hasOrphanedToolCall(msgs);
-					return a === b;
-				},
-			),
-			{ numRuns: 100 },
 		);
 	});
 });

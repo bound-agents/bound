@@ -128,46 +128,6 @@ Content`,
 			if (result.ok) throw new Error("Expected ok: false");
 			expect(result.error).toMatch(/invalid.*name|name.*invalid/i);
 		});
-
-		it("should return error for spaces in name", async () => {
-			const files: SkillFileEntry[] = [
-				{
-					path: "SKILL.md",
-					content: `---
-name: invalid skill
-description: Invalid name
----
-
-Content`,
-				},
-			];
-
-			const result = await importSkillFromFiles(db, siteId, files, {});
-
-			expect(result.ok).toBe(false);
-			if (result.ok) throw new Error("Expected ok: false");
-			expect(result.error).toMatch(/invalid.*name|name.*invalid/i);
-		});
-
-		it("should return error for special characters in name", async () => {
-			const files: SkillFileEntry[] = [
-				{
-					path: "SKILL.md",
-					content: `---
-name: invalid@skill!
-description: Invalid name
----
-
-Content`,
-				},
-			];
-
-			const result = await importSkillFromFiles(db, siteId, files, {});
-
-			expect(result.ok).toBe(false);
-			if (result.ok) throw new Error("Expected ok: false");
-			expect(result.error).toMatch(/invalid.*name|name.*invalid/i);
-		});
 	});
 
 	describe("re-importing an existing skill updates it in place", () => {
@@ -396,32 +356,6 @@ Content`,
 			const changelogCount = db.prepare("SELECT COUNT(*) as count FROM change_log").get() as any;
 
 			expect(changelogCount.count).toBeGreaterThan(0);
-		});
-
-		it("should store files with correct metadata", async () => {
-			const files: SkillFileEntry[] = [
-				{
-					path: "SKILL.md",
-					content: `---
-name: metadata-skill
-description: Test metadata
----
-
-Test content for file`,
-				},
-			];
-
-			const result = await importSkillFromFiles(db, siteId, files, {});
-
-			expect(result.ok).toBe(true);
-			if (!result.ok) throw new Error("Expected ok: true");
-
-			const file = db
-				.prepare("SELECT * FROM files WHERE id = ? AND deleted = 0")
-				.get("/home/user/skills/metadata-skill/SKILL.md") as any;
-
-			// File should exist with proper metadata
-			expect(file).toBeDefined();
 		});
 	});
 });

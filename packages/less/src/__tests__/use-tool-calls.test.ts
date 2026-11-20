@@ -86,16 +86,6 @@ describe("useToolCalls", () => {
 		else process.env.FORCE_COLOR = originalEnv;
 	});
 
-	it("registers the tool handler and event listeners on mount", async () => {
-		const client = createMockClient();
-		mountHook(client, new Map());
-		await tick();
-		expect(client.onToolCall).toHaveBeenCalledTimes(1);
-		expect(client.on).toHaveBeenCalledWith("tool:cancel", expect.any(Function));
-		expect(client.on).toHaveBeenCalledWith("aux:started", expect.any(Function));
-		expect(client.on).toHaveBeenCalledWith("aux:completed", expect.any(Function));
-	});
-
 	it("does nothing when client is null", async () => {
 		let latest: ReturnType<typeof useToolCalls> | null = null;
 		function Harness() {

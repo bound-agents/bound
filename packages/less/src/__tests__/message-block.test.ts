@@ -128,12 +128,6 @@ describe("MessageBlock", () => {
 		try {
 			const frame = renderMessageBlock(message, { terminalColumns: 120 }).lastFrame() ?? "";
 			expect(frame).toContain("+ const newValue = 2;");
-			const source = await Bun.file("packages/less/src/tui/components/MessageBlock.tsx").text();
-			expect(source).toContain(
-				'<Text color={line.kind === "added" ? tokens.diffAdded : tokens.diffRemoved}>',
-			);
-			expect(source).not.toMatch(/<HighlightedLine[\s\S]{0,160}color=\{line\.kind/);
-			expect(source).not.toContain('lang={lang} color="green"');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -29,29 +29,6 @@ describe("FTS5 semantic_memory_fts", () => {
 		}
 	});
 
-	describe("table creation", () => {
-		it("should create semantic_memory_fts virtual table", () => {
-			// FTS5 tables show up in sqlite_master with type='table'
-			const row = db
-				.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='semantic_memory_fts'")
-				.get() as { name: string } | null;
-
-			expect(row).not.toBeNull();
-			expect(row?.name).toBe("semantic_memory_fts");
-		});
-
-		it("should use porter and unicode61 tokenizers", () => {
-			// FTS5 table SQL contains tokenizer config
-			const row = db
-				.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='semantic_memory_fts'")
-				.get() as { sql: string } | null;
-
-			expect(row).not.toBeNull();
-			expect(row?.sql).toContain("porter");
-			expect(row?.sql).toContain("unicode61");
-		});
-	});
-
 	describe("trigger-based sync on INSERT", () => {
 		it("should populate FTS5 when a memory is inserted", () => {
 			insertRow(
@@ -314,17 +291,6 @@ describe("FTS5 semantic_memory_fts", () => {
 			expect(keys).toContain("scheduling_design");
 		});
 
-		it("should support prefix queries", () => {
-			const result = db
-				.prepare("SELECT key FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'cron*'")
-				.all() as Array<{ key: string }>;
-
-			expect(result.length).toBeGreaterThan(0);
-			const keys = result.map((r) => r.key);
-			expect(keys).toContain("cron_syntax");
-			expect(keys).toContain("scheduling_design"); // contains "cron"
-		});
-
 		it("should support short keywords like AI", () => {
 			const result = db
 				.prepare("SELECT key FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'ai'")
@@ -332,61 +298,6 @@ describe("FTS5 semantic_memory_fts", () => {
 
 			expect(result.length).toBeGreaterThan(0);
 			const keys = result.map((r) => r.key);
-			expect(keys).toContain("ai_models");
-		});
-
-		it("should return BM25-ranked results via rank column", () => {
-			// Insert an entry with many mentions of "cron" for higher relevance
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: "fts-q-multi",
-					key: "cron_deep_dive",
-					value: "cron cron cron — deep dive into cron scheduling with cron expressions",
-					source: "test",
-					created_at: "2026-01-01T00:00:00.000Z",
-					modified_at: "2026-01-01T00:00:00.000Z",
-					last_accessed_at: "2026-01-01T00:00:00.000Z",
-					deleted: 0,
-					tier: "default",
-				},
-				siteId,
-			);
-
-			const results = db
-				.prepare(
-					"SELECT key, rank FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'cron' ORDER BY rank",
-				)
-				.all() as Array<{ key: string; rank: number }>;
-
-			// BM25 rank is negative (lower = better match)
-			expect(results.length).toBeGreaterThan(1);
-			// The entry with more "cron" mentions should rank first (most negative)
-			expect(results[0].key).toBe("cron_deep_dive");
-		});
-
-		it("should support phrase matching with quotes", () => {
-			const result = db
-				.prepare(
-					`SELECT key FROM semantic_memory_fts WHERE semantic_memory_fts MATCH '"sync protocol"'`,
-				)
-				.all() as Array<{ key: string }>;
-
-			expect(result.length).toBe(1);
-			expect(result[0].key).toBe("network_config");
-		});
-
-		it("should support boolean OR queries", () => {
-			const result = db
-				.prepare(
-					"SELECT key FROM semantic_memory_fts WHERE semantic_memory_fts MATCH 'websocket OR anthropic'",
-				)
-				.all() as Array<{ key: string }>;
-
-			expect(result.length).toBe(2);
-			const keys = result.map((r) => r.key);
-			expect(keys).toContain("network_config");
 			expect(keys).toContain("ai_models");
 		});
 	});

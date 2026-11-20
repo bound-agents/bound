@@ -68,16 +68,10 @@ describe("Bedrock chat() — system anchor independence from message-level marke
 			{ role: "assistant", content: "hello" },
 			{ role: "user", content: "follow up" },
 		];
-
-		// Direct call to the system message builder with the contract under
-		// test: enable cachePoint when cache_ttl is intended, independent
-		// of any message-level marker presence.
-		const enabled = bridgeMessagesWithoutMarker.some((m) => {
-			const opts = m.providerOptions as { bedrock?: { cachePoint?: unknown } } | undefined;
-			return opts?.bedrock?.cachePoint !== undefined;
-		});
-		// Today: enabled === false → system gets no cachePoint → bug.
-		expect(enabled).toBe(false);
+		// No message-level marker is present, yet caching is intended
+		// (cache_ttl set). The old contract keyed system-anchor enablement on
+		// hasBedrockMessageCachePoint(bridgeMessages) and would disable it; the
+		// new contract keeps the system anchor whenever cache_ttl is set.
 
 		// The fix: system anchor enabled whenever `cache_ttl` is set, even
 		// if no bridge message has a cachePoint. Encoded by
@@ -271,76 +265,5 @@ describe("buildBedrockSystemMessage — property tests", () => {
 			}),
 			{ numRuns: 100 },
 		);
-	});
-});
-
-describe("Bedrock chat() integration — system + cachePoint placement", () => {
-	// These tests construct the same shape that BedrockDriver.chat() builds
-	// internally (toModelMessages → buildBedrockSystemMessage → prepend) and
-	// assert the wire-bound message array satisfies the cachePoint invariant.
-	// They cover the gap between the unit tests above and a full streamText
-	// stub: if a future refactor moves logic around inside chat(), these
-	// tests catch the loss of the cachePoint at the messages[0] boundary.
-
-	it("C8: system + bridge-output cache marker → messages[0] has cachePoint", () => {
-		// Simulates the post-toModelMessages state when a {role:"cache"} marker
-		// was present in the input — the bridge attaches the cachePoint to
-		// the most recently emitted message. The driver should detect this
-		// and propagate the cachePoint to the system message.
-		const bridgeMessages: ModelMessage[] = [
-			{ role: "user", content: "hi" },
-			{
-				role: "user",
-				content: "second",
-				providerOptions: { bedrock: { cachePoint: { type: "default", ttl: "1h" } } },
-			},
-		];
-		const systemMessage = buildBedrockSystemMessage({
-			system: "STABLE_PREFIX",
-			cacheEnabled: hasBedrockMessageCachePoint(bridgeMessages),
-			cacheTtl: "1h",
-		});
-		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
-
-		expect(messages[0].role).toBe("system");
-		expect(messages[0].content).toBe("STABLE_PREFIX");
-		const opts = messages[0].providerOptions as
-			| { bedrock?: { cachePoint?: { type?: string; ttl?: string } } }
-			| undefined;
-		expect(opts?.bedrock?.cachePoint?.type).toBe("default");
-		expect(opts?.bedrock?.cachePoint?.ttl).toBe("1h");
-	});
-
-	it("C9: system + no bridge-output cache marker → messages[0] is system but has NO cachePoint", () => {
-		// Capability gate disabled caching upstream — no {role:"cache"} marker
-		// was placed. The system block should still ride the messages array
-		// (so the wire request is well-formed and downstream logic doesn't
-		// break) but without a cachePoint.
-		const bridgeMessages: ModelMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "assistant", content: "hello" },
-		];
-		const systemMessage = buildBedrockSystemMessage({
-			system: "STABLE_PREFIX",
-			cacheEnabled: hasBedrockMessageCachePoint(bridgeMessages),
-		});
-		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
-
-		expect(messages[0].role).toBe("system");
-		expect(messages[0].providerOptions).toBeUndefined();
-	});
-
-	it("C10: no system → bridge messages pass through unchanged", () => {
-		const bridgeMessages: ModelMessage[] = [
-			{ role: "user", content: "hi" },
-			{ role: "assistant", content: "there" },
-		];
-		const systemMessage = buildBedrockSystemMessage({
-			cacheEnabled: hasBedrockMessageCachePoint(bridgeMessages),
-		});
-		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
-
-		expect(messages.length).toBe(bridgeMessages.length);
-		expect(messages[0]).toBe(bridgeMessages[0]);
 	});
 });

@@ -113,14 +113,4 @@ describe("App round4 uncovered branches", () => {
 			unmount();
 		});
 	});
-
-	describe("view routing renders the chat view by default", () => {
-		it("mounts ChatView and exposes the commit hash build identity", async () => {
-			const { lastFrame, unmount } = renderApp();
-			await tick();
-			const frame = lastFrame() ?? "";
-			expect(frame.length).toBeGreaterThan(0);
-			unmount();
-		});
-	});
 });

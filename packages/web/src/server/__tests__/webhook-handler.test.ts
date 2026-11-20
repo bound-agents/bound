@@ -381,24 +381,6 @@ describe("handleWebhookRequest", () => {
 	});
 
 	// ──────────────────────────────────────────────────────────────────
-	// AC2.6: WebSocket endpoint still works (integration check)
-	// ──────────────────────────────────────────────────────────────────
-	test("AC2.6: WebSocket endpoint path /sync/ws is unchanged", async () => {
-		// This test verifies that we didn't break the URL routing
-		// The actual WebSocket upgrade is tested in websocket.integration.test.ts
-		// Here we just verify the path routing logic
-		const wsRequest = new Request("http://localhost:3000/sync/ws", {
-			headers: {
-				upgrade: "websocket",
-			},
-		});
-
-		// The handler should recognize this is a WS request
-		expect(wsRequest.url).toContain("/sync/ws");
-		expect(wsRequest.headers.get("upgrade")).toBe("websocket");
-	});
-
-	// ──────────────────────────────────────────────────────────────────
 	// AC1.5: Invalid signature returns 401
 	// ──────────────────────────────────────────────────────────────────
 	test("AC1.5: POST with invalid signature returns 404", async () => {

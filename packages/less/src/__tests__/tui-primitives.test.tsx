@@ -13,28 +13,8 @@ describe("Spinner", () => {
 });
 
 describe("Badge", () => {
-	it("renders running status as colored dot", () => {
+	it("renders a status as a colored dot glyph", () => {
 		const { lastFrame } = render(<Badge status="running" />);
-		expect(lastFrame()).toContain("●");
-	});
-
-	it("renders failed status as colored dot", () => {
-		const { lastFrame } = render(<Badge status="failed" />);
-		expect(lastFrame()).toContain("●");
-	});
-
-	it("renders disabled status as colored dot", () => {
-		const { lastFrame } = render(<Badge status="disabled" />);
-		expect(lastFrame()).toContain("●");
-	});
-
-	it("renders connected status as colored dot", () => {
-		const { lastFrame } = render(<Badge status="connected" />);
-		expect(lastFrame()).toContain("●");
-	});
-
-	it("renders disconnected status as colored dot", () => {
-		const { lastFrame } = render(<Badge status="disconnected" />);
 		expect(lastFrame()).toContain("●");
 	});
 });

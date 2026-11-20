@@ -47,34 +47,6 @@ describe("computeInitialLayout", () => {
 	});
 
 	describe("node sorting and limiting", () => {
-		it("sorts nodes within tier by modifiedAt descending", () => {
-			const baseMs = Date.UTC(2026, 0, 1);
-			const nodes: MemoryGraphNode[] = [
-				{
-					key: "node-old",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date(baseMs - 3000).toISOString(),
-				},
-				{
-					key: "node-newest",
-					value: "value",
-					tier: "default",
-					source: null,
-					sourceThreadTitle: null,
-					lineIndex: 0,
-					modifiedAt: new Date(baseMs).toISOString(),
-				},
-			];
-
-			const result = computeInitialLayout(nodes, [], 500, 400);
-			// Both should be positioned
-			expect(result.nodes).toHaveLength(2);
-		});
-
 		it("limits each tier to 40 nodes max", () => {
 			const nodes: MemoryGraphNode[] = [];
 			for (let i = 0; i < 50; i++) {

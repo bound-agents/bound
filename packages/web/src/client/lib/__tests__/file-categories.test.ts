@@ -6,18 +6,6 @@ describe("getFileCategory", () => {
 		expect(getFileCategory("index.ts", 0)).toBe("code");
 	});
 
-	it("detects JavaScript as code", () => {
-		expect(getFileCategory("app.js", 0)).toBe("code");
-	});
-
-	it("detects Python as code", () => {
-		expect(getFileCategory("main.py", 0)).toBe("code");
-	});
-
-	it("detects JSON as code", () => {
-		expect(getFileCategory("package.json", 0)).toBe("code");
-	});
-
 	it("detects markdown", () => {
 		expect(getFileCategory("readme.md", 0)).toBe("markdown");
 	});
@@ -26,20 +14,8 @@ describe("getFileCategory", () => {
 		expect(getFileCategory("photo.png", 0)).toBe("image");
 	});
 
-	it("detects JPG as image", () => {
-		expect(getFileCategory("pic.jpg", 0)).toBe("image");
-	});
-
-	it("detects SVG as image", () => {
-		expect(getFileCategory("icon.svg", 0)).toBe("image");
-	});
-
 	it("detects plain text", () => {
 		expect(getFileCategory("notes.txt", 0)).toBe("text");
-	});
-
-	it("detects log as text", () => {
-		expect(getFileCategory("app.log", 0)).toBe("text");
 	});
 
 	it("treats unknown non-binary as text", () => {

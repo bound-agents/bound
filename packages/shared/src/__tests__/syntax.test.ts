@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-	SYNTAX_LANGS,
-	SYNTAX_THEME,
 	getHighlighter,
 	highlightToHtml,
 	highlightToTokens,
@@ -50,18 +48,6 @@ describe("normalizeLang", () => {
 });
 
 describe("highlighter lifecycle", () => {
-	test("SYNTAX_LANGS exposes the bundled set", () => {
-		expect(SYNTAX_LANGS).toContain("typescript");
-		expect(SYNTAX_LANGS).toContain("python");
-		expect(SYNTAX_LANGS).toContain("bash");
-		// plaintext is shiki's special pass-through, not a bundled language
-		expect((SYNTAX_LANGS as readonly string[]).includes("plaintext")).toBe(false);
-	});
-
-	test("SYNTAX_THEME is set", () => {
-		expect(SYNTAX_THEME).toBe("tokyo-night");
-	});
-
 	test("prewarmHighlighter resolves and getHighlighter is idempotent", async () => {
 		await prewarmHighlighter();
 		const a = await getHighlighter();

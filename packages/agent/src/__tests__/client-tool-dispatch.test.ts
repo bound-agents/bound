@@ -69,48 +69,6 @@ describe("ClientToolCallRequest type and type guard", () => {
 		const obj = { clientToolCall: false, toolName: "tool", callId: "123", arguments: {} };
 		expect(isClientToolCallRequest(obj)).toBe(false);
 	});
-
-	it("ClientToolCallRequest has all required fields with correct types", () => {
-		const request: ClientToolCallRequest = {
-			clientToolCall: true,
-			toolName: "calculate",
-			callId: "id-456",
-			arguments: { x: 10, y: 20, operation: "add" },
-		};
-
-		expect(request.clientToolCall).toBe(true);
-		expect(typeof request.toolName).toBe("string");
-		expect(typeof request.callId).toBe("string");
-		expect(typeof request.arguments).toBe("object");
-	});
-
-	it("ClientToolCallRequest arguments can be empty", () => {
-		const request: ClientToolCallRequest = {
-			clientToolCall: true,
-			toolName: "no_args_tool",
-			callId: "id-789",
-			arguments: {},
-		};
-
-		expect(request.arguments).toEqual({});
-		expect(isClientToolCallRequest(request)).toBe(true);
-	});
-
-	it("ClientToolCallRequest arguments can have nested objects", () => {
-		const request: ClientToolCallRequest = {
-			clientToolCall: true,
-			toolName: "complex_tool",
-			callId: "id-nested",
-			arguments: {
-				user: { id: "123", name: "John" },
-				options: { deep: { nested: true } },
-			},
-		};
-
-		expect(request.arguments.user).toEqual({ id: "123", name: "John" });
-		expect(request.arguments.options).toEqual({ deep: { nested: true } });
-		expect(isClientToolCallRequest(request)).toBe(true);
-	});
 });
 
 // Mock LLM backend for testing

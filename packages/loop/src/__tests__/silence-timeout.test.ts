@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
 	SILENCE_HEARTBEAT_INTERVAL_MS,
-	scaledMaxRetries,
 	scaledSilenceTimeout,
 	withSilenceTimeout,
 } from "../silence-timeout";
@@ -72,14 +71,6 @@ describe("scaledSilenceTimeout", () => {
 		expect(scaledSilenceTimeout(60_000, 200_000)).toBe(60_000 + 120_000);
 		// 149_999 is under the first 50k step boundary -> floor to 0 extra.
 		expect(scaledSilenceTimeout(60_000, 149_999)).toBe(60_000);
-	});
-});
-
-describe("scaledMaxRetries", () => {
-	it("is the identity on the ceiling regardless of estimated context", () => {
-		expect(scaledMaxRetries(0, 3)).toBe(3);
-		expect(scaledMaxRetries(500_000, 3)).toBe(3);
-		expect(scaledMaxRetries(10_000_000, 7)).toBe(7);
 	});
 });
 

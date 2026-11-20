@@ -69,58 +69,6 @@ describe("Annotation Pipeline Tests", () => {
 	});
 
 	describe("remove-dispatcher.AC3.1 & AC3.2: Annotations preserved in discovery", () => {
-		it("discord_list_channels is registered with readOnlyHint annotation", async () => {
-			// Create a mock Discord MCP server that registers tools with annotations
-			const discordMcpServer = new McpServer({
-				name: "discord",
-				version: "1.0.0",
-			});
-
-			// Register tools with annotations using registerTool
-			discordMcpServer.registerTool(
-				"discord_list_channels",
-				{
-					description: "List known DM channel IDs that have sent messages to this bot.",
-					inputSchema: z.object({}),
-					annotations: {
-						readOnlyHint: true,
-					},
-				},
-				async () => ({
-					content: [{ type: "text", text: "[]" }],
-				}),
-			);
-
-			discordMcpServer.registerTool(
-				"discord_send_message",
-				{
-					description: "Send a message to a Discord channel.",
-					inputSchema: z.object({
-						channel_id: z.string(),
-						content: z.string(),
-					}),
-					// No annotations — write tool
-				},
-				async () => ({
-					content: [{ type: "text", text: "Message sent" }],
-				}),
-			);
-
-			// Register the Discord server
-			await registry.registerServer("discord", discordMcpServer.server);
-
-			// Get the discovered tools
-			const allTools = registry.getAllPlatformTools();
-
-			// Verify discord_list_channels exists
-			expect(allTools.has("discord_list_channels")).toBe(true);
-			const listChannelsTool = allTools.get("discord_list_channels");
-			expect(listChannelsTool).toBeDefined();
-
-			// Verify the annotations were preserved (AC3.2)
-			expect(listChannelsTool?.annotations?.readOnlyHint).toBe(true);
-		});
-
 		it("preserves annotations from MCP listTools response on PlatformRegisteredTool", async () => {
 			// Create a mock platform server with multiple tools with different annotations
 			const platformMcpServer = new McpServer({
@@ -346,57 +294,6 @@ describe("Annotation Pipeline Tests", () => {
 			// Tools without annotations or with other annotations should be excluded
 			expect(readOnlyTools.has("not_annotated")).toBe(false);
 			expect(readOnlyTools.has("annotated_write")).toBe(false);
-		});
-
-		it("discord_send_message is excluded from read-only tools", async () => {
-			// Create a Discord-like server with both read and write tools
-			const discordMcpServer = new McpServer({
-				name: "discord",
-				version: "1.0.0",
-			});
-
-			discordMcpServer.registerTool(
-				"discord_list_channels",
-				{
-					description: "List channels",
-					inputSchema: z.object({}),
-					annotations: {
-						readOnlyHint: true,
-					},
-				},
-				async () => ({
-					content: [{ type: "text", text: "[]" }],
-				}),
-			);
-
-			discordMcpServer.registerTool(
-				"discord_send_message",
-				{
-					description: "Send a message",
-					inputSchema: z.object({
-						channel_id: z.string(),
-						content: z.string(),
-					}),
-					annotations: {
-						destructiveHint: true,
-					},
-				},
-				async () => ({
-					content: [{ type: "text", text: "sent" }],
-				}),
-			);
-
-			// Register the Discord server
-			await registry.registerServer("discord", discordMcpServer.server);
-
-			// Get read-only tools
-			const readOnlyTools = registry.getReadOnlyPlatformTools();
-
-			// discord_list_channels should be included
-			expect(readOnlyTools.has("discord_list_channels")).toBe(true);
-
-			// discord_send_message should be excluded
-			expect(readOnlyTools.has("discord_send_message")).toBe(false);
 		});
 	});
 

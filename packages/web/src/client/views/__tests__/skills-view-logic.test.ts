@@ -30,14 +30,4 @@ describe("deleteControlsFor (#269 delete-control gating)", () => {
 			controls: "confirm-cancel",
 		});
 	});
-
-	it("an ordinary row exposes exactly one delete-triggering control across the flow", () => {
-		// Pre-arm: one Delete button (the only control that arms confirmation).
-		const idle = deleteControlsFor({ is_builtin: false }, false);
-		expect(idle.controls).toBe("delete");
-		// Armed: Confirm Delete (the only control that calls DELETE) plus Cancel —
-		// so exactly one DELETE-triggering control is ever present at a time.
-		const armed = deleteControlsFor({ is_builtin: false }, true);
-		expect(armed.controls).toBe("confirm-cancel");
-	});
 });

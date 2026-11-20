@@ -18,9 +18,6 @@ import { seedBundledSkills } from "../seed-skills";
 const SKILL_AUTHORING = BUNDLED_SKILLS.find((s) => s.name === "skill-authoring");
 if (!SKILL_AUTHORING) throw new Error("skill-authoring missing from BUNDLED_SKILLS");
 const SKILL_AUTHORING_SKILL_MD = SKILL_AUTHORING.files.find((f) => f.path === "SKILL.md")?.content;
-const SKILL_AUTHORING_FORMAT_REFERENCE_MD = SKILL_AUTHORING.files.find(
-	(f) => f.path === "references/format-reference.md",
-)?.content;
 
 describe("seedBundledSkills", () => {
 	let tmpDir: string;
@@ -46,37 +43,6 @@ describe("seedBundledSkills", () => {
 		} catch {
 			// ignore
 		}
-	});
-
-	it("AC5.1: Creates skill-authoring files in files table after first startup", () => {
-		seedBundledSkills(db, siteId);
-
-		const skillMdFile = db
-			.prepare("SELECT id, path, content FROM files WHERE path = ? AND deleted = 0")
-			.get("/home/user/skills/skill-authoring/SKILL.md");
-
-		expect(skillMdFile).toBeDefined();
-		expect(skillMdFile?.path).toBe("/home/user/skills/skill-authoring/SKILL.md");
-		expect(skillMdFile?.content).toBe(SKILL_AUTHORING_SKILL_MD);
-
-		const refFile = db
-			.prepare("SELECT id, path, content FROM files WHERE path = ? AND deleted = 0")
-			.get("/home/user/skills/skill-authoring/references/format-reference.md");
-
-		expect(refFile).toBeDefined();
-		expect(refFile?.path).toBe("/home/user/skills/skill-authoring/references/format-reference.md");
-		expect(refFile?.content).toBe(SKILL_AUTHORING_FORMAT_REFERENCE_MD);
-	});
-
-	it("AC5.2: Creates skills table row with correct ID", () => {
-		seedBundledSkills(db, siteId);
-
-		const expectedSkillId = deterministicUUID(BOUND_NAMESPACE, "skill-authoring");
-		const skillRow = db.prepare("SELECT id, name FROM skills WHERE id = ?").get(expectedSkillId);
-
-		expect(skillRow).toBeDefined();
-		expect(skillRow?.id).toBe(expectedSkillId);
-		expect(skillRow?.name).toBe("skill-authoring");
 	});
 
 	it("AC5.3: Does not override an existing skill row on re-seed", () => {
@@ -160,15 +126,8 @@ describe("seedBundledSkills", () => {
 		expect(restoredRow?.content).toBe(SKILL_AUTHORING_SKILL_MD);
 	});
 
-	it("AC5.5: Content hash of seeded files matches bundled skill source", () => {
+	it("AC5.5: Content hash on the skills row matches the sha256 of the bundled SKILL.md", () => {
 		seedBundledSkills(db, siteId);
-
-		// Verify SKILL.md content and hash match
-		const skillMdFile = db
-			.prepare("SELECT content FROM files WHERE path = ? AND deleted = 0")
-			.get("/home/user/skills/skill-authoring/SKILL.md");
-
-		expect(skillMdFile?.content).toBe(SKILL_AUTHORING_SKILL_MD);
 
 		const expectedSkillHash = createHash("sha256")
 			.update(SKILL_AUTHORING_SKILL_MD ?? "")
@@ -179,13 +138,6 @@ describe("seedBundledSkills", () => {
 			.get("skill-authoring");
 
 		expect(skillRowHash?.content_hash).toBe(expectedSkillHash);
-
-		// Verify format-reference.md content matches
-		const refFile = db
-			.prepare("SELECT content FROM files WHERE path = ? AND deleted = 0")
-			.get("/home/user/skills/skill-authoring/references/format-reference.md");
-
-		expect(refFile?.content).toBe(SKILL_AUTHORING_FORMAT_REFERENCE_MD);
 	});
 
 	it("seeds every bundled skill (files + active skills row)", () => {

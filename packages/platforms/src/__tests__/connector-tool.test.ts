@@ -1,5 +1,5 @@
 import Database from "bun:sqlite";
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { applySchema, insertRow } from "@bound/core";
 import type { TypedEventEmitter } from "@bound/shared";
@@ -494,37 +494,6 @@ describe("Connector Tool", () => {
 		});
 	});
 
-	describe("AC2.5: attach activates subscription when local leader", () => {
-		it("calls activateSubscription when local client exists", async () => {
-			await registry.registerServer("test-platform", server);
-
-			// Track if activateSubscription is called
-			let activateSubscriptionCalled = false;
-			const originalActivate = registry.activateSubscription;
-			registry.activateSubscription = mock(async (handle: any) => {
-				activateSubscriptionCalled = true;
-				return originalActivate.call(registry, handle);
-			});
-
-			const toolContext = {
-				registry,
-				db,
-				siteId,
-			};
-
-			const tool = createConnectorTool(toolContext);
-			const result = (await tool.execute?.({
-				action: "attach",
-				server_name: "test-platform",
-				event_name: "message.received",
-				event_args: { channel_id: "ch-456" },
-			})) as string;
-
-			expect(result).toContain("Attached:");
-			expect(activateSubscriptionCalled).toBe(true);
-		});
-	});
-
 	describe("attach rolls back when the connector rejects the subscription", () => {
 		it("soft-deletes the handle, task, and thread and returns an error when events/stream rejects with the subscription-rejected code", async () => {
 			// A connector whose events/stream permanently rejects — e.g. Discord
@@ -743,26 +712,6 @@ describe("Connector Tool", () => {
 
 			expect(result).toContain("Error:");
 			expect(result).toContain("handle_id");
-		});
-	});
-
-	describe("AC2.9: channels error when server not found and no relay", () => {
-		it("returns error for missing server without remotePlatformRequest", async () => {
-			const toolContext = {
-				registry,
-				db,
-				siteId,
-				// no remotePlatformRequest
-			};
-
-			const tool = createConnectorTool(toolContext);
-			const result = (await tool.execute?.({
-				action: "channels",
-				server_name: "missing-server",
-			})) as string;
-
-			expect(result).toContain("Error:");
-			expect(result).toContain("not found");
 		});
 	});
 

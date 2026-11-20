@@ -63,37 +63,6 @@ describe("tool registry", () => {
 			expect(tool.execute).toBeUndefined();
 		});
 
-		it("registers client tools without execute handlers", () => {
-			const clientTools = new Map<
-				string,
-				{
-					type: "function";
-					function: {
-						name: string;
-						description: string;
-						parameters: Record<string, unknown>;
-					};
-				}
-			>([
-				[
-					"client_tool",
-					{
-						type: "function",
-						function: {
-							name: "client_tool",
-							description: "A client tool",
-							parameters: { type: "object", properties: {} },
-						},
-					},
-				],
-			]);
-
-			const registry = createToolRegistry(undefined, clientTools, [], logger);
-			const tool = getTool(registry, "client_tool");
-			expect(tool.kind).toBe("client");
-			expect(tool.execute).toBeUndefined();
-		});
-
 		it("registers built-in tools with execute handlers", () => {
 			const fs = new InMemoryFs();
 			const builtInTools = createBuiltInTools(fs);
@@ -214,69 +183,6 @@ describe("tool registry", () => {
 			expect(typeof result).toBe("string");
 			expect(result).toContain("test content");
 		});
-
-		it("client tool is registered without execute handler", async () => {
-			const clientTools = new Map<
-				string,
-				{
-					type: "function";
-					function: {
-						name: string;
-						description: string;
-						parameters: Record<string, unknown>;
-					};
-				}
-			>([
-				[
-					"test_client_tool",
-					{
-						type: "function",
-						function: {
-							name: "test_client_tool",
-							description: "A test client tool",
-							parameters: { type: "object", properties: {} },
-						},
-					},
-				],
-			]);
-
-			const registry = createToolRegistry(undefined, clientTools, [], logger);
-
-			const tool = getTool(registry, "test_client_tool");
-			expect(tool.kind).toBe("client");
-			expect(tool.execute).toBeUndefined();
-		});
-
-		it("client tool has no execute handler", () => {
-			const clientTools = new Map<
-				string,
-				{
-					type: "function";
-					function: {
-						name: string;
-						description: string;
-						parameters: Record<string, unknown>;
-					};
-				}
-			>([
-				[
-					"test_client_tool",
-					{
-						type: "function",
-						function: {
-							name: "test_client_tool",
-							description: "A test client tool",
-							parameters: { type: "object", properties: {} },
-						},
-					},
-				],
-			]);
-
-			const registry = createToolRegistry(undefined, clientTools, [], logger);
-			const tool = getTool(registry, "test_client_tool");
-			expect(tool.kind).toBe("client");
-			expect(tool.execute).toBeUndefined();
-		});
 	});
 
 	describe("agent tools dispatch (AC1.4)", () => {
@@ -352,21 +258,6 @@ describe("tool registry", () => {
 		});
 	});
 
-	describe("unknown tool lookup (AC1.6)", () => {
-		it("returns undefined for non-existent tool name", () => {
-			const registry = createToolRegistry(undefined, undefined, [], logger);
-			const tool = registry.get("nonexistent_tool_12345");
-			expect(tool).toBeUndefined();
-		});
-
-		it("handles lookup of non-existent tool without throwing", () => {
-			const registry = createToolRegistry(undefined, undefined, [], logger);
-			expect(() => {
-				registry.get("missing_tool");
-			}).not.toThrow();
-		});
-	});
-
 	describe("merged tools discoverability (AC5.4)", () => {
 		it("all 14 native agent tools have defined parameters", () => {
 			const mockContext = {
@@ -393,31 +284,6 @@ describe("tool registry", () => {
 				expect(params).not.toBeNull();
 				// Parameters should be an object with type: "object"
 				expect(params.type).toBe("object");
-			}
-		});
-
-		it("each agent tool has proper toolDefinition.function.parameters structure", () => {
-			const mockContext = {
-				db: {} as any,
-				siteId: "test-site",
-				eventBus: {} as any,
-				logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as any,
-				taskId: undefined,
-				threadId: "thread-123",
-				fs: undefined,
-				mcpClients: new Map(),
-			};
-
-			const agentTools = createAgentTools(mockContext);
-
-			for (const tool of agentTools) {
-				const toolDef = tool.toolDefinition;
-				expect(toolDef.type).toBe("function");
-				expect(toolDef.function).toBeDefined();
-				expect(toolDef.function.parameters).toBeDefined();
-				// Check that parameters have at least the basic structure
-				const params = toolDef.function.parameters as Record<string, any>;
-				expect(params.type).toBeDefined();
 			}
 		});
 

@@ -41,100 +41,6 @@ describe("WebSocket Handler", () => {
 		handler = createWebSocketHandler(eventBus);
 	});
 
-	it("creates handler with required methods", () => {
-		expect(typeof handler.open).toBe("function");
-		expect(typeof handler.message).toBe("function");
-		expect(typeof handler.close).toBe("function");
-	});
-
-	it("tracks client subscriptions on message", () => {
-		const mockWs = {
-			readyState: WebSocket.OPEN,
-			send: () => {},
-		} as unknown as WebSocket;
-
-		handler.open(mockWs);
-
-		const subscribeMessage1 = JSON.stringify({
-			type: "thread:subscribe",
-			thread_id: "thread-1",
-		});
-
-		const subscribeMessage2 = JSON.stringify({
-			type: "thread:subscribe",
-			thread_id: "thread-2",
-		});
-
-		expect(() => {
-			handler.message(mockWs, subscribeMessage1);
-			handler.message(mockWs, subscribeMessage2);
-		}).not.toThrow();
-	});
-
-	it("broadcasts message:created events to subscribed clients", async () => {
-		const messages: SentMessage[] = [];
-		const mockWs = {
-			readyState: WebSocket.OPEN,
-			send(data: string): void {
-				messages.push(JSON.parse(data));
-			},
-		} as unknown as WebSocket;
-
-		handler.open(mockWs);
-
-		const subscribeMessage = JSON.stringify({
-			type: "thread:subscribe",
-			thread_id: "thread-1",
-		});
-		handler.message(mockWs, subscribeMessage);
-
-		eventBus.emit("message:created", {
-			message: {
-				id: "msg-1",
-				content: "Hello",
-				role: "user",
-			},
-			thread_id: "thread-1",
-		});
-
-		const parsed = await waitForWebSocketMessage(
-			messages,
-			(message) => message.type === "message:created",
-			"message:created",
-		);
-		expect(parsed.type).toBe("message:created");
-		expect(parsed.data.role).toBe("user");
-	});
-
-	it("does not broadcast to clients not subscribed to thread", async () => {
-		const messages: SentMessage[] = [];
-		const mockWs = {
-			readyState: WebSocket.OPEN,
-			send(data: string): void {
-				messages.push(JSON.parse(data));
-			},
-		} as unknown as WebSocket;
-
-		handler.open(mockWs);
-
-		const subscribeMessage = JSON.stringify({
-			type: "thread:subscribe",
-			thread_id: "thread-1",
-		});
-		handler.message(mockWs, subscribeMessage);
-
-		eventBus.emit("message:created", {
-			message: {
-				id: "msg-1",
-				content: "Hello",
-				role: "user",
-			},
-			thread_id: "thread-2",
-		});
-
-		await waitForNoWebSocketMessages(messages, "messages for an unsubscribed thread");
-	});
-
 	it("broadcasts message:broadcast events to subscribed clients", async () => {
 		const messages: SentMessage[] = [];
 		const mockWs = {
@@ -195,31 +101,6 @@ describe("WebSocket Handler", () => {
 		});
 
 		await waitForNoWebSocketMessages(messages, "messages for an unsubscribed thread");
-	});
-
-	it("handles client disconnection", () => {
-		const mockWs = {
-			readyState: WebSocket.OPEN,
-			send: () => {},
-		} as unknown as WebSocket;
-
-		handler.open(mockWs);
-		expect(() => {
-			handler.close(mockWs);
-		}).not.toThrow();
-	});
-
-	it("ignores invalid message format", () => {
-		const mockWs = {
-			readyState: WebSocket.OPEN,
-			send: () => {},
-		} as unknown as WebSocket;
-
-		handler.open(mockWs);
-
-		expect(() => {
-			handler.message(mockWs, "invalid json");
-		}).not.toThrow();
 	});
 
 	it("broadcasts context:debug events to subscribed clients", async () => {

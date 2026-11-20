@@ -83,20 +83,6 @@ const createMockEventBus = (): TypedEventEmitter => {
 	return new (require("@bound/shared").TypedEventEmitter)();
 };
 
-const _createTrackedEventBus = (): {
-	eventBus: TypedEventEmitter;
-	emitted: Array<{ event: string; args: unknown }>;
-} => {
-	const eventBus = createMockEventBus();
-	const emitted: Array<{ event: string; args: unknown }> = [];
-	const originalEmit = eventBus.emit.bind(eventBus);
-	eventBus.emit = ((event: string, ...args: unknown[]) => {
-		emitted.push({ event, args: args[0] });
-		return originalEmit(event, ...args);
-	}) as typeof eventBus.emit;
-	return { eventBus, emitted };
-};
-
 // Mock logger
 const createMockLogger = (): Logger => ({
 	info: () => {},

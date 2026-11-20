@@ -16,15 +16,6 @@ describe("createLogger", () => {
 		resetLogger();
 	});
 
-	it("creates a logger instance with all log methods", () => {
-		const logger = createLogger("@bound/test", "TestComponent");
-		expect(logger).toBeDefined();
-		expect(typeof logger.info).toBe("function");
-		expect(typeof logger.debug).toBe("function");
-		expect(typeof logger.warn).toBe("function");
-		expect(typeof logger.error).toBe("function");
-	});
-
 	it("writes structured JSON to log file", async () => {
 		process.env.LOG_LEVEL = "debug";
 		const logger = createLogger("@bound/test", "TestComponent");

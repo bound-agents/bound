@@ -26,12 +26,6 @@ function makeMcpTools(): Map<string, { tools: Tool[]; config: McpServerConfig }>
 }
 
 describe("buildToolSet MCP handler", () => {
-	it("registers the namespaced MCP tool definition", () => {
-		const { tools } = buildToolSet("/cwd", "host", makeMcpTools());
-		const names = tools.map((t) => t.function.name);
-		expect(names).toContain("boundless_mcp_proxysrv_echo");
-	});
-
 	it("handler proxies through to the MCP client's callTool when a manager is wired", async () => {
 		let received: { name: string; arguments: unknown } | null = null;
 		const mockClient = {

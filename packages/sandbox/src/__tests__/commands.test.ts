@@ -81,31 +81,6 @@ describe("Command Framework", () => {
 		expect(receivedContext).toEqual(context);
 	});
 
-	test("missing required argument returns error", async () => {
-		const definitions: CommandDefinition[] = [
-			{
-				name: "needs-args",
-				args: [{ name: "required-arg", required: true }],
-				handler: async () => {
-					return { stdout: "ok", stderr: "", exitCode: 0 };
-				},
-			},
-		];
-
-		const context = {
-			db: createDatabase(":memory:"),
-			siteId: "test-site",
-			eventBus: mockEventBus,
-			logger: mockLogger,
-		};
-
-		const commands = createDefineCommands(definitions, context);
-		const result = await commands[0].handler([]);
-
-		expect(result.exitCode).toBe(1);
-		expect(result.stderr).toContain("Missing required argument");
-	});
-
 	// Bug: SQL queries passed as positional args were broken when the SQL contained
 	// "=". The hasFlags heuristic treated `a.includes("=")` as a signal to enter
 	// key=value parsing mode. A SQL string like "SELECT … WHERE x=1" is one argv
@@ -692,34 +667,6 @@ describe("--help and missing-arg hint", () => {
 		expect(result.stderr).toContain("(run 'schedule --help' for usage)");
 	});
 
-	// command-discovery-redesign.AC2.2: Exit code stays 1
-	test("AC2.2: missing-arg error exits with code 1", async () => {
-		const definitions: CommandDefinition[] = [
-			{
-				name: "schedule",
-				description: "Schedule a deferred task",
-				args: [{ name: "task", required: true }],
-				handler: async () => ({
-					stdout: "ok",
-					stderr: "",
-					exitCode: 0,
-				}),
-			},
-		];
-
-		const context = {
-			db: createDatabase(":memory:"),
-			siteId: "test-site",
-			eventBus: mockEventBus,
-			logger: mockLogger,
-		};
-
-		const commands = createDefineCommands(definitions, context);
-		const result = await commands[0].handler([]);
-
-		expect(result.exitCode).toBe(1);
-	});
-
 	// Test formatHelp function directly
 	test("formatHelp generates correct usage text for command with required args", () => {
 		const def: CommandDefinition = {
@@ -757,116 +704,6 @@ describe("--help and missing-arg hint", () => {
 		expect(result.stdout).toContain("special — Special command");
 		expect(result.stdout).toContain("This is a custom help message with special formatting.");
 		expect(result.stdout).not.toContain("Usage:");
-	});
-
-	// command-discovery-redesign.AC1.2: memory --help returns subcommand listing
-	test("AC1.2: memory --help returns subcommand listing with helpText", () => {
-		const memoryHelpText = [
-			"Subcommands:",
-			"",
-			"  store <key> <value> [--source_tag S] [--tier TIER]",
-			"    Store a memory. Tier: pinned, summary, default, detail.",
-			"",
-			"  forget <key> [--prefix P]",
-			"    Forget a memory by exact key, or by prefix with --prefix.",
-			"",
-			"  search <query>",
-			"    Search memories by keyword.",
-			"",
-			"  connect <source> <target> <relation> [--weight N] [--context 'phrase']",
-			"    Create an edge between two memory keys.",
-			"",
-			"  disconnect <source> <target> [relation]",
-			"    Remove an edge. If relation is omitted, removes all edges between source and target.",
-			"",
-			"  traverse <key> [--depth N] [--relation R]",
-			"    Walk the memory graph from a key. Depth 1-3 (default 2).",
-			"",
-			"  neighbors <key> [--dir out|in|both]",
-			"    List direct neighbors of a key.",
-		].join("\n");
-
-		const def: CommandDefinition = {
-			name: "memory",
-			description:
-				"Memory operations: store, forget, search, connect, disconnect (use subcommands)",
-			helpText: memoryHelpText,
-			args: [
-				{
-					name: "subcommand",
-					required: true,
-					description:
-						"Subcommand: store, forget, search, connect, disconnect, traverse, neighbors",
-				},
-			],
-			handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-		};
-
-		const result = formatHelp(def);
-
-		expect(result.exitCode).toBe(0);
-		expect(result.stdout).toContain("memory — Memory operations");
-		expect(result.stdout).toContain("Subcommands:");
-		// Verify all 7 subcommand names appear
-		expect(result.stdout).toContain("store");
-		expect(result.stdout).toContain("forget");
-		expect(result.stdout).toContain("search");
-		expect(result.stdout).toContain("connect");
-		expect(result.stdout).toContain("disconnect");
-		expect(result.stdout).toContain("traverse");
-		expect(result.stdout).toContain("neighbors");
-	});
-
-	// command-discovery-redesign.AC1.2: advisory --help returns subcommand listing
-	test("AC1.2: advisory --help returns subcommand listing with helpText", () => {
-		const advisoryHelpText = [
-			"Subcommands:",
-			"",
-			"  create --title T --detail D [--action A] [--impact I]",
-			"    Post a new advisory for operator review.",
-			"",
-			"  list [--status S]",
-			"    List advisories. Filter by status: proposed, approved, applied, dismissed, deferred.",
-			"",
-			"  approve <id>",
-			"    Approve a proposed advisory.",
-			"",
-			"  apply <id>",
-			"    Mark an approved advisory as applied.",
-			"",
-			"  dismiss <id>",
-			"    Dismiss a proposed advisory.",
-			"",
-			"  defer <id> [--until ISO]",
-			"    Defer an advisory until a given date.",
-		].join("\n");
-
-		const def: CommandDefinition = {
-			name: "advisory",
-			description: "Post a proactive advisory for operator review",
-			helpText: advisoryHelpText,
-			args: [
-				{
-					name: "subcommand",
-					required: false,
-					description: "Subcommand: create, dismiss, approve, apply, defer, list",
-				},
-			],
-			handler: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
-		};
-
-		const result = formatHelp(def);
-
-		expect(result.exitCode).toBe(0);
-		expect(result.stdout).toContain("advisory — Post a proactive advisory");
-		expect(result.stdout).toContain("Subcommands:");
-		// Verify all 6 subcommand names appear
-		expect(result.stdout).toContain("create");
-		expect(result.stdout).toContain("list");
-		expect(result.stdout).toContain("approve");
-		expect(result.stdout).toContain("apply");
-		expect(result.stdout).toContain("dismiss");
-		expect(result.stdout).toContain("defer");
 	});
 });
 

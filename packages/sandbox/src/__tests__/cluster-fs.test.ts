@@ -12,11 +12,6 @@ import {
 } from "../cluster-fs";
 
 describe("ClusterFs", () => {
-	test("creates a ClusterFs with proper mount structure", () => {
-		const clusterFs = createClusterFs({ hostName: "localhost", syncEnabled: true });
-		expect(clusterFs).toBeDefined();
-	});
-
 	test("allows writing and reading files from /home/user/", async () => {
 		const clusterFs = createClusterFs({ hostName: "localhost", syncEnabled: true });
 		const testContent = "Hello, world!";

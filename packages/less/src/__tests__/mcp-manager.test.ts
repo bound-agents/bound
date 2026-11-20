@@ -27,14 +27,6 @@ describe("McpServerManager", () => {
 		}
 	});
 
-	describe("constructor", () => {
-		it("initializes with empty server state", () => {
-			const manager = new McpServerManager(logger);
-			const states = manager.getServerStates();
-			expect(states.size).toBe(0);
-		});
-	});
-
 	describe("ensureAllEnabled", () => {
 		it("AC6.6: marks invalid stdio server as failed with error message", async () => {
 			const manager = new McpServerManager(logger);
@@ -508,35 +500,6 @@ describe("McpServerManager", () => {
 	});
 
 	describe("MCP transport types", () => {
-		it("AC6.1: should verify stdio spawn code path structure exists", async () => {
-			const manager = new McpServerManager(logger);
-
-			// Create a config with stdio transport
-			const configs: McpServerConfig[] = [
-				{
-					transport: "stdio",
-					name: "stdio-server",
-					command: "echo",
-					args: ["test"],
-					enabled: true,
-				},
-			];
-
-			// Call ensureAllEnabled which should attempt stdio transport
-			await manager.ensureAllEnabled(configs);
-
-			// Verify the server state was created
-			const states = manager.getServerStates();
-			expect(states.has("stdio-server")).toBe(true);
-
-			const state = states.get("stdio-server");
-			expect(state?.config.transport).toBe("stdio");
-
-			// Verify the manager can handle stdio transport configuration
-			expect(state?.config.name).toBe("stdio-server");
-			expect(state?.config.command).toBe("echo");
-		});
-
 		it("AC6.2: should accept HTTP transport config", async () => {
 			const manager = new McpServerManager(logger);
 

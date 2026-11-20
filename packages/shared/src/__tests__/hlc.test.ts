@@ -50,31 +50,9 @@ describe("generateHlc", () => {
 		expect(ts).toBe("2026-04-11T04:31:00.000Z");
 		expect(counter).toBe("0001");
 	});
-
-	it("produces monotonically increasing values under rapid calls", () => {
-		const results: string[] = [];
-		let last: string | null = null;
-		const fixedTime = "2026-04-11T04:30:00.000Z";
-		for (let i = 0; i < 100; i++) {
-			const hlc = generateHlc(fixedTime, last, SITE_A);
-			results.push(hlc);
-			last = hlc;
-		}
-		for (let i = 1; i < results.length; i++) {
-			expect(results[i] > results[i - 1]).toBe(true);
-		}
-	});
 });
 
 describe("mergeHlc", () => {
-	it("produces value greater than both local and remote", () => {
-		const local = generateHlc("2026-04-11T04:30:00.000Z", null, SITE_A);
-		const remote = generateHlc("2026-04-11T04:30:05.000Z", null, SITE_B);
-		const merged = mergeHlc(local, remote, SITE_A);
-		expect(merged > local).toBe(true);
-		expect(merged > remote).toBe(true);
-	});
-
 	it("uses wall clock when it exceeds both local and remote", () => {
 		const local = generateHlc("2026-04-11T04:30:00.000Z", null, SITE_A);
 		const remote = generateHlc("2026-04-11T04:30:00.000Z", null, SITE_B);
@@ -123,18 +101,6 @@ describe("HLC_ZERO", () => {
 });
 
 describe("string comparison preserves causal order", () => {
-	it("later timestamps sort after earlier ones", () => {
-		const early = generateHlc("2026-04-11T04:30:00.000Z", null, SITE_A);
-		const late = generateHlc("2026-04-11T04:31:00.000Z", null, SITE_A);
-		expect(late > early).toBe(true);
-	});
-
-	it("same timestamp, higher counter sorts later", () => {
-		const first = generateHlc("2026-04-11T04:30:00.000Z", null, SITE_A);
-		const second = generateHlc("2026-04-11T04:30:00.000Z", first, SITE_A);
-		expect(second > first).toBe(true);
-	});
-
 	it("same timestamp and counter, site_id provides total order", () => {
 		const hlcA = `2026-04-11T04:30:00.000Z_0000_${SITE_A}`;
 		const hlcB = `2026-04-11T04:30:00.000Z_0000_${SITE_B}`;

@@ -129,17 +129,6 @@ export function findTaskRunTimestampsById(
 	} | null;
 }
 
-export function findActiveTaskSummaryById(
-	db: Database,
-	id: string,
-): { id: string; name: string; thread_id: string | null } | null {
-	return db.query("SELECT id, name, thread_id FROM tasks WHERE id = ? AND deleted = 0").get(id) as {
-		id: string;
-		name: string;
-		thread_id: string | null;
-	} | null;
-}
-
 export function listStuckRecoverableTasks(
 	db: Database,
 	stuckThreshold: string,

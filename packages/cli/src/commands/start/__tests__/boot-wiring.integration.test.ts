@@ -209,16 +209,12 @@ describe("bound start — fully configured boot wiring", () => {
 	it("seeded the heartbeat and consolidation cron tasks on boot (scheduler init)", () => {
 		// initScheduler seeds a heartbeat + consolidation task. Their presence
 		// proves the scheduler-init block ran under a configured boot.
-		const heartbeat = node.appContext.db
-			.query("SELECT id FROM tasks WHERE type = 'cron' AND trigger_spec LIKE '%heartbeat%'")
-			.get() as { id: string } | null;
 		const anyCron = node.appContext.db.query("SELECT COUNT(*) AS c FROM tasks").get() as {
 			c: number;
 		};
-		// At minimum the webhook event task + seeded crons exist.
+		// At minimum the webhook event task + seeded crons exist — the scheduler-init
+		// block ran under a full startNode boot (direct seeding counts are asserted in
+		// scheduler-remote-platform-request.test.ts).
 		expect(anyCron.c).toBeGreaterThan(0);
-		// Heartbeat seeding is best-effort; assert the task table is populated and,
-		// when the heartbeat trigger spec matches, that it seeded.
-		if (heartbeat) expect(heartbeat.id).toBeTruthy();
 	});
 });

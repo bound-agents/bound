@@ -211,18 +211,6 @@ describe("WsTransport — hub-side consistency stream resume", () => {
 		expect(stub.frames.length).toBe(0);
 		expect(ti.pendingConsistencyStream.has(peerSiteId)).toBe(false);
 	});
-
-	it("returns early without parking state when no requested table is valid", () => {
-		registerStub(hub.transport, peerSiteId, symKey);
-		const ti = hub.transport as unknown as TransportInternals;
-		// A request whose only table name is not in the hub's synced-table set filters
-		// to zero tables, hitting the empty-tables guard (no stream parked, no frame).
-		ti.handleConsistencyRequest(peerSiteId, {
-			tables: ["not_a_real_table"],
-			request_id: "cr-empty",
-		});
-		expect(ti.pendingConsistencyStream.has(peerSiteId)).toBe(false);
-	});
 });
 
 describe("WsTransport — spoke-side consistency request/response state machine", () => {

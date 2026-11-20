@@ -73,14 +73,6 @@ describe("mcp-auth-challenges repository", () => {
 			expect(row?.failure_reason).toBeNull();
 			expect(row?.id).toBe(challengeId(OWNER, SERVER));
 		});
-
-		it("carries no secret columns (R-MO7 — schema has none to write)", () => {
-			const id = raiseChallenge(db, demand(), OWNER);
-			const row = findChallengeById(db, id) as unknown as Record<string, unknown>;
-			expect(row).not.toHaveProperty("client_secret");
-			expect(row).not.toHaveProperty("code_verifier");
-			expect(row).not.toHaveProperty("token");
-		});
 	});
 
 	describe("markResolved (pending → resolved, R-MO8a/R-MO20)", () => {

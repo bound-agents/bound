@@ -8,20 +8,6 @@ import { ToolCallCard, computeStdoutRowBudget } from "../tui/components/ToolCall
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("ToolCallCard timer", () => {
-	it("renders tool name and running status", async () => {
-		const { lastFrame } = render(
-			React.createElement(ToolCallCard, {
-				toolName: "boundless_bash",
-				startTime: Date.now(),
-				terminalColumns: 80,
-			}),
-		);
-		await tick();
-
-		const frame = lastFrame();
-		expect(frame).toContain("bash");
-	});
-
 	it("does not update more than once per second", async () => {
 		// Track how many times the component renders
 		let renderCount = 0;

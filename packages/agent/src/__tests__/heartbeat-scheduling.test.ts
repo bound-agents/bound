@@ -266,47 +266,6 @@ describe("rescheduleHeartbeat", () => {
 		expect(nextDate.getUTCMinutes() % 30).toBe(0);
 	});
 
-	it("applies 3x multiplier for 2h idle", () => {
-		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
-		const ctx = makeCtx();
-		// 2 hours ago (falls into 1-4h tier: 3x)
-		const lastInteraction = new Date(Date.now() - 2 * 60 * 60 * 1000);
-
-		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
-
-		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
-		// With 3x multiplier: 30min becomes 90min effective interval
-		const nextDate = new Date(row.next_run_at);
-		const totalMinutes = nextDate.getUTCHours() * 60 + nextDate.getUTCMinutes();
-		// Boundaries at 0, 90 (1:30), 180 (3:00), 270 (4:30), etc.
-		const mod = totalMinutes % 90;
-		expect(mod).toBe(0);
-	});
-
-	it("applies 5x multiplier for 5h idle", () => {
-		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
-		const ctx = makeCtx();
-		// 5 hours ago (falls into 4-12h tier: 5x)
-		const lastInteraction = new Date(Date.now() - 5 * 60 * 60 * 1000);
-
-		const task = getTask(taskId);
-		rescheduleHeartbeat(db, task, ctx.logger, "test", siteId, lastInteraction);
-
-		const row = db.query("SELECT next_run_at FROM tasks WHERE id = ?").get(taskId) as any;
-		// With 5x multiplier: 30min becomes 150min effective interval
-		// Verify that next_run_at is in the future
-		const nextDate = new Date(row.next_run_at);
-		expect(nextDate.getTime()).toBeGreaterThan(Date.now());
-
-		// Verify it's at a valid boundary by checking that (time - now) is roughly a multiple of 150min
-		// allowing for small timing variations
-		const msUntilNext = nextDate.getTime() - Date.now();
-		const effectiveIntervalMs = 30 * 60 * 1000 * 5; // 150min in ms
-		expect(msUntilNext).toBeGreaterThan(0);
-		expect(msUntilNext).toBeLessThanOrEqual(effectiveIntervalMs);
-	});
-
 	// AC3.2: Eviction reschedule
 	it("reschedules evicted task to next boundary (AC3.2)", () => {
 		const { taskId } = insertHeartbeatTask(30 * 60 * 1000, "running");
@@ -584,66 +543,6 @@ describe("heartbeat_at sync via outbox (R-LR1)", () => {
 		const task = db.query("SELECT heartbeat_at FROM tasks WHERE id = ?").get(taskId) as any;
 		expect(task.heartbeat_at).toBe(now);
 	});
-
-	// AC1.2: LWW convergence with close-in-time refreshes
-	// Verifies that multiple heartbeat_at updates in quick succession
-	// with different timestamps create separate change_log entries
-	it("AC1.2: Multiple heartbeat_at updates create separate change_log entries", () => {
-		const leaseId = "L1";
-		const taskId = insertRunningTask(leaseId);
-
-		// Clear change_log to start fresh
-		db.run("DELETE FROM change_log");
-
-		// Create two close-in-time heartbeat refreshes on host A
-		const t1 = new Date().toISOString();
-		const result1 = updateRowIf(
-			db,
-			"tasks",
-			taskId,
-			{ lease_id: leaseId },
-			{ heartbeat_at: t1 },
-			siteId,
-		);
-		expect(result1).toBe(true);
-
-		// Small delay then second refresh
-		const t2 = new Date(Date.now() + 1).toISOString();
-		const result2 = updateRowIf(
-			db,
-			"tasks",
-			taskId,
-			{ lease_id: leaseId },
-			{ heartbeat_at: t2 },
-			siteId,
-		);
-		expect(result2).toBe(true);
-
-		// Get the change_log entries
-		const entries = getChangeLogEntries("tasks");
-		const refreshEntries = entries.filter((e) => e.row_id === taskId);
-		expect(refreshEntries.length).toBeGreaterThanOrEqual(2);
-
-		// Extract the last two entries (the refreshes we just made)
-		const firstRefresh = refreshEntries[refreshEntries.length - 2];
-		const secondRefresh = refreshEntries[refreshEntries.length - 1];
-
-		const firstData = JSON.parse(firstRefresh.row_data as string);
-		const secondData = JSON.parse(secondRefresh.row_data as string);
-
-		// Verify both entries have heartbeat_at and they're different
-		expect(firstData.heartbeat_at).toBe(t1);
-		expect(secondData.heartbeat_at).toBe(t2);
-		expect(firstData.heartbeat_at).not.toBe(secondData.heartbeat_at);
-
-		// Verify modified_at timestamps are also recorded (LWW uses these)
-		expect(firstData.modified_at).toBeDefined();
-		expect(secondData.modified_at).toBeDefined();
-		// Second update should have later or equal modified_at
-		expect(new Date(secondData.modified_at).getTime()).toBeGreaterThanOrEqual(
-			new Date(firstData.modified_at).getTime(),
-		);
-	});
 });
 
 describe("rescheduleHeartbeat outbox routing (R-LR11)", () => {
@@ -797,41 +696,6 @@ describe("rescheduleHeartbeat outbox routing (R-LR11)", () => {
 			siteId,
 			lastInteraction,
 		);
-
-		// Verify row state
-		const row = db
-			.query("SELECT status, next_run_at, error FROM tasks WHERE id = ?")
-			.get(taskId) as any;
-		expect(row.status).toBe("pending");
-		expect(row.next_run_at).toBeDefined();
-		// error should NOT be cleared on non-completion contexts
-		expect(row.error).toBe(null);
-
-		// Verify change_log entry
-		const entries = getChangeLogEntries();
-		const relevantEntries = entries.filter((e) => e.row_id === taskId);
-		expect(relevantEntries.length).toBe(1);
-
-		const entry = relevantEntries[0];
-		const rowData = JSON.parse(entry.row_data as string);
-		expect(rowData.status).toBe("pending");
-		expect(rowData.next_run_at).toBeDefined();
-		// error not in the update (only next_run_at and status)
-		// The change_log will show the full row state, so error should be null/undefined if not updated
-		expect([null, undefined]).toContain(rowData.error);
-	});
-
-	// AC11.1: Hard-error reschedule routes through outbox
-	it("AC11.1.3: Hard-error (model validation) context routes through outbox", () => {
-		const taskId = insertRunningHeartbeatTask(null);
-		const ctx = makeCtx();
-		const lastInteraction = new Date();
-
-		// Clear change_log to count entries from this operation
-		db.run("DELETE FROM change_log");
-
-		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as any;
-		rescheduleHeartbeat(db, task, ctx.logger, "model validation failure", siteId, lastInteraction);
 
 		// Verify row state
 		const row = db

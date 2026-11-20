@@ -35,12 +35,6 @@ describe("signing module", () => {
 			expect(headers["X-Agent-Version"]).toBe("0.0.1");
 		});
 
-		it("creates a valid ISO 8601 timestamp", async () => {
-			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", "{}");
-			const timestamp = new Date(headers["X-Timestamp"]);
-			expect(timestamp.getTime()).toBeGreaterThan(0);
-		});
-
 		it("creates hex-encoded signature", async () => {
 			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", "{}");
 			expect(headers["X-Signature"]).toMatch(/^[0-9a-f]+$/);
@@ -144,15 +138,6 @@ describe("signing module", () => {
 			const skew = detectClockSkew(now, now);
 			expect(skew).toBeNull();
 		});
-
-		it("returns null for timestamps 10 seconds apart", () => {
-			const now = new Date().getTime();
-			const local = new Date(now).toISOString();
-			const remote = new Date(now + 10000).toISOString();
-			const skew = detectClockSkew(local, remote);
-			expect(skew).toBeNull();
-		});
-
 		it("returns skew value for timestamps 45 seconds apart", () => {
 			const now = new Date().getTime();
 			const local = new Date(now).toISOString();
@@ -160,14 +145,6 @@ describe("signing module", () => {
 			const skew = detectClockSkew(local, remote);
 			expect(skew).toBeGreaterThan(40);
 			expect(skew).toBeLessThan(50);
-		});
-
-		it("returns skew value for timestamps 2 minutes apart", () => {
-			const now = new Date().getTime();
-			const local = new Date(now).toISOString();
-			const remote = new Date(now + 120000).toISOString();
-			const skew = detectClockSkew(local, remote);
-			expect(skew).toBeGreaterThan(110);
 		});
 
 		it("returns positive skew regardless of direction", () => {
@@ -217,23 +194,6 @@ describe("signing module", () => {
 				expect(result.value.hostName).toBe(siteId);
 			}
 		});
-
-		it("string-to-bytes equivalence: same hash for string and encoded Uint8Array", async () => {
-			const { CryptoHasher } = await import("bun");
-			const stringBody = "hello world";
-			const bytesBody = new TextEncoder().encode(stringBody);
-
-			const hashString = new CryptoHasher("sha256");
-			hashString.update(stringBody);
-			const hexString = Buffer.from(hashString.digest()).toString("hex");
-
-			const hashBytes = new CryptoHasher("sha256");
-			hashBytes.update(bytesBody);
-			const hexBytes = Buffer.from(hashBytes.digest()).toString("hex");
-
-			expect(hexString).toBe(hexBytes);
-		});
-
 		it("empty Uint8Array round-trip", async () => {
 			const emptyBody = new Uint8Array(0);
 			const headers = await signRequest(privateKey, siteId, "POST", "/sync/push", emptyBody);

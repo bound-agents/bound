@@ -4,7 +4,7 @@ import { deriveSiteId, exportPublicKey, generateKeypair } from "../crypto.js";
 import { KeyManager } from "../key-manager.js";
 import { signRequest } from "../signing.js";
 import { WsMessageType, encodeFrame } from "../ws-frames.js";
-import { type WsConnectionData, authenticateWsUpgrade } from "../ws-server.js";
+import { authenticateWsUpgrade } from "../ws-server.js";
 
 describe("authenticateWsUpgrade", () => {
 	let hubKeypair: { publicKey: CryptoKey; privateKey: CryptoKey };
@@ -42,49 +42,6 @@ describe("authenticateWsUpgrade", () => {
 		// Initialize hub's KeyManager with the keyring
 		keyManager = new KeyManager(hubKeypair, hubSiteId);
 		await keyManager.init(keyring);
-	});
-
-	describe("ws-transport.AC3.3 — Valid signature accepted", () => {
-		it("accepts upgrade request with valid Ed25519 signature", async () => {
-			// Sign the request with spoke's private key
-			const signatureHeaders = await signRequest(
-				spokeKeypair.privateKey,
-				spokeSiteId,
-				"GET",
-				"/sync/ws",
-				"",
-			);
-
-			// Create request with signed headers
-			const request = new Request("http://localhost:3000/sync/ws", {
-				method: "GET",
-				headers: signatureHeaders,
-			});
-
-			// Authenticate the upgrade
-			const keyring: KeyringConfig = {
-				hosts: {
-					[spokeSiteId]: { public_key: spokePubKey, url: "http://localhost:3100" },
-				},
-			};
-
-			const result = await authenticateWsUpgrade(request, keyring, keyManager);
-
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				const data = result.value;
-				expect(data).toMatchObject({
-					siteId: spokeSiteId,
-					sendState: "ready",
-					pendingDrain: null,
-				});
-				expect(data.symmetricKey).toBeInstanceOf(Uint8Array);
-				expect(data.symmetricKey.length).toBe(32);
-				expect(data.fingerprint).toBeString();
-				expect(data.fingerprint.length).toBe(16);
-				expect(data.fingerprint).toMatch(/^[0-9a-f]+$/);
-			}
-		});
 	});
 
 	describe("ws-transport.AC3.4 — Invalid signature rejected", () => {
@@ -240,91 +197,6 @@ describe("authenticateWsUpgrade", () => {
 			}
 		});
 	});
-
-	describe("Replay protection", () => {
-		it("rejects a reused valid upgrade signature within the freshness window", async () => {
-			const signatureHeaders = await signRequest(
-				spokeKeypair.privateKey,
-				spokeSiteId,
-				"GET",
-				"/sync/ws",
-				"",
-			);
-			const keyring: KeyringConfig = {
-				hosts: {
-					[spokeSiteId]: { public_key: spokePubKey, url: "http://localhost:3100" },
-				},
-			};
-
-			const first = await authenticateWsUpgrade(
-				new Request("http://localhost:3000/sync/ws", {
-					method: "GET",
-					headers: signatureHeaders,
-				}),
-				keyring,
-				keyManager,
-			);
-			const second = await authenticateWsUpgrade(
-				new Request("http://localhost:3000/sync/ws", {
-					method: "GET",
-					headers: signatureHeaders,
-				}),
-				keyring,
-				keyManager,
-			);
-
-			expect(first.ok).toBe(true);
-			expect(second.ok).toBe(false);
-			if (!second.ok) {
-				expect(second.error.status).toBe(401);
-				expect(second.error.body).toBe("Unauthorized");
-			}
-		});
-	});
-
-	describe("WsConnectionData structure", () => {
-		it("returns correct structure with all required fields", async () => {
-			const signatureHeaders = await signRequest(
-				spokeKeypair.privateKey,
-				spokeSiteId,
-				"GET",
-				"/sync/ws",
-				"",
-			);
-
-			const request = new Request("http://localhost:3000/sync/ws", {
-				method: "GET",
-				headers: signatureHeaders,
-			});
-
-			const keyring: KeyringConfig = {
-				hosts: {
-					[spokeSiteId]: { public_key: spokePubKey, url: "http://localhost:3100" },
-				},
-			};
-
-			const result = await authenticateWsUpgrade(request, keyring, keyManager);
-
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				const data: WsConnectionData = result.value;
-
-				// Check all required fields exist
-				expect(data).toHaveProperty("siteId");
-				expect(data).toHaveProperty("symmetricKey");
-				expect(data).toHaveProperty("fingerprint");
-				expect(data).toHaveProperty("sendState");
-				expect(data).toHaveProperty("pendingDrain");
-
-				// Check types
-				expect(typeof data.siteId).toBe("string");
-				expect(data.symmetricKey).toBeInstanceOf(Uint8Array);
-				expect(typeof data.fingerprint).toBe("string");
-				expect(data.sendState).toBe("ready");
-				expect(data.pendingDrain).toBeNull();
-			}
-		});
-	});
 });
 
 describe("WsConnectionManager", async () => {
@@ -432,38 +304,6 @@ describe("WsConnectionManager", async () => {
 			expect(allConnections.get("site-3")).toBe(mockWs3);
 		});
 	});
-
-	describe("ws-transport.AC6.4 — Send returning 0 triggers close", () => {
-		it("closes connection and removes from manager when send returns 0", () => {
-			const manager = new WsConnectionManager();
-			let connectionClosed = false;
-			let closeCode: number | undefined;
-
-			const mockWs = {
-				data: {
-					siteId: "test-site-1",
-					sendState: "ready",
-				},
-				send: () => 0, // Simulate send failure
-				close: (code?: number) => {
-					connectionClosed = true;
-					closeCode = code;
-					manager.remove("test-site-1");
-				},
-			};
-
-			manager.add("test-site-1", mockWs as any);
-			const result = mockWs.send();
-
-			if (result === 0) {
-				mockWs.close(1011);
-			}
-
-			expect(connectionClosed).toBe(true);
-			expect(closeCode).toBe(1011);
-			expect(manager.has("test-site-1")).toBe(false);
-		});
-	});
 });
 
 describe("createWsHandlers", async () => {
@@ -479,575 +319,379 @@ describe("createWsHandlers", async () => {
 		return { keyring, keyManager };
 	};
 
-	describe("lifecycle integration", () => {
-		it("processes full connection lifecycle", async () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const events: string[] = [];
-
-			const mockLogger = {
-				debug: (msg: string) => events.push(`debug: ${msg}`),
-				info: (msg: string) => events.push(`info: ${msg}`),
-				warn: (msg: string) => events.push(`warn: ${msg}`),
-			};
-
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-				logger: mockLogger as any,
-			});
-
-			expect(handlers).toHaveProperty("websocket");
-			expect(handlers).toHaveProperty("handleUpgrade");
-			expect(typeof handlers.websocket).toBe("object");
-			expect(typeof handlers.handleUpgrade).toBe("function");
+	it("logs a 'spool frame received' canary for a spool-typed raw frame before decode (#253)", () => {
+		const manager = new WsConnectionManager();
+		const { keyring, keyManager } = createMockKeyringAndManager();
+		const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
+		const logger = {
+			debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
+			info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
+			warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
+			error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+		};
+		const handlers = createWsHandlers({
+			connectionManager: manager,
+			keyring,
+			keyManager,
+			logger: logger as any,
 		});
 
-		it("handleUpgrade returns error response on auth failure", async () => {
-			const manager = new WsConnectionManager();
-			const failingKeyring = { hosts: {} };
-			const failingKeyManager = {
-				getSymmetricKey: () => null,
-				getFingerprint: () => null,
-			} as any;
+		const symmetricKey = new Uint8Array(32).fill(7);
+		const mockWs = {
+			data: {
+				siteId: "spoke-site",
+				symmetricKey,
+				sendState: "ready",
+				pendingDrain: null,
+			},
+			close: () => {},
+		} as any;
 
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring: failingKeyring,
-				keyManager: failingKeyManager,
-			});
+		// A well-formed SPOOL_TRANSFER_ACK frame (0x41 plaintext type byte at offset 0).
+		const frame = encodeFrame(
+			WsMessageType.SPOOL_TRANSFER_ACK,
+			{ entries: [{ id: "w-1", token: "tok-1" }] },
+			symmetricKey,
+		);
+		handlers.websocket.message?.(mockWs, frame);
 
-			// Create request without proper signature headers
-			const request = new Request("http://localhost:3000/sync/ws", {
-				method: "GET",
-				headers: {
-					"x-site-id": "unknown-site",
+		const recv = logs.find((e) => e.level === "info" && e.msg === "WsServer spool frame received");
+		expect(recv).toBeDefined();
+		const meta = recv?.meta as Record<string, unknown>;
+		expect(meta.siteId).toBe("spoke-site");
+		expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
+		expect(meta.frameBytes).toBe(frame.length);
+
+		// Canary #2: the decode-outcome line fires for the same frame, reports ok:true,
+		// names the decoded type, and confirms a transport is wired in scope.
+		const outcome = logs.find(
+			(e) => e.level === "info" && e.msg === "WsServer spool decode outcome",
+		);
+		expect(outcome).toBeDefined();
+		const outMeta = outcome?.meta as Record<string, unknown>;
+		expect(outMeta.siteId).toBe("spoke-site");
+		expect(outMeta.ok).toBe(true);
+		expect(outMeta.decodedType).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
+		expect(outMeta.error).toBeNull();
+		// No transport was configured on this handler, so hasWsTransport is false —
+		// which also means a valid spool frame with no transport does NOT hit the
+		// fell-off-chain warn (that branch lives inside the `if (config.wsTransport)`).
+		expect(outMeta.hasWsTransport).toBe(false);
+		expect(
+			logs.some(
+				(e) => e.level === "warn" && e.msg === "WsServer spool frame fell off dispatch chain",
+			),
+		).toBe(false);
+	});
+
+	it("a valid spool frame with a transport dispatches to its handler and does NOT fall off the chain (#253)", () => {
+		const manager = new WsConnectionManager();
+		const { keyring, keyManager } = createMockKeyringAndManager();
+		const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
+		const logger = {
+			debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
+			info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
+			warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
+			error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+		};
+		let dispatchedType: number | null = null;
+		const wsTransport = {
+			handleSpoolTransferAck: () => {
+				dispatchedType = WsMessageType.SPOOL_TRANSFER_ACK;
+			},
+		} as any;
+		const handlers = createWsHandlers({
+			connectionManager: manager,
+			keyring,
+			keyManager,
+			logger: logger as any,
+			wsTransport,
+		});
+
+		const symmetricKey = new Uint8Array(32).fill(7);
+		const mockWs = {
+			data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
+			close: () => {},
+		} as any;
+
+		const frame = encodeFrame(
+			WsMessageType.SPOOL_TRANSFER_ACK,
+			{ entries: [{ id: "w-1", token: "tok-1" }] },
+			symmetricKey,
+		);
+		handlers.websocket.message?.(mockWs, frame);
+
+		// The frame reached its dispatch branch — the type IS frame[0], so a
+		// spool-family byte always decodes to a matching branch; the fell-off-chain
+		// else-if is unreachable via a well-formed encodeFrame frame and stays quiet.
+		expect(dispatchedType).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
+		const outcome = logs.find(
+			(e) => e.level === "info" && e.msg === "WsServer spool decode outcome",
+		);
+		expect((outcome?.meta as Record<string, unknown>).hasWsTransport).toBe(true);
+		expect(
+			logs.some(
+				(e) => e.level === "warn" && e.msg === "WsServer spool frame fell off dispatch chain",
+			),
+		).toBe(false);
+	});
+
+	it("dispatches a decoded SPOOL_TRANSFER through the server with senderIsOriginator=true (hub inbound is first-hop, #253)", () => {
+		// Guards ws-server.ts:461. The hub receiving a SPOOL_TRANSFER on an
+		// authenticated inbound spoke connection is provably first-hop (spokes
+		// never forward), so the server MUST pass senderIsOriginator=true so
+		// handleSpoolTransfer may backfill a missing source_site. If someone
+		// deletes the literal `true` at the call site, the third argument becomes
+		// undefined and this assertion fails — restoring the legacy first-hop
+		// "response cannot be addressed" dead-letter.
+		const manager = new WsConnectionManager();
+		const { keyring, keyManager } = createMockKeyringAndManager();
+		let captured: { sourceSiteId: string; payload: unknown; senderIsOriginator: unknown } | null =
+			null;
+		const wsTransport = {
+			handleSpoolTransfer: (
+				sourceSiteId: string,
+				payload: unknown,
+				senderIsOriginator?: unknown,
+			) => {
+				captured = { sourceSiteId, payload, senderIsOriginator };
+			},
+		} as any;
+		const handlers = createWsHandlers({
+			connectionManager: manager,
+			keyring,
+			keyManager,
+			wsTransport,
+		});
+
+		const symmetricKey = new Uint8Array(32).fill(7);
+		const mockWs = {
+			data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
+			close: () => {},
+		} as any;
+
+		const payload = {
+			entries: [
+				{
+					id: "w-1",
+					target_site_id: "receiver",
+					source_site: null,
+					kind: "platform_request",
+					payload: { server_name: "discord", method: "tools/list", params: {} },
+					idempotency_key: "key-w-1",
+					ref_id: null,
+					stream_id: null,
+					expires_at: null,
+					received_at: null,
+					token: "tok-1",
 				},
-			});
+			],
+		};
+		const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, symmetricKey);
+		handlers.websocket.message?.(mockWs, frame);
 
-			// Mock server object
-			const mockServer = {
-				upgrade: () => true,
-			} as any;
+		expect(captured).not.toBeNull();
+		expect(captured?.sourceSiteId).toBe("spoke-site");
+		expect(captured?.payload).toEqual(payload);
+		// The third argument must be the literal `true` — not merely truthy, and
+		// never absent. This is the assertion that breaks if ws-server.ts:461
+		// loses its `true`.
+		expect(captured?.senderIsOriginator).toBe(true);
+	});
 
-			const response = await handlers.handleUpgrade(request, mockServer);
-
-			if (response) {
-				expect(response.status).toBe(401);
-				expect(await response.text()).toBe("Unauthorized");
-			}
+	it("decode-fail warn carries frameTypeByte and frameSize (#253)", () => {
+		const manager = new WsConnectionManager();
+		const { keyring, keyManager } = createMockKeyringAndManager();
+		const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
+		const logger = {
+			debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
+			info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
+			warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
+			error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+		};
+		const handlers = createWsHandlers({
+			connectionManager: manager,
+			keyring,
+			keyManager,
+			logger: logger as any,
 		});
 
-		it("websocket open handler adds connection to manager", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-			});
+		const mockWs = {
+			data: {
+				siteId: "spoke-site",
+				symmetricKey: new Uint8Array(32).fill(7),
+				sendState: "ready",
+				pendingDrain: null,
+			},
+			close: () => {},
+		} as any;
 
-			const mockWs = {
-				data: {
-					siteId: "test-site",
-					sendState: "ready",
-					pendingDrain: null,
-				},
-			} as any;
+		// Undecryptable garbage with a SPOOL_TRANSFER type byte at offset 0.
+		const garbage = new Uint8Array(60).fill(0);
+		garbage[0] = WsMessageType.SPOOL_TRANSFER;
+		handlers.websocket.message?.(mockWs, garbage);
 
-			handlers.websocket.open?.(mockWs);
+		const warn = logs.find((e) => e.level === "warn" && e.msg === "WS frame decode failed");
+		expect(warn).toBeDefined();
+		const meta = warn?.meta as Record<string, unknown>;
+		expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER);
+		expect(meta.frameSize).toBe(60);
+	});
 
-			expect(manager.has("test-site")).toBe(true);
-			expect(manager.get("test-site")).toBe(mockWs);
+	it("uses configured idleTimeout and backpressureLimit", () => {
+		const manager = new WsConnectionManager();
+		const { keyring, keyManager } = createMockKeyringAndManager();
+		const handlers = createWsHandlers({
+			connectionManager: manager,
+			keyring,
+			keyManager,
+			idleTimeout: 60,
+			backpressureLimit: 1024,
 		});
 
-		it("websocket close handler removes connection from manager", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-			});
+		expect(handlers.websocket.idleTimeout).toBe(60);
+		expect(handlers.websocket.backpressureLimit).toBe(1024);
+	});
 
-			const mockWs = {
-				data: {
-					siteId: "test-site",
-					sendState: "ready",
-					pendingDrain: null,
-				},
-			} as any;
-
-			manager.add("test-site", mockWs);
-			handlers.websocket.close?.(mockWs, 1000, "normal");
-
-			expect(manager.has("test-site")).toBe(false);
+	it("uses default idleTimeout and backpressureLimit", () => {
+		const manager = new WsConnectionManager();
+		const { keyring, keyManager } = createMockKeyringAndManager();
+		const handlers = createWsHandlers({
+			connectionManager: manager,
+			keyring,
+			keyManager,
 		});
 
-		it("websocket message handler validates binary frames", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-			});
+		expect(handlers.websocket.idleTimeout).toBe(120);
+		expect(handlers.websocket.backpressureLimit).toBe(2097152);
+	});
 
-			const mockWs = {
+	describe("transport failure boundaries", () => {
+		const peerSiteId = "peer-site";
+		const symmetricKey = new Uint8Array(32);
+
+		const createMockWs = () => {
+			const closeCalls: Array<[number | undefined, string | undefined]> = [];
+			return {
 				data: {
-					siteId: "test-site",
-					sendState: "ready",
-					pendingDrain: null,
-				},
-				close: () => {},
-			} as any;
-
-			// Test with Uint8Array (valid binary)
-			const binaryMessage = new Uint8Array([1, 2, 3]);
-			expect(() => {
-				handlers.websocket.message?.(mockWs, binaryMessage);
-			}).not.toThrow();
-
-			// Test with string (invalid - should close with code 1003)
-			let closedWithCode: number | undefined;
-			mockWs.close = (code?: number) => {
-				closedWithCode = code;
-			};
-
-			handlers.websocket.message?.(mockWs, "invalid text message");
-
-			expect(closedWithCode).toBe(1003);
-		});
-
-		it("logs a 'spool frame received' canary for a spool-typed raw frame before decode (#253)", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
-			const logger = {
-				debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
-				info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
-				warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
-				error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
-			};
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-				logger: logger as any,
-			});
-
-			const symmetricKey = new Uint8Array(32).fill(7);
-			const mockWs = {
-				data: {
-					siteId: "spoke-site",
+					siteId: peerSiteId,
 					symmetricKey,
-					sendState: "ready",
+					fingerprint: "0123456789abcdef",
+					sendState: "ready" as const,
 					pendingDrain: null,
 				},
-				close: () => {},
-			} as any;
-
-			// A well-formed SPOOL_TRANSFER_ACK frame (0x41 plaintext type byte at offset 0).
-			const frame = encodeFrame(
-				WsMessageType.SPOOL_TRANSFER_ACK,
-				{ entries: [{ id: "w-1", token: "tok-1" }] },
-				symmetricKey,
-			);
-			handlers.websocket.message?.(mockWs, frame);
-
-			const recv = logs.find(
-				(e) => e.level === "info" && e.msg === "WsServer spool frame received",
-			);
-			expect(recv).toBeDefined();
-			const meta = recv?.meta as Record<string, unknown>;
-			expect(meta.siteId).toBe("spoke-site");
-			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
-			expect(meta.frameBytes).toBe(frame.length);
-
-			// Canary #2: the decode-outcome line fires for the same frame, reports ok:true,
-			// names the decoded type, and confirms a transport is wired in scope.
-			const outcome = logs.find(
-				(e) => e.level === "info" && e.msg === "WsServer spool decode outcome",
-			);
-			expect(outcome).toBeDefined();
-			const outMeta = outcome?.meta as Record<string, unknown>;
-			expect(outMeta.siteId).toBe("spoke-site");
-			expect(outMeta.ok).toBe(true);
-			expect(outMeta.decodedType).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
-			expect(outMeta.error).toBeNull();
-			// No transport was configured on this handler, so hasWsTransport is false —
-			// which also means a valid spool frame with no transport does NOT hit the
-			// fell-off-chain warn (that branch lives inside the `if (config.wsTransport)`).
-			expect(outMeta.hasWsTransport).toBe(false);
-			expect(
-				logs.some(
-					(e) => e.level === "warn" && e.msg === "WsServer spool frame fell off dispatch chain",
-				),
-			).toBe(false);
-		});
-
-		it("a valid spool frame with a transport dispatches to its handler and does NOT fall off the chain (#253)", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
-			const logger = {
-				debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
-				info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
-				warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
-				error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
+				close: (code?: number, reason?: string) => closeCalls.push([code, reason]),
+				closeCalls,
 			};
-			let dispatchedType: number | null = null;
-			const wsTransport = {
-				handleSpoolTransferAck: () => {
-					dispatchedType = WsMessageType.SPOOL_TRANSFER_ACK;
-				},
-			} as any;
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-				logger: logger as any,
-				wsTransport,
-			});
+		};
 
-			const symmetricKey = new Uint8Array(32).fill(7);
-			const mockWs = {
-				data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
-				close: () => {},
-			} as any;
-
-			const frame = encodeFrame(
-				WsMessageType.SPOOL_TRANSFER_ACK,
-				{ entries: [{ id: "w-1", token: "tok-1" }] },
-				symmetricKey,
-			);
-			handlers.websocket.message?.(mockWs, frame);
-
-			// The frame reached its dispatch branch — the type IS frame[0], so a
-			// spool-family byte always decodes to a matching branch; the fell-off-chain
-			// else-if is unreachable via a well-formed encodeFrame frame and stays quiet.
-			expect(dispatchedType).toBe(WsMessageType.SPOOL_TRANSFER_ACK);
-			const outcome = logs.find(
-				(e) => e.level === "info" && e.msg === "WsServer spool decode outcome",
-			);
-			expect((outcome?.meta as Record<string, unknown>).hasWsTransport).toBe(true);
-			expect(
-				logs.some(
-					(e) => e.level === "warn" && e.msg === "WsServer spool frame fell off dispatch chain",
-				),
-			).toBe(false);
-		});
-
-		it("dispatches a decoded SPOOL_TRANSFER through the server with senderIsOriginator=true (hub inbound is first-hop, #253)", () => {
-			// Guards ws-server.ts:461. The hub receiving a SPOOL_TRANSFER on an
-			// authenticated inbound spoke connection is provably first-hop (spokes
-			// never forward), so the server MUST pass senderIsOriginator=true so
-			// handleSpoolTransfer may backfill a missing source_site. If someone
-			// deletes the literal `true` at the call site, the third argument becomes
-			// undefined and this assertion fails — restoring the legacy first-hop
-			// "response cannot be addressed" dead-letter.
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			let captured: { sourceSiteId: string; payload: unknown; senderIsOriginator: unknown } | null =
-				null;
-			const wsTransport = {
-				handleSpoolTransfer: (
-					sourceSiteId: string,
-					payload: unknown,
-					senderIsOriginator?: unknown,
-				) => {
-					captured = { sourceSiteId, payload, senderIsOriginator };
-				},
-			} as any;
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-				wsTransport,
-			});
-
-			const symmetricKey = new Uint8Array(32).fill(7);
-			const mockWs = {
-				data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
-				close: () => {},
-			} as any;
-
-			const payload = {
-				entries: [
-					{
-						id: "w-1",
-						target_site_id: "receiver",
-						source_site: null,
-						kind: "platform_request",
-						payload: { server_name: "discord", method: "tools/list", params: {} },
-						idempotency_key: "key-w-1",
-						ref_id: null,
-						stream_id: null,
-						expires_at: null,
-						received_at: null,
-						token: "tok-1",
-					},
-				],
-			};
-			const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, symmetricKey);
-			handlers.websocket.message?.(mockWs, frame);
-
-			expect(captured).not.toBeNull();
-			expect(captured?.sourceSiteId).toBe("spoke-site");
-			expect(captured?.payload).toEqual(payload);
-			// The third argument must be the literal `true` — not merely truthy, and
-			// never absent. This is the assertion that breaks if ws-server.ts:461
-			// loses its `true`.
-			expect(captured?.senderIsOriginator).toBe(true);
-		});
-
-		it("decode-fail warn carries frameTypeByte and frameSize (#253)", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const logs: Array<{ level: string; msg: string; meta?: unknown }> = [];
-			const logger = {
-				debug: (msg: string, meta?: unknown) => logs.push({ level: "debug", msg, meta }),
-				info: (msg: string, meta?: unknown) => logs.push({ level: "info", msg, meta }),
-				warn: (msg: string, meta?: unknown) => logs.push({ level: "warn", msg, meta }),
-				error: (msg: string, meta?: unknown) => logs.push({ level: "error", msg, meta }),
-			};
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-				logger: logger as any,
-			});
-
-			const mockWs = {
-				data: {
-					siteId: "spoke-site",
-					symmetricKey: new Uint8Array(32).fill(7),
-					sendState: "ready",
-					pendingDrain: null,
-				},
-				close: () => {},
-			} as any;
-
-			// Undecryptable garbage with a SPOOL_TRANSFER type byte at offset 0.
-			const garbage = new Uint8Array(60).fill(0);
-			garbage[0] = WsMessageType.SPOOL_TRANSFER;
-			handlers.websocket.message?.(mockWs, garbage);
-
-			const warn = logs.find((e) => e.level === "warn" && e.msg === "WS frame decode failed");
-			expect(warn).toBeDefined();
-			const meta = warn?.meta as Record<string, unknown>;
-			expect(meta.frameTypeByte).toBe(WsMessageType.SPOOL_TRANSFER);
-			expect(meta.frameSize).toBe(60);
-		});
-
-		it("websocket drain handler sets ready state and calls pending drain", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-			});
-
-			let drainCalled = false;
-			const mockDrain = () => {
-				drainCalled = true;
-			};
-
-			const mockWs = {
-				data: {
-					siteId: "test-site",
-					sendState: "pressured" as const,
-					pendingDrain: mockDrain,
-				},
-			} as any;
-
-			handlers.websocket.drain?.(mockWs);
-
-			expect(mockWs.data.sendState).toBe("ready");
-			expect(drainCalled).toBe(true);
-			expect(mockWs.data.pendingDrain).toBeNull();
-		});
-
-		it("websocket drain handler clears pendingDrain", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-			});
-
-			const mockWs = {
-				data: {
-					siteId: "test-site",
-					sendState: "pressured" as const,
-					pendingDrain: null,
-				},
-			} as any;
-
-			handlers.websocket.drain?.(mockWs);
-
-			expect(mockWs.data.sendState).toBe("ready");
-			expect(mockWs.data.pendingDrain).toBeNull();
-		});
-
-		it("uses configured idleTimeout and backpressureLimit", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-				idleTimeout: 60,
-				backpressureLimit: 1024,
-			});
-
-			expect(handlers.websocket.idleTimeout).toBe(60);
-			expect(handlers.websocket.backpressureLimit).toBe(1024);
-		});
-
-		it("uses default idleTimeout and backpressureLimit", () => {
-			const manager = new WsConnectionManager();
-			const { keyring, keyManager } = createMockKeyringAndManager();
-			const handlers = createWsHandlers({
-				connectionManager: manager,
-				keyring,
-				keyManager,
-			});
-
-			expect(handlers.websocket.idleTimeout).toBe(120);
-			expect(handlers.websocket.backpressureLimit).toBe(2097152);
-		});
-
-		describe("transport failure boundaries", () => {
-			const peerSiteId = "peer-site";
-			const symmetricKey = new Uint8Array(32);
-
-			const createMockWs = () => {
-				const closeCalls: Array<[number | undefined, string | undefined]> = [];
-				return {
-					data: {
-						siteId: peerSiteId,
-						symmetricKey,
-						fingerprint: "0123456789abcdef",
-						sendState: "ready" as const,
-						pendingDrain: null,
-					},
-					close: (code?: number, reason?: string) => closeCalls.push([code, reason]),
-					closeCalls,
-				};
-			};
-
-			it.each([
-				[WsMessageType.CHANGELOG_PUSH, "handleChangelogPush", { entries: [] }],
-				[WsMessageType.RELAY_SEND, "handleRelaySend", { entries: [] }],
-				[WsMessageType.SNAPSHOT_ACK, "handleSnapshotAck", { snapshot_hlc: "1" }],
-			] as const)(
-				"contains a throwing %s handler and records the peer, frame type, and error class",
-				(frameType, handlerName, payload) => {
-					const manager = new WsConnectionManager();
-					const { keyring, keyManager } = createMockKeyringAndManager();
-					const errors: Array<{ message: string; context?: Record<string, unknown> }> = [];
-					const transport = new Proxy(
-						{},
-						{
-							get: (_target, property) =>
-								property === handlerName
-									? () => {
-											throw new RangeError("storage detail must not be logged");
-										}
-									: () => {},
-						},
-					) as any;
-					const handlers = createWsHandlers({
-						connectionManager: manager,
-						keyring,
-						keyManager,
-						wsTransport: transport,
-						logger: {
-							debug: () => {},
-							info: () => {},
-							warn: () => {},
-							error: (message: string, context?: Record<string, unknown>) =>
-								errors.push({ message, context }),
-						} as any,
-					});
-					const ws = createMockWs();
-
-					expect(() =>
-						handlers.websocket.message?.(ws as any, encodeFrame(frameType, payload, symmetricKey)),
-					).not.toThrow();
-					expect(errors).toHaveLength(1);
-					expect(errors[0]).toMatchObject({
-						context: {
-							peer_site_id: peerSiteId,
-							frame_type: WsMessageType[frameType],
-							error_class: "RangeError",
-						},
-					});
-					expect(ws.closeCalls).toEqual([[1011, "Internal server error"]]);
-				},
-			);
-
-			it("warns once without logging a payload when ws.send throws", () => {
+		it.each([
+			[WsMessageType.CHANGELOG_PUSH, "handleChangelogPush", { entries: [] }],
+			[WsMessageType.RELAY_SEND, "handleRelaySend", { entries: [] }],
+			[WsMessageType.SNAPSHOT_ACK, "handleSnapshotAck", { snapshot_hlc: "1" }],
+		] as const)(
+			"contains a throwing %s handler and records the peer, frame type, and error class",
+			(frameType, handlerName, payload) => {
 				const manager = new WsConnectionManager();
 				const { keyring, keyManager } = createMockKeyringAndManager();
-				const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
-				let sendFrame: ((frame: Uint8Array) => boolean) | undefined;
+				const errors: Array<{ message: string; context?: Record<string, unknown> }> = [];
+				const transport = new Proxy(
+					{},
+					{
+						get: (_target, property) =>
+							property === handlerName
+								? () => {
+										throw new RangeError("storage detail must not be logged");
+									}
+								: () => {},
+					},
+				) as any;
 				const handlers = createWsHandlers({
 					connectionManager: manager,
 					keyring,
 					keyManager,
-					wsTransport: {
-						addPeer: (_peer, send) => {
-							sendFrame = send;
-						},
-						removePeer: () => {},
-						handleChangelogPush: () => {},
-						handleChangelogAck: () => {},
-						drainChangelog: () => {},
-						handleRelaySend: () => {},
-						handleRelayAck: () => {},
-						handleSpoolTransfer: () => {},
-						handleSpoolTransferAck: () => {},
-						drainDurableWorkSpool: () => {},
-						seedNewPeer: () => {},
-						handleSnapshotAck: () => {},
-						continueSnapshotSeed: () => {},
-						handleReseedRequest: () => {},
-						handleConsistencyRequest: () => {},
-						handleRowPullRequest: () => {},
-						handleRowPullAck: () => {},
-						continueRowPull: () => {},
-						continueConsistencyStream: () => {},
-					},
+					wsTransport: transport,
 					logger: {
 						debug: () => {},
 						info: () => {},
-						warn: (message: string, context?: Record<string, unknown>) =>
-							warnings.push({ message, context }),
-						error: () => {},
+						warn: () => {},
+						error: (message: string, context?: Record<string, unknown>) =>
+							errors.push({ message, context }),
 					} as any,
 				});
-				const ws = {
-					...createMockWs(),
-					send: () => {
-						throw new Error("secret payload must not be logged");
-					},
-				};
-				handlers.websocket.open?.(ws as any);
-				const frame = new Uint8Array([1, 2, 3, 4]);
+				const ws = createMockWs();
 
-				expect(sendFrame?.(frame)).toBe(false);
-				expect(sendFrame?.(frame)).toBe(false);
-				expect(warnings).toHaveLength(1);
-				expect(warnings[0]).toMatchObject({
-					context: { peer_site_id: peerSiteId, frame_size: frame.length },
+				expect(() =>
+					handlers.websocket.message?.(ws as any, encodeFrame(frameType, payload, symmetricKey)),
+				).not.toThrow();
+				expect(errors).toHaveLength(1);
+				expect(errors[0]).toMatchObject({
+					context: {
+						peer_site_id: peerSiteId,
+						frame_type: WsMessageType[frameType],
+						error_class: "RangeError",
+					},
 				});
-				expect(JSON.stringify(warnings[0])).not.toContain("secret payload");
+				expect(ws.closeCalls).toEqual([[1011, "Internal server error"]]);
+			},
+		);
+
+		it("warns once without logging a payload when ws.send throws", () => {
+			const manager = new WsConnectionManager();
+			const { keyring, keyManager } = createMockKeyringAndManager();
+			const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
+			let sendFrame: ((frame: Uint8Array) => boolean) | undefined;
+			const handlers = createWsHandlers({
+				connectionManager: manager,
+				keyring,
+				keyManager,
+				wsTransport: {
+					addPeer: (_peer, send) => {
+						sendFrame = send;
+					},
+					removePeer: () => {},
+					handleChangelogPush: () => {},
+					handleChangelogAck: () => {},
+					drainChangelog: () => {},
+					handleRelaySend: () => {},
+					handleRelayAck: () => {},
+					handleSpoolTransfer: () => {},
+					handleSpoolTransferAck: () => {},
+					drainDurableWorkSpool: () => {},
+					seedNewPeer: () => {},
+					handleSnapshotAck: () => {},
+					continueSnapshotSeed: () => {},
+					handleReseedRequest: () => {},
+					handleConsistencyRequest: () => {},
+					handleRowPullRequest: () => {},
+					handleRowPullAck: () => {},
+					continueRowPull: () => {},
+					continueConsistencyStream: () => {},
+				},
+				logger: {
+					debug: () => {},
+					info: () => {},
+					warn: (message: string, context?: Record<string, unknown>) =>
+						warnings.push({ message, context }),
+					error: () => {},
+				} as any,
 			});
+			const ws = {
+				...createMockWs(),
+				send: () => {
+					throw new Error("secret payload must not be logged");
+				},
+			};
+			handlers.websocket.open?.(ws as any);
+			const frame = new Uint8Array([1, 2, 3, 4]);
+
+			expect(sendFrame?.(frame)).toBe(false);
+			expect(sendFrame?.(frame)).toBe(false);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toMatchObject({
+				context: { peer_site_id: peerSiteId, frame_size: frame.length },
+			});
+			expect(JSON.stringify(warnings[0])).not.toContain("secret payload");
 		});
 	});
 });

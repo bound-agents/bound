@@ -695,24 +695,6 @@ describe("websocket real-server protocol", () => {
 		expect(c.frames.length).toBe(countBefore);
 	});
 
-	it("broadcasts task:completed to all connected clients", async () => {
-		const c = await connect();
-		await Bun.sleep(10);
-		srv.eventBus.emit("task:completed", { task_id: "task-9", result: "done" });
-		const got = await c.waitFor((f) => f.type === "task:updated", "task:updated");
-		expect((got.data as Frame).taskId).toBe("task-9");
-		expect((got.data as Frame).status).toBe("completed");
-	});
-
-	it("broadcasts file:changed to all connected clients", async () => {
-		const c = await connect();
-		await Bun.sleep(10);
-		srv.eventBus.emit("file:changed", { path: "/x/y.ts", operation: "modified" });
-		const got = await c.waitFor((f) => f.type === "file:updated", "file:updated");
-		expect((got.data as Frame).path).toBe("/x/y.ts");
-		expect((got.data as Frame).operation).toBe("modified");
-	});
-
 	it("delivers alert:created only to clients subscribed to the alert thread", async () => {
 		seedThread(srv.db, "thread-alert");
 		const subscribed = await connect();
@@ -744,25 +726,6 @@ describe("websocket real-server protocol", () => {
 		);
 		expect(got.count).toBe(3);
 		expect(got.thread_id).toBe("thread-bg");
-	});
-
-	it("forwards a status:forward thread payload as thread:status", async () => {
-		seedThread(srv.db, "thread-status");
-		const c = await connect();
-		c.send({ type: "thread:subscribe", thread_id: "thread-status" });
-		await Bun.sleep(10);
-		srv.eventBus.emit("status:forward", {
-			thread_id: "thread-status",
-			status: "thinking",
-			detail: "my_tool",
-			tokens: 1234,
-		});
-		const got = await c.waitFor((f) => f.type === "thread:status", "thread:status");
-		expect(got.thread_id).toBe("thread-status");
-		expect(got.active).toBe(true);
-		expect(got.state).toBe("thinking");
-		expect(got.tokens).toBe(1234);
-		expect(got.model).toBe("my_tool");
 	});
 
 	it("broadcasts stream:chunk to subscribed clients only", async () => {

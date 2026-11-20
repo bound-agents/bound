@@ -373,52 +373,6 @@ Content here.`;
 			expect(result).toMatch(/name/i);
 		});
 	});
-
-	describe("retire action (removed)", () => {
-		it("rejects the retire action — retire no longer exists", async () => {
-			// Setup: an active skill that, under the old design, could be retired.
-			const now = new Date().toISOString();
-			const skillName = "retiring-skill";
-			insertRow(
-				db,
-				"skills",
-				{
-					id: "skill-retire",
-					name: skillName,
-					description: "To retire",
-					skill_root: `/home/user/skills/${skillName}`,
-					content_hash: "abc",
-					allowed_tools: null,
-					compatibility: null,
-					metadata_json: "{}",
-					activated_at: now,
-					created_by_thread: null,
-					activation_count: 1,
-					last_activated_at: now,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-
-			const tool = createSkillTool(toolContext);
-			const result = await getExecute(tool)({
-				action: "retire",
-				name: skillName,
-			});
-
-			// The action is rejected — the enum no longer accepts it.
-			expect(typeof result).toBe("string");
-			expect(result).toMatch(/Error/i);
-
-			// And the skill is untouched: still present, not removed.
-			const skill = db.prepare("SELECT deleted FROM skills WHERE name = ?").get(skillName) as {
-				deleted: number;
-			};
-			expect(skill.deleted).toBe(0);
-		});
-	});
-
 	describe("action validation", () => {
 		it("should reject invalid action and list valid ones (AC3.5)", async () => {
 			const tool = createSkillTool(toolContext);
@@ -432,8 +386,6 @@ Content here.`;
 			expect(result).toMatch(/list/i);
 			expect(result).toMatch(/read/i);
 			expect(result).toMatch(/deactivate/i);
-			// retire is no longer a valid action and must not appear in the list.
-			expect(result).not.toMatch(/retire/i);
 		});
 	});
 

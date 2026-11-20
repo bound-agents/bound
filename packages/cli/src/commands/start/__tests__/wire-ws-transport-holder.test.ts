@@ -56,50 +56,6 @@ function makeSpyTransport() {
 }
 
 describe("wireWsTransportHolder", () => {
-	it("forwards handleSpoolTransfer to the real instance (the #253 wedge)", () => {
-		const holder = createWsTransportHolderStubs();
-		const { transport, calls } = makeSpyTransport();
-
-		wireWsTransportHolder(holder, transport);
-		holder.handleSpoolTransfer("hub-site", { entries: [] });
-
-		expect(calls).toEqual([
-			{
-				method: "handleSpoolTransfer",
-				args: ["hub-site", { entries: [] }],
-				boundToInstance: true,
-			},
-		]);
-	});
-
-	it("forwards handleSpoolTransferAck to the real instance", () => {
-		const holder = createWsTransportHolderStubs();
-		const { transport, calls } = makeSpyTransport();
-
-		wireWsTransportHolder(holder, transport);
-		holder.handleSpoolTransferAck("hub-site", { acked: 1 });
-
-		expect(calls).toEqual([
-			{
-				method: "handleSpoolTransferAck",
-				args: ["hub-site", { acked: 1 }],
-				boundToInstance: true,
-			},
-		]);
-	});
-
-	it("forwards drainDurableWorkSpool to the real instance", () => {
-		const holder = createWsTransportHolderStubs();
-		const { transport, calls } = makeSpyTransport();
-
-		wireWsTransportHolder(holder, transport);
-		holder.drainDurableWorkSpool("peer-site");
-
-		expect(calls).toEqual([
-			{ method: "drainDurableWorkSpool", args: ["peer-site"], boundToInstance: true },
-		]);
-	});
-
 	it("forwards every declared holder method to a real bound method (no method left stubbed)", () => {
 		const holder = createWsTransportHolderStubs();
 		const { transport, calls } = makeSpyTransport();

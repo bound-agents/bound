@@ -28,27 +28,6 @@ describe("row state hash cache", () => {
 		db.close();
 	});
 
-	test("selects every table column on a cache miss", () => {
-		const db = createCoreTestDb();
-		db.run(
-			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m1', 'k', 'v', 'now', 'now')",
-		);
-		const queries: string[] = [];
-		const query = db.query.bind(db);
-		(db as unknown as { query: typeof db.query }).query = ((sql: string) => {
-			queries.push(sql);
-			return query(sql);
-		}) as typeof db.query;
-		getCachedRowStateHashes(db, "semantic_memory", ["m1"]);
-		expect(queries.some((sql) => sql.startsWith("SELECT * FROM semantic_memory"))).toBe(true);
-		expect(
-			(db.query("PRAGMA table_info(semantic_memory)").all() as Array<{ name: string }>).map(
-				(x) => x.name,
-			),
-		).toContain("last_accessed_at");
-		db.close();
-	});
-
 	test("matches independent fixed SHA-256 digest fixtures for representative values", () => {
 		const row = {
 			id: "m1",

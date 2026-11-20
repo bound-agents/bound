@@ -70,7 +70,7 @@ describe("MCPClient.connect transport validation", () => {
 	});
 });
 
-describe("MCPClient.disconnect / reconnect", () => {
+describe("MCPClient.disconnect", () => {
 	it("closes the SDK client and flips connected to false", async () => {
 		const client = makeClient("stdio", { command: "true" });
 		let closed = false;
@@ -98,22 +98,6 @@ describe("MCPClient.disconnect / reconnect", () => {
 		);
 		await client.disconnect();
 		expect(closed).toBe(false);
-	});
-
-	it("reconnect closes the existing SDK client (first half of the rebuild cycle)", async () => {
-		// reconnect() = disconnect() + fresh Client + connect(). We can only stub the
-		// CURRENT internal client, not the fresh one reconnect builds, so this asserts
-		// the disconnect contract deterministically; the fresh-connect half rides the
-		// connect() tests above against a separately stubbed client.
-		const client = makeClient("stdio", { command: "true" });
-		let closeCalls = 0;
-		patch(client, {
-			close: async () => {
-				closeCalls++;
-			},
-		});
-		await client.disconnect();
-		expect(closeCalls).toBe(1);
 	});
 });
 

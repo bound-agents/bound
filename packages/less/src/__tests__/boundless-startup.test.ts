@@ -102,20 +102,4 @@ describe("boundless startup", () => {
 			expect((client.getThread as any).mock.calls[0][0]).toBe("thread-123");
 		});
 	});
-
-	describe("configuration override", () => {
-		it("AC1.3: should override config URL when --url provided", () => {
-			const baseConfig = { url: "http://localhost:3001", model: null };
-			const overriddenConfig = { ...baseConfig, url: "http://localhost:3002" };
-			expect(overriddenConfig.url).toBe("http://localhost:3002");
-			expect(overriddenConfig.model).toBe(null);
-		});
-
-		it("should not persist override to config file", () => {
-			const baseConfig = { url: "http://localhost:3001", model: null };
-			const _overridden = { ...baseConfig, url: "http://localhost:3002" };
-			// The override should be in-memory only, not persisted
-			// This is validated by the caller (boundless.tsx) not writing to disk
-		});
-	});
 });

@@ -130,20 +130,6 @@ describe("CancelStateMachine", () => {
 		});
 	});
 
-	describe("resetTurn", () => {
-		it("clears canceled flag and turns off turnActive", () => {
-			stateMachine.turnActive = true;
-
-			// Simulate a cancellation
-			(stateMachine as any).canceledThisTurn = true;
-
-			stateMachine.resetTurn();
-
-			expect(stateMachine.turnActive).toBe(false);
-			expect((stateMachine as any).canceledThisTurn).toBe(false);
-		});
-	});
-
 	describe("onTransitionSettled", () => {
 		it("clears transitionInFlight flag", async () => {
 			stateMachine.transitionInFlight = true;
@@ -207,16 +193,6 @@ describe("CancelStateMachine", () => {
 
 			expect(deps.showHint).toHaveBeenCalledWith("Press Ctrl-C again to exit");
 			expect(deps.gracefulExit).not.toHaveBeenCalled();
-		});
-
-		it("updates lastCtrlCTime to the controlled clock after an expired window", async () => {
-			stateMachine.turnActive = true;
-
-			await stateMachine.onCtrlC();
-			now += 2_100;
-			await stateMachine.onCtrlC();
-
-			expect((stateMachine as any).lastCtrlCTime).toBe(12_100);
 		});
 	});
 

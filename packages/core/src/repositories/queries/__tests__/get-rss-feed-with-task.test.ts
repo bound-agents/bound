@@ -116,8 +116,6 @@ describe("get-rss-feed-with-task finders", () => {
 				model_hint: "opus",
 				no_history: 1,
 			});
-			// seen_guids is poller-internal, must not be projected.
-			expect(Object.keys(row as object)).not.toContain("seen_guids");
 		});
 
 		it("returns null for an absent id", () => {

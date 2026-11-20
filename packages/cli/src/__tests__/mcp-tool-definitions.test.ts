@@ -7,12 +7,6 @@ describe("buildMcpToolDefinitions", () => {
 		const defs = buildMcpToolDefinitions(serverNames);
 		expect(defs).toHaveLength(2);
 	});
-
-	it("ToolDefinition name matches server name (AC4.1)", () => {
-		const defs = buildMcpToolDefinitions(new Set(["github"]));
-		expect(defs[0].function.name).toBe("github");
-	});
-
 	it("schema has subcommand as required string (AC4.2)", () => {
 		const defs = buildMcpToolDefinitions(new Set(["github"]));
 		const params = defs[0].function.parameters as {
@@ -39,12 +33,5 @@ describe("buildMcpToolDefinitions", () => {
 	it("returns empty array when no servers connected (AC4.1 edge)", () => {
 		const defs = buildMcpToolDefinitions(new Set());
 		expect(defs).toHaveLength(0);
-	});
-
-	it("description hints at subcommand='help' usage (AC4.2)", () => {
-		const defs = buildMcpToolDefinitions(new Set(["github"]));
-		expect(defs[0].function.description).toContain("subcommand");
-		expect(defs[0].function.description).toContain("help");
-		expect(defs[0].function.description).toContain("github");
 	});
 });

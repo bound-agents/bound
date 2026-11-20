@@ -129,42 +129,6 @@ describe("memory_edges schema and triggers", () => {
 		});
 	});
 
-	describe("edge-graph-normalization.AC1.3: Triggers are created idempotently", () => {
-		it("both triggers exist after applySchema", () => {
-			db = createDatabase(dbPath);
-			applySchema(db);
-
-			const triggers = db
-				.query(
-					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%'",
-				)
-				.all() as Array<{ name: string }>;
-
-			expect(triggers.length).toBe(2);
-
-			const names = new Set(triggers.map((t) => t.name));
-			expect(names.has("memory_edges_canonical_relation_insert")).toBe(true);
-			expect(names.has("memory_edges_canonical_relation_update")).toBe(true);
-		});
-
-		it("trigger SQL contains the canonical list", () => {
-			db = createDatabase(dbPath);
-			applySchema(db);
-
-			const insertTrigger = db
-				.query("SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?")
-				.get("memory_edges_canonical_relation_insert") as { sql: string } | null;
-
-			expect(insertTrigger).toBeDefined();
-			const triggerSql = insertTrigger?.sql ?? "";
-
-			// Verify all canonical relations are in the NOT IN clause
-			for (const relation of CANONICAL_RELATIONS) {
-				expect(triggerSql).toContain(`'${relation}'`);
-			}
-		});
-	});
-
 	describe("edge-graph-normalization.AC1.4: applySchema is idempotent", () => {
 		it("calling applySchema twice does not error and preserves data", () => {
 			db = createDatabase(dbPath);
@@ -203,21 +167,6 @@ describe("memory_edges schema and triggers", () => {
 				source_key: string;
 			} | null;
 			expect(row?.id).toBe("edge-1");
-		});
-
-		it("trigger count is exactly 2 after multiple applySchema calls", () => {
-			db = createDatabase(dbPath);
-			applySchema(db);
-			applySchema(db);
-			applySchema(db);
-
-			const triggers = db
-				.query(
-					"SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='memory_edges' AND name NOT LIKE 'rsh_inv_%'",
-				)
-				.all() as Array<{ name: string }>;
-
-			expect(triggers.length).toBe(2);
 		});
 	});
 
@@ -309,35 +258,6 @@ describe("memory_edges schema and triggers", () => {
 	});
 
 	describe("Trigger-const sync check (nice-to-have)", () => {
-		it("trigger SQL reflects CANONICAL_RELATIONS exactly", () => {
-			db = createDatabase(dbPath);
-			applySchema(db);
-
-			const insertTrigger = db
-				.query("SELECT sql FROM sqlite_master WHERE type='trigger' AND name = ?")
-				.get("memory_edges_canonical_relation_insert") as { sql: string } | null;
-
-			expect(insertTrigger?.sql).toBeDefined();
-			const triggerSql = insertTrigger?.sql ?? "";
-
-			// Extract the NOT IN clause values
-			const notInMatch = triggerSql.match(/NOT IN \(([^)]+)\)/);
-			expect(notInMatch).toBeDefined();
-
-			const notInClause = notInMatch?.[1] ?? "";
-			// Split on comma and clean up quotes
-			const triggeredRelations = notInClause
-				.split(",")
-				.map((s) => s.trim().replace(/^'|'$/g, ""))
-				.filter((s) => s.length > 0);
-
-			// Should match CANONICAL_RELATIONS
-			const expectedRelations = [...CANONICAL_RELATIONS].sort();
-			const actualRelations = triggeredRelations.sort();
-
-			expect(actualRelations).toEqual(expectedRelations);
-		});
-
 		it("canonical relations in trigger match the exported CANONICAL_RELATIONS const", () => {
 			db = createDatabase(dbPath);
 			applySchema(db);

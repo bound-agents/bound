@@ -6,14 +6,7 @@ import {
 	PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
 import { BasicTracerProvider, InMemorySpanExporter } from "@opentelemetry/sdk-trace-base";
-import {
-	type TelemetryOptions,
-	counter,
-	histogram,
-	initTelemetry,
-	meter,
-	shutdownTelemetry,
-} from "../telemetry.js";
+import { counter, histogram, initTelemetry, shutdownTelemetry } from "../telemetry.js";
 
 const ENV_KEYS = [
 	"OTEL_ENABLED",
@@ -37,19 +30,6 @@ function metricReader(exporter: InMemoryMetricExporter): PeriodicExportingMetric
 }
 
 describe("shared telemetry bootstrap", () => {
-	it("exports the documented options API and metric helpers", () => {
-		const options: TelemetryOptions = {
-			enabled: true,
-			traceExporter: new InMemorySpanExporter(),
-			metricReader: metricReader(new InMemoryMetricExporter()),
-			resourceAttributes: { "service.version": "1" },
-		};
-		expect(options.enabled).toBe(true);
-		expect(typeof meter).toBe("function");
-		expect(typeof counter).toBe("function");
-		expect(typeof histogram).toBe("function");
-	});
-
 	it.each([undefined, "", "false", "0", "TRUE", "yes"])(
 		"enables from OTEL_ENABLED only for explicit true/1: %s",
 		(value) => {
@@ -148,15 +128,6 @@ describe("shared telemetry bootstrap", () => {
 			"test.requests",
 			"test.duration",
 		]);
-	});
-
-	it("returns stable meter and instrument instances for ergonomic shared helpers", () => {
-		expect(meter("bound.test")).toBe(meter("bound.test"));
-		expect(counter("bound.test.jobs")).toBe(counter("bound.test.jobs"));
-		expect(histogram("bound.test.latency", { unit: "ms" })).toBe(
-			histogram("bound.test.latency", { unit: "ms" }),
-		);
-		expect(metrics.getMeter("bound.test")).toBeDefined();
 	});
 
 	it("keeps initialization and shutdown idempotent", async () => {

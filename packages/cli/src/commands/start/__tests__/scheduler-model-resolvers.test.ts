@@ -287,24 +287,6 @@ describe("initScheduler — modelRouter-gated resolver closures", () => {
 		expect(row?.title).toBe("A concise generated title");
 	});
 
-	it("returns null resolvers when no model router is supplied", () => {
-		// The null-router boot path (the sibling platform-request test's shape):
-		// every resolver closure is undefined, so the exposed resolvers object
-		// carries only undefined fields — still an object, never the router arms.
-		const result = initScheduler(
-			appContext,
-			makeAgentLoopFactory(),
-			null,
-			{ bash: undefined },
-			null,
-		);
-		schedulerHandle = result.schedulerHandle;
-		expect(result.resolvers?.modelValidator).toBeUndefined();
-		expect(result.resolvers?.modelDefaultResolver).toBeUndefined();
-		expect(result.resolvers?.modelTierResolver).toBeUndefined();
-		expect(result.resolvers?.generateTitle).toBeUndefined();
-	});
-
 	it("swallows a scheduler-start failure and still returns (203-205)", () => {
 		// Poison the eventBus so registerConnectorEventDelivery (called after
 		// scheduler.start inside the guarded try) throws. initScheduler must
@@ -396,23 +378,6 @@ describe("initScheduler — platform resolver closures and scheduler-start catch
 		// undefined (the arm still executed against the real registry).
 		const instructions = result.resolvers?.platformInstructionsResolver?.(threadId);
 		expect(instructions).toBeUndefined();
-	});
-
-	it("leaves platform resolvers undefined when no registry is supplied", () => {
-		// The null-registry boot path (the model-resolver tests' shape): both platform
-		// closures are undefined on the exposed resolvers object, mirroring the model
-		// closures' null-router behavior.
-		const result = initScheduler(
-			appContext,
-			makeAgentLoopFactory(),
-			null,
-			{ bash: undefined },
-			null,
-		);
-		schedulerHandle = result.schedulerHandle;
-		expect(result.connectorTool).toBeNull();
-		expect(result.resolvers?.platformToolResolver).toBeUndefined();
-		expect(result.resolvers?.platformInstructionsResolver).toBeUndefined();
 	});
 
 	it("swallows a scheduler-start failure via connector:event registration throw (225-227)", () => {

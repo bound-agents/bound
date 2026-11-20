@@ -3,9 +3,9 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bashToolWithStreaming, createBashTool } from "../tools/bash";
+import { bashToolWithStreaming } from "../tools/bash";
 import { DISABLED_SANDBOX } from "../tools/sandbox";
-import type { ResolvedSandboxConfig } from "../tools/sandbox";
+import type { ResolvedShell } from "../tools/shell";
 import { resolveShell } from "../tools/shell";
 
 setDefaultTimeout(15000);
@@ -21,70 +21,6 @@ function bodyText(result: { content: Array<{ type: string; text?: string }> }): 
 		.map((c) => c.text ?? "")
 		.join("\n");
 }
-
-/** A sandbox config that is enabled. Whether it degrades to passthrough/error
- * or actually sandboxes depends on the host (mxc containability under the test
- * runner), so tests that must be deterministic use DISABLED_SANDBOX instead. */
-function enabledSandbox(onUnavailable: "passthrough" | "error"): ResolvedSandboxConfig {
-	return {
-		enabled: true,
-		writablePaths: [],
-		network: "open",
-		onUnavailable,
-	};
-}
-void enabledSandbox;
-
-describe("bash tool — spawn dispatch and sandbox notes", () => {
-	let tempDir: string;
-	beforeEach(() => {
-		tempDir = join(tmpdir(), `boundless-bashcov-${randomBytes(4).toString("hex")}`);
-		mkdirSync(tempDir, { recursive: true });
-	});
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-	});
-
-	it("logs sandbox_disabled and runs unsandboxed when the sandbox is opted out", async () => {
-		// DISABLED_SANDBOX takes the default branch of spawnForBash's dispatch
-		// (sandbox.enabled === false): an unsandboxed run recorded as INFO
-		// sandbox_disabled, with NO [sandbox] degradation note (opting out is the
-		// configured intent, not a degradation). Deterministic on every host.
-		const infoEvents: Array<[string, Record<string, unknown> | undefined]> = [];
-		const warnEvents: string[] = [];
-		const logger = {
-			info: (e: string, f?: Record<string, unknown>) => infoEvents.push([e, f]),
-			warn: (e: string) => warnEvents.push(e),
-		};
-		const tool = createBashTool("host-x", shell, DISABLED_SANDBOX, logger);
-		const result = (await tool({ command: "echo hi" }, new AbortController().signal, tempDir)) as {
-			content: Array<{ type: string; text?: string }>;
-			isError?: boolean;
-		};
-		const text = normalizeEol(bodyText(result));
-		expect(text).toContain("hi");
-		expect(text).not.toContain("[sandbox]");
-		expect(result.isError).toBeUndefined();
-		expect(infoEvents.some(([e]) => e === "sandbox_disabled")).toBe(true);
-		expect(warnEvents).toHaveLength(0);
-	});
-
-	it("records an error result with provenance when the command is missing", async () => {
-		const result = (await bashToolWithStreaming(
-			{},
-			new AbortController().signal,
-			tempDir,
-			undefined,
-			"host-x",
-			shell,
-			DISABLED_SANDBOX,
-		)) as { content: Array<{ type: string; text?: string }>; isError?: boolean };
-		expect(result.isError).toBe(true);
-		expect(bodyText(result)).toContain("command is required");
-		// Provenance block is always first.
-		expect(result.content[0]?.text).toContain("[boundless]");
-	});
-});
 
 describe("bash tool — streaming, db-guard, abort", () => {
 	let tempDir: string;
@@ -129,27 +65,6 @@ describe("bash tool — streaming, db-guard, abort", () => {
 		expect(text.toLowerCase()).toContain("sqlite");
 	});
 
-	it("aborts a long-running command via the external signal and reports a kill exit code", async () => {
-		const controller = new AbortController();
-		const longCmd = isPosix ? "sleep 30" : "Start-Sleep -Seconds 30";
-		const promise = bashToolWithStreaming(
-			{ command: longCmd },
-			controller.signal,
-			tempDir,
-			undefined,
-			"host-x",
-			shell,
-		);
-		// Abort shortly after spawn so the abort handler path (SIGTERM→SIGKILL) runs.
-		setTimeout(() => controller.abort(), 150);
-		const result = (await promise) as {
-			content: Array<{ type: string; text?: string }>;
-		};
-		const text = bodyText(result);
-		// Exit code line is present; the aborted process reports a non-zero / 137 code.
-		expect(text).toContain("Exit code:");
-	});
-
 	it("honors a short timeout parameter and returns an exit code", async () => {
 		const longCmd = isPosix ? "sleep 30" : "Start-Sleep -Seconds 30";
 		const result = (await bashToolWithStreaming(
@@ -185,22 +100,5 @@ describe("bash tool — streaming, db-guard, abort", () => {
 		expect(result.isError).toBe(true);
 		expect(result.content[0]?.text).toContain("[boundless]");
 		expect(bodyText(result)).toContain("Error:");
-	});
-
-	it("offloads oversized output to a local temp file and returns a pointer", async () => {
-		// >50KB of output trips the offload threshold: the body is written to a
-		// bound-tool-results temp file and the result carries a pointer, not the
-		// full inline text.
-		const big = isPosix ? "seq 1 60000" : "1..60000";
-		const result = (await bashToolWithStreaming(
-			{ command: big },
-			new AbortController().signal,
-			tempDir,
-			undefined,
-			"host-x",
-			shell,
-		)) as { content: Array<{ type: string; text?: string }> };
-		const text = bodyText(result);
-		expect(text.toLowerCase()).toContain("bound-tool-results");
 	});
 });

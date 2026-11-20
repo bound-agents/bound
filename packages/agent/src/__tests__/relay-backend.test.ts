@@ -107,7 +107,6 @@ describe("createRelayBackend", () => {
 		const eventBus = new TypedEventEmitter();
 		const remoteSite = "remote-spoke";
 		seedCapableHost(db, remoteSite, "remote-spoke.local");
-		seedCapableHost(db, remoteSite, "remote-spoke.local");
 
 		const backend = createRelayBackend(
 			{ db, eventBus, siteId: "local-spoke", logger: mockLogger },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
-import { defineToolSchema, parseToolInput, zodToToolParams } from "../tool-schema";
+import { defineToolSchema, parseToolInput } from "../tool-schema";
 
 // Mirrors the shape of the grouped native tools (memory/advisory): a required
 // `action` enum plus a pile of per-action-irrelevant optional params.
@@ -13,17 +13,6 @@ const sampleSchema = z.object({
 });
 
 describe("defineToolSchema", () => {
-	it("preserves the legacy function-definition shape exactly", () => {
-		const name = "sample";
-		const description = "Sample tool";
-		const legacyDefinition = {
-			type: "function" as const,
-			function: { name, description, parameters: zodToToolParams(sampleSchema) },
-		};
-
-		expect(defineToolSchema(name, description, sampleSchema).definition).toEqual(legacyDefinition);
-	});
-
 	it("treats wire null as absent for optional params", () => {
 		// The model-facing JSONSchema marks optional params as nullable (the AI
 		// SDK `withNullableType` transform), so the model passes null for the
@@ -53,13 +42,6 @@ describe("defineToolSchema", () => {
 			"sample",
 		);
 		expect(result.ok).toBe(true);
-	});
-
-	it("returns the legacy validation error for malformed input", () => {
-		const raw = { action: "store", weight: "not-a-number" };
-		expect(defineToolSchema("sample", "Sample tool", sampleSchema).safeParse(raw)).toEqual(
-			parseToolInput(sampleSchema, raw, "sample"),
-		);
 	});
 
 	it("still rejects a genuine type mismatch, without the misleading truncation suffix", () => {

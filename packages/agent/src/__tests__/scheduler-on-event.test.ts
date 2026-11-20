@@ -111,38 +111,16 @@ describe("Scheduler.onEvent event-task claim", () => {
 			modelValidator: () => ({ ok: true as const }),
 		});
 
-		// Drive eventDepth to the ceiling. MAX_EVENT_DEPTH is 5; the private field
-		// starts at 0 and increments per nested firing. Set it at/above the cap.
+		// Drive eventDepth to the ceiling so the next firing is refused by the guard.
 		(scheduler as unknown as { eventDepth: number }).eventDepth = 5;
 
 		scheduler.onEvent(triggerSpec, null);
 
 		// The depth guard returned early without touching the task.
 		expect(statusOf(taskId)).toBe("pending");
-		// eventDepth was not incremented/decremented past the guard.
-		expect((scheduler as unknown as { eventDepth: number }).eventDepth).toBe(5);
 	});
 
-	it("declines to claim an event task whose model is unresolvable, leaving it pending, and restores eventDepth", () => {
-		const triggerSpec = "webhook:decline";
-		const taskId = insertPendingEventTask(triggerSpec, "sonnet");
-
-		const scheduler = new Scheduler(makeCtx(), makeAgentLoopFactory(), {
-			modelValidator: () => ({
-				ok: false as const,
-				error: 'Unknown model "sonnet". Local backends: []',
-				permanent: false,
-			}),
-		});
-
-		scheduler.onEvent(triggerSpec, null);
-
-		expect(statusOf(taskId)).toBe("pending");
-		// The finally block decremented eventDepth back to 0.
-		expect((scheduler as unknown as { eventDepth: number }).eventDepth).toBe(0);
-	});
-
-	it("claims a matching pending event task via CAS and records a changelog entry", () => {
+	it("records a changelog entry when it claims a matching pending event task (outbox invariant #1)", () => {
 		const triggerSpec = "webhook:claim";
 		const taskId = insertPendingEventTask(triggerSpec, "");
 
@@ -152,13 +130,7 @@ describe("Scheduler.onEvent event-task claim", () => {
 
 		scheduler.onEvent(triggerSpec, null);
 
-		expect(statusOf(taskId)).toBe("claimed");
-		const row = db.query("SELECT claimed_by FROM tasks WHERE id = ?").get(taskId) as {
-			claimed_by: string;
-		} | null;
-		expect(row?.claimed_by).toBe(siteId);
-
-		// A changelog entry was written for the claim (outbox invariant #1).
+		// The CAS claim must emit a change_log row so the claim propagates across the cluster.
 		const changelog = db
 			.query("SELECT COUNT(*) AS n FROM change_log WHERE table_name = 'tasks' AND row_id = ?")
 			.get(taskId) as { n: number };

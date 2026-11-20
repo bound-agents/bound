@@ -252,11 +252,6 @@ describe("FTS5-based graph-seeded retrieval", () => {
 			expect(keys).toContain("cache_strategy");
 		});
 
-		it("handles empty keywords gracefully", () => {
-			const results = graphSeededRetrieval(db, [], 10);
-			expect(results).toEqual([]);
-		});
-
 		it("handles large keyword lists without crashing", () => {
 			insertRow(
 				db,

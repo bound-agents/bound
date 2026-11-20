@@ -46,12 +46,6 @@ describe("connector-handle CRUD", () => {
 		expect(row.deleted).toBe(0);
 	});
 
-	it("produces same ID regardless of event_args key order", () => {
-		const id1 = connectorHandleId("discord", "message.received", { a: 1, b: 2 });
-		const id2 = connectorHandleId("discord", "message.received", { b: 2, a: 1 });
-		expect(id1).toBe(id2);
-	});
-
 	it("resurrects a soft-deleted handle on re-create with the same identity tuple", () => {
 		const id1 = createConnectorHandle(db, siteId, {
 			serverName: "discord",

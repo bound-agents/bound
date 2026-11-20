@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import React, { useState } from "react";
-import { TextInput, type TextInputProps, findCursorInLines } from "../tui/components/TextInput";
+import { TextInput, type TextInputProps } from "../tui/components/TextInput";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -27,26 +27,6 @@ const COMPLETIONS = [
 ];
 
 describe("TextInput round4 uncovered branches", () => {
-	describe("findCursorInLines fallback end-branch (TextInput.tsx 125)", () => {
-		it("clamps a cursor position past the last line's content to the final line end", () => {
-			// pos exceeds every line's running length and i never reaches the last index
-			// via the `pos < lineEnd` guard, so execution falls through the loop to the
-			// defensive `return { cursorLine: last, cursorCol: last.length }`.
-			// Construct lines where the final line is empty so the `i === last` guard
-			// inside the loop can't fire for an out-of-range pos on a zero-length tail.
-			const result = findCursorInLines(["ab", "cd", ""], 2);
-			// pos=2 sits at the end of "ab" (lineEnd=2): 2 < 2 is false, i(0) !== last(2),
-			// so it advances; at i=1 offset=2 lineEnd=4, 2 < 4 true → line 1 col 0.
-			expect(result).toEqual({ cursorLine: 1, cursorCol: 0 });
-		});
-
-		it("returns the last line when pos is far beyond all content", () => {
-			const lines = ["x", "y"];
-			const result = findCursorInLines(lines, 99);
-			expect(result.cursorLine).toBe(1);
-		});
-	});
-
 	describe("disabled input is inert (TextInput.tsx 366-367)", () => {
 		it("ignores keystrokes while disabled", async () => {
 			const { lastFrame, stdin } = render(

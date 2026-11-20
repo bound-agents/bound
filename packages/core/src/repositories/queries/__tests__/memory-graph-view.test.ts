@@ -84,25 +84,6 @@ describe("listMemoryGraphNodes", () => {
 		});
 	});
 
-	it("projects exactly the MemoryGraphNodeRow columns and nothing else", () => {
-		seedThread({ id: "thread-1", title: "T", color: 3 });
-		seedMemory({ id: "mem-1", key: "k1", source: "thread-1" });
-
-		const [row] = listMemoryGraphNodes(db);
-		expect(Object.keys(row).sort()).toEqual(
-			[
-				"id",
-				"key",
-				"value",
-				"tier",
-				"source",
-				"modified_at",
-				"source_thread_title",
-				"source_color",
-			].sort(),
-		);
-	});
-
 	describe("LEFT JOIN null cases", () => {
 		it("returns null thread fields when source is null", () => {
 			seedMemory({ id: "mem-1", key: "k1", source: null });

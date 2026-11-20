@@ -44,7 +44,6 @@ export * from "./change-log";
 export * from "./host-meta";
 export * from "./sync-state";
 export * from "./durable-work";
-
 export * from "./queries/attached-session-hosts";
 export * from "./queries/client-sessions-with-host";
 export * from "./queries/cross-thread-summaries";
@@ -66,6 +65,5 @@ export * from "./queries/thread-user-display-name";
 export * from "./queries/threads-directory-listing";
 export * from "./queries/threads-needing-summary";
 export * from "./queries/thread-cost";
-export * from "./relay-outbox";
 export * from "./queries/webhook-response-by-id";
 export * from "./queries/interrupted-tool-use";

@@ -104,20 +104,6 @@ describe("DI Container", async () => {
 
 		await expect(bootstrapContainer(configDir, dbPath)).rejects.toThrow();
 	});
-
-	it("creates database with schema on bootstrap", async () => {
-		await bootstrapContainer(configDir, dbPath);
-
-		// Verify tables exist
-		const db = require("bun:sqlite").Database;
-		const testDb = new db(dbPath);
-		const tables = testDb
-			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-			.all() as Array<{ name: string }>;
-
-		expect(tables.length).toBe(34); // relay_outbox/relay_inbox retired at release N+1; + agents (#201) + local-only row_state_hashes cache + local_flags + mcp_auth_challenges (MCP OAuth slice 1) + local-only mcp_auth_waiters (MCP OAuth slice 3) + 1 FTS5 virtual + 5 FTS5 shadow
-		testDb.close();
-	});
 });
 
 describe("AppContext", async () => {
@@ -239,15 +225,5 @@ describe("AppContext", async () => {
 		});
 
 		expect(received).toBeDefined();
-	});
-
-	it("initializes logger service", async () => {
-		const ctx = await createAppContext(configDir, dbPath);
-
-		expect(ctx.logger).toBeDefined();
-		expect(typeof ctx.logger.info).toBe("function");
-		expect(typeof ctx.logger.warn).toBe("function");
-		expect(typeof ctx.logger.error).toBe("function");
-		expect(typeof ctx.logger.debug).toBe("function");
 	});
 });

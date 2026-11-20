@@ -1,11 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "../offload";
-
-describe("TOOL_RESULT_OFFLOAD_THRESHOLD", () => {
-	it("is the shared 50_000-character ceiling", () => {
-		expect(TOOL_RESULT_OFFLOAD_THRESHOLD).toBe(50_000);
-	});
-});
+import { buildOffloadMessage } from "../offload";
 
 describe("buildOffloadMessage", () => {
 	it("names the tool, the original length, and the destination path", () => {

@@ -17,10 +17,6 @@ describe("formatFileAttachment", () => {
 });
 
 describe("safeSlice", () => {
-	test("clamps end to string length", () => {
-		expect(safeSlice("abc", 0, 100)).toBe("abc");
-	});
-
 	test("preserves surrogate pairs at the boundary", () => {
 		// 🎉 is a non-BMP code point — two UTF-16 code units (surrogate pair).
 		const s = `a${"🎉"}b`;

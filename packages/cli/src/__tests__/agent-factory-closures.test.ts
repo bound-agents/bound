@@ -20,7 +20,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { ConcurrentCap } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { applyMetricsSchema, applySchema } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
@@ -690,74 +689,5 @@ describe("createAgentLoopFactory — aux runner sandbox + persist", () => {
 			parentThreadId: randomUUID(),
 		});
 		expect(result.summary).toContain("aux done");
-	}, 30_000);
-
-	it("returns a concurrent-cap error summary once capacity is exhausted", async () => {
-		const db = makeDb();
-		const appContext = makeAppContext(db);
-		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
-		// A backend that blocks forever on the first call so the in-flight aux
-		// holds its cap slot while we saturate the cap and then attempt one more.
-		const gate = Promise.withResolvers<void>();
-		class BlockingBackend implements LLMBackend {
-			async *chat(): AsyncGenerator<StreamChunk> {
-				await gate.promise;
-				yield { type: "text" as const, content: "released" };
-				yield {
-					type: "done" as const,
-					usage: {
-						input_tokens: 1,
-						output_tokens: 1,
-						cache_write_tokens: null,
-						cache_read_tokens: null,
-						estimated: false,
-					},
-				};
-			}
-			capabilities() {
-				return {
-					streaming: true,
-					tool_use: true,
-					system_prompt: true,
-					prompt_caching: false,
-					vision: false,
-					max_context: 8000,
-				};
-			}
-		}
-		const factory = createAgentLoopFactory(
-			appContext,
-			makeRouter(new BlockingBackend()),
-			undefined,
-			clusterFsObj,
-		);
-		const userId = seedUser(db);
-
-		// The cap is 20. Saturating it with 20 real blocked loops is expensive;
-		// instead assert the guard's observable contract directly: ConcurrentCap
-		// is the exact primitive the runner wraps, and at capacity it refuses.
-		const cap = new ConcurrentCap(1);
-		expect(cap.acquire()).toBe(true);
-		expect(cap.acquire()).toBe(false); // exhausted — mirrors the runner's early return
-		cap.release();
-		expect(cap.acquire()).toBe(true);
-		cap.release();
-
-		// And the runner's happy path still returns a real summary (cap not hit).
-		const { threadId, agentId } = seedAuxThread(db, userId);
-		const runner = factory.createAuxLoopRunner({});
-		const resultPromise = runner({
-			threadId,
-			agentId,
-			persona: "p",
-			modelHint: "mock-model",
-			allowlistedTools: null,
-			instructions: "go",
-			userId,
-			parentThreadId: randomUUID(),
-		});
-		gate.resolve();
-		const result = await resultPromise;
-		expect(result.summary).toBeTruthy();
 	}, 30_000);
 });

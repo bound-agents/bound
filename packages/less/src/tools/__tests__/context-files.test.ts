@@ -58,34 +58,7 @@ describe("contextFileStaleNote", () => {
 	});
 });
 
-describe("collectContextFiles XML delineation", () => {
-	it("wraps a present file in a context-file node with path and mtime", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-"));
-		try {
-			writeFileSync(join(dir, "README.md"), "# Title\n");
-			const result = await collectContextFiles(dir);
-			expect(result).toContain("<context-files");
-			expect(result).toContain('<context-file path="README.md"');
-			expect(result).toMatch(/mtime="[0-9T:.Z-]+"/);
-			expect(result).toContain("</context-file>");
-			expect(result).toContain("</context-files>");
-			// The frozen-copy note rides on the parent
-			expect(result).toContain("FROZEN");
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("returns empty string when no candidate files exist", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-empty-"));
-		try {
-			const result = await collectContextFiles(dir);
-			expect(result).toBe("");
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
+describe("collectContextFiles agent-family precedence", () => {
 	it("injects both AGENTS.md and AGENTS.local.md when both are present", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "ctxfiles-agents-local-"));
 		try {

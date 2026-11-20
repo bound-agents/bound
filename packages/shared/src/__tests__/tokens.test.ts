@@ -8,12 +8,6 @@ import {
 
 describe("tokens", () => {
 	describe("countTokens", () => {
-		it("AC1.1: returns positive integer for normal text", () => {
-			const count = countTokens("hello world");
-			expect(count).toBeGreaterThan(0);
-			expect(Number.isInteger(count)).toBe(true);
-		});
-
 		it("AC1.1: cl100k_base encodes 'hello world' as 2 tokens", () => {
 			expect(countTokens("hello world")).toBe(2);
 		});
@@ -121,13 +115,6 @@ describe("tokens", () => {
 			];
 			const expected = countTokens("hello") + countTokens(JSON.stringify(content[1]));
 			expect(countContentTokens(content)).toBe(expected);
-		});
-
-		it("AC1.4: lazy initialization works on first call", () => {
-			// Simply verify that calling countTokens works correctly
-			// (proves lazy init succeeded)
-			const result = countTokens("test");
-			expect(result).toBeGreaterThan(0);
 		});
 	});
 

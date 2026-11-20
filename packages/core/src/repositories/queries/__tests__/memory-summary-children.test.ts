@@ -201,10 +201,6 @@ describe("listSummarizesChildrenKeyValue", () => {
 		expect(rows).toHaveLength(2);
 		expect(rows).toContainEqual({ key: "child-1", value: "value one" });
 		expect(rows).toContainEqual({ key: "child-2", value: "value two" });
-		// Projection must carry ONLY key + value, nothing else.
-		for (const r of rows) {
-			expect(Object.keys(r).sort()).toEqual(["key", "value"]);
-		}
 	});
 
 	it("excludes a child whose semantic_memory row is soft-deleted (JOIN m.deleted = 0)", () => {

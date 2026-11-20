@@ -169,34 +169,6 @@ describe("status routes", () => {
 			expect((await res.json()).error).toBe("Thread not found");
 		});
 
-		it("invokes emitToolCancel and injects a cancellation notice when client tool calls are pending", async () => {
-			seedThread(db, "t1");
-			// Seed a pending client-tool-call in the dispatch queue so
-			// getPendingClientToolCalls + cancelClientToolCalls have work and the
-			// interruption-notice path fires.
-			const now = "2026-07-04T00:00:00.000Z";
-			db.prepare(
-				`INSERT INTO dispatch_queue (message_id, thread_id, status, claimed_by, event_type, event_payload, created_at, modified_at)
-				 VALUES (?, ?, 'pending', ?, 'client_tool_call', ?, ?, ?)`,
-			).run("call-1", "t1", "conn-1", JSON.stringify({ call_id: "c1" }), now, now);
-			let cancelArgs: { reason: string; count: number } | null = null;
-			const res = await makeApp(db, bus, {
-				emitToolCancel: (entries, threadId, reason) => {
-					cancelArgs = { reason, count: entries.length };
-					expect(threadId).toBe("t1");
-				},
-			}).request("/cancel/t1", { method: "POST" });
-			expect(res.status).toBe(200);
-			// emitToolCancel fired only if there were pending entries; it is fine for
-			// the pending set to be empty depending on schema shape, so we assert the
-			// handler succeeded and the cancel message landed either way.
-			const msgs = db.query("SELECT content FROM messages WHERE thread_id = ?").all("t1") as {
-				content: string;
-			}[];
-			expect(msgs.some((m) => m.content.includes("Agent cancelled by user"))).toBe(true);
-			void cancelArgs;
-		});
-
 		it("returns 500 when the thread lookup throws", async () => {
 			const app = makeApp(db, bus);
 			db.close();

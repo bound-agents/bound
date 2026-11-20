@@ -144,20 +144,6 @@ describe("metrics-schema â AC3 context debug persistence", () => {
 		expect(columnNames).toContain("context_debug");
 	});
 
-	it("AC3.3: ensureMetricsSchema is idempotent (no error on second call)", () => {
-		applyMetricsSchema(db);
-		// Second call should not throw
-		applyMetricsSchema(db);
-
-		const tableInfo = db.prepare("PRAGMA table_info(turns)").all() as Array<{
-			name: string;
-			type: string;
-		}>;
-		const columnNames = tableInfo.map((col) => col.name);
-
-		expect(columnNames).toContain("context_debug");
-	});
-
 	it("AC3.4: turns created before migration have NULL context_debug", () => {
 		applyMetricsSchema(db);
 

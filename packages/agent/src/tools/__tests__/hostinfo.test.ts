@@ -313,20 +313,4 @@ describe("hostinfo tool", () => {
 		expect(result).toMatch(/Host: this-hub \(local, hub\)/);
 		expect(result).not.toMatch(/Host: a-spoke \([^)]*hub/);
 	});
-
-	it("tool definition has correct shape", () => {
-		const toolCtx: ToolContext = {
-			db,
-			siteId,
-			eventBus: { emit: () => {} } as any,
-			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-		};
-
-		const tool = createHostinfoTool(toolCtx);
-
-		expect(tool.kind).toBe("builtin");
-		expect(tool.toolDefinition.function.name).toBe("hostinfo");
-		expect(tool.toolDefinition.function.description).toContain("host");
-		expect(typeof tool.execute).toBe("function");
-	});
 });

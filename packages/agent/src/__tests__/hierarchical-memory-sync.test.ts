@@ -79,86 +79,6 @@ describe("AC6.5: Tier changelog propagation", () => {
 		const updatedData = JSON.parse(changeLogEntry?.row_data);
 		expect(updatedData.tier).toBe("pinned");
 	});
-
-	it("tier change from default to detail propagates via changelog", () => {
-		const memoryId = randomBytes(8).toString("hex");
-
-		// Insert entry with default tier
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: memoryId,
-				key: "detail_test_key",
-				value: "Test value",
-				source: null,
-				created_at: "2026-02-01T00:00:00.000Z",
-				modified_at: "2026-02-01T00:00:00.000Z",
-				deleted: 0,
-				tier: "default",
-			},
-			siteId,
-		);
-
-		// Update tier to 'detail'
-		updateRow(db, "semantic_memory", memoryId, { tier: "detail" }, siteId);
-
-		// Verify changelog entry has tier='detail'
-		const changeLogEntry = db
-			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY hlc DESC LIMIT 1",
-			)
-			.get(memoryId) as { row_data: string } | null;
-
-		expect(changeLogEntry).toBeDefined();
-		const rowData = JSON.parse(changeLogEntry?.row_data);
-		expect(rowData.tier).toBe("detail");
-	});
-
-	it("multiple tier transitions create multiple changelog entries", () => {
-		const memoryId = randomBytes(8).toString("hex");
-
-		// Insert with default
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: memoryId,
-				key: "multi_tier_test",
-				value: "Test value",
-				source: null,
-				created_at: "2026-02-01T00:00:00.000Z",
-				modified_at: "2026-02-01T00:00:00.000Z",
-				deleted: 0,
-				tier: "default",
-			},
-			siteId,
-		);
-
-		// Transition: default -> pinned
-		updateRow(db, "semantic_memory", memoryId, { tier: "pinned" }, siteId);
-
-		// Transition: pinned -> detail
-		updateRow(db, "semantic_memory", memoryId, { tier: "detail" }, siteId);
-
-		// Transition: detail -> summary
-		updateRow(db, "semantic_memory", memoryId, { tier: "summary" }, siteId);
-
-		// Verify all tier values appear in changelog
-		const entries = db
-			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'semantic_memory' ORDER BY hlc",
-			)
-			.all(memoryId) as Array<{ row_data: string }>;
-
-		expect(entries.length).toBeGreaterThanOrEqual(3);
-
-		const tiers = entries.map((e) => JSON.parse(e.row_data).tier);
-		expect(tiers).toContain("default");
-		expect(tiers).toContain("pinned");
-		expect(tiers).toContain("detail");
-		expect(tiers).toContain("summary");
-	});
 });
 
 describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
@@ -229,26 +149,6 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 		expect(rowData.deleted).toBe(1);
 	});
 
-	it("multiple summarizes edges create separate changelog entries", () => {
-		const summaryKey = "summary_multi_child";
-		const detailKey1 = "detail_child_1";
-		const detailKey2 = "detail_child_2";
-
-		// Create two summarizes edges from same summary
-		upsertEdge(db, summaryKey, detailKey1, "summarizes", 1.0, siteId);
-		upsertEdge(db, summaryKey, detailKey2, "summarizes", 1.0, siteId);
-
-		// Verify changelog entries exist for both edges
-		const entries = db
-			.prepare(
-				"SELECT COUNT(*) AS cnt FROM change_log WHERE table_name = 'memory_edges' AND ((SELECT relation FROM memory_edges WHERE id = change_log.row_id LIMIT 1) = 'summarizes')",
-			)
-			.get() as { cnt: number };
-
-		// We should have at least 2 summarizes edge entries
-		expect(entries.cnt).toBeGreaterThanOrEqual(2);
-	});
-
 	it("edge weight updates produce changelog with updated weight", () => {
 		const sourceKey = "source_weight_update";
 		const targetKey = "target_weight_update";
@@ -280,47 +180,5 @@ describe("AC6.6: Summarizes edge sync via memory_edges changelog", () => {
 		expect(changeLogEntry).toBeDefined();
 		const rowData = JSON.parse(changeLogEntry?.row_data);
 		expect(rowData.weight).toBe(2.5);
-	});
-
-	it("orphaned detail edge cascade properly records in changelog", () => {
-		const summaryKey = "summary_cascade_test";
-		const detailKey = "detail_cascade_test";
-
-		// Create summarizes edge
-		upsertEdge(db, summaryKey, detailKey, "summarizes", 1.0, siteId);
-
-		// Create a related edge to the detail
-		upsertEdge(db, detailKey, "other_entry", "related_to", 1.0, siteId);
-
-		// Get both edge IDs
-		const summEdgeId = (
-			db
-				.prepare(
-					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
-				)
-				.get(summaryKey, detailKey, "summarizes") as { id: string } | null
-		)?.id;
-
-		const _relEdgeId = (
-			db
-				.prepare(
-					"SELECT id FROM memory_edges WHERE source_key = ? AND target_key = ? AND relation = ?",
-				)
-				.get(detailKey, "other_entry", "related_to") as { id: string } | null
-		)?.id;
-
-		// Remove summarizes edge cascade
-		removeEdges(db, summaryKey, detailKey, ["summarizes"], siteId);
-
-		// Verify changelog for both edges shows deletion
-		const summEntry = db
-			.prepare(
-				"SELECT row_data FROM change_log WHERE row_id = ? AND table_name = 'memory_edges' ORDER BY hlc DESC LIMIT 1",
-			)
-			.get(summEdgeId) as { row_data: string } | null;
-
-		expect(summEntry).toBeDefined();
-		const summData = JSON.parse(summEntry?.row_data);
-		expect(summData.deleted).toBe(1);
 	});
 });

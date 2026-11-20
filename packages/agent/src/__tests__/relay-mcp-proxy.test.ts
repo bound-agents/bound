@@ -158,46 +158,6 @@ describe("Remote MCP proxy commands via relay", () => {
 		expect(unknownResult.annotations).toEqual({});
 	});
 
-	it("exec wrapper propagates relay request via store object reference", async () => {
-		// This tests the ACTUAL production flow. The exec wrapper in agent-factory.ts
-		// creates its own loopContextStorage.run() scope. The command handler stores the
-		// relay request in that scope's store. After .run() returns, the store is no
-		// longer active via getStore(), but the store OBJECT is still mutated because
-		// JS objects are passed by reference.
-		//
-		// The exec wrapper must check store.relayRequest after .run() returns and
-		// propagate it as the return value.
-		const { commands } = generateRemoteMCPProxyCommands(db, "local-hub-site", new Set());
-		const ctx = createTestContext();
-		const customCommands = createDefineCommands(commands, ctx);
-
-		const fs = new InMemoryFs();
-		const bash = new Bash({ fs, customCommands });
-
-		// Simulate the agent-factory exec wrapper pattern:
-		// Creates a store, runs sandbox.exec inside .run(), then checks the store.
-		const store = {
-			threadId: "test-thread",
-			taskId: undefined,
-			relayRequest: undefined as unknown,
-		};
-		const result = await loopContextStorage.run(store, () =>
-			bash.exec("github list_commits --owner karashiiro --repo bound"),
-		);
-
-		// After .run() returns, the store object still has relayRequest set
-		// because the command handler mutated the same JS object.
-		expect(store.relayRequest).toBeDefined();
-		expect(isRelayRequest(store.relayRequest)).toBe(true);
-		const relayReq = store.relayRequest as RelayToolCallRequest;
-		expect(relayReq.outboxEntryId).toBeDefined();
-		expect(relayReq.targetSiteId).toBe("remote-spoke-1");
-		expect(relayReq.toolName).toBe("github");
-
-		// The just-bash result itself should NOT have the relay fields (this is the original bug)
-		expect(isRelayRequest(result)).toBe(false);
-	});
-
 	it("exec wrapper returns relay request instead of empty result", async () => {
 		// This is the end-to-end test matching the production exec wrapper.
 		// The wrapper should detect store.relayRequest and return it as the result,

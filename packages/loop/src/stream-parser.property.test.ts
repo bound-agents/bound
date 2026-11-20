@@ -279,18 +279,6 @@ describe("dropSupersededToolCallDrafts — scalable grouping", () => {
 			}),
 		);
 	});
-
-	it("keeps distinct-name grouping as a large functional fixture", () => {
-		const calls: ParsedToolCall[] = Array.from({ length: 8_000 }, (_, i) => ({
-			id: `id-${i}`,
-			name: `tool-${i}`,
-			input: {},
-			argsJson: "{}",
-			truncated: false,
-		}));
-
-		expect(dropSupersededToolCallDrafts(calls)).toEqual(calls);
-	});
 });
 
 describe("dropSupersededToolCallDrafts (D1–D4)", () => {

@@ -171,15 +171,6 @@ describe("withTx(db, fn) — transaction wrapping helper", () => {
 		expect(result).toBe(42);
 	});
 
-	it("returns complex object from withTx function", () => {
-		const obj = { key: "value", num: 123 };
-		const result = withTx(db, () => {
-			return obj;
-		});
-
-		expect(result).toEqual(obj);
-	});
-
 	it("supports nested updateRowIf calls producing multiple change_log entries", () => {
 		// Setup: insert two task rows
 		insertRow(

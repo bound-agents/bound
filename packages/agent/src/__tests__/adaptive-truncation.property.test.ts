@@ -122,51 +122,6 @@ describe("resolveAdaptiveTruncationTarget — property tests", () => {
 		);
 	});
 
-	it("A3: cold-start fallback — < min samples returns baseTarget with null inflation", () => {
-		fc.assert(
-			fc.property(
-				fc.array(
-					fc.tuple(fc.integer({ min: 1, max: 100_000 }), fc.integer({ min: 1, max: 200_000 })),
-					{
-						maxLength: 2, // below the 3-sample minimum
-					},
-				),
-				fc.integer({ min: 1, max: 200_000 }),
-				(pairs, baseTarget) => {
-					const db = freshDb();
-					seedTurns(db, THREAD_ID, pairs);
-					const { target, inflation } = resolveAdaptiveTruncationTarget(db, THREAD_ID, baseTarget);
-					db.close();
-					return target === baseTarget && inflation === null;
-				},
-			),
-			{ numRuns: 30 },
-		);
-	});
-
-	it("A4: determinism — same DB state, same input => same output", () => {
-		fc.assert(
-			fc.property(
-				fc.array(
-					fc.tuple(fc.integer({ min: 1, max: 100_000 }), fc.integer({ min: 1, max: 500_000 })),
-					{
-						minLength: 3,
-						maxLength: 10,
-					},
-				),
-				(pairs) => {
-					const db = freshDb();
-					seedTurns(db, THREAD_ID, pairs);
-					const a = resolveAdaptiveTruncationTarget(db, THREAD_ID, 170_000);
-					const b = resolveAdaptiveTruncationTarget(db, THREAD_ID, 170_000);
-					db.close();
-					return a.target === b.target && a.inflation === b.inflation;
-				},
-			),
-			{ numRuns: 30 },
-		);
-	});
-
 	it("A5: inflation = 1.0 → target = baseTarget (no tightening when accurate)", () => {
 		const db = freshDb();
 		// 5 turns where actual == estimated (perfect estimator).

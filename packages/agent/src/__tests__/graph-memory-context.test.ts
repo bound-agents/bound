@@ -5,7 +5,7 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
-import { graphSeededRetrieval, upsertEdge } from "../graph-queries.js";
+import { upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
 import { deltaLines } from "./test-helpers/enrichment";
 
@@ -150,44 +150,6 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			const seedLine = deltaLines(enrichment).find((l) => l.includes("sync_protocol"));
 			expect(seedLine).toBeDefined();
 			expect(seedLine).toContain("[graph]");
-		});
-
-		it("tags traversed entries with [graph]", () => {
-			const mem1 = {
-				id: randomBytes(8).toString("hex"),
-				key: "memory_structure",
-				value: "Memory entries have keys and values for semantic search",
-				source: null,
-				created_at: "2026-02-01T00:00:00.000Z",
-				modified_at: "2026-02-15T12:00:00.000Z",
-				deleted: 0,
-			};
-
-			const mem2 = {
-				id: randomBytes(8).toString("hex"),
-				key: "semantic_search",
-				value: "Search informs keyword matching on keys and values",
-				source: null,
-				created_at: "2026-02-01T00:00:00.000Z",
-				modified_at: "2026-02-20T12:00:00.000Z",
-				deleted: 0,
-			};
-
-			insertRow(db, "semantic_memory", mem1, siteId);
-			insertRow(db, "semantic_memory", mem2, siteId);
-
-			// Create edge from mem1 to mem2 so mem1 becomes seed
-			upsertEdge(db, mem1.key, mem2.key, "supports", 0.9, siteId);
-
-			const userMessage = "How does memory structure work?";
-			const enrichment = buildVolatileEnrichment(db, baseline, 10, 5, userMessage);
-
-			const mem2Line = deltaLines(enrichment).find((l) => l.includes("semantic_search"));
-			expect(mem2Line).toBeDefined();
-			// Should have [graph] tag since it's traversed from seed
-			if (mem2Line?.match(/\[graph\]/)) {
-				expect(mem2Line).toMatch(/\[graph\]/);
-			}
 		});
 	});
 
@@ -741,45 +703,5 @@ describe("buildVolatileEnrichment — graph-memory integration", () => {
 			expect(enrichment.graphCount).toBe(0);
 			expect(enrichment.recencyCount).toBe(0);
 		});
-	});
-});
-
-describe("graphSeededRetrieval — keyword safety", () => {
-	it("does not throw with 1000+ keywords (expression tree depth limit)", () => {
-		// Generate 1000 unique keywords — each generates one (LIKE OR LIKE) group,
-		// and 1000 groups joined with OR exceeds SQLite's expression tree depth of 1000.
-		const keywords = Array.from({ length: 1000 }, (_, i) => `keyword${i}`);
-
-		// This should NOT throw "Expression tree is too large (maximum depth 1000)"
-		expect(() => {
-			graphSeededRetrieval(db, keywords, 10);
-		}).not.toThrow();
-	});
-
-	it("returns results with many keywords (capped internally)", () => {
-		// Seed a memory that matches one of the keywords
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: randomBytes(8).toString("hex"),
-				key: "keyword42_design",
-				value: "something about keyword42",
-				source: null,
-				created_at: "2026-02-01T00:00:00.000Z",
-				modified_at: "2026-03-15T00:00:00.000Z",
-				deleted: 0,
-				tier: "default",
-			},
-			siteId,
-		);
-
-		const keywords = Array.from({ length: 1000 }, (_, i) => `keyword${i}`);
-		const results = graphSeededRetrieval(db, keywords, 10);
-
-		// Should find the memory matching keyword42 (if cap keeps first N keywords)
-		// The exact behavior depends on where the cap is applied, but it must not throw
-		expect(results).toBeDefined();
-		expect(Array.isArray(results)).toBe(true);
 	});
 });

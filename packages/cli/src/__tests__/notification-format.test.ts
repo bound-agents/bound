@@ -17,9 +17,6 @@ describe("formatNotification", () => {
 		// authoritative system state.
 		expect(result).toContain("[notification from background task");
 		expect(result).toContain("goose deep read completed");
-		// Provenance signal — see notification-provenance.test.ts for
-		// the full assertion against the marker set.
-		expect(result.toLowerCase()).toContain("unverified");
 	});
 
 	it("handles proactive notification with empty content", () => {
@@ -53,7 +50,6 @@ describe("formatNotification", () => {
 		// is also agent-authored from a sibling thread.
 		expect(result).toContain("[introspect request from thread thread-abc");
 		expect(result).toContain("What do you think?");
-		expect(result.toLowerCase()).toContain("unverified");
 	});
 
 	it("formats unknown notification types as JSON", () => {

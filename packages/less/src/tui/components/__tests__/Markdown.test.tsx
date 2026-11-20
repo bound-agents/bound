@@ -14,15 +14,6 @@ const stripSgr = (s: string): string =>
 	s.replace(/\u001B\[[0-9;]*m/g, "");
 
 describe("Markdown — formatting tweaks", () => {
-	it("renders inline code without literal backticks", () => {
-		const { lastFrame } = render(
-			React.createElement(Markdown, { text: "run the `build` step", width: 60 }),
-		);
-		const frame = stripSgr(lastFrame() ?? "");
-		expect(frame).toContain("build");
-		expect(frame).not.toContain("`");
-	});
-
 	it("renders a link as an OSC 8 hyperlink, not literal [label](url)", () => {
 		const { lastFrame } = render(
 			React.createElement(Markdown, {

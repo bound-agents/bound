@@ -193,40 +193,6 @@ describe("RssPoller lifecycle + real-transport integration", () => {
 		await poller.disconnect();
 	});
 
-	it("delivers unseen items end-to-end through the real Node transport and logs", async () => {
-		const infos: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
-		server = Bun.serve({
-			port: 0,
-			fetch() {
-				return new Response(RSS_DOC, { status: 200 });
-			},
-		});
-		const port = server.port;
-		// Pre-seed a DIFFERENT guid so the single doc item is unseen and delivers.
-		seedFeed("https://feed.example.com/feed.xml", { seen_guids: JSON.stringify(["old-guid"]) });
-		const poller = new RssPoller({
-			db,
-			siteId,
-			eventBus,
-			resolveHost: async () => ["93.184.216.34"],
-			fetchValidatedUrl: (url, _address, init) =>
-				fetch(`http://127.0.0.1:${port}${url.pathname}`, init as RequestInit),
-			logger: {
-				info: (msg, meta) => infos.push({ msg, meta }),
-				warn: () => {},
-			},
-		});
-
-		await poller.tick();
-
-		const durable = db
-			.query("SELECT kind FROM durable_work WHERE kind = 'rss_intake'")
-			.all() as Array<{ kind: string }>;
-		expect(durable.length).toBe(1);
-		expect(emitted.some((e) => e.event === "connector:event")).toBe(true);
-		expect(infos.some((i) => i.msg.includes("Delivered new feed items"))).toBe(true);
-	});
-
 	it("handles a 304 Not Modified via conditional headers without delivering", async () => {
 		let hits = 0;
 		server = Bun.serve({

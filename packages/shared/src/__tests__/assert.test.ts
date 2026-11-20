@@ -39,12 +39,4 @@ describe("assert", () => {
 	it("throws a caller-supplied message when given one", () => {
 		expect(() => assert(false, "must be present")).toThrow("must be present");
 	});
-
-	it("narrows the type after a successful assertion", () => {
-		const maybe: string | undefined = "value" as string | undefined;
-		assert(maybe);
-		// If assert did not narrow, this access would be a type error; it also
-		// exercises that execution continued past a truthy assertion.
-		expect(maybe.length).toBe(5);
-	});
 });

@@ -59,18 +59,6 @@ describe("getThreadUserDisplayName", () => {
 		expect(row).toEqual({ display_name: "Alice" });
 	});
 
-	it("projects EXACTLY the display_name column the interface declares", () => {
-		insertRow(db, "users", makeUser({ id: "u1", display_name: "Bob" }), SITE_ID);
-		insertRow(db, "threads", makeThread({ id: "t1", user_id: "u1" }), SITE_ID);
-
-		const row = getThreadUserDisplayName(db, "t1");
-
-		expect(row).not.toBeNull();
-		// Only `display_name` is selected — no other thread/user columns leak in.
-		expect(Object.keys(row as object).sort()).toEqual(["display_name"]);
-		expect((row as { display_name: string }).display_name).toBe("Bob");
-	});
-
 	it("returns null for an absent thread id (miss path)", () => {
 		insertRow(db, "users", makeUser({ id: "u1", display_name: "Alice" }), SITE_ID);
 		insertRow(db, "threads", makeThread({ id: "t1", user_id: "u1" }), SITE_ID);

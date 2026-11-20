@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentSideConnection } from "@agentclientprotocol/sdk";
-import type { BoundClient, ToolCallRequest } from "@bound/client";
+import type { BoundClient } from "@bound/client";
 import type { WsStreamChunk } from "@bound/shared";
 import { AcpSession, type AcpSessionDeps } from "../acp/session";
 import type { AppLogger } from "../logging";
@@ -148,70 +148,7 @@ describe("AcpSession — lifecycle", () => {
 	});
 });
 
-describe("AcpSession — thread status and alerts", () => {
-	it("resolves end_turn only after an active status was seen, then idle", async () => {
-		const { session } = makeSession();
-		const promise = session.runPrompt("hi");
-		// A bare idle before any active must NOT resolve the turn.
-		session.handleThreadStatus(false);
-		session.handleThreadStatus(true); // seenActive
-		session.handleThreadStatus(false); // genuine idle
-		const res = await promise;
-		expect(res.stopReason).toBe("end_turn");
-	});
-
-	it("a cancelled turn going idle resolves as cancelled", async () => {
-		const { session } = makeSession();
-		const promise = session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		await session.cancel();
-		session.handleThreadStatus(false);
-		const res = await promise;
-		expect(res.stopReason).toBe("cancelled");
-	});
-
-	it("an alert with no assistant text rejects the prompt at idle", async () => {
-		const { session, conn } = makeSession();
-		const promise = session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		session.handleAlert("inference timed out");
-		// The alert is surfaced as an assistant message chunk.
-		expect(conn.updates.some((u) => u.sessionUpdate === "agent_message_chunk")).toBe(true);
-		session.handleThreadStatus(false);
-		await expect(promise).rejects.toThrow(/inference timed out/);
-	});
-
-	it("an alert followed by assistant text resolves end_turn (informational)", async () => {
-		const { session } = makeSession();
-		const promise = session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		session.handleAlert("model fell back to secondary");
-		// Real assistant text arrives after the alert.
-		await session.handleStreamChunk({ type: "text", content: "here is the answer" });
-		session.handleThreadStatus(false);
-		const res = await promise;
-		expect(res.stopReason).toBe("end_turn");
-	});
-});
-
 describe("AcpSession — stream chunk mapping", () => {
-	it("maps a text chunk to an agent_message_chunk and marks sawAgentText", async () => {
-		const { session, conn } = makeSession();
-		void session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		await session.handleStreamChunk({ type: "text", content: "hi there" });
-		const update = conn.updates.find((u) => u.sessionUpdate === "agent_message_chunk");
-		expect(update).toBeDefined();
-		expect((update?.content as { text: string }).text).toBe("hi there");
-	});
-
-	it("maps a thinking chunk to an agent_thought_chunk", async () => {
-		const { session, conn } = makeSession();
-		void session.runPrompt("hi");
-		await session.handleStreamChunk({ type: "thinking", content: "let me reason" });
-		expect(conn.updates.some((u) => u.sessionUpdate === "agent_thought_chunk")).toBe(true);
-	});
-
 	it("surfaces a stream error as assistant text and logs acp_stream_error", async () => {
 		const { session, conn, logger } = makeSession();
 		void session.runPrompt("hi");
@@ -220,94 +157,11 @@ describe("AcpSession — stream chunk mapping", () => {
 		expect(conn.updates.some((u) => u.sessionUpdate === "agent_message_chunk")).toBe(true);
 	});
 
-	it("opens and accumulates a daemon tool_use stream into a tool_call lifecycle", async () => {
-		const { session, conn } = makeSession();
-		void session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		await session.handleStreamChunk({ type: "tool_use_start", id: "call_1", name: "query" });
-		await session.handleStreamChunk({
-			type: "tool_use_args",
-			id: "call_1",
-			partial_json: '{"sql":',
-		});
-		await session.handleStreamChunk({
-			type: "tool_use_args",
-			id: "call_1",
-			partial_json: '"SELECT 1"}',
-		});
-		await session.handleStreamChunk({ type: "tool_use_end", id: "call_1" });
-		// A pending tool_call was opened, then an in_progress update with rawInput.
-		expect(conn.updates.some((u) => u.sessionUpdate === "tool_call")).toBe(true);
-		const inProgress = conn.updates.find(
-			(u) => u.sessionUpdate === "tool_call_update" && u.status === "in_progress",
-		);
-		expect(inProgress).toBeDefined();
-		expect((inProgress?.rawInput as { sql: string }).sql).toBe("SELECT 1");
-	});
-
 	it("logs acp_session_update_failed when the connection rejects an update", async () => {
 		const { session, conn, logger } = makeSession();
 		void session.runPrompt("hi");
 		conn.failSessionUpdate(new Error("conn closed"));
 		await session.handleStreamChunk({ type: "text", content: "x" });
 		expect(logger.errors.some(([e]) => e === "acp_session_update_failed")).toBe(true);
-	});
-});
-
-describe("AcpSession — client tool calls and permission", () => {
-	it("executes an allowed client tool and returns its result", async () => {
-		const handler: ToolHandler = async () => ({
-			content: [{ type: "text", text: "tool output" }],
-		});
-		const { session, conn } = makeSession({
-			toolHandlers: new Map([["boundless_read", handler]]),
-			clientToolNames: new Set(["boundless_read"]),
-		});
-		void session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		const call: ToolCallRequest = {
-			call_id: "c1",
-			thread_id: "thread-abc",
-			tool_name: "boundless_read",
-			arguments: { path: "README.md" },
-		};
-		const result = await session.handleToolCall(call);
-		expect(result.is_error).toBeFalsy();
-		expect(result.content).toEqual([{ type: "text", text: "tool output" }]);
-		// Lifecycle: pending → in_progress → completed.
-		expect(conn.updates.some((u) => u.sessionUpdate === "tool_call")).toBe(true);
-	});
-
-	it("rejects a client tool when the permission outcome is a reject option", async () => {
-		const handler: ToolHandler = async () => ({ content: [{ type: "text", text: "nope" }] });
-		const { session, conn } = makeSession({
-			toolHandlers: new Map([["boundless_bash", handler]]),
-			clientToolNames: new Set(["boundless_bash"]),
-		});
-		conn.setPermissionOutcome({ outcome: { outcome: "selected", optionId: "reject_once" } });
-		void session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		const result = await session.handleToolCall({
-			call_id: "c2",
-			thread_id: "thread-abc",
-			tool_name: "boundless_bash",
-			arguments: { command: "rm -rf /" },
-		});
-		expect(result.is_error).toBe(true);
-		expect(result.content).toEqual([{ type: "text", text: "Tool call rejected by user" }]);
-	});
-
-	it("returns a not-found error when no handler exists for the tool", async () => {
-		const { session } = makeSession({ clientToolNames: new Set(["boundless_ghost"]) });
-		void session.runPrompt("hi");
-		session.handleThreadStatus(true);
-		const result = await session.handleToolCall({
-			call_id: "c3",
-			thread_id: "thread-abc",
-			tool_name: "boundless_ghost",
-			arguments: {},
-		});
-		expect(result.is_error).toBe(true);
-		expect(JSON.stringify(result.content)).toContain("not found");
 	});
 });

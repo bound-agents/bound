@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -388,8 +387,3 @@ describe("runMcpLogin (daemon-mediated MCP OAuth)", () => {
 		expect(logs.join("\n")).toContain("Resolving MCP authorization");
 	});
 });
-
-// Silence the unused-import lint for the PKCE helpers if a future assertion
-// needs them; referenced here to keep the fixture self-documenting.
-void createHash;
-void randomBytes;

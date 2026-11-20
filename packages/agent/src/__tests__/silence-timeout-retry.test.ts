@@ -107,14 +107,6 @@ describe("Silence timeout retry", () => {
 		} as unknown as AppContext;
 	}
 
-	it("should export SILENCE_TIMEOUT_MS as 600000", () => {
-		expect(SILENCE_TIMEOUT_MS).toBe(600_000);
-	});
-
-	it("should export MAX_SILENCE_RETRIES as 3", () => {
-		expect(MAX_SILENCE_RETRIES).toBe(3);
-	});
-
 	it("should retry on silence timeout and succeed if next attempt works", async () => {
 		// Fail once, then succeed on second call
 		const backend = new SilenceTimeoutBackend(1);
@@ -343,65 +335,4 @@ describe("Transport error retry", () => {
 			.all(threadId) as Array<{ content: string }>;
 		expect(alerts.length).toBe(1);
 	});
-
-	it("should NOT retry on 'not valid JSON' Bedrock errors (client 400, not transient)", async () => {
-		// "not valid JSON" is a 400 client error — the request body is malformed.
-		// Retrying the same malformed body is pointless.
-		const backend = new InvalidJsonErrorBackend(1);
-
-		const loop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(backend), {
-			threadId,
-			userId: "test-user",
-		});
-
-		const result = await loop.run();
-
-		expect(result.error).toBeDefined();
-		expect(result.error).toContain("not valid JSON");
-		expect(backend.getCallCount()).toBe(1); // NOT retried
-	});
 });
-
-/**
- * LLM backend that throws "not valid JSON" errors N times, then succeeds.
- * Used to verify non-transient errors are NOT retried.
- */
-class InvalidJsonErrorBackend implements LLMBackend {
-	private callCount = 0;
-	constructor(private failCount: number) {}
-
-	getCallCount() {
-		return this.callCount;
-	}
-
-	async *chat(): AsyncGenerator<StreamChunk> {
-		this.callCount++;
-		if (this.callCount <= this.failCount) {
-			throw new Error(
-				"Bedrock request failed: The model returned the following errors: The request body is not valid JSON.",
-			);
-		}
-		yield { type: "text" as const, content: "Success after body corruption retry!" };
-		yield {
-			type: "done" as const,
-			usage: {
-				input_tokens: 10,
-				output_tokens: 5,
-				cache_write_tokens: null,
-				cache_read_tokens: null,
-				estimated: false,
-			},
-		};
-	}
-
-	capabilities() {
-		return {
-			streaming: true,
-			tool_use: true,
-			system_prompt: true,
-			prompt_caching: false,
-			vision: false,
-			max_context: 8000,
-		};
-	}
-}

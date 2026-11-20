@@ -285,12 +285,13 @@ describe("MainAgentLoop.relayDeferredClientTool (remote session host)", () => {
 			.get(threadId) as { content: string } | null;
 		expect(assistant?.content).toBe("saw the relay error");
 
-		// A durable_work client_tool relay request was written for the session host,
-		// proving the remote branch (not the no-session branch) ran.
+		// routeRelayRequest rejects the non-capable target with a typed routing error
+		// (invariant #3 / R-DW14) BEFORE writing any durable_work row, so the
+		// request-write-failure branch ran: no client_tool row was persisted.
 		const durable = db
 			.query("SELECT kind, target_site_id FROM durable_work WHERE kind = 'client_tool'")
 			.all() as Array<{ kind: string; target_site_id: string }>;
-		expect(durable.length).toBeGreaterThanOrEqual(0);
+		expect(durable.some((r) => r.target_site_id === "remote-site")).toBe(false);
 	});
 });
 

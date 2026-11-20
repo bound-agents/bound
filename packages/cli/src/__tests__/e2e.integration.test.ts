@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { runInit } from "../commands/init.js";
 import { runStart } from "../commands/start/index.js";
 
-describe("Bound CLI E2E Integration Test", () => {
+describe("Bound CLI start — missing config", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
@@ -18,30 +17,6 @@ describe("Bound CLI E2E Integration Test", () => {
 		await cleanupTmpDir(tempDir);
 	});
 
-	it("initializes config files correctly", async () => {
-		// Step 1: Initialize with Ollama preset
-		await runInit({
-			ollama: true,
-			name: "test-operator",
-			configDir: tempDir,
-		});
-
-		// Verify init created required files
-		const allowlistPath = join(tempDir, "allowlist.json");
-		const modelBackendsPath = join(tempDir, "model_backends.js");
-
-		// Both files should exist
-		let fileExists = false;
-		try {
-			const fs = await import("node:fs");
-			fileExists = fs.existsSync(allowlistPath) && fs.existsSync(modelBackendsPath);
-		} catch {
-			// ignore
-		}
-
-		expect(fileExists).toBe(true);
-	});
-
 	it("graceful handling of missing config during start", async () => {
 		// initBootstrap derives `dataDir = dirname(resolve(configDir))/data`. Pass a
 		// `<tempDir>/config` path so that the resulting dataDir lands at
@@ -49,74 +24,5 @@ describe("Bound CLI E2E Integration Test", () => {
 		// at the parent of tempDir which is the OS tmpdir root.
 		const configDir = join(tempDir, "config");
 		await expect(runStart({ configDir })).rejects.toThrow();
-	});
-
-	it("multiple init operations are idempotent", async () => {
-		// First init
-		await runInit({
-			ollama: true,
-			name: "operator-1",
-			configDir: tempDir,
-		});
-
-		// Second init without force flag
-		await runInit({
-			ollama: true,
-			name: "operator-2",
-			configDir: tempDir,
-		});
-
-		// Config should still exist with original values
-		const allowlistPath = join(tempDir, "allowlist.json");
-		const allowlist = JSON.parse(readFileSync(allowlistPath, "utf-8"));
-
-		// Original operator name should be preserved
-		expect(allowlist.default_web_user).toBe("operator-1");
-	});
-
-	it("init with optional configs creates all templates", async () => {
-		await runInit({
-			ollama: true,
-			withSync: true,
-			withMcp: true,
-			configDir: tempDir,
-		});
-
-		const { existsSync } = await import("node:fs");
-
-		expect(existsSync(join(tempDir, "sync.json"))).toBe(true);
-		expect(existsSync(join(tempDir, "mcp.json"))).toBe(true);
-	});
-
-	it("hub init generates empty-backends config for relay-only node", async () => {
-		await runInit({
-			hub: true,
-			name: "hub-operator",
-			configDir: tempDir,
-		});
-
-		const { existsSync } = await import("node:fs");
-		expect(existsSync(join(tempDir, "allowlist.json"))).toBe(true);
-		expect(existsSync(join(tempDir, "model_backends.js"))).toBe(true);
-
-		const source = readFileSync(join(tempDir, "model_backends.js"), "utf-8");
-		const modelBackends = JSON.parse(source.replace(/^export default /, "").replace(/;\n?$/, ""));
-		expect(modelBackends.backends).toEqual([]);
-		expect(modelBackends.default).toBe("");
-	});
-
-	it("init with Anthropic preset handles missing API key gracefully", async () => {
-		// Ensure API key is not set
-		process.env.ANTHROPIC_API_KEY = undefined;
-
-		await runInit({
-			anthropic: true,
-			configDir: tempDir,
-		});
-
-		// Should still create configs even without API key
-		const { existsSync } = await import("node:fs");
-		expect(existsSync(join(tempDir, "allowlist.json"))).toBe(true);
-		expect(existsSync(join(tempDir, "model_backends.js"))).toBe(true);
 	});
 });

@@ -87,109 +87,10 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
-	describe("WS message schemas - session:configure", () => {
-		it("should accept valid session:configure message", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "session:configure",
-				tools: [
-					{
-						type: "function",
-						function: {
-							name: "my_tool",
-							description: "Does something",
-							parameters: { some: "value" },
-						},
-					},
-				],
-			});
-
-			handler.message(mockWs, msg);
-
-			// No error should be sent for valid message
-			expect((mockWs as unknown as MockWebSocket).messages).toHaveLength(0);
-		});
-
-		it("should accept session:configure with empty tools array", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "session:configure",
-				tools: [],
-			});
-
-			handler.message(mockWs, msg);
-
-			expect((mockWs as unknown as MockWebSocket).messages).toHaveLength(0);
-		});
-	});
-
-	describe("WS message schemas - message:send", () => {
-		it("should accept valid message:send", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "message:send",
-				thread_id: "thread-123",
-				content: "Hello world",
-			});
-
-			// Should not throw or send error
-			expect(() => {
-				handler.message(mockWs, msg);
-			}).not.toThrow();
-		});
-
-		it("should accept message:send with file_ids", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "message:send",
-				thread_id: "thread-123",
-				content: "Message with files",
-				file_ids: ["file-1", "file-2"],
-			});
-
-			expect(() => {
-				handler.message(mockWs, msg);
-			}).not.toThrow();
-		});
-	});
-
-	describe("WS message schemas - thread subscribe/unsubscribe", () => {
-		it("should accept valid thread:subscribe", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "thread:subscribe",
-				thread_id: "thread-123",
-			});
-
-			expect(() => {
-				handler.message(mockWs, msg);
-			}).not.toThrow();
-		});
-
-		it("should accept valid thread:unsubscribe", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "thread:unsubscribe",
-				thread_id: "thread-123",
-			});
-
-			expect(() => {
-				handler.message(mockWs, msg);
-			}).not.toThrow();
-		});
-	});
+	// NOTE: per-type "accept valid X" schema tests removed — the discriminated-union
+	// acceptance of every valid message type is guarded once by "should accept any
+	// valid message type" below, and what each message DOES (store tools, register
+	// subscription, persist, deliver) is guarded by the dispatch/registry tests.
 
 	describe("client-session affinity rows", () => {
 		it("does not record tool-less subscriptions as client sessions", async () => {
@@ -358,40 +259,9 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 	});
 
-	describe("WS message schemas - tool:result", () => {
-		it("should accept valid tool:result", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "tool:result",
-				call_id: "call-123",
-				thread_id: "thread-123",
-				content: "Tool result content",
-			});
-
-			expect(() => {
-				handler.message(mockWs, msg);
-			}).not.toThrow();
-		});
-
-		it("should accept tool:result with is_error flag", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			const msg = JSON.stringify({
-				type: "tool:result",
-				call_id: "call-123",
-				thread_id: "thread-123",
-				content: "Error occurred",
-				is_error: true,
-			});
-
-			expect(() => {
-				handler.message(mockWs, msg);
-			}).not.toThrow();
-		});
-	});
+	// Removed "accept valid tool:result" / "accept with is_error" — bare no-throw
+	// acceptance duplicated by the discriminated-union test; the exit_code=0/1
+	// handler tests below guard what a tool:result actually does.
 
 	describe("WS message schemas - context:stage", () => {
 		it("should accept valid context:stage with string content", () => {
@@ -599,130 +469,11 @@ describe("ClientConnection type and WS message schemas", () => {
 			expect(messages).toHaveLength(1);
 		});
 
-		it("session:configure should store tools on the connection", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			// Send session:configure with tools
-			handler.message(
-				mockWs,
-				JSON.stringify({
-					type: "session:configure",
-					tools: [
-						{
-							type: "function",
-							function: {
-								name: "tool_a",
-								description: "Tool A",
-								parameters: { type: "object" },
-							},
-						},
-						{
-							type: "function",
-							function: {
-								name: "tool_b",
-								description: "Tool B",
-								parameters: { type: "object" },
-							},
-						},
-					],
-				}),
-			);
-
-			// No error should be sent
-			expect(
-				((mockWs as unknown as MockWebSocket).messages as unknown[]).filter(
-					(msg) => (msg as Record<string, unknown>).type === "error",
-				),
-			).toHaveLength(0);
-		});
-
-		it("session:configure with empty tools should clear previously registered tools", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			// First, register tools
-			handler.message(
-				mockWs,
-				JSON.stringify({
-					type: "session:configure",
-					tools: [
-						{
-							type: "function",
-							function: {
-								name: "tool_a",
-								description: "Tool A",
-								parameters: { type: "object" },
-							},
-						},
-					],
-				}),
-			);
-
-			// Then, configure with empty tools
-			handler.message(
-				mockWs,
-				JSON.stringify({
-					type: "session:configure",
-					tools: [],
-				}),
-			);
-
-			// No errors should have been sent
-			expect(
-				((mockWs as unknown as MockWebSocket).messages as unknown[]).filter(
-					(msg) => (msg as Record<string, unknown>).type === "error",
-				),
-			).toHaveLength(0);
-		});
-
-		it("thread:subscribe should work with new message format", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			handler.message(
-				mockWs,
-				JSON.stringify({
-					type: "thread:subscribe",
-					thread_id: "thread-123",
-				}),
-			);
-
-			expect(
-				((mockWs as unknown as MockWebSocket).messages as unknown[]).filter(
-					(msg) => (msg as Record<string, unknown>).type === "error",
-				),
-			).toHaveLength(0);
-		});
-
-		it("thread:unsubscribe should work with new message format", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			handler.open(mockWs);
-
-			// Subscribe first
-			handler.message(
-				mockWs,
-				JSON.stringify({
-					type: "thread:subscribe",
-					thread_id: "thread-123",
-				}),
-			);
-
-			// Then unsubscribe
-			handler.message(
-				mockWs,
-				JSON.stringify({
-					type: "thread:unsubscribe",
-					thread_id: "thread-123",
-				}),
-			);
-
-			expect(
-				((mockWs as unknown as MockWebSocket).messages as unknown[]).filter(
-					(msg) => (msg as Record<string, unknown>).type === "error",
-				),
-			).toHaveLength(0);
-		});
+		// Removed 4 "valid message produces no error" dispatcher tests
+		// (session:configure store/clear, thread:subscribe/unsubscribe) — they only
+		// asserted zero error frames, which the union acceptance test already covers.
+		// What configure/subscribe actually DO (store/clear tools, register the
+		// subscription) is guarded by the Task 1 registry and affinity tests below.
 	});
 
 	describe("Task 3: message:send WS handler", () => {
@@ -2249,41 +2000,10 @@ describe("ClientConnection type and WS message schemas", () => {
 	});
 
 	describe("Protocol Extension  Content Widening (AC10)", () => {
-		it("AC10.1 & AC10.4: tool:result with string content is accepted by schema", () => {
-			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-			const eventBus = new TypedEventEmitter();
-			const handler = createWebSocketHandler(eventBus);
-			handler.open(mockWs);
-
-			// AC10.1: String content should be accepted without error (backward compatible)
-			expect(() => {
-				handler.message(
-					mockWs,
-					JSON.stringify({
-						type: "tool:result",
-						call_id: "call-123",
-						thread_id: "thread-1",
-						content: "hello world",
-					}),
-				);
-			}).not.toThrow();
-
-			// AC10.4: Legacy string-only messages should continue to work
-			expect(() => {
-				handler.message(
-					mockWs,
-					JSON.stringify({
-						type: "tool:result",
-						call_id: "call-legacy",
-						thread_id: "thread-1",
-						content: "legacy response",
-						is_error: false,
-					}),
-				);
-			}).not.toThrow();
-
-			handler.cleanup();
-		});
+		// Removed AC10.1/AC10.4 (bare no-throw acceptance of string-content tool:result)
+		// — the discriminated-union test guards string-content acceptance; AC10.2/AC10.3
+		// below guard the content-widening branch (block content accepted, tool_use/
+		// thinking rejected), which is the behavior AC10 actually added.
 
 		it("AC10.2: tool:result with ContentBlock[] accepts text, image, document blocks", () => {
 			const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
@@ -2402,73 +2122,10 @@ describe("ClientConnection type and WS message schemas", () => {
 		});
 
 		describe("AC3: tool:cancel protocol - event handling infrastructure", () => {
-			it("AC3.1: event bus can emit agent:cancel events", () => {
-				const eventBus = new TypedEventEmitter();
-
-				let cancelEventReceived = false;
-				let receivedThreadId = "";
-
-				// Set up listener for agent:cancel events
-				eventBus.on("agent:cancel", (data) => {
-					cancelEventReceived = true;
-					receivedThreadId = data.thread_id;
-				});
-
-				// Emit the cancel event
-				eventBus.emit("agent:cancel", { thread_id: "thread-123" });
-
-				// Verify the event was received
-				expect(cancelEventReceived).toBe(true);
-				expect(receivedThreadId).toBe("thread-123");
-			});
-
-			it("AC3.2: event bus can emit client_tool_call:created events", () => {
-				const eventBus = new TypedEventEmitter();
-
-				let eventReceived = false;
-				let receivedCallId = "";
-
-				eventBus.on("client_tool_call:created", (data) => {
-					eventReceived = true;
-					receivedCallId = data.callId;
-				});
-
-				eventBus.emit("client_tool_call:created", {
-					threadId: "thread-456",
-					callId: "call-2",
-					entryId: "entry-1",
-					toolName: "test_tool",
-					arguments: {},
-				});
-
-				expect(eventReceived).toBe(true);
-				expect(receivedCallId).toBe("call-2");
-			});
-
-			it("AC3.3: handler can track subscribed clients for message delivery", () => {
-				const eventBus = new TypedEventEmitter();
-				const handler = createWebSocketHandler(eventBus);
-
-				const mockWs = new MockWebSocket() as unknown as ServerWebSocket<unknown>;
-				handler.open(mockWs);
-
-				// Subscribe to a thread
-				handler.message(
-					mockWs,
-					JSON.stringify({
-						type: "thread:subscribe",
-						thread_id: "thread-789",
-					}),
-				);
-
-				// Verify registry tracking works
-				const connections = handler.registry.getClientToolsForThread("thread-789");
-				// The connection should be tracked even if it has no tools
-				expect(typeof connections).toBe("object");
-				expect(connections instanceof Map).toBe(true);
-
-				handler.cleanup();
-			});
+			// Removed AC3.1/AC3.2 (constructed a bare TypedEventEmitter and asserted
+			// on()/emit() fire the listener — that guards @bound/shared's emitter, not
+			// this handler) and AC3.3 (asserted getClientToolsForThread returns a Map —
+			// a type-system guarantee). None can fail on a websocket-handler regression.
 
 			it("AC3.5: emitToolCancel with empty entries does not throw", () => {
 				const eventBus = new TypedEventEmitter();

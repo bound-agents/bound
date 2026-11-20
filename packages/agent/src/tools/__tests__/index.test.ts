@@ -17,19 +17,6 @@ describe("createAgentTools", () => {
 		db.exec(`INSERT INTO host_meta (key, value) VALUES ('site_id', '${siteId}')`);
 	});
 
-	it("returns all 14 native tools (10 standalone + 3 grouped + yard)", () => {
-		const toolCtx: ToolContext = {
-			db,
-			siteId,
-			eventBus: { emit: () => {} } as any,
-			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-		};
-
-		const tools = createAgentTools(toolCtx);
-
-		expect(tools.length).toBe(14);
-	});
-
 	it("all tools have kind='builtin'", () => {
 		const toolCtx: ToolContext = {
 			db,

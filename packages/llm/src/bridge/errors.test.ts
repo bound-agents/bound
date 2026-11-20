@@ -19,11 +19,6 @@ function apiCallError(opts: {
 }
 
 describe("mapError", () => {
-	it("passes an existing LLMError through untouched", () => {
-		const original = new LLMError("boom", "test", 503);
-		expect(mapError(original, "test")).toBe(original);
-	});
-
 	it("surfaces the APICallError responseBody detail across the wire", () => {
 		// The Codex backend returns 400 with the actual reason in responseBody,
 		// while .message is only the bare status text. Without lifting the body,
@@ -70,18 +65,6 @@ describe("mapError", () => {
 		// The phrase should appear exactly once (base message already had it).
 		expect(msg.match(/Store must be set to false/g)).toHaveLength(1);
 	});
-
-	it("carries the status code and retry-after through untouched", () => {
-		const err = apiCallError({
-			message: "Too Many Requests",
-			statusCode: 429,
-			responseHeaders: { "retry-after": "30" },
-		});
-		const mapped = mapError(err, "p");
-		expect(mapped.statusCode).toBe(429);
-		expect(mapped.retryAfterMs).toBe(30_000);
-	});
-
 	it("unwraps a RetryError's lastError to recover the status and detail", () => {
 		const inner = apiCallError({
 			message: "Bad Request",

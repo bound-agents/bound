@@ -289,23 +289,8 @@ describe("eviction host-liveness gate integration (R-LR2)", () => {
 			applyLWWReducer(dbB, entry);
 		}
 
-		// Run host B's eviction selector
-		const evictionTime = new Date(now.getTime() - EVICTION_TIMEOUT).toISOString();
-		const hostOfflineThreshold = new Date(now.getTime() - HOST_OFFLINE_TIMEOUT).toISOString();
-		const tasksToEvict = dbB
-			.query<Task, [string, string]>(
-				`SELECT t.*
-				 FROM tasks t
-				 LEFT JOIN hosts h ON h.site_id = t.claimed_by
-				 WHERE t.status = 'running'
-				   AND t.deleted = 0
-				   AND t.heartbeat_at < ?
-				   AND (
-					   h.site_id IS NULL
-					   OR COALESCE(h.modified_at, h.online_at) < ?
-				   )`,
-			)
-			.all(evictionTime, hostOfflineThreshold) as Task[];
+		// Run host B's eviction selector against the production statement.
+		const tasksToEvict = evictFrom(dbB, now);
 
 		// AC2.1: Should evict because both task heartbeat and host modified_at are stale
 		expect(tasksToEvict).toHaveLength(1);

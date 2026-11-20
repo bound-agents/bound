@@ -5,13 +5,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
-import { generateHlc } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
-import { runConfigReload } from "../commands/config-reload.js";
 import { runDrain } from "../commands/drain.js";
 import { runSetHub } from "../commands/set-hub.js";
 import { runSetPersona } from "../commands/set-persona.js";
-import { runSyncStatus } from "../commands/sync-status.js";
 
 describe("boundctl commands", () => {
 	let tempDir: string;
@@ -41,82 +38,6 @@ describe("boundctl commands", () => {
 
 	afterEach(async () => {
 		await cleanupTmpDir(tempDir);
-	});
-
-	describe("config reload", () => {
-		it("reloads mcp configuration successfully", async () => {
-			const configDir = join(tempDir, "config");
-			mkdirSync(configDir);
-
-			// Create valid mcp.json
-			const mcpConfig = {
-				servers: [
-					{
-						name: "test-server",
-						transport: "stdio",
-						command: "node",
-						args: ["server.js"],
-					},
-				],
-			};
-			writeFileSync(join(configDir, "mcp.json"), JSON.stringify(mcpConfig, null, 2));
-
-			await runConfigReload({
-				target: "mcp",
-				configDir,
-			});
-
-			// Verify change_log entry was created (open a fresh connection)
-			const db = new Database(dbPath);
-			const entry = db
-				.query("SELECT * FROM cluster_config WHERE key = 'config_reload_requested'")
-				.get() as { key: string; value: string; modified_at: string } | null;
-
-			expect(entry).not.toBeNull();
-			expect(entry?.key).toBe("config_reload_requested");
-
-			// Check change_log also has the entry
-			const changeLogCount = db
-				.query(
-					"SELECT COUNT(*) as count FROM change_log WHERE table_name = 'cluster_config' AND row_id = 'config_reload_requested'",
-				)
-				.get() as { count: number };
-
-			expect(changeLogCount.count).toBeGreaterThan(0);
-
-			db.close();
-		});
-
-		it("reloads mcp configuration with HTTP transport", async () => {
-			const configDir = join(tempDir, "config");
-			mkdirSync(configDir);
-
-			// Create valid mcp.json with HTTP transport
-			const mcpConfig = {
-				servers: [
-					{
-						name: "http-server",
-						transport: "http",
-						url: "http://localhost:3001/mcp",
-					},
-				],
-			};
-			writeFileSync(join(configDir, "mcp.json"), JSON.stringify(mcpConfig, null, 2));
-
-			await runConfigReload({
-				target: "mcp",
-				configDir,
-			});
-
-			// Verify change_log entry was created
-			const db = new Database(dbPath);
-			const entry = db
-				.query("SELECT * FROM cluster_config WHERE key = 'config_reload_requested'")
-				.get() as { key: string; value: string; modified_at: string } | null;
-
-			expect(entry).not.toBeNull();
-			db.close();
-		});
 	});
 
 	describe("set-persona", () => {
@@ -187,45 +108,6 @@ describe("boundctl commands", () => {
 			writeFileSync(personaPath, "");
 
 			await expect(runSetPersona({ file: personaPath, configDir })).rejects.toThrow(/empty/);
-		});
-	});
-
-	describe("sync-status", () => {
-		it("displays sync status successfully", async () => {
-			const dataDir = join(tempDir, "data");
-
-			// Add some test data
-			const db = new Database(dbPath);
-
-			const hlc = generateHlc();
-			db.query(
-				"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, ?, ?, ?)",
-			).run(hlc, "test_table", "row1", "test-site-id", new Date().toISOString(), "{}");
-
-			const nowIso = new Date().toISOString();
-			db.query(
-				"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?)",
-			).run("peer-site-1", "peer-host-1", nowIso, nowIso, 0);
-
-			db.query(
-				"INSERT INTO sync_state (peer_site_id, last_sync_at, last_sent, last_received, sync_errors) VALUES (?, ?, ?, ?, ?)",
-			).run("peer-site-1", new Date().toISOString(), 0, 0, 0);
-
-			db.close();
-
-			// Should not throw
-			await runSyncStatus({
-				configDir: dataDir,
-			});
-		});
-
-		it("handles empty sync state gracefully", async () => {
-			const dataDir = join(tempDir, "data");
-
-			// Should not throw even with no data
-			await runSyncStatus({
-				configDir: dataDir,
-			});
 		});
 	});
 

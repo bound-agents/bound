@@ -137,9 +137,6 @@ describe("Yard anchoring", () => {
 		]);
 	});
 });
-
-describe("yardTreeToFlow", () => {});
-
 describe("persisted Yard message reconstruction", () => {
 	it("reconstructs a multi-node topology from a historical Yard program without an execution payload", async () => {
 		const { reconstructCompletedYardExecutions } = await import("../yard-execution");
@@ -369,11 +366,6 @@ describe("message/live reconciliation", () => {
 		]);
 	});
 });
-
-describe("yardTreeToFlow visual metadata and compact tree layout", () => {});
-
-describe("Yard result convergence", () => {});
-
 describe("static Yard detail metadata", () => {
 	it("keeps complete literal arguments, prompts, and instructions for scrollable inspectors", async () => {
 		const { extractYardProgramTopology } = await import("../yard-execution");

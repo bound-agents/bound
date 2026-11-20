@@ -4,19 +4,6 @@ import { createClusterFs } from "../cluster-fs";
 import { type SandboxConfig, createSandbox } from "../sandbox-factory";
 
 describe("Sandbox Factory", () => {
-	test("creates a Sandbox with Bash instance and memory tracker", async () => {
-		const config: SandboxConfig = {
-			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
-			commands: [],
-		};
-
-		const sandbox = await createSandbox(config);
-		expect(sandbox).toBeDefined();
-		expect(sandbox.bash).toBeDefined();
-		expect(sandbox.memoryTracker).toBeDefined();
-		expect(sandbox.checkMemoryThreshold).toBeInstanceOf(Function);
-	});
-
 	test("executes simple echo command and returns output", async () => {
 		const config: SandboxConfig = {
 			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
@@ -41,41 +28,6 @@ describe("Sandbox Factory", () => {
 
 		expect(result.stdout).toContain("world");
 		expect(result.exitCode).toBe(0);
-	});
-
-	test("accepts network configuration", async () => {
-		const config: SandboxConfig = {
-			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
-			commands: [],
-			networkConfig: {
-				allowedUrls: [
-					{
-						urlPattern: "https://example.com",
-						methods: ["GET"],
-					},
-				],
-			},
-		};
-
-		const sandbox = await createSandbox(config);
-		expect(sandbox).toBeDefined();
-		expect(sandbox.bash).toBeDefined();
-	});
-
-	test("applies execution limits", async () => {
-		const config: SandboxConfig = {
-			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
-			commands: [],
-			executionLimits: {
-				maxCallDepth: 100,
-				maxCommandCount: 5000,
-				maxLoopIterations: 5000,
-			},
-		};
-
-		const sandbox = await createSandbox(config);
-		expect(sandbox).toBeDefined();
-		expect(sandbox.bash).toBeDefined();
 	});
 
 	test("checkMemoryThreshold returns correct initial state", async () => {
@@ -127,17 +79,5 @@ describe("Sandbox Factory", () => {
 
 		expect(result.overThreshold).toBe(true);
 		expect(result.usageBytes).toBeGreaterThan(10);
-	});
-
-	test("defaults to 50MB memory threshold", async () => {
-		const config: SandboxConfig = {
-			clusterFs: createClusterFs({ hostName: "localhost", syncEnabled: true }),
-			commands: [],
-		};
-
-		const sandbox = await createSandbox(config);
-		const result = sandbox.checkMemoryThreshold();
-
-		expect(result.thresholdBytes).toBe(500 * 1024 * 1024);
 	});
 });

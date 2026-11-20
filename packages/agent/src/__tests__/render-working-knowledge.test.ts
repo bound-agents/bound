@@ -475,35 +475,6 @@ describe("renderWorkingKnowledge — stable/varying split", () => {
 		});
 	});
 
-	describe("R-VC11(d) — no last_accessed_at side effects", () => {
-		it("accepts plain input and produces output with no DB access", () => {
-			const input: WorkingKnowledgeInput = {
-				pinned: [
-					{
-						key: "test_key",
-						value: "test value",
-						source: null,
-						modifiedAt: "2026-05-22T10:00:00Z",
-						tier: "pinned",
-						tag: "[pinned]",
-					} as StageEntry,
-				],
-				summaries: [],
-				staleChildrenBySummary: new Map(),
-				deltaKeys: new Set(),
-			};
-
-			expect(() => {
-				renderWorkingKnowledge(input);
-			}).not.toThrow();
-
-			const result = renderWorkingKnowledge(input);
-			expect(result).toBeDefined();
-			expect(result.stableLines).toBeArray();
-			expect(result.varyingLines).toBeArray();
-		});
-	});
-
 	// Summary cap + demote (volatile-prefix bloat fix). The stable prefix
 	// rendered EVERY tier='summary' entry at full 200-char gloss, uncapped — the
 	// largest growable slab in the cached prefix (166 entries / ~8.3k tok live).

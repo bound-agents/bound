@@ -1,5 +1,4 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { getLineCode, getLineColor } from "../../lib/metro-lines";
 import { installDom } from "../harness/dom";
 
 const dom = installDom();
@@ -16,7 +15,6 @@ describe("LineBadge", () => {
 		const span = target.querySelector("span");
 		expect(span).not.toBeNull();
 		// Index 3 is the Tozai line, code "T".
-		expect(getLineCode(3)).toBe("T");
 		expect(span?.textContent?.trim()).toBe("T");
 		expect(span?.getAttribute("aria-label")).toBe("Line T");
 		expect(span?.getAttribute("role")).toBe("img");
@@ -32,9 +30,8 @@ describe("LineBadge", () => {
 	it("paints the ring in the line's color", async () => {
 		const { target } = await mountBadge({ lineIndex: 1 });
 		const span = target.querySelector("span") as HTMLElement;
-		// jsdom normalizes the hex #C8331C to rgb(200, 51, 28) in the style attribute.
+		// jsdom normalizes the Marunouchi hex #C8331C to rgb(200, 51, 28) in the style attribute.
 		expect(span.style.borderColor).toBe("rgb(200, 51, 28)");
-		expect(getLineColor(1)).toBe("#C8331C");
 	});
 
 	it("scales diameter, font-size and ring width for compact size", async () => {
@@ -68,7 +65,6 @@ describe("LineBadge", () => {
 		// Index 10 wraps to 0 (code "G").
 		const { target } = await mountBadge({ lineIndex: 10 });
 		const span = target.querySelector("span");
-		expect(span?.textContent?.trim()).toBe(getLineCode(10));
-		expect(getLineCode(10)).toBe("G");
+		expect(span?.textContent?.trim()).toBe("G");
 	});
 });

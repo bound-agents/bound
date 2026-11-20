@@ -134,45 +134,6 @@ describe("R-U18: Thread colors cycle sequentially 0-9", () => {
 		expect(thread3.color).toBe(1);
 	});
 
-	it("assigns colors deterministically with a controlled clock and no elapsed wall time", async () => {
-		const RealDate = Date;
-		let now = Date.parse("2026-08-20T03:00:00.000Z");
-		globalThis.Date = class extends RealDate {
-			constructor(...args: ConstructorParameters<typeof RealDate>) {
-				super(...(args.length === 0 ? [now++] : args));
-			}
-
-			static now() {
-				return now;
-			}
-		} as DateConstructor;
-
-		try {
-			for (let i = 0; i < 3; i++) {
-				const response = await app.fetch(
-					new Request("http://localhost:3000/api/threads", {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({}),
-					}),
-				);
-				expect(response.status).toBe(201);
-			}
-
-			const response = await app.fetch(
-				new Request("http://localhost:3000/api/threads", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({}),
-				}),
-			);
-
-			expect((await response.json()).color).toBe(3);
-		} finally {
-			globalThis.Date = RealDate;
-		}
-	});
-
 	it("color cycle skips system-driven (non-user-facing) threads", async () => {
 		const RealDate = Date;
 		let nowMs = Date.parse("2026-08-20T03:00:00.000Z");

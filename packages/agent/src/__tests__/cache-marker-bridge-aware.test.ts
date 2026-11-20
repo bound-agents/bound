@@ -96,26 +96,4 @@ describe("maybePlaceCacheMarker — bridge-aware properties", () => {
 			{ numRuns: 200 },
 		);
 	});
-
-	it("is deterministic for every role prefix, developer run, and marker kind", () => {
-		fc.assert(
-			fc.property(
-				fc.array(nonDeveloperRoleArb, { minLength: 1, maxLength: 10 }),
-				fc.array(fc.constant("developer" as const), { minLength: 0, maxLength: 5 }),
-				markerKindArb,
-				(prefix, developers, kind) => {
-					const roles = [...prefix, ...developers];
-					const left = originals(roles);
-					const right = originals(roles);
-					const a = maybePlaceCacheMarker(left, kind, CAPS);
-					const b = maybePlaceCacheMarker(right, kind, CAPS);
-					return (
-						JSON.stringify(a) === JSON.stringify(b) &&
-						JSON.stringify(left) === JSON.stringify(right)
-					);
-				},
-			),
-			{ numRuns: 100 },
-		);
-	});
 });

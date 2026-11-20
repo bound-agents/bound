@@ -24,7 +24,7 @@ import type { SchedulerAction, SchedulerLike } from "rxjs";
 import type { MCPClient } from "../mcp-client";
 import { INTAKE_RECONCILIATION_STARTUP_GRACE_MS, RelayProcessor } from "../relay-processor";
 import { routeRelayRequest } from "../relay-router";
-import { sleep, waitFor } from "./helpers";
+import { waitFor } from "./helpers";
 
 // Mock MCPClient for testing
 class MockMCPClient implements Partial<MCPClient> {
@@ -237,25 +237,6 @@ describe("RelayProcessor", () => {
 			handle.stop();
 		});
 
-		it("creates RelayProcessor and returns stop handle", () => {
-			const mcpClients = new Map<string, MCPClient>();
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				createMockLogger(),
-				createMockEventBus(),
-			);
-
-			const handle = processor.start(10);
-			expect(handle).toBeDefined();
-			expect(handle.stop).toBeDefined();
-			expect(typeof handle.stop).toBe("function");
-
-			handle.stop();
-		});
-
 		it("polls pending durable_work entries on a regular interval", async () => {
 			const mockClient = new MockMCPClient(
 				"test-tool",
@@ -292,25 +273,6 @@ describe("RelayProcessor", () => {
 			handle.stop();
 
 			expect(getDurableWork(db, "entry-1")?.claim_state).toBe("consumed");
-		});
-
-		it("gracefully stops processing on stop()", async () => {
-			const mcpClients = new Map<string, MCPClient>();
-			const processor = new RelayProcessor(
-				db,
-				"target-site",
-				mcpClients,
-				createMockModelRouter(),
-				createMockLogger(),
-				createMockEventBus(),
-			);
-
-			const handle = processor.start(10);
-			await sleep(50);
-			handle.stop();
-
-			// Verify no errors during shutdown
-			expect(true).toBe(true);
 		});
 	});
 

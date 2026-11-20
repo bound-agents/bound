@@ -100,17 +100,6 @@ describe("messages.metadata property bag", () => {
 		return messageId;
 	}
 
-	it("schema exposes messages.metadata column", () => {
-		const cols = db
-			.query<{ name: string; type: string }, []>(
-				"SELECT name, type FROM pragma_table_info('messages')",
-			)
-			.all();
-		const meta = cols.find((c) => c.name === "metadata");
-		expect(meta).toBeDefined();
-		expect(meta?.type.toUpperCase()).toBe("TEXT");
-	});
-
 	it("insertRow accepts a metadata field and round-trips through the DB", () => {
 		const { threadId } = seedThread();
 		const messageId = insertMessage(threadId, {

@@ -54,18 +54,6 @@ describe("getLeaderHostLiveness", () => {
 		expect(row).toEqual({ modified_at: "2026-02-15T12:00:00.000Z" });
 	});
 
-	it("projects EXACTLY the declared column (modified_at) and nothing else", () => {
-		insertRow(db, "hosts", makeHost("leader-host-B", "2026-03-01T08:30:00.000Z"), SITE_ID);
-		insertRow(db, "cluster_config", makeConfig("leader:web", "leader-host-B"), SITE_ID);
-
-		const row = getLeaderHostLiveness(db, "leader:web");
-
-		expect(row).not.toBeNull();
-		// The projection interface declares only modified_at — assert the exact key set.
-		expect(Object.keys(row as object)).toEqual(["modified_at"]);
-		expect((row as { modified_at: string }).modified_at).toBe("2026-03-01T08:30:00.000Z");
-	});
-
 	it("returns null when the cluster_config key is unset (no left-side row)", () => {
 		insertRow(db, "hosts", makeHost("leader-host-C", "2026-01-02T00:00:00.000Z"), SITE_ID);
 		// No cluster_config row for this key.

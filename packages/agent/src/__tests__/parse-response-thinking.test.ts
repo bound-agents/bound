@@ -2,26 +2,12 @@ import { describe, expect, it } from "bun:test";
 import type { StreamChunk } from "@bound/llm";
 
 /**
- * Test that parseResponseChunks correctly handles thinking chunks:
+ * Test that parseStreamChunks correctly handles thinking chunks:
  * - Thinking content is collected into a separate field
  * - Thinking content is NOT included in textContent
  * - Usage is still extracted correctly
- *
- * Since parseResponseChunks is a private method on MainAgentLoop, we test the
- * exported parseStreamChunks helper function instead.
  */
-let parseStreamChunks: any;
-try {
-	const mod = await import("../agent-loop-utils");
-	parseStreamChunks = mod.parseStreamChunks;
-} catch (error) {
-	console.error(
-		"Failed to import parseStreamChunks:",
-		error,
-		error instanceof Error ? error.stack : undefined,
-	);
-	// Will be defined after implementation
-}
+import { parseStreamChunks } from "../agent-loop-utils";
 
 describe("parseStreamChunks thinking handling", () => {
 	it("collects thinking content separately from text content", () => {

@@ -122,23 +122,6 @@ describe("trace-collector", () => {
 			expect(carrier).toBeNull();
 		});
 
-		it("injects carrier format when called within context", async () => {
-			const collector = createScopedTraceCollector();
-			const tracer = collector.getTracer("test.tracer");
-
-			const span = tracer.startSpan("test-span");
-
-			// The function uses the global trace.getActiveSpan(), so set one via context
-			// But note: this requires global telemetry setup, not a scoped collector.
-			// For this test, we verify the injection format would be correct if a global span exists.
-			span.end();
-			await collector.flush();
-
-			// Test that the function returns null when no global span is active
-			const result = injectTraceContext();
-			expect(result).toBeNull();
-		});
-
 		it.each([
 			{ traceId: "bad", spanId: "b7ad6b7169203331", traceFlags: 1 },
 			{ traceId: "00000000000000000000000000000000", spanId: "b7ad6b7169203331", traceFlags: 1 },

@@ -116,34 +116,6 @@ describe("HLC Change Log", () => {
 		expect(hlcSiteId).toBe(siteId);
 	});
 
-	it("ORDER BY hlc preserves insertion order", () => {
-		const now = new Date().toISOString();
-		const ids: string[] = [];
-
-		for (let i = 0; i < 3; i++) {
-			const id = randomUUID();
-			ids.push(id);
-			insertRow(
-				db,
-				"users",
-				{
-					id,
-					display_name: `User${i}`,
-					first_seen_at: now,
-					modified_at: now,
-					deleted: 0,
-				},
-				siteId,
-			);
-		}
-
-		const entries = db.query("SELECT row_id FROM change_log ORDER BY hlc ASC").all() as Array<{
-			row_id: string;
-		}>;
-
-		expect(entries.map((e) => e.row_id)).toEqual(ids);
-	});
-
 	it("fresh install schema has hlc TEXT PRIMARY KEY on change_log", () => {
 		const tableInfo = db.query("PRAGMA table_info(change_log)").all() as Array<{
 			name: string;

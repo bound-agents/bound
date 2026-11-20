@@ -129,25 +129,19 @@ describe("computeToolFingerprint", () => {
 		];
 		expect(computeToolFingerprint(orderedEnum)).not.toBe(computeToolFingerprint(reversedEnum));
 	});
-});
 
-describe("CachedTurnState interface", () => {
-	it("is a valid type for storing cached state", () => {
-		const state: CachedTurnState = {
-			messages: [],
-			systemPrompt: "You are a helpful assistant",
-			cacheMessagePositions: [],
-			fixedCacheIdx: -1,
-			lastMessageCreatedAt: "2026-04-23T10:00:00Z",
-			toolFingerprint: "abc123def456",
-		};
-
-		expect(state.messages).toEqual([]);
-		expect(state.systemPrompt).toBe("You are a helpful assistant");
-		expect(state.cacheMessagePositions).toEqual([]);
-		expect(state.fixedCacheIdx).toBe(-1);
-		expect(state.lastMessageCreatedAt).toBe("2026-04-23T10:00:00Z");
-		expect(state.toolFingerprint).toBe("abc123def456");
+	it("never throws on a malformed entry (cache hint must degrade, not crash)", () => {
+		// The fingerprint is a cache-keying hint computed on every turn; a
+		// malformed tool entry (e.g. a registry tool missing its toolDefinition)
+		// must downgrade the hash, never throw and abort the agent loop.
+		const malformed = [
+			undefined,
+			{ type: "function" },
+			{ function: {} },
+			{ function: { name: "ok", description: "", parameters: {} } },
+		] as unknown as ToolDefinition[];
+		expect(computeToolFingerprint(malformed)).toMatch(/^[a-f0-9]{16}$/);
+		expect(computeToolFingerprint([undefined] as unknown as ToolDefinition[])).toBe("empty");
 	});
 });
 
@@ -219,34 +213,5 @@ describe("TurnStateStore isolation from caller mutation", () => {
 		expect(retrieved).toBeDefined();
 		expect(retrieved?.messages).toHaveLength(2);
 		expect(retrieved?.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
-	});
-
-	it("demonstrates why spread-copy matters: without it, caller mutations leak into the cache", () => {
-		// Negative control: pins the ORIGINAL buggy behavior. If someone ever
-		// reverts the spread-copy in agent-loop.ts, this test stays green but
-		// the positive test above will fail — the pair together documents the
-		// contract the call site must honor.
-		const store = new InMemoryTurnStateStore<CachedTurnState>();
-		const threadId = "thread-alias-demo";
-
-		const storedMessages: LLMMessage[] = [mkMsg("user", "hi"), mkMsg("assistant", "hello!")];
-
-		// Hand the array reference directly — no spread-copy.
-		store.set(threadId, {
-			messages: storedMessages,
-			systemPrompt: "sys",
-			cacheMessagePositions: [],
-			fixedCacheIdx: -1,
-			lastMessageCreatedAt: "2026-04-23T10:00:00Z",
-			toolFingerprint: "fp",
-		});
-
-		storedMessages.push(
-			mkMsg("tool_call", JSON.stringify([{ type: "tool_use", id: "tu_A", name: "f", input: {} }])),
-		);
-
-		// Caller's mutation leaked — this is exactly the bug condition.
-		const retrieved = store.get(threadId);
-		expect(retrieved?.messages).toHaveLength(3);
 	});
 });

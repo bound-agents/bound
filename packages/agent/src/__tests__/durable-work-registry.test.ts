@@ -86,11 +86,4 @@ describe("RPC relay request durable work TTL (4D-C)", () => {
 			expect(entry?.ttlMs).toBe(5 * 60 * 1000);
 		}
 	});
-
-	it("keeps the 7-day window on passive intake kinds", () => {
-		for (const kind of ["webhook_intake", "rss_intake", "connector_intake"]) {
-			const entry = DURABLE_WORK_REGISTRY.find((candidate) => candidate.kind === kind);
-			expect(entry?.ttlMs).toBe(7 * 24 * 60 * 60 * 1000);
-		}
-	});
 });

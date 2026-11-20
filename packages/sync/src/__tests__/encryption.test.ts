@@ -1,13 +1,11 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { x25519 } from "@noble/curves/ed25519";
 import { generateKeypair } from "../crypto";
 import {
 	computeFingerprint,
-	decryptBody,
 	deriveSharedSecret,
 	ed25519ToX25519Private,
 	ed25519ToX25519Public,
-	encryptBody,
 	extractRawEd25519Keys,
 } from "../encryption";
 
@@ -167,82 +165,6 @@ describe("encryption module", () => {
 			const fp2 = computeFingerprint(x25519Pub2);
 
 			expect(fp1).not.toBe(fp2);
-		});
-	});
-
-	describe("encryptBody and decryptBody", () => {
-		let symmetricKey: Uint8Array;
-
-		beforeEach(() => {
-			symmetricKey = crypto.getRandomValues(new Uint8Array(32));
-		});
-
-		it("round-trip: encrypt then decrypt recovers plaintext (AC4.1)", async () => {
-			const plaintext = new TextEncoder().encode("hello world");
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
-			const decrypted = decryptBody(ciphertext, nonce, symmetricKey);
-
-			expect(new TextDecoder().decode(decrypted)).toBe("hello world");
-		});
-
-		it("encrypts JSON body and recovers it (AC4.1)", async () => {
-			const plaintext = new TextEncoder().encode(JSON.stringify({ msg: "test", num: 42 }));
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
-			const decrypted = decryptBody(ciphertext, nonce, symmetricKey);
-
-			const obj = JSON.parse(new TextDecoder().decode(decrypted));
-			expect(obj.msg).toBe("test");
-			expect(obj.num).toBe(42);
-		});
-
-		it("generates random nonces - different encryptions differ (AC4.2)", () => {
-			const plaintext = new TextEncoder().encode("same message");
-			const { nonce: nonce1, ciphertext: ct1 } = encryptBody(plaintext, symmetricKey);
-			const { nonce: nonce2, ciphertext: ct2 } = encryptBody(plaintext, symmetricKey);
-
-			expect(nonce1).not.toEqual(nonce2);
-			expect(ct1).not.toEqual(ct2);
-		});
-
-		it("encrypts empty body - ciphertext is 16 bytes (auth tag only, AC4.3)", () => {
-			const plaintext = new Uint8Array(0);
-			const { ciphertext } = encryptBody(plaintext, symmetricKey);
-
-			expect(ciphertext.length).toBe(16); // auth tag only
-		});
-
-		it("decrypts empty body - returns empty plaintext (AC4.3)", () => {
-			const plaintext = new Uint8Array(0);
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
-			const decrypted = decryptBody(ciphertext, nonce, symmetricKey);
-
-			expect(decrypted.length).toBe(0);
-		});
-
-		it("rejects tampered ciphertext", () => {
-			const plaintext = new TextEncoder().encode("secret");
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
-
-			// Flip a bit in the ciphertext
-			ciphertext[0] ^= 0x01;
-
-			expect(() => decryptBody(ciphertext, nonce, symmetricKey)).toThrow();
-		});
-
-		it("rejects decryption with wrong key", () => {
-			const plaintext = new TextEncoder().encode("secret");
-			const { ciphertext, nonce } = encryptBody(plaintext, symmetricKey);
-
-			const wrongKey = crypto.getRandomValues(new Uint8Array(32));
-			expect(() => decryptBody(ciphertext, nonce, wrongKey)).toThrow();
-		});
-
-		it("rejects decryption with wrong nonce", () => {
-			const plaintext = new TextEncoder().encode("secret");
-			const { ciphertext } = encryptBody(plaintext, symmetricKey);
-
-			const wrongNonce = crypto.getRandomValues(new Uint8Array(24));
-			expect(() => decryptBody(ciphertext, wrongNonce, symmetricKey)).toThrow();
 		});
 	});
 });

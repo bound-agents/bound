@@ -67,35 +67,6 @@ describe("turns-observability — UUID primary key migration", () => {
 		expect(turnId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 	});
 
-	it("recordContextDebug accepts string turn ids", () => {
-		applyMetricsSchema(db);
-
-		const turnId = recordTurn(db, {
-			model_id: "test-model",
-			tokens_in: 10,
-			tokens_out: 20,
-			created_at: "2026-04-26T12:00:00.000Z",
-		});
-
-		const debug: ContextDebugInfo = {
-			contextWindow: 200000,
-			totalEstimated: 1000,
-			model: "test-model",
-			sections: [{ name: "system", tokens: 500 }],
-			budgetPressure: false,
-			truncated: 0,
-		};
-
-		// Should not throw on a string id
-		recordContextDebug(db, turnId, debug);
-
-		const row = db.query("SELECT context_debug FROM turns WHERE id = ?").get(turnId) as {
-			context_debug: string | null;
-		};
-		expect(row.context_debug).toBeTruthy();
-		expect(JSON.parse(row.context_debug as string).totalEstimated).toBe(1000);
-	});
-
 	it("round-trips finishReason and maxOutputTokens through context_debug", () => {
 		applyMetricsSchema(db);
 

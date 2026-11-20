@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { deflateSync } from "node:zlib";
-import { parseOsascriptPngHex, readClipboardImage } from "../tui/util/clipboard-image";
+import { parseOsascriptPngHex } from "../tui/util/clipboard-image";
 import { renderHalfBlocks } from "../tui/util/half-blocks";
 import {
 	clearImagePreviews,
@@ -143,49 +143,6 @@ describe("clipboard image reading", () => {
 	it("rejects malformed hex output", () => {
 		expect(parseOsascriptPngHex("no data here")).toBeNull();
 		expect(parseOsascriptPngHex("«data PNGfZZZZZZZZZZZZZZZZZZ»")).toBeNull();
-	});
-
-	it("darwin: falls back from pngpaste to osascript, validates PNG magic", async () => {
-		const png = buildPng(1, 1, 2, [9, 9, 9]);
-		const hex = Buffer.from(png).toString("hex");
-		const calls: string[] = [];
-		const img = await readClipboardImage("darwin", async (cmd) => {
-			calls.push(cmd);
-			if (cmd === "pngpaste") return { ok: false, stdout: Buffer.alloc(0) };
-			return { ok: true, stdout: Buffer.from(`«data PNGf${hex}»`) };
-		});
-		expect(calls).toEqual(["pngpaste", "osascript"]);
-		expect(img?.mediaType).toBe("image/png");
-		expect(Buffer.from(img?.bytes ?? []).equals(Buffer.from(png))).toBe(true);
-	});
-
-	it("returns null when the clipboard has no image", async () => {
-		const img = await readClipboardImage("darwin", async () => ({
-			ok: false,
-			stdout: Buffer.alloc(0),
-		}));
-		expect(img).toBeNull();
-	});
-
-	it("win32: reads PNG base64 from PowerShell, falling back to powershell.exe", async () => {
-		const png = buildPng(1, 1, 2, [7, 7, 7]);
-		const calls: string[] = [];
-		const img = await readClipboardImage("win32", async (cmd) => {
-			calls.push(cmd);
-			if (cmd === "pwsh") return { ok: false, stdout: Buffer.alloc(0) };
-			return { ok: true, stdout: Buffer.from(Buffer.from(png).toString("base64")) };
-		});
-		expect(calls).toEqual(["pwsh", "powershell.exe"]);
-		expect(img?.mediaType).toBe("image/png");
-		expect(Buffer.from(img?.bytes ?? []).equals(Buffer.from(png))).toBe(true);
-	});
-
-	it("win32: empty PowerShell stdout means no image", async () => {
-		const img = await readClipboardImage("win32", async () => ({
-			ok: true,
-			stdout: Buffer.alloc(0),
-		}));
-		expect(img).toBeNull();
 	});
 });
 

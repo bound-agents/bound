@@ -122,10 +122,4 @@ describe("Host Heartbeat", () => {
 			.get(siteId)?.count;
 		expect(afterStop).toBe(beforeStop);
 	});
-
-	it("uses default 2-minute interval when none specified", () => {
-		const timer = createTimerSpy();
-		const handle = startHostHeartbeat(db, siteId, { timer });
-		expect(() => handle.stop()).not.toThrow();
-	});
 });

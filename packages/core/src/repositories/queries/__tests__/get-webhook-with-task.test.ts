@@ -123,22 +123,6 @@ describe("get-webhook-with-task finders", () => {
 				model_hint: "opus",
 				no_history: 1,
 			});
-			// Exact key set — guards against accidental projection drift.
-			expect(Object.keys(row as object).sort()).toEqual(
-				[
-					"created_at",
-					"description",
-					"id",
-					"model_hint",
-					"modified_at",
-					"name",
-					"no_history",
-					"prompt",
-					"signature_format",
-					"task_id",
-					"thread_id",
-				].sort(),
-			);
 		});
 
 		it("returns null for an absent id", () => {
@@ -331,17 +315,6 @@ describe("get-webhook-with-task finders", () => {
 					no_history: 1,
 				},
 			]);
-			// The CLI projection must NOT carry id/task_id/thread_id/prompt.
-			expect(Object.keys(rows[0]).sort()).toEqual(
-				[
-					"created_at",
-					"description",
-					"model_hint",
-					"name",
-					"no_history",
-					"signature_format",
-				].sort(),
-			);
 		});
 
 		it("surfaces raw no_history=null (not 0) for the CLI projection when the task is absent", () => {

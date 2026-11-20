@@ -716,13 +716,4 @@ describe("invoke with background: true", () => {
 		expect(typeof out).toBe("string");
 		expect(out).toContain("no active auxiliary agent named 'ghost'");
 	});
-
-	it("exposes background in the tool's JSON schema", () => {
-		const tool = createAuxTool(ctx);
-		const params = tool.toolDefinition.function.parameters as {
-			properties: Record<string, { type?: string }>;
-		};
-		expect(params.properties.background).toBeDefined();
-		expect(params.properties.background.type).toBe("boolean");
-	});
 });

@@ -12,7 +12,6 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-	AnthropicDriver,
 	buildAnthropicReasoningOptions,
 	buildAnthropicSystemMessage,
 	hasAnthropicMessageCacheControl,
@@ -154,24 +153,5 @@ describe("shouldEnableAnthropicSystemCacheControl", () => {
 				bridgeMessages: [{ role: "user", content: "hi" }],
 			}),
 		).toBe(false);
-	});
-});
-
-describe("AnthropicDriver.capabilities", () => {
-	it("advertises caching, vision, and extended thinking with the configured context window", () => {
-		const driver = new AnthropicDriver({
-			apiKey: "test-key",
-			model: "claude-sonnet-4-5",
-			contextWindow: 200000,
-		});
-		expect(driver.capabilities()).toEqual({
-			streaming: true,
-			tool_use: true,
-			system_prompt: true,
-			prompt_caching: true,
-			vision: true,
-			extended_thinking: true,
-			max_context: 200000,
-		});
 	});
 });

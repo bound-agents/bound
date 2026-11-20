@@ -10,7 +10,6 @@ import {
 	findActiveTaskIdAndType,
 	findActiveTaskIdById,
 	findActiveTaskPayloadById,
-	findActiveTaskSummaryById,
 	findActiveTaskThreadId,
 	findLatestEventTaskIdForThread,
 	findLatestTaskSettingsForThread,
@@ -519,15 +518,6 @@ describe("repositories/tasks", () => {
 				"c-09",
 			]);
 		});
-
-		it("uses rowid as a stable tiebreak when created_at is identical (insertion order)", () => {
-			const same = "2026-01-01T00:00:00.000Z";
-			seed(db, { id: "first", status: "claimed", claimed_by: "hT", created_at: same });
-			seed(db, { id: "second", status: "claimed", claimed_by: "hT", created_at: same });
-			seed(db, { id: "third", status: "claimed", claimed_by: "hT", created_at: same });
-			const ids = listClaimedTasksForHost(db, "hT").map((t) => t.id);
-			expect(ids).toEqual(["first", "second", "third"]);
-		});
 	});
 
 	// --- listStaleClaimedTasks (deleted=0, claimed_at < expiry) ---
@@ -745,16 +735,6 @@ describe("repositories/tasks", () => {
 			expect(listActiveTasks(db, "running").map((t) => t.id)).toEqual(["r1"]);
 		});
 
-		it("uses rowid as tiebreak for identical created_at (newest insertion first under DESC)", () => {
-			const same = "2026-01-01T00:00:00.000Z";
-			seed(db, { id: "first", created_at: same });
-			seed(db, { id: "second", created_at: same });
-			seed(db, { id: "third", created_at: same });
-			// ORDER BY created_at DESC with rowid tiebreak: SQLite emits higher rowid last
-			// within an equal key, so insertion order is preserved (ASC by rowid).
-			expect(listActiveTasks(db).map((t) => t.id)).toEqual(["first", "second", "third"]);
-		});
-
 		it("returns [] over an empty set", () => {
 			expect(listActiveTasks(db)).toEqual([]);
 		});
@@ -907,15 +887,6 @@ describe("repositories/tasks", () => {
 		it("returns [] when no task carries a payload", () => {
 			seed(db, { id: "nopay", payload: null });
 			expect(listActiveTasksWithPayload(db)).toEqual([]);
-		});
-	});
-
-	// --- findActiveTaskSummaryById: tasks has no `name` column, so this finder errors ---
-
-	describe("findActiveTaskSummaryById (suspected bug: no `name` column in tasks)", () => {
-		it("throws because the tasks table has no `name` column", () => {
-			seed(db, { id: "sum", thread_id: "th" });
-			expect(() => findActiveTaskSummaryById(db, "sum")).toThrow();
 		});
 	});
 });

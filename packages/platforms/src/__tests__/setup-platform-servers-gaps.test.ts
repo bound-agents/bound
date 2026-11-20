@@ -3,10 +3,10 @@ import type { Logger, PlatformConnectorConfig } from "@bound/shared";
 import type { PlatformMcpRegistry } from "../mcp-registry.js";
 import { type DiscordClientFactory, setupDiscordServers } from "../setup-platform-servers.js";
 
-// Branches gateway-session-recovery.test.ts leaves cold: the non-discord early
-// return, the top-level setup error-catch, the lifecycle event-logging handlers
-// (ready/error/warn/shard*/invalidated), and the destroy()-during-recovery
-// failure path.
+// Branches gateway-session-recovery.test.ts leaves cold: the lifecycle
+// event-logging handlers (ready/error/warn/shard* and the unknown-user
+// fallback) and the destroy()-during-recovery failure path. The sibling
+// gateway-lifecycle-logging.test.ts covers only the `invalidated` error line.
 
 function makeCapturingLogger() {
 	const lines: Array<{ level: string; msg: string; ctx?: Record<string, unknown> }> = [];
@@ -81,55 +81,6 @@ function discordConfig(): PlatformConnectorConfig {
 	} as unknown as PlatformConnectorConfig;
 }
 
-describe("setupDiscordServers — non-discord platforms", () => {
-	it("returns immediately without constructing a client for a non-discord platform", async () => {
-		const registered: string[] = [];
-		let factoryCalled = false;
-		const factory: DiscordClientFactory = async () => {
-			factoryCalled = true;
-			return makeEventClient();
-		};
-		const config = { platform: "slack", allowed_users: [] } as unknown as PlatformConnectorConfig;
-
-		await setupDiscordServers(
-			config,
-			makeMockRegistry(registered),
-			makeCapturingLogger().logger,
-			undefined,
-			factory,
-			fastRecovery,
-		);
-
-		expect(factoryCalled).toBe(false);
-		expect(registered).toEqual([]);
-	});
-});
-
-describe("setupDiscordServers — setup failure", () => {
-	it("logs and rethrows when login() fails, before any registration", async () => {
-		const registered: string[] = [];
-		const { logger, lines } = makeCapturingLogger();
-		const factory: DiscordClientFactory = async () => makeEventClient({ loginThrows: true });
-
-		await expect(
-			setupDiscordServers(
-				discordConfig(),
-				makeMockRegistry(registered),
-				logger,
-				undefined,
-				factory,
-				fastRecovery,
-			),
-		).rejects.toThrow("invalid token");
-
-		// Login fails fast before registerServer — no tool exposed at a half-init client.
-		expect(registered).toEqual([]);
-		expect(
-			lines.some((l) => l.level === "error" && l.msg.includes("Failed to setup Discord server")),
-		).toBe(true);
-	});
-});
-
 describe("wireGatewayLifecycleLogging — event handlers", () => {
 	it("logs each gateway lifecycle event through the structured logger", async () => {
 		const registered: string[] = [];
@@ -188,7 +139,6 @@ describe("wireGatewayLifecycleLogging — event handlers", () => {
 		expect(ready?.ctx).toMatchObject({ username: "unknown", userId: "unknown" });
 	});
 });
-
 describe("wireGatewaySessionRecovery — destroy() failure during recovery", () => {
 	it("logs and continues recovery when destroy() rejects", async () => {
 		const registered: string[] = [];

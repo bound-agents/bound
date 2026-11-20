@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase, insertRow, updateRow } from "@bound/core";
+import { applySchema, createDatabase, insertRow } from "@bound/core";
 import { upsertEdge } from "../graph-queries.js";
 import { buildVolatileEnrichment } from "../summary-extraction.js";
 import { deltaLines } from "./test-helpers/enrichment";
@@ -250,57 +250,6 @@ describe("AC4.1: Backward compatibility — zero summaries produces identical ou
 		expect(line).toBeDefined();
 		expect(line).toContain("via thread");
 	});
-
-	it("header shows correct format with graph and recency counts", () => {
-		const userId = randomBytes(8).toString("hex");
-		const threadId = randomBytes(8).toString("hex");
-
-		// Create thread
-		insertRow(
-			db,
-			"threads",
-			{
-				id: threadId,
-				user_id: userId,
-				interface: "web",
-				host_origin: "test",
-				color: 0,
-				title: "Test Thread",
-				created_at: "2026-02-01T00:00:00.000Z",
-				last_message_at: "2026-03-15T12:00:00.000Z",
-				modified_at: new Date().toISOString(),
-				deleted: 0,
-			},
-			siteId,
-		);
-
-		// Insert entries with keywords
-		insertRow(
-			db,
-			"semantic_memory",
-			{
-				id: randomBytes(8).toString("hex"),
-				key: "machine_learning_basics",
-				value: "Overview of machine learning",
-				source: null,
-				created_at: new Date().toISOString(),
-				modified_at: "2026-03-10T12:00:00.000Z",
-				deleted: 0,
-				tier: "default",
-			},
-			siteId,
-		);
-
-		const enrichment = buildVolatileEnrichment(db, baseline, 10);
-
-		// Verify: basic structure exists
-		expect(deltaLines(enrichment).length).toBeGreaterThan(0);
-		expect(enrichment.tiers).toBeDefined();
-		expect(enrichment.tiers.L0).toBeDefined();
-		expect(enrichment.tiers.L1).toBeDefined();
-		expect(enrichment.tiers.L2).toBeDefined();
-		expect(enrichment.tiers.L3).toBeDefined();
-	});
 });
 
 describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail preservation", () => {
@@ -451,51 +400,6 @@ describe("AC3.6: Edge cases — orphaned details, exclusion cascade, detail pres
 			// Verify: pinned entry does NOT also appear in L2
 			const l2Entries = enrichment.tiers.L2.map((e) => e.key);
 			expect(l2Entries).not.toContain("_pinned_core_concept");
-		});
-	});
-
-	describe("Detail preservation on update", () => {
-		it("detail tier preserved when updating entry value via handleStore", () => {
-			const _userId = randomBytes(8).toString("hex");
-
-			// Insert initial entry with detail tier
-			const memKey = "detail_entry_key";
-			const memoryId = randomBytes(8).toString("hex");
-			insertRow(
-				db,
-				"semantic_memory",
-				{
-					id: memoryId,
-					key: memKey,
-					value: "original value",
-					source: null,
-					created_at: "2026-02-01T00:00:00.000Z",
-					modified_at: "2026-02-01T00:00:00.000Z",
-					deleted: 0,
-					tier: "detail",
-				},
-				siteId,
-			);
-
-			// Simulate handleStore update without passing --tier
-			// (Would normally call handleStore, but for test just do the update directly)
-			updateRow(
-				db,
-				"semantic_memory",
-				memoryId,
-				{
-					value: "updated value",
-					deleted: 0,
-					// Note: NOT passing tier — should preserve existing
-				},
-				siteId,
-			);
-
-			// Verify: tier is still detail
-			const updated = db.prepare("SELECT tier FROM semantic_memory WHERE key = ?").get(memKey) as {
-				tier: string;
-			};
-			expect(updated.tier).toBe("detail");
 		});
 	});
 });

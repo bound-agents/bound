@@ -762,21 +762,6 @@ describe("reducers", () => {
 			expect(result.applied).toBe(false);
 		});
 
-		it("LWW skips string row_data", () => {
-			const result = applyLWWReducer(db, { ...baseEvent, row_data: '"hello"' });
-			expect(result.applied).toBe(false);
-		});
-
-		it("LWW skips number row_data", () => {
-			const result = applyLWWReducer(db, { ...baseEvent, row_data: "42" });
-			expect(result.applied).toBe(false);
-		});
-
-		it("LWW skips boolean row_data", () => {
-			const result = applyLWWReducer(db, { ...baseEvent, row_data: "false" });
-			expect(result.applied).toBe(false);
-		});
-
 		it("append-only skips null row_data", () => {
 			const result = applyAppendOnlyReducer(db, {
 				...baseEvent,

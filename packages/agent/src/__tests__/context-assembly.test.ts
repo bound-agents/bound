@@ -12,7 +12,6 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import fc from "fast-check";
 import {
 	CONTEXT_SAFETY_MARGIN_FLOOR,
-	CONTEXT_SAFETY_MARGIN_RATIO,
 	type VolatileContext,
 	applyActualUsageToContextDebug,
 	assembleContext,
@@ -74,16 +73,6 @@ describe("Context Assembly Pipeline", () => {
 		if (tmpDir) {
 			await cleanupTmpDir(tmpDir);
 		}
-	});
-
-	it("should return an array of LLMMessages", async () => {
-		const { messages } = assembleContext({
-			db,
-			threadId,
-			userId,
-		});
-
-		expect(Array.isArray(messages)).toBe(true);
 	});
 
 	describe("systemPrompt separation", () => {
@@ -201,44 +190,6 @@ describe("Context Assembly Pipeline", () => {
 		});
 	});
 
-	it("should assemble context with message history", async () => {
-		// Insert a user message
-		const msgId = randomUUID();
-		db.run(
-			"INSERT INTO messages (id, thread_id, role, content, model_id, tool_name, created_at, modified_at, host_origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			[
-				msgId,
-				threadId,
-				"user",
-				"Hello",
-				null,
-				null,
-				new Date().toISOString(),
-				new Date().toISOString(),
-				"local",
-			],
-		);
-
-		const { messages } = assembleContext({
-			db,
-			threadId,
-			userId,
-		});
-
-		expect(Array.isArray(messages)).toBe(true);
-	});
-
-	it("should support no_history mode", async () => {
-		const { messages } = assembleContext({
-			db,
-			threadId,
-			userId,
-			noHistory: true,
-		});
-
-		expect(Array.isArray(messages)).toBe(true);
-	});
-
 	it("should inject persona from the cluster_config row", async () => {
 		const personaContent =
 			"You are a specialized technical assistant focused on system architecture.";
@@ -258,20 +209,6 @@ describe("Context Assembly Pipeline", () => {
 		expect(systemPrompt).toContain(personaContent);
 
 		db.run("DELETE FROM cluster_config WHERE key = 'persona'");
-	});
-
-	it("should work without persona when the cluster_config row is absent", async () => {
-		db.run("DELETE FROM cluster_config WHERE key = 'persona'");
-
-		const { messages } = assembleContext({
-			db,
-			threadId,
-			userId,
-		});
-
-		// Should still have system messages but without persona
-		expect(Array.isArray(messages)).toBe(true);
-		expect(messages.length > 0).toBe(true);
 	});
 
 	it("reflects a persona row edit on the next assembly (no stale cache)", async () => {
@@ -1745,11 +1682,6 @@ describe("Context Assembly Pipeline", () => {
 			expect(computeSafetyMargin(1_000)).toBe(CONTEXT_SAFETY_MARGIN_FLOOR);
 			// 25600 is the boundary: 2% = 512 exactly
 			expect(computeSafetyMargin(25_600)).toBe(512);
-		});
-
-		it("constants are the documented values", () => {
-			expect(CONTEXT_SAFETY_MARGIN_RATIO).toBe(0.02);
-			expect(CONTEXT_SAFETY_MARGIN_FLOOR).toBe(512);
 		});
 
 		it("debug metadata exposes safetyMargin and effectiveBudget", () => {
@@ -3295,26 +3227,6 @@ This skill reviews pull requests.`;
 
 			// Verify debug.crossThreadSources is undefined (no other threads exist)
 			expect(result.debug.crossThreadSources).toBeUndefined();
-		});
-
-		it("metro-interchange-ui.AC3.7: backward compatibility — old turns without crossThreadSources field render gracefully", () => {
-			// Simulate old ContextDebugInfo JSON without crossThreadSources field
-			const oldDebugInfo = {
-				contextWindow: 128000,
-				totalEstimated: 5000,
-				model: "claude-opus",
-				sections: [],
-				budgetPressure: false,
-				truncated: 0,
-			};
-
-			// Parse and verify accessing undefined field doesn't crash
-			const parsed = JSON.parse(JSON.stringify(oldDebugInfo));
-			expect(parsed.crossThreadSources).toBeUndefined();
-			expect(() => {
-				// Should not throw
-				const _unused = parsed.crossThreadSources ?? [];
-			}).not.toThrow();
 		});
 	});
 
@@ -7987,31 +7899,6 @@ describe("Cross-thread prompt cache: stable prefix vs varying suffix", () => {
 
 			for (const keyword of volatileKeywords) {
 				expect(preSchema.toLowerCase()).not.toContain(keyword.toLowerCase());
-			}
-		});
-
-		it("Phase3.2: All volatile enrichment uses developer role", () => {
-			const result = assembleContext({
-				db,
-				threadId,
-				userId,
-			});
-
-			const developerMessages = result.messages.filter((m) => m.role === "developer");
-
-			// Should have at least one developer message for volatile enrichment
-			expect(developerMessages.length).toBeGreaterThan(0);
-
-			// The enrichment developer message should come last (before system messages if any)
-			const lastDeveloperIdx = result.messages.findLastIndex((m) => m.role === "developer");
-			const lastSystemIdx = result.messages.findLastIndex((m) => m.role === "system");
-
-			// If both exist, developer should come after system messages in the array
-			// (since system is stable prefix, volatile comes after)
-			if (lastSystemIdx >= 0 && lastDeveloperIdx >= 0) {
-				// Verify they're separate blocks
-				expect(lastDeveloperIdx).toBeGreaterThanOrEqual(0);
-				expect(lastSystemIdx).toBeGreaterThanOrEqual(0);
 			}
 		});
 

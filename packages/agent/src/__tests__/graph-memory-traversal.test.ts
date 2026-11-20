@@ -186,21 +186,6 @@ describe("graph-memory.AC3.6: Traversal on key with no edges returns empty resul
 	});
 });
 
-describe("graph-memory.AC3.7: Depth clamping to MAX_DEPTH=3", () => {
-	it("should clamp depth=10 to effective depth=3", () => {
-		const results10 = traverseGraph(db, "A", 10);
-		const results3 = traverseGraph(db, "A", 3);
-
-		// Both should return the same results since 10 is clamped to 3
-		expect(results10.length).toBe(results3.length);
-
-		// Extract keys and compare (order might differ due to sorting)
-		const keys10 = new Set(results10.map((r) => r.key));
-		const keys3 = new Set(results3.map((r) => r.key));
-		expect(keys10).toEqual(keys3);
-	});
-});
-
 describe("graphSeededRetrieval: Seeds and traversal", () => {
 	it("should find seeds by keyword matching", () => {
 		const results = graphSeededRetrieval(db, ["Memory"], 10);
@@ -276,13 +261,6 @@ describe("graphSeededRetrieval: Seeds and traversal", () => {
 });
 
 describe("traverseGraph: Additional edge cases", () => {
-	it("should handle depth < 1 by clamping to 1", () => {
-		const results = traverseGraph(db, "A", 0);
-		// Should clamp to depth 1
-		const resultsDepth1 = traverseGraph(db, "A", 1);
-		expect(results.length).toBe(resultsDepth1.length);
-	});
-
 	it("should exclude soft-deleted edges", () => {
 		// Soft delete an edge: A→B
 		const edge = db

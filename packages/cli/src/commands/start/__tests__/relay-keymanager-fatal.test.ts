@@ -82,10 +82,7 @@ describe("initRelay — KeyManager fatal branch and fs/plaintext wiring", () => 
 		expect(caught?.message).toContain("FATAL");
 		expect(caught?.message).toContain("encryption key manager");
 		// The process survives — if R-SE19 had called process.exit we would never
-		// reach this assertion in-process. An error naming the key-manager fault
-		// was logged at error level, not swallowed.
-		const errorLogged = (appContext.logger as unknown as { _probe?: never }) !== null;
-		expect(errorLogged).toBe(true);
+		// reach this assertion in-process.
 	});
 
 	it("initializes a real KeyManager cleanly for a valid self+peer keyring", async () => {

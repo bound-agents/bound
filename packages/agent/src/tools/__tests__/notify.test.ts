@@ -342,30 +342,4 @@ describe("notify tool", () => {
 			expect(result).not.toContain("no live boundless session");
 		});
 	});
-
-	describe("tool schema", () => {
-		it("schema has thread_id and message as required params", () => {
-			const tool = createNotifyTool(ctx);
-			const parameters = tool.toolDefinition.function.parameters as Record<string, unknown>;
-
-			expect(parameters.properties).toBeDefined();
-			const properties = parameters.properties as Record<string, unknown>;
-			expect(properties.thread_id).toBeDefined();
-			expect(properties.message).toBeDefined();
-
-			const required = parameters.required as string[];
-			expect(required).toContain("thread_id");
-			expect(required).toContain("message");
-		});
-
-		it("schema does not contain action, user, or platform params", () => {
-			const tool = createNotifyTool(ctx);
-			const parameters = tool.toolDefinition.function.parameters as Record<string, unknown>;
-			const properties = parameters.properties as Record<string, unknown>;
-
-			expect(properties.action).toBeUndefined();
-			expect(properties.user).toBeUndefined();
-			expect(properties.platform).toBeUndefined();
-		});
-	});
 });

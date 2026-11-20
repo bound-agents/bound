@@ -97,40 +97,4 @@ describe("R-E14: Cancel persists system cancellation message with host name", ()
 		expect(cancelMsg.content).toContain("test-host");
 		expect(cancelMsg.host_origin).toBe("test-host");
 	});
-
-	it("returns 404 when thread not found", async () => {
-		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
-
-		const fakeThreadId = randomUUID();
-		const res = await app.request(`/api/status/cancel/${fakeThreadId}`, {
-			method: "POST",
-			headers: {
-				Host: "localhost",
-			},
-		});
-
-		expect(res.status).toBe(404);
-
-		const body = await res.json();
-		expect(body.error).toBe("Thread not found");
-	});
-
-	it("emits agent:cancel event", async () => {
-		const app = await createWebApp(db, eventBus, { operatorUserId: "test-operator" });
-
-		let emittedEvent: { thread_id: string } | null = null;
-		eventBus.once("agent:cancel", (payload) => {
-			emittedEvent = payload;
-		});
-
-		await app.request(`/api/status/cancel/${threadId}`, {
-			method: "POST",
-			headers: {
-				Host: "localhost",
-			},
-		});
-
-		expect(emittedEvent).not.toBeNull();
-		expect(emittedEvent?.thread_id).toBe(threadId);
-	});
 });

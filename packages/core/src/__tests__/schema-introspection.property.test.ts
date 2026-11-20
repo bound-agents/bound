@@ -17,9 +17,8 @@
  *      DB whose schema does not change produces identical
  *      structured output.
  *
- *   D3 Column ordering matches PRAGMA cid — the helper sorts on
- *      `cid` (declaration order). Columns with equal cid would be
- *      a SQLite invariant violation; sorting must be stable.
+ *   (D3 column-ordering and D5 synced-list membership live in
+ *   schema-introspection.test.ts — not duplicated here.)
  *
  *   D4 Schema-stability under DML — INSERT / UPDATE / DELETE on
  *      synced tables does NOT change the schema output. (Only DDL
@@ -63,19 +62,6 @@ describe("getSyncedTableSchemas — property tests", () => {
 		db.close();
 	});
 
-	it("D3: columns within each table sorted by declaration order (cid)", () => {
-		const db = freshDb();
-		const schemas = getSyncedTableSchemas(db);
-		// We can't compare against PRAGMA directly without re-running it,
-		// but we can assert the arrays are non-empty and that the order
-		// is stable across calls (which it must be if `cid` is the sort
-		// key — PRAGMA returns deterministic order).
-		const a = schemas.map((s) => s.columns.map((c) => c.name).join(","));
-		const b = getSyncedTableSchemas(db).map((s) => s.columns.map((c) => c.name).join(","));
-		expect(a).toEqual(b);
-		db.close();
-	});
-
 	it("D4: DML on synced tables does NOT change schema output", () => {
 		fc.assert(
 			fc.property(
@@ -112,6 +98,7 @@ describe("getSyncedTableSchemas — property tests", () => {
 			{ numRuns: 30 },
 		);
 	});
+
 	it("D5: every name in the synced list appears, no extras", () => {
 		const db = freshDb();
 		const schemas = getSyncedTableSchemas(db);

@@ -10,57 +10,24 @@ import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { MainAgentLoop } from "../agent-loop";
-import {
-	TOOL_RESULT_OFFLOAD_THRESHOLD,
-	buildOffloadMessage,
-	offloadToolResultPath,
-} from "../tool-result-offload";
+import { offloadToolResultPath } from "../tool-result-offload";
 
-// --- Unit tests for offload helpers ---
+// --- Unit test for the agent-local offload path helper ---
+// (TOOL_RESULT_OFFLOAD_THRESHOLD and buildOffloadMessage are shared with the
+// host surface and tested at their source in @bound/shared's offload.test.ts;
+// offloadToolResultPath is the only piece owned by this surface.)
 
-describe("tool-result-offload helpers", () => {
-	describe("TOOL_RESULT_OFFLOAD_THRESHOLD", () => {
-		it("should be 50000", () => {
-			expect(TOOL_RESULT_OFFLOAD_THRESHOLD).toBe(50_000);
-		});
+describe("offloadToolResultPath", () => {
+	it("should generate a path under /home/user/.tool-results/", () => {
+		const path = offloadToolResultPath("tool-abc-123");
+		expect(path).toBe("/home/user/.tool-results/tool-abc-123.txt");
 	});
 
-	describe("offloadToolResultPath", () => {
-		it("should generate a path under /home/user/.tool-results/", () => {
-			const path = offloadToolResultPath("tool-abc-123");
-			expect(path).toBe("/home/user/.tool-results/tool-abc-123.txt");
-		});
-
-		it("should use the tool call ID in the filename", () => {
-			const id = "tooluse_6UcYmU0dFxuh3MBuVdR3WX";
-			const path = offloadToolResultPath(id);
-			expect(path).toContain(id);
-			expect(path).toEndWith(".txt");
-		});
-	});
-
-	describe("buildOffloadMessage", () => {
-		it("should include the file path", () => {
-			const msg = buildOffloadMessage("/home/user/.tool-results/tool-123.txt", 75000, "bash");
-			expect(msg).toContain("/home/user/.tool-results/tool-123.txt");
-		});
-
-		it("should include the original character count", () => {
-			const msg = buildOffloadMessage("/home/user/.tool-results/tool-123.txt", 75000, "bash");
-			expect(msg).toContain("75000");
-		});
-
-		it("should include instructions to use filtering tools", () => {
-			const msg = buildOffloadMessage("/home/user/.tool-results/tool-123.txt", 75000, "bash");
-			expect(msg).toContain("cat");
-			expect(msg).toContain("grep");
-			expect(msg).toContain("head");
-		});
-
-		it("should include the tool name for context", () => {
-			const msg = buildOffloadMessage("/home/user/.tool-results/tool-123.txt", 75000, "query");
-			expect(msg).toContain("query");
-		});
+	it("should use the tool call ID in the filename", () => {
+		const id = "tooluse_6UcYmU0dFxuh3MBuVdR3WX";
+		const path = offloadToolResultPath(id);
+		expect(path).toContain(id);
+		expect(path).toEndWith(".txt");
 	});
 });
 

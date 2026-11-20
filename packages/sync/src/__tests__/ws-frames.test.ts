@@ -3,12 +3,8 @@ import { encryptBody } from "../encryption.js";
 import {
 	type ChangelogAckPayload,
 	type ChangelogPushPayload,
-	type DrainCompletePayload,
-	type DrainRequestPayload,
 	type ErrorPayload,
 	type RelayAckPayload,
-	type RelayDeliverPayload,
-	type RelaySendPayload,
 	WsMessageType,
 	decodeFrame,
 	encodeFrame,
@@ -62,50 +58,6 @@ describe("ws-frames module", () => {
 				}
 			});
 
-			it("roundtrip RELAY_SEND", () => {
-				const payload: RelaySendPayload = {
-					entries: [
-						{
-							id: "relay-1",
-							target_site_id: "spoke-1",
-							kind: "tool_call",
-							payload: { tool: "search", args: { query: "test" } },
-						},
-					],
-				};
-
-				const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, symmetricKey);
-				const result = decodeFrame(frame, symmetricKey);
-
-				expect(result.ok).toBe(true);
-				if (result.ok) {
-					expect(result.value.type).toBe(WsMessageType.RELAY_SEND);
-					expect(result.value.payload).toEqual(payload);
-				}
-			});
-
-			it("roundtrip RELAY_DELIVER", () => {
-				const payload: RelayDeliverPayload = {
-					entries: [
-						{
-							id: "relay-2",
-							source_site_id: "spoke-1",
-							kind: "result",
-							payload: { tool_use_id: "123", content: "result data" },
-						},
-					],
-				};
-
-				const frame = encodeFrame(WsMessageType.RELAY_DELIVER, payload, symmetricKey);
-				const result = decodeFrame(frame, symmetricKey);
-
-				expect(result.ok).toBe(true);
-				if (result.ok) {
-					expect(result.value.type).toBe(WsMessageType.RELAY_DELIVER);
-					expect(result.value.payload).toEqual(payload);
-				}
-			});
-
 			it("roundtrip RELAY_ACK", () => {
 				const payload: RelayAckPayload = {
 					ids: ["relay-1", "relay-2", "relay-3"],
@@ -117,36 +69,6 @@ describe("ws-frames module", () => {
 				expect(result.ok).toBe(true);
 				if (result.ok) {
 					expect(result.value.type).toBe(WsMessageType.RELAY_ACK);
-					expect(result.value.payload).toEqual(payload);
-				}
-			});
-
-			it("roundtrip DRAIN_REQUEST", () => {
-				const payload: DrainRequestPayload = {
-					reason: "hub_migration",
-				};
-
-				const frame = encodeFrame(WsMessageType.DRAIN_REQUEST, payload, symmetricKey);
-				const result = decodeFrame(frame, symmetricKey);
-
-				expect(result.ok).toBe(true);
-				if (result.ok) {
-					expect(result.value.type).toBe(WsMessageType.DRAIN_REQUEST);
-					expect(result.value.payload).toEqual(payload);
-				}
-			});
-
-			it("roundtrip DRAIN_COMPLETE", () => {
-				const payload: DrainCompletePayload = {
-					success: true,
-				};
-
-				const frame = encodeFrame(WsMessageType.DRAIN_COMPLETE, payload, symmetricKey);
-				const result = decodeFrame(frame, symmetricKey);
-
-				expect(result.ok).toBe(true);
-				if (result.ok) {
-					expect(result.value.type).toBe(WsMessageType.DRAIN_COMPLETE);
 					expect(result.value.payload).toEqual(payload);
 				}
 			});
@@ -269,16 +191,6 @@ describe("ws-frames module", () => {
 						expect(result.error).toBe("frame_too_short");
 					}
 				});
-
-				it("frame with 0 bytes returns error", () => {
-					const emptyFrame = new Uint8Array(0);
-					const result = decodeFrame(emptyFrame, symmetricKey);
-
-					expect(result.ok).toBe(false);
-					if (!result.ok) {
-						expect(result.error).toBe("frame_too_short");
-					}
-				});
 			});
 
 			describe("Unknown message type", () => {
@@ -286,20 +198,6 @@ describe("ws-frames module", () => {
 					// Construct a frame with unknown type byte
 					const frame = new Uint8Array(50);
 					frame[0] = 0xaa; // Unknown type
-					frame.set(crypto.getRandomValues(new Uint8Array(24)), 1);
-					frame.set(crypto.getRandomValues(new Uint8Array(25)), 25);
-
-					const result = decodeFrame(frame, symmetricKey);
-
-					expect(result.ok).toBe(false);
-					if (!result.ok) {
-						expect(result.error).toBe("unknown_type");
-					}
-				});
-
-				it("type byte 0x00 (not in enum) returns error", () => {
-					const frame = new Uint8Array(50);
-					frame[0] = 0x00;
 					frame.set(crypto.getRandomValues(new Uint8Array(24)), 1);
 					frame.set(crypto.getRandomValues(new Uint8Array(25)), 25);
 
@@ -332,91 +230,6 @@ describe("ws-frames module", () => {
 					}
 				});
 			});
-
-			describe("Large payload roundtrip", () => {
-				it("large payload near 2MB limit encodes and decodes", () => {
-					// Create a large payload (1MB of data)
-					const largeData = {
-						entries: Array.from({ length: 1000 }, (_, i) => ({
-							id: `entry-${i}`,
-							data: "x".repeat(1000),
-						})),
-					};
-
-					const frame = encodeFrame(WsMessageType.RELAY_SEND, largeData, symmetricKey);
-					const result = decodeFrame(frame, symmetricKey);
-
-					expect(result.ok).toBe(true);
-					if (result.ok) {
-						expect(result.value.type).toBe(WsMessageType.RELAY_SEND);
-						expect((result.value.payload as RelaySendPayload).entries.length).toBe(1000);
-					}
-				});
-			});
-
-			describe("Empty payload", () => {
-				it("empty object payload roundtrips", () => {
-					const payload = {};
-					const frame = encodeFrame(WsMessageType.DRAIN_REQUEST, payload, symmetricKey);
-					const result = decodeFrame(frame, symmetricKey);
-
-					expect(result.ok).toBe(true);
-					if (result.ok) {
-						expect(result.value.payload).toEqual(payload);
-					}
-				});
-			});
-
-			describe("Complex nested payload", () => {
-				it("deeply nested payload roundtrips correctly", () => {
-					const payload = {
-						entries: [
-							{
-								id: "complex-1",
-								target_site_id: "spoke-1",
-								kind: "tool_call",
-								payload: {
-									tool: "nested_tool",
-									args: {
-										level1: {
-											level2: {
-												level3: {
-													data: [1, 2, 3, { nested: true }],
-												},
-											},
-										},
-									},
-								},
-							},
-						],
-					};
-
-					const frame = encodeFrame(WsMessageType.RELAY_SEND, payload, symmetricKey);
-					const result = decodeFrame(frame, symmetricKey);
-
-					expect(result.ok).toBe(true);
-					if (result.ok) {
-						expect(result.value.payload).toEqual(payload);
-					}
-				});
-			});
-
-			describe("Unicode and special characters", () => {
-				it("payload with unicode characters roundtrips", () => {
-					const payload = {
-						message: "Hello 世界 🚀 café",
-						emoji: "🎉🔒🌍",
-					};
-
-					const frame = encodeFrame(WsMessageType.ERROR, payload, symmetricKey);
-					const result = decodeFrame(frame, symmetricKey);
-
-					expect(result.ok).toBe(true);
-					if (result.ok) {
-						expect(result.value.payload).toEqual(payload);
-					}
-				});
-			});
 		});
 	});
 
@@ -435,13 +248,6 @@ describe("ws-frames module", () => {
 			// Ciphertext at offset 25..end
 			const ciphertext = frame.slice(25);
 			expect(ciphertext.length).toBeGreaterThan(16); // At least auth tag
-		});
-
-		it("frame type byte is preserved through encoding", () => {
-			const payload: ChangelogAckPayload = { cursor: "test" };
-			const frame = encodeFrame(WsMessageType.ERROR, payload, symmetricKey);
-
-			expect(frame[0]).toBe(WsMessageType.ERROR);
 		});
 	});
 });

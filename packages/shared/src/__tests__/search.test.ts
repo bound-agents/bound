@@ -1,7 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import {
-	DEFAULT_MAX_MATCHES,
-	DEFAULT_MAX_PREVIEW_CHARS,
 	compileSearchPattern,
 	computeLineHash,
 	formatSearchResults,
@@ -202,12 +200,5 @@ describe("isLikelyBinary", () => {
 
 	it("treats normal text as non-binary", () => {
 		expect(isLikelyBinary("just normal text\nwith lines")).toBe(false);
-	});
-});
-
-describe("exported defaults", () => {
-	it("exposes sane default caps", () => {
-		expect(DEFAULT_MAX_MATCHES).toBeGreaterThan(0);
-		expect(DEFAULT_MAX_PREVIEW_CHARS).toBeGreaterThan(0);
 	});
 });

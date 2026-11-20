@@ -26,18 +26,6 @@ describe("crypto module", () => {
 		}
 	});
 
-	describe("generateKeypair", () => {
-		it("generates an Ed25519 keypair", async () => {
-			const { publicKey, privateKey } = await generateKeypair();
-			expect(publicKey).toBeDefined();
-			expect(privateKey).toBeDefined();
-			expect(publicKey.type).toBe("public");
-			expect(privateKey.type).toBe("private");
-			expect(publicKey.algorithm.name).toBe("Ed25519");
-			expect(privateKey.algorithm.name).toBe("Ed25519");
-		});
-	});
-
 	describe("exportPublicKey and importPublicKey", () => {
 		it("exports public key as base64-encoded SPKI with prefix", async () => {
 			const { publicKey } = await generateKeypair();

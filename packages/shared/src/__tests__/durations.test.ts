@@ -8,17 +8,6 @@ import {
 	toDurationMs,
 } from "../durations.js";
 
-// bound#149 was blocked on `Temporal` being absent from the Bun runtime
-// (upstream oven-sh/bun#15853). Bun 1.4 ships it as a global, so this asserts
-// the premise the rest of the file rests on rather than letting a regression
-// here surface as a confusing parse failure downstream.
-describe("Temporal availability", () => {
-	it("exposes Temporal as a global", () => {
-		expect(typeof Temporal).toBe("object");
-		expect(Temporal.Duration.from("PT5M").total({ unit: "millisecond" })).toBe(300_000);
-	});
-});
-
 describe("parseIsoDurationMs", () => {
 	it("parses the calendar-free units", () => {
 		expect(parseIsoDurationMs("PT30S")).toBe(30_000);

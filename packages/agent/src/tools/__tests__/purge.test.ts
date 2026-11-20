@@ -315,24 +315,4 @@ describe("Native Purge Tool", () => {
 		expect(typeof result).toBe("string");
 		expect(result).not.toMatch(/^Error/);
 	});
-
-	it("tool should have valid RegisteredTool shape", () => {
-		const tool = createPurgeTool(toolContext);
-		expect(tool.kind).toBe("builtin");
-		expect(tool.toolDefinition).toBeDefined();
-		expect(tool.toolDefinition.function.name).toBe("purge");
-		expect(tool.toolDefinition.function.description).toBeDefined();
-		expect(tool.toolDefinition.function.parameters).toBeDefined();
-		expect(tool.execute).toBeDefined();
-		expect(typeof tool.execute).toBe("function");
-	});
-
-	it("tool definition should have message_ids, last_n, thread_id, summary properties", () => {
-		const tool = createPurgeTool(toolContext);
-		const params = tool.toolDefinition.function.parameters as any;
-		expect(params.properties.message_ids).toBeDefined();
-		expect(params.properties.last_n).toBeDefined();
-		expect(params.properties.thread_id).toBeDefined();
-		expect(params.properties.summary).toBeDefined();
-	});
 });

@@ -953,27 +953,6 @@ describe("tieredHistoryTruncation — unit tests", () => {
 		expect(result.wireLegalOpener).toBe(true);
 	});
 
-	it("monotonicity holds for specific case: doubling budget increases recentKept", () => {
-		const messages: LLMMessage[] = [];
-		for (let i = 0; i < 30; i++) {
-			messages.push({ role: "user", content: `Message ${i}` });
-		}
-
-		const result1 = tieredHistoryTruncation({
-			historyMessages: messages,
-			historyBudget: 500,
-			threadId: "test-thread",
-		});
-
-		const result2 = tieredHistoryTruncation({
-			historyMessages: messages,
-			historyBudget: 1000,
-			threadId: "test-thread",
-		});
-
-		expect(result2.recentKept).toBeGreaterThanOrEqual(result1.recentKept);
-	});
-
 	it("ancient marker is present when messages are dropped or folded", () => {
 		const messages: LLMMessage[] = [];
 		for (let i = 0; i < 20; i++) {

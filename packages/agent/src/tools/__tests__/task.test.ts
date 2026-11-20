@@ -525,27 +525,4 @@ describe("Native Task Tool", () => {
 			expect(task.model_hint).toBe("haiku");
 		});
 	});
-
-	it("tool should have valid RegisteredTool shape", () => {
-		const tool = createTaskTool(toolContext);
-		expect(tool.kind).toBe("builtin");
-		expect(tool.toolDefinition).toBeDefined();
-		expect(tool.toolDefinition.function.name).toBe("task");
-		expect(tool.toolDefinition.function.description).toBeDefined();
-		expect(tool.toolDefinition.function.parameters).toBeDefined();
-		expect(tool.execute).toBeDefined();
-		expect(typeof tool.execute).toBe("function");
-	});
-
-	it("tool definition should have required parameters", () => {
-		const tool = createTaskTool(toolContext);
-		const params = tool.toolDefinition.function.parameters as any;
-		expect(params.required).toContain("action");
-		expect(params.properties.action).toBeDefined();
-		expect(params.properties.task_description).toBeDefined();
-		expect(params.properties.cron).toBeDefined();
-		expect(params.properties.delay).toBeDefined();
-		expect(params.properties.on_event).toBeDefined();
-		expect(params.properties.task_id).toBeDefined();
-	});
 });

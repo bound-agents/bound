@@ -44,18 +44,4 @@ describe("SessionHeader", () => {
 		expect(frame).toContain("▀");
 		expect(frame).toContain("█");
 	});
-
-	it("places the text column to the right of the icon (single row)", () => {
-		const { lastFrame } = render(<SessionHeader commitHash="abc1234" cwd="/tmp/work" />);
-		const frame = lastFrame() ?? "";
-		// `boundless` must appear on a line that also contains a glyph from the
-		// icon's top — i.e. the columns are siblings in a row, not stacked.
-		const lines = frame.split("\n");
-		const boundlessLine = lines.find((l) => l.includes("boundless"));
-		expect(boundlessLine).toBeDefined();
-		// The favicon's first row is the rounded top: `     ▄▄▄▄▄▄     `. That
-		// row is the same physical row as the `boundless` line when laid out as a
-		// flex row with column children.
-		expect(boundlessLine).toContain("▄");
-	});
 });
