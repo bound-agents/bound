@@ -16,7 +16,8 @@
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { platform } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
@@ -240,16 +241,43 @@ describe("bound start — NodeHandle.stop() closes the owned DB before teardown"
 			{ configDir },
 			{ webPort: 0, syncPort: 0, webHost: "localhost", syncHost: "localhost" },
 		);
-		const db = node.appContext.db;
 		await node.stop();
 
-		// Directly observable on every platform: stop() must have closed the
-		// node-owned bun:sqlite handle. A closed Database throws on any query, so
-		// this probe fails on the pre-fix code (handle still open) and passes once
-		// stop() calls appContext.db.close(). This is the assertion that makes the
-		// regression visible on macOS, where POSIX unlink-while-open means the raw
-		// rm below cannot reproduce the Windows EBUSY on its own.
-		expect(() => db.query("SELECT 1").get()).toThrow();
+		// Root cause, cross-platform: after stop() NO file descriptor may remain open
+		// under tempDir. The node-owned DB runs with cached prepared statements
+		// (bun:sqlite memoizes every repository db.query(sql), keyed by SQL text, on
+		// the Database) and mmap_size=256MiB; a graceful close() defers releasing the
+		// connection until those statements are finalized, which only happens when GC
+		// collects them — not synchronously at stop(). So a bare close() leaves
+		// bound.db, bound.db-wal and bound.db-shm (plus the mmap) open under the data
+		// dir. On Windows those held handles are a mandatory lock and the retry-less raw
+		// rm below fails EBUSY; on macOS POSIX unlink-while-open hides the Windows EBUSY
+		// from that rm, so lsof is the cross-platform observable for the exact handles
+		// that lock the dir on Windows. stop() now closes then forces a synchronous GC
+		// (Bun.gc(true)) to collect the cached statements and release every fd + mapping.
+		//
+		// Fails on cabd6c21's code (bare close() leaves 5 fds under tempDir), passes
+		// with the close()+GC fix. Skip only this sub-assertion on win32 (lsof is a
+		// POSIX tool); the raw rm below is the Windows-side guard for the same handles.
+		if (platform() !== "win32") {
+			const lsof = Bun.spawnSync(["lsof", "-p", String(process.pid)], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			// Only assert when lsof is actually available (exit 0 and some output); a
+			// missing/sandboxed lsof must not turn into a false green or a false red.
+			if (lsof.exitCode === 0) {
+				const out = lsof.stdout.toString();
+				// Resolve both symlink forms of tempDir (/var vs /private/var on macOS)
+				// so a /private-prefixed lsof path still matches.
+				const forms = Array.from(new Set([tempDir as string, realpathSync(tempDir as string)]));
+				const leaked = out
+					.split("\n")
+					.filter((line) => forms.some((f) => line.includes(f)))
+					.map((line) => line.replace(/\s+/g, " ").trim());
+				expect(leaked).toEqual([]);
+			}
+		}
 
 		// Raw removal — deliberately NOT cleanupTmpDirSync. The tolerant helper
 		// swallows EBUSY, which would mask a DB handle that stop() failed to close.

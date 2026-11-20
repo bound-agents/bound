@@ -404,7 +404,24 @@ Press Ctrl+C to stop.
 			// Close the node-owned DB handle after all DB users, clients, servers and
 			// telemetry have stopped, and before removing the PID lockfile. In the
 			// finally so a stop-side failure above cannot leak the handle.
-			appContext.db.close();
+			//
+			// The default close() is graceful: it marks the Database closed but defers
+			// releasing the underlying sqlite connection until every prepared statement
+			// is finalized, and bun:sqlite caches the statements the repositories compile
+			// via db.query(sql) (keyed by SQL text) on the Database itself. Those cached
+			// Statement objects are only finalized when GC collects them, which does not
+			// happen synchronously at stop() — so after a bare close() the data dir still
+			// has bound.db, bound.db-wal and bound.db-shm (plus the mmap_size=256MiB
+			// mappings) held open. Confirmed on macOS via `lsof -p` after stop(): five fds
+			// still held. On Windows those are mandatory file locks, so a retry-less
+			// recursive rm of the data dir fails EBUSY, which under the serial Windows CI
+			// lane cascades into later start tests. Closing then forcing a synchronous GC
+			// collects the cached Statement objects now, so every fd + mapping is released
+			// before teardown continues and nothing under the data dir survives the close
+			// (lsof then shows zero). close(true) is not enough on its own: it still leans
+			// on GC to reclaim the cached statements, so the release stays racy.
+			appContext.db.close(false);
+			Bun.gc(true);
 			// Remove the PID lockfile last. Under runStart the process.on("exit")
 			// handler also calls this (idempotent by PID guard); under startNode this is
 			// the only caller.
