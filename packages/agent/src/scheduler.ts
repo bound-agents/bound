@@ -988,6 +988,9 @@ export class Scheduler {
 				throw err;
 			}
 		}, HEARTBEAT_INTERVAL);
+		// The scheduler never holds a process open by itself: a daemon stays up
+		// on its servers, and a node a test forgot to stop can still exit.
+		this.heartbeatInterval.unref?.();
 
 		// Start main scheduler loop with dynamic quiescence-based interval
 		const scheduleTick = () => {
@@ -999,6 +1002,7 @@ export class Scheduler {
 				// Recalculate interval based on quiescence and reset timer
 				const effectiveInterval = this.getEffectivePollInterval();
 				this.intervalId = setTimeout(scheduleTick, effectiveInterval);
+				this.intervalId.unref?.();
 			} catch (err: unknown) {
 				// Auto-stop on closed database — prevents leaked timers from
 				// crashing the process when a test closes the DB before stop().
@@ -1011,6 +1015,7 @@ export class Scheduler {
 		};
 
 		this.intervalId = setTimeout(scheduleTick, pollInterval);
+		this.intervalId.unref?.();
 
 		this.ctx.logger.info("Scheduler started");
 

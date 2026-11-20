@@ -128,6 +128,23 @@ describe("Scheduler features", () => {
 	// -----------------------------------------------------------------------
 	// Quiescence multiplier
 	// -----------------------------------------------------------------------
+	describe("timers do not hold the process open", () => {
+		it("unrefs the poll and heartbeat timers so an unstopped scheduler cannot keep a process alive", () => {
+			const scheduler = new Scheduler(makeCtx() as any, makeAgentLoopFactory());
+			const handle = scheduler.start(60_000);
+			try {
+				const timers = scheduler as unknown as {
+					intervalId: { hasRef(): boolean } | null;
+					heartbeatInterval: { hasRef(): boolean } | null;
+				};
+				expect(timers.intervalId?.hasRef()).toBe(false);
+				expect(timers.heartbeatInterval?.hasRef()).toBe(false);
+			} finally {
+				handle.stop();
+			}
+		});
+	});
+
 	describe("quiescence multiplier", () => {
 		it("applies quiescence multiplier to poll interval based on idle time", () => {
 			const ctx = makeCtx();

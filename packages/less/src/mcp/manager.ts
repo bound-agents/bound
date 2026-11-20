@@ -66,6 +66,21 @@ function configsEqual(a: McpServerConfig, b: McpServerConfig): boolean {
 	return true;
 }
 
+/**
+ * Upper bound on an MCP server's `initialize` handshake and its first
+ * `tools/list`. Without it the SDK's 60s default applies, so a server that
+ * spawns but never answers stalls startup for a minute per server, and a
+ * server that exits early is only failed once its `close` event is delivered
+ * — late on a starved event loop. A timeout turns either into a fast,
+ * non-fatal `failed` server (AC6.6).
+ */
+export const DEFAULT_MCP_CONNECT_TIMEOUT_MS = 10_000;
+
+export interface McpServerManagerOptions {
+	/** Per-request timeout for the connect handshake and tool listing. */
+	connectTimeoutMs?: number;
+}
+
 export interface ReloadResult {
 	added: string[];
 	removed: string[];
@@ -76,9 +91,11 @@ export interface ReloadResult {
 export class McpServerManager {
 	private logger: AppLogger;
 	private servers: Map<string, McpServerState> = new Map();
+	private readonly connectTimeoutMs: number;
 
-	constructor(logger: AppLogger) {
+	constructor(logger: AppLogger, options: McpServerManagerOptions = {}) {
 		this.logger = logger;
+		this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_MCP_CONNECT_TIMEOUT_MS;
 	}
 
 	/**
@@ -158,10 +175,12 @@ export class McpServerManager {
 			}
 
 			// Connect client to transport
-			await client.connect(transport);
+			// Both calls are bounded: see DEFAULT_MCP_CONNECT_TIMEOUT_MS.
+			const requestOptions = { timeout: this.connectTimeoutMs };
+			await client.connect(transport, requestOptions);
 
 			// Enumerate tools
-			const toolsResult = await client.listTools();
+			const toolsResult = await client.listTools(undefined, requestOptions);
 			const tools = toolsResult.tools || [];
 
 			// Success

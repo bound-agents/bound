@@ -61,6 +61,26 @@ describe("McpServerManager", () => {
 			expect(state?.tools).toEqual([]);
 		});
 
+		it("AC6.6: fails a stdio server that never answers the handshake within the connect timeout", async () => {
+			// Without a bound the SDK's 60s request timeout applies and startup
+			// stalls; the manager's own timeout turns it into a fast failure.
+			const manager = new McpServerManager(logger, { connectTimeoutMs: 300 });
+			const started = Date.now();
+			await manager.ensureAllEnabled([
+				{
+					transport: "stdio",
+					name: "silent-server",
+					command: "sh",
+					args: ["-c", "exec sleep 30"],
+					enabled: true,
+				},
+			]);
+			expect(Date.now() - started).toBeLessThan(5_000);
+			const state = manager.getServerStates().get("silent-server");
+			expect(state?.status).toBe("failed");
+			expect(state?.client).toBeNull();
+		});
+
 		it("skips disabled servers", async () => {
 			const manager = new McpServerManager(logger);
 			const configs: McpServerConfig[] = [

@@ -245,13 +245,19 @@ export async function reloadConfigs(config: SighupHandlerConfig): Promise<void> 
 /**
  * Register SIGHUP signal handler for config hot-reload.
  * The handler calls reloadConfigs() to reload all optional configs and update KeyManager.
+ * Returns a function that removes the listener; node shutdown calls it so a
+ * process that boots several nodes (tests) does not accumulate listeners.
  */
-export function registerSighupHandler(config: SighupHandlerConfig): void {
+export function registerSighupHandler(config: SighupHandlerConfig): () => void {
 	const { logger } = config;
 
-	process.on("SIGHUP", async () => {
+	const onSighup = async () => {
 		await reloadConfigs(config);
-	});
+	};
+	process.on("SIGHUP", onSighup);
 
 	logger.info("SIGHUP handler registered for config reload");
+	return () => {
+		process.off("SIGHUP", onSighup);
+	};
 }

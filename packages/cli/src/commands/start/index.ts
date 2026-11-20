@@ -237,7 +237,7 @@ export async function startNode(
 				};
 
 	// Phase 5b: Register SIGHUP handler for config hot-reload (after sync init for wsClient reference)
-	registerSighupHandler({
+	const unregisterSighup = registerSighupHandler({
 		appContext,
 		configDir,
 		keyManager,
@@ -365,6 +365,7 @@ Press Ctrl+C to stop.
 	const stop = async (): Promise<void> => {
 		if (stopped) return;
 		stopped = true;
+		unregisterSighup();
 		heartbeatHandle?.stop();
 		schedulerHandle?.stop();
 		pruningHandle?.stop();

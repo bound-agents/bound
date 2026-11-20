@@ -55,6 +55,21 @@ describe("SIGHUP handler", () => {
 		await cleanupTmpDir(tempDir);
 	});
 
+	it("registerSighupHandler returns an unregister that removes exactly its listener", async () => {
+		const { registerSighupHandler } = await import("../sighup.js");
+		const before = process.listenerCount("SIGHUP");
+		const unregister = registerSighupHandler({
+			appContext: { logger: testLogger, optionalConfig: {} } as never,
+			configDir: tempDir,
+			logger: testLogger as unknown as Logger,
+		} as never);
+		expect(process.listenerCount("SIGHUP")).toBe(before + 1);
+		unregister();
+		expect(process.listenerCount("SIGHUP")).toBe(before);
+		unregister();
+		expect(process.listenerCount("SIGHUP")).toBe(before);
+	});
+
 	it("AC12.1: reloads optional configs and updates appContext", async () => {
 		const { reloadConfigs } = await import("../sighup.js");
 
