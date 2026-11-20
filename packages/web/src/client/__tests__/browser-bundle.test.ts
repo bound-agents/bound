@@ -11,6 +11,9 @@ function emittedJavaScript(dir: string): string[] {
 		.map((entry) => join(dir, entry));
 }
 
+// A full Vite production build. CI runs the web suite with --parallel, so on
+// a contended macOS runner the build alone has exceeded 60s (run 44665408752)
+// while finishing in ~8s on an idle machine.
 test("production browser bundle excludes Node native-addon loaders", async () => {
 	const generatedBuildInfo = join(webRoot, "../shared/src/build-info-generated.ts");
 	if (!existsSync(generatedBuildInfo)) {
@@ -39,4 +42,4 @@ test("production browser bundle excludes Node native-addon loaders", async () =>
 			.map(({ path }) => path);
 		expect(offenders).toEqual([]);
 	}
-}, 60_000);
+}, 180_000);
