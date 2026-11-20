@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { TOOL_RESULT_OFFLOAD_THRESHOLD, buildOffloadMessage } from "@bound/shared";
 import { checkDbCommand } from "./db-guard";
 import { spawnLowbox } from "./lowbox-runtime";
+import { createTreeKiller } from "./process-tree";
 import { formatProvenance } from "./provenance";
 import {
 	DISABLED_SANDBOX,
@@ -41,12 +42,20 @@ function spawnUnsandboxed(command: string, cwd: string, shell: ResolvedShell): S
 		stderr: "pipe",
 		env: nonInteractiveEnv(),
 	});
+	const killTree = createTreeKiller(proc.pid);
 	return {
 		stdout: proc.stdout as ReadableStream<Uint8Array>,
 		stderr: proc.stderr as ReadableStream<Uint8Array>,
 		exited: proc.exited,
 		pid: proc.pid,
-		kill: (signal) => proc.kill(signal as number),
+		kill: (signal) => {
+			killTree(signal ?? "SIGTERM");
+			try {
+				proc.kill(signal as number);
+			} catch {
+				// Already gone.
+			}
+		},
 	};
 }
 
@@ -322,32 +331,14 @@ export async function bashToolWithStreaming(
 				testNamespace,
 			);
 
-			// Handle abort: SIGTERM -> 2s wait -> SIGKILL
+			// Handle abort: SIGTERM -> 2s wait -> SIGKILL, each to the whole
+			// process tree. `proc.kill` walks the host process table: the command
+			// is not a process-group leader, and under the sandbox nothing inside
+			// can signal anything but itself, so signalling only the direct child
+			// orphans every descendant (see process-tree.ts).
 			const abortHandler = () => {
-				try {
-					// Try to kill the process group (negative PID)
-					process.kill(-proc.pid, "SIGTERM");
-				} catch {
-					// Fallback to regular kill
-					try {
-						proc.kill("SIGTERM");
-					} catch {
-						// Process might already be dead
-					}
-				}
-
-				// Wait 2 seconds, then send SIGKILL
-				setTimeout(() => {
-					try {
-						process.kill(-proc.pid, "SIGKILL");
-					} catch {
-						try {
-							proc.kill("SIGKILL");
-						} catch {
-							// Process already dead
-						}
-					}
-				}, 2000);
+				proc.kill("SIGTERM");
+				setTimeout(() => proc.kill("SIGKILL"), 2000);
 			};
 
 			internalController.signal.addEventListener("abort", abortHandler);

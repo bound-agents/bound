@@ -25,6 +25,7 @@
 import type { ChildProcess } from "node:child_process";
 import { Readable } from "node:stream";
 import { ensureMxcRuntime } from "./mxc-runtime";
+import { createTreeKiller } from "./process-tree";
 import { IDENTITY_MACH_LOOKUPS, buildPolicy, nonInteractiveEnv } from "./sandbox-policy";
 import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy";
 
@@ -133,10 +134,18 @@ async function runSandboxProbe(): Promise<{ supported: boolean; reason?: string 
 /** Sentinel exit value the probe timeout resolves to (real exit codes are 0..255 or -1). */
 const SANDBOX_PROBE_TIMEOUT = -2;
 
-/** Adapt a Node `ChildProcess` to the {@link SandboxSpawnResult} contract. */
+/**
+ * Adapt a Node `ChildProcess` to the {@link SandboxSpawnResult} contract.
+ * `kill` signals the whole process tree, not just the mxc wrapper: the
+ * sandboxed shell runs in its own session under the wrapper, and sandboxed
+ * processes can only signal themselves, so killing the wrapper alone orphans
+ * every descendant. See `process-tree.ts`.
+ */
 function adaptChildProcess(child: ChildProcess): SandboxSpawnResult {
 	const toWeb = (stream: ChildProcess["stdout"]): ReadableStream<Uint8Array> | null =>
 		stream ? (Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>) : null;
+	const pid = child.pid ?? -1;
+	const killTree = pid > 0 ? createTreeKiller(pid) : null;
 
 	return {
 		stdout: toWeb(child.stdout),
@@ -145,8 +154,9 @@ function adaptChildProcess(child: ChildProcess): SandboxSpawnResult {
 			child.once("close", (code) => resolve(code ?? -1));
 			child.once("error", () => resolve(-1));
 		}),
-		pid: child.pid ?? -1,
+		pid,
 		kill: (signal) => {
+			killTree?.(signal ?? "SIGTERM");
 			try {
 				child.kill(signal as NodeJS.Signals);
 			} catch {
