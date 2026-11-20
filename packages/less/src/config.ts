@@ -7,7 +7,17 @@ import { z } from "zod";
 
 const JS_CONFIG_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JS_CONFIG_STACK_LIMIT_BYTES = 256 * 1024;
-const JS_CONFIG_CPU_LIMIT_MS = 50;
+// Fuel budget for a single config evaluation, NOT a wall-clock deadline. A
+// Date.now()-based `Date.now() > deadline` interrupt guard aborts a healthy,
+// tiny config eval when the host is descheduled past the deadline (a contended
+// CI lane), failing with "error: interrupted" on config that is fine. QuickJS
+// polls the interrupt handler as it executes bytecode; counting polls instead
+// of wall-clock time makes the guard immune to host descheduling while still
+// bounding a runaway/infinite-loop script. Mirrors the canonical helper
+// `setInterruptBudget` in packages/core/src/quickjs-interrupt-budget.ts;
+// duplicated here because `less` (a terminal client) does not depend on
+// `@bound/core` and should not pull the SQLite/DI backend in for ten lines.
+const JS_CONFIG_INTERRUPT_BUDGET = 50_000;
 let quickJS: Promise<QuickJSWASMModule> | undefined;
 
 function getQuickJS(): Promise<QuickJSWASMModule> {
@@ -29,8 +39,11 @@ async function evaluateJavaScriptConfig(
 	const runtime = (await getQuickJS()).newRuntime();
 	runtime.setMemoryLimit(JS_CONFIG_MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(JS_CONFIG_STACK_LIMIT_BYTES);
-	const deadline = Date.now() + JS_CONFIG_CPU_LIMIT_MS;
-	runtime.setInterruptHandler(() => Date.now() > deadline);
+	let fuel = JS_CONFIG_INTERRUPT_BUDGET;
+	runtime.setInterruptHandler(() => {
+		fuel -= 1;
+		return fuel <= 0;
+	});
 	const vm = runtime.newContext();
 	try {
 		const body = source.replace(/^\s*export\s+default\s+/, "return (").replace(/;?\s*$/, ");");

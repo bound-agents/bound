@@ -18,10 +18,10 @@ import {
 import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
 import type { QuickJSWASMModule } from "quickjs-emscripten-core";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
+import { setInterruptBudget } from "./quickjs-interrupt-budget";
 
 const JS_CONFIG_MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JS_CONFIG_STACK_LIMIT_BYTES = 256 * 1024;
-const JS_CONFIG_CPU_LIMIT_MS = 50;
 let quickJS: Promise<QuickJSWASMModule> | undefined;
 
 function getQuickJS(): Promise<QuickJSWASMModule> {
@@ -40,8 +40,7 @@ async function evaluateJavaScriptConfig(source: string, filename: string): Promi
 	const runtime = (await getQuickJS()).newRuntime();
 	runtime.setMemoryLimit(JS_CONFIG_MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(JS_CONFIG_STACK_LIMIT_BYTES);
-	const deadline = Date.now() + JS_CONFIG_CPU_LIMIT_MS;
-	runtime.setInterruptHandler(() => Date.now() > deadline);
+	setInterruptBudget(runtime);
 	const vm = runtime.newContext();
 	try {
 		const body = source.replace(/\bexport\s+default\s+/, "return (").replace(/;?\s*$/, ");");

@@ -417,4 +417,48 @@ export default { hub };`,
 			for (const result of Object.values(configs)) expect(result.ok).toBe(true);
 		});
 	});
+
+	describe("QuickJS interrupt budget (host-descheduling resilience)", async () => {
+		// Regression for the macOS config-eval flake: the interrupt guard used to be
+		// a Date.now() wall-clock deadline, so a host descheduled past the deadline
+		// (contended CI lane) aborted a healthy, tiny config eval with "interrupted".
+		// A fuel budget counts guest progress, not host time, so descheduling can no
+		// longer abort a static eval.
+		it("loads a static config even when the wall clock jumps far past the old 50ms deadline during eval", async () => {
+			writeFileSync(
+				join(configDir, "sync.js"),
+				'export default { hub: "https://descheduled.example.com" };',
+			);
+
+			// Simulate the host being descheduled across the whole eval: every Date.now()
+			// read jumps an hour forward. A wall-clock guard would fire on the first poll;
+			// a fuel budget is immune because no guest instructions were spent.
+			const realNow = Date.now.bind(Date);
+			let jumps = 0;
+			Date.now = () => realNow() + ++jumps * 3_600_000;
+			try {
+				const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
+				expect(result.ok).toBe(true);
+				if (result.ok) expect(result.value.hub).toBe("https://descheduled.example.com");
+			} finally {
+				Date.now = realNow;
+			}
+		});
+
+		it("still interrupts a runaway config script within the normal test timeout", async () => {
+			// The budget bounds a genuine infinite loop. This asserts the safety boundary
+			// holds WITHOUT a duration-sensitive assertion: the loop never terminates on
+			// its own, so the only way this test returns is the fuel budget aborting it.
+			writeFileSync(
+				join(configDir, "sync.js"),
+				"const hub = (() => { while (true) {} })(); export default { hub };",
+			);
+			const result = await loadConfigWithPrecedence(configDir, "sync", syncSchema);
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error.filename).toBe("sync.js");
+				expect(result.error.message).toContain("interrupted");
+			}
+		});
+	});
 });

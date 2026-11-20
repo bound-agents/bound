@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expandEnvVars, loadConfigWithPrecedence } from "@bound/core";
+import { expandEnvVars, loadConfigWithPrecedence, setInterruptBudget } from "@bound/core";
 import { modelBackendsSchema } from "@bound/shared";
 import type { ModelBackendsConfig } from "@bound/shared";
 import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
@@ -10,15 +10,6 @@ import { compileDynamicPricing } from "./dynamic-pricing";
 
 const MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
 const STACK_LIMIT_BYTES = 256 * 1024;
-// Interrupt deadline for one config evaluation. WALL-CLOCK, not CPU time:
-// Date.now() advances while the process is descheduled, so on a contended
-// ~2-core CI runner a healthy config eval doing microseconds of real work
-// blows past a tight deadline and fails startup with "error: interrupted" —
-// the cli startup-wiring test failed exactly this way on macOS lanes (runs
-// 32892293787, 32894781301, 32911204557) while passing locally every time.
-// Same fix as dynamic-pricing.ts (9935abdf): the limit exists to bound a
-// runaway config script, not to assert a performance budget.
-const CPU_LIMIT_MS = 1000;
 
 let quickJS: Promise<QuickJSWASMModule> | undefined;
 
@@ -42,8 +33,7 @@ async function loadDynamicPriceFunctions(source: string): Promise<Array<string |
 	const runtime = (await getQuickJS()).newRuntime();
 	runtime.setMemoryLimit(MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(STACK_LIMIT_BYTES);
-	const deadline = Date.now() + CPU_LIMIT_MS;
-	runtime.setInterruptHandler(() => Date.now() > deadline);
+	setInterruptBudget(runtime);
 	const vm = runtime.newContext();
 	try {
 		// Dynamic prices are evaluated afresh in the hardened pricing VM. Keep the

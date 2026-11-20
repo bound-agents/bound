@@ -92,6 +92,7 @@ describe("startNode — SIGHUP config hot-reload callbacks", () => {
 	let node: NodeHandle;
 	let siteId: string;
 	let sighupBefore: Set<(...args: unknown[]) => void>;
+	let stopped = false;
 
 	beforeAll(async () => {
 		tempDir = mkdtempSync(join(tmpdir(), "bound-sighup-hotreload-"));
@@ -133,11 +134,12 @@ describe("startNode — SIGHUP config hot-reload callbacks", () => {
 	}, 60_000);
 
 	afterAll(async () => {
-		await node?.stop();
-		// Remove exactly the SIGHUP listener(s) the boot registered.
-		for (const l of process.listeners("SIGHUP") as unknown as Array<(...args: unknown[]) => void>) {
-			if (!sighupBefore.has(l)) process.removeListener("SIGHUP", l);
-		}
+		// node.stop() removes the SIGHUP listener it registered (commit 4a8d8d9d),
+		// so there is no manual process.removeListener cleanup here. The
+		// "node.stop() restores the original SIGHUP listener set" test drives and
+		// asserts that teardown; if it did not run (an earlier failure), stop here as
+		// a safety net so a half-booted node does not leak into later files.
+		if (!stopped) await node?.stop();
 		fake?.stop();
 		cleanupTmpDirSync(tempDir);
 	});
@@ -222,5 +224,28 @@ describe("startNode — SIGHUP config hot-reload callbacks", () => {
 		// updates it in place before invoking the callback).
 		const mcp = node.appContext.optionalConfig.mcp;
 		expect(mcp?.ok).toBe(true);
+	}, 20_000);
+
+	// Must be the LAST test in the block: it tears the node down. node.stop()
+	// removes the SIGHUP listener it registered (commit 4a8d8d9d), so after stop
+	// the process SIGHUP listener set must be byte-for-byte the pre-boot snapshot.
+	// This replaces the old manual process.removeListener cleanup in afterAll and
+	// turns the stop-side guard into an asserted contract rather than a test-only
+	// workaround.
+	it("node.stop() restores the original SIGHUP listener set", async () => {
+		const beforeStop = (
+			process.listeners("SIGHUP") as unknown as Array<(...a: unknown[]) => void>
+		).filter((l) => !sighupBefore.has(l));
+		expect(beforeStop.length).toBe(1);
+
+		await node.stop();
+		stopped = true;
+
+		const after = new Set(
+			process.listeners("SIGHUP") as unknown as Array<(...args: unknown[]) => void>,
+		);
+		// Same count and same membership as before boot — no leaked listener.
+		expect(after.size).toBe(sighupBefore.size);
+		for (const l of after) expect(sighupBefore.has(l)).toBe(true);
 	}, 20_000);
 });

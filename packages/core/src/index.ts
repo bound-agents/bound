@@ -54,6 +54,10 @@ export {
 	type OptionalConfigs,
 } from "./config-loader";
 export {
+	setInterruptBudget,
+	DEFAULT_CONFIG_INTERRUPT_BUDGET,
+} from "./quickjs-interrupt-budget";
+export {
 	bootstrapContainer,
 	DatabaseService,
 	ConfigService,

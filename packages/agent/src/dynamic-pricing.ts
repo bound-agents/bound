@@ -1,3 +1,4 @@
+import { setInterruptBudget } from "@bound/core";
 import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
 import type { QuickJSWASMModule } from "quickjs-emscripten-core";
 import { newQuickJSWASMModuleFromVariant } from "quickjs-emscripten-core";
@@ -23,16 +24,6 @@ export interface PriceFunctionBackend {
 
 const MEMORY_LIMIT_BYTES = 8 * 1024 * 1024;
 const STACK_LIMIT_BYTES = 256 * 1024;
-// Interrupt deadline for one callback evaluation. This is WALL-CLOCK, not CPU
-// time: Date.now() advances while the process is descheduled, so on a
-// contended host (a ~2-core CI runner mid test sweep) a callback doing
-// microseconds of real work can blow past a tight deadline and silently fall
-// back to static pricing — which is exactly how the cli startup-wiring test
-// failed on two unrelated branches' macOS lanes (runs 32892293787 and
-// 32894781301) while passing locally every time. The limit exists to bound a
-// runaway/hung callback, not to assert a performance budget, so slack costs
-// nothing when callbacks are healthy.
-const CPU_LIMIT_MS = 1000;
 
 let quickJS: QuickJSWASMModule | null = null;
 let activeSources = new Map<string, string>();
@@ -58,8 +49,7 @@ function evaluate(module: QuickJSWASMModule, source: string, input: DynamicPrice
 	const runtime = module.newRuntime();
 	runtime.setMemoryLimit(MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(STACK_LIMIT_BYTES);
-	const deadline = Date.now() + CPU_LIMIT_MS;
-	runtime.setInterruptHandler(() => Date.now() > deadline);
+	setInterruptBudget(runtime);
 	const vm = runtime.newContext();
 	try {
 		const result = vm.evalCode(
