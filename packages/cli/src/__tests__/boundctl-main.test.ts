@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema } from "@bound/core";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { type CliIO, defaultCliIO, main } from "../boundctl-main";
 
 /** Capturing IO for in-process dispatch assertions. */
@@ -91,7 +92,7 @@ describe("boundctl main() — DB-backed command dispatch", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tmp);
 	});
 
 	it("routes 'skill list' to the DB-backed command and returns 0", async () => {
@@ -246,7 +247,7 @@ describe("boundctl main() — command handler error arms", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tmp);
 	});
 
 	it("set-hub maps a thrown command to 'set-hub failed' and exit 1", async () => {

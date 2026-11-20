@@ -27,9 +27,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { ensureKeypair, exportPublicKey } from "@bound/sync";
 import { runInit } from "../../init.js";
 import { type NodeHandle, startNode } from "../index.js";
@@ -138,7 +139,7 @@ describe("startNode — SIGHUP config hot-reload callbacks", () => {
 			if (!sighupBefore.has(l)) process.removeListener("SIGHUP", l);
 		}
 		fake?.stop();
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	/** The single SIGHUP listener the boot added; await its reload to completion. */

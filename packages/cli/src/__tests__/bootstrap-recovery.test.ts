@@ -21,14 +21,7 @@
 
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import {
-	copyFileSync,
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -36,6 +29,7 @@ import * as agent from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import * as core from "@bound/core";
 import { insertRow } from "@bound/core";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { runInit } from "../commands/init.js";
 import { initBootstrap } from "../commands/start/bootstrap.js";
 
@@ -56,9 +50,7 @@ async function makeConfigDir(prefix: string): Promise<string> {
 	const dir = mkdtempSync(join(tmpdir(), `${prefix}-${randomBytes(4).toString("hex")}-`));
 	const configDir = join(dir, "config");
 	await runInit({ ollama: true, name: `${prefix}-op`, configDir });
-	cleanups.push(() =>
-		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
-	);
+	cleanups.push(() => cleanupTmpDirSync(dir));
 	return configDir;
 }
 

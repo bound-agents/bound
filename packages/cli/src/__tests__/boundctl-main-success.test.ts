@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema, getSiteId } from "@bound/core";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { type CliIO, main } from "../boundctl-main";
 
 /**
@@ -74,7 +75,7 @@ describe("boundctl main() — success bodies against real DBs", () => {
 	});
 
 	afterEach(() => {
-		rmSync(h.tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(h.tmp);
 	});
 
 	it("set-hub writes cluster_hub and returns 0", async () => {
@@ -199,7 +200,7 @@ describe("boundctl main() — success bodies against real DBs", () => {
 			expect(code).toBe(1);
 			expect(errors.join("\n")).toContain("set-hub failed");
 		} finally {
-			rmSync(bare, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			cleanupTmpDirSync(bare);
 		}
 	});
 

@@ -16,10 +16,11 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { createHmac } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createWebhookBinding } from "@bound/core";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { ensureKeypair, exportPublicKey } from "@bound/sync";
 import { runInit } from "../../init.js";
 import { type NodeHandle, startNode } from "../index.js";
@@ -138,7 +139,7 @@ describe("bound start — fully configured boot wiring", () => {
 	afterAll(async () => {
 		await node?.stop();
 		fake?.stop();
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	it("boots the sync server when a keyring is present (keyManager + sync-server branch)", () => {

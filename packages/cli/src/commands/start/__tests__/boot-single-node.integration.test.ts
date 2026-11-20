@@ -16,10 +16,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoundClient } from "@bound/client";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { runInit } from "../../init.js";
 import { type NodeHandle, startNode } from "../index.js";
 
@@ -113,7 +114,7 @@ describe("bound start — single-node in-process boot", () => {
 		client?.disconnect();
 		await node?.stop();
 		fake?.stop();
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	it("binds the web server to a real OS-assigned ephemeral port (port 0 round-trip)", () => {

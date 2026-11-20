@@ -22,9 +22,10 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { ensureKeypair, exportPublicKey } from "@bound/sync";
 import { runInit } from "../../init.js";
 import { type NodeHandle, startNode } from "../index.js";
@@ -165,8 +166,8 @@ describe("startNode — spoke SIGHUP ws-config reload (non-null wsClient)", () =
 			if (!sighupBeforeSpoke.has(l)) process.removeListener("SIGHUP", l);
 		}
 		fake?.stop();
-		rmSync(spokeTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-		rmSync(hubTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(spokeTemp);
+		cleanupTmpDirSync(hubTemp);
 	});
 
 	/** The single SIGHUP listener the spoke boot added. */

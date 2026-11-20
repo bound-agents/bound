@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { runLogin, runMcpLogin } from "../commands/login";
 
 // These tests drive the impure edges of `bound login` through the injection
@@ -28,7 +29,7 @@ describe("runLogin — chatgpt browser flow", () => {
 	});
 
 	afterEach(() => {
-		rmSync(configDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(configDir);
 	});
 
 	it("completes the flow: opens the browser, catches the redirect, exchanges, and saves tokens", async () => {

@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHATGPT_OAUTH_REDIRECT_URI } from "@bound/llm";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { type LoginArgs, defaultTokenStorePath, runLogin, runMcpLogin } from "../login";
 
 describe("defaultTokenStorePath", () => {
@@ -110,7 +111,7 @@ describe("runLogin --chatgpt (in-process browser flow)", () => {
 	afterEach(() => {
 		console.log = origLog;
 		console.error = origError;
-		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(dir);
 	});
 
 	it("completes the flow and writes the token store", async () => {

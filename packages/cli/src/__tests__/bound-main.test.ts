@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { type CliIO, defaultCliIO, main } from "../bound-main";
 
 /** Capturing IO for in-process dispatch assertions. */
@@ -52,7 +53,7 @@ describe("bound main()", () => {
 
 		afterEach(() => {
 			process.chdir(cwd);
-			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			cleanupTmpDirSync(dir);
 		});
 
 		it("routes to runInit and returns 0 on success", async () => {

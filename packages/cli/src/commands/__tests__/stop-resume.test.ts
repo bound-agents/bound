@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { runResume, runStop } from "../stop-resume";
 
 /**
@@ -40,7 +41,7 @@ describe("runStop / runResume", () => {
 
 	afterEach(() => {
 		console.log = origLog;
-		rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tmp);
 	});
 
 	/** Read the live emergency_stop row (deleted = 0) straight from the DB. */

@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyMetricsSchema, applySchema } from "@bound/core";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { type CliIO, main } from "../boundctl-main";
 
 /**
@@ -147,7 +148,7 @@ describe("boundctl main() — drain dispatch body", () => {
 	});
 
 	afterEach(() => {
-		rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tmp);
 	});
 
 	it("routes drain with a short timeout through main() and returns 0", async () => {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { type CliIO, main } from "../bound-main";
 
 /**
@@ -36,7 +37,7 @@ describe("bound main() — start dispatch body", () => {
 			const code = await main(["start", "--config-dir", join(dir, "absent-config")], io);
 			expect(code).toBe(1);
 		} finally {
-			rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			cleanupTmpDirSync(dir);
 		}
 	}, 20000);
 });

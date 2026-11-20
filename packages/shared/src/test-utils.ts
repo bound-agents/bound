@@ -38,3 +38,23 @@ export async function cleanupTmpDir(path: string): Promise<void> {
 		}
 	}
 }
+
+/**
+ * Synchronous form of {@link cleanupTmpDir} for sync hooks. Retries are
+ * delegated to rmSync's own maxRetries; a lock that still outlives them is
+ * swallowed, since leaking a temp dir is better than failing a passing test.
+ */
+export function cleanupTmpDirSync(path: string): void {
+	try {
+		rmSync(path, {
+			recursive: true,
+			force: true,
+			maxRetries: MAX_RETRIES,
+			retryDelay: RETRY_DELAY_MS,
+		});
+	} catch (err: unknown) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "EBUSY" || code === "EPERM") return;
+		throw err;
+	}
+}

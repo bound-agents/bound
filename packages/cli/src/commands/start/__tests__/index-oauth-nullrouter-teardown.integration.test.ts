@@ -28,9 +28,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cleanupTmpDirSync } from "@bound/shared/test-utils";
 import { runInit } from "../../init.js";
 import { type NodeHandle, runStart, startNode } from "../index.js";
 
@@ -135,7 +136,7 @@ describe("bound start — MCP OAuth wiring arm", () => {
 		await node?.stop();
 		fakeMcp?.stop();
 		fakeLlm?.stop();
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	it("boots with the oauth owner-exchange + app-proxy consumers wired on the relay processor", () => {
@@ -207,7 +208,7 @@ describe("bound start — null model router SIGHUP arm", () => {
 
 	afterEach(async () => {
 		await node?.stop();
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	it("boots with no model router when the default backend is missing", () => {
@@ -289,7 +290,7 @@ describe("bound start — teardown with a throwing MCP client", () => {
 	}, 60_000);
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	it("swallows a client whose disconnect() throws and still completes teardown", async () => {
@@ -328,7 +329,7 @@ describe("bound start — runStart signal wiring", () => {
 	}, 60_000);
 
 	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		cleanupTmpDirSync(tempDir);
 	});
 
 	it("registers SIGINT/SIGTERM handlers and tears down when SIGINT fires", async () => {
