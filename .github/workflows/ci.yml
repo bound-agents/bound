@@ -126,7 +126,15 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
           restore-keys: bun-${{ runner.os }}-
 
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        shell: bash
+        # On a cold Windows cache, Bun 1.4.5 can run tree-sitter-kotlin's install
+        # script (node-gyp-build -> node-gyp; kotlin ships no prebuilds) before
+        # node-gyp's own dependencies are linked. Runs 44634982514 and
+        # 44642575960 both missed the cache and failed on a different missing
+        # node-gyp dependency (env-paths, then nopt); every warm-cache run
+        # installed cleanly. A second attempt finds the dependencies in place.
+        run: bun install --frozen-lockfile || bun install --frozen-lockfile
 
       - name: Prepare Linux Tree-sitter native addons
         if: ${{ runner.os == 'Linux' }}
