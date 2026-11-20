@@ -10,10 +10,7 @@
 
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { applyMetricsSchema, applySchema, createDatabase, insertRow } from "@bound/core";
 
 const SITE = "11111111-1111-1111-1111-111111111111";
@@ -37,12 +34,10 @@ function iso(offsetMs = 0): string {
 }
 
 describe("buildHeartbeatContext maintenance + validation branches", () => {
-	let tmpDir: string;
 	let db: Database;
 
 	beforeAll(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), `hb-ctx-cov-${randomBytes(4).toString("hex")}-`));
-		db = createDatabase(join(tmpDir, "test.db"));
+		db = createDatabase(":memory:");
 		applySchema(db);
 		applyMetricsSchema(db);
 	});
@@ -57,7 +52,6 @@ describe("buildHeartbeatContext maintenance + validation branches", () => {
 
 	afterAll(() => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
 	it("runs all siteId-gated maintenance and validation sweeps without error", async () => {

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema, challengeId, findChallengeById } from "@bound/core";
@@ -11,6 +11,15 @@ import { McpTokenStore } from "../token-store";
 
 const SITE = "site-owner";
 let dir: string;
+
+// A path whose parent is a regular file: mkdir and rename under it fail on
+// every OS. /dev/null/nope only fails on POSIX; on Windows it is writable.
+function fileAsParentDir(): string {
+	mkdirSync(dir, { recursive: true });
+	const file = join(dir, "not-a-dir");
+	writeFileSync(file, "");
+	return file;
+}
 let store: McpTokenStore;
 let db: Database;
 
@@ -88,7 +97,7 @@ describe("McpOAuthProvider token custody", () => {
 	it("saveTokens propagates a persistence failure (R-MO23)", async () => {
 		const bad = new McpOAuthProvider(
 			db,
-			new McpTokenStore(join("/dev/null/nope", "mcp-auth.json")),
+			new McpTokenStore(join(fileAsParentDir(), "mcp-auth.json")),
 			{ name: "srv", url: "https://mcp.example/mcp" },
 			SITE,
 			new RaiseDebouncer(),

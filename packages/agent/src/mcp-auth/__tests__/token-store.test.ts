@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { err, ok } from "@bound/shared";
@@ -12,6 +12,15 @@ import {
 } from "../token-store";
 
 let dir: string;
+
+// A path whose parent is a regular file: mkdir and rename under it fail on
+// every OS. /dev/null/nope only fails on POSIX; on Windows it is writable.
+function fileAsParentDir(): string {
+	mkdirSync(dir, { recursive: true });
+	const file = join(dir, "not-a-dir");
+	writeFileSync(file, "");
+	return file;
+}
 let path: string;
 
 beforeEach(() => {
@@ -97,7 +106,7 @@ describe("scope-union-never-narrows (R-MO20 custody clause)", () => {
 describe("saveTokens-failure propagation (R-MO23)", () => {
 	it("propagates a persistence failure and leaves the disk without the token", async () => {
 		// Point the store at a path whose parent is a FILE, so mkdir/rename fails.
-		const badStore = new McpTokenStore(join("/dev/null/nope", "mcp-auth.json"));
+		const badStore = new McpTokenStore(join(fileAsParentDir(), "mcp-auth.json"));
 		await expect(badStore.saveBundle("srv", bundle())).rejects.toBeDefined();
 		expect(badStore.getBundle("srv")).toBeNull();
 	});

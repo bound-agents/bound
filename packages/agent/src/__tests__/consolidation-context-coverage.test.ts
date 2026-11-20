@@ -7,10 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { applySchema, createDatabase, insertRow } from "@bound/core";
 import {
 	DEFAULT_CONSOLIDATION_INTERVAL_MS,
@@ -67,12 +64,10 @@ function addEdge(db: Database, sourceKey: string, targetKey: string): void {
 }
 
 describe("buildConsolidationContext", () => {
-	let tmpDir: string;
 	let db: Database;
 
 	beforeAll(() => {
-		tmpDir = mkdtempSync(join(tmpdir(), `consol-ctx-${randomBytes(4).toString("hex")}-`));
-		db = createDatabase(join(tmpDir, "test.db"));
+		db = createDatabase(":memory:");
 		applySchema(db);
 	});
 
@@ -83,7 +78,6 @@ describe("buildConsolidationContext", () => {
 
 	afterAll(() => {
 		db.close();
-		rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
 	it("exports a 4-hour default interval", () => {
