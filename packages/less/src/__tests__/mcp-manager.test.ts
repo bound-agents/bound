@@ -73,6 +73,39 @@ describe("McpServerManager", () => {
 			expect(state?.client).toBeNull();
 		});
 
+		it("AC6.6: a silent stdio server ends { failed, client:null, tools:[] } via the connect timeout", async () => {
+			// Regression for the macOS watchdog flake: client.connect()/listTools()
+			// used to inherit the SDK's 60s DEFAULT_REQUEST_TIMEOUT_MSEC, so a child
+			// that spawns but never answers MCP `initialize` stalled startup past the
+			// 15s Bun test watchdog. The manager's own { timeout: connectTimeoutMs }
+			// on both calls turns that into a fast, non-fatal failed server (AC6.6).
+			// With connectTimeoutMs: 300 the whole call must finish far under the
+			// test timeout; removing either timeout argument restores 60s behavior
+			// and makes this case exceed the test timeout deterministically.
+			const manager = new McpServerManager(logger, { connectTimeoutMs: 300 });
+			const started = Date.now();
+			await expect(
+				manager.ensureAllEnabled([
+					{
+						transport: "stdio",
+						name: "silent-handshake",
+						command: "sh",
+						args: ["-c", "exec sleep 30"],
+						enabled: true,
+					},
+				]),
+			).resolves.toBeUndefined();
+			// Fast failure: well under the 15s Bun watchdog, and under the 30s the
+			// child would otherwise sleep for.
+			expect(Date.now() - started).toBeLessThan(5_000);
+
+			const state = manager.getServerStates().get("silent-handshake");
+			expect(state?.status).toBe("failed");
+			expect(state?.client).toBeNull();
+			expect(state?.tools).toEqual([]);
+			expect(state?.error).toBeTruthy();
+		});
+
 		it("skips disabled servers", async () => {
 			const manager = new McpServerManager(logger);
 			const configs: McpServerConfig[] = [
