@@ -1005,8 +1005,21 @@ describe("RelayProcessor - executeInference", () => {
 
 		expect(ends.length).toBeGreaterThan(0);
 
-		const endPayload = JSON.parse(ends[0].payload) as { chunks: StreamChunk[]; seq: number };
-		const doneChunk = endPayload.chunks.find((c) => c.type === "done");
+		// The done chunk can ride an earlier stream_chunk: the processor flushes
+		// whenever 200ms have passed since the last flush, so on a slow runner the
+		// final chunk ships before stream_end, which then carries none. The
+		// requester reassembles chunks in seq order across both kinds, so the
+		// contract is that the stream carries a done chunk, not that stream_end does.
+		const rows = db
+			.query(
+				"SELECT payload FROM durable_work WHERE stream_id = ? AND kind IN ('stream_chunk', 'stream_end')",
+			)
+			.all(streamId) as Array<{ payload: string }>;
+		const streamChunks = rows
+			.map((r) => JSON.parse(r.payload) as { chunks: StreamChunk[]; seq: number })
+			.sort((a, b) => a.seq - b.seq)
+			.flatMap((p) => p.chunks);
+		const doneChunk = streamChunks.find((c) => c.type === "done");
 
 		expect(doneChunk).toBeDefined();
 		if (doneChunk && doneChunk.type === "done") {
