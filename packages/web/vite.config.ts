@@ -79,6 +79,41 @@ export const Worker = class {};`;
 	};
 }
 
+/**
+ * Fail the production build if any emitted browser chunk pulls in a Node
+ * native-addon loader. @bound/client and @bound/shared carry Node-only code
+ * paths (tree-sitter grammar loading, process introspection) that Rollup can
+ * statically reach; if the stubs above ever stop catching one, the forbidden
+ * source lands in a client chunk and would crash in the browser.
+ *
+ * This moved out of a unit test (`browser-bundle.test.ts`) that spawned a full
+ * nested `vite build` inside the `--parallel` lane: the build's duration is
+ * scheduling-dependent, so the test needed an arbitrary per-test deadline that
+ * flaked under contention. Enforcing the invariant inside `generateBundle`
+ * ties it to a build that already has to run, with no extra process and no
+ * timeout.
+ */
+function forbidNativeAddonLoadersPlugin(): Plugin {
+	const forbidden = ["process.config", "tree-sitter.node"];
+	return {
+		name: "forbid-native-addon-loaders",
+		generateBundle(_options, bundle) {
+			for (const [fileName, output] of Object.entries(bundle)) {
+				if (output.type !== "chunk") {
+					continue;
+				}
+				for (const needle of forbidden) {
+					if (output.code.includes(needle)) {
+						this.error(
+							`browser chunk "${fileName}" contains a Node native-addon loader reference (${needle}); a server-only code path leaked into the client bundle. Check nodeStubsPlugin and the import graph.`,
+						);
+					}
+				}
+			}
+		},
+	};
+}
+
 export default defineConfig({
 	plugins: [
 		nodeStubsPlugin(),
@@ -87,6 +122,7 @@ export default defineConfig({
 				generate: "client",
 			},
 		}),
+		forbidNativeAddonLoadersPlugin(),
 	],
 	root: ".",
 	resolve: {
