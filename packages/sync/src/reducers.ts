@@ -127,10 +127,18 @@ export function applyAppendOnlyReducer(
 
 	const hasModifiedAt = rowData.modified_at !== null && rowData.modified_at !== undefined;
 
-	const columns = Object.keys(rowData);
+	// Drop any column the receiving schema does not have, mirroring
+	// applyLWWReducer. A newer peer may ship a row_data key for a column this
+	// (older) host hasn't migrated yet; including it in the INSERT/UPDATE would
+	// throw "table X has no column named ...", and applyEvents rolls back and
+	// re-throws the whole batch on any reducer exception, poisoning all sync
+	// from that peer. Forward-compat: keep the known columns, drop the rest.
+	const schemaColumns = getTableColumns(db, event.table_name);
+	const columns = Object.keys(rowData).filter(
+		(col) => validateColumnName(col) && schemaColumns.includes(col),
+	);
 
-	// Validate all column names
-	if (!columns.every((col) => validateColumnName(col))) {
+	if (columns.length === 0) {
 		return { applied: false };
 	}
 

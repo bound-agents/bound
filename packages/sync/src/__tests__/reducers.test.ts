@@ -173,6 +173,100 @@ describe("reducers", () => {
 			expect(row.content).toBe("[redacted]");
 			expect(row.modified_at).toBe("2026-03-22T10:01:00Z");
 		});
+
+		it("drops a column the receiving schema lacks instead of throwing (forward-compat)", () => {
+			// A newer peer records a turns row carrying a column (cost_breakdown)
+			// that an older receiving host's schema does not have. The append-only
+			// reducer must drop the unknown column and insert the rest, mirroring
+			// the LWW reducer — NOT throw "table turns has no column named ...",
+			// which would roll back and poison the whole sync batch.
+			db.run(`CREATE TABLE turns (
+				id TEXT PRIMARY KEY,
+				model_id TEXT NOT NULL,
+				tokens_in INTEGER NOT NULL,
+				tokens_out INTEGER NOT NULL,
+				cost_usd REAL,
+				created_at TEXT NOT NULL,
+				modified_at TEXT,
+				deleted INTEGER NOT NULL DEFAULT 0
+			) STRICT`);
+
+			const event: ChangeLogEntry = {
+				hlc: "2026-11-21T10:00:00.000Z_0001_newpeer",
+				table_name: "turns",
+				row_id: "turn-skew",
+				site_id: "newpeer",
+				timestamp: "2026-11-21T10:00:00Z",
+				row_data: JSON.stringify({
+					id: "turn-skew",
+					model_id: "m",
+					tokens_in: 10,
+					tokens_out: 5,
+					cost_usd: 0.01,
+					created_at: "2026-11-21T10:00:00Z",
+					modified_at: "2026-11-21T10:00:00Z",
+					deleted: 0,
+					cost_breakdown: JSON.stringify({
+						input: 0.001,
+						output: 0.009,
+						cacheRead: 0,
+						cacheWrite: 0,
+					}),
+				}),
+			};
+
+			const result = applyAppendOnlyReducer(db, event);
+
+			expect(result.applied).toBe(true);
+			const row = db.query("SELECT * FROM turns WHERE id = ?").get("turn-skew") as Record<
+				string,
+				unknown
+			>;
+			expect(row).toBeDefined();
+			expect(row.cost_usd).toBe(0.01);
+			expect("cost_breakdown" in row).toBe(false);
+		});
+
+		it("drops an unknown column on the redaction (modified-at update) path too", () => {
+			db.run(`CREATE TABLE turns (
+				id TEXT PRIMARY KEY,
+				model_id TEXT NOT NULL,
+				tokens_in INTEGER NOT NULL,
+				tokens_out INTEGER NOT NULL,
+				cost_usd REAL,
+				created_at TEXT NOT NULL,
+				modified_at TEXT,
+				deleted INTEGER NOT NULL DEFAULT 0
+			) STRICT`);
+			db.run(
+				`INSERT INTO turns (id, model_id, tokens_in, tokens_out, cost_usd, created_at, modified_at)
+				 VALUES ('turn-r', 'm', 1, 1, 0.5, '2026-11-21T10:00:00Z', '2026-11-21T10:00:00Z')`,
+			);
+
+			const event: ChangeLogEntry = {
+				hlc: "2026-11-21T10:01:00.000Z_0001_newpeer",
+				table_name: "turns",
+				row_id: "turn-r",
+				site_id: "newpeer",
+				timestamp: "2026-11-21T10:01:00Z",
+				row_data: JSON.stringify({
+					id: "turn-r",
+					cost_usd: 0.75,
+					modified_at: "2026-11-21T10:01:00Z",
+					cost_breakdown: JSON.stringify({ input: 0.75, output: 0, cacheRead: 0, cacheWrite: 0 }),
+				}),
+			};
+
+			const result = applyAppendOnlyReducer(db, event);
+
+			expect(result.applied).toBe(true);
+			const row = db.query("SELECT * FROM turns WHERE id = ?").get("turn-r") as Record<
+				string,
+				unknown
+			>;
+			expect(row.cost_usd).toBe(0.75);
+			expect("cost_breakdown" in row).toBe(false);
+		});
 	});
 
 	describe("applyLWWReducer", () => {
