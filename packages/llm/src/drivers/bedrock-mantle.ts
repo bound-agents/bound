@@ -61,9 +61,11 @@ import { resolveAwsCredentials } from "./aws-credential-cache";
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	bindAsyncIterable,
+	buildReasoningOrigin,
 	mapProviderStream,
 	resolveProviderFetch,
 	withEmptyRetry,
+	withEncryptedReasoningRetry,
 } from "./shared";
 import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
 
@@ -191,6 +193,16 @@ export class BedrockMantleDriver implements LLMBackend {
 	private contextWindow: number;
 	private providerMode: BedrockMantleProviderMode;
 	private logger?: Logger;
+	/**
+	 * Identity of THIS Mantle deployment, `${siteId}:${region}:${providerMode}`,
+	 * or undefined when no siteId was supplied (tests). Used only on the
+	 * openai_responses path: stamped onto minted encrypted reasoning and compared
+	 * against each replayed block's `reasoning_origin` so a foreign blob is
+	 * dropped before it 400s the turn. siteId is the load-bearing discriminator —
+	 * two hosts can serve the same model in the same region with distinct
+	 * deployments whose encrypted blobs don't cross-decrypt.
+	 */
+	private readonly reasoningOrigin?: string;
 
 	constructor(config: {
 		region: string;
@@ -212,11 +224,22 @@ export class BedrockMantleDriver implements LLMBackend {
 		credentials?: () => Promise<SigV4Credentials>;
 		/** Per-backend connect / time-to-first-byte deadline (ms). */
 		connectTimeoutMs?: number;
+		/**
+		 * This host's site id. Combined with region + providerMode to form the
+		 * deployment identity stamped onto / compared against encrypted reasoning.
+		 * Omitted in tests that don't exercise the cross-host path.
+		 */
+		siteId?: string;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
 		this.providerMode = config.providerMode;
 		this.logger = config.logger;
+		this.reasoningOrigin = buildReasoningOrigin({
+			siteId: config.siteId,
+			provider: PROVIDER_NAME,
+			detail: `${config.region}:${config.providerMode}`,
+		});
 
 		// Lazy credential provider — resolved per request inside the SigV4 fetch,
 		// never at construction. fromIni honors SSO/AssumeRole for an explicit
@@ -328,20 +351,32 @@ export class BedrockMantleDriver implements LLMBackend {
 		// envelope: ids/names round-trip raw with only the length cap as a
 		// backstop.
 		const breakpointsSupported = supportsPromptCacheBreakpoints(modelId);
-		const messages = toModelMessages(params.messages, {
-			cacheProvider: breakpointsSupported ? "openai" : null,
-			resolveFileRef: params.resolveFileRef,
-			targetEnvelope: OPENAI_RESPONSES_ENVELOPE,
-			// Replay native OpenAI reasoning state (store:false encrypted content)
-			// so GPT-5.x reconstructs its prior chain-of-thought across turns —
-			// tool-call-justification continuity. buildReasoningPart keeps thinking
-			// blocks that carry reasoning_encrypted_content and drops those that
-			// don't (prior opus/Anthropic blocks, signature-only): @ai-sdk/openai
-			// would skip the latter under store:false with a per-block warning, so
-			// dropping at the boundary is equivalent and silences the flood.
-			reasoningProviderOptions: "openai",
-			midConversationSystem: true,
-		});
+		// Build the Responses `input` from history. `stripEncryptedReasoning` lets
+		// the layer-2 recovery re-build with all encrypted reasoning removed on a
+		// deployment-mismatch rejection (see the catch below).
+		const buildMessages = (stripEncryptedReasoning: boolean) =>
+			toModelMessages(params.messages, {
+				cacheProvider: breakpointsSupported ? "openai" : null,
+				resolveFileRef: params.resolveFileRef,
+				targetEnvelope: OPENAI_RESPONSES_ENVELOPE,
+				// Replay native OpenAI reasoning state (store:false encrypted content)
+				// so GPT-5.x reconstructs its prior chain-of-thought across turns —
+				// tool-call-justification continuity. buildReasoningPart keeps thinking
+				// blocks that carry reasoning_encrypted_content and drops those that
+				// don't (prior opus/Anthropic blocks, signature-only): @ai-sdk/openai
+				// would skip the latter under store:false with a per-block warning, so
+				// dropping at the boundary is equivalent and silences the flood.
+				reasoningProviderOptions: "openai",
+				// Layer 1: this deployment's identity. buildReasoningPart drops any
+				// replayed encrypted reasoning whose reasoning_origin was minted on a
+				// DIFFERENT deployment — the cross-host blob that would 400 the turn.
+				...(this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
+				// Layer 2 recovery: on a deployment-mismatch rejection, re-build with
+				// ALL encrypted reasoning dropped (stamped foreign, unstamped legacy, or
+				// matching-but-still-rejected), so legacy and unforeseen cases self-heal.
+				...(stripEncryptedReasoning && { stripEncryptedReasoning: true }),
+				midConversationSystem: true,
+			});
 
 		// System-anchor breakpoint (GPT-5.6 family): spend one of the four
 		// breakpoints on the system/instructions message so the big stable
@@ -366,13 +401,15 @@ export class BedrockMantleDriver implements LLMBackend {
 
 		// One streaming attempt — built fresh per retry so a re-issue is a clean
 		// new request (new SigV4 signature, new stream), not a replayed one.
-		const runAttempt = (): AsyncIterable<StreamChunk> =>
+		const runAttempt = (
+			attemptMessages: ReturnType<typeof buildMessages>,
+		): AsyncIterable<StreamChunk> =>
 			mapProviderStream({
 				providerName: PROVIDER_NAME,
 				stream: () =>
 					streamText({
 						model: provider.responses(modelId),
-						messages,
+						messages: attemptMessages,
 						allowSystemInMessages: true,
 						...(systemParam && { system: systemParam }),
 						...(tools && { tools }),
@@ -398,15 +435,31 @@ export class BedrockMantleDriver implements LLMBackend {
 				},
 			});
 
+		// withEmptyRetry handles the empty-completion retry; withEncryptedReasoningRetry
+		// (shared) adds the ONE encrypted-reasoning strip-and-retry (layer 2). A
+		// deployment-mismatch rejection means the replayed encrypted reasoning was
+		// minted elsewhere (or a legacy/unforeseen case layer-1 origin matching didn't
+		// catch); it rebuilds the input with ALL encrypted reasoning stripped and
+		// reissues exactly once. Any other error — and a second encrypted-reasoning
+		// rejection — propagates, but an invalid-`input` 400 is annotated first.
 		try {
-			yield* withEmptyRetry(runAttempt, {
-				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-				isAborted: () => params.signal?.aborted ?? false,
-				providerName: PROVIDER_NAME,
-				modelId,
-				onRetry: (attempt) =>
+			yield* withEncryptedReasoningRetry({
+				build: buildMessages,
+				run: (attemptMessages) =>
+					withEmptyRetry(() => runAttempt(attemptMessages), {
+						maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+						isAborted: () => params.signal?.aborted ?? false,
+						providerName: PROVIDER_NAME,
+						modelId,
+						onRetry: (attempt) =>
+							this.logger?.warn?.(
+								`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+								{ model: modelId },
+							),
+					}),
+				onStrip: () =>
 					this.logger?.warn?.(
-						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+						`[${PROVIDER_NAME}] encrypted-reasoning rejected (cross-deployment replay); retrying once with encrypted reasoning stripped`,
 						{ model: modelId },
 					),
 			});

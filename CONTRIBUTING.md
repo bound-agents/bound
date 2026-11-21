@@ -153,6 +153,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Nothing inside the boundless sandbox can kill a stray process](docs/gotchas.md#nothing-inside-the-boundless-sandbox-can-kill-a-stray-process)
 - [Mantle GPT-5.x automatic prompt cache is exact-match, not prefix](docs/gotchas.md#mantle-gpt-5x-automatic-prompt-cache-is-exact-match-not-prefix)
 - [`@ai-sdk/openai` injects `reasoning.summary` on Mantle Responses turns](docs/gotchas.md#ai-sdkopenai-injects-reasoningsummary-on-mantle-responses-turns)
+- [Encrypted reasoning is bound to the provider that minted it](docs/gotchas.md#encrypted-reasoning-is-bound-to-the-provider-that-minted-it)
 - [OpenAI-compatible providers never report cache-write tokens](docs/gotchas.md#openai-compatible-providers-never-report-cache-write-tokens)
 - [Importing a package can create logs/bound.log in cwd](docs/gotchas.md#importing-a-package-can-create-logsboundlog-in-cwd)
 - [Yard's `input` can arrive as JSON text, not a value](docs/gotchas.md#yards-input-can-arrive-as-json-text-not-a-value)

@@ -7,9 +7,11 @@ import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from ".
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	bindAsyncIterable,
+	buildReasoningOrigin,
 	mapProviderStream,
 	resolveProviderFetch,
 	withEmptyRetry,
+	withEncryptedReasoningRetry,
 } from "../shared";
 import { CHATGPT_BACKEND_BASE_URL } from "./auth-core";
 import type { TokenManager } from "./token-store";
@@ -43,6 +45,15 @@ export class ChatGptOAuthDriver implements LLMBackend {
 	private readonly model: string;
 	private readonly contextWindow: number;
 	private readonly logger?: Logger;
+	/**
+	 * Identity of THIS ChatGPT/Codex deployment, `${siteId}:${PROVIDER_NAME}`, or
+	 * undefined when no siteId was supplied (tests). Stamped onto minted OpenAI
+	 * encrypted reasoning and compared against each replayed block's
+	 * `reasoning_origin` so a blob minted by a DIFFERENT provider/host (e.g. the
+	 * bedrock-mantle deployment of the same model id on another host) is dropped
+	 * before it 400s the turn. Encrypted reasoning does not cross providers.
+	 */
+	private readonly reasoningOrigin?: string;
 
 	constructor(config: {
 		tokenManager: TokenManager;
@@ -51,10 +62,20 @@ export class ChatGptOAuthDriver implements LLMBackend {
 		logger?: Logger;
 		fetch?: typeof fetch;
 		connectTimeoutMs?: number;
+		/**
+		 * This host's site id. Combined with the provider name to form the deployment
+		 * identity stamped onto / compared against encrypted reasoning. Omitted in
+		 * tests that don't exercise the cross-provider path.
+		 */
+		siteId?: string;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
 		this.logger = config.logger;
+		this.reasoningOrigin = buildReasoningOrigin({
+			siteId: config.siteId,
+			provider: PROVIDER_NAME,
+		});
 		this.provider = createOpenAI({
 			name: PROVIDER_NAME,
 			// The native provider adds the terminal /responses path itself.
@@ -74,20 +95,29 @@ export class ChatGptOAuthDriver implements LLMBackend {
 	private async *chatStream(params: ChatParams): AsyncIterable<StreamChunk> {
 		const modelId = params.model || this.model;
 		const tools = toToolSet(params.tools);
-		const messages = toModelMessages(params.messages, {
-			cacheProvider: null,
-			resolveFileRef: params.resolveFileRef,
-			targetEnvelope: PERMISSIVE_ENVELOPE,
-			reasoningProviderOptions: "openai",
-			midConversationSystem: true,
-		});
-		const runAttempt = (): AsyncIterable<StreamChunk> =>
+		const buildMessages = (stripEncryptedReasoning: boolean) =>
+			toModelMessages(params.messages, {
+				cacheProvider: null,
+				resolveFileRef: params.resolveFileRef,
+				targetEnvelope: PERMISSIVE_ENVELOPE,
+				reasoningProviderOptions: "openai",
+				// Layer 1: drop replayed encrypted reasoning minted on a DIFFERENT
+				// provider/host (e.g. the bedrock-mantle deployment of this same model
+				// id on another host) — the Codex endpoint rejects a foreign blob.
+				...(this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
+				// Layer 2: strip ALL encrypted reasoning on the one post-rejection retry.
+				...(stripEncryptedReasoning && { stripEncryptedReasoning: true }),
+				midConversationSystem: true,
+			});
+		const runAttempt = (
+			attemptMessages: ReturnType<typeof buildMessages>,
+		): AsyncIterable<StreamChunk> =>
 			mapProviderStream({
 				providerName: PROVIDER_NAME,
 				stream: () =>
 					streamText({
 						model: this.provider.responses(modelId),
-						messages,
+						messages: attemptMessages,
 						allowSystemInMessages: true,
 						...(params.system && { system: params.system }),
 						...(tools && { tools }),
@@ -134,18 +164,38 @@ export class ChatGptOAuthDriver implements LLMBackend {
 						}),
 						abortSignal: params.signal,
 					}).fullStream,
-				map: { estimateInputFromMessages: params.messages, coalescePrefixItems: true },
+				map: {
+					estimateInputFromMessages: params.messages,
+					coalescePrefixItems: true,
+					// Stamp minted encrypted reasoning with this deployment's identity so a
+					// later request-build on a DIFFERENT provider/host drops the un-replayable
+					// blob instead of 400-ing the turn.
+					...(this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
+				},
 			});
 
 		yield { type: "heartbeat" };
-		yield* withEmptyRetry(runAttempt, {
-			maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-			isAborted: () => params.signal?.aborted ?? false,
-			providerName: PROVIDER_NAME,
-			modelId,
-			onRetry: (attempt) =>
+		// withEmptyRetry handles the empty-completion retry; withEncryptedReasoningRetry
+		// (shared) adds the ONE strip-and-retry when the Codex endpoint rejects a
+		// cross-provider encrypted-reasoning blob (minted by, e.g., the bedrock-mantle
+		// deployment of this same model id on another host).
+		yield* withEncryptedReasoningRetry({
+			build: buildMessages,
+			run: (attemptMessages) =>
+				withEmptyRetry(() => runAttempt(attemptMessages), {
+					maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+					isAborted: () => params.signal?.aborted ?? false,
+					providerName: PROVIDER_NAME,
+					modelId,
+					onRetry: (attempt) =>
+						this.logger?.warn?.(
+							`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+							{ model: modelId },
+						),
+				}),
+			onStrip: () =>
 				this.logger?.warn?.(
-					`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+					`[${PROVIDER_NAME}] encrypted-reasoning rejected (cross-provider replay); retrying once with encrypted reasoning stripped`,
 					{ model: modelId },
 				),
 		});

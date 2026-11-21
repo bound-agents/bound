@@ -730,6 +730,109 @@ describe("toModelMessages — content blocks", () => {
 		]);
 	});
 
+	it("keeps native OpenAI encrypted reasoning when the block's origin matches the executing deployment", () => {
+		// Layer 1 (provenance). The executing deployment passes its own
+		// reasoningOrigin. A block stamped with that SAME origin was minted here
+		// and decrypts locally, so it replays.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "",
+							reasoning_encrypted_content: "ENC==",
+							reasoning_origin: "siteA:us-east-1:openai_responses",
+						},
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{
+				reasoningProviderOptions: "openai",
+				reasoningOrigin: "siteA:us-east-1:openai_responses",
+				targetEnvelope: PERMISSIVE_ENVELOPE,
+			},
+		);
+		expect(out[1].content).toEqual([
+			{
+				type: "reasoning",
+				text: "",
+				providerOptions: { openai: { reasoningEncryptedContent: "ENC==" } },
+			},
+			{ type: "text", text: "answer" },
+		]);
+	});
+
+	it("drops encrypted reasoning minted on a DIFFERENT deployment (cross-host origin mismatch)", () => {
+		// Layer 1 (provenance). The live prod bug: gpt-5.6-sol is served by two
+		// hosts, each its own Mantle deployment. A blob minted on siteB does not
+		// decrypt on siteA — replaying it 400s the whole turn ("invalid encrypted
+		// reasoning"). The executing deployment (siteA) drops the foreign
+		// encrypted content so the inline text/tool_use still replays.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "",
+							reasoning_encrypted_content: "ENC-from-siteB",
+							reasoning_origin: "siteB:us-west-2:openai_responses",
+						},
+						{ type: "text", text: "answer" },
+						{ type: "tool_use", id: "call_1", name: "lookup", input: { q: "x" } },
+					],
+				},
+			],
+			{
+				reasoningProviderOptions: "openai",
+				reasoningOrigin: "siteA:us-east-1:openai_responses",
+				targetEnvelope: PERMISSIVE_ENVELOPE,
+			},
+		);
+		expect(out[1].content).toEqual([
+			{ type: "text", text: "answer" },
+			{ type: "tool-call", toolCallId: "call_1", toolName: "lookup", input: { q: "x" } },
+		]);
+	});
+
+	it("keeps unstamped (legacy) encrypted reasoning when an executing origin is known", () => {
+		// Layer 1. A legacy block minted before provenance stamping has no
+		// reasoning_origin. We cannot prove it is foreign, so we keep it and rely
+		// on layer 2 (the strip-and-retry on provider rejection) to self-heal the
+		// rare genuine mismatch. Degrading same-host replay is the bigger harm.
+		const out = toModelMessages(
+			[
+				{ role: "user", content: "ask" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "", reasoning_encrypted_content: "ENC-legacy" },
+						{ type: "text", text: "answer" },
+					],
+				},
+			],
+			{
+				reasoningProviderOptions: "openai",
+				reasoningOrigin: "siteA:us-east-1:openai_responses",
+				targetEnvelope: PERMISSIVE_ENVELOPE,
+			},
+		);
+		expect(out[1].content).toEqual([
+			{
+				type: "reasoning",
+				text: "",
+				providerOptions: { openai: { reasoningEncryptedContent: "ENC-legacy" } },
+			},
+			{ type: "text", text: "answer" },
+		]);
+	});
+
 	it("keeps historical image provenance immediately before the image", () => {
 		const data = Buffer.from("hello").toString("base64");
 		const provenance =

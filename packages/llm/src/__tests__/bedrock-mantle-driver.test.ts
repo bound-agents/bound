@@ -366,3 +366,201 @@ describe("withEmptyRetry", () => {
 		expect(retries).toEqual([1, 2]);
 	});
 });
+
+function responsesSse(): Response {
+	const events = [
+		`event: response.created\ndata: ${JSON.stringify({
+			type: "response.created",
+			response: { id: "resp_1", model: "openai.gpt-5.6-sol" },
+		})}`,
+		`event: response.output_item.added\ndata: ${JSON.stringify({
+			type: "response.output_item.added",
+			output_index: 0,
+			item: { type: "message", id: "msg_1", role: "assistant", content: [] },
+		})}`,
+		`event: response.content_part.added\ndata: ${JSON.stringify({
+			type: "response.content_part.added",
+			item_id: "msg_1",
+			output_index: 0,
+			content_index: 0,
+			part: { type: "output_text", text: "" },
+		})}`,
+		`event: response.output_text.delta\ndata: ${JSON.stringify({
+			type: "response.output_text.delta",
+			item_id: "msg_1",
+			output_index: 0,
+			content_index: 0,
+			delta: "answer",
+		})}`,
+		`event: response.output_text.done\ndata: ${JSON.stringify({
+			type: "response.output_text.done",
+			item_id: "msg_1",
+			output_index: 0,
+			content_index: 0,
+			text: "answer",
+		})}`,
+		`event: response.content_part.done\ndata: ${JSON.stringify({
+			type: "response.content_part.done",
+			item_id: "msg_1",
+			output_index: 0,
+			content_index: 0,
+			part: { type: "output_text", text: "answer" },
+		})}`,
+		`event: response.output_item.done\ndata: ${JSON.stringify({
+			type: "response.output_item.done",
+			output_index: 0,
+			item: {
+				type: "message",
+				id: "msg_1",
+				role: "assistant",
+				content: [{ type: "output_text", text: "answer" }],
+			},
+		})}`,
+		`event: response.completed\ndata: ${JSON.stringify({
+			type: "response.completed",
+			response: {
+				id: "resp_1",
+				model: "openai.gpt-5.6-sol",
+				status: "completed",
+				usage: {
+					input_tokens: 3,
+					input_tokens_details: { cached_tokens: 0 },
+					output_tokens: 1,
+					output_tokens_details: { reasoning_tokens: 0 },
+					total_tokens: 4,
+				},
+			},
+		})}`,
+	].join("\n\n");
+	return new Response(`${events}\n\n`, {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+function encryptedReasoningRejection(): Response {
+	return new Response(
+		JSON.stringify({
+			error: {
+				message:
+					"The encrypted content rsn_abc could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+				type: "invalid_request_error",
+			},
+		}),
+		{ status: 400, headers: { "content-type": "application/json" } },
+	);
+}
+
+describe("BedrockMantleDriver — encrypted-reasoning cross-deployment recovery", () => {
+	// A thread that previously ran a gpt-5.6-sol turn on a DIFFERENT Mantle
+	// deployment carries that deployment's encrypted reasoning. Replaying it to
+	// this deployment is rejected ("could not be verified"). Layer 2: the driver
+	// retries ONCE with all encrypted reasoning stripped, and the stripped request
+	// succeeds. The history carries a foreign-origin thinking block whose
+	// encrypted content must be gone from the retried request body.
+	const crossHostParams: ChatParams = {
+		model: "openai.gpt-5.6-sol",
+		messages: [
+			{ role: "user", content: "first question" },
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "thinking",
+						thinking: "",
+						reasoning_encrypted_content: "ENC-foreign-origin",
+						reasoning_origin: "MSI-site:us-west-2:openai_responses",
+					},
+					{ type: "text", text: "prior answer" },
+				],
+			},
+			{ role: "user", content: "follow-up" },
+		],
+	};
+
+	it("retries once with encrypted reasoning stripped on a deployment-mismatch rejection", async () => {
+		const bodies: string[] = [];
+		let call = 0;
+		const captureFetch: typeof fetch = async (input, init) => {
+			const req = new Request(input as RequestInfo, init);
+			bodies.push(await req.clone().text());
+			call++;
+			// First call carries the foreign-origin encrypted reasoning and is
+			// rejected; the stripped retry succeeds.
+			return call === 1 ? encryptedReasoningRejection() : responsesSse();
+		};
+
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-5.6-sol",
+			contextWindow: 272_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+			// This deployment's own identity; the history's block was minted on MSI,
+			// so layer-1 origin matching already drops it — but assert the full retry
+			// path by exercising a deployment whose siteId differs from the block's.
+			siteId: "this-host:us-east-1",
+		});
+
+		const out = await collect(driver.chat(crossHostParams));
+
+		expect(call).toBe(2); // one rejection, one stripped retry
+		// Both requests must be free of the foreign encrypted blob: layer-1 origin
+		// mismatch drops it on the first call, and the explicit strip drops it on
+		// the retry. The turn self-heals into a text answer rather than failing.
+		expect(bodies[0]).not.toContain("ENC-foreign-origin");
+		expect(bodies[1]).not.toContain("ENC-foreign-origin");
+		expect(out.some((c) => c.type === "text" && c.content.includes("answer"))).toBe(true);
+	});
+
+	it("does not retry when the first request succeeds", async () => {
+		let call = 0;
+		const captureFetch: typeof fetch = async () => {
+			call++;
+			return responsesSse();
+		};
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-5.6-sol",
+			contextWindow: 272_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+			siteId: "this-host:us-east-1",
+		});
+		await collect(driver.chat(crossHostParams));
+		expect(call).toBe(1); // no retry on a clean first attempt
+	});
+
+	it("does not run the stripped retry for a non-encrypted-reasoning error", async () => {
+		// A generic 400 (not the encrypted-reasoning family) must NOT trigger the
+		// layer-2 stripped retry — the error propagates. A 400 is non-retryable by
+		// the SDK, so the driver issues exactly one request and never rebuilds the
+		// input with reasoning stripped.
+		const bodies: string[] = [];
+		const captureFetch: typeof fetch = async (input, init) => {
+			const req = new Request(input as RequestInfo, init);
+			bodies.push(await req.clone().text());
+			return new Response(
+				JSON.stringify({ error: { message: "model is overloaded", type: "server_error" } }),
+				{ status: 400, headers: { "content-type": "application/json" } },
+			);
+		};
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-5.6-sol",
+			contextWindow: 272_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+			siteId: "this-host:us-east-1",
+		});
+		await expect(collect(driver.chat(crossHostParams))).rejects.toThrow();
+		// Exactly one request: no stripped rebuild fired. The inline prior text still
+		// replays (layer-1 already drops the foreign blob at build time, so its
+		// absence is not a strip signal; the prior-text presence is the real tell).
+		expect(bodies).toHaveLength(1);
+		expect(bodies[0]).toContain("prior answer");
+	});
+});

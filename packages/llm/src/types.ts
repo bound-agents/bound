@@ -258,6 +258,21 @@ export type ContentBlock =
 			 * given block carries at most one provider's replay metadata.
 			 */
 			reasoning_encrypted_content?: string;
+			/**
+			 * Provenance stamp identifying the deployment that minted this block's
+			 * `reasoning_encrypted_content`. Opaque encrypted reasoning only decrypts
+			 * on the exact deployment that produced it — a Bedrock Mantle blob minted
+			 * on host A's regional deployment is rejected ("invalid encrypted
+			 * reasoning" / "could not be verified" / "missing recognized prefix") when
+			 * replayed to host B's deployment of the same model. The executing host
+			 * stamps its own deployment identity here (see bedrock-mantle.ts
+			 * `reasoningOrigin`), so a later request-build on a DIFFERENT deployment
+			 * can drop the un-replayable encrypted content instead of failing the
+			 * whole turn. Unstamped (legacy) blocks are treated as origin-agnostic —
+			 * kept, with the provider-rejection retry (strip-and-reissue) as the
+			 * safety net. Only meaningful alongside `reasoning_encrypted_content`.
+			 */
+			reasoning_origin?: string;
 	  }
 	| { type: "image"; source: ImageSource; description?: string }
 	| {
@@ -321,6 +336,13 @@ export type StreamChunk =
 			 * stitches this onto the assembled thinking ContentBlock.
 			 */
 			reasoning_encrypted_content?: string;
+			/**
+			 * See ContentBlock "thinking".reasoning_origin. Emitted alongside
+			 * `reasoning_encrypted_content` on the reasoning-end chunk by the
+			 * executing deployment's driver, so the assembled block records which
+			 * deployment minted the encrypted state. Survives the relay/stream path.
+			 */
+			reasoning_origin?: string;
 	  }
 	| { type: "tool_use_start"; id: string; name: string }
 	| { type: "tool_use_args"; id: string; partial_json: string }

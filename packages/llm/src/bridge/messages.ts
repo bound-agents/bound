@@ -81,6 +81,33 @@ export interface ToModelMessagesOptions {
 	 * driver to keep the legacy merge path.
 	 */
 	midConversationSystem?: boolean;
+	/**
+	 * Identity of the deployment executing THIS request, used only when
+	 * `reasoningProviderOptions === "openai"`. Opaque OpenAI-Responses encrypted
+	 * reasoning (`reasoning_encrypted_content`) only decrypts on the exact
+	 * deployment that minted it. When a thinking block's `reasoning_origin`
+	 * (stamped by the minting deployment) differs from this value, its encrypted
+	 * content is dropped at request-build time — replaying it would 400 the whole
+	 * turn ("invalid encrypted reasoning" / "could not be verified" / "missing
+	 * recognized prefix"), whereas dropping it keeps the inline text/tool_use.
+	 *
+	 * Set ONLY by the executing driver (bedrock-mantle on the host that will run
+	 * the request), because the drop decision requires the executing deployment's
+	 * own identity — not the loop host's. Unset (or an unstamped legacy block
+	 * whose `reasoning_origin` is absent) keeps the block and leans on the
+	 * provider-rejection strip-and-retry as the safety net.
+	 */
+	reasoningOrigin?: string;
+	/**
+	 * Layer-2 recovery escape hatch for the openai (OpenAI-Responses) path. When
+	 * true, ALL replayed encrypted reasoning is dropped regardless of origin —
+	 * stamped-foreign, unstamped-legacy, or even matching-but-still-rejected. Set
+	 * by the executing driver only after the provider rejected the request with
+	 * an encrypted-reasoning error (`isEncryptedReasoningRejection`), so a single
+	 * stripped retry self-heals cases layer-1 origin matching can't catch. No
+	 * effect unless `reasoningProviderOptions === "openai"`.
+	 */
+	stripEncryptedReasoning?: boolean;
 }
 
 /**
@@ -566,7 +593,12 @@ export function toModelMessages(
 				if (b.type === "text" && b.text) {
 					parts.push({ type: "text", text: b.text });
 				} else if (b.type === "thinking") {
-					const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
+					const reasoningPart = buildReasoningPart(
+						b,
+						opts.reasoningProviderOptions,
+						opts.reasoningOrigin,
+						opts.stripEncryptedReasoning,
+					);
 					if (reasoningPart) parts.push(reasoningPart);
 				} else if (b.type === "tool_use") {
 					parts.push({
@@ -663,7 +695,12 @@ export function toModelMessages(
 			if (b.type === "text") {
 				if (b.text) parts.push({ type: "text", text: b.text });
 			} else if (b.type === "thinking") {
-				const reasoningPart = buildReasoningPart(b, opts.reasoningProviderOptions);
+				const reasoningPart = buildReasoningPart(
+					b,
+					opts.reasoningProviderOptions,
+					opts.reasoningOrigin,
+					opts.stripEncryptedReasoning,
+				);
 				if (reasoningPart) parts.push(reasoningPart);
 			} else if (b.type === "tool_use") {
 				parts.push({
@@ -963,6 +1000,8 @@ function extractText(blocks: ContentBlock[]): string {
 function buildReasoningPart(
 	b: Extract<ContentBlock, { type: "thinking" }>,
 	providerKey: "bedrock" | "anthropic" | "openai" | null | undefined,
+	reasoningOrigin?: string,
+	stripEncryptedReasoning?: boolean,
 ): Record<string, unknown> | null {
 	// OpenAI Responses replays reasoning ONLY when it carries the provider's own
 	// encrypted reasoning state (returned under store:false). A block with it
@@ -976,6 +1015,27 @@ function buildReasoningPart(
 	// inline text/tool_use in the same assistant message is unaffected.
 	if (providerKey === "openai") {
 		if (!b.reasoning_encrypted_content) return null;
+		// Layer 2: the provider already rejected this history with an
+		// encrypted-reasoning error, so drop ALL encrypted reasoning on the retry
+		// regardless of origin — stamped-foreign, unstamped-legacy, or
+		// matching-but-still-rejected. The reasoning text is empty on Mantle, so
+		// dropping loses nothing but the un-replayable blob; the inline text/tool_use
+		// in the same message still replays.
+		if (stripEncryptedReasoning) return null;
+		// Deployment-bound encrypted reasoning (layer 1). Opaque OpenAI-Responses
+		// encrypted state only decrypts on the deployment that minted it: the live
+		// prod bug is a model served by two hosts, each its own Bedrock Mantle
+		// deployment, where replaying host A's blob to host B 400s the whole turn.
+		// When the executing deployment passes its own origin AND this block was
+		// stamped with a DIFFERENT one at mint time, drop the encrypted content
+		// here (where the executing deployment identity is known) so the inline
+		// text/tool_use still replays. An unstamped (legacy) block has no origin to
+		// compare, so it is kept — the provider-rejection strip-and-retry (layer 2)
+		// self-heals the rare genuine mismatch, and keeping it avoids degrading the
+		// common same-host replay.
+		if (reasoningOrigin && b.reasoning_origin && b.reasoning_origin !== reasoningOrigin) {
+			return null;
+		}
 		return {
 			type: "reasoning" as const,
 			text: b.thinking,

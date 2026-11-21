@@ -1,6 +1,7 @@
 import { type Logger, counter, histogram } from "@bound/shared";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 import { type MapChunksOptions, mapChunks, mapError } from "../bridge";
+import { isEncryptedReasoningRejection } from "../bridge/request-diagnostics";
 import { createLoggingFetch } from "../fetch-logger";
 import type { StreamChunk } from "../types";
 
@@ -296,4 +297,68 @@ export function bindAsyncIterable<T>(
 			};
 		},
 	};
+}
+
+/**
+ * Build the deployment-provenance stamp for OpenAI-Responses encrypted reasoning
+ * (`reasoning_encrypted_content`). The blob only decrypts on the exact provider
+ * endpoint that minted it, so the stamp must distinguish:
+ *   - two HOSTS serving the same provider+model (differ by `siteId`), and
+ *   - two PROVIDERS serving the same model on one host (differ by `provider`).
+ * The optional `detail` disambiguates a provider that can mint un-cross-decryptable
+ * blobs from more than one endpoint on the same host (Bedrock Mantle: region +
+ * provider mode). Format: `${siteId}:${provider}[:${detail}]`.
+ *
+ * Returns undefined when `siteId` is absent (tests that don't exercise the
+ * cross-host path) — an unstamped block is treated as origin-agnostic and leans
+ * on the strip-and-retry safety net.
+ */
+export function buildReasoningOrigin(parts: {
+	siteId?: string;
+	provider: string;
+	detail?: string;
+}): string | undefined {
+	if (!parts.siteId) return undefined;
+	return parts.detail
+		? `${parts.siteId}:${parts.provider}:${parts.detail}`
+		: `${parts.siteId}:${parts.provider}`;
+}
+
+/**
+ * Wraps a streaming attempt with the ONE encrypted-reasoning strip-and-retry
+ * (layer 2 of the cross-provider / cross-host encrypted-reasoning defense). The
+ * `build` thunk re-constructs the request's messages with
+ * `stripEncryptedReasoning` toggled, so a deployment-mismatch rejection rebuilds
+ * the input with ALL replayed encrypted reasoning dropped and reissues exactly
+ * once. Any other error — and a second encrypted-reasoning rejection —
+ * propagates. The retry is safe because the stripped rebuild is a clean new
+ * request (a fresh `build(true)` call), not a replay of the rejected stream; the
+ * inline text/tool_use in each assistant message survives the strip, only the
+ * un-replayable blob is lost.
+ *
+ * `run(messages)` runs one streaming attempt over the built messages (typically
+ * `withEmptyRetry(() => mapProviderStream(...))`). `onStrip` is an optional
+ * one-time hook for a warn log.
+ */
+export async function* withEncryptedReasoningRetry<M>(config: {
+	build: (stripEncryptedReasoning: boolean) => M;
+	run: (messages: M) => AsyncIterable<StreamChunk>;
+	onStrip?: () => void;
+}): AsyncIterable<StreamChunk> {
+	let messages = config.build(false);
+	let stripped = false;
+	for (;;) {
+		try {
+			yield* config.run(messages);
+			return;
+		} catch (err) {
+			if (isEncryptedReasoningRejection(err) && !stripped) {
+				stripped = true;
+				config.onStrip?.();
+				messages = config.build(true);
+				continue;
+			}
+			throw err;
+		}
+	}
 }

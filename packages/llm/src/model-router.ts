@@ -589,6 +589,7 @@ function createBackendFromConfig(
 	config: BackendConfig,
 	logger?: Logger,
 	fetch?: typeof globalThis.fetch,
+	siteId?: string,
 ): LLMBackend {
 	const provider = config.provider.toLowerCase();
 
@@ -702,6 +703,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				siteId,
 			});
 		}
 
@@ -734,6 +736,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				siteId,
 			});
 		}
 
@@ -803,6 +806,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				siteId,
 			});
 		}
 
@@ -828,13 +832,14 @@ function buildRouterState(
 	config: ModelBackendsConfig,
 	logger?: Logger,
 	fetchByBackendId?: Map<string, typeof globalThis.fetch>,
+	siteId?: string,
 ): RouterState {
 	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
 	const groups = new Map<string, { entries: PoolEntry[]; caps: BackendCapabilities[] }>();
 
 	for (const backendConfig of config.backends) {
 		const fetchOverride = fetchByBackendId?.get(backendConfig.id);
-		const backend = createBackendFromConfig(backendConfig, logger, fetchOverride);
+		const backend = createBackendFromConfig(backendConfig, logger, fetchOverride, siteId);
 		const baseline = backend.capabilities();
 		const capOverride =
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
@@ -916,13 +921,26 @@ export interface CreateModelRouterOptions {
 	fetchByBackendId?: Map<string, typeof globalThis.fetch>;
 	/** Optional clock override for deterministic rate-limit handling. */
 	clock?: () => number;
+	/**
+	 * This host's site id, forwarded to deployment-bound drivers (bedrock-mantle)
+	 * so they can stamp minted encrypted reasoning with their own deployment
+	 * identity (`${siteId}:${region}:${providerMode}`) and drop foreign encrypted
+	 * reasoning at request-build time. Unset in tests that don't exercise the
+	 * cross-host encrypted-reasoning path.
+	 */
+	siteId?: string;
 }
 
 export function createModelRouter(
 	config: ModelBackendsConfig,
 	options?: CreateModelRouterOptions,
 ): ModelRouter {
-	const state = buildRouterState(config, options?.logger, options?.fetchByBackendId);
+	const state = buildRouterState(
+		config,
+		options?.logger,
+		options?.fetchByBackendId,
+		options?.siteId,
+	);
 	return new ModelRouter(
 		state.backends,
 		state.defaultId,

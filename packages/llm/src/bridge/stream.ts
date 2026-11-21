@@ -78,6 +78,16 @@ export interface MapChunksOptions {
 	 * Mantle driver, which is the only caller that sets it.
 	 */
 	coalescePrefixItems?: boolean;
+	/**
+	 * Deployment identity stamped onto this stream's encrypted-reasoning thinking
+	 * chunks (`reasoning_origin`). Opaque OpenAI-Responses encrypted reasoning only
+	 * decrypts on the deployment that minted it, so the executing driver records
+	 * who minted the blob here — a later request-build on a DIFFERENT deployment
+	 * drops the un-replayable encrypted content instead of 400-ing the whole turn.
+	 * Set only by the executing driver (bedrock-mantle openai_responses). Unset on
+	 * every other provider (the blob is not deployment-bound there).
+	 */
+	reasoningOrigin?: string;
 }
 
 type ProviderMetadata = Record<string, Record<string, unknown>>;
@@ -468,7 +478,16 @@ export async function* mapChunks(
 				const meta = part.providerMetadata as ProviderMetadata | undefined;
 				const enc = meta?.openai?.reasoningEncryptedContent as string | undefined;
 				if (enc) {
-					yield { type: "thinking", content: "", reasoning_encrypted_content: enc };
+					yield {
+						type: "thinking",
+						content: "",
+						reasoning_encrypted_content: enc,
+						// Stamp the minting deployment's identity so a later request-build
+						// on a DIFFERENT deployment can drop this un-replayable blob
+						// instead of 400-ing the turn. Only the executing openai-responses
+						// driver sets reasoningOrigin; every other provider leaves it unset.
+						...(opts.reasoningOrigin && { reasoning_origin: opts.reasoningOrigin }),
+					};
 				}
 				break;
 			}

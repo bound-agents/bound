@@ -15,6 +15,13 @@ export interface ParsedResponse {
 	thinkingSignature: string | null;
 	thinkingRedactedData: string | null;
 	thinkingEncryptedContent: string | null;
+	/**
+	 * Provenance stamp (from the thinking chunk's `reasoning_origin`) naming the
+	 * deployment that minted `thinkingEncryptedContent`. Stitched onto the
+	 * assembled thinking block so a later request-build on a different deployment
+	 * can drop the un-replayable encrypted content. Null when no stamp was seen.
+	 */
+	thinkingReasoningOrigin: string | null;
 	toolCalls: ParsedToolCall[];
 	finishReason: LLMFinishReason | null;
 	usage: {
@@ -88,6 +95,7 @@ export function parseResponseChunks(
 	let thinkingSignature: string | null = null;
 	let thinkingRedactedData: string | null = null;
 	let thinkingEncryptedContent: string | null = null;
+	let thinkingReasoningOrigin: string | null = null;
 	const toolCalls: ParsedToolCall[] = [];
 	const argsAccumulator = new Map<string, string>();
 	const nameMap = new Map<string, string>();
@@ -113,6 +121,7 @@ export function parseResponseChunks(
 				if (chunk.reasoning_encrypted_content) {
 					thinkingEncryptedContent = chunk.reasoning_encrypted_content;
 				}
+				if (chunk.reasoning_origin) thinkingReasoningOrigin = chunk.reasoning_origin;
 				break;
 			case "tool_use_start":
 				argsAccumulator.set(chunk.id, "");
@@ -178,6 +187,7 @@ export function parseResponseChunks(
 		thinkingSignature,
 		thinkingRedactedData,
 		thinkingEncryptedContent,
+		thinkingReasoningOrigin,
 		toolCalls: dropSupersededToolCallDrafts(toolCalls),
 		finishReason,
 		usage: {

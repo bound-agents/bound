@@ -172,6 +172,8 @@ export function buildAssistantToolCallBlocks(
 		signature: string | null;
 		redactedData: string | null;
 		encryptedContent: string | null;
+		/** Deployment that minted encryptedContent; stitched on as reasoning_origin. */
+		reasoningOrigin?: string | null;
 	},
 	toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
 ): ContentBlock[] {
@@ -185,6 +187,9 @@ export function buildAssistantToolCallBlocks(
 		if (thinking.redactedData) thinkingBlock.redacted_data = thinking.redactedData;
 		if (thinking.encryptedContent) {
 			thinkingBlock.reasoning_encrypted_content = thinking.encryptedContent;
+		}
+		if (thinking.reasoningOrigin) {
+			thinkingBlock.reasoning_origin = thinking.reasoningOrigin;
 		}
 		blocks.push(thinkingBlock);
 	}
@@ -1333,6 +1338,7 @@ export abstract class ModularAgentLoop {
 			signature: string | null;
 			redactedData: string | null;
 			encryptedContent: string | null;
+			reasoningOrigin?: string | null;
 		},
 		toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>,
 	): ContentBlock[] {

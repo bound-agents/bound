@@ -327,7 +327,10 @@ export async function initInference(
 
 	let modelRouter: ReturnType<typeof createModelRouter> | null = null;
 	try {
-		modelRouter = createModelRouter(routerConfig, { logger: aiSdkFetchLogger });
+		modelRouter = createModelRouter(routerConfig, {
+			logger: aiSdkFetchLogger,
+			siteId: appContext.siteId,
+		});
 		const ids = [...new Set(routerConfig.backends.map((b) => b.id))].join(", ");
 		appContext.logger.info(
 			`[llm] Model router ready — backends: ${ids} (default: ${routerConfig.default})`,

@@ -37,6 +37,7 @@ export { mapError } from "./errors";
 export {
 	type MessageShapeSummary,
 	type RequestShapeSummary,
+	isEncryptedReasoningRejection,
 	isResponsesInputRejection,
 	summarizeRequestShape,
 } from "./request-diagnostics";

@@ -53,9 +53,11 @@ import {
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	bindAsyncIterable,
+	buildReasoningOrigin,
 	mapProviderStream,
 	resolveProviderFetch,
 	withEmptyRetry,
+	withEncryptedReasoningRetry,
 } from "../shared";
 import type { CopilotAccountInfo } from "./auth-core";
 import { type CopilotAutoSession, CopilotAutoSessionCache } from "./auto-session";
@@ -175,6 +177,17 @@ export class GitHubCopilotDriver implements LLMBackend {
 	private readonly baseFetch?: typeof fetch;
 	private readonly resolveAccount: () => Promise<CopilotAccountInfo>;
 	private readonly now?: () => number;
+	/**
+	 * Identity of THIS Copilot deployment, `${siteId}:${PROVIDER_NAME}`, or
+	 * undefined when no siteId was supplied (tests). Used only on the Responses
+	 * route (the only Copilot route that mints OpenAI encrypted reasoning, via
+	 * `include: ["reasoning.encrypted_content"]`): stamped onto minted encrypted
+	 * reasoning and compared against each replayed block's `reasoning_origin` so a
+	 * blob minted by a DIFFERENT provider/host (e.g. the bedrock-mantle or
+	 * chatgpt-oauth deployment of the same model id) is dropped before it 400s the
+	 * turn. Encrypted reasoning does not cross providers.
+	 */
+	private readonly reasoningOrigin?: string;
 	/** Per-turn request context the fetch wrapper snapshots on each send. */
 	private requestContext: CopilotRequestContext = { initiator: "user", hasImages: false };
 	/**
@@ -205,6 +218,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 		connectTimeoutMs?: number;
 		/** Test seam: inject a clock for catalog/session TTL gating. */
 		now?: () => number;
+		/**
+		 * This host's site id. Combined with the provider name to form the deployment
+		 * identity stamped onto / compared against encrypted reasoning on the Responses
+		 * route. Omitted in tests that don't exercise the cross-provider path.
+		 */
+		siteId?: string;
 	}) {
 		this.tokenManager = config.tokenManager;
 		this.model = config.model;
@@ -212,6 +231,10 @@ export class GitHubCopilotDriver implements LLMBackend {
 		this.logger = config.logger;
 		this.baseFetch = resolveProviderFetch(PROVIDER_NAME, config);
 		if (config.now) this.now = config.now;
+		this.reasoningOrigin = buildReasoningOrigin({
+			siteId: config.siteId,
+			provider: PROVIDER_NAME,
+		});
 		const eager = config.account;
 		this.resolveAccount =
 			config.resolveAccount ??
@@ -295,11 +318,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 
 		yield { type: "heartbeat" };
 
-		const runAttempt = (): AsyncIterable<StreamChunk> =>
+		const runAttempt = (stripEncryptedReasoning: boolean): AsyncIterable<StreamChunk> =>
 			mapProviderStream({
 				providerName: PROVIDER_NAME,
 				modelId,
-				stream: () => this.streamForRoute(route, modelId, apiEndpoint, params, entry),
+				stream: () =>
+					this.streamForRoute(route, modelId, apiEndpoint, params, entry, stripEncryptedReasoning),
 				// The messages route goes to @ai-sdk/anthropic, which surfaces the
 				// cache-write total (and the 1h/5m split) under providerMetadata.anthropic.
 				// Tag it so the bridge extracts both; the structured
@@ -309,17 +333,37 @@ export class GitHubCopilotDriver implements LLMBackend {
 				map: {
 					estimateInputFromMessages: params.messages,
 					...(route === "messages" && { usageProvider: "anthropic" as const }),
+					// Only the Responses route mints OpenAI encrypted reasoning; stamp it
+					// with this deployment's origin so a later request-build on a DIFFERENT
+					// provider/host drops the un-replayable blob instead of 400-ing.
+					...(route === "responses" &&
+						this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
 				},
 			});
 
 		const routedThroughAuto = configuredModel === AUTO_MODEL;
 		try {
+			// withEmptyRetry handles the empty-completion retry; withEncryptedReasoningRetry
+			// (shared) adds the ONE strip-and-retry when the Responses endpoint rejects a
+			// cross-provider encrypted-reasoning blob (minted by, e.g., the bedrock-mantle
+			// or chatgpt-oauth deployment of this same model id on another host). Non-
+			// Responses routes never mint or replay such blobs, so the wrapper is a no-op
+			// there (the rejection classifier won't match a non-encrypted-reasoning error).
 			yield* this.stampCost(
-				withEmptyRetry(runAttempt, {
-					maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-					isAborted: () => params.signal?.aborted ?? false,
-					providerName: PROVIDER_NAME,
-					modelId,
+				withEncryptedReasoningRetry({
+					build: (stripEncryptedReasoning) => stripEncryptedReasoning,
+					run: (stripEncryptedReasoning) =>
+						withEmptyRetry(() => runAttempt(stripEncryptedReasoning), {
+							maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+							isAborted: () => params.signal?.aborted ?? false,
+							providerName: PROVIDER_NAME,
+							modelId,
+						}),
+					onStrip: () =>
+						this.logger?.warn?.(
+							`[${PROVIDER_NAME}] encrypted-reasoning rejected (cross-provider replay); retrying once with encrypted reasoning stripped`,
+							{ model: modelId },
+						),
 				}),
 				entry,
 				routedThroughAuto,
@@ -381,9 +425,11 @@ export class GitHubCopilotDriver implements LLMBackend {
 		apiEndpoint: string,
 		params: ChatParams,
 		entry: CopilotModelEntry | null,
+		stripEncryptedReasoning: boolean,
 	): AsyncIterable<unknown> {
 		if (route === "messages") return this.streamMessages(modelId, apiEndpoint, params);
-		if (route === "responses") return this.streamResponses(modelId, apiEndpoint, params, entry);
+		if (route === "responses")
+			return this.streamResponses(modelId, apiEndpoint, params, entry, stripEncryptedReasoning);
 		return this.streamChat(modelId, apiEndpoint, params, entry);
 	}
 
@@ -444,6 +490,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 		apiEndpoint: string,
 		params: ChatParams,
 		entry: CopilotModelEntry | null,
+		stripEncryptedReasoning: boolean,
 	): AsyncIterable<unknown> {
 		const provider = createOpenAI({
 			name: PROVIDER_NAME,
@@ -456,6 +503,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 			resolveFileRef: params.resolveFileRef,
 			targetEnvelope: OPENAI_RESPONSES_ENVELOPE,
 			reasoningProviderOptions: "openai",
+			// Layer 1: drop replayed encrypted reasoning minted on a DIFFERENT
+			// provider/host (e.g. the bedrock-mantle or chatgpt-oauth deployment of
+			// this same model id) — the Copilot Responses endpoint rejects a foreign blob.
+			...(this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
+			// Layer 2: strip ALL encrypted reasoning on the one post-rejection retry.
+			...(stripEncryptedReasoning && { stripEncryptedReasoning: true }),
 			midConversationSystem: true,
 		});
 		const tools = toToolSet(params.tools);

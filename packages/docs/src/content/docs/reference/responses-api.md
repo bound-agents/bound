@@ -68,6 +68,14 @@ Replay `reasoning` items exactly as an earlier response returned them. For model
 stateless requests; dropping the items degrades multi-step tool use. A reasoning item
 followed by a user or developer message, or by nothing, is dropped.
 
+Encrypted reasoning is bound to the provider that minted it: the `encrypted_content` blob only
+decrypts on the exact provider endpoint that produced it. When one model id is served by more
+than one provider or deployment (for example, the same id reached through Bedrock Mantle on one
+host and the ChatGPT/Codex backend on another), Bound stamps each reasoning item's minting
+provider and drops encrypted content that a different provider cannot decrypt, retrying once with
+it stripped if the endpoint still rejects the replay. See the [encrypted-reasoning provenance
+gotcha](https://github.com/bound-agents/bound/blob/main/docs/gotchas.md#encrypted-reasoning-is-bound-to-the-provider-that-minted-it).
+
 Message `content` is either a string or a parts array. The endpoint handles these part types:
 
 | Part type | Handling |

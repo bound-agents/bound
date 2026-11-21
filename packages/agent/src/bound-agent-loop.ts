@@ -1227,6 +1227,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 						signature: parsed.thinkingSignature,
 						redactedData: parsed.thinkingRedactedData,
 						encryptedContent: parsed.thinkingEncryptedContent,
+						reasoningOrigin: parsed.thinkingReasoningOrigin,
 					},
 					[],
 				),
@@ -1528,6 +1529,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				signature: parsed.thinkingSignature,
 				redactedData: parsed.thinkingRedactedData,
 				encryptedContent: parsed.thinkingEncryptedContent,
+				reasoningOrigin: parsed.thinkingReasoningOrigin,
 			},
 			parsed.toolCalls,
 		);

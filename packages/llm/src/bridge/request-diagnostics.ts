@@ -195,3 +195,48 @@ export function isResponsesInputRejection(err: unknown): boolean {
 	if (text.includes("invalid 'input'") || text.includes('invalid "input"')) return true;
 	return false;
 }
+
+/**
+ * Classify whether an error is the OpenAI-Responses encrypted-reasoning
+ * rejection: the provider refuses the replayed `reasoning_encrypted_content`
+ * because it was minted on a DIFFERENT deployment (the live cross-host bug for
+ * a Bedrock Mantle model served by two hosts). The endpoint has used three
+ * phrasings over time — "invalid encrypted reasoning", "could not be verified"
+ * / "could not be decrypted or parsed", and "missing recognized prefix" — all
+ * meaning the same thing: this deployment cannot decrypt that blob. The narrow
+ * matcher gates a SINGLE strip-and-retry (reissue with all encrypted reasoning
+ * dropped); a false positive costs one wasted retry, a false negative fails the
+ * turn, so the matcher stays tight to these phrases rather than broadening to
+ * every 400. Walks the same wrapped AI SDK error shape as
+ * `isResponsesInputRejection`.
+ */
+export function isEncryptedReasoningRejection(err: unknown): boolean {
+	const haystacks: string[] = [];
+	const push = (v: unknown) => {
+		if (typeof v === "string" && v.length > 0) haystacks.push(v.toLowerCase());
+	};
+	const seen = new Set<unknown>();
+	let node: unknown = err;
+	for (let depth = 0; depth < 4 && node && !seen.has(node); depth++) {
+		seen.add(node);
+		const e = node as {
+			message?: unknown;
+			responseBody?: unknown;
+			lastError?: unknown;
+			cause?: unknown;
+		};
+		push(e.message);
+		push(e.responseBody);
+		node = e.lastError ?? e.cause;
+	}
+	if (haystacks.length === 0) return false;
+	const text = haystacks.join(" ");
+	// Only fire on the encrypted-reasoning family — not every mention of
+	// "reasoning". Each phrase is specific to the replayed encrypted blob.
+	if (text.includes("invalid encrypted reasoning")) return true;
+	if (text.includes("encrypted content") && text.includes("could not be")) return true;
+	if (text.includes("encrypted reasoning") && text.includes("could not be verified")) return true;
+	if (text.includes("encrypted") && text.includes("missing recognized prefix")) return true;
+	if (text.includes("could not be decrypted or parsed")) return true;
+	return false;
+}

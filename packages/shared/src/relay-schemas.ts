@@ -254,6 +254,7 @@ export const errorPayloadSchema = z.object({
 export const streamChunkPayloadSchema = z.object({
 	content: z.string().optional(),
 	thinking: z.string().optional(),
+	reasoning_origin: z.string().optional(),
 	tool_use_start: z
 		.object({
 			id: z.string(),
@@ -324,6 +325,7 @@ export const wsStreamChunkSchema = z.discriminatedUnion("type", [
 		content: z.string(),
 		signature: z.string().optional(),
 		redacted_data: z.string().optional(),
+		reasoning_origin: z.string().optional(),
 	}),
 	z.object({ type: z.literal("tool_use_start"), id: z.string(), name: z.string() }),
 	z.object({ type: z.literal("tool_use_args"), id: z.string(), partial_json: z.string() }),
