@@ -1,0 +1,173 @@
+---
+title: Quick start
+description: Install Bound, connect a ChatGPT or GitHub Copilot subscription, and send a first message.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+This tutorial installs Bound, connects a model provider, and sends a first message in the
+web UI. The default path uses a ChatGPT subscription. GitHub Copilot and local Ollama setup
+are available in the provider tabs.
+
+## Prerequisites
+
+- macOS or Linux for the shell commands below
+- A browser on the machine running Bound for subscription sign-in
+- A ChatGPT plan with Codex access, a GitHub Copilot plan, or Ollama with enough local resources
+  to run a model
+
+Windows binaries are also available from the
+[GitHub releases page](https://github.com/bound-agents/bound/releases).
+
+## 1. Install Bound
+
+Download the `bound` binary for your platform from the
+[GitHub releases page](https://github.com/bound-agents/bound/releases).
+
+Make the binary executable and move it to a system directory on your `PATH`:
+
+```bash
+chmod +x bound
+sudo mv bound /usr/local/bin/
+```
+
+Alternatively, install it without elevated privileges by moving it to a user-owned
+directory:
+
+```bash
+chmod +x bound
+mkdir -p ~/.local/bin
+mv bound ~/.local/bin/
+```
+
+Ensure that `~/.local/bin` is on the `PATH` for the non-privileged installation.
+
+Confirm that your shell can run the binary:
+
+```bash
+bound --help
+```
+
+The command should print the command-line help.
+
+## 2. Connect a model provider
+
+Create a directory for this installation and keep using it for the remaining commands:
+
+```bash
+mkdir -p ~/bound
+cd ~/bound
+```
+
+Choose one provider tab and complete its setup before continuing to step 3.
+
+<Tabs>
+<TabItem label="ChatGPT subscription">
+
+Use a ChatGPT plan that includes Codex access.
+
+Create the base configuration and sign in:
+
+```bash
+bound init --hub
+bound login --chatgpt
+```
+
+Follow the browser sign-in flow and wait for the terminal to report `Signed in.`
+The `--hub` preset creates an empty backend list; replace `config/model_backends.js`
+with the following configuration to run this installation with ChatGPT:
+
+```js
+export default {
+  backends: [
+    {
+      id: "chatgpt",
+      provider: "chatgpt-oauth",
+      model: "gpt-5.4",
+      context_window: 200000,
+      tier: 1,
+    },
+  ],
+  default: "chatgpt",
+};
+```
+
+Bound uses the saved sign-in credentials for this backend. Requests consume the account's
+subscription allowance.
+
+</TabItem>
+<TabItem label="GitHub Copilot">
+
+Use a GitHub account with Copilot access.
+
+Create the base configuration and sign in:
+
+```bash
+bound init --hub
+bound login --copilot
+```
+
+Enter the code displayed in the terminal on GitHub's verification page and approve access.
+Wait for the terminal to confirm sign-in. The `--hub` preset creates an empty backend list;
+replace `config/model_backends.js` with this configuration:
+
+```js
+export default {
+  backends: [
+    {
+      id: "copilot",
+      provider: "github-copilot",
+      model: "auto",
+      context_window: 128000,
+      tier: 2,
+    },
+  ],
+  default: "copilot",
+};
+```
+
+The `auto` selector lets Copilot choose a model available to the account. Usage is subject
+to the account's Copilot plan limits.
+
+</TabItem>
+<TabItem label="Ollama (local)">
+
+Install [Ollama](https://ollama.com) and keep it running. Download the model used by
+Bound's Ollama preset, then create the configuration:
+
+```bash
+ollama pull llama3
+bound init --ollama
+```
+
+This path runs inference on the local machine and needs enough memory and compute for
+`llama3` alongside other workloads.
+
+</TabItem>
+</Tabs>
+
+## 3. Start Bound
+
+Start the server:
+
+```bash
+bound start
+```
+
+Keep this process running. By default, Bound serves the web UI on port `3001` and the sync
+protocol on port `3000`.
+
+## 4. Send a message
+
+1. Open [the local web UI](http://localhost:3001).
+2. Create a thread.
+3. Ask the agent to remember a short note, such as `Remember that my preferred build tool is Bun.`
+
+A response confirms that the web UI, Bound server, and selected model backend are working together.
+
+## Next steps
+
+- [Use the `boundless` terminal client](/bound/guides/boundless/) for local repository workflows.
+- [Look up model backend settings](/bound/reference/configuration/#model_backendsjs--model_backendsjson).
+- [How Bound fits together](/bound/concepts/system-model/) to learn how threads, memory, tools,
+  and hosts relate.

@@ -12,16 +12,28 @@ The Bound web UI runs on the web server, which defaults to
 
 **Purpose:** Work in an individual conversation.
 
-**Contains:** The thread's messages, live activity, and interaction surface. Yard runs render as
-interactive inline execution trees: nodes update from the lifecycle stream, show running,
-completed, or failed status, and can be panned or zoomed. The tree stays under its originating
-Yard call when that call is available; a tree that arrives first remains safely at the end of the
-conversation. Active trees reconnect from the server's in-memory replay buffer when available.
-Completed trees rebuild after reload from the persisted Yard tool-call program and its paired
-tool result. This preserves the completed topology without a separate persistence layer. Older results retain a compact final card.
-Threads opened from **System Map** appear here.
+**Contains:** The thread's messages, live activity, and interaction surface. Threads opened
+from **System Map** appear here.
 
-The composer stages multiple attachments, including images pasted from the clipboard, then sends them together. Press Escape with an empty input to clear staged attachments. Auxiliary invocations show a live running card while the web UI is connected. That card is intentionally transient: a client connecting after invocation begins sees the completed result but does not reconstruct an in-progress card.
+The composer stages multiple attachments, including images pasted from the clipboard, then
+sends them together. Press Escape with an empty input to clear staged attachments. Auxiliary
+invocations show a live running card while the web UI is connected. That card is transient:
+a client connecting after an invocation begins sees the completed result once it lands.
+
+### Yard execution graphs
+
+Yard runs render as interactive inline execution trees that can be panned and zoomed. Active
+trees update live while a run is in flight; completed trees rebuild on reload, while older
+results keep a compact final card.
+
+Straight-line `yield` expressions form the execution chain and finish at a **Result**
+terminus. `sequence([...])` children show source ordinals; `all([...])` children run in
+parallel and show a `×N` tag. Yields inside conditionals, loops, and `try` blocks render as
+dynamic regions rather than guaranteed steps.
+
+Nodes show **Pending**, **Running**, **Complete**, **Failed**, or **Settled** status.
+Select a node to open the inspector below the canvas with its source details and formatted
+values. Press Escape or click the canvas to close the inspector.
 
 **Related documentation:** [Agent system](/bound/concepts/agent-system/) explains how a
 thread advances through the agent loop. [Work lifecycle](/bound/concepts/work-lifecycle/)
@@ -79,7 +91,7 @@ documents advisory actions available to the agent.
 
 **Contains:** A browser and preview for the replicated virtual filesystem.
 
-**Related documentation:** [Sandbox and filesystem](/bound/concepts/sandbox/) explains how
+**Related documentation:** [Sandbox and filesystems](/bound/concepts/sandbox/) explains how
 these files differ from files exposed by a terminal client.
 
 ## Connections
@@ -106,11 +118,17 @@ selected time range.
 
 **Contains:** A time-range selector and:
 
-- **Cost timeline:** Spending over time by model, split into input, output, cache-read, and cache-write components. The per-component costs come from each turn's recorded cost breakdown — the parts captured at the moment the turn's price was decided — so they are exact for turns priced by a catalog, static operator pricing, or a component-returning `price(turn)` callback. Older turns and turns priced by a plain-number callback carry no breakdown; their cost is split across components proportionally by token count.
+- **Cost timeline:** Spending over time by model, split into input, output, cache-read, and
+  cache-write components.
 - **Token charts:** Input, output, cache-read, and cache-write tokens.
 - **Cache hit timeline:** Prompt-cache hit rate over time.
 - **Latency:** Response latency by model.
 - **Relay cycles:** Cross-host relay timing and success rates.
+
+Per-component costs come from each turn's recorded cost breakdown captured at pricing time,
+so they are exact for turns priced by a catalog, static operator pricing, or a
+component-returning `price(turn)` callback. Older turns and turns priced by a plain-number
+callback carry no breakdown and split their total proportionally by token count.
 
 The view refreshes automatically when the selected range includes the current time.
 
@@ -128,9 +146,3 @@ used by later turns and synchronize to other hosts according to the cluster stat
 **Related documentation:** [Configuration reference](/bound/reference/configuration/) covers
 configuration lookup, and [State, consistency, and multi-host
 operation](/bound/concepts/sync/) explains cluster-wide state visibility.
-
-### Yard execution graphs
-
-Yard cards reconstruct their topology from the persisted program source and paired result, then overlay live lifecycle state while the trace is available. Straight-line `yield` expressions form the execution chain and finish at a **Result** terminus. `sequence([...])` children show source ordinals; `all([...])` children run in parallel and show a `×N` tag. Yields inside conditionals, loops, and `try` blocks render as dynamic regions rather than guaranteed steps.
-
-Nodes show **Pending**, **Running**, **Complete**, **Failed**, or **Settled**. **Settled** marks a terminal historical run; it does not establish that every effect succeeded. Select a node to open the inspector below the canvas. It shows literal source details and the same formatted values used for results. The selected node stays highlighted; Escape or a canvas click closes the inspector.

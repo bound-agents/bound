@@ -62,7 +62,7 @@ function parsePage(file: string): Page | null {
 	}
 
 	const relativePath = relative(contentRoot, file).split(sep).join("/");
-	const slug = relativePath === "index.md" ? "index" : relativePath.replace(/\.md$/, "");
+	const slug = relativePath === "index.md" ? "index" : relativePath.replace(/\.mdx?$/, "");
 	return { file, slug, title, description };
 }
 
@@ -71,7 +71,7 @@ function flattenSidebarItems(items: SidebarItem[]): string[] {
 }
 
 function checkSourceStructure(): void {
-	const pages = walkFiles(contentRoot, ".md")
+	const pages = [...walkFiles(contentRoot, ".md"), ...walkFiles(contentRoot, ".mdx")]
 		.map(parsePage)
 		.filter((page): page is Page => page !== null);
 	const pageSlugs = new Set(pages.map((page) => page.slug));

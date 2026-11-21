@@ -46,7 +46,6 @@ template:
 bound init --ollama --with-sync --name spoke-1
 ```
 
-Again, the backend is illustrative and does not determine whether the host is a hub or spoke.
 Replace the generated placeholder in the spoke's `sync.json` with the full URL that this
 spoke can use to reach the hub. For example:
 
@@ -94,8 +93,7 @@ boundctl sync-status
 ```
 
 Open **Network** in the web UI. Confirm that the hub and spoke are online, that the spoke is
-actually connected to the intended hub, and that each expected model appears under its host.
-Do not treat a configured hub name or recorded designation as proof of connectivity.
+connected to the intended hub, and that each expected model appears under its host.
 
 ## 5. Optionally record the cluster hub designation
 
@@ -107,20 +105,17 @@ updated:
 boundctl set-hub hub-host
 ```
 
-`set-hub` first attempts to drain the local relay outbox, then writes
-`cluster_config.cluster_hub`. It does not configure `sync.json` or `keyring.json`, validate the
-target name or URL, test reachability, or connect any peer.
+`set-hub` records the hub designation in synchronized cluster configuration. Configure
+`sync.json` and `keyring.json` separately.
 
-Use `--wait` to also wait for registered peers' sync timestamps after the
-write:
+Use `--wait` to wait for registered peers' sync timestamps to advance past the write:
 
 ```bash
 boundctl set-hub hub-host --wait
 ```
 
-This wait is not a connectivity or target validation check. With zero registered peers it
-succeeds immediately. If it times out, the command warns, but the new designation remains
-written.
+`--wait` checks local sync timestamps only. With zero registered peers it returns immediately;
+if it times out, the command warns and leaves the new designation in place.
 
 ## 6. Add more spokes
 
@@ -142,21 +137,36 @@ maintenance window; the commands below do not provide an atomic transition or ro
    boundctl drain replacement-hub --timeout 180
    ```
 
-   The command does not verify that it is running against the current hub. It temporarily
-   sets `emergency_stop` to `drain`, waits for locally running tasks, writes
-   `cluster_config.cluster_hub`, and then clears the stop. It waits for tasks; it does not
-   migrate or stop them. If the timeout expires, it proceeds with the designation change and
-   reports a warning.
+   The command pauses new scheduled work, waits for locally running tasks to finish, updates
+   the synchronized hub designation, and resumes scheduling. Run it on the current hub and
+   handle task migration, `sync.json`, `keyring.json`, and DNS changes separately. If the
+   timeout expires, the command proceeds with the designation change and reports a warning.
 4. Manually update every affected spoke's `sync.json` to the replacement's reachable full URL
    and update `keyring.json` with the matching URL and public key. Make any required DNS or
-   network changes, then restart or otherwise reconnect each spoke.
+   network changes, then restart or reconnect each spoke.
 5. Run `boundctl sync-status` and inspect **Network** to verify actual connections and expected
    synchronized state before resuming normal work.
 
-Use `drain` only for its recorded hub-designation and local task-drain step. It does not edit
-`sync.json` or `keyring.json`, change DNS, reconnect peers, or roll back the procedure on a
-later failure. See the [CLI and operations reference](/bound/guides/cli-operations/) for drain,
-recovery, consistency-check, and maintenance commands.
+See the [CLI and operations reference](/bound/guides/cli-operations/) for `drain`, recovery,
+consistency-check, and maintenance commands.
+
+## Tune a slow inference relay
+
+Keep the default relay timeouts unless a slow inference backend needs more time. To set an
+inference timeout, edit the spoke's `sync.json` while preserving its full hub URL:
+
+```json
+{
+  "hub": "ws://hub.example.com:3000",
+  "relay": {
+    "enabled": true,
+    "inference_timeout_ms": 300000
+  }
+}
+```
+
+See the [`sync.json` reference](/bound/reference/configuration/#syncjs--syncjson) for all relay and
+WebSocket fields. A larger timeout extends how long the relay waits for a response.
 
 ## Troubleshoot the cluster
 
@@ -177,25 +187,6 @@ catch-up.
 
 Confirm that the host was initialized with the intended backend and that the host appears
 online in **Network**.
-
-### Optional: tune a slow inference relay
-
-Keep the default relay timeouts unless a slow inference backend needs more time. To set an
-inference timeout, edit the spoke's `sync.json` while preserving its full hub URL:
-
-```json
-{
-  "hub": "ws://hub.example.com:3000",
-  "relay": {
-    "enabled": true,
-    "inference_timeout_ms": 300000
-  }
-}
-```
-
-See the [`sync.json` reference](/bound/reference/configuration/#syncjs--syncjson) for all relay and
-WebSocket fields. A larger timeout changes how long the relay waits; it doesn't establish
-that a failed inference request is safe to retry.
 
 ## Related concepts
 

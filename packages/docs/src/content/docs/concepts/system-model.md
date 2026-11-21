@@ -12,11 +12,11 @@ or available only while a client is connected.
 A cluster arranges these parts around a sync link and a relay path:
 
 - **Hub and spokes.** The hub and each spoke host exchange selected durable state over a sync link.
-- **Trigger host.** One host receives a trigger and owns the resulting work. On it, a persistent agent holds a thread, a thread carries a task, and a task drives the agent loop. A client session can attach to that thread.
+- **Loop host.** One host receives a trigger and owns the resulting work. On it, a persistent agent holds a thread, a thread carries a task, and a task drives the agent loop. A client session can attach to that thread.
 - **Relay.** From the agent loop, an inference or tool relay reaches a backend or model, a tool server, or a live client to serve the request.
 
-The **trigger host** is the host that receives a trigger and owns the resulting agent
-loop.
+The **loop host** (also called the trigger host) receives a trigger and owns the resulting
+agent loop.
 
 A **cluster** is the set of Bound hosts that share selected state. A **host** is one
 running Bound instance with its own local database, configuration, and capabilities. In
@@ -26,23 +26,22 @@ syncs with the hub rather than directly with every other spoke.
 A **persistent agent** is the durable Bound identity that serves conversations and work.
 A **thread** is one ongoing conversation or work context for that agent. A **task** is
 durable work for a thread. A **client session** is a live connection, such as a web or
-terminal client, that can attach ephemerally to a thread; it is not durable thread-scoped
-state.
+terminal client, that attaches ephemerally to a thread.
 
 ## Scope and availability
 
 | Scope | Examples | What it means |
 | --- | --- | --- |
 | Replicated durable state | Selected thread records and messages, tasks, memories, skills | Hosts exchange selected state so it can be used across the cluster. |
-| Host-local configuration and capabilities | Backend credentials, configured model backends, MCP servers, host workspace access | These remain owned by the host that configures or provides them. Other hosts may know about them, but that does not make them universally available. |
-| Thread-scoped state | Conversation history, active skills, task context | This state belongs to one conversation or its work, rather than to every thread. |
-| Live or ephemeral capabilities | Connected client sessions and tools, streamed inference, active connector subscriptions | These exist while their owning process or client is live and can disappear when it disconnects. |
+| Host-local configuration and capabilities | Backend credentials, configured model backends, MCP servers, host workspace access | Owned by the host that configures or provides them. Other hosts can see them in the cluster inventory while execution stays on the owning host. |
+| Thread-scoped state | Conversation history, active skills, task context | Scoped to one conversation and its work. |
+| Live or ephemeral capabilities | Connected client sessions and tools, streamed inference, active connector subscriptions | Available while their owning process or client is live and removed when it disconnects. |
 
 A **memory** is durable knowledge the agent can store and retrieve across sessions. A
 **skill** is a reusable instruction set with supporting files; activating it adds its
 instructions to a particular thread. A **virtual filesystem** is Bound-managed file
 space. A **host workspace** is file space owned by a particular host or exposed by a
-live client, rather than shared across every host.
+live client.
 
 A **tool** is an action the agent can call, such as memory management, scheduling, a
 connector operation, or a client-provided file action. Tools may be native to Bound,
@@ -51,23 +50,21 @@ the thread and on the host or session that owns the capability.
 
 ## Placement and routing
 
-The trigger host assembles context, selects the next action, records results, and
-continues the thread. The loop does not move merely because another host can provide a
-model or tool.
+The loop host assembles context, selects the next action, records results, and continues
+the thread. The loop stays on the loop host even when a model or tool runs on another host.
 
 A **backend** is a configured route to an inference provider or service; a **model** is
 the specific model selected through that backend. When the selected model is on another
-host, the trigger host can relay the assembled inference request and receive the result.
+host, the loop host can relay the assembled inference request and receive the result.
 Likewise, a tool call can relay to the host that owns an MCP server or to the host with
 the live client session. Placement can therefore vary per inference or tool call while
-the trigger host remains responsible for the loop.
+the loop host remains responsible for the loop.
 
 ## Interface boundary
 
-The **Responses API** provides stateless model routing rather than a persistent-agent
-interface: it accepts a request and routes it to a compatible model backend, but does not
-itself own a persistent agent, thread history, task scheduling, memory, tools, skills, or
-a client session.
+The **Responses API** provides stateless model routing: it accepts a request and routes it to
+a compatible model backend, with no persistent agent, thread history, task scheduling, memory,
+tools, skills, or client session.
 
 ## Related concepts
 

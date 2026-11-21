@@ -20,7 +20,7 @@ Yard-backed work is suited to requests such as:
 - a comparison that needs evidence from separate sources;
 - work that benefits from distinct investigation and review stages.
 
-A simple question, one direct action, or a small self-contained edit usually does not need a Yard.
+A straightforward question, one direct action, or a small self-contained edit usually does not need a Yard.
 The agent can handle those requests with its ordinary tools.
 
 ## How the work proceeds
@@ -40,8 +40,8 @@ A substantial request can therefore take a recognizable shape:
 4. **Targeted repair** — a failed check or review finding goes back only to the relevant scope,
    rather than restarting all of the work.
 
-These are possible shapes rather than a fixed ceremony. A request may need only one specialist, or it may
-stop after investigation when the evidence does not support a change.
+A request may need only one specialist, or stop after investigation when the evidence does not
+support a change.
 
 ### An illustrative internal plan
 
@@ -74,8 +74,8 @@ boundaries.
 
 ## Safeguards
 
-A Yard does not grant the agent additional permissions, tools, or authority. All work remains
-subject to the same access controls, sandboxing, and side-effect rules as direct agent work.
+All work inside a Yard runs under the same access controls, sandboxing, and side-effect rules as
+direct agent work.
 
 Each run has bounded time and parallel work. When multiple scopes can change files, the agent should
 assign non-overlapping change scopes. Work intended for release should be reviewed and validated
@@ -83,10 +83,9 @@ before release.
 
 ## Limits
 
-A Yard can coordinate substantial work, but it cannot guarantee complete coverage or success. Time
-limits, unavailable tools, failed work, missing evidence, or external blockers can leave part of a
-request incomplete. Review can find problems and trigger targeted correction, but it cannot turn
-insufficient evidence into a verified result.
+Time limits, unavailable tools, failed work, missing evidence, or external blockers can leave
+part of a request incomplete. Review catches gaps and triggers targeted correction against the
+available evidence.
 
 ## What the result should report
 
@@ -100,10 +99,11 @@ The final response should identify:
 This reporting boundary keeps the delivered outcome evaluable without needing access to, or control
 over, the internal workflow.
 
-## Reloading execution panels
+## Inspecting Yard execution
 
-Yard keeps execution lifecycle events in server memory only while a run is active. When a thread view reconnects, its subscription receives a replay of the active trace and continues rendering the interactive graph live. The replay buffer is evicted when the root run reaches a terminal state, and it is naturally unavailable after a server restart.
-
-Completed executions reload from the persisted Yard tool-call program and paired tool result. The UI derives literal `tool`, `infer`, `aux`, `all`, `sequence`, and nested `yard` structure without evaluating the program. Straight-line yields form the chain. `sequence` members show their source ordinal, and `all` groups show a parallel `×N` tag. Conditional, loop, and `try` yields remain dynamic regions rather than asserted execution paths.
-
-Nodes use **Pending**, **Running**, **Complete**, **Failed**, and **Settled** status. **Settled** means the historical run terminated; it does not prove each effect succeeded. Select a node to inspect its source arguments and unified formatted value; selection remains highlighted until Escape is pressed or the canvas is clicked. No execution-history table, sync surface, route, or client API is used.
+In the web UI and the `boundless` terminal client, an active Yard run renders as an interactive
+execution tree that updates live while the trace is running and rebuilds from the persisted
+program and result after reload. See
+[Web UI reference](/bound/concepts/web-ui/#yard-execution-graphs) and
+[Follow Yard execution](/bound/guides/boundless/#follow-yard-execution) for status states and
+inspector controls.

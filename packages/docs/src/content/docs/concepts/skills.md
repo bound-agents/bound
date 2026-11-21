@@ -24,24 +24,16 @@ Use present tense and imperative mood. Keep the subject line under 72 characters
 
 The name identifies the skill, the description tells the agent when it may be useful, and
 the body supplies the instructions used after activation. Supporting files can provide
-additional material without adding all of it to the thread's instructions.
-
-Authoring requirements are compact but strict: names must be 1–64 character kebab-case
-values matching `^[a-z0-9]+(-[a-z0-9]+)*$`; descriptions are limited to 1,024 characters;
-and the `SKILL.md` body is limited to 500 lines and 64 KB.
+additional material without adding all of it to the thread's instructions. See the
+[HTTP API reference](/bound/reference/http-api/#skills) for name, description, and body size
+limits.
 
 ## Bundled skills
 
-Bound ships a small set of skills embedded in the binary and seeded on startup:
-`bound-reference` (the agent's self-reference manual), `skill-authoring` (how to
-write skills), `yard-recipes` (orchestration recipes for the `yard` tool), and
-`aux-agents` (doctrine for designing auxiliary-agent identities). Seeding is
-idempotent and respects operator retirement — a deleted bundled skill stays
-deleted. Removal is CLI/API-only (`boundctl skill delete` or `DELETE /api/skills/:id`);
-the web UI hides the **Delete** button for bundled skills. The `yard` and `aux` tool
-descriptions point the agent at the matching
-skill, so deep guidance lives in an activatable body instead of permanently
-occupying every turn's context.
+Bound ships a small set of built-in skills seeded on startup (such as `bound-reference` and
+`skill-authoring`) so deep guidance lives in activatable bodies instead of occupying every
+turn's context. Seeding respects operator retirement: once deleted through the CLI or HTTP API,
+a bundled skill stays deleted.
 
 ## Import and storage
 
@@ -49,8 +41,8 @@ Importing validates and copies the skill into Bound's replicated files and assoc
 with a skill record. The imported skill becomes available to the agent, but its instructions
 are not added to existing threads.
 
-Imported skills follow the [state and consistency model](/bound/concepts/sync/). Files in a
-connected project are not imported merely because a terminal client can read them.
+Imported skills follow the [state and consistency model](/bound/concepts/sync/). Skills must
+be explicitly imported; files in a connected workspace stay local to that client.
 
 ## Thread activation
 
@@ -68,8 +60,7 @@ See [Agent tools](/bound/reference/agent-tools/) for activation actions and para
 
 ## Skill lifecycle
 
-In summary, packaging creates an importable skill, importing makes it available, activation
-uses it in one thread, and deactivation stops using it there without deleting it:
+A skill moves through these lifecycle stages:
 
 1. **Packaged:** `SKILL.md` and any supporting files form a skill directory.
 2. **Imported:** Bound validates and stores the skill so the agent can discover it.

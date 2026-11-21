@@ -82,50 +82,55 @@ without an API key:
 bound login --chatgpt [--config-dir DIR]
 ```
 
-`--chatgpt` runs the OAuth 2.0 Authorization Code + PKCE flow against `auth.openai.com`. It
-binds a loopback callback on `localhost:1455`, opens your browser to approve access (the URL
-is also printed for headless or remote shells), and on success writes the token bundle to
-`<config-dir>/chatgpt-auth.json`. The access token, rotating refresh token, and account id
-live in that bound-owned file; the running server refreshes the access token automatically
-before each expiry.
-
-The token bundle is deliberately kept separate from Codex's own `~/.codex/auth.json` and is
-not seeded from it. OpenAI mints a new refresh token on each refresh and invalidates the
-previous one, so two tools sharing a single refresh lineage would take turns logging each
-other out. Signing in through the browser gives bound its own independent lineage.
+`--chatgpt` runs the OAuth 2.0 Authorization Code + PKCE flow against `auth.openai.com` using a
+loopback callback on `localhost:1455` and writes the token bundle (separate from
+`~/.codex/auth.json`) to `<config-dir>/chatgpt-auth.json`. The running server refreshes the
+access token automatically before expiry.
 
 After signing in, add a backend with `provider: "chatgpt-oauth"` to `model_backends` (see the
-[Configuration Reference](/bound/reference/configuration/)).
+[configuration reference](/bound/reference/configuration/#model_backendsjs--model_backendsjson)).
 
 Sign in with a GitHub Copilot subscription so a `github-copilot` backend can drive Claude, GPT,
-Gemini, grok, and the `auto` selector without an API key:
+Gemini, Grok, and the `auto` selector without an API key:
 
 ```text
 bound login --copilot [--config-dir DIR]
 ```
 
-`--copilot` runs the OAuth 2.0 Device Authorization flow against `github.com` using bound's own
-public GitHub App. It prints a verification URL and a user code (and opens your browser), polls for
-approval, validates the account's Copilot plan and API endpoint, and writes the token bundle to
-`<config-dir>/copilot-auth.json`. The `ghu_` access token, rotating `ghr_` refresh token, and
-expiry live in that bound-owned file; the running server refreshes the access token automatically
-before each expiry.
+`--copilot` runs the OAuth 2.0 Device Authorization flow against `github.com` using Bound's
+public GitHub App. It prints a verification URL and a user code (and opens your browser), polls
+for approval, validates the account's Copilot plan and API endpoint, and writes the token
+bundle to `<config-dir>/copilot-auth.json`. The `ghu_` access token, rotating `ghr_` refresh
+token, and expiry live in that Bound-owned file; the running server refreshes the access token
+automatically before each expiry.
 
-The Copilot API fronts several model families. bound routes each model to the right wire surface
-automatically — Claude over Anthropic Messages, GPT-5.x and grok over OpenAI Responses, the rest
-over chat completions. On a Free plan only zero-priced models (for example `gpt-4.1`, `gpt-4o`,
-`gpt-5.4-nano`) and the `auto` selector are callable; a paid plan unlocks the rest. After signing
-in, add a backend with `provider: "github-copilot"` to `model_backends`.
+The Copilot API fronts several model families. Bound routes each model to the matching wire
+surface automatically — Claude over Anthropic Messages, GPT-5.x and Grok over OpenAI
+Responses, and the rest over chat completions. On a Free plan only zero-priced models (such as
+`gpt-4.1`, `gpt-4o`, and `gpt-5.4-nano`) and the `auto` selector are callable; a paid plan
+unlocks the rest. After signing in, add a backend with `provider: "github-copilot"` to
+`model_backends`.
 
-Before using `boundctl`, note that a **host** is a running Bound instance, the **hub** is the
-host that coordinates replication, and other synchronized hosts are **spokes**.
+Authorize an OAuth-protected MCP server through a running local daemon:
+
+```text
+bound login --challenge ID [--url DAEMON_URL]
+bound login --mcp SERVER [--url DAEMON_URL]
+```
+
+`--challenge` resolves a pending OAuth challenge raised by a tool call; `--mcp` raises and
+resolves a challenge for a configured server ahead of its first use. Both open your browser for
+consent, serve the loopback callback through the local daemon, and transfer the authorization
+code to the host that owns the server. See
+[Connect MCP servers](/bound/guides/mcp-servers/#authenticate-with-oauth) for the full flow.
 
 ## `boundctl`
 
 Unless a command says otherwise, `boundctl` operates on `config/` and `data/` in the
-current directory. Cluster-wide commands take effect through synchronized state as noted
-below; consult [System model](/bound/concepts/system-model/) for the underlying host and
-state boundaries.
+current directory. In the commands below, a **host** is a running Bound instance, the **hub**
+is the host that coordinates replication, and other synchronized hosts are **spokes**.
+Cluster-wide commands take effect through synchronized state as noted; consult
+[System model](/bound/concepts/system-model/) for the underlying host and state boundaries.
 
 ### `boundctl set-hub`
 
@@ -133,9 +138,8 @@ state boundaries.
 boundctl set-hub HOST [--wait] [--timeout SECONDS]
 ```
 
-The command records `HOST` as synchronized cluster state; it does not configure peer URLs,
-keys, or connections, and it does not validate that the named host is reachable. Before using
-it, configure the physical topology separately.
+Records `HOST` as the synchronized hub designation. Configure peer URLs, keys, and connections
+separately before running this command.
 
 `--wait` polls the local synchronization records until every currently registered peer has a
 sync timestamp newer than the designation. With no registered peers it returns immediately.
@@ -305,47 +309,3 @@ The web API includes control and filesystem endpoints that assume a loopback tru
 boundary. Set `BOUND_ALLOW_UNSAFE_WEB_BIND=1` only when an external network boundary
 protects the web server.
 :::
-
-## Troubleshooting
-
-### Configuration fails to load
-
-Validate the JSON syntax, then compare each field with the
-[configuration reference](/bound/reference/configuration/). Bound rejects unknown fields.
-
-### A spoke is missing data
-
-Run `boundctl sync-status`, then `boundctl consistency-check`. Use `bound start --reseed`
-only when the local replica should be replaced from a hub snapshot.
-
-### A binary does not start
-
-Confirm that the downloaded binary matches the host platform and is executable. Current
-binaries are available on the [GitHub releases page](https://github.com/bound-agents/bound/releases).
-
-## Docker image runtime ABI
-
-Release images use Ubuntu 24.04 and install `libstdc++6` explicitly. This matches the
-native Linux build environment and supplies the C++ ABI required by Bun-embedded native
-addons such as the structure reader's tree-sitter parser. Do not replace the runtime
-check with an ELF dependency scan: embedded addons are loaded by Bun and are not visible
-through the executable's `DT_NEEDED` entries.
-
-Every release architecture runs the image smoke test after publishing its platform image.
-Before `bun run build`, the native Linux runner derives the complete grammar manifest from
-`packages/shared/src/read-structure.ts`. For every imported grammar it reads that package's
-actual `bindings/node/index.js` loader: loaders with Bun's explicit branch are staged at their
-own `prebuilds/linux-x64` or `prebuilds/linux-arm64` filename, while node-gyp-build-only loaders
-are audited at the exact `build/Release/<target_name>.node` output derived from `binding.gyp`.
-Missing, wrong-architecture, or `libnode.so`-linked binaries are rebuilt from the shipped
-`binding.gyp` and audited again. Rebuilds use the repository-pinned upstream `node-gyp` executable,
-verified official Node headers, and `node_shared=false`; the release runner installs Python 3 and a
-native C/C++ toolchain but deliberately does not install Ubuntu's `node-gyp` package. The stage step
-prints the package, selected path, expected ELF machine, and retained failure diagnostics.
-
-The runtime smoke keeps its container and ABI diagnostics on failure. It uses the compiled binary's
-embedded Bun CLI mode to execute a read-only probe against the staged package tree. The probe imports
-every grammar used by the structure reader, parses one harmless declaration per grammar, and therefore
-exercises each package's actual `bindings/node/index.js` loader—not daemon liveness alone. The test
-needs Docker, so local development without Docker validates the static Dockerfile/workflow contract;
-the runtime image check requires a Docker environment to execute the probe against the staged package tree.

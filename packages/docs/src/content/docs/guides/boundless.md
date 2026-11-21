@@ -39,34 +39,16 @@ Copy the full thread ID to resume this thread later.
 
 ## Work with local files and commands
 
-The client registers these tools against the working directory:
-
-- `boundless_read` reads files with stable line anchors.
-- `boundless_read_structure` lists top-level declarations from supported source files without their bodies, with line anchors compatible with `boundless_edit`.
-- `boundless_write` creates or replaces files atomically.
-- `boundless_edit` applies anchored edits from a prior read.
-- `boundless_search` searches files with regular expressions.
-- `boundless_bash` executes a command in the sandbox.
-- `boundless_copy` copies a file between the host and Bound's virtual filesystem.
-
-Anchored reads let the agent address exact lines without reproducing their full text.
-
-The file tools guard the Bound system database: `boundless_write`, `boundless_edit`,
-and a satellite-target `boundless_copy` refuse paths that look like the system database
-(`bound.db` and its WAL/SHM siblings, or SQLite files under a `data/` directory) — direct
-writes bypass soft-deletion and sync triggers. Reads of those paths succeed but carry a note
-pointing at the `query` tool, and `boundless_bash` warns without blocking when a command
-invokes the SQLite CLI or names the database file.
+While connected, `boundless` exposes file, search, and shell tools scoped to your working
+directory. See [Agent tools](/bound/reference/agent-tools/#boundless-client-tools) for the tool
+list.
 
 :::danger[Filesystem access]
-Read access follows the operating-system permissions of the `boundless` process. Writes are
-confined to the working directory and temporary directories allowed by the platform sandbox:
-seatbelt on macOS, bubblewrap on Linux, and Bound's one-shot AppContainer lowbox on Windows.
-The Windows backend also keeps `.git/config` and `.git/hooks` read-only while ordinary Git
-state remains writable. It creates an unprivileged per-command profile; if host policy blocks
-profile creation, the default `sandbox.onUnavailable: "error"` refuses the command with
-guidance. Set `"passthrough"` only to opt explicitly into a visibly unsandboxed fallback.
-Start `boundless` in a directory whose contents are appropriate for the thread to access.
+Read access follows the operating-system permissions of the `boundless` process. Writes and shell
+commands are confined to the working directory and temporary directories by the platform sandbox
+(seatbelt on macOS, bubblewrap on Linux, and an AppContainer lowbox on Windows). `.git/config`
+and `.git/hooks` stay read-only, and direct writes to Bound's system database are blocked. Start
+`boundless` in a directory whose contents are appropriate for the thread to access.
 :::
 
 For details about host-tool trust boundaries and shell write confinement, read
@@ -81,7 +63,9 @@ Press Escape while the input is empty to clear every staged attachment.
 
 ## Watch auxiliary work
 
-Foreground and background auxiliary invocations show a live running card while this terminal client is connected. These lifecycle events are transient: a client that connects after an invocation starts does not reconstruct its running card, but receives the completed result when it lands.
+Foreground and background auxiliary invocations show a live running card while this terminal
+client is connected. Clients connecting after an invocation starts see the completed result once
+it lands.
 
 ## Connect to another server
 
@@ -115,59 +99,27 @@ Client configuration lives in `~/.bound/less/`:
 
 ### Context files
 
-On session start, boundless injects the content of well-known project instruction files
-from the working directory into the system prompt, wrapped in a frozen `<context-files>`
-block. The default set is `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `AGENTS.local.md`,
-`CLAUDE.md`, and `CLAUDE.local.md`; override it with the `contextFiles` list in
+On session start, `boundless` loads project instruction files from the working directory into the
+thread's system prompt. The default set is `README.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+`AGENTS.local.md`, `CLAUDE.md`, and `CLAUDE.local.md`; override it with `contextFiles` in
 `config.json`.
 
-`AGENTS.local.md` and `CLAUDE.local.md` are developer-local companions read **in addition
-to** their repo-scoped base file — use them for per-developer instructions that shouldn't
-be committed. They match `*.local.md` in the repo's `.gitignore`, so they stay untracked.
-
-`AGENTS.md` is the cross-agent open standard and wins over the Claude-specific fallback: when
-`AGENTS.md` is present, `CLAUDE.md` is skipped, and the same rule applies to the local pair
-(`CLAUDE.local.md` is skipped when `AGENTS.local.md` is present). The two pairs are
-independent — `AGENTS.md` does not suppress `CLAUDE.local.md`.
-
-The injected copy is held frozen for prompt-cache stability and is not refreshed when the
-agent edits the file mid-session; after a write or edit to one of these files, trust the
-tool result rather than re-reading to confirm the change landed.
+`AGENTS.local.md` and `CLAUDE.local.md` are developer-local companions loaded alongside their
+repository-scoped base file. When `AGENTS.md` is present, `CLAUDE.md` is skipped (and
+`AGENTS.local.md` similarly takes precedence over `CLAUDE.local.md`). Context files are loaded
+once at session start.
 
 ## Read status and tool output
 
-Large shell results may be shortened or offloaded before they reach the transcript.
-Consecutive reads and searches share one compact result group. Failed calls retain their
-diagnostic output.
-
-An additional status row appears when measurements are available:
-
-| Segment | Meaning |
-| --- | --- |
-| `ctx 44% (87k/200k)` | Provider-reported context-window use after the last turn |
-| `$1.05 thread / $12.34 today` | This thread's whole-life spend and cluster-wide daily spend |
-| `● 3 background` | Background tool calls in flight on this thread |
-
-Segments remain hidden until they have a value. See
-[Foreground and background work](/bound/concepts/auxiliary-agents/#foreground-and-background-work)
-for background work.
+The status row shows context-window usage (`ctx`), thread and daily spend, and active background
+tool count when those values are available. Large shell output is shortened or offloaded before
+reaching the transcript, while failed calls retain their diagnostic output.
 
 ## Follow Yard execution
 
-A running `yard` call appears as a magenta-striped card below the transcript. It replaces the ordinary tool request and result rows for the whole invocation.
-
-The card shows the input and a live execution graph. The graph follows generator execution order from left to right: each yielded effect leads to the next. `all([...])` and `sequence([...])` render as labeled containers; `all` keeps its children parallel while `sequence` links its children in order. Nested `yard()` runs remain subtrees. State colors show whether an effect is running, done, or failed. A wide fan-out collapses into one row, with failed members retaining an indexed failure detail.
-
-While the run is live, the card includes a short syntax-highlighted program preview. Previews and graph height are bounded to the viewport. The processing indicator tracks the full invocation, including effect progress and elapsed time, and the thread cost refreshes as lifecycle events arrive.
-
-Client tools dispatched inside the run, such as `boundless_bash`, appear only as graph nodes. Tools dispatched by auxiliary-agent threads belong to their own thread and do not stream under this chat.
-
-When the root run finishes, the card moves into terminal scrollback at the matching Yard
-result row with the generator program (syntax-highlighted) and the full input and result
-payloads — pretty-printed JSON when they parse, raw wrapped text when a long preview was
-middle-elided upstream. Live execution events are thread-scoped and ephemeral; transcripts
-created by older servers, or sessions that attach after a run finishes, retain the
-ordinary Yard tool-call/result rendering.
+A running `yard` call renders as an inline card with a live execution graph showing sequential
+steps, parallel groups, and each step's running, done, or failed status. When the run finishes,
+the card moves into terminal scrollback alongside its program, input, and result.
 
 ## Connect an ACP editor
 
@@ -185,23 +137,12 @@ web-server URL with `--url` or set the server URL in `~/.bound/less/config.json`
 
 Copy the full thread ID from the status area and pass that value to `--attach`.
 
-### Tool output appears shortened
+### Windows sandbox is unavailable
 
-Shell output longer than 32 visual rows is elided in the middle. Output over 256 KiB is
-offloaded before it reaches the transcript.
-
-### Windows lowbox is unavailable
-
-Windows commands do not fall back to mxc or a persisted sandbox session. Bound creates a
-one-shot AppContainer profile and lowbox token for each command, then a watcher owns process-
-tree cancellation and profile/ACL/journal cleanup. A policy that prevents an unprivileged
-user from calling `CreateAppContainerProfile` makes this backend unavailable. Restore
-unprivileged profile creation, or set `sandbox.onUnavailable` to `"passthrough"` to
-run commands without write confinement; the tool reports `ran UNSANDBOXED`.
-
-The Windows backend confines writes to allowed roots and denies sibling,
-traversal, and junction escapes; keeps `.git/config` and `.git/hooks` read-only including nested
-existing hooks; cancels the descendant process tree; and performs watcher-owned cleanup.
+On Windows, `boundless` requires unprivileged AppContainer profile creation. If host policy
+blocks it, the default `sandbox.onUnavailable: "error"` refuses shell commands. Restore
+unprivileged profile creation, or set `sandbox.onUnavailable` to `"passthrough"` in
+`~/.bound/less/config.json` to run commands unsandboxed (the tool reports `ran UNSANDBOXED`).
 
 ## Related concepts
 

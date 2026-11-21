@@ -1,5 +1,5 @@
 export default {
-	globs: ["STYLE_GUIDE.md", "src/content/docs/**/*.md"],
+	globs: ["STYLE_GUIDE.md", "src/content/docs/**/*.{md,mdx}"],
 	config: {
 		default: true,
 		// Starlight renders the frontmatter title as the page H1.

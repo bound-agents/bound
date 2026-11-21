@@ -8,8 +8,8 @@ a configured connection to a model service. A **host** is a Bound instance in th
 The **loop host** coordinates the agent turn, while the **inference host** owns the backend
 that serves a particular model request. These can be the same host or different hosts.
 
-**Routing** is the process of choosing an eligible backend and, therefore, the host that
-will serve the request. It does not move the agent loop.
+**Routing** chooses an eligible backend and host to serve a request while keeping the agent
+loop on the loop host.
 
 ## Routing decisions
 
@@ -32,17 +32,15 @@ not reconstruct the turn from replicated state. See [State, consistency, and mul
 operation](/bound/concepts/sync/) for the distinction between inference relay and state
 replication.
 
-A model advertisement or fallback route does not guarantee that a routed request will
-succeed. The selected backend or relay can be unavailable, reject the request, or lack a
-required capability. Bound reports a failure when it cannot complete the selected route;
-retry and recovery behavior belongs to the [work
-lifecycle](/bound/concepts/work-lifecycle/).
+A selected backend or relay can be unavailable, reject the request, or lack a required
+capability. Bound reports a failure when a route cannot complete; retry and recovery behavior
+belongs to the [work lifecycle](/bound/concepts/work-lifecycle/).
 
 ## Local and hosted backends
 
 A backend can use a model service running locally or a hosted provider API. Providers differ
 in authentication, model discovery, request controls, and prompt-cache support. See the
-[configuration reference](/bound/reference/configuration/#model_backendsjs) for the
+[configuration reference](/bound/reference/configuration/#model_backendsjs--model_backendsjson) for the
 current providers, credentials, and backend fields.
 
 ## Provider-specific request handling

@@ -9,17 +9,14 @@ confinement, and transport encryption separately.
 
 ## Security controls
 
-- **Authentication** establishes who or what is connecting. Webhook signatures and the sync
-  handshake authenticate different kinds of senders.
-- **Authorization** decides what an authenticated identity may do. User allowlists and
-  connector restrictions are authorization controls.
-- **Confirmation** asks for approval before a selected operation. An MCP confirmation rule
-  does not authenticate the MCP server or confine its process.
+- **Authentication** establishes who or what is connecting, such as webhook signatures and the
+  sync handshake.
+- **Authorization** decides what an authenticated identity may do, such as user allowlists and
+  connector restrictions.
+- **Confirmation** asks for operator approval before running a selected operation, such as an
+  MCP confirmation rule.
 - **Confinement** restricts where code can write or which network destinations it can reach.
-  It does not necessarily restrict reads or prevent data from being sent through an allowed
-  tool.
-- **Transport encryption** protects data in transit between endpoints. It does not decide
-  whether an endpoint is trusted to receive that data.
+- **Transport encryption** protects data in transit between endpoints.
 
 Before comparing surfaces, it helps to separate the roles. An **operator** configures and
 runs Bound. A **user or caller** sends work. A **Bound host** receives or runs that work.
@@ -59,21 +56,23 @@ remote inference host.
 A tool's **provider** is the component that makes the tool available, such as Bound, an MCP
 server, or a live client. Its **owner** is the host or client that maintains the connection
 and handles the call. Native tools act on Bound state, MCP tools run through their server,
-and live client tools act on the client host. Knowing that a tool exists does not make it
-available when its server or client is disconnected.
+and live client tools act on the client host. Remote and client tools are available only while
+their owning server or client is connected.
 
 The agent virtual filesystem and a host workspace are separate. The virtual filesystem is
-persisted through Bound state. A `boundless` client can expose host reads and constrained
-writes. Write confinement does not imply that host reads are confined to the same paths.
-See [Sandbox and filesystems](/bound/concepts/sandbox/) for the operation-level model.
+persisted through Bound state. A `boundless` client exposes host reads under the client
+process's OS permissions and confines writes to allowed roots. See
+[Sandbox and filesystems](/bound/concepts/sandbox/) for the operation-level model.
 
 ## Limits of these controls
 
-These controls are not interchangeable. Loopback binding is a deployment boundary; it does not provide
-application-level authentication, and the Responses API does not provide bearer-token
-authentication. Encryption protects transport but does not authorize every connected party.
-Tool confirmation does not sandbox a tool. Write confinement does not prevent reading data
-or sending it through another allowed capability.
+Each control protects one layer and cannot stand in for the others. Loopback binding
+restricts network reachability as a deployment boundary, leaving application-level
+authentication to an external proxy (the Responses API ignores bearer tokens). Transport
+encryption protects traffic in transit while leaving party authorization to keys and
+allowlists. Tool confirmation gates operator approval for a call while leaving process
+isolation to the host OS. Write confinement restricts where host writes can land while
+leaving read access and outbound tools governed by their own permissions.
 
 ## Related documentation
 

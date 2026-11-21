@@ -16,9 +16,9 @@ replicates or belongs to a single request or thread.
 
 | Scope | Meaning | Entries on this page |
 | --- | --- | --- |
-| **Host-local file** | Read from one host's configuration directory. It does not become cluster control state merely because hosts can sync other data. Secrets in these files remain part of that host's configuration. | `allowlist.js` / `allowlist.json`, `model_backends.js` / `model_backends.json`, `network.js` / `network.json`, `platforms.js` / `platforms.json`, `sync.js` / `sync.json`, `keyring.js` / `keyring.json`, `mcp.js` / `mcp.json`, `memory.js` / `memory.json` |
+| **Host-local file** | Read from one host's configuration directory. Values and secrets stay on that host. | `allowlist.js` / `allowlist.json`, `model_backends.js` / `model_backends.json`, `network.js` / `network.json`, `platforms.js` / `platforms.json`, `sync.js` / `sync.json`, `keyring.js` / `keyring.json`, `mcp.js` / `mcp.json`, `memory.js` / `memory.json` |
 | **Replicated control state** | Stored outside the configuration-file set and replicated to hosts. | [`persona`](#persona) |
-| **Per-thread or client-local concept** | Selected or derived for a thread, turn, or client rather than defined as replicated cluster control state. | Per-thread backend cache windows and per-call model effort |
+| **Per-thread or client-local concept** | Selected or derived for a single thread, turn, or client. | Per-thread backend cache windows and per-call model effort |
 
 Unless a field description explicitly says otherwise, a file entry configures the host that
 reads it. For example, the precedence-selected model backends config lists backends that the host can serve locally,
@@ -50,8 +50,8 @@ works there as well.
 | File | Required | Purpose |
 |------|----------|---------|
 | [`allowlist.js` / `allowlist.json`](#allowlistjs--allowlistjson) | Yes | Who may talk to the agent |
-| [`model_backends.js` / `model_backends.json`](#model_backendsjs) | Yes | LLM backends, routing, pricing, caching |
-| [`network.js` / `network.json`](#networkjs--networkjson) | No | Outbound HTTP policy for sandbox and just-bash execution |
+| [`model_backends.js` / `model_backends.json`](#model_backendsjs--model_backendsjson) | Yes | LLM backends, routing, pricing, caching |
+| [`network.js` / `network.json`](#networkjs--networkjson) | No | Outbound HTTP policy for sandbox and `just-bash` execution |
 | [`platforms.js` / `platforms.json`](#platformsjs--platformsjson) | No | Platform connectors (Discord, etc.) |
 | [`sync.js` / `sync.json`](#syncjs--syncjson) | No | Hub URL, relay, WebSocket sync tuning |
 | [`keyring.js` / `keyring.json`](#keyringjs--keyringjson) | No | Per-host identity keys (auto-populated) |
@@ -72,8 +72,8 @@ Maps Bound users to identities on supported platforms.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `default_web_user` | string (non-empty) | — | The user id assumed for unauthenticated web-UI sessions. **Must** be a key in `users`. |
-| `users` | map&lt;id, user&gt; | — | At least one user required. Key is the user id; value is the user entry below. |
+| `default_web_user` | string (non-empty) | — | The user ID assumed for unauthenticated web-UI sessions. Must be a key in `users`. |
+| `users` | map&lt;id, user&gt; | — | At least one user required. Key is the user ID; value is the user entry below. |
 
 **User entry:**
 
@@ -82,17 +82,13 @@ Maps Bound users to identities on supported platforms.
 | `display_name` | string (non-empty) | — | Human-readable name. |
 | `platforms` | map&lt;string, string&gt; | absent | Identifies this Bound user on each platform, e.g. `{ "discord": "<discord-user-id>" }`. This is independent of connector-local `platforms.json` filtering. |
 
-> `discord_id` was removed. Use `platforms.discord` instead; the old key fails validation.
-
 ---
 
-## `model_backends.js`
+## `model_backends.js` / `model_backends.json`
 
-Bound first loads `model_backends.js` when it exists; otherwise it loads the legacy `model_backends.json`. The JavaScript form is an ESM-like module that `export default`s the LLM backends and routing configuration and runs in Bound's bounded QuickJS evaluator. Only the JavaScript form permits a backend `price(turn)` callback; JSON remains strict static configuration. Both forms reject undeclared fields through the same strict schema.
+Bound loads `model_backends.js` when it exists; otherwise it loads `model_backends.json`. The JavaScript form is an ESM-like module that `export default`s the LLM backends and routing configuration and runs in Bound's bounded QuickJS evaluator. Only the JavaScript form permits a backend `price(turn)` callback; JSON remains strict static configuration. Both forms reject undeclared fields through the same strict schema.
 
-The LLM backends and how inference routes across them. An **empty `backends` array is
-valid** for a hub-only node that relays all inference to spokes; in that case `default`
-must be `""`.
+An empty `backends` array is valid for a hub-only node that relays all inference to spokes; in that case `default` must be `""`.
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
@@ -106,14 +102,14 @@ must be `""`.
 |-------|------|---------|---------|
 | `id` | string (non-empty) | — | Logical alias the router resolves (e.g. `"opus"`). Distinct from `model`. |
 | `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`, `umans`, `chatgpt-oauth`, `github-copilot`. |
-| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model id for the selected `provider_mode` (for example, `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). **Omitted for `umans`** (the model lineup is fetched at runtime — see below). |
+| `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model ID for the selected `provider_mode` (for example, `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). Omitted for `umans` (the model lineup is fetched at runtime — see below). |
 | `provider_mode` | enum `anthropic`\|`openai_responses` | — | Required for `bedrock-mantle`. Selects the Mantle protocol surface: Anthropic Messages (`/anthropic/v1/messages`) or OpenAI Responses (`/openai/v1/responses`). |
-| `base_url` | url | absent | **Required** for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region` and `provider_mode`) and `umans` (default `https://api.code.umans.ai`). |
-| `api_key` | string | absent | **Required** for `cerebras`, `anthropic`, `zai`, `opencode-go`, `umans`. Unused by `bedrock-mantle` (auth is AWS SigV4), `chatgpt-oauth`, and `github-copilot` (subscription OAuth tokens are used instead). |
+| `base_url` | url | absent | Required for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region` and `provider_mode`) and `umans` (default `https://api.code.umans.ai`). |
+| `api_key` | string | absent | Required for `cerebras`, `anthropic`, `zai`, `opencode-go`, `umans`. Unused by `bedrock-mantle` (auth is AWS SigV4), `chatgpt-oauth`, and `github-copilot` (subscription OAuth tokens are used instead). |
 | `token_store_path` | string | `config/chatgpt-auth.json` (`chatgpt-oauth`), `config/copilot-auth.json` (`github-copilot`) | Absolute path to the persisted OAuth token bundle. For `chatgpt-oauth`, create it with `bound login --chatgpt`; for `github-copilot`, with `bound login --copilot`. Both still require `model`, `context_window`, and `tier`. |
-| `region` | string | absent | AWS region (Bedrock, and **required** for `bedrock-mantle` — the mantle endpoint host is region-scoped). |
+| `region` | string | absent | AWS region (Bedrock, and required for `bedrock-mantle` — the Mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
-| `context_window` | int > 0 | — | Token budget bound for context assembly. **Omitted for `umans`** (fetched per-model). |
+| `context_window` | int > 0 | — | Token budget bound for context assembly. Omitted for `umans` (fetched per-model). |
 | `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. Omitted and rejected for `umans`. |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
@@ -205,7 +201,7 @@ entry field.
 
 ```js
 export default {
-  backends: [{ provider: "umans", id: "umans", api_key: "sk-…" }],
+  backends: [{ provider: "umans", id: "umans", api_key: "sk-..." }],
   default: "umans",
 };
 ```
@@ -216,11 +212,11 @@ accepted by the schema. Set up with `bound init --umans` (reads `UMANS_API_KEY`)
 
 ### GitHub Copilot
 
-A `github-copilot` backend drives a Copilot model through bound's own GitHub App, authenticated
+A `github-copilot` backend drives a Copilot model through Bound's own GitHub App, authenticated
 by the device-flow token `bound login --copilot` writes to `config/copilot-auth.json` (no
-`api_key`). The Copilot API fronts several model families; bound reads each model's capabilities
+`api_key`). The Copilot API fronts several model families; Bound reads each model's capabilities
 from the live catalog and routes it to the matching wire surface automatically. The `model` is
-the Copilot model id, or the literal `auto` to let Copilot pick a model per request.
+the Copilot model ID, or the literal `auto` to let Copilot pick a model per request.
 
 ```js
 export default {
@@ -246,11 +242,11 @@ export default {
 
 Plan caveats: on a Free plan only zero-priced models (for example `gpt-4.1`, `gpt-4o`,
 `gpt-5.4-nano`) and the `auto` selector are callable directly; naming a premium model there
-fails with an actionable "unavailable for this plan" error. A paid Copilot plan unlocks the rest.
+fails with an `unavailable for this plan` error. A paid Copilot plan unlocks the rest.
 The API endpoint is plan-specific and discovered (and host-validated against `githubcopilot.com`)
 from the account lookup — it is never set in config.
 
-`effort` is honored on every route — Anthropic Messages (Claude), OpenAI Responses (GPT-5+, grok,
+`effort` is honored on every route — Anthropic Messages (Claude), OpenAI Responses (GPT-5+, Grok,
 mai-code), and chat completions (Gemini and the rest). The requested value is validated against the
 reasoning levels the model advertises in the live catalog: an advertised value passes through,
 `max` collapses to the highest level the model lists when `max` itself is absent, and a value the
@@ -258,15 +254,22 @@ model does not advertise is dropped rather than sent. A `thinking: { type: "disa
 to `none` when the model offers it. On the Responses route an active effort also runs the turn under
 `store: false` with encrypted reasoning content so replayed reasoning rides inline.
 
-Pricing is read from Copilot's own catalog: a `github-copilot` turn's cost is computed from the resolved model's `billing.token_prices` (for `model: "auto"`, the model Copilot actually selected), so the operator backend need not copy per-token prices by hand. The catalog's `long_context` rates apply automatically once a turn's prompt exceeds the model's `max_prompt_tokens`; a `1h`-TTL cache-write price, when the catalog carries one, bills the 1h subset of cache writes separately. The Auto pool's discount applies only to `model: "auto"` turns, and a time-boxed promo discount applies only before its end date. Setting any `price_per_m_*` field (or a `price(turn)` callback) on the backend overrides the catalog entirely — explicit operator pricing always wins; absent both, a turn with no catalog pricing records `0`.
+Pricing is read from Copilot's own catalog: a `github-copilot` turn's cost is computed from the
+resolved model's `billing.token_prices` (for `model: "auto"`, the model Copilot actually selected),
+so the backend entry does not need manual per-token prices. The catalog's `long_context` rates apply
+automatically once a turn's prompt exceeds the model's `max_prompt_tokens`, and a `1h`-TTL
+cache-write price bills the 1h subset of cache writes separately when the catalog carries one.
+
+The Auto pool's discount applies only to `model: "auto"` turns, and a time-boxed promo discount
+applies only before its end date. Setting any `price_per_m_*` field or a `price(turn)` callback on
+the backend overrides the catalog entirely; absent both, a turn with no catalog pricing records `0`.
 
 ---
 
 ## `network.js` / `network.json`
 
-Outbound HTTP policy for sandbox and just-bash egress. It does not control Bound's own
-provider, sync, platform, or MCP clients. When this file is absent, those clients are not
-globally denied.
+Outbound HTTP policy for sandbox and `just-bash` egress only. Bound's own provider, sync,
+platform, and MCP clients are unaffected.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -292,7 +295,7 @@ subscriptions, with failover to standbys.
 | `platform` | string (non-empty) | — | Platform name, e.g. `discord`. |
 | `token` | string | absent | Bot token / credential. |
 | `signing_secret` | string | absent | Webhook signing secret. |
-| `allowed_users` | array&lt;string&gt; | `[]` | Connector-local platform user filter, independent of `allowlist.json` identity mapping. For Discord, this filters DMs and interactions; it is not documented as guild-channel author gating. |
+| `allowed_users` | array&lt;string&gt; | `[]` | Connector-local platform user filter, independent of `allowlist.json` identity mapping. For Discord, this filters DMs and interactions. |
 | `leadership` | enum | `auto` | `auto`, `leader`, `standby`, or `all` — this host's role in leader election. |
 | `failover_threshold_ms` | int > 0 | `30000` | How long a leader may be silent before a standby takes over. |
 
@@ -364,8 +367,7 @@ confirmation).
 
 **`transport: "http"`:** `url` (url), `headers` (optional string→string map).
 
-Unknown keys on one transport do not slip through via the other — each variant is strict
-independently.
+Each transport variant validates its own schema strictly.
 
 **OAuth for `http` servers.** An `http` server may carry an optional `auth` block of
 `type: "oauth"` for the OAuth 2.1 authorization-code flow with PKCE. Its absence leaves the
@@ -384,7 +386,7 @@ A server that returns `401` or steps up scope with `403 insufficient_scope` rais
 challenge instead of failing permanently. Resolve it with `bound login --challenge <id>` or
 `bound login --mcp <server>`, or from the web UI consent card. See the
 [MCP servers guide](/bound/guides/mcp-servers/#authenticate-with-oauth) for the procedure.
-Tokens live in a per-host `config/mcp-auth.json` written by the machinery, not in `mcp.json`.
+Bound stores OAuth tokens in a per-host `config/mcp-auth.json` file.
 
 **MCP Apps.** A configured HTTP server that advertises the
 [MCP Apps](https://github.com/modelcontextprotocol/ext-apps) `io.modelcontextprotocol/ui`
@@ -410,15 +412,6 @@ Pinned-memory caps — a context-management control. Absent means the defaults b
 
 ### `persona`
 
-`persona` is not a configuration file. It is a single replicated, cluster-wide Markdown
-value included in the system prompt and capped at 64 KB. A fresh install has no persona.
-Manage it with `boundctl set-persona`, the web UI's **Persona** view, or the corresponding
-API; there is no `persona.md` seed.
-
-## Removed configuration files
-
-### `cron_schedules.json`
-
-`cron_schedules.json` is not read or validated. Create recurring tasks at runtime through
-the agent's `task` tool with the `schedule` action and a cron expression. The system-managed
-agent heartbeat has no configuration-file surface.
+`persona` is a single replicated, cluster-wide Markdown value included in the system prompt
+and capped at 64 KB. A fresh install has no persona. Manage it with `boundctl set-persona`,
+the web UI's **Persona** view, or the corresponding API.

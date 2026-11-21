@@ -14,8 +14,8 @@ exposes, and verify the connection in the web UI.
 
 ## 1. Add a server
 
-Create or update `mcp.json` in Bound's
-[configuration reference](/bound/reference/configuration/). The
+Create or update `mcp.json` in your Bound configuration directory (see the
+[configuration reference](/bound/reference/configuration/#mcpjs--mcpjson)). The
 vendor packages, endpoints, and tool names below are illustrative and can change between
 versions. Check the vendor's current documentation before using them.
 
@@ -89,9 +89,8 @@ For multi-host installations, see the [System model](/bound/concepts/system-mode
 
 ## Authenticate with OAuth
 
-An `http` server that returns `401` with an authorization challenge, or steps up scope with
-`403 insufficient_scope`, needs an OAuth 2.1 grant. Add an `auth` block of `type: "oauth"` to
-switch that server off the static-`headers` path:
+For an `http` server that requires OAuth 2.1, add an `auth` block of `type: "oauth"` instead of
+static `headers`:
 
 ```json
 {
@@ -110,62 +109,29 @@ switch that server off the static-`headers` path:
 }
 ```
 
-Omit `client_id` to register a public client with the authorization server at consent time.
-Set `client_secret` for a confidential client; declare it only on the host that owns this
-server's config, because it never syncs and never crosses the relay. See the
+Omit `client_id` to register a public client dynamically at consent time. Set `client_secret` on
+the owning host's config for a confidential client. See the
 [`auth` block reference](/bound/reference/configuration/#mcpjs--mcpjson) for every field.
 
-The first call to an OAuth server that has no token does not fail permanently. Bound raises a
-challenge, settles the call, and keeps the thread usable. The settled tool result surfaces as a
-consent affordance on whichever surface the call ran on:
+When a tool call reaches an unauthorized OAuth server, Bound raises a challenge and keeps the
+thread usable. Resolve a challenge in any of three ways:
 
-- **boundless / TUI** renders a `🔐 authorization required` notice naming the server, the demanded
-  scopes, and the challenge id, with the `bound login --challenge <id>` command inline. Nothing
-  blocks — the call already settled and the thread stays usable.
-- **web chat** renders a consent card at the top of the thread listing every pending challenge. On
-  a loopback web bind (`WEB_BIND_HOST` unset or loopback, the default) the card carries a live
-  **Authorize** button that opens your browser for consent. On a non-loopback bind (`0.0.0.0`, the
-  documented hub setting) the card carries no button — a loopback callback is unreachable from a
-  remote browser — and instead shows the `bound login --challenge <id>` instruction to run from a
-  local session.
-- **Connections > MCP Servers** carries a per-server authorization badge: a `🔐 needs authorization`
-  (pending) or `🔐 authorization failed` (failed) marker on the server row, with the same Authorize
-  button (loopback) or `bound login --challenge <id>` instruction (non-loopback) in the expanded detail.
+- Run `bound login --challenge <id>` using the challenge ID shown in `boundless` or the web UI.
+- Run `bound login --mcp <server>` to authorize a server ahead of its first use.
+- Click **Authorize** on the web UI consent card or under **Connections > MCP Servers** (when the
+  web server is bound to loopback).
 
-Resolve a challenge from any host:
-
-- Run `bound login --challenge <id>` with the challenge id from the settled tool result or a card.
-- Run `bound login --mcp <server>` to authorize a server before its first use.
-- Click **Authorize** on the web consent card (loopback bind only).
-
-Each of these opens your browser for consent and requires a running local daemon: the daemon
-serves the loopback callback and transfers the authorization code to the host that owns the
-server. That owning host performs the token exchange and holds the token in its own
-`config/mcp-auth.json`; the token never syncs and never crosses the relay, so custody is per-host.
-When the grant resolves, the thread that raised the challenge is woken so the model can re-issue
-the call. Consent affordances are not delivered over platform connectors (Discord) — a challenge
-raised from a connector thread still settles and resolves from the web card or the CLI. See
-[CLI and operations](/bound/guides/cli-operations/#bound-login) for the command reference.
+Each option opens your browser for consent through a running local daemon and stores the
+resulting token on the host that owns the server. Once authorized, the waiting thread resumes so
+the model can retry the call.
 
 ## Use MCP Apps
 
-MCP Apps are optional and let compatible servers return interactive UI for supported tool
-results in the web UI. See the [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps)
-for server support and implementation details.
-
-The web UI reaches an app-bearing server through a same-origin proxy (`/api/mcp-apps/proxy/...`),
-not a direct browser connection — most MCP servers do not enable CORS for browser origins, and
-the proxy dodges that. The proxy is **location-transparent**: an app-bearing server configured on
-any host in the cluster renders in the web UI, not only servers on the host serving the page. When
-the serving host owns the server it fetches upstream directly; when another host owns it, the call
-rides the cluster relay to that host, which resolves the upstream URL and attaches any credential at
-its own edge. Upstream URLs and auth tokens never reach the browser, and a browser cookie or
-`Authorization` header is never forwarded upstream.
-
-For an OAuth-authenticated app server (see [Authenticate with OAuth](#authenticate-with-oauth)),
-the owning host attaches its own token when it proxies the call. If no valid grant is held yet, the
-proxy returns `401` and the app panel surfaces the pending authorization; resolve it with
-`bound login --mcp <server>` and reload the app.
+Compatible `http` servers can render interactive UI inline for tool results in the web UI,
+including servers configured on another host in the cluster. No extra `mcp.json` fields are
+required; if an OAuth-protected app server has no grant yet, run `bound login --mcp <server>` and
+reload the app. See the [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps)
+for server support.
 
 ## Troubleshoot the connection
 

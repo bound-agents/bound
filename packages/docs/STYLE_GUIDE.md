@@ -34,7 +34,6 @@ task page, its conceptual explanation, and its reference material.
 
 ## Voice and tone
 
-- Address the reader as "you".
 - Use active voice and present tense.
 - Use imperative verbs for instructions: "Open", "Run", "Set", and "Select".
 - Put the action before its explanation when the action is what the reader needs.
@@ -47,7 +46,7 @@ task page, its conceptual explanation, and its reference material.
 - Avoid second person except the possessive "your" for operator-owned things ("your configuration"). Prefer the imperative or make the system the actor.
 - Do not use emphasis markup (bold, italics, ALL CAPS) for stress. Bold is reserved for list-entry lead-ins and terms defined on the same page.
 - Use the em dash in moderation. Do not give every clause a dash-gloss, and do not pack a sentence with both a parenthetical and a dash-pair aside.
-- State what holds. Avoid corrective tails ("X, not Y"), "not just X" framing, and negation-defined restatements ("X does A; it does not B").
+- State what holds. Avoid corrective tails ("X, not Y"), "not just X" framing, negation-defined restatements ("X does A; it does not B"), and unprompted disclaimers about things the reader had no reason to assume.
 - Documentation is end-state: no incident dates, no references to CI or verification infrastructure, and no issue-tracker references.
 
 ## Product terminology
@@ -154,8 +153,8 @@ bun run check
 ```
 
 The blocking checks validate Markdown structure, frontmatter, sidebar coverage, internal
-links, fragments, and the production Astro build. Vale reports narrow prose and terminology
-suggestions in CI; its advisory findings do not block a pull request.
+links, fragments, and the production Astro build. Vale runs in CI against `Bound` and `Llmisms`:
+error-level findings fail the check, while warnings and suggestions advise.
 
 ## Review checklist
 

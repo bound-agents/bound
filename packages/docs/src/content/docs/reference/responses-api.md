@@ -93,7 +93,7 @@ The endpoint does not retain earlier calls, outputs, or reasoning between reques
 ### Ignored and rejected fields
 
 Unrecognized fields are ignored for compatibility with clients that send a richer Responses
-schema. Ignored fields do not add behavior or server-side state.
+schema.
 
 Two recognized stateful fields are explicitly rejected rather than ignored:
 `previous_response_id` and `conversation`. A request containing either field returns `400`.
@@ -108,11 +108,9 @@ Omit `stream` or set it to `false`. The endpoint collects the model stream inter
 returns one OpenAI-compatible `Response` object. The response includes model output and
 usage information, and its output entries can contain reasoning, text, or function calls in
 model order. Reasoning entries carry the model's summary text and, for models that produce
-it, `encrypted_content` for replay in a later request. Other parts of the broader Responses
-schema are not supported unless this page lists them.
+it, `encrypted_content` for replay in a later request.
 
-The response echoes `tool_choice` and `parallel_tool_calls` for strict SDK parsers. Echoing
-`parallel_tool_calls` does not mean that the value was forwarded to the model driver.
+The response echoes `tool_choice` and `parallel_tool_calls` for strict SDK parsers.
 
 ### Streaming response
 
@@ -154,8 +152,6 @@ The endpoint sends a heartbeat every 5 seconds while it waits for the first mode
 | Requested model is unavailable | `503` |
 | Streaming fails after the SSE response starts | Terminal `response.failed` event |
 
-Unrecognized request fields are ignored and produce a normal response.
-
 ## Model resolution
 
 The endpoint uses the same `resolveModel()` path as the agent loop. It checks local backends
@@ -168,10 +164,9 @@ table lists failures for unknown or unavailable models.
 
 ## Client configuration
 
-The default web server listens only on loopback. Bound accepts and ignores a bearer token so
-clients that require an API-key value can connect. That ignored value is a compatibility
-placeholder for compatibility only: Bound does not validate it or use it to authorize the
-request. Do not treat a dummy API key as access control. See
+The default web server listens only on loopback. Bound accepts and ignores any bearer token so
+clients that require an API-key value can connect. Bound never validates or uses that value for
+authorization — do not treat a dummy API key as access control. See
 [Security boundaries](/bound/concepts/security-boundaries/) before exposing the endpoint
 beyond its default network boundary.
 

@@ -1,5 +1,5 @@
 ---
-title: Sandbox and filesystem
+title: Sandbox and filesystems
 description: How Bound separates replicated virtual files from host files exposed by a terminal session.
 ---
 
@@ -17,8 +17,7 @@ separate from a project on your computer.
 | Continue on another turn | Persisted virtual files remain available | Requires an applicable client session and its tools |
 | Appear on another Bound host | Selected virtual file state can synchronize | Client files do not synchronize through Bound's file state |
 
-The tool name and active client context determine which boundary an operation uses; a
-similar-looking path or filename does not join the two filesystems.
+The tool name and active client context determine which filesystem an operation targets.
 
 ## Agent virtual filesystem
 
@@ -31,20 +30,16 @@ computer.
 
 ## Connected client filesystem
 
-A connected `boundless` terminal client—the command-line client that connects a local
-working directory to Bound—can provide file and shell tools. These tools operate on the
+A connected `boundless` terminal client — the command-line client that connects a local
+working directory to Bound — can provide file and shell tools. These tools operate on the
 connected client's filesystem, so their availability and effects are tied to that session
 rather than to the replicated virtual filesystem.
 
 Reads can reach files that the client process's operating-system permissions allow. Writes
-and shell commands are subject to OS-level write confinement: writes are limited to the
-bubblewrap, and Windows uses Bound's one-shot AppContainer lowbox. On Windows, writes
-inside an allowed root succeed, while sibling, traversal, and junction paths outside it are
-denied; cancelling an operation cancels its descendant tree, and the watcher cleans up the
-profile, ACL, and journal it owns. `.git/config` and `.git/hooks` remain
-read-only on every platform while Git's index, refs, logs, and objects remain writable. This
-boundary does not make client files part of the virtual filesystem or replicate them to other
-Bound hosts.
+and shell commands run under OS-level write confinement: writes are restricted to the working
+directory and temporary directories allowed by the platform sandbox (seatbelt on macOS,
+bubblewrap on Linux, and an AppContainer lowbox on Windows). `.git/config` and `.git/hooks`
+stay read-only on every platform while ordinary Git state remains writable.
 
 ## Next steps
 

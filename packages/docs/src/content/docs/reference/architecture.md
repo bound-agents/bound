@@ -61,18 +61,16 @@ operators, and [Configure a multi-host cluster](/bound/guides/multi-host/) for s
 
 The implementation has these runtime boundaries:
 
-- **Loop ownership:** The trigger host assembles context and runs the loop. Only inference
+- **Loop ownership:** The loop host assembles context and runs the loop. Only inference
   and tool calls relay.
-- **Inference routing:** A model can execute on the loop-owning host or on another host.
+- **Inference routing:** A model can execute on the loop host or on another host.
 - **Tool routing:** A tool can execute locally, on another host, or through the
   `boundless` terminal client.
 - **Built-in file operations:** These operations use an in-memory virtual filesystem.
 - **Host commands:** `boundless` adds operating-system-level confinement.
 
-These are current composition and dispatch properties rather than promises that package or
-process boundaries will remain unchanged. See
-[Security boundaries](/bound/concepts/security-boundaries/) for the trust and confinement
+See [Security boundaries](/bound/concepts/security-boundaries/) for the trust and confinement
 model.
 
-Contributors can find internal design references—including dependency graphs, protocol
-notes, and the database schema—in the repository's `docs/design/` directory.
+Contributors can find internal design references — including dependency graphs, protocol
+notes, and the database schema — in the repository's `docs/design/` directory.

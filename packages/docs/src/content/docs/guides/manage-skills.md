@@ -3,7 +3,9 @@ title: Manage skills
 description: Import, inspect, activate, deactivate, delete, and restore reusable agent instructions.
 ---
 
-This guide shows how to manage a skill artifact and activate it for one thread. Activation is per-thread and opt-in; importing a skill only stages the artifact in the catalog.
+This guide shows how to import a reusable skill into the catalog, inspect it, activate and
+deactivate it for one thread, delete it, and restore it. Activation is per-thread and opt-in;
+importing a skill only stages the artifact in the catalog.
 
 ## Prerequisites
 
@@ -12,10 +14,6 @@ This guide requires:
 - A running Bound instance.
 - A valid skill directory containing a `SKILL.md` file.
 - `boundctl` on your `PATH` for the command-line steps.
-
-## Expected outcome
-
-The steps below import a reusable skill, inspect it, activate and deactivate it for a single thread, delete it, and restore it.
 
 ## Import a skill
 
@@ -42,15 +40,15 @@ For additional command-line guidance, see [CLI operations](/bound/guides/cli-ope
 
 1. List the skills in the catalog:
 
-```bash
-boundctl skill list
-```
+   ```bash
+   boundctl skill list
+   ```
 
-1. View a specific skill:
+2. View a specific skill:
 
-```bash
-boundctl skill view <name>
-```
+   ```bash
+   boundctl skill view <name>
+   ```
 
 Use the displayed name in subsequent activation, deletion, and restore steps.
 
@@ -97,7 +95,8 @@ Bundled (built-in) skills have no **Delete** button in the web UI — remove the
 boundctl skill delete <name>
 ```
 
-Deletion soft-deletes the catalog artifact and its files. It does not make claims about context that may already have been assembled for an active turn.
+Deletion soft-deletes the catalog artifact and its files. Any turn already in progress keeps
+the context assembled before deletion.
 
 ## Restore a skill
 
@@ -108,14 +107,14 @@ Deletion soft-deletes the catalog artifact and its files. It does not make claim
 
 1. Confirm that the restored or imported skill appears in the catalog:
 
-```bash
-boundctl skill list
-```
+   ```bash
+   boundctl skill list
+   ```
 
-1. Inspect it to confirm its details:
+2. Inspect it to confirm its details:
 
-```bash
-boundctl skill view <name>
-```
+   ```bash
+   boundctl skill view <name>
+   ```
 
-1. In a thread, ask the agent to use the skill and confirm that it follows the skill's instructions.
+3. In a thread, ask the agent to use the skill and confirm that it follows the skill's instructions.

@@ -11,8 +11,8 @@ different problems.
 ## Hub-and-spoke topology
 
 One host acts as the hub. Each spoke maintains a WebSocket sync connection to the hub, and
-spokes do not synchronize directly with one another. The hub forwards replicated changes;
-it does not become the only host allowed to run loops, inference, or tools.
+spokes do not synchronize directly with one another. The hub forwards replicated changes while
+any host can still run loops, inference, or tools.
 
 Each host has an Ed25519 identity. A signed handshake establishes host identity, and sync
 frames use XChaCha20-Poly1305 encryption. These transport protections are one part of the
@@ -28,9 +28,8 @@ each host observes every write eventually, though not necessarily at the same in
 
 Conflict handling depends on the kind of table. Most synchronized tables use
 last-writer-wins resolution based on a hybrid logical clock. Append-only tables, including
-messages, deduplicate inserts by identifier. These mechanisms describe how replicated
-records converge; they do not turn unrelated multi-step operations into one cluster-wide
-transaction.
+messages, deduplicate inserts by identifier. Each table converges independently at the row
+level.
 
 ## Relay is operation movement
 
@@ -42,8 +41,8 @@ agent turn:
 - **Tool relay** sends a tool call to the host that owns the relevant MCP server or live
   client session.
 
-The receiving host performs the relayed operation. Replication may later carry durable
-results as state, but relay itself is not database synchronization.
+The receiving host performs the relayed operation; durable results replicate separately
+through the change log.
 
 ## Host roles during a turn
 

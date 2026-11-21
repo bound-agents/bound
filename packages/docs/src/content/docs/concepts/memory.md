@@ -28,9 +28,9 @@ Each tier gives an entry a different role in context:
 | `default` | Remains searchable and eligible for relevance retrieval |
 | `detail` | Remains archive detail, normally represented by its title until retrieved |
 
-Pinned and summary material consume prompt space, so Bound applies configured budgets
-rather than treating a tier as unlimited storage. See the [configuration
-reference](/bound/reference/configuration/) for current memory limits and defaults.
+Pinned and summary material consume prompt space, so Bound enforces configured budgets for
+each tier. See the [configuration reference](/bound/reference/configuration/) for current
+memory limits and defaults.
 
 ## Knowledge graph
 
@@ -57,10 +57,10 @@ changes and the current turn:
 - **Relevant memory** contains titles selected for the current turn through keyword and
   graph matching.
 
-A title or pointer is not the complete memory body. The agent retrieves full content when a
-turn needs it, which keeps the default prompt smaller while retaining access to the archive.
+When a turn needs the full body behind a title or pointer, the agent retrieves it on demand,
+keeping the default prompt smaller while retaining access to the archive.
 
-## Live State is not durable knowledge
+## Live State
 
 Each turn also includes Live State: short-lived operational pointers such as cross-thread
 activity, task runs, file changes, and recently applied advisories. Live State helps the

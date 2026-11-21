@@ -63,113 +63,37 @@ sender to post to `/webhook/<name>` on that sync listener.
 4. Confirm that the delivery appears.
 5. Confirm that the linked event task runs.
 
-An accepted delivery is queued for processing; the `202` response does not mean that task
-execution has finished. For how event-driven work proceeds after delivery, read
-[Work lifecycle](/bound/concepts/work-lifecycle/).
-
-## Create a webhook through the API
-
-As an alternative to the web UI, send all supported create fields to the web server. The
-`format` field is optional and defaults to `github`.
-
-```bash
-curl -i -X POST http://localhost:3001/api/webhooks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "github",
-    "format": "github",
-    "description": "GitHub push events",
-    "prompt": "Summarize the change and flag risky edits.",
-    "model_hint": "fast",
-    "no_history": true
-  }'
-```
-
-A successful response has this boundary:
-
-```http
-HTTP/1.1 201 Created
-Content-Type: application/json
-
-{
-  "id": "<generated webhook ID>",
-  "name": "github",
-  "signature_format": "github",
-  "description": "GitHub push events",
-  "prompt": "Summarize the change and flag risky edits.",
-  "model_hint": "fast",
-  "no_history": true,
-  "task_id": "<generated linked event task ID>",
-  "thread_id": "<generated delivery thread ID>",
-  "secret": "<64-character hexadecimal secret>"
-}
-```
-
-This representative projection omits server-managed metadata rather than inventing values
-for it. Save the returned secret immediately; later `GET` requests do not return it. The
-create response does not return a delivery URL, so request candidates from
-`GET /api/webhooks/:id/urls` as described above.
+An HTTP `202` response means Bound has queued the delivery for asynchronous processing. For how
+event-driven work proceeds after delivery, read [Work lifecycle](/bound/concepts/work-lifecycle/).
 
 ## Manage webhooks
 
 Use **Connections > Webhooks** to edit settings, rotate a secret, inspect deliveries, or
-delete a webhook. A webhook's name is immutable. The secret-rotation endpoint returns a new
-secret; save the new value and update the sender.
+delete a webhook. A webhook's name is immutable. After rotating a secret, update the sending
+service with the new value.
 
-Deleting a webhook soft-deletes the binding and cancels its linked event task. Its delivery
-thread remains. Recreating a webhook with the same name reuses the source ID but creates a
-new linked event task and delivery thread.
+Deleting a webhook soft-deletes the binding and cancels its linked event task while keeping its
+delivery thread. Recreating a webhook with the same name creates a new linked event task and
+delivery thread.
 
-The API provides these endpoints:
-
-```text
-GET /api/webhooks
-GET /api/webhooks/:id
-GET /api/webhooks/:id/urls
-PATCH /api/webhooks/:id
-DELETE /api/webhooks/:id
-```
+To create or manage webhooks programmatically, or to look up signature formats and deduplication
+headers, see the [HTTP API reference](/bound/reference/http-api/#webhooks).
 
 ## Optional: Use another signature format
 
-| Format | How it validates | Use case |
-| --- | --- | --- |
-| `github` | HMAC-SHA256 of the payload body, sent in `X-Hub-Signature-256` | GitHub webhooks |
-| `stripe` | HMAC-SHA256, sent in `Stripe-Signature` | Stripe events |
-| `slack` | HMAC-SHA256, sent in `X-Slack-Signature` | Slack slash commands or events |
-| `raw` | HMAC-SHA256 over the timestamp and body, sent in `X-Webhook-Signature` with `X-Webhook-Timestamp` | Custom integrations |
-| `none` | No signature validation | Unauthenticated integrations |
-
-The secret stored by Bound must match the secret used by the sender. Bound generates the
-secret when it creates a webhook, so use `stripe` and `slack` only with senders that can use
-the generated secret.
-
-Stripe, Slack, and raw signatures must include a timestamp within five minutes of the
-receiving host's clock.
+Choose `github`, `stripe`, `slack`, `raw`, or `none` when creating a webhook. Bound generates the
+signing secret on creation, so use `stripe` and `slack` only with senders that accept a
+Bound-generated secret.
 
 :::danger[Unauthenticated deliveries]
-The `none` format accepts requests without authentication. Bound rejects creation and
-delivery for this format unless the cluster-wide unauthenticated-webhook switch is enabled.
-Enable it only behind a network boundary that prevents untrusted requests.
+The `none` format accepts requests without signature validation. Bound rejects creation and
+delivery for this format unless the cluster-wide unauthenticated-webhook switch is enabled in
+**Connections > Webhooks** (or via `boundctl webhook allow-unauthenticated`). Enable it only
+behind a network boundary that prevents untrusted requests.
 :::
-
-Enable that switch in **Connections > Webhooks** or through the API:
-
-```bash
-curl -X PUT http://localhost:3001/api/webhooks/unauthenticated-switch \
-  -H "Content-Type: application/json" \
-  -d '{"allow_unauthenticated": true}'
-```
 
 Read [Security boundaries](/bound/concepts/security-boundaries/) before exposing an ingress
 endpoint or enabling unauthenticated delivery.
-
-## Reference: Delivery deduplication
-
-Bound deduplicates deliveries that include `X-GitHub-Delivery`,
-`Stripe-Idempotency-Key`, or `X-Idempotency-Key`. These identifiers can suppress repeated
-deliveries, but they do not guarantee exactly-once side effects from the linked event task.
-Design task actions to tolerate retries.
 
 ## Troubleshoot delivery
 

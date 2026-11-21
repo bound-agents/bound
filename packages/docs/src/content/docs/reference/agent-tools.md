@@ -82,27 +82,14 @@ Use `task` for one-time deferred work, recurring cron work, and work woken by co
 webhook, or RSS events. Tasks can depend on earlier tasks and use their results as input. See
 [Agent system](/bound/concepts/agent-system/) for scheduler behavior.
 
-## Other native tools
+## Cross-thread delivery
 
-| Tool | Behavior |
-| --- | --- |
-| `model_hint` | Selects a different model for the current task. |
-| `query` | Runs read-only SQL against Bound's database. |
-| `introspect` | Requests a reflection from another thread. |
-| `purge` | Marks messages that can be replaced in model context when they are no longer useful. |
-| `advisory` | Creates and manages operational notices. |
-| `notify` | Sends a user-facing notification through an available interface. |
-| `archive` | Archives a thread to long-term storage. |
-| `hostinfo` | Displays registered-host and capability information. |
-| `connector` | Manages connector access when platform connectors make it available. |
-
-`introspect` and `notify` deliver into another thread by ID. Both require the
-target thread to belong to the same user as the calling thread: the tool resolves
-the caller's owner and the target's owner and refuses a cross-user delivery. Threads
-without a recorded owner are treated as unowned and remain reachable, so
-single-user deployments are unaffected. This keeps a thread from being used to
-inject content or trigger inference in another user's thread once a deployment
-hosts more than one user.
+`introspect` and `notify` deliver into another thread by ID. Both require the target thread to
+belong to the same user as the calling thread: the tool resolves the caller's owner and the
+target's owner and refuses cross-user delivery. Threads without a recorded owner are treated as
+unowned and remain reachable, so single-user deployments are unaffected. This prevents one
+user's thread from injecting content or triggering inference in another user's thread on
+multi-user deployments.
 
 ## Tool sources
 
@@ -114,5 +101,24 @@ caller.
 | Native tools | Bound's built-in agent capabilities, indexed on this page. |
 | Platform connector tools | Tools supplied by available platform connectors. Event-bound threads receive scoped tools; ordinary threads receive read-only platform tools. |
 | Configured MCP servers | Commands exposed by each configured Model Context Protocol (MCP) server. See [Connect MCP servers](/bound/guides/mcp-servers/). |
-| Live `boundless` client | Host file and shell tools supplied for the duration of a connected terminal-client session. See [Use the boundless terminal client](/bound/guides/boundless/). |
+| Live `boundless` client | Host file and shell tools supplied for the duration of a connected terminal-client session. See [`boundless` client tools](#boundless-client-tools). |
 | Responses API caller | Function definitions supplied by the caller. Bound returns function calls, and the caller executes them and sends back the results. See [Responses API](/bound/reference/responses-api/). |
+
+## `boundless` client tools
+
+When a `boundless` terminal client is attached to a thread, it registers these tools against the
+client's working directory:
+
+| Tool | Purpose |
+| --- | --- |
+| `boundless_read` | Reads files with stable line anchors. |
+| `boundless_read_structure` | Lists top-level declarations from supported source files with line anchors. |
+| `boundless_write` | Creates or replaces files atomically. |
+| `boundless_edit` | Applies anchored edits from a prior read. |
+| `boundless_search` | Searches files with regular expressions. |
+| `boundless_bash` | Executes a shell command under platform write confinement. |
+| `boundless_copy` | Copies a file between the host and Bound's virtual filesystem. |
+
+Write tools refuse paths targeting Bound's system database (`bound.db` and its WAL/SHM siblings).
+Shell output longer than 32 visual rows is elided in the middle, and output over 256 KiB is
+offloaded before reaching the transcript.

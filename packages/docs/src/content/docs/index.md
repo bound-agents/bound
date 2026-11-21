@@ -45,5 +45,5 @@ interfaces on different machines available to the same agent.
 - **Use Bound for terminal workflows:** [Set up the `boundless` terminal client](/bound/guides/boundless/).
 - **Distribute models or interfaces across machines:** [Configure optional multi-host
   operation](/bound/guides/multi-host/).
-- **Learn the web UI:** [Review the web UI guide](/bound/concepts/web-ui/).
+- **Learn the web UI:** [Review the web UI reference](/bound/concepts/web-ui/).
 - **Look up a setting:** [Use the configuration reference](/bound/reference/configuration/).

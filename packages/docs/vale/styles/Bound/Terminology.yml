@@ -9,3 +9,4 @@ swap:
   web socket: WebSocket
   openAI: OpenAI
   OpenAi: OpenAI
+  Boundless: "`boundless`"
