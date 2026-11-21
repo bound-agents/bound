@@ -45,6 +45,27 @@ export {
 	type ChatGptTokens,
 } from "./drivers/chatgpt-oauth/auth-core";
 
+export { GitHubCopilotDriver } from "./drivers/github-copilot/driver";
+
+export {
+	CopilotTokenManager,
+	FileCopilotTokenStore,
+} from "./drivers/github-copilot/token-store";
+
+export {
+	COPILOT_CLIENT_ID,
+	type AuthCoreDeps,
+	fetchAccountInfo,
+	pollDeviceToken,
+	refreshTokens,
+	startDeviceFlow,
+	validateCopilotApiEndpoint,
+	type CopilotAccountInfo,
+	type CopilotTokens,
+	type DeviceCodeGrant,
+	type DevicePollResult,
+} from "./drivers/github-copilot/auth-core";
+
 export { UmansDriver, type UmansAccount } from "./drivers/umans";
 
 export {

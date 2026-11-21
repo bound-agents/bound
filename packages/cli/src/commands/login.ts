@@ -15,17 +15,22 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import {
+	type AuthCoreDeps,
 	CHATGPT_OAUTH_REDIRECT_URI,
+	type CopilotTokens,
 	buildAuthorizeUrl,
 	exchangeCodeForTokens,
 	extractIdClaims,
 	generatePkce,
 	generateState,
+	pollDeviceToken,
+	startDeviceFlow,
 } from "@bound/llm";
-import { FileTokenStore } from "@bound/llm";
+import { FileCopilotTokenStore, FileTokenStore, fetchAccountInfo } from "@bound/llm";
 
 export interface LoginArgs {
 	chatgpt?: boolean;
+	copilot?: boolean;
 	/** `bound login --challenge <id>`: claim a previously-raised MCP OAuth challenge (R-MO27e). */
 	challenge?: string;
 	/** `bound login --mcp <server>`: raise-and-resolve an MCP server's challenge for warm-up (R-MO27e). */
@@ -55,9 +60,14 @@ export interface LoginArgs {
 const CALLBACK_PORT = 1455;
 const CALLBACK_PATH = "/auth/callback";
 
-/** Default bound-owned token store location, a sibling of the other config files. */
+/** Default bound-owned ChatGPT token store location, a sibling of the other config files. */
 export function defaultTokenStorePath(configDir: string): string {
 	return resolve(configDir, "chatgpt-auth.json");
+}
+
+/** Default bound-owned Copilot token store location. */
+export function defaultCopilotTokenStorePath(configDir: string): string {
+	return resolve(configDir, "copilot-auth.json");
 }
 
 /** Open a URL in the default browser, best-effort per platform. */
@@ -153,10 +163,15 @@ export async function runLogin(args: LoginArgs): Promise<void> {
 		await runMcpLogin(args);
 		return;
 	}
+	if (args.copilot) {
+		await runCopilotLogin(args);
+		return;
+	}
 	if (!args.chatgpt) {
 		console.error(
 			"Usage:\n" +
 				"  bound login --chatgpt [--config-dir <dir>]\n" +
+				"  bound login --copilot [--config-dir <dir>]\n" +
 				"  bound login --challenge <id> [--url <daemon>]\n" +
 				"  bound login --mcp <server> [--url <daemon>]",
 		);
@@ -291,4 +306,66 @@ export async function runMcpLogin(args: LoginArgs): Promise<void> {
 		"After you consent, the daemon catches the callback and hands the code to the owning host. Watch the thread that raised the challenge — it is woken on resolution.",
 	);
 	(args.openBrowser ?? openInBrowser)(claim.authorize_url);
+}
+
+/**
+ * `bound login --copilot` — the GitHub Copilot device-authorization flow.
+ *
+ * Runs the OAuth 2.0 Device Grant against github.com using bound's own public
+ * GitHub App client id, prints the verification URL + user code, polls for
+ * authorization (honoring authorization_pending / slow_down), looks up the
+ * account/plan to validate the Copilot API endpoint, and persists a bound-owned
+ * token store at <configDir>/copilot-auth.json.
+ *
+ * The store is bound-owned and NOT shared with any other tool: GitHub rotates
+ * the refresh token on each refresh and invalidates the prior one, so two tools
+ * sharing a lineage would take turns logging each other out.
+ */
+export async function runCopilotLogin(args: LoginArgs): Promise<void> {
+	const configDir = args.configDir || "config";
+	const storePath = defaultCopilotTokenStorePath(configDir);
+	const store = new FileCopilotTokenStore(storePath);
+	const deps: AuthCoreDeps = { fetch: args.fetchImpl ?? globalThis.fetch };
+
+	const grant = await startDeviceFlow(deps);
+	console.log("To sign in to GitHub Copilot for bound:\n");
+	console.log(`  1. Open ${grant.verificationUri}`);
+	console.log(`  2. Enter the code: ${grant.userCode}\n`);
+	(args.openBrowser ?? openInBrowser)(grant.verificationUri);
+	console.log("Waiting for authorization…");
+
+	// Poll until complete, expiry, or a terminal error. The interval starts at
+	// the server-requested value and bumps on slow_down.
+	let intervalSeconds = grant.intervalSeconds;
+	let tokens: CopilotTokens | undefined;
+	for (;;) {
+		if (Date.now() >= grant.expiresAt) {
+			throw new Error(
+				"device code expired before authorization — run `bound login --copilot` again",
+			);
+		}
+		await new Promise((r) => setTimeout(r, intervalSeconds * 1000));
+		const result = await pollDeviceToken(deps, {
+			deviceCode: grant.deviceCode,
+			currentIntervalSeconds: intervalSeconds,
+		});
+		if (result.status === "complete") {
+			tokens = result.tokens;
+			break;
+		}
+		if (result.status === "slow_down") {
+			intervalSeconds = result.intervalSeconds;
+		}
+		// pending — keep polling.
+	}
+
+	store.save(tokens);
+	// Validate the account/plan + endpoint up front so a bad plan surfaces now,
+	// not on the first inference turn.
+	const account = await fetchAccountInfo(deps, tokens.accessToken);
+	console.log(`\nSigned in. Tokens saved to ${storePath}`);
+	console.log(`Plan: ${account.copilotPlan ?? "unknown"} — API endpoint ${account.apiEndpoint}`);
+	console.log(
+		'Add a backend with `provider: "github-copilot"` to config/model_backends.js to use it.',
+	);
 }

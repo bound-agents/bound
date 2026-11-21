@@ -262,7 +262,7 @@ const driver = new OpenAICompatibleDriver({
 ```typescript
 interface BackendConfig {
   id: string;
-  provider: string;  // "anthropic" | "bedrock" | "bedrock-mantle" | "openai-compatible" | "cerebras" | "zai" | "opencode-go" | "umans"
+  provider: string;  // "anthropic" | "bedrock" | "bedrock-mantle" | "openai-compatible" | "cerebras" | "zai" | "opencode-go" | "umans" | "chatgpt-oauth" | "github-copilot"
   providerMode?: "anthropic" | "openai_responses";  // required for bedrock-mantle
   model: string;
   baseUrl?: string;
@@ -290,6 +290,7 @@ Provider-specific extra fields:
 | `cerebras` | `apiKey` | `baseUrl` (default `https://api.cerebras.ai/v1`), `contextWindow` (default 128 000) |
 | `zai` | `apiKey` | `baseUrl` (default `https://api.z.ai/api/coding/paas/v4`), `contextWindow` (default 128 000) |
 | `umans` | `apiKey` | `baseUrl` (default `https://api.code.umans.ai`) — **no** `model`/`tier`/`contextWindow`/pricing (self-configuring) |
+| `github-copilot` | — (device-flow token store) | `tokenStorePath` (default `config/copilot-auth.json`), `contextWindow` (default 128 000). No `apiKey`; the plan-specific API endpoint is discovered and host-validated from the account lookup. Each model is routed to Anthropic Messages, OpenAI Responses, or chat completions by its catalog `supported_endpoints` (name heuristic on catalog miss); `model: "auto"` resolves a per-request session. |
 
 `cerebras` and `zai` are thin wrappers that delegate to `OpenAICompatibleDriver` with provider-specific defaults.
 

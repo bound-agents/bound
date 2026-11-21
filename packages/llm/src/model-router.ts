@@ -4,6 +4,9 @@ import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
 import { ChatGptOAuthDriver } from "./drivers/chatgpt-oauth/driver";
 import { FileTokenStore, TokenManager } from "./drivers/chatgpt-oauth/token-store";
+import { fetchAccountInfo } from "./drivers/github-copilot/auth-core";
+import { GitHubCopilotDriver } from "./drivers/github-copilot/driver";
+import { CopilotTokenManager, FileCopilotTokenStore } from "./drivers/github-copilot/token-store";
 import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 import { OpenCodeGoDriver } from "./drivers/opencode-go";
 import { UmansDriver, createUmansAccount } from "./drivers/umans";
@@ -16,7 +19,6 @@ import type {
 } from "./types";
 import type { ChatParams, StreamChunk } from "./types";
 import { LLMError } from "./types";
-
 export interface BackendInfo {
 	id: string;
 	capabilities: BackendCapabilities;
@@ -694,6 +696,29 @@ function createBackendFromConfig(
 				tokenManager: new TokenManager(tokens, { fetch: fetch ?? globalThis.fetch }, store),
 				model: config.model,
 				contextWindow,
+				logger,
+				fetch,
+				connectTimeoutMs: config.connectTimeoutMs,
+			});
+		}
+
+		case "github-copilot": {
+			const contextWindow = config.contextWindow ?? 128000;
+			const store = new FileCopilotTokenStore(config.tokenStorePath ?? "config/copilot-auth.json");
+			const tokens = store.load();
+			if (!tokens) {
+				throw new Error("GitHub Copilot is not logged in — run `bound login --copilot`");
+			}
+			const deps = { fetch: fetch ?? globalThis.fetch };
+			const tokenManager = new CopilotTokenManager(tokens, deps, store);
+			return new GitHubCopilotDriver({
+				tokenManager,
+				model: config.model,
+				contextWindow,
+				// The validated Copilot API endpoint is plan-specific and comes from
+				// the account lookup — resolved once, lazily, on first chat.
+				resolveAccount: () =>
+					tokenManager.getAccessToken().then((accessToken) => fetchAccountInfo(deps, accessToken)),
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,

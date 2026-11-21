@@ -97,6 +97,26 @@ other out. Signing in through the browser gives bound its own independent lineag
 After signing in, add a backend with `provider: "chatgpt-oauth"` to `model_backends` (see the
 [Configuration Reference](/bound/reference/configuration/)).
 
+Sign in with a GitHub Copilot subscription so a `github-copilot` backend can drive Claude, GPT,
+Gemini, grok, and the `auto` selector without an API key:
+
+```text
+bound login --copilot [--config-dir DIR]
+```
+
+`--copilot` runs the OAuth 2.0 Device Authorization flow against `github.com` using bound's own
+public GitHub App. It prints a verification URL and a user code (and opens your browser), polls for
+approval, validates the account's Copilot plan and API endpoint, and writes the token bundle to
+`<config-dir>/copilot-auth.json`. The `ghu_` access token, rotating `ghr_` refresh token, and
+expiry live in that bound-owned file; the running server refreshes the access token automatically
+before each expiry.
+
+The Copilot API fronts several model families. bound routes each model to the right wire surface
+automatically — Claude over Anthropic Messages, GPT-5.x and grok over OpenAI Responses, the rest
+over chat completions. On a Free plan only zero-priced models (for example `gpt-4.1`, `gpt-4o`,
+`gpt-5.4-nano`) and the `auto` selector are callable; a paid plan unlocks the rest. After signing
+in, add a backend with `provider: "github-copilot"` to `model_backends`.
+
 Before using `boundctl`, note that a **host** is a running Bound instance, the **hub** is the
 host that coordinates replication, and other synchronized hosts are **spokes**.
 

@@ -160,6 +160,7 @@ const modelBackendSchema = z
 			"opencode-go",
 			"umans",
 			"chatgpt-oauth",
+			"github-copilot",
 		]),
 		// `model`, `context_window`, and `tier` are REQUIRED for every provider
 		// EXCEPT `umans`, which is config-light + self-configuring: a umans
