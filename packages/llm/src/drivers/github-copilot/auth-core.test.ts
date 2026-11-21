@@ -188,6 +188,37 @@ describe("refreshTokens", () => {
 		};
 		await expect(refreshTokens(deps, current)).rejects.toThrow(/bad_refresh_token/);
 	});
+
+	it("names re-login as the remedy when GitHub rejects a dead refresh token", async () => {
+		// GitHub reports a rotated-away or revoked ghr_ as incorrect_client_credentials,
+		// which reads like an app misconfiguration; the error must say to log in again.
+		const deps = {
+			fetch: jsonFetch(200, {
+				error: "incorrect_client_credentials",
+				error_description: "The client_id and/or client_secret passed are incorrect.",
+			}),
+		};
+		const current: CopilotTokens = {
+			accessToken: "ghu_old",
+			refreshToken: "ghr_dead",
+			accessTokenExpiresAt: 0,
+		};
+		await expect(refreshTokens(deps, current)).rejects.toThrow(/bound login --copilot/);
+	});
+
+	it("keeps the provider's description for other refresh errors", async () => {
+		const deps = {
+			fetch: jsonFetch(200, { error: "unsupported_grant_type", error_description: "nope" }),
+		};
+		const current: CopilotTokens = {
+			accessToken: "ghu_old",
+			refreshToken: "ghr_old",
+			accessTokenExpiresAt: 0,
+		};
+		await expect(refreshTokens(deps, current)).rejects.toThrow(
+			/token refresh failed: unsupported_grant_type — nope/,
+		);
+	});
 });
 
 describe("validateCopilotApiEndpoint", () => {

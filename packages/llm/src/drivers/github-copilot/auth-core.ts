@@ -261,6 +261,15 @@ export async function refreshTokens(
 	});
 	const json = (await res.json().catch(() => ({}))) as AccessTokenResponse;
 	if (json.error) {
+		// GitHub answers a dead or revoked refresh token with
+		// `incorrect_client_credentials` (verified: a fabricated ghr_ gets the
+		// same error while the device-flow endpoint still accepts the client_id),
+		// which reads like an app misconfiguration. Name the real remedy.
+		if (json.error === "incorrect_client_credentials" || json.error === "bad_refresh_token") {
+			throw new Error(
+				`Copilot login expired or was revoked (${json.error}) — run \`bound login --copilot\``,
+			);
+		}
 		throw new Error(
 			`token refresh failed: ${json.error}${json.error_description ? ` — ${json.error_description}` : ""}`,
 		);
