@@ -69,9 +69,9 @@ import {
 	tap,
 } from "rxjs";
 import {
-	calculateTurnCost,
 	clampMaxOutputTokens,
 	createFileRefResolver,
+	resolveTurnCost,
 } from "./agent-loop-utils.js";
 import { MainAgentLoop } from "./agent-loop.js";
 import { stripCacheMarkersIfUnsupported } from "./cache-marker.js";
@@ -2107,26 +2107,28 @@ export class RelayProcessor {
 				// AC3.4: Check abort signal (cancel from requester)
 				if (abortController.signal.aborted) break;
 
-				// Stamp authoritative cost on the done chunk before it leaves
-				// the hub. The spoke that initiated this delegated turn will
-				// often be hub-only mode (empty model_backends.backends) and
-				// its local calculateTurnCost would return 0 — we hold the
-				// real pricing config, so we compute it here. Mirrors the
-				// per-backend hand-off pattern used for cache_ttl/thinking/
-				// effort/max_tokens (CONTRIBUTING.md invariant #17).
+				// Stamp authoritative cost on the done chunk before it leaves the hub
+				// under one precedence rule, shared with the local loop: explicit
+				// operator pricing wins (the hub holds the real pricing config; the
+				// initiating spoke is often hub-only mode with none), otherwise a
+				// provider-reported cost already on the chunk (e.g. the Copilot driver's
+				// catalog pricing), otherwise 0. Mirrors the per-backend hand-off pattern
+				// for cache_ttl/thinking/effort/max_tokens (CONTRIBUTING.md invariant #17).
 				let outChunk: StreamChunk = chunk;
 				if (chunk.type === "done") {
 					const backends = this.appCtx?.config.modelBackends.backends ?? [];
-					const cost_usd = calculateTurnCost(
-						payload.model,
-						{
+					const cost_usd = resolveTurnCost({
+						modelId: payload.model,
+						usage: {
 							inputTokens: chunk.usage.input_tokens,
 							outputTokens: chunk.usage.output_tokens,
 							cacheReadTokens: chunk.usage.cache_read_tokens,
 							cacheWriteTokens: chunk.usage.cache_write_tokens,
+							cacheWrite1hTokens: chunk.usage.cache_write_1h_tokens ?? null,
 						},
 						backends,
-					);
+						providerCostUsd: chunk.cost_usd,
+					});
 					outChunk = { ...chunk, cost_usd };
 				}
 

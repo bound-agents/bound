@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { z } from "zod";
 import {
 	inferenceRequestPayloadSchema,
 	streamChunkPayloadSchema,
@@ -207,6 +208,64 @@ describe("wsStreamChunkSchema — discriminated union validation", () => {
 			},
 		});
 		expect(result.success).toBe(true);
+	});
+
+	it("accepts done chunk carrying the 1h cache-write split", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 150,
+				output_tokens: 42,
+				cache_write_tokens: 1000,
+				cache_write_1h_tokens: 400,
+				cache_read_tokens: null,
+				estimated: false,
+			},
+		});
+		expect(result.success).toBe(true);
+		if (result.success && result.data.type === "done") {
+			expect(result.data.usage.cache_write_1h_tokens).toBe(400);
+		}
+	});
+
+	it("accepts a done chunk whose 1h split is null (unknown)", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 1,
+				output_tokens: 1,
+				cache_write_tokens: 1000,
+				cache_write_1h_tokens: null,
+				cache_read_tokens: null,
+				estimated: false,
+			},
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("VERSION SKEW: an older peer's schema (no cache_write_1h_tokens field) accepts a chunk carrying it, stripping the unknown key", () => {
+		// Reconstruct the pre-change done-usage object WITHOUT the 1h field: a plain
+		// z.object strips unknown keys (no .strict()), so a chunk from a newer peer
+		// parses cleanly and simply drops the extra key.
+		const legacyDoneUsage = z.object({
+			input_tokens: z.number(),
+			output_tokens: z.number(),
+			cache_write_tokens: z.number().nullable(),
+			cache_read_tokens: z.number().nullable(),
+			estimated: z.boolean(),
+		});
+		const parsed = legacyDoneUsage.safeParse({
+			input_tokens: 150,
+			output_tokens: 42,
+			cache_write_tokens: 1000,
+			cache_write_1h_tokens: 400,
+			cache_read_tokens: null,
+			estimated: false,
+		});
+		expect(parsed.success).toBe(true);
+		if (parsed.success) {
+			expect("cache_write_1h_tokens" in parsed.data).toBe(false);
+		}
 	});
 
 	it("accepts done chunk with cost_usd", () => {

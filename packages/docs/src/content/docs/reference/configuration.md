@@ -117,7 +117,8 @@ must be `""`.
 | `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. Omitted and rejected for `umans`. |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
-| `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens. |
+| `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens (the 5m-TTL rate; also the fallback rate for 1h-TTL writes). |
+| `price_per_m_cache_write_1h` | number ≥ 0 | absent | USD per million 1h-TTL cache-write tokens. When set, the 1h subset of a turn's cache writes bills at this rate and the remaining (5m) writes at `price_per_m_cache_write`; when unset, every cache write bills at `price_per_m_cache_write`. The provider must report the 1h/5m split for this to apply — absent a reported split, all cache writes bill at the 5m rate. |
 | `price_per_m_cache_read` | number ≥ 0 | absent | USD per million cache-read tokens. |
 | `price` | function | absent | Optional `price(turn)` callback returning this turn's USD cost. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to static pricing. When `price` is set, the static `price_per_m_*` fields may be omitted entirely — they default to `0` and only matter as the fallback when the callback fails. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
@@ -181,6 +182,8 @@ export default {
 };
 ```
 
+The `turn` argument carries `turn.usage` (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `cacheWrite1hTokens` — the 1h-TTL subset of `cacheWriteTokens`, `0` when the provider did not report a split) and `turn.pricesPerM` (the static `input` / `output` / `cacheRead` / `cacheWrite` rates, plus `cacheWrite1h`, which falls back to `cacheWrite` when `price_per_m_cache_write_1h` is unset). A callback that ignores the 1h fields computes exactly what it did before they existed.
+
 ### umans.ai
 
 A minimal `umans` backend entry contains `provider`, `id`, and `api_key`. The top-level
@@ -242,6 +245,7 @@ model does not advertise is dropped rather than sent. A `thinking: { type: "disa
 to `none` when the model offers it. On the Responses route an active effort also runs the turn under
 `store: false` with encrypted reasoning content so replayed reasoning rides inline.
 
+Pricing is read from Copilot's own catalog: a `github-copilot` turn's cost is computed from the resolved model's `billing.token_prices` (for `model: "auto"`, the model Copilot actually selected), so the operator backend need not copy per-token prices by hand. The catalog's `long_context` rates apply automatically once a turn's prompt exceeds the model's `max_prompt_tokens`; a `1h`-TTL cache-write price, when the catalog carries one, bills the 1h subset of cache writes separately. The Auto pool's discount applies only to `model: "auto"` turns, and a time-boxed promo discount applies only before its end date. Setting any `price_per_m_*` field (or a `price(turn)` callback) on the backend overrides the catalog entirely — explicit operator pricing always wins; absent both, a turn with no catalog pricing records `0`.
 ---
 
 ## `network.js` / `network.json`

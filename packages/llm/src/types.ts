@@ -60,6 +60,7 @@ export interface ModelDescriptor {
 		outputPerM: number;
 		cacheReadPerM?: number;
 		cacheWritePerM?: number;
+		cacheWrite1hPerM?: number;
 	};
 	maxOutputTokens?: number;
 }
@@ -330,6 +331,14 @@ export type StreamChunk =
 				input_tokens: number;
 				output_tokens: number;
 				cache_write_tokens: number | null;
+				/**
+				 * The 1h-TTL subset of `cache_write_tokens` (the remainder is 5m).
+				 * `null` when the driver can't see the split — never a guess. The
+				 * total stays on `cache_write_tokens`, so consumers that ignore this
+				 * field are unaffected. Optional on the wire: an older peer that
+				 * never sets it, and an older peer that receives it, both stay valid.
+				 */
+				cache_write_1h_tokens?: number | null;
 				cache_read_tokens: number | null;
 				estimated: boolean;
 			};

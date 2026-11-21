@@ -19,6 +19,7 @@ import {
 	insertThreadMessage,
 	isTransientLLMError,
 	resolveToolAnnotations,
+	resolveTurnCost,
 	shouldRetryRelayCall,
 } from "../agent-loop-utils";
 import { compileDynamicPricing } from "../dynamic-pricing";
@@ -183,6 +184,184 @@ describe("calculateTurnCost", () => {
 			[{ id: modelId, price_per_m_input: 4, priceFunction }],
 		);
 		expect(cost).toBe(4);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// calculateTurnCost — 1h/5m cache-write split (Change A)
+// ---------------------------------------------------------------------------
+describe("calculateTurnCost 1h cache-write split", () => {
+	it("bills the 1h subset at price_per_m_cache_write_1h and the rest at price_per_m_cache_write", () => {
+		// 10_000 total cache-write tokens, 4_000 of them 1h. 1h priced 2x the 5m rate.
+		const cost = calculateTurnCost(
+			"split-model",
+			{
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 10_000,
+				cacheWrite1hTokens: 4_000,
+			},
+			[
+				{
+					id: "split-model",
+					price_per_m_cache_write: 1,
+					price_per_m_cache_write_1h: 2,
+				},
+			],
+		);
+		// (6_000 * 1 + 4_000 * 2) / 1e6 = 14_000 / 1e6
+		expect(cost).toBeCloseTo(14_000 / 1_000_000, 12);
+	});
+
+	it("falls back to price_per_m_cache_write for the 1h subset when price_per_m_cache_write_1h is unset", () => {
+		const cost = calculateTurnCost(
+			"no-1h-rate",
+			{
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 10_000,
+				cacheWrite1hTokens: 4_000,
+			},
+			[{ id: "no-1h-rate", price_per_m_cache_write: 1 }],
+		);
+		// all 10_000 at rate 1
+		expect(cost).toBeCloseTo(10_000 / 1_000_000, 12);
+	});
+
+	it("treats an unknown split (null / absent) as today's behavior — all at price_per_m_cache_write", () => {
+		const withNull = calculateTurnCost(
+			"unknown-split",
+			{
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 10_000,
+				cacheWrite1hTokens: null,
+			},
+			[{ id: "unknown-split", price_per_m_cache_write: 1, price_per_m_cache_write_1h: 2 }],
+		);
+		const withAbsent = calculateTurnCost(
+			"unknown-split",
+			{
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 10_000,
+			},
+			[{ id: "unknown-split", price_per_m_cache_write: 1, price_per_m_cache_write_1h: 2 }],
+		);
+		// null / absent 1h → everything at the 5m rate
+		expect(withNull).toBeCloseTo(10_000 / 1_000_000, 12);
+		expect(withAbsent).toBeCloseTo(10_000 / 1_000_000, 12);
+	});
+
+	it("passes cacheWrite1hTokens and pricesPerM.cacheWrite1h into the dynamic price callback", () => {
+		const cost = calculateTurnCost(
+			"dyn-split",
+			{
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 10_000,
+				cacheWrite1hTokens: 4_000,
+			},
+			[
+				{
+					id: "dyn-split",
+					price_per_m_cache_write: 1,
+					price_per_m_cache_write_1h: 2,
+					priceFunction: `function price(turn) {
+						const oneH = turn.cacheWrite1hTokens;
+						const rest = turn.cacheWriteTokens - oneH;
+						return (rest * turn.pricesPerM.cacheWrite + oneH * turn.pricesPerM.cacheWrite1h) / 1e6;
+					}`,
+				},
+			],
+		);
+		expect(cost).toBeCloseTo(14_000 / 1_000_000, 12);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveTurnCost — precedence (callback > static > provider > 0) (Change B)
+// ---------------------------------------------------------------------------
+describe("resolveTurnCost precedence", () => {
+	beforeAll(async () => {
+		// Register the gpt-5.6 price(turn) callback this block relies on, so the
+		// precedence test does not depend on another describe's beforeAll ordering.
+		await compileDynamicPricing([
+			{
+				id: "gpt-5.6",
+				priceFunction: `function price(turn) {
+					const long = turn.inputTokens > 128000;
+					return (turn.inputTokens * (long ? 2.5 : turn.pricesPerM.input)
+						+ turn.outputTokens * (long ? 20 : turn.pricesPerM.output)
+						+ turn.cacheReadTokens * turn.pricesPerM.cacheRead
+						+ turn.cacheWriteTokens * turn.pricesPerM.cacheWrite) / 1e6;
+				}`,
+			},
+		]);
+	});
+
+	it("uses operator static pricing over a provider-reported cost", () => {
+		const cost = resolveTurnCost({
+			modelId: "static-model",
+			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			backends: [{ id: "static-model", price_per_m_input: 5 }],
+			providerCostUsd: 99,
+		});
+		// static wins: 1M * 5 / 1e6 = 5, not the provider's 99.
+		expect(cost).toBeCloseTo(5, 10);
+	});
+
+	it("falls through to the provider-reported cost when the backend has no explicit pricing", () => {
+		const cost = resolveTurnCost({
+			modelId: "zero-priced",
+			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			backends: [{ id: "zero-priced" }],
+			providerCostUsd: 0.42,
+		});
+		expect(cost).toBe(0.42);
+	});
+
+	it("falls through to the provider cost for a model absent from the backends list", () => {
+		const cost = resolveTurnCost({
+			modelId: "unknown",
+			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			backends: [],
+			providerCostUsd: 0.1,
+		});
+		expect(cost).toBe(0.1);
+	});
+
+	it("returns 0 when neither operator pricing nor a provider cost is present", () => {
+		const cost = resolveTurnCost({
+			modelId: "zero-priced",
+			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			backends: [{ id: "zero-priced" }],
+			providerCostUsd: undefined,
+		});
+		expect(cost).toBe(0);
+	});
+
+	it("prefers a price(turn) callback over both static pricing and the provider cost", () => {
+		const cost = resolveTurnCost({
+			modelId: "gpt-5.6",
+			usage: {
+				inputTokens: 200_000,
+				outputTokens: 10_000,
+				cacheReadTokens: 50_000,
+				cacheWriteTokens: 1_000,
+			},
+			// gpt-5.6 has a compiled price(turn) callback registered in beforeAll.
+			backends: [{ id: "gpt-5.6", price_per_m_input: 1.25 }],
+			providerCostUsd: 99,
+		});
+		// Long-context callback: input 200k > 128k → 2.5/M, output 10k at 20/M,
+		// cache prices 0: (200000*2.5 + 10000*20)/1e6 = 0.7, not the provider's 99.
+		expect(cost).toBeCloseTo(0.7, 8);
 	});
 });
 

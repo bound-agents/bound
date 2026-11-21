@@ -295,6 +295,7 @@ function buildSharedRow(
 		price_per_m_input: descriptor.pricing?.inputPerM ?? 0,
 		price_per_m_output: descriptor.pricing?.outputPerM ?? 0,
 		price_per_m_cache_write: descriptor.pricing?.cacheWritePerM,
+		price_per_m_cache_write_1h: descriptor.pricing?.cacheWrite1hPerM,
 		price_per_m_cache_read: descriptor.pricing?.cacheReadPerM,
 		max_output_tokens: descriptor.maxOutputTokens,
 	} as SharedBackendRow;

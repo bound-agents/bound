@@ -13,6 +13,7 @@ export interface BackendPricing {
 	price_per_m_output?: number;
 	price_per_m_cache_read?: number;
 	price_per_m_cache_write?: number;
+	price_per_m_cache_write_1h?: number;
 }
 
 export interface MetricsResponse {

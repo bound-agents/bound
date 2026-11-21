@@ -13,7 +13,7 @@ import type { CapabilityRequirements, ContentBlock, LLMMessage, StreamChunk } fr
 // existing callers and tests that import it from this module.
 export { isTransientLLMError } from "@bound/loop";
 import { createLogger } from "@bound/shared";
-import { calculateDynamicPrice } from "./dynamic-pricing";
+import { calculateDynamicPrice, hasDynamicPrice } from "./dynamic-pricing";
 import type { ModelResolution } from "./model-resolution";
 import type { RelayWaitResult } from "./relay-wait$";
 import type { RegisteredTool } from "./types";
@@ -196,6 +196,13 @@ interface UsageTokens {
 	outputTokens: number;
 	cacheReadTokens: number | null;
 	cacheWriteTokens: number | null;
+	/**
+	 * The 1h-TTL subset of `cacheWriteTokens`. `null`/absent means the split is
+	 * unknown, in which case every cache-write token is billed at the 5m rate
+	 * (today's behavior). Never a guess — a driver that can't see the split
+	 * reports null.
+	 */
+	cacheWrite1hTokens?: number | null;
 }
 
 interface BackendPricing {
@@ -204,6 +211,8 @@ interface BackendPricing {
 	price_per_m_output?: number;
 	price_per_m_cache_read?: number;
 	price_per_m_cache_write?: number;
+	/** Per-M price for the 1h cache-write subset; falls back to price_per_m_cache_write. */
+	price_per_m_cache_write_1h?: number;
 }
 
 /** Compute cost in USD for a turn's token usage against backend pricing. */
@@ -220,13 +229,18 @@ export function calculateTurnCost(
 		output: cfg.price_per_m_output ?? 0,
 		cacheRead: cfg.price_per_m_cache_read ?? 0,
 		cacheWrite: cfg.price_per_m_cache_write ?? 0,
+		cacheWrite1h: cfg.price_per_m_cache_write_1h ?? cfg.price_per_m_cache_write ?? 0,
 	};
+	// 1h subset is only known when explicitly reported; null/absent → 0, which
+	// makes the whole cache-write total bill at the 5m rate (today's behavior).
+	const cacheWrite1hTokens = usage.cacheWrite1hTokens ?? 0;
 	const dynamic = calculateDynamicPrice(modelId, {
 		modelId,
 		inputTokens: usage.inputTokens,
 		outputTokens: usage.outputTokens,
 		cacheReadTokens: usage.cacheReadTokens ?? 0,
 		cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+		cacheWrite1hTokens,
 		pricesPerM,
 	});
 	if (dynamic?.value !== null && dynamic !== null) return dynamic.value;
@@ -238,12 +252,65 @@ export function calculateTurnCost(
 		});
 	}
 
+	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
+	// Split the cache-write total: the 1h subset at the 1h rate, the remainder
+	// at the 5m rate. Clamp the 1h subset to the total so a bogus over-count
+	// can't drive the remainder negative.
+	const oneHTokens = Math.min(cacheWrite1hTokens, totalCacheWrite);
+	const fiveMTokens = totalCacheWrite - oneHTokens;
 	const inputCost = (usage.inputTokens * pricesPerM.input) / 1_000_000;
 	const outputCost = (usage.outputTokens * pricesPerM.output) / 1_000_000;
 	const cacheReadCost = ((usage.cacheReadTokens ?? 0) * pricesPerM.cacheRead) / 1_000_000;
-	const cacheWriteCost = ((usage.cacheWriteTokens ?? 0) * pricesPerM.cacheWrite) / 1_000_000;
+	const cacheWriteCost =
+		(fiveMTokens * pricesPerM.cacheWrite + oneHTokens * pricesPerM.cacheWrite1h) / 1_000_000;
 
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
+}
+
+/**
+ * True when the operator has declared explicit pricing for this model: either a
+ * compiled price(turn) callback is active, or the backend carries any nonzero
+ * static `price_per_m_*` field. A model absent from the backends list, or one
+ * whose every price field is unset/0 with no callback, counts as NOT explicitly
+ * priced — its cost then falls through to a provider-reported value.
+ */
+export function hasExplicitOperatorPricing(modelId: string, backends: BackendPricing[]): boolean {
+	if (hasDynamicPrice(modelId)) return true;
+	const cfg = backends.find((b) => b.id === modelId);
+	if (!cfg) return false;
+	return (
+		(cfg.price_per_m_input ?? 0) > 0 ||
+		(cfg.price_per_m_output ?? 0) > 0 ||
+		(cfg.price_per_m_cache_read ?? 0) > 0 ||
+		(cfg.price_per_m_cache_write ?? 0) > 0 ||
+		(cfg.price_per_m_cache_write_1h ?? 0) > 0
+	);
+}
+
+export interface ResolveTurnCostInput {
+	modelId: string;
+	usage: UsageTokens;
+	backends: BackendPricing[];
+	/** Provider-reported USD cost from the done chunk (e.g. Copilot catalog pricing). */
+	providerCostUsd: number | null | undefined;
+}
+
+/**
+ * Resolve a turn's USD cost under one precedence rule, shared by the local
+ * agent loop and the relay-processor so neither blindly overwrites the other:
+ *
+ *   explicit operator pricing  >  provider-reported cost  >  0
+ *
+ * "Explicit operator pricing" means a price(turn) callback OR any nonzero static
+ * `price_per_m_*` on the backend — in that case `calculateTurnCost` is
+ * authoritative. Otherwise a provider-reported `done.cost_usd` wins (Copilot
+ * catalog pricing, or a hub-relayed cost). Absent both, the cost is 0.
+ */
+export function resolveTurnCost(input: ResolveTurnCostInput): number {
+	if (hasExplicitOperatorPricing(input.modelId, input.backends)) {
+		return calculateTurnCost(input.modelId, input.usage, input.backends);
+	}
+	return input.providerCostUsd ?? 0;
 }
 
 /**

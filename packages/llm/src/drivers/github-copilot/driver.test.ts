@@ -145,6 +145,19 @@ async function drain(stream: AsyncIterable<unknown>): Promise<void> {
 	}
 }
 
+async function collectChunks(stream: AsyncIterable<unknown>): Promise<unknown[]> {
+	const chunks: unknown[] = [];
+	for await (const c of stream) chunks.push(c);
+	return chunks;
+}
+
+function doneChunk(chunks: unknown[]): { type: "done"; cost_usd?: number } | undefined {
+	return chunks.find(
+		(c): c is { type: "done"; cost_usd?: number } =>
+			typeof c === "object" && c !== null && (c as { type?: string }).type === "done",
+	);
+}
+
 /** Find the single inference request among all recorded requests. */
 function inferenceRequest(requests: Request[]): Request {
 	const inf = requests.find((r) => {
@@ -226,6 +239,221 @@ describe("GitHubCopilotDriver routing", () => {
 		});
 		await drain(driver.chat({ messages: [{ role: "user", content: "hi" }] }));
 		expect(new URL(inferenceRequest(requests).url).pathname).toBe("/responses");
+	});
+
+	it("stamps the messages route's cost with the 1h cache-write subset at cache_write_1h_price", async () => {
+		// The messages route is tagged usageProvider: "anthropic", so the bridge
+		// extracts the 1h/5m split from providerMetadata.anthropic.usage.cache_creation
+		// and stampCost prices the 1h subset at cache_write_1h_price.
+		const requests: Request[] = [];
+		// A messages SSE whose message_start usage carries a cache_creation split:
+		// 1000 cache-write tokens total, 600 of them 1h.
+		const splitMessagesSse = () => {
+			const events = [
+				`event: message_start\ndata: ${JSON.stringify({
+					type: "message_start",
+					message: {
+						id: "msg_1",
+						type: "message",
+						role: "assistant",
+						model: "claude-haiku-5.5",
+						content: [],
+						stop_reason: null,
+						usage: {
+							input_tokens: 3,
+							output_tokens: 0,
+							cache_creation_input_tokens: 1000,
+							cache_creation: {
+								ephemeral_1h_input_tokens: 600,
+								ephemeral_5m_input_tokens: 400,
+							},
+						},
+					},
+				})}`,
+				`event: content_block_start\ndata: ${JSON.stringify({
+					type: "content_block_start",
+					index: 0,
+					content_block: { type: "text", text: "" },
+				})}`,
+				`event: content_block_delta\ndata: ${JSON.stringify({
+					type: "content_block_delta",
+					index: 0,
+					delta: { type: "text_delta", text: "hi" },
+				})}`,
+				`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
+				`event: message_delta\ndata: ${JSON.stringify({
+					type: "message_delta",
+					delta: { stop_reason: "end_turn" },
+					usage: { output_tokens: 1 },
+				})}`,
+				`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}`,
+			].join("\n\n");
+			return new Response(`${events}\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const req = new Request(input, init);
+			requests.push(req);
+			const url = new URL(req.url);
+			if (url.pathname.endsWith("/models")) {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "claude-haiku-5.5",
+								supported_endpoints: ["/v1/messages"],
+								billing: {
+									token_prices: {
+										batch_size: 1_000_000,
+										default: {
+											input_price: 10,
+											output_price: 50,
+											cache_read_price: 1,
+											cache_write_price: 12.5,
+											cache_write_1h_price: 20,
+										},
+									},
+								},
+							},
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			if (url.pathname.endsWith("/v1/messages")) return splitMessagesSse();
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "claude-haiku-5.5",
+			contextWindow: 200000,
+			account,
+			fetch: fetchImpl,
+		});
+		const chunks = await collectChunks(
+			driver.chat({ messages: [{ role: "user", content: "hi" }] }),
+		);
+		const done = doneChunk(chunks) as
+			| {
+					type: "done";
+					cost_usd?: number;
+					usage: {
+						input_tokens: number;
+						output_tokens: number;
+						cache_read_tokens: number | null;
+						cache_write_tokens: number | null;
+						cache_write_1h_tokens?: number | null;
+					};
+			  }
+			| undefined;
+		// The split rode through to the done usage: 600 of the 1000 cache-write tokens.
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		expect(done?.usage.cache_write_1h_tokens).toBe(600);
+		// Cost derives from the reported usage so it is independent of how the
+		// anthropic adapter reports input_tokens. The 1h subset (600) prices at
+		// cache_write_1h_price (20) and the remaining 400 at cache_write_price (12.5);
+		// if the split were dropped the whole 1000 would price at 12.5 and this would
+		// fail. Units: USD = tokens * price / batch_size(1e6) / 100.
+		const u = done?.usage;
+		const expected =
+			((u?.input_tokens ?? 0) * 10 +
+				(u?.output_tokens ?? 0) * 50 +
+				(u?.cache_read_tokens ?? 0) * 1 +
+				400 * 12.5 +
+				600 * 20) /
+			1_000_000 /
+			100;
+		expect(done?.cost_usd).toBeCloseTo(expected, 14);
+	});
+
+	it("stamps done.cost_usd from the catalog pricing for a fixed model", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-5.6",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({
+				catalog: [
+					{
+						id: "gpt-5.6",
+						supported_endpoints: ["/responses"],
+						billing: {
+							token_prices: {
+								batch_size: 1_000_000,
+								default: { input_price: 100, output_price: 800 },
+							},
+						},
+					},
+				],
+				requests,
+			}),
+		});
+		// responsesSse reports input_tokens: 3, output_tokens: 1.
+		// USD = (3*100 + 1*800) / 1e6 / 100 = 1100 / 1e8.
+		const chunks = await collectChunks(
+			driver.chat({ messages: [{ role: "user", content: "hi" }] }),
+		);
+		const done = doneChunk(chunks);
+		expect(done?.cost_usd).toBeCloseTo(1100 / 1e8, 14);
+	});
+
+	it("stamps done.cost_usd from the selected model's catalog price when model is auto", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "auto",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({
+				auto: {
+					session_token: "sess_1",
+					selected_model: { id: "gpt-5.6" },
+					expires_at: Date.now() / 1000 + 3600,
+				},
+				catalog: [
+					{
+						id: "gpt-5.6",
+						supported_endpoints: ["/responses"],
+						billing: {
+							token_prices: {
+								batch_size: 1_000_000,
+								default: { input_price: 100, output_price: 800 },
+							},
+							auto_discount: 0.5,
+						},
+					},
+				],
+				requests,
+			}),
+		});
+		const chunks = await collectChunks(
+			driver.chat({ messages: [{ role: "user", content: "hi" }] }),
+		);
+		const done = doneChunk(chunks);
+		// auto route applies the 0.5 auto_discount: (1100 / 1e8) * 0.5.
+		expect(done?.cost_usd).toBeCloseTo((1100 / 1e8) * 0.5, 14);
+	});
+
+	it("leaves done.cost_usd unset when the catalog has no pricing for the model", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-5.6",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({
+				catalog: [{ id: "gpt-5.6", supported_endpoints: ["/responses"] }],
+				requests,
+			}),
+		});
+		const chunks = await collectChunks(
+			driver.chat({ messages: [{ role: "user", content: "hi" }] }),
+		);
+		const done = doneChunk(chunks);
+		expect(done?.cost_usd).toBeUndefined();
 	});
 
 	it("routes a gpt-4.1 model over chat completions and uses the name heuristic when absent from the catalog", async () => {

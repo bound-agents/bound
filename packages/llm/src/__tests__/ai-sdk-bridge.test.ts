@@ -3187,6 +3187,7 @@ describe("mapChunks — finish / usage", () => {
 			input_tokens: 500,
 			output_tokens: 50,
 			cache_write_tokens: 1024,
+			cache_write_1h_tokens: null,
 			cache_read_tokens: 100,
 			estimated: false,
 		});
@@ -3250,6 +3251,7 @@ describe("mapChunks — finish / usage", () => {
 			input_tokens: 11,
 			output_tokens: 4,
 			cache_write_tokens: 3506,
+			cache_write_1h_tokens: null,
 			cache_read_tokens: 0,
 			estimated: false,
 		});
@@ -3281,6 +3283,7 @@ describe("mapChunks — finish / usage", () => {
 			input_tokens: 100,
 			output_tokens: 20,
 			cache_write_tokens: null,
+			cache_write_1h_tokens: null,
 			cache_read_tokens: null,
 			estimated: false,
 		});
@@ -3433,6 +3436,303 @@ describe("mapChunks — finish / usage", () => {
 		expect(done?.usage.cache_write_tokens).toBeNull();
 		expect(done?.usage.cache_read_tokens).toBeNull();
 		expect(done?.usage.estimated).toBe(false);
+	});
+
+	it("extracts the 1h cache-write subset from anthropic providerMetadata.usage.cache_creation", async () => {
+		// Live-verified on Copilot /v1/messages: message_stop carries
+		// providerMetadata.anthropic.usage = { ...rawUsage } where rawUsage holds
+		// cache_creation: { ephemeral_1h_input_tokens, ephemeral_5m_input_tokens }
+		// plus the summed cache_creation_input_tokens.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 7019,
+								usage: {
+									cache_creation_input_tokens: 7019,
+									cache_creation: {
+										ephemeral_1h_input_tokens: 7019,
+										ephemeral_5m_input_tokens: 0,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(7019);
+		expect(done?.usage.cache_write_1h_tokens).toBe(7019);
+	});
+
+	it("reports the 1h subset as 0 when anthropic reports a split with no 1h writes", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 500,
+								usage: {
+									cache_creation_input_tokens: 500,
+									cache_creation: {
+										ephemeral_1h_input_tokens: 0,
+										ephemeral_5m_input_tokens: 500,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(500);
+		// 0 = reported with no 1h writes, distinct from null = split unknown.
+		expect(done?.usage.cache_write_1h_tokens).toBe(0);
+	});
+
+	it("reports the 1h subset as null when anthropic reports cache writes without a cache_creation split", async () => {
+		// cacheCreationInputTokens present (total cache write), but usage.cache_creation
+		// absent — the split is unknown, so every cache write bills at the 5m rate.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: { anthropic: { cacheCreationInputTokens: 500 } },
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(500);
+		expect(done?.usage.cache_write_1h_tokens).toBeNull();
+	});
+
+	it("reads the anthropic 1h subset from a custom providerOptionsName mirror key", async () => {
+		// @ai-sdk/anthropic mirrors anthropicMetadata under providerOptionsName when a
+		// custom provider key is used (provider id with a dotted prefix); both the
+		// `anthropic` key and the mirror carry the same usage object. The 1h scan must
+		// find the split under whichever namespace holds it.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							// Total cache-write comes from the standard `anthropic` key.
+							anthropic: { cacheCreationInputTokens: 1000 },
+							// The split rides only on the custom mirror namespace.
+							copilot: {
+								usage: {
+									cache_creation: {
+										ephemeral_1h_input_tokens: 600,
+										ephemeral_5m_input_tokens: 400,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		expect(done?.usage.cache_write_1h_tokens).toBe(600);
+	});
+
+	it("sums the anthropic 1h subset across multiple finish-step events", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "step 1" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 1000,
+								usage: {
+									cache_creation: {
+										ephemeral_1h_input_tokens: 400,
+										ephemeral_5m_input_tokens: 600,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 300,
+								usage: {
+									cache_creation: {
+										ephemeral_1h_input_tokens: 100,
+										ephemeral_5m_input_tokens: 200,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 600, outputTokens: 50 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1300);
+		expect(done?.usage.cache_write_1h_tokens).toBe(500);
+	});
+
+	it("sums the bedrock 1h cacheDetails entries and leaves 5m out of the 1h subset", async () => {
+		// Bedrock reports per-TTL writes as usage.cacheDetails:
+		// Array<{ inputTokens, ttl }>. Sum entries whose ttl is "1h".
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: {
+								usage: {
+									cacheWriteInputTokens: 1000,
+									cacheDetails: [
+										{ inputTokens: 600, ttl: "1h" },
+										{ inputTokens: 400, ttl: "5m" },
+									],
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 100, outputTokens: 10 },
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		expect(done?.usage.cache_write_1h_tokens).toBe(600);
+	});
+
+	it("reports the bedrock 1h subset as null when cacheDetails is absent (split unknown)", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: { usage: { cacheWriteInputTokens: 1000 } },
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 100, outputTokens: 10 },
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		expect(done?.usage.cache_write_1h_tokens).toBeNull();
+	});
+
+	it("reports the 1h subset as null when no finish-step carried provider metadata", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_1h_tokens).toBeNull();
+	});
+
+	it("clamps the 1h subset to the total cache-write count", async () => {
+		// Defensive: a provider that reports a 1h subset larger than the total
+		// (should never happen) must not exceed cache_write_tokens downstream.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 500,
+								usage: {
+									cache_creation: {
+										ephemeral_1h_input_tokens: 999,
+										ephemeral_5m_input_tokens: 0,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(500);
+		expect(done?.usage.cache_write_1h_tokens).toBe(500);
 	});
 
 	it("falls back to char-based estimation when zero-usage + output text", async () => {

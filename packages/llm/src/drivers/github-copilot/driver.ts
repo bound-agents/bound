@@ -63,6 +63,7 @@ import {
 	CopilotCatalog,
 	type CopilotModelEntry,
 	type CopilotRoute,
+	computeCopilotCost,
 	resolveRoute,
 	routeFromModelName,
 } from "./catalog";
@@ -73,7 +74,6 @@ import {
 	resolveInitiator,
 } from "./fetch-wrapper";
 import type { CopilotTokenManager } from "./token-store";
-
 export const PROVIDER_NAME = "github-copilot";
 
 /** The literal that triggers auto-session routing. */
@@ -300,16 +300,30 @@ export class GitHubCopilotDriver implements LLMBackend {
 				providerName: PROVIDER_NAME,
 				modelId,
 				stream: () => this.streamForRoute(route, modelId, apiEndpoint, params, entry),
-				map: { estimateInputFromMessages: params.messages },
+				// The messages route goes to @ai-sdk/anthropic, which surfaces the
+				// cache-write total (and the 1h/5m split) under providerMetadata.anthropic.
+				// Tag it so the bridge extracts both; the structured
+				// inputTokenDetails.cacheWriteTokens path still takes precedence for the
+				// total, so this only adds the split (and a metadata-shaped total
+				// fallback), never changes today's cache_write_tokens for this route.
+				map: {
+					estimateInputFromMessages: params.messages,
+					...(route === "messages" && { usageProvider: "anthropic" as const }),
+				},
 			});
 
+		const routedThroughAuto = configuredModel === AUTO_MODEL;
 		try {
-			yield* withEmptyRetry(runAttempt, {
-				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-				isAborted: () => params.signal?.aborted ?? false,
-				providerName: PROVIDER_NAME,
-				modelId,
-			});
+			yield* this.stampCost(
+				withEmptyRetry(runAttempt, {
+					maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+					isAborted: () => params.signal?.aborted ?? false,
+					providerName: PROVIDER_NAME,
+					modelId,
+				}),
+				entry,
+				routedThroughAuto,
+			);
 		} catch (err) {
 			// A 4xx session error invalidates the cached auto-session so the next
 			// turn re-resolves; surface a catalog/plan 400 as actionable.
@@ -317,6 +331,41 @@ export class GitHubCopilotDriver implements LLMBackend {
 				autoSessions.invalidate(params.threadId);
 			}
 			throw this.mapCopilotError(err, modelId);
+		}
+	}
+
+	/**
+	 * Stamp `cost_usd` on the terminal `done` chunk from the resolved model's
+	 * Copilot catalog pricing. Leaves `cost_usd` unset when the catalog carries
+	 * no pricing for the model, so the precedence helper downstream can fall
+	 * through to operator pricing or 0. The 1h cache-write split rides on
+	 * `done.usage.cache_write_1h_tokens` when the route surfaced it (null via the
+	 * AI SDK today — all cache writes then price at the 5m rate).
+	 */
+	private async *stampCost(
+		stream: AsyncIterable<StreamChunk>,
+		entry: CopilotModelEntry | null,
+		routedThroughAuto: boolean,
+	): AsyncIterable<StreamChunk> {
+		const pricing = entry?.pricing;
+		for await (const chunk of stream) {
+			if (chunk.type === "done" && pricing) {
+				const cost_usd = computeCopilotCost({
+					pricing,
+					usage: {
+						inputTokens: chunk.usage.input_tokens,
+						outputTokens: chunk.usage.output_tokens,
+						cacheReadTokens: chunk.usage.cache_read_tokens ?? 0,
+						cacheWriteTokens: chunk.usage.cache_write_tokens ?? 0,
+						cacheWrite1hTokens: chunk.usage.cache_write_1h_tokens ?? 0,
+					},
+					nowMs: Date.now(),
+					routedThroughAuto,
+				});
+				yield { ...chunk, cost_usd };
+				continue;
+			}
+			yield chunk;
 		}
 	}
 

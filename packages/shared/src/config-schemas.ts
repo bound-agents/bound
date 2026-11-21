@@ -182,6 +182,10 @@ const modelBackendSchema = z
 		price_per_m_input: z.number().min(0).default(0),
 		price_per_m_output: z.number().min(0).default(0),
 		price_per_m_cache_write: z.number().min(0).optional(),
+		// Per-M price for the 1h-TTL cache-write subset. Falls back to
+		// price_per_m_cache_write when unset; the remaining (5m) cache writes always
+		// price at price_per_m_cache_write. See calculateTurnCost.
+		price_per_m_cache_write_1h: z.number().min(0).optional(),
 		price_per_m_cache_read: z.number().min(0).optional(),
 		capabilities: backendCapabilitiesOverrideSchema.optional(),
 		thinking: thinkingConfigSchema.optional(),
@@ -351,6 +355,7 @@ export const modelBackendsSchema = z
 				if (b.price_per_m_input !== 0) return false;
 				if (b.price_per_m_output !== 0) return false;
 				if (b.price_per_m_cache_write !== undefined) return false;
+				if (b.price_per_m_cache_write_1h !== undefined) return false;
 				if (b.price_per_m_cache_read !== undefined) return false;
 				return true;
 			});

@@ -571,6 +571,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				price_per_m_output: b.price_per_m_output,
 				price_per_m_cache_read: b.price_per_m_cache_read,
 				price_per_m_cache_write: b.price_per_m_cache_write,
+				price_per_m_cache_write_1h: b.price_per_m_cache_write_1h,
 			})),
 			siteId: appContext.siteId,
 			// Sync server config — forwarded to the webhooks route so it can

@@ -115,6 +115,13 @@ interface FinishState {
 	 * reported a value. See readStepCacheWriteTokens.
 	 */
 	cacheWriteTokens?: number | null;
+	/**
+	 * The 1h-TTL subset of `cacheWriteTokens`, summed across finish-steps. Null
+	 * when no step reported the split (unknown → everything bills at the 5m
+	 * rate); 0 when a step reported the split but no 1h writes. See
+	 * readStepCacheWrite1hTokens.
+	 */
+	cacheWrite1hTokens?: number | null;
 }
 
 /**
@@ -134,6 +141,51 @@ function readStepCacheWriteTokens(
 	}
 	if (usageProvider === "anthropic") {
 		return (meta.anthropic?.cacheCreationInputTokens as number | undefined) ?? null;
+	}
+	return null;
+}
+
+/**
+ * Pull a step's 1h-TTL cache-write subset out of providerMetadata. Returns null
+ * when the provider did not report the split (distinct from 0 = split reported
+ * with no 1h writes), so the caller can forward null → "split unknown, bill the
+ * whole cache-write total at the 5m rate" versus 0 → "no 1h writes this step".
+ *
+ * Anthropic surfaces the split on the raw usage object under
+ * `providerMetadata.<key>.usage.cache_creation.ephemeral_1h_input_tokens` — the
+ * key is `anthropic`, or the SDK's custom `providerOptionsName` mirror when a
+ * dotted provider id is used (both carry the same metadata). Bedrock surfaces
+ * per-TTL writes as `providerMetadata.bedrock.usage.cacheDetails`
+ * (Array<{ inputTokens, ttl }>); the 1h subset sums entries whose ttl is "1h".
+ */
+function readStepCacheWrite1hTokens(
+	meta: ProviderMetadata | undefined,
+	usageProvider: "bedrock" | "anthropic" | null | undefined,
+): number | null {
+	if (!meta) return null;
+	if (usageProvider === "bedrock") {
+		const bedrockUsage = meta.bedrock?.usage as
+			| { cacheDetails?: Array<{ inputTokens?: number; ttl?: string }> }
+			| undefined;
+		const details = bedrockUsage?.cacheDetails;
+		if (!Array.isArray(details)) return null;
+		let sum = 0;
+		for (const d of details) {
+			if (d?.ttl === "1h") sum += d.inputTokens ?? 0;
+		}
+		return sum;
+	}
+	if (usageProvider === "anthropic") {
+		// The raw usage mirror lives under `anthropic` or, when the SDK used a
+		// custom provider key, under whatever that key is. Scan each metadata
+		// namespace for a usage.cache_creation carrying the ephemeral split.
+		for (const ns of Object.values(meta)) {
+			const usage = (ns as { usage?: { cache_creation?: { ephemeral_1h_input_tokens?: number } } })
+				?.usage;
+			const oneH = usage?.cache_creation?.ephemeral_1h_input_tokens;
+			if (typeof oneH === "number") return oneH;
+		}
+		return null;
 	}
 	return null;
 }
@@ -188,6 +240,12 @@ export async function* mapChunks(
 	// tokens_cache_write = NULL because of this; summing recovers them.
 	let cacheWriteAccum = 0;
 	let cacheWriteSeen = false;
+	// The 1h-TTL subset of cache-write tokens, summed across finish-steps with
+	// its own seen flag so null (no step reported the split) stays distinct from
+	// 0 (split reported, no 1h writes). Null downstream means every cache-write
+	// token bills at the 5m rate.
+	let cacheWrite1hAccum = 0;
+	let cacheWrite1hSeen = false;
 
 	for await (const raw of stream) {
 		const part = raw as { type: string } & Record<string, unknown>;
@@ -322,6 +380,11 @@ export async function* mapChunks(
 					cacheWriteAccum += stepCacheWrite;
 					cacheWriteSeen = true;
 				}
+				const step1h = readStepCacheWrite1hTokens(meta, opts.usageProvider);
+				if (step1h != null) {
+					cacheWrite1hAccum += step1h;
+					cacheWrite1hSeen = true;
+				}
 				break;
 			}
 			case "finish": {
@@ -352,6 +415,7 @@ export async function* mapChunks(
 						{
 							totalUsage,
 							cacheWriteTokens: cacheWriteSeen ? cacheWriteAccum : null,
+							cacheWrite1hTokens: cacheWrite1hSeen ? cacheWrite1hAccum : null,
 						},
 						{ text: outputText, reasoning: reasoningText, toolInput: toolInputText },
 						opts,
@@ -425,6 +489,7 @@ interface DoneUsage {
 	input_tokens: number;
 	output_tokens: number;
 	cache_write_tokens: number | null;
+	cache_write_1h_tokens: number | null;
 	cache_read_tokens: number | null;
 	estimated: boolean;
 }
@@ -498,6 +563,10 @@ function extractUsage(
 		input_tokens: inputTokens,
 		output_tokens: outputTokens,
 		cache_write_tokens: cacheWriteTokens,
+		cache_write_1h_tokens:
+			finish.cacheWrite1hTokens != null
+				? Math.min(finish.cacheWrite1hTokens, cacheWriteTokens ?? finish.cacheWrite1hTokens)
+				: null,
 		cache_read_tokens: cacheReadTokens,
 		estimated,
 	};

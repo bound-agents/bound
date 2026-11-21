@@ -269,6 +269,7 @@ export const streamEndPayloadSchema = z.object({
 		input_tokens: z.number(),
 		output_tokens: z.number(),
 		cache_write_tokens: z.number().nullable().optional(),
+		cache_write_1h_tokens: z.number().nullable().optional(),
 		cache_read_tokens: z.number().nullable().optional(),
 	}),
 });
@@ -333,6 +334,7 @@ export const wsStreamChunkSchema = z.discriminatedUnion("type", [
 			input_tokens: z.number(),
 			output_tokens: z.number(),
 			cache_write_tokens: z.number().nullable(),
+			cache_write_1h_tokens: z.number().nullable().optional(),
 			cache_read_tokens: z.number().nullable(),
 			estimated: z.boolean(),
 		}),

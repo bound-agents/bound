@@ -21,6 +21,8 @@ export interface ParsedResponse {
 		inputTokens: number;
 		outputTokens: number;
 		cacheWriteTokens: number | null;
+		/** 1h-TTL subset of cacheWriteTokens; null when the split is unknown. */
+		cacheWrite1hTokens: number | null;
 		cacheReadTokens: number | null;
 		usageEstimated: boolean;
 	};
@@ -81,6 +83,7 @@ export function parseResponseChunks(
 	let inputTokens = 0;
 	let outputTokens = 0;
 	let cacheWriteTokens: number | null = null;
+	let cacheWrite1hTokens: number | null = null;
 	let cacheReadTokens: number | null = null;
 	let usageEstimated = false;
 	let costUsdFromHub: number | null = null;
@@ -136,6 +139,7 @@ export function parseResponseChunks(
 				inputTokens = chunk.usage.input_tokens;
 				outputTokens = chunk.usage.output_tokens;
 				cacheWriteTokens = chunk.usage.cache_write_tokens;
+				cacheWrite1hTokens = chunk.usage.cache_write_1h_tokens ?? null;
 				cacheReadTokens = chunk.usage.cache_read_tokens;
 				usageEstimated = chunk.usage.estimated;
 				costUsdFromHub = chunk.cost_usd ?? null;
@@ -167,6 +171,7 @@ export function parseResponseChunks(
 			inputTokens,
 			outputTokens,
 			cacheWriteTokens,
+			cacheWrite1hTokens,
 			cacheReadTokens,
 			usageEstimated,
 		},

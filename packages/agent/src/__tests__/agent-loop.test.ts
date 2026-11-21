@@ -1405,15 +1405,15 @@ describe("MainAgentLoop", () => {
 		expect(turns[0].cost_usd).toBeCloseTo(0.000105, 8);
 	});
 
-	it("treats hub-stamped cost_usd of 0 as authoritative (does not fall back)", async () => {
-		// Edge case: hub explicitly stamps 0 (e.g. its own backends list is
-		// missing pricing for the model). The `??` operator falls through
-		// only on null/undefined, NOT on a real 0. This pins that contract:
-		// an explicit 0 from the hub is the recorded value, even if the
-		// spoke could compute something positive locally.
+	it("records operator pricing over a local provider-stamped cost (local resolution)", async () => {
+		// Defect fix: for a LOCAL resolution the done-chunk cost is a provider-reported
+		// value (e.g. the Copilot driver's catalog price), NOT a hub-applied one. When
+		// the operator backend carries explicit pricing it must win over that provider
+		// cost — the opposite of letting the stamped value through verbatim. Here the
+		// driver stamps 0.99 but the backend's explicit 3.0/15.0 compute 0.000105.
 		const mockBackend = new MockLLMBackend();
 		mockBackend.pushResponse(async function* () {
-			yield { type: "text" as const, content: "free response" };
+			yield { type: "text" as const, content: "priced response" };
 			yield {
 				type: "done" as const,
 				usage: {
@@ -1423,13 +1423,11 @@ describe("MainAgentLoop", () => {
 					cache_read_tokens: null,
 					estimated: false,
 				},
-				cost_usd: 0,
+				cost_usd: 0.99,
 			};
 		});
 
 		const mockBash = createMockSandbox();
-		// Spoke has pricing locally — would compute non-zero — but must
-		// honor the hub's 0.
 		const ctx = {
 			db,
 			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
@@ -1466,7 +1464,68 @@ describe("MainAgentLoop", () => {
 			.all(threadId) as Array<{ cost_usd: number }>;
 
 		expect(turns.length).toBe(1);
-		expect(turns[0].cost_usd).toBe(0);
+		// Operator pricing wins: input 10 × $3/M + output 5 × $15/M = 0.000105, not 0.99.
+		expect(turns[0].cost_usd).toBeCloseTo(0.000105, 8);
+	});
+
+	it("records a local provider-stamped cost when the backend has no explicit pricing", async () => {
+		// For a LOCAL resolution whose backend carries no explicit pricing (all-zero
+		// static prices, no price(turn) callback), the provider-reported done-chunk
+		// cost falls through and is recorded — including an explicit 0.42.
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "catalog-priced response" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+				cost_usd: 0.42,
+			};
+		});
+
+		const mockBash = createMockSandbox();
+		// Backend present (so resolution is local) but with no price fields at all.
+		const ctx = {
+			db,
+			logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+			eventBus: { on: () => {}, off: () => {}, emit: () => {} },
+			hostName: "test-host",
+			siteId: "test-site-id",
+			config: {
+				modelBackends: {
+					backends: [
+						{
+							id: "claude-opus",
+							provider: "anthropic",
+							model: "claude-opus",
+							context_window: 8000,
+							tier: 1,
+						},
+					],
+					default: "claude-opus",
+				},
+			},
+		} as unknown as AppContext;
+
+		const agentLoop = new MainAgentLoop(ctx, mockBash, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+
+		await agentLoop.run();
+
+		const turns = db
+			.query("SELECT cost_usd FROM turns WHERE thread_id = ?")
+			.all(threadId) as Array<{ cost_usd: number }>;
+
+		expect(turns.length).toBe(1);
+		// No explicit operator pricing → the provider-reported cost is recorded verbatim.
+		expect(turns[0].cost_usd).toBe(0.42);
 	});
 
 	// Bug #10: turns table must record the resolved model_id, not "unknown"

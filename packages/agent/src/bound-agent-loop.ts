@@ -83,13 +83,13 @@ import {
 
 import {
 	buildCommandOutput,
-	calculateTurnCost,
 	clampMaxOutputTokens,
 	createFileRefResolver,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
 	insertThreadMessage,
 	parseContentBlocks,
+	resolveTurnCost,
 } from "./agent-loop-utils";
 import type { selectCacheTtl } from "./cache-prediction";
 import { applyActualUsageToContextDebug } from "./context-assembly";
@@ -1024,9 +1024,31 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				this.config.modelId || metrics.modelId || "unknown",
 			);
 			const backends = this.ctx.config?.modelBackends?.backends ?? [];
+			// Cost precedence (CONTRIBUTING.md invariant #17). A done-chunk cost can
+			// come from two places: a relay hub (remote resolution) that already
+			// applied the operator-pricing-over-provider precedence before stamping,
+			// OR a local provider driver (e.g. Copilot) that stamped its own catalog
+			// cost. For a REMOTE turn the relayed cost is authoritative and recorded
+			// verbatim — including an explicit 0 — since the executing host owns the
+			// pricing config this (often hub-only) spoke may lack. For a LOCAL turn the
+			// stamped cost is just a provider-reported value, so resolveTurnCost lets
+			// explicit operator pricing win over it (explicit pricing > provider cost
+			// > 0); absent operator pricing it falls through to the provider's cost.
 			const cost_usd =
-				metrics.response.costUsdFromHub ??
-				calculateTurnCost(resolvedModelId, metrics.response.usage, backends);
+				this.lastModelResolution?.kind === "remote"
+					? (metrics.response.costUsdFromHub ??
+						resolveTurnCost({
+							modelId: resolvedModelId,
+							usage: metrics.response.usage,
+							backends,
+							providerCostUsd: undefined,
+						}))
+					: resolveTurnCost({
+							modelId: resolvedModelId,
+							usage: metrics.response.usage,
+							backends,
+							providerCostUsd: metrics.response.costUsdFromHub,
+						});
 			const turnId = recordTurn(
 				this.ctx.db,
 				{

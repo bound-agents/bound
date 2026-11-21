@@ -9,11 +9,19 @@ export interface DynamicPriceInput {
 	outputTokens: number;
 	cacheReadTokens: number;
 	cacheWriteTokens: number;
+	/**
+	 * The 1h-TTL subset of `cacheWriteTokens` (the remainder is billed at the
+	 * 5m rate). 0 when the split is unknown or absent — callers that ignore it
+	 * compute exactly what they did before this field existed.
+	 */
+	cacheWrite1hTokens: number;
 	pricesPerM: {
 		input: number;
 		output: number;
 		cacheRead: number;
 		cacheWrite: number;
+		/** Per-M price for the 1h cache-write subset; falls back to `cacheWrite`. */
+		cacheWrite1h: number;
 	};
 }
 
@@ -90,7 +98,8 @@ function sampleInput(modelId: string): DynamicPriceInput {
 		outputTokens: 1,
 		cacheReadTokens: 0,
 		cacheWriteTokens: 0,
-		pricesPerM: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+		cacheWrite1hTokens: 0,
+		pricesPerM: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 },
 	};
 }
 
@@ -126,4 +135,13 @@ export function calculateDynamicPrice(
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
+}
+
+/**
+ * True when a compiled price(turn) callback is active for this model. Used by
+ * the cost-precedence helper to decide whether the operator has declared
+ * explicit pricing (which wins over a provider-reported cost).
+ */
+export function hasDynamicPrice(modelId: string): boolean {
+	return activeSources.has(modelId);
 }

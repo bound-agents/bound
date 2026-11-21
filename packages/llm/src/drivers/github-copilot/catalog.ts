@@ -19,6 +19,29 @@
 
 export type CopilotRoute = "messages" | "responses" | "chat";
 
+/** Per-row price fields (default or long_context). All USD-per-token after the
+ * batch_size/100 conversion is applied by computeCopilotCost. */
+export interface CopilotPriceRow {
+	inputPrice: number;
+	outputPrice: number;
+	cacheReadPrice: number;
+	cacheWritePrice: number;
+	/** Price for the 1h cache-write subset; falls back to cacheWritePrice when absent. */
+	cacheWrite1hPrice?: number;
+	/** Tokens threshold above which long_context pricing applies (default row only). */
+	maxPromptTokens?: number;
+}
+
+/** Parsed `billing.token_prices` + discounts for one catalog entry. */
+export interface CopilotPricing {
+	batchSize: number;
+	default: CopilotPriceRow;
+	longContext?: CopilotPriceRow;
+	/** Fractional discount (e.g. 0.1 = 10% off) applied only on `model: "auto"` turns. */
+	autoDiscount?: number;
+	promo?: { discountPercent: number; endsAt: string };
+}
+
 /** The subset of a catalog entry we read. */
 export interface CopilotModelEntry {
 	id: string;
@@ -32,7 +55,19 @@ export interface CopilotModelEntry {
 	reasoningEfforts?: string[];
 	/** True when every token price is 0 (Free-callable). */
 	zeroPriced?: boolean;
+	/** Parsed structured pricing from billing.token_prices; absent when billing has none. */
+	pricing?: CopilotPricing;
 	policyState?: string;
+}
+
+/** Raw per-row price shape under billing.token_prices.{default,long_context}. */
+interface RawPriceRow {
+	input_price?: number;
+	output_price?: number;
+	cache_read_price?: number;
+	cache_write_price?: number;
+	cache_write_1h_price?: number;
+	max_prompt_tokens?: number;
 }
 
 /** Raw JSON shape of one `{api}/models` entry. */
@@ -50,7 +85,18 @@ interface RawModelEntry {
 	};
 	policy?: { state?: string };
 	model_picker_enabled?: boolean;
-	billing?: { token_prices?: Record<string, number> & { batch_size?: number } };
+	billing?: {
+		// Legacy flat map (batch_size + numeric prices keyed by name) OR the
+		// structured {batch_size, default, long_context} shape. Both appear in
+		// the wild; parseEntry handles each.
+		token_prices?: Record<string, unknown> & {
+			batch_size?: number;
+			default?: RawPriceRow;
+			long_context?: RawPriceRow;
+		};
+		auto_discount?: number;
+		promo?: { discount_percent?: number; ends_at?: string };
+	};
 }
 
 interface RawModelsResponse {
@@ -60,15 +106,69 @@ interface RawModelsResponse {
 /** Default catalog cache lifetime (1 hour). */
 export const CATALOG_TTL_MS = 60 * 60_000;
 
+function parsePriceRow(raw: RawPriceRow | undefined): CopilotPriceRow | null {
+	if (!raw) return null;
+	return {
+		inputPrice: raw.input_price ?? 0,
+		outputPrice: raw.output_price ?? 0,
+		cacheReadPrice: raw.cache_read_price ?? 0,
+		cacheWritePrice: raw.cache_write_price ?? 0,
+		...(raw.cache_write_1h_price !== undefined && {
+			cacheWrite1hPrice: raw.cache_write_1h_price,
+		}),
+		...(raw.max_prompt_tokens !== undefined && { maxPromptTokens: raw.max_prompt_tokens }),
+	};
+}
+
+/**
+ * Parse the structured `billing.token_prices` shape + discounts into
+ * `CopilotPricing`. Returns null when billing carries no structured `default`
+ * row (legacy flat-map billing, or no billing at all).
+ */
+function parsePricing(billing: RawModelEntry["billing"]): CopilotPricing | null {
+	const tp = billing?.token_prices;
+	const defaultRow = parsePriceRow(tp?.default);
+	if (!tp || !defaultRow) return null;
+	const longContext = parsePriceRow(tp.long_context);
+	const pricing: CopilotPricing = {
+		batchSize: tp.batch_size ?? 1_000_000,
+		default: defaultRow,
+		...(longContext && { longContext }),
+	};
+	if (typeof billing?.auto_discount === "number") {
+		pricing.autoDiscount = billing.auto_discount;
+	}
+	if (
+		typeof billing?.promo?.discount_percent === "number" &&
+		typeof billing.promo.ends_at === "string"
+	) {
+		pricing.promo = {
+			discountPercent: billing.promo.discount_percent,
+			endsAt: billing.promo.ends_at,
+		};
+	}
+	return pricing;
+}
+
 function parseEntry(raw: RawModelEntry): CopilotModelEntry | null {
 	if (!raw.id) return null;
 	const prices = raw.billing?.token_prices;
-	// Free-callable iff every numeric price is 0 (batch_size is metadata, not a
-	// price — exclude it). Absent billing → treat as NOT known-zero-priced.
+	const pricing = parsePricing(raw.billing);
+	// Free-callable detection. For the structured shape, every default-row price
+	// must be 0; for the legacy flat map, every numeric price must be 0
+	// (batch_size is metadata, not a price). Absent billing → not known-zero.
 	let zeroPriced: boolean | undefined;
-	if (prices) {
+	if (pricing) {
+		const d = pricing.default;
+		zeroPriced =
+			d.inputPrice === 0 &&
+			d.outputPrice === 0 &&
+			d.cacheReadPrice === 0 &&
+			d.cacheWritePrice === 0;
+	} else if (prices) {
 		zeroPriced = Object.entries(prices).every(
-			([key, value]) => key === "batch_size" || value === 0,
+			([key, value]) =>
+				key === "batch_size" || key === "default" || key === "long_context" || value === 0,
 		);
 	}
 	return {
@@ -81,8 +181,67 @@ function parseEntry(raw: RawModelEntry): CopilotModelEntry | null {
 		supportsVision: raw.capabilities?.supports?.vision,
 		reasoningEfforts: raw.capabilities?.supports?.reasoning_effort,
 		...(zeroPriced !== undefined && { zeroPriced }),
+		...(pricing && { pricing }),
 		policyState: raw.policy?.state,
 	};
+}
+
+/** Token usage for one turn, fed to computeCopilotCost. */
+export interface CopilotCostUsage {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	/** 1h-TTL subset of cacheWriteTokens; 0/absent when unknown (all billed at 5m). */
+	cacheWrite1hTokens?: number;
+}
+
+export interface ComputeCopilotCostInput {
+	pricing: CopilotPricing;
+	usage: CopilotCostUsage;
+	/** Wall-clock for promo expiry; injected so the computation stays pure. */
+	nowMs: number;
+	/** True only when the turn was routed through `model: "auto"`. */
+	routedThroughAuto?: boolean;
+}
+
+/**
+ * Compute a turn's USD cost from a Copilot catalog pricing block and token
+ * usage. Unit: USD = tokens * price / batchSize / 100 (verified against
+ * Anthropic list prices — see catalog.test.ts). The long_context row applies
+ * when (input + cache_read + cache_write) exceeds default.maxPromptTokens and a
+ * long_context row exists. The auto discount applies only on `auto`-routed
+ * turns; the promo discount only while now < promo.endsAt. Discounts stack
+ * multiplicatively.
+ */
+export function computeCopilotCost(input: ComputeCopilotCostInput): number {
+	const { pricing, usage, nowMs, routedThroughAuto } = input;
+	const promptTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+	const maxPrompt = pricing.default.maxPromptTokens;
+	const useLong =
+		pricing.longContext !== undefined && maxPrompt !== undefined && promptTokens > maxPrompt;
+	const row = useLong && pricing.longContext ? pricing.longContext : pricing.default;
+
+	const cacheWrite1h = Math.min(usage.cacheWrite1hTokens ?? 0, usage.cacheWriteTokens);
+	const cacheWrite5m = usage.cacheWriteTokens - cacheWrite1h;
+	const cacheWrite1hPrice = row.cacheWrite1hPrice ?? row.cacheWritePrice;
+
+	const perMillion =
+		usage.inputTokens * row.inputPrice +
+		usage.outputTokens * row.outputPrice +
+		usage.cacheReadTokens * row.cacheReadPrice +
+		cacheWrite5m * row.cacheWritePrice +
+		cacheWrite1h * cacheWrite1hPrice;
+
+	let cost = perMillion / pricing.batchSize / 100;
+
+	if (routedThroughAuto && typeof pricing.autoDiscount === "number") {
+		cost *= 1 - pricing.autoDiscount;
+	}
+	if (pricing.promo && nowMs < Date.parse(pricing.promo.endsAt)) {
+		cost *= 1 - pricing.promo.discountPercent / 100;
+	}
+	return cost;
 }
 
 /**
