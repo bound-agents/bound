@@ -246,6 +246,7 @@ to `none` when the model offers it. On the Responses route an active effort also
 `store: false` with encrypted reasoning content so replayed reasoning rides inline.
 
 Pricing is read from Copilot's own catalog: a `github-copilot` turn's cost is computed from the resolved model's `billing.token_prices` (for `model: "auto"`, the model Copilot actually selected), so the operator backend need not copy per-token prices by hand. The catalog's `long_context` rates apply automatically once a turn's prompt exceeds the model's `max_prompt_tokens`; a `1h`-TTL cache-write price, when the catalog carries one, bills the 1h subset of cache writes separately. The Auto pool's discount applies only to `model: "auto"` turns, and a time-boxed promo discount applies only before its end date. Setting any `price_per_m_*` field (or a `price(turn)` callback) on the backend overrides the catalog entirely — explicit operator pricing always wins; absent both, a turn with no catalog pricing records `0`.
+
 ---
 
 ## `network.js` / `network.json`
