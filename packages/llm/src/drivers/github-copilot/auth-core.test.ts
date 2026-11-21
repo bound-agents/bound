@@ -290,3 +290,83 @@ describe("isExpired", () => {
 		expect(isExpired(tokens, 1_000_000 - 300_001)).toBe(false);
 	});
 });
+
+describe("startDeviceFlow error paths", () => {
+	it("throws when the device-code response omits required fields", async () => {
+		// 200 OK but no device_code/user_code/verification_uri — a malformed body
+		// must not silently yield an unusable grant.
+		const deps = { fetch: jsonFetch(200, { user_code: "WDJB-MJHT" }) };
+		await expect(startDeviceFlow(deps)).rejects.toThrow(/missing required fields/);
+	});
+});
+
+describe("pollDeviceToken error paths", () => {
+	it("throws on a non-OK poll with no parseable error body", async () => {
+		// No json.error (so the pending/slow_down/terminal branches are skipped),
+		// non-200 status → the status-line throw fires.
+		const deps = { fetch: jsonFetch(500, {}) };
+		await expect(
+			pollDeviceToken(deps, { deviceCode: "dev-123", currentIntervalSeconds: 5 }),
+		).rejects.toThrow(/device token poll failed: 500/);
+	});
+
+	it("throws when a 200 success body carries no access_token", async () => {
+		// 200, no error, but access_token absent — not a usable completion.
+		const deps = { fetch: jsonFetch(200, { token_type: "bearer" }) };
+		await expect(
+			pollDeviceToken(deps, { deviceCode: "dev-123", currentIntervalSeconds: 5 }),
+		).rejects.toThrow(/device token response has no access_token/);
+	});
+});
+
+describe("refreshTokens error paths", () => {
+	it("throws on a non-OK refresh with no error body", async () => {
+		// No json.error → skip the error-body branch; non-200 → status-line throw.
+		const deps = { fetch: jsonFetch(502, {}) };
+		const current: CopilotTokens = {
+			accessToken: "ghu_old",
+			refreshToken: "ghr_old",
+			accessTokenExpiresAt: 0,
+		};
+		await expect(refreshTokens(deps, current)).rejects.toThrow(/token refresh failed: 502/);
+	});
+
+	it("throws when a 200 refresh body carries no access_token", async () => {
+		// 200, no error, but access_token absent: refreshTokens must reject rather
+		// than build a bundle with an empty access token.
+		const deps = { fetch: jsonFetch(200, { refresh_token: "ghr_new" }) };
+		const current: CopilotTokens = {
+			accessToken: "ghu_old",
+			refreshToken: "ghr_old",
+			accessTokenExpiresAt: 0,
+		};
+		await expect(refreshTokens(deps, current)).rejects.toThrow(
+			/token refresh response has no access_token/,
+		);
+	});
+});
+
+describe("fetchAccountInfo error paths", () => {
+	it("throws with the status line and detail text on a non-OK account lookup", async () => {
+		// A non-JSON 401 body: the stub returns text, and the thrown message must
+		// carry both the status and the detail so a plan/auth failure is legible.
+		const deps = {
+			fetch: (async () =>
+				new Response("token revoked", {
+					status: 401,
+					statusText: "Unauthorized",
+					headers: { "content-type": "text/plain" },
+				})) as typeof fetch,
+		};
+		await expect(fetchAccountInfo(deps, "ghu_abc")).rejects.toThrow(
+			/Copilot account lookup failed: 401 Unauthorized token revoked/,
+		);
+	});
+
+	it("throws when the account lookup returns no endpoints.api", async () => {
+		// 200 with chat enabled but no endpoints.api — there is no base URL to ride,
+		// so the driver must refuse rather than hardcode a host.
+		const deps = { fetch: jsonFetch(200, { chat_enabled: true, endpoints: {} }) };
+		await expect(fetchAccountInfo(deps, "ghu_abc")).rejects.toThrow(/returned no endpoints\.api/);
+	});
+});

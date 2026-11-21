@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { CopilotAccountInfo } from "./auth-core";
-import { GitHubCopilotDriver, messagesHaveImages } from "./driver";
+import { GitHubCopilotDriver, messagesHaveImages, resolveReasoningEffort } from "./driver";
 import type { CopilotTokenManager } from "./token-store";
 
 const account: CopilotAccountInfo = {
@@ -541,5 +541,256 @@ describe("GitHubCopilotDriver reasoning effort (Chat route)", () => {
 		const inf = inferenceRequest(requests);
 		const body = JSON.parse(await inf.text()) as { reasoning_effort?: string };
 		expect(body.reasoning_effort).toBeUndefined();
+	});
+});
+
+describe("messagesHaveImages document file_ref", () => {
+	it("detects an image-media document file_ref as a vision request", () => {
+		// A document part whose source is a file_ref resolving to image media is a
+		// vision request even though its block type is "document", not "image".
+		expect(
+			messagesHaveImages([
+				{
+					role: "user",
+					content: [
+						{
+							type: "document",
+							source: { type: "file_ref", file_id: "f1", media_type: "image/png" },
+						} as unknown as ContentBlock,
+					],
+				},
+			]),
+		).toBe(true);
+	});
+
+	it("does not treat a non-image document file_ref as a vision request", () => {
+		// A document file_ref resolving to a PDF is not a vision request.
+		expect(
+			messagesHaveImages([
+				{
+					role: "user",
+					content: [
+						{
+							type: "document",
+							source: { type: "file_ref", file_id: "f1", media_type: "application/pdf" },
+						} as unknown as ContentBlock,
+					],
+				},
+			]),
+		).toBe(false);
+	});
+});
+
+describe("resolveReasoningEffort", () => {
+	it("passes a canonical effort through when the model advertises no list", () => {
+		// No advertised reasoning_effort list: only the canonical low/medium/high
+		// are allowed through.
+		expect(resolveReasoningEffort({ effort: "medium" }, undefined)).toBe("medium");
+		expect(resolveReasoningEffort({ effort: "low" }, [])).toBe("low");
+	});
+
+	it("drops a non-canonical effort when the model advertises no list", () => {
+		// "xhigh" is not in the canonical trio and there is no advertised list to
+		// validate it against, so it is omitted from the wire.
+		expect(resolveReasoningEffort({ effort: "xhigh" }, undefined)).toBeUndefined();
+	});
+
+	it("returns undefined when no effort is requested and thinking is not disabled", () => {
+		expect(resolveReasoningEffort({}, ["low", "medium", "high"])).toBeUndefined();
+	});
+
+	it("does not map thinking:disabled to none when the model omits none", () => {
+		// disabled only maps to "none" when the model lists "none"; absent that, and
+		// with no explicit effort, nothing is forwarded.
+		expect(
+			resolveReasoningEffort({ thinking: { type: "disabled" } }, ["low", "medium", "high"]),
+		).toBeUndefined();
+	});
+
+	it("returns undefined for effort:max when no weaker tier is advertised", () => {
+		// "max" with neither "max" nor any weaker ranked level listed resolves to
+		// nothing rather than inventing a tier.
+		expect(resolveReasoningEffort({ effort: "max" }, ["unknown-tier"])).toBeUndefined();
+	});
+});
+
+describe("GitHubCopilotDriver auto selection from array content", () => {
+	it("extracts the last user text from array content for the /auto prompt", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "auto",
+			contextWindow: 200000,
+			account,
+			now: () => 0,
+			fetch: makeFetch({
+				catalog: [{ id: "mai-code-2-flash", supported_endpoints: ["/responses"] }],
+				auto: {
+					session_token: "sess-xyz",
+					selected_model: { id: "mai-code-2-flash" },
+					expires_at: 3600,
+				},
+				requests,
+			}),
+		});
+		// The last user turn carries array content with text blocks; lastUserText
+		// must join them into the /auto prompt rather than sending an empty string.
+		await drain(
+			driver.chat({
+				threadId: "t-arr",
+				messages: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: "first line" },
+							{ type: "text", text: "second line" },
+						],
+					},
+				],
+			}),
+		);
+		const auto = requests.find((r) => new URL(r.url).pathname.endsWith("/auto"));
+		if (!auto) throw new Error("no /auto request issued");
+		const body = JSON.parse(await auto.text()) as { prompt?: string };
+		expect(body.prompt).toBe("first line\nsecond line");
+	});
+});
+
+describe("GitHubCopilotDriver account resolution", () => {
+	it("throws when constructed with neither an account nor a resolver", async () => {
+		// The default resolver must refuse rather than silently proceed without a
+		// validated endpoint.
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-4.1",
+			contextWindow: 128000,
+			fetch: makeFetch({ requests: [] }),
+		});
+		await expect(
+			drain(driver.chat({ messages: [{ role: "user", content: "hi" }] })),
+		).rejects.toThrow(/requires account or resolveAccount/);
+	});
+
+	it("resets endpoint state after a failed account lookup so the next turn retries", async () => {
+		let calls = 0;
+		const resolveAccount = async (): Promise<CopilotAccountInfo> => {
+			calls++;
+			if (calls === 1) throw new Error("transient account lookup failure");
+			return account;
+		};
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-4.1",
+			contextWindow: 128000,
+			resolveAccount,
+			fetch: makeFetch({ catalog: [], requests: [] }),
+		});
+		// First turn fails in the endpoint resolver; the driver must clear its cached
+		// endpoint promise so a second turn re-resolves rather than replaying the
+		// rejected promise forever.
+		await expect(
+			drain(driver.chat({ messages: [{ role: "user", content: "hi" }] })),
+		).rejects.toThrow(/transient account lookup failure/);
+		await drain(driver.chat({ messages: [{ role: "user", content: "hi" }] }));
+		expect(calls).toBe(2);
+	});
+});
+
+describe("GitHubCopilotDriver error mapping", () => {
+	/** A fake fetch that answers control routes but returns a 4xx on inference. */
+	function erroringFetch(opts: {
+		requests: Request[];
+		inferenceBody: unknown;
+		auto?: { session_token: string; selected_model: { id: string }; expires_at: number };
+	}): typeof fetch {
+		return (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const req = new Request(input, init);
+			opts.requests.push(req);
+			const url = new URL(req.url);
+			if (url.pathname.endsWith("/models")) {
+				return new Response(JSON.stringify({ data: [] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			if (url.pathname.endsWith("/auto")) {
+				return new Response(JSON.stringify(opts.auto ?? {}), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			// Inference route (chat completions / responses): a 400 with a plan error.
+			return new Response(JSON.stringify(opts.inferenceBody), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			});
+		}) as typeof fetch;
+	}
+
+	it("rewrites a model_not_supported 400 into an actionable plan error", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-4.1",
+			contextWindow: 128000,
+			account,
+			fetch: erroringFetch({
+				requests,
+				inferenceBody: { error: { message: "model_not_supported", code: "model_not_supported" } },
+			}),
+		});
+		// A 400 whose message names model_not_supported must surface as the
+		// actionable "unavailable for this plan" message, not the raw API error.
+		await expect(
+			drain(driver.chat({ model: "gpt-4.1", messages: [{ role: "user", content: "hi" }] })),
+		).rejects.toThrow(/unavailable for this plan/);
+	});
+
+	it("passes a non-plan 400 through unchanged", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-4.1",
+			contextWindow: 128000,
+			account,
+			fetch: erroringFetch({
+				requests,
+				inferenceBody: { error: { message: "context length exceeded" } },
+			}),
+		});
+		// A 400 that is not a plan/model problem is not rewritten with the plan hint.
+		await expect(
+			drain(driver.chat({ model: "gpt-4.1", messages: [{ role: "user", content: "hi" }] })),
+		).rejects.not.toThrow(/unavailable for this plan/);
+	});
+
+	it("invalidates the auto-session on a 4xx so the next turn re-resolves", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "auto",
+			contextWindow: 200000,
+			account,
+			now: () => 0,
+			fetch: erroringFetch({
+				requests,
+				inferenceBody: { error: { message: "no_available_model_endpoints" } },
+				auto: {
+					session_token: "sess-1",
+					selected_model: { id: "mai-code-2-flash" },
+					expires_at: 3600,
+				},
+			}),
+		});
+		// The inference 4xx is a session error on an auto turn: the cached session is
+		// invalidated, so a second turn issues a fresh /auto request.
+		await expect(
+			drain(driver.chat({ threadId: "t-inv", messages: [{ role: "user", content: "hi" }] })),
+		).rejects.toThrow();
+		await expect(
+			drain(driver.chat({ threadId: "t-inv", messages: [{ role: "user", content: "hi" }] })),
+		).rejects.toThrow();
+		const autoCalls = requests.filter((r) => new URL(r.url).pathname.endsWith("/auto")).length;
+		expect(autoCalls).toBe(2);
 	});
 });
