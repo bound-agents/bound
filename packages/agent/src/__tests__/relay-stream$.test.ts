@@ -381,7 +381,14 @@ describe("createRelayStream$", () => {
 			] as any,
 			aborted$,
 			undefined,
-			{ perHostTimeoutMs: 1000, pollIntervalMs: 50 },
+			// spoke-1's inactivity timer (perHostTimeoutMs) must expire to force the
+			// failover, so keep it short. But once we switch to spoke-2 the test still
+			// has to observe the second inference row, build the reply, and let the
+			// reducer consume it — none of which is bounded by a tight deadline on a
+			// loaded runner. firstTokenTimeoutMs is what actually fires the failover
+			// after spoke-1 produces nothing; give the per-host inactivity clock ample
+			// headroom so spoke-2's reply is never raced by its own timer.
+			{ perHostTimeoutMs: 1000, firstTokenTimeoutMs: 300, pollIntervalMs: 50 },
 		);
 
 		const subscribed = new Promise<void>((resolve) => {
@@ -394,14 +401,14 @@ describe("createRelayStream$", () => {
 
 		await subscribed;
 
-		// Get first outbox entry (spoke-1)
+		// Capture spoke-1's inference stream id so the second-row query can exclude it.
 		const firstStreamId = getStreamIdFromOutbox(db);
 
-		// The first host times out; the stream then switches to spoke-2 and
-		// writes a second 'inference' outbox entry (plus a cancel for the first
-		// host). Poll for that second inference entry instead of sleeping. Keep
-		// the timeout comfortably above the polling/SQLite work: this test covers
-		// failover semantics, not a 200ms scheduling deadline on loaded CI.
+		// spoke-1 never produces a first token; its firstTokenTimeoutMs expires and
+		// the stream fails over to spoke-2, writing a SECOND 'inference' durable_work
+		// row (plus a 'cancel' row for spoke-1). Poll for that second inference row
+		// instead of sleeping. This test covers failover semantics, not a scheduling
+		// deadline, so the poll budget is generous.
 		await pollUntil(
 			() =>
 				(
@@ -412,16 +419,28 @@ describe("createRelayStream$", () => {
 			{ timeoutMs: 5000, intervalMs: 25 },
 		);
 
-		// Get second outbox entry (spoke-2) - query from after first entry
+		// Select the SECOND inference row explicitly. The prior query was
+		// `ORDER BY created_at DESC LIMIT 1` with no kind filter, which was flaky:
+		// the spoke-1 failover writes a 'cancel' row (stream_id = NULL) at nearly the
+		// same instant as spoke-2's inference row, created_at is ISO millisecond
+		// precision, and on a loaded runner the two land in the same millisecond. The
+		// tie made DESC return an arbitrary row; when it returned the cancel row,
+		// stream_id was NULL, the `=== firstStreamId` guard did not catch it (NULL !==
+		// a UUID), and the reply was inserted against a dead stream id — spoke-2 then
+		// timed out and the whole stream errored `all 2 eligible host(s) timed out`.
+		// Fix: filter to kind = 'inference' AND a different stream_id, and order on
+		// rowid (strictly monotonic, no millisecond ties).
 		const secondEntry = db
-			.prepare("SELECT stream_id FROM durable_work ORDER BY created_at DESC LIMIT 1")
-			.get() as { stream_id: string } | null;
+			.prepare(
+				"SELECT stream_id FROM durable_work WHERE kind = 'inference' AND stream_id != ? ORDER BY rowid DESC LIMIT 1",
+			)
+			.get(firstStreamId) as { stream_id: string } | null;
 		if (!secondEntry || secondEntry.stream_id === firstStreamId) {
 			throw new Error("Second outbox entry not found");
 		}
 		const secondStreamId = secondEntry.stream_id;
 
-		// Verify we have at least 2 inference outbox entries (plus a cancel for first host timeout)
+		// Verify we have exactly 2 inference outbox entries (plus a cancel for first host timeout)
 		const inferenceOutbox = db
 			.prepare("SELECT COUNT(*) as cnt FROM durable_work WHERE kind = 'inference'")
 			.get() as { cnt: number };
