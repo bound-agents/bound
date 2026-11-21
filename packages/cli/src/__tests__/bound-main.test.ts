@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDirSync } from "@bound/shared/test-utils";
-import { type CliIO, defaultCliIO, main } from "../bound-main";
+import { type CliIO, defaultCliIO, main, parseLoginArgs } from "../bound-main";
 
 /** Capturing IO for in-process dispatch assertions. */
 function captureIO(): { io: CliIO; logs: string[]; errors: string[] } {
@@ -120,5 +120,37 @@ describe("bound main()", () => {
 			console.error = origError;
 		}
 		expect(seen).toEqual(["log:hello", "err:oops"]);
+	});
+});
+
+describe("parseLoginArgs", () => {
+	it("forwards --copilot so the device flow runs instead of the usage error", () => {
+		const parsed = parseLoginArgs(["login", "--copilot"]);
+		expect(parsed.copilot).toBe(true);
+		expect(parsed.chatgpt).toBe(false);
+		expect(parsed.configDir).toBe("config");
+	});
+
+	it("maps every login flag and its value", () => {
+		const parsed = parseLoginArgs([
+			"login",
+			"--chatgpt",
+			"--config-dir",
+			"/tmp/cfg",
+			"--challenge",
+			"c1",
+			"--mcp",
+			"srv",
+			"--url",
+			"http://localhost:9",
+		]);
+		expect(parsed).toEqual({
+			chatgpt: true,
+			copilot: false,
+			challenge: "c1",
+			mcp: "srv",
+			configDir: "/tmp/cfg",
+			daemonUrl: "http://localhost:9",
+		});
 	});
 });

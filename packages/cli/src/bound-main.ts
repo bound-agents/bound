@@ -11,6 +11,7 @@
 // yet" on shutdown. Dynamic import keeps init entirely logger-free.
 
 import { runInit } from "./commands/init.js";
+import type { LoginArgs } from "./commands/login.js";
 
 /**
  * Output sinks + environment, injectable for in-process tests. Production wires
@@ -28,6 +29,22 @@ export function defaultCliIO(): CliIO {
 	return {
 		log: (m) => console.log(m),
 		error: (m) => console.error(m),
+	};
+}
+
+/** Maps `bound login ...` argv (command word included) onto {@link LoginArgs}. */
+export function parseLoginArgs(args: string[]): LoginArgs {
+	const flagValue = (flag: string): string | undefined => {
+		const idx = args.indexOf(flag);
+		return idx !== -1 ? args[idx + 1] : undefined;
+	};
+	return {
+		chatgpt: args.includes("--chatgpt"),
+		copilot: args.includes("--copilot"),
+		challenge: flagValue("--challenge"),
+		mcp: flagValue("--mcp"),
+		configDir: flagValue("--config-dir") ?? "config",
+		daemonUrl: flagValue("--url"),
 	};
 }
 
@@ -68,6 +85,7 @@ OPTIONS:
   bound init --force               Overwrite existing config
 
   bound login --chatgpt            Sign in with ChatGPT (OAuth) for the chatgpt-oauth provider
+  bound login --copilot            Sign in with GitHub (device flow) for the github-copilot provider
   bound login --challenge <id>     Resolve a raised MCP OAuth challenge (needs a running local daemon)
   bound login --mcp <server>       Warm up an MCP server: raise-and-resolve its OAuth challenge now
 
@@ -115,19 +133,9 @@ EXAMPLES:
 	}
 
 	if (command === "login") {
-		const loginConfigIdx = args.indexOf("--config-dir");
-		const challengeIdx = args.indexOf("--challenge");
-		const mcpIdx = args.indexOf("--mcp");
-		const urlIdx = args.indexOf("--url");
 		const { runLogin } = await import("./commands/login.js");
 		try {
-			await runLogin({
-				chatgpt: args.includes("--chatgpt"),
-				challenge: challengeIdx !== -1 ? args[challengeIdx + 1] : undefined,
-				mcp: mcpIdx !== -1 ? args[mcpIdx + 1] : undefined,
-				configDir: loginConfigIdx !== -1 ? args[loginConfigIdx + 1] : "config",
-				daemonUrl: urlIdx !== -1 ? args[urlIdx + 1] : undefined,
-			});
+			await runLogin(parseLoginArgs(args));
 		} catch (error) {
 			io.error(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
 			return 1;
