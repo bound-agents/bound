@@ -53,7 +53,29 @@ async function loadQuickJS(): Promise<QuickJSWASMModule> {
 	return quickJS;
 }
 
-function evaluate(module: QuickJSWASMModule, source: string, input: DynamicPriceInput): number {
+/** A price(turn) callback may return a plain number (total USD) or an object
+ * with the four component parts in USD (the total is their sum). */
+export interface DynamicPriceBreakdown {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+}
+
+interface EvaluatedPrice {
+	value: number;
+	breakdown: DynamicPriceBreakdown | null;
+}
+
+function isFiniteNonNegative(n: unknown): n is number {
+	return typeof n === "number" && Number.isFinite(n) && n >= 0;
+}
+
+function evaluate(
+	module: QuickJSWASMModule,
+	source: string,
+	input: DynamicPriceInput,
+): EvaluatedPrice {
 	const runtime = module.newRuntime();
 	runtime.setMemoryLimit(MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(STACK_LIMIT_BYTES);
@@ -81,10 +103,36 @@ function evaluate(module: QuickJSWASMModule, source: string, input: DynamicPrice
 		}
 		const value = vm.dump(result.value) as unknown;
 		result.value.dispose();
-		if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-			throw new Error("price callback must return a finite non-negative number");
+		// Plain-number return: today's behavior, no component split.
+		if (isFiniteNonNegative(value)) {
+			return { value, breakdown: null };
 		}
-		return value;
+		// Object return: the four parts must each be finite non-negative; the
+		// total is their sum. Any missing/invalid part is a hard error so a
+		// malformed callback never silently under-reports cost.
+		if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+			const o = value as Record<string, unknown>;
+			if (
+				isFiniteNonNegative(o.input) &&
+				isFiniteNonNegative(o.output) &&
+				isFiniteNonNegative(o.cacheRead) &&
+				isFiniteNonNegative(o.cacheWrite)
+			) {
+				const breakdown: DynamicPriceBreakdown = {
+					input: o.input,
+					output: o.output,
+					cacheRead: o.cacheRead,
+					cacheWrite: o.cacheWrite,
+				};
+				return {
+					value: breakdown.input + breakdown.output + breakdown.cacheRead + breakdown.cacheWrite,
+					breakdown,
+				};
+			}
+		}
+		throw new Error(
+			"price callback must return a finite non-negative number, or an object with finite non-negative input/output/cacheRead/cacheWrite",
+		);
 	} finally {
 		vm.dispose();
 		runtime.dispose();
@@ -119,7 +167,9 @@ export async function compileDynamicPricing(backends: PriceFunctionBackend[]): P
 }
 
 /** Synchronous hot-path evaluation over the registry published at startup/reload. */
-export type DynamicPriceResult = { value: number; error: null } | { value: null; error: string };
+export type DynamicPriceResult =
+	| { value: number; error: null; breakdown?: DynamicPriceBreakdown }
+	| { value: null; error: string };
 
 export function calculateDynamicPrice(
 	modelId: string,
@@ -128,7 +178,10 @@ export function calculateDynamicPrice(
 	const source = activeSources.get(modelId);
 	if (!source || !quickJS) return null;
 	try {
-		return { value: evaluate(quickJS, source, input), error: null };
+		const evaluated = evaluate(quickJS, source, input);
+		return evaluated.breakdown
+			? { value: evaluated.value, error: null, breakdown: evaluated.breakdown }
+			: { value: evaluated.value, error: null };
 	} catch (error) {
 		return {
 			value: null,

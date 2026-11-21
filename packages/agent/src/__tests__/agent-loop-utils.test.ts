@@ -9,6 +9,7 @@ import fc from "fast-check";
 import {
 	buildCommandOutput,
 	calculateTurnCost,
+	calculateTurnCostBreakdown,
 	clampMaxOutputTokens,
 	convertDeltaMessages,
 	createFileRefResolver,
@@ -188,6 +189,82 @@ describe("calculateTurnCost", () => {
 });
 
 // ---------------------------------------------------------------------------
+// calculateTurnCostBreakdown
+// ---------------------------------------------------------------------------
+describe("calculateTurnCostBreakdown", () => {
+	it("splits static pricing into four parts that sum to calculateTurnCost", () => {
+		const usage = {
+			inputTokens: 1_000_000,
+			outputTokens: 500_000,
+			cacheReadTokens: 2_000_000,
+			cacheWriteTokens: 100_000,
+		};
+		const backends = [
+			{
+				id: "static",
+				price_per_m_input: 3,
+				price_per_m_output: 15,
+				price_per_m_cache_read: 0.3,
+				price_per_m_cache_write: 3.75,
+			},
+		];
+		const breakdown = calculateTurnCostBreakdown("static", usage, backends);
+		expect(breakdown).not.toBeNull();
+		expect(breakdown?.input).toBeCloseTo(3, 8);
+		expect(breakdown?.output).toBeCloseTo(7.5, 8);
+		expect(breakdown?.cacheRead).toBeCloseTo(0.6, 8);
+		expect(breakdown?.cacheWrite).toBeCloseTo(0.375, 8);
+		const sum =
+			(breakdown?.input ?? 0) +
+			(breakdown?.output ?? 0) +
+			(breakdown?.cacheRead ?? 0) +
+			(breakdown?.cacheWrite ?? 0);
+		expect(sum).toBeCloseTo(calculateTurnCost("static", usage, backends), 8);
+	});
+
+	it("folds the 1h cache-write subset into cacheWrite", () => {
+		const usage = {
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 100_000,
+			cacheWrite1hTokens: 40_000,
+		};
+		const backends = [{ id: "split", price_per_m_cache_write: 1, price_per_m_cache_write_1h: 2 }];
+		const breakdown = calculateTurnCostBreakdown("split", usage, backends);
+		// 60k at 1 + 40k at 2 = 60000/1e6 + 80000/1e6 = 0.06 + 0.08 = 0.14, all in cacheWrite.
+		expect(breakdown?.cacheWrite).toBeCloseTo(0.14, 8);
+		expect(breakdown?.input).toBe(0);
+		expect(breakdown?.output).toBe(0);
+		expect(breakdown?.cacheRead).toBe(0);
+		const sum =
+			(breakdown?.input ?? 0) +
+			(breakdown?.output ?? 0) +
+			(breakdown?.cacheRead ?? 0) +
+			(breakdown?.cacheWrite ?? 0);
+		expect(sum).toBeCloseTo(calculateTurnCost("split", usage, backends), 8);
+	});
+
+	it("returns null for a model with no static price and no callback", () => {
+		const breakdown = calculateTurnCostBreakdown(
+			"unpriced",
+			{ inputTokens: 100, outputTokens: 50, cacheReadTokens: null, cacheWriteTokens: null },
+			[{ id: "unpriced" }],
+		);
+		expect(breakdown).toBeNull();
+	});
+
+	it("returns null for a model absent from the backends list", () => {
+		const breakdown = calculateTurnCostBreakdown(
+			"missing",
+			{ inputTokens: 100, outputTokens: 50, cacheReadTokens: null, cacheWriteTokens: null },
+			[],
+		);
+		expect(breakdown).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
 // calculateTurnCost — 1h/5m cache-write split (Change A)
 // ---------------------------------------------------------------------------
 describe("calculateTurnCost 1h cache-write split", () => {
@@ -306,48 +383,73 @@ describe("resolveTurnCost precedence", () => {
 	});
 
 	it("uses operator static pricing over a provider-reported cost", () => {
-		const cost = resolveTurnCost({
+		const result = resolveTurnCost({
 			modelId: "static-model",
 			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
 			backends: [{ id: "static-model", price_per_m_input: 5 }],
 			providerCostUsd: 99,
 		});
 		// static wins: 1M * 5 / 1e6 = 5, not the provider's 99.
-		expect(cost).toBeCloseTo(5, 10);
+		expect(result.cost).toBeCloseTo(5, 10);
+		// static path yields a component breakdown that sums to the cost.
+		expect(result.breakdown).not.toBeNull();
+		expect(result.breakdown?.input).toBeCloseTo(5, 10);
+		expect(result.breakdown?.output).toBe(0);
 	});
 
 	it("falls through to the provider-reported cost when the backend has no explicit pricing", () => {
-		const cost = resolveTurnCost({
+		const result = resolveTurnCost({
 			modelId: "zero-priced",
 			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
 			backends: [{ id: "zero-priced" }],
 			providerCostUsd: 0.42,
 		});
-		expect(cost).toBe(0.42);
+		expect(result.cost).toBe(0.42);
+		// provider-reported cost with no breakdown passed in → null breakdown.
+		expect(result.breakdown).toBeNull();
+	});
+
+	it("carries a provider-reported breakdown through when supplied", () => {
+		const result = resolveTurnCost({
+			modelId: "zero-priced",
+			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			backends: [{ id: "zero-priced" }],
+			providerCostUsd: 0.42,
+			providerBreakdown: { input: 0.1, output: 0.3, cacheRead: 0.01, cacheWrite: 0.01 },
+		});
+		expect(result.cost).toBe(0.42);
+		expect(result.breakdown).toEqual({
+			input: 0.1,
+			output: 0.3,
+			cacheRead: 0.01,
+			cacheWrite: 0.01,
+		});
 	});
 
 	it("falls through to the provider cost for a model absent from the backends list", () => {
-		const cost = resolveTurnCost({
+		const result = resolveTurnCost({
 			modelId: "unknown",
 			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
 			backends: [],
 			providerCostUsd: 0.1,
 		});
-		expect(cost).toBe(0.1);
+		expect(result.cost).toBe(0.1);
+		expect(result.breakdown).toBeNull();
 	});
 
-	it("returns 0 when neither operator pricing nor a provider cost is present", () => {
-		const cost = resolveTurnCost({
+	it("returns 0 and a null breakdown when neither operator pricing nor a provider cost is present", () => {
+		const result = resolveTurnCost({
 			modelId: "zero-priced",
 			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
 			backends: [{ id: "zero-priced" }],
 			providerCostUsd: undefined,
 		});
-		expect(cost).toBe(0);
+		expect(result.cost).toBe(0);
+		expect(result.breakdown).toBeNull();
 	});
 
 	it("prefers a price(turn) callback over both static pricing and the provider cost", () => {
-		const cost = resolveTurnCost({
+		const result = resolveTurnCost({
 			modelId: "gpt-5.6",
 			usage: {
 				inputTokens: 200_000,
@@ -361,7 +463,9 @@ describe("resolveTurnCost precedence", () => {
 		});
 		// Long-context callback: input 200k > 128k → 2.5/M, output 10k at 20/M,
 		// cache prices 0: (200000*2.5 + 10000*20)/1e6 = 0.7, not the provider's 99.
-		expect(cost).toBeCloseTo(0.7, 8);
+		expect(result.cost).toBeCloseTo(0.7, 8);
+		// A plain-number callback yields no component split.
+		expect(result.breakdown).toBeNull();
 	});
 });
 

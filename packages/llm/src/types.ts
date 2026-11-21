@@ -351,6 +351,21 @@ export type StreamChunk =
 			 */
 			cost_usd?: number;
 			/**
+			 * The four per-component cost parts for this turn, in USD
+			 * (`{ input, output, cacheRead, cacheWrite }`), stamped alongside
+			 * `cost_usd` by a driver that prices from a catalog (e.g. Copilot) or
+			 * by the relay hub. The parts sum to `cost_usd` (the last part absorbs
+			 * any float-rounding residue). Absent when no component split is known.
+			 * Optional on the wire: an older peer that never sets it, and an older
+			 * peer that receives it, both stay valid.
+			 */
+			cost_breakdown?: {
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+			};
+			/**
 			 * Terminal finish reason mapped from the provider stopReason by the
 			 * AI SDK. `"content-filter"` means the model's safety system stopped
 			 * generation (Bedrock `content_filtered`, Anthropic refusal): the

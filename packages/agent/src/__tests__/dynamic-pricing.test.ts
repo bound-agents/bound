@@ -58,4 +58,58 @@ describe("dynamic pricing registry", () => {
 			]),
 		).rejects.toThrow();
 	});
+
+	it("accepts an object return and reports its component breakdown", async () => {
+		await compileDynamicPricing([
+			{
+				id: "obj",
+				priceFunction:
+					"function price(t) { return { input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004 }; }",
+			},
+		]);
+		const result = calculateDynamicPrice("obj", { ...input, modelId: "obj" });
+		// cost = sum of the four parts; breakdown carries the parts verbatim.
+		expect(result?.value).toBeCloseTo(0.037, 10);
+		expect(result?.error).toBeNull();
+		expect(result && "breakdown" in result ? result.breakdown : undefined).toEqual({
+			input: 0.01,
+			output: 0.02,
+			cacheRead: 0.003,
+			cacheWrite: 0.004,
+		});
+	});
+
+	it("a plain-number return has no breakdown field", async () => {
+		await compileDynamicPricing([
+			{ id: "num", priceFunction: "function price(t) { return t.inputTokens / 1000; }" },
+		]);
+		const result = calculateDynamicPrice("num", { ...input, modelId: "num" });
+		expect(result).toEqual({ value: 0.1, error: null });
+		expect(result && "breakdown" in result ? result.breakdown : undefined).toBeUndefined();
+	});
+
+	it("rejects an object return whose parts are not all finite non-negative numbers", async () => {
+		// Validation runs at compile time against the sample input, mirroring the
+		// plain-number `-1` case above.
+		await expect(
+			compileDynamicPricing([
+				{
+					id: "badobj",
+					priceFunction:
+						"function price(t) { return { input: 0.01, output: -1, cacheRead: 0, cacheWrite: 0 }; }",
+				},
+			]),
+		).rejects.toThrow(/finite non-negative/);
+	});
+
+	it("rejects an object return missing a required component key", async () => {
+		await expect(
+			compileDynamicPricing([
+				{
+					id: "partial",
+					priceFunction: "function price(t) { return { input: 0.01, output: 0.02 }; }",
+				},
+			]),
+		).rejects.toThrow(/finite non-negative/);
+	});
 });

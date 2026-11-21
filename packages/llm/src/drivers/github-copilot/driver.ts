@@ -63,7 +63,7 @@ import {
 	CopilotCatalog,
 	type CopilotModelEntry,
 	type CopilotRoute,
-	computeCopilotCost,
+	computeCopilotCostBreakdown,
 	resolveRoute,
 	routeFromModelName,
 } from "./catalog";
@@ -335,12 +335,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 	}
 
 	/**
-	 * Stamp `cost_usd` on the terminal `done` chunk from the resolved model's
-	 * Copilot catalog pricing. Leaves `cost_usd` unset when the catalog carries
-	 * no pricing for the model, so the precedence helper downstream can fall
-	 * through to operator pricing or 0. The 1h cache-write split rides on
-	 * `done.usage.cache_write_1h_tokens` when the route surfaced it (null via the
-	 * AI SDK today — all cache writes then price at the 5m rate).
+	 * Stamp `cost_usd` and its four-part `cost_breakdown` on the terminal `done`
+	 * chunk from the resolved model's Copilot catalog pricing. Leaves both unset
+	 * when the catalog carries no pricing for the model, so the precedence helper
+	 * downstream can fall through to operator pricing or 0. The 1h cache-write
+	 * split comes from `done.usage.cache_write_1h_tokens`, which the Messages
+	 * route reads from Anthropic's `usage.cache_creation`.
 	 */
 	private async *stampCost(
 		stream: AsyncIterable<StreamChunk>,
@@ -350,7 +350,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 		const pricing = entry?.pricing;
 		for await (const chunk of stream) {
 			if (chunk.type === "done" && pricing) {
-				const cost_usd = computeCopilotCost({
+				const cost_breakdown = computeCopilotCostBreakdown({
 					pricing,
 					usage: {
 						inputTokens: chunk.usage.input_tokens,
@@ -362,7 +362,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 					nowMs: Date.now(),
 					routedThroughAuto,
 				});
-				yield { ...chunk, cost_usd };
+				const cost_usd =
+					cost_breakdown.input +
+					cost_breakdown.output +
+					cost_breakdown.cacheRead +
+					cost_breakdown.cacheWrite;
+				yield { ...chunk, cost_usd, cost_breakdown };
 				continue;
 			}
 			yield chunk;

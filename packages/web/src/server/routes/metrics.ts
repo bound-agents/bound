@@ -240,7 +240,20 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 					SUM(tokens_in) as tokens_in,
 					SUM(tokens_out) as tokens_out,
 					SUM(COALESCE(tokens_cache_read, 0)) as cache_read,
-					SUM(COALESCE(tokens_cache_write, 0)) as cache_write
+					SUM(COALESCE(tokens_cache_write, 0)) as cache_write,
+					-- Recorded per-component parts, summed over the turns in this bucket
+					-- that carry a cost_breakdown JSON (authoritative; see recordTurn).
+					SUM(COALESCE(json_extract(cost_breakdown, '$.input'), 0)) as rec_input,
+					SUM(COALESCE(json_extract(cost_breakdown, '$.output'), 0)) as rec_output,
+					SUM(COALESCE(json_extract(cost_breakdown, '$.cacheRead'), 0)) as rec_cache_read,
+					SUM(COALESCE(json_extract(cost_breakdown, '$.cacheWrite'), 0)) as rec_cache_write,
+					-- The cost and token sums of ONLY the turns WITHOUT a breakdown, so the
+					-- legacy static/token-proportional fallback applies to just those.
+					SUM(CASE WHEN cost_breakdown IS NULL THEN COALESCE(cost_usd, 0) ELSE 0 END) as legacy_cost_usd,
+					SUM(CASE WHEN cost_breakdown IS NULL THEN tokens_in ELSE 0 END) as legacy_tokens_in,
+					SUM(CASE WHEN cost_breakdown IS NULL THEN tokens_out ELSE 0 END) as legacy_tokens_out,
+					SUM(CASE WHEN cost_breakdown IS NULL THEN COALESCE(tokens_cache_read, 0) ELSE 0 END) as legacy_cache_read,
+					SUM(CASE WHEN cost_breakdown IS NULL THEN COALESCE(tokens_cache_write, 0) ELSE 0 END) as legacy_cache_write
 				FROM turns
 				WHERE created_at BETWEEN ? AND ? AND deleted = 0
 				GROUP BY date, model_id
@@ -254,6 +267,15 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				tokens_out: number;
 				cache_read: number;
 				cache_write: number;
+				rec_input: number;
+				rec_output: number;
+				rec_cache_read: number;
+				rec_cache_write: number;
+				legacy_cost_usd: number;
+				legacy_tokens_in: number;
+				legacy_tokens_out: number;
+				legacy_cache_read: number;
+				legacy_cache_write: number;
 			}>;
 
 			const totalsRow = _db
@@ -448,17 +470,26 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				avg_context_utilization: number | null;
 			}>;
 
-			// Reconstruct the four cost components for each (date, model) bucket.
-			// When pricing is configured for the model, multiply token sums by
-			// `price_per_m_*` from the snapshot. When pricing is missing, fall
-			// back to a proportional split of the persisted `cost_usd` weighted
-			// by the four token counts so the components still sum to `cost_usd`.
+			// Reconstruct the four cost components for each (date, model) bucket in
+			// two additive parts that together sum to the bucket's `cost_usd`:
+			//
+			//   1. RECORDED parts: for turns that stamped a `cost_breakdown` at the
+			//      moment their cost was decided (static operator pricing, the Copilot
+			//      catalog path, or an object-returning price(turn) callback), the
+			//      authoritative per-component USD is summed in SQL (`rec_*`).
+			//   2. LEGACY fallback: turns WITHOUT a breakdown (older rows, plain-number
+			//      callbacks) still need a split. Over ONLY that subset's cost/token
+			//      sums (`legacy_*`), reconstruct from static `price_per_m_*` when the
+			//      snapshot carries a nonzero price, else proportionally split the
+			//      legacy `cost_usd` by the four token counts so the parts still sum.
 			const costByModelTimelineWithComponents = (costByModelTimelineRows || []).map((row) => {
 				const pricing = pricingById.get(row.model_id);
-				let costInput: number;
-				let costOutput: number;
-				let costCacheRead: number;
-				let costCacheWrite: number;
+
+				// --- Part 2: the legacy (no-breakdown) subset ---
+				let legacyInput: number;
+				let legacyOutput: number;
+				let legacyCacheRead: number;
+				let legacyCacheWrite: number;
 
 				// Only reconstruct from static per-token prices when the snapshot
 				// actually carries at least one nonzero `price_per_m_*`. A model
@@ -475,24 +506,36 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 						(pricing.price_per_m_cache_write ?? 0) > 0);
 
 				if (pricing && hasStaticPrice) {
-					costInput = (row.tokens_in * (pricing.price_per_m_input ?? 0)) / 1_000_000;
-					costOutput = (row.tokens_out * (pricing.price_per_m_output ?? 0)) / 1_000_000;
-					costCacheRead = (row.cache_read * (pricing.price_per_m_cache_read ?? 0)) / 1_000_000;
-					costCacheWrite = (row.cache_write * (pricing.price_per_m_cache_write ?? 0)) / 1_000_000;
+					legacyInput = (row.legacy_tokens_in * (pricing.price_per_m_input ?? 0)) / 1_000_000;
+					legacyOutput = (row.legacy_tokens_out * (pricing.price_per_m_output ?? 0)) / 1_000_000;
+					legacyCacheRead =
+						(row.legacy_cache_read * (pricing.price_per_m_cache_read ?? 0)) / 1_000_000;
+					legacyCacheWrite =
+						(row.legacy_cache_write * (pricing.price_per_m_cache_write ?? 0)) / 1_000_000;
 				} else {
-					const totalTokens = row.tokens_in + row.tokens_out + row.cache_read + row.cache_write;
+					const totalTokens =
+						row.legacy_tokens_in +
+						row.legacy_tokens_out +
+						row.legacy_cache_read +
+						row.legacy_cache_write;
 					if (totalTokens > 0) {
-						costInput = (row.cost_usd * row.tokens_in) / totalTokens;
-						costOutput = (row.cost_usd * row.tokens_out) / totalTokens;
-						costCacheRead = (row.cost_usd * row.cache_read) / totalTokens;
-						costCacheWrite = (row.cost_usd * row.cache_write) / totalTokens;
+						legacyInput = (row.legacy_cost_usd * row.legacy_tokens_in) / totalTokens;
+						legacyOutput = (row.legacy_cost_usd * row.legacy_tokens_out) / totalTokens;
+						legacyCacheRead = (row.legacy_cost_usd * row.legacy_cache_read) / totalTokens;
+						legacyCacheWrite = (row.legacy_cost_usd * row.legacy_cache_write) / totalTokens;
 					} else {
-						costInput = 0;
-						costOutput = 0;
-						costCacheRead = 0;
-						costCacheWrite = 0;
+						legacyInput = 0;
+						legacyOutput = 0;
+						legacyCacheRead = 0;
+						legacyCacheWrite = 0;
 					}
 				}
+
+				// --- Combine: recorded parts + legacy fallback ---
+				const costInput = row.rec_input + legacyInput;
+				const costOutput = row.rec_output + legacyOutput;
+				const costCacheRead = row.rec_cache_read + legacyCacheRead;
+				const costCacheWrite = row.rec_cache_write + legacyCacheWrite;
 
 				return {
 					date: row.date,

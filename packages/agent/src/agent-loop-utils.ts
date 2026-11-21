@@ -215,6 +215,87 @@ interface BackendPricing {
 	price_per_m_cache_write_1h?: number;
 }
 
+/** The four per-component cost parts of a turn, in USD. 1h cache-write folds
+ * into `cacheWrite`. */
+export interface TurnCostBreakdown {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+}
+
+/**
+ * Compute the four per-component cost parts for a turn's token usage against
+ * static backend pricing. Returns `null` when the model is absent from the
+ * backends list, when it carries no static price at all, OR when a dynamic
+ * `price(turn)` callback resolved the cost as a single number (no component
+ * split available). A callback that returns a component object is handled by
+ * the caller, not here. When non-null, the four parts sum to
+ * `calculateTurnCost` for the same inputs.
+ */
+export function calculateTurnCostBreakdown(
+	modelId: string,
+	usage: UsageTokens,
+	backends: BackendPricing[],
+): TurnCostBreakdown | null {
+	const cfg = backends.find((b) => b.id === modelId);
+	if (!cfg) return null;
+
+	const pricesPerM = {
+		input: cfg.price_per_m_input ?? 0,
+		output: cfg.price_per_m_output ?? 0,
+		cacheRead: cfg.price_per_m_cache_read ?? 0,
+		cacheWrite: cfg.price_per_m_cache_write ?? 0,
+		cacheWrite1h: cfg.price_per_m_cache_write_1h ?? cfg.price_per_m_cache_write ?? 0,
+	};
+	const hasStatic =
+		pricesPerM.input > 0 ||
+		pricesPerM.output > 0 ||
+		pricesPerM.cacheRead > 0 ||
+		pricesPerM.cacheWrite > 0 ||
+		pricesPerM.cacheWrite1h > 0;
+	if (!hasStatic) return null;
+
+	// A winning price(turn) callback resolves the cost as a single number with no
+	// component split, so the static split below would NOT sum to that cost. When
+	// a callback is active and produces a value, there is no breakdown. (A model
+	// may carry both a static price and a callback; the callback wins the cost,
+	// so it must also win — to null — the breakdown.)
+	if (hasDynamicPrice(modelId)) {
+		const cacheWrite1h = usage.cacheWrite1hTokens ?? 0;
+		const dynamic = calculateDynamicPrice(modelId, {
+			modelId,
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens ?? 0,
+			cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+			cacheWrite1hTokens: cacheWrite1h,
+			pricesPerM,
+		});
+		// Callback produced a usable number → no component split.
+		if (dynamic?.value !== null && dynamic !== null) return null;
+		// Callback errored / unavailable → fall through to the static split, which
+		// is exactly what calculateTurnCost falls back to for the cost number.
+	}
+
+	// 1h subset is only known when explicitly reported; null/absent → 0, which
+	// makes the whole cache-write total bill at the 5m rate (today's behavior).
+	const cacheWrite1hTokens = usage.cacheWrite1hTokens ?? 0;
+	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
+	// Split the cache-write total: the 1h subset at the 1h rate, the remainder
+	// at the 5m rate. Clamp the 1h subset to the total so a bogus over-count
+	// can't drive the remainder negative.
+	const oneHTokens = Math.min(cacheWrite1hTokens, totalCacheWrite);
+	const fiveMTokens = totalCacheWrite - oneHTokens;
+	return {
+		input: (usage.inputTokens * pricesPerM.input) / 1_000_000,
+		output: (usage.outputTokens * pricesPerM.output) / 1_000_000,
+		cacheRead: ((usage.cacheReadTokens ?? 0) * pricesPerM.cacheRead) / 1_000_000,
+		cacheWrite:
+			(fiveMTokens * pricesPerM.cacheWrite + oneHTokens * pricesPerM.cacheWrite1h) / 1_000_000,
+	};
+}
+
 /** Compute cost in USD for a turn's token usage against backend pricing. */
 export function calculateTurnCost(
 	modelId: string,
@@ -252,19 +333,11 @@ export function calculateTurnCost(
 		});
 	}
 
-	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
-	// Split the cache-write total: the 1h subset at the 1h rate, the remainder
-	// at the 5m rate. Clamp the 1h subset to the total so a bogus over-count
-	// can't drive the remainder negative.
-	const oneHTokens = Math.min(cacheWrite1hTokens, totalCacheWrite);
-	const fiveMTokens = totalCacheWrite - oneHTokens;
-	const inputCost = (usage.inputTokens * pricesPerM.input) / 1_000_000;
-	const outputCost = (usage.outputTokens * pricesPerM.output) / 1_000_000;
-	const cacheReadCost = ((usage.cacheReadTokens ?? 0) * pricesPerM.cacheRead) / 1_000_000;
-	const cacheWriteCost =
-		(fiveMTokens * pricesPerM.cacheWrite + oneHTokens * pricesPerM.cacheWrite1h) / 1_000_000;
-
-	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
+	// Static path: reuse the component computer so the number and the breakdown
+	// can never drift. A model with no static price yields a null breakdown → 0.
+	const breakdown = calculateTurnCostBreakdown(modelId, usage, backends);
+	if (!breakdown) return 0;
+	return breakdown.input + breakdown.output + breakdown.cacheRead + breakdown.cacheWrite;
 }
 
 /**
@@ -293,6 +366,18 @@ export interface ResolveTurnCostInput {
 	backends: BackendPricing[];
 	/** Provider-reported USD cost from the done chunk (e.g. Copilot catalog pricing). */
 	providerCostUsd: number | null | undefined;
+	/**
+	 * Provider-reported component breakdown from the done chunk (Copilot catalog
+	 * pricing stamps this alongside `providerCostUsd`; a hub relays it verbatim).
+	 * Carried through only when the provider cost actually wins the precedence.
+	 */
+	providerBreakdown?: TurnCostBreakdown | null;
+}
+
+/** The resolved cost plus its component split (null when no split is available). */
+export interface ResolvedTurnCost {
+	cost: number;
+	breakdown: TurnCostBreakdown | null;
 }
 
 /**
@@ -305,12 +390,25 @@ export interface ResolveTurnCostInput {
  * `price_per_m_*` on the backend — in that case `calculateTurnCost` is
  * authoritative. Otherwise a provider-reported `done.cost_usd` wins (Copilot
  * catalog pricing, or a hub-relayed cost). Absent both, the cost is 0.
+ *
+ * The returned `breakdown` is the four-component split when one is available:
+ *   - static operator pricing → `calculateTurnCostBreakdown` (sums to cost);
+ *   - a price(turn) callback that resolved as a plain number → null (no split);
+ *   - provider-reported cost → the passed `providerBreakdown` (or null);
+ *   - the 0 fallback → null.
  */
-export function resolveTurnCost(input: ResolveTurnCostInput): number {
+export function resolveTurnCost(input: ResolveTurnCostInput): ResolvedTurnCost {
 	if (hasExplicitOperatorPricing(input.modelId, input.backends)) {
-		return calculateTurnCost(input.modelId, input.usage, input.backends);
+		const cost = calculateTurnCost(input.modelId, input.usage, input.backends);
+		// A static-priced model yields a component split; a price(turn) callback
+		// that returned a plain number does not (breakdown is null).
+		const breakdown = calculateTurnCostBreakdown(input.modelId, input.usage, input.backends);
+		return { cost, breakdown };
 	}
-	return input.providerCostUsd ?? 0;
+	if (input.providerCostUsd !== null && input.providerCostUsd !== undefined) {
+		return { cost: input.providerCostUsd, breakdown: input.providerBreakdown ?? null };
+	}
+	return { cost: 0, breakdown: null };
 }
 
 /**

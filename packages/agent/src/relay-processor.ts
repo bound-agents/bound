@@ -2117,7 +2117,7 @@ export class RelayProcessor {
 				let outChunk: StreamChunk = chunk;
 				if (chunk.type === "done") {
 					const backends = this.appCtx?.config.modelBackends.backends ?? [];
-					const cost_usd = resolveTurnCost({
+					const resolved = resolveTurnCost({
 						modelId: payload.model,
 						usage: {
 							inputTokens: chunk.usage.input_tokens,
@@ -2128,8 +2128,13 @@ export class RelayProcessor {
 						},
 						backends,
 						providerCostUsd: chunk.cost_usd,
+						// A Copilot-driver done chunk already carries its catalog breakdown;
+						// carry it through when the provider cost wins the precedence.
+						providerBreakdown: chunk.cost_breakdown ?? null,
 					});
-					outChunk = { ...chunk, cost_usd };
+					outChunk = resolved.breakdown
+						? { ...chunk, cost_usd: resolved.cost, cost_breakdown: resolved.breakdown }
+						: { ...chunk, cost_usd: resolved.cost };
 				}
 
 				chunkBuffer.push(outChunk);

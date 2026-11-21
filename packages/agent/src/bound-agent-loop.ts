@@ -1034,21 +1034,46 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// stamped cost is just a provider-reported value, so resolveTurnCost lets
 			// explicit operator pricing win over it (explicit pricing > provider cost
 			// > 0); absent operator pricing it falls through to the provider's cost.
-			const cost_usd =
-				this.lastModelResolution?.kind === "remote"
-					? (metrics.response.costUsdFromHub ??
-						resolveTurnCost({
-							modelId: resolvedModelId,
-							usage: metrics.response.usage,
-							backends,
-							providerCostUsd: undefined,
-						}))
-					: resolveTurnCost({
-							modelId: resolvedModelId,
-							usage: metrics.response.usage,
-							backends,
-							providerCostUsd: metrics.response.costUsdFromHub,
-						});
+			// Resolve BOTH the authoritative cost and its component breakdown so the
+			// turn row records parts that sum to the recorded cost. For a REMOTE turn
+			// the relayed cost+breakdown are authoritative (recorded verbatim); for a
+			// LOCAL turn resolveTurnCost lets explicit operator pricing win over a
+			// provider-stamped cost, and returns the matching breakdown (null when
+			// the model is priced only by a plain-number price(turn) callback).
+			let cost_usd: number;
+			let cost_breakdown: {
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+			} | null;
+			if (this.lastModelResolution?.kind === "remote") {
+				if (metrics.response.costUsdFromHub !== null) {
+					// Hub already applied the precedence and stamped the cost; record it
+					// and its relayed breakdown verbatim.
+					cost_usd = metrics.response.costUsdFromHub;
+					cost_breakdown = metrics.response.costBreakdownFromHub;
+				} else {
+					const resolved = resolveTurnCost({
+						modelId: resolvedModelId,
+						usage: metrics.response.usage,
+						backends,
+						providerCostUsd: undefined,
+					});
+					cost_usd = resolved.cost;
+					cost_breakdown = resolved.breakdown;
+				}
+			} else {
+				const resolved = resolveTurnCost({
+					modelId: resolvedModelId,
+					usage: metrics.response.usage,
+					backends,
+					providerCostUsd: metrics.response.costUsdFromHub,
+					providerBreakdown: metrics.response.costBreakdownFromHub,
+				});
+				cost_usd = resolved.cost;
+				cost_breakdown = resolved.breakdown;
+			}
 			const turnId = recordTurn(
 				this.ctx.db,
 				{
@@ -1061,6 +1086,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 					tokens_cache_write: metrics.response.usage.cacheWriteTokens,
 					tokens_cache_read: metrics.response.usage.cacheReadTokens,
 					cost_usd,
+					cost_breakdown,
 					status: metrics.status === "success" ? "ok" : metrics.status,
 					created_at: new Date().toISOString(),
 				},

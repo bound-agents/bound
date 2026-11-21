@@ -396,8 +396,18 @@ describe("GitHubCopilotDriver routing", () => {
 		const chunks = await collectChunks(
 			driver.chat({ messages: [{ role: "user", content: "hi" }] }),
 		);
-		const done = doneChunk(chunks);
+		const done = doneChunk(chunks) as
+			| {
+					cost_usd?: number;
+					cost_breakdown?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+			  }
+			| undefined;
 		expect(done?.cost_usd).toBeCloseTo(1100 / 1e8, 14);
+		// The stamped parts are each component at its own rate and sum to cost_usd.
+		expect(done?.cost_breakdown?.input).toBeCloseTo(300 / 1e8, 14);
+		expect(done?.cost_breakdown?.output).toBeCloseTo(800 / 1e8, 14);
+		expect(done?.cost_breakdown?.cacheRead).toBe(0);
+		expect(done?.cost_breakdown?.cacheWrite).toBe(0);
 	});
 
 	it("stamps done.cost_usd from the selected model's catalog price when model is auto", async () => {

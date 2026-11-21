@@ -339,6 +339,19 @@ export const wsStreamChunkSchema = z.discriminatedUnion("type", [
 			estimated: z.boolean(),
 		}),
 		cost_usd: z.number().optional(),
+		// Optional per-component cost split stamped alongside cost_usd (Copilot
+		// catalog pricing, or relayed from a hub). Optional on the wire: an older
+		// peer that never sets it, and an older peer that receives it, both stay
+		// valid — the discriminated union strips it on parse when the field is
+		// absent from this schema version. Mirrors cache_write_1h_tokens.
+		cost_breakdown: z
+			.object({
+				input: z.number(),
+				output: z.number(),
+				cacheRead: z.number(),
+				cacheWrite: z.number(),
+			})
+			.optional(),
 	}),
 	z.object({ type: z.literal("error"), error: z.string() }),
 ]);

@@ -215,6 +215,24 @@ export interface ComputeCopilotCostInput {
  * multiplicatively.
  */
 export function computeCopilotCost(input: ComputeCopilotCostInput): number {
+	const parts = computeCopilotCostBreakdown(input);
+	return parts.input + parts.output + parts.cacheRead + parts.cacheWrite;
+}
+
+/** USD per component for one turn; the four parts sum to the turn's cost. */
+export interface CopilotCostBreakdown {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+}
+
+/**
+ * The same computation as {@link computeCopilotCost}, split by component. Both
+ * discounts scale every part by the same factor, so the parts still sum to the
+ * discounted total; 1h and 5m cache writes fold into `cacheWrite`.
+ */
+export function computeCopilotCostBreakdown(input: ComputeCopilotCostInput): CopilotCostBreakdown {
 	const { pricing, usage, nowMs, routedThroughAuto } = input;
 	const promptTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
 	const maxPrompt = pricing.default.maxPromptTokens;
@@ -226,22 +244,20 @@ export function computeCopilotCost(input: ComputeCopilotCostInput): number {
 	const cacheWrite5m = usage.cacheWriteTokens - cacheWrite1h;
 	const cacheWrite1hPrice = row.cacheWrite1hPrice ?? row.cacheWritePrice;
 
-	const perMillion =
-		usage.inputTokens * row.inputPrice +
-		usage.outputTokens * row.outputPrice +
-		usage.cacheReadTokens * row.cacheReadPrice +
-		cacheWrite5m * row.cacheWritePrice +
-		cacheWrite1h * cacheWrite1hPrice;
-
-	let cost = perMillion / pricing.batchSize / 100;
-
+	let factor = 1 / pricing.batchSize / 100;
 	if (routedThroughAuto && typeof pricing.autoDiscount === "number") {
-		cost *= 1 - pricing.autoDiscount;
+		factor *= 1 - pricing.autoDiscount;
 	}
 	if (pricing.promo && nowMs < Date.parse(pricing.promo.endsAt)) {
-		cost *= 1 - pricing.promo.discountPercent / 100;
+		factor *= 1 - pricing.promo.discountPercent / 100;
 	}
-	return cost;
+
+	return {
+		input: usage.inputTokens * row.inputPrice * factor,
+		output: usage.outputTokens * row.outputPrice * factor,
+		cacheRead: usage.cacheReadTokens * row.cacheReadPrice * factor,
+		cacheWrite: (cacheWrite5m * row.cacheWritePrice + cacheWrite1h * cacheWrite1hPrice) * factor,
+	};
 }
 
 /**

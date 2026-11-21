@@ -289,6 +289,83 @@ describe("wsStreamChunkSchema — discriminated union validation", () => {
 		}
 	});
 
+	it("accepts done chunk with cost_breakdown and preserves the four parts", () => {
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 150,
+				output_tokens: 42,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: true,
+			},
+			cost_usd: 0.0045,
+			cost_breakdown: { input: 0.001, output: 0.0033, cacheRead: 0.0001, cacheWrite: 0.0001 },
+		});
+		expect(result.success).toBe(true);
+		if (result.success && result.data.type === "done") {
+			expect(result.data.cost_breakdown).toEqual({
+				input: 0.001,
+				output: 0.0033,
+				cacheRead: 0.0001,
+				cacheWrite: 0.0001,
+			});
+		}
+	});
+
+	it("VERSION SKEW (newer peer accepts absence): a done chunk WITHOUT cost_breakdown parses, with the field undefined", () => {
+		// The current (newer) schema marks cost_breakdown optional, so an older
+		// peer that never sets it produces a chunk that parses cleanly here.
+		const result = wsStreamChunkSchema.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 150,
+				output_tokens: 42,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: true,
+			},
+			cost_usd: 0.0045,
+		});
+		expect(result.success).toBe(true);
+		if (result.success && result.data.type === "done") {
+			expect(result.data.cost_breakdown).toBeUndefined();
+		}
+	});
+
+	it("VERSION SKEW (older peer strips it): a pre-change done schema drops a cost_breakdown the newer peer sent", () => {
+		// Reconstruct the pre-change done-chunk schema WITHOUT the cost_breakdown
+		// field: a plain z.object strips unknown keys (no .strict()), so a chunk
+		// from a newer peer parses cleanly and simply drops the extra key.
+		const legacyDoneChunk = z.object({
+			type: z.literal("done"),
+			usage: z.object({
+				input_tokens: z.number(),
+				output_tokens: z.number(),
+				cache_write_tokens: z.number().nullable(),
+				cache_read_tokens: z.number().nullable(),
+				estimated: z.boolean(),
+			}),
+			cost_usd: z.number().optional(),
+		});
+		const parsed = legacyDoneChunk.safeParse({
+			type: "done",
+			usage: {
+				input_tokens: 150,
+				output_tokens: 42,
+				cache_write_tokens: null,
+				cache_read_tokens: null,
+				estimated: true,
+			},
+			cost_usd: 0.0045,
+			cost_breakdown: { input: 0.001, output: 0.0033, cacheRead: 0.0001, cacheWrite: 0.0001 },
+		});
+		expect(parsed.success).toBe(true);
+		if (parsed.success) {
+			expect("cost_breakdown" in parsed.data).toBe(false);
+		}
+	});
+
 	it("accepts error chunk", () => {
 		const result = wsStreamChunkSchema.safeParse({
 			type: "error",

@@ -3,6 +3,7 @@ import {
 	CATALOG_TTL_MS,
 	CopilotCatalog,
 	computeCopilotCost,
+	computeCopilotCostBreakdown,
 	resolveRoute,
 	routeFromEndpoints,
 	routeFromModelName,
@@ -408,6 +409,61 @@ describe("CopilotCatalog", () => {
 			});
 			// 0.10 * 0.9 * 0.5
 			expect(cost).toBeCloseTo(0.1 * 0.9 * 0.5, 10);
+		});
+	});
+
+	describe("computeCopilotCostBreakdown", () => {
+		const row = {
+			inputPrice: 10,
+			outputPrice: 50,
+			cacheReadPrice: 1,
+			cacheWritePrice: 12.5,
+			cacheWrite1hPrice: 20,
+			maxPromptTokens: 200_000,
+		};
+		const usage = {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			cacheReadTokens: 1_000_000,
+			cacheWriteTokens: 1_000_000,
+			cacheWrite1hTokens: 400_000,
+		};
+
+		it("prices each component at its own rate, folding 1h and 5m writes into cacheWrite", () => {
+			const parts = computeCopilotCostBreakdown({
+				pricing: { batchSize: 1_000_000, default: row },
+				usage,
+				nowMs: fixedNow,
+			});
+			expect(parts.input).toBeCloseTo(0.1, 12);
+			expect(parts.output).toBeCloseTo(0.5, 12);
+			expect(parts.cacheRead).toBeCloseTo(0.01, 12);
+			// 600k at 12.5 + 400k at 20 = 75 + 80 = 155 per-M units / 100.
+			expect(parts.cacheWrite).toBeCloseTo((600_000 * 12.5 + 400_000 * 20) / 1e6 / 100, 12);
+		});
+
+		it("scales every component by the stacked discounts so the parts sum to the total", () => {
+			const input = {
+				pricing: {
+					batchSize: 1_000_000,
+					default: row,
+					longContext: { inputPrice: 20, outputPrice: 100, cacheReadPrice: 2, cacheWritePrice: 25 },
+					autoDiscount: 0.1,
+					promo: { discountPercent: 50, endsAt: "2026-12-01T00:00:00Z" },
+				},
+				usage,
+				nowMs: Date.UTC(2026, 10, 1),
+				routedThroughAuto: true,
+			};
+			const parts = computeCopilotCostBreakdown(input);
+			const total = computeCopilotCost(input);
+			expect(parts.input + parts.output + parts.cacheRead + parts.cacheWrite).toBeCloseTo(
+				total,
+				14,
+			);
+			// 4M prompt tokens > 200k, so the long_context row applies: input 20 → $0.20 × 0.45.
+			expect(parts.input).toBeCloseTo(0.2 * 0.9 * 0.5, 12);
+			expect(parts.output).toBeCloseTo(1.0 * 0.9 * 0.5, 12);
 		});
 	});
 });

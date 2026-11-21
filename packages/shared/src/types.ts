@@ -451,6 +451,8 @@ export interface Turn extends SoftDeletable {
 	relay_target: string | null;
 	relay_latency_ms: number | null;
 	context_debug: string | null;
+	/** JSON `{ input, output, cacheRead, cacheWrite }` in USD; null when unknown. */
+	cost_breakdown: string | null;
 	host_origin: string | null;
 	modified_at: string | null;
 }

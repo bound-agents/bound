@@ -91,6 +91,53 @@ describe("metrics-schema â AC4.6 cache token persistence", () => {
 		expect(row?.tokens_cache_read).toBeNull();
 	});
 
+	it("should persist cost_breakdown JSON from recordTurn()", () => {
+		applyMetricsSchema(db);
+
+		const turnId = recordTurn(db, {
+			model_id: "test-model",
+			tokens_in: 100,
+			tokens_out: 50,
+			tokens_cache_write: 10,
+			tokens_cache_read: 20,
+			cost_usd: 0.0123,
+			cost_breakdown: { input: 0.001, output: 0.009, cacheRead: 0.0001, cacheWrite: 0.0022 },
+			created_at: "2026-11-21T12:00:00Z",
+		});
+
+		const row = db.prepare("SELECT cost_breakdown FROM turns WHERE id = ?").get(turnId) as
+			| { cost_breakdown: string | null }
+			| undefined;
+
+		expect(row).toBeDefined();
+		expect(JSON.parse(row?.cost_breakdown ?? "null")).toEqual({
+			input: 0.001,
+			output: 0.009,
+			cacheRead: 0.0001,
+			cacheWrite: 0.0022,
+		});
+	});
+
+	it("should persist NULL cost_breakdown when omitted", () => {
+		applyMetricsSchema(db);
+
+		const turnId = recordTurn(db, {
+			model_id: "test-model",
+			tokens_in: 100,
+			tokens_out: 50,
+			tokens_cache_write: null,
+			tokens_cache_read: null,
+			created_at: "2026-11-21T12:00:00Z",
+		});
+
+		const row = db.prepare("SELECT cost_breakdown FROM turns WHERE id = ?").get(turnId) as
+			| { cost_breakdown: string | null }
+			| undefined;
+
+		expect(row).toBeDefined();
+		expect(row?.cost_breakdown).toBeNull();
+	});
+
 	it("should handle idempotent ALTER TABLE for cache columns", () => {
 		// Apply schema twice to verify idempotent behavior
 		applyMetricsSchema(db);

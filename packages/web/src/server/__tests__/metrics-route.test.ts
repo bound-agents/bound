@@ -514,6 +514,162 @@ describe("metrics routes", () => {
 		});
 	});
 
+	describe("per-model cost breakdown from recorded components", () => {
+		const seedTurn = (t: {
+			id: string;
+			created_at: string;
+			model_id: string;
+			tokens_in: number;
+			tokens_out: number;
+			cache_read?: number;
+			cache_write?: number;
+			cost_usd: number;
+			cost_breakdown?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+		}) => {
+			db.prepare(
+				`INSERT INTO turns (id, thread_id, created_at, model_id, tokens_in, tokens_out,
+				tokens_cache_read, tokens_cache_write, cost_usd, status, cost_breakdown)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			).run(
+				t.id,
+				"thread-1",
+				t.created_at,
+				t.model_id,
+				t.tokens_in,
+				t.tokens_out,
+				t.cache_read ?? 0,
+				t.cache_write ?? 0,
+				t.cost_usd,
+				"ok",
+				t.cost_breakdown ? JSON.stringify(t.cost_breakdown) : null,
+			);
+		};
+
+		const fetchTimeline = async () => {
+			const app = createMetricsRoutes(db);
+			const from = new Date("2026-05-18T00:00:00Z").toISOString();
+			const to = new Date("2026-05-19T00:00:00Z").toISOString();
+			const response = await app.fetch(
+				new Request(`http://localhost/?from=${from}&to=${to}`, { method: "GET" }),
+			);
+			expect(response.status).toBe(200);
+			const json = (await response.json()) as Record<string, unknown>;
+			const tokens = json.tokens as Record<string, unknown>;
+			return tokens.costByModelTimeline as Array<Record<string, number | string>>;
+		};
+
+		it("returns exact recorded components for a bucket whose turns all have a breakdown", async () => {
+			// Two turns in one (date, model) bucket, each with a recorded breakdown.
+			// The route must SUM the recorded parts — not re-derive a token split.
+			seedTurn({
+				id: "t1",
+				created_at: "2026-05-18T10:00:00Z",
+				model_id: "m",
+				tokens_in: 1000,
+				tokens_out: 200,
+				cache_read: 5000,
+				cache_write: 100,
+				cost_usd: 0.1,
+				cost_breakdown: { input: 0.03, output: 0.06, cacheRead: 0.005, cacheWrite: 0.005 },
+			});
+			seedTurn({
+				id: "t2",
+				created_at: "2026-05-18T10:30:00Z",
+				model_id: "m",
+				tokens_in: 500,
+				tokens_out: 100,
+				cache_read: 0,
+				cache_write: 0,
+				cost_usd: 0.05,
+				cost_breakdown: { input: 0.02, output: 0.03, cacheRead: 0, cacheWrite: 0 },
+			});
+
+			const timeline = await fetchTimeline();
+			const bucket = timeline.find((r) => r.model_id === "m");
+			expect(bucket).toBeDefined();
+			expect(bucket?.cost_usd).toBeCloseTo(0.15, 10);
+			expect(bucket?.cost_input_usd).toBeCloseTo(0.05, 10);
+			expect(bucket?.cost_output_usd).toBeCloseTo(0.09, 10);
+			expect(bucket?.cost_cache_read_usd).toBeCloseTo(0.005, 10);
+			expect(bucket?.cost_cache_write_usd).toBeCloseTo(0.005, 10);
+			// Parts sum to cost.
+			const sum =
+				(bucket?.cost_input_usd as number) +
+				(bucket?.cost_output_usd as number) +
+				(bucket?.cost_cache_read_usd as number) +
+				(bucket?.cost_cache_write_usd as number);
+			expect(sum).toBeCloseTo(bucket?.cost_usd as number, 10);
+		});
+
+		it("uses the legacy token-proportional fallback for a bucket of legacy rows (no breakdown)", async () => {
+			// No cost_breakdown, no backend pricing → proportional token split of cost.
+			seedTurn({
+				id: "t1",
+				created_at: "2026-05-18T10:00:00Z",
+				model_id: "legacy",
+				tokens_in: 100,
+				tokens_out: 300,
+				cache_read: 0,
+				cache_write: 0,
+				cost_usd: 0.4,
+			});
+
+			const timeline = await fetchTimeline();
+			const bucket = timeline.find((r) => r.model_id === "legacy");
+			expect(bucket).toBeDefined();
+			expect(bucket?.cost_usd).toBeCloseTo(0.4, 10);
+			// 400 total tokens: input 100/400 * 0.4 = 0.1, output 300/400 * 0.4 = 0.3.
+			expect(bucket?.cost_input_usd).toBeCloseTo(0.1, 10);
+			expect(bucket?.cost_output_usd).toBeCloseTo(0.3, 10);
+			expect(bucket?.cost_cache_read_usd).toBeCloseTo(0, 10);
+			expect(bucket?.cost_cache_write_usd).toBeCloseTo(0, 10);
+		});
+
+		it("adds recorded components and the legacy fallback for a MIXED bucket", async () => {
+			// One turn with a breakdown, one legacy turn, same (date, model) bucket.
+			// The route sums the recorded parts for the first and the token split for
+			// the second, then adds them.
+			seedTurn({
+				id: "t1",
+				created_at: "2026-05-18T10:00:00Z",
+				model_id: "mixed",
+				tokens_in: 1000,
+				tokens_out: 200,
+				cache_read: 0,
+				cache_write: 0,
+				cost_usd: 0.1,
+				cost_breakdown: { input: 0.04, output: 0.06, cacheRead: 0, cacheWrite: 0 },
+			});
+			seedTurn({
+				id: "t2",
+				created_at: "2026-05-18T10:30:00Z",
+				model_id: "mixed",
+				tokens_in: 100,
+				tokens_out: 300,
+				cache_read: 0,
+				cache_write: 0,
+				cost_usd: 0.4,
+			});
+
+			const timeline = await fetchTimeline();
+			const bucket = timeline.find((r) => r.model_id === "mixed");
+			expect(bucket).toBeDefined();
+			expect(bucket?.cost_usd).toBeCloseTo(0.5, 10);
+			// Recorded: input 0.04, output 0.06. Legacy split of 0.4 over 400 tokens:
+			// input +0.1, output +0.3. Totals: input 0.14, output 0.36.
+			expect(bucket?.cost_input_usd).toBeCloseTo(0.14, 10);
+			expect(bucket?.cost_output_usd).toBeCloseTo(0.36, 10);
+			expect(bucket?.cost_cache_read_usd).toBeCloseTo(0, 10);
+			expect(bucket?.cost_cache_write_usd).toBeCloseTo(0, 10);
+			const sum =
+				(bucket?.cost_input_usd as number) +
+				(bucket?.cost_output_usd as number) +
+				(bucket?.cost_cache_read_usd as number) +
+				(bucket?.cost_cache_write_usd as number);
+			expect(sum).toBeCloseTo(bucket?.cost_usd as number, 10);
+		});
+	});
+
 	describe("AC5.1 & AC5.3: Relay aggregation", () => {
 		it("aggregates relay performance by host", async () => {
 			const app = createMetricsRoutes(db);

@@ -184,6 +184,19 @@ export default {
 
 The `turn` argument carries `turn.usage` (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, and `cacheWrite1hTokens` — the 1h-TTL subset of `cacheWriteTokens`, `0` when the provider did not report a split) and `turn.pricesPerM` (the static `input` / `output` / `cacheRead` / `cacheWrite` rates, plus `cacheWrite1h`, which falls back to `cacheWrite` when `price_per_m_cache_write_1h` is unset). A callback that ignores the 1h fields computes exactly what it did before they existed.
 
+The callback may return either a plain number (this turn's total USD) or an object `{ input, output, cacheRead, cacheWrite }` carrying the four per-component costs in USD — the total is their sum. Each part must be a finite non-negative number; a missing or invalid part rejects at startup/reload. Returning the object form makes the web UI's per-model cost chart show exact per-component costs for the turn instead of a token-weighted estimate; returning a plain number leaves that turn without a component split (the chart estimates it). Fold any 1h cache-write cost into `cacheWrite`.
+
+```js
+      price(turn) {
+        return {
+          input: (turn.usage.inputTokens * turn.pricesPerM.input) / 1_000_000,
+          output: (turn.usage.outputTokens * turn.pricesPerM.output) / 1_000_000,
+          cacheRead: (turn.usage.cacheReadTokens * turn.pricesPerM.cacheRead) / 1_000_000,
+          cacheWrite: (turn.usage.cacheWriteTokens * turn.pricesPerM.cacheWrite) / 1_000_000,
+        };
+      },
+```
+
 ### umans.ai
 
 A minimal `umans` backend entry contains `provider`, `id`, and `api_key`. The top-level

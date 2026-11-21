@@ -106,7 +106,7 @@ selected time range.
 
 **Contains:** A time-range selector and:
 
-- **Cost timeline:** Spending over time by model.
+- **Cost timeline:** Spending over time by model, split into input, output, cache-read, and cache-write components. The per-component costs come from each turn's recorded cost breakdown — the parts captured at the moment the turn's price was decided — so they are exact for turns priced by a catalog, static operator pricing, or a component-returning `price(turn)` callback. Older turns and turns priced by a plain-number callback carry no breakdown; their cost is split across components proportionally by token count.
 - **Token charts:** Input, output, cache-read, and cache-write tokens.
 - **Cache hit timeline:** Prompt-cache hit rate over time.
 - **Latency:** Response latency by model.

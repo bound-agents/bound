@@ -31,6 +31,14 @@ export interface TurnRecord {
 	 * cost/usage analysis sees them instead of silently dropping.
 	 */
 	status?: "ok" | "error" | "aborted";
+	/**
+	 * The four per-component cost parts for this turn, in USD, JSON-serialized
+	 * (`{ input, output, cacheRead, cacheWrite }`). Recorded at the moment the
+	 * turn's cost is decided so the metrics route sums authoritative recorded
+	 * parts instead of re-deriving a skewed token-proportional split. Absent
+	 * (`null`) for legacy rows and plain-number `price(turn)` callbacks.
+	 */
+	cost_breakdown?: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
 }
 
 export function applyMetricsSchema(db: Database): void {
@@ -93,6 +101,12 @@ export function applyMetricsSchema(db: Database): void {
 		["modified_at", "TEXT"],
 		// Soft delete flag (0 = not deleted, 1 = deleted) for synced table semantics
 		["deleted", "INTEGER NOT NULL DEFAULT 0"],
+		// Per-component cost parts for the turn as JSON { input, output,
+		// cacheRead, cacheWrite } in USD, written by recordTurn. Nullable: legacy
+		// rows and plain-number price(turn) callbacks have no breakdown. The
+		// append-only reducer drops this key on older peers that haven't migrated
+		// (forward-compat; see packages/sync/src/reducers.ts).
+		["cost_breakdown", "TEXT"],
 	] as const) {
 		try {
 			db.run(`ALTER TABLE turns ADD COLUMN ${colName} ${decl}`);
@@ -209,6 +223,7 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		relay_target: null,
 		relay_latency_ms: null,
 		context_debug: null,
+		cost_breakdown: turn.cost_breakdown ? JSON.stringify(turn.cost_breakdown) : null,
 		deleted: 0,
 	};
 

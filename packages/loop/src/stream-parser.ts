@@ -27,6 +27,17 @@ export interface ParsedResponse {
 		usageEstimated: boolean;
 	};
 	costUsdFromHub: number | null;
+	/**
+	 * Per-component cost breakdown stamped on the done chunk (Copilot catalog
+	 * pricing, or relayed from a hub). `{ input, output, cacheRead, cacheWrite }`
+	 * in USD; null when the chunk carried no breakdown.
+	 */
+	costBreakdownFromHub: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	} | null;
 }
 
 export interface StreamParserLogger {
@@ -87,6 +98,7 @@ export function parseResponseChunks(
 	let cacheReadTokens: number | null = null;
 	let usageEstimated = false;
 	let costUsdFromHub: number | null = null;
+	let costBreakdownFromHub: ParsedResponse["costBreakdownFromHub"] = null;
 	let finishReason: LLMFinishReason | null = null;
 
 	for (const chunk of remappedChunks) {
@@ -143,6 +155,7 @@ export function parseResponseChunks(
 				cacheReadTokens = chunk.usage.cache_read_tokens;
 				usageEstimated = chunk.usage.estimated;
 				costUsdFromHub = chunk.cost_usd ?? null;
+				costBreakdownFromHub = chunk.cost_breakdown ?? null;
 				finishReason = chunk.finish_reason ?? null;
 				break;
 			case "error":
@@ -176,6 +189,7 @@ export function parseResponseChunks(
 			usageEstimated,
 		},
 		costUsdFromHub,
+		costBreakdownFromHub,
 	};
 }
 
