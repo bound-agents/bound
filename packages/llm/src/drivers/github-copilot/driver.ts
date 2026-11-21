@@ -24,6 +24,7 @@
 
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import type { OpenAIResponsesProviderOptions } from "@ai-sdk/openai";
 import type { Logger } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 import { streamText } from "ai";
@@ -58,7 +59,13 @@ import {
 } from "../shared";
 import type { CopilotAccountInfo } from "./auth-core";
 import { type CopilotAutoSession, CopilotAutoSessionCache } from "./auto-session";
-import { CopilotCatalog, type CopilotRoute, resolveRoute } from "./catalog";
+import {
+	CopilotCatalog,
+	type CopilotModelEntry,
+	type CopilotRoute,
+	resolveRoute,
+	routeFromModelName,
+} from "./catalog";
 import {
 	type CopilotRequestContext,
 	createCopilotControlFetch,
@@ -107,6 +114,50 @@ function lastUserText(messages: LLMMessage[]): string {
 		if (text) return text;
 	}
 	return "";
+}
+
+/** Effort levels in ascending strength; used to resolve `max` to the top advertised tier. */
+const EFFORT_RANK = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Resolve the effective `reasoning_effort` for a turn against the model's
+ * advertised levels (from the catalog's `capabilities.supports.reasoning_effort`).
+ *
+ *  - `thinking.type === "disabled"` maps to `"none"` when the model lists it.
+ *  - an explicit `params.effort` passes through iff the model advertises it.
+ *  - `"max"` maps to the highest of the advertised tiers (xhigh/high/…) when
+ *    `"max"` itself is absent but a weaker ceiling is listed.
+ *  - when the model advertises no list at all, pass only the canonical
+ *    low/medium/high values through; drop anything else.
+ *  - anything unresolved returns `undefined` (the field is omitted on the wire).
+ */
+export function resolveReasoningEffort(
+	params: Pick<ChatParams, "effort" | "thinking">,
+	efforts: string[] | undefined,
+): string | undefined {
+	const disabled = params.thinking?.type === "disabled";
+	if (disabled && efforts?.includes("none")) return "none";
+
+	const requested = params.effort;
+	if (!requested) return undefined;
+
+	// No advertised list: accept only the canonical trio, drop the rest.
+	if (!efforts || efforts.length === 0) {
+		return requested === "low" || requested === "medium" || requested === "high"
+			? requested
+			: undefined;
+	}
+
+	if (efforts.includes(requested)) return requested;
+
+	// `max` with no explicit `max` tier collapses to the strongest listed level.
+	if (requested === "max") {
+		for (let i = EFFORT_RANK.length - 1; i >= 0; i--) {
+			const level = EFFORT_RANK[i];
+			if (level !== "max" && efforts.includes(level)) return level;
+		}
+	}
+	return undefined;
 }
 
 /** A 4xx that names a model/session problem the user can act on. */
@@ -248,7 +299,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 			mapProviderStream({
 				providerName: PROVIDER_NAME,
 				modelId,
-				stream: () => this.streamForRoute(route, modelId, apiEndpoint, params),
+				stream: () => this.streamForRoute(route, modelId, apiEndpoint, params, entry),
 				map: { estimateInputFromMessages: params.messages },
 			});
 
@@ -275,10 +326,11 @@ export class GitHubCopilotDriver implements LLMBackend {
 		modelId: string,
 		apiEndpoint: string,
 		params: ChatParams,
+		entry: CopilotModelEntry | null,
 	): AsyncIterable<unknown> {
 		if (route === "messages") return this.streamMessages(modelId, apiEndpoint, params);
-		if (route === "responses") return this.streamResponses(modelId, apiEndpoint, params);
-		return this.streamChat(modelId, apiEndpoint, params);
+		if (route === "responses") return this.streamResponses(modelId, apiEndpoint, params, entry);
+		return this.streamChat(modelId, apiEndpoint, params, entry);
 	}
 
 	/** Anthropic Messages route via @ai-sdk/anthropic, baseURL `${api}/v1`. */
@@ -318,6 +370,9 @@ export class GitHubCopilotDriver implements LLMBackend {
 		return streamText({
 			model: provider.languageModel(modelId),
 			messages,
+			// The system prompt rides as a role:"system" ModelMessage at index 0 (see
+			// buildAnthropicSystemMessage); ai@7 streamText rejects it unless we opt in.
+			allowSystemInMessages: true,
 			...(tools && { tools }),
 			...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
@@ -334,6 +389,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 		modelId: string,
 		apiEndpoint: string,
 		params: ChatParams,
+		entry: CopilotModelEntry | null,
 	): AsyncIterable<unknown> {
 		const provider = createOpenAI({
 			name: PROVIDER_NAME,
@@ -349,6 +405,22 @@ export class GitHubCopilotDriver implements LLMBackend {
 			midConversationSystem: true,
 		});
 		const tools = toToolSet(params.tools);
+		const effort = resolveReasoningEffort(params, entry?.reasoningEfforts);
+		// When reasoning is active, run under store:false + encrypted_content so the
+		// model replays its reasoning inline rather than via item_reference ids that
+		// Copilot may not retain (mirrors OpenCode and the chatgpt-oauth driver).
+		// forceReasoning is required because the SDK only auto-detects gpt-5*; a
+		// gpt-6.x / grok / mai-code turn would otherwise drop the reasoning fields.
+		const openaiOptions: OpenAIResponsesProviderOptions = {
+			...(params.threadId && { promptCacheKey: params.threadId }),
+			...(effort && {
+				forceReasoning: true,
+				reasoningEffort: effort,
+				reasoningSummary: "auto",
+				store: false,
+				include: ["reasoning.encrypted_content"],
+			}),
+		};
 		return streamText({
 			model: provider.responses(modelId),
 			messages,
@@ -360,8 +432,8 @@ export class GitHubCopilotDriver implements LLMBackend {
 			// the output budget is tiny; only forward a sane cap.
 			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 			abortSignal: params.signal,
-			...(params.threadId && {
-				providerOptions: { openai: { promptCacheKey: params.threadId } },
+			...(Object.keys(openaiOptions).length > 0 && {
+				providerOptions: { openai: openaiOptions },
 			}),
 		}).fullStream;
 	}
@@ -371,6 +443,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 		modelId: string,
 		apiEndpoint: string,
 		params: ChatParams,
+		entry: CopilotModelEntry | null,
 	): AsyncIterable<unknown> {
 		const provider = createOpenAI({
 			name: PROVIDER_NAME,
@@ -385,6 +458,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 			midConversationSystem: true,
 		});
 		const tools = toToolSet(params.tools);
+		const effort = resolveReasoningEffort(params, entry?.reasoningEfforts);
 		return streamText({
 			model: provider.chat(modelId),
 			messages,
@@ -395,6 +469,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 			...(params.temperature !== undefined && { temperature: params.temperature }),
 			abortSignal: params.signal,
+			...(effort && { providerOptions: { openai: { reasoningEffort: effort } } }),
 		}).fullStream;
 	}
 
@@ -423,7 +498,9 @@ export class GitHubCopilotDriver implements LLMBackend {
 			system_prompt: true,
 			vision: true,
 			prompt_caching: true,
-			extended_thinking: false,
+			// Extended thinking is the Claude (Messages) route's capability; the
+			// catalog isn't available synchronously, so route from the model name.
+			extended_thinking: routeFromModelName(this.model) === "messages",
 			max_context: this.contextWindow,
 		};
 	}

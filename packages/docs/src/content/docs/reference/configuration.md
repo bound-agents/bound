@@ -234,6 +234,14 @@ fails with an actionable "unavailable for this plan" error. A paid Copilot plan 
 The API endpoint is plan-specific and discovered (and host-validated against `githubcopilot.com`)
 from the account lookup — it is never set in config.
 
+`effort` is honored on every route — Anthropic Messages (Claude), OpenAI Responses (GPT-5+, grok,
+mai-code), and chat completions (Gemini and the rest). The requested value is validated against the
+reasoning levels the model advertises in the live catalog: an advertised value passes through,
+`max` collapses to the highest level the model lists when `max` itself is absent, and a value the
+model does not advertise is dropped rather than sent. A `thinking: { type: "disabled" }` config maps
+to `none` when the model offers it. On the Responses route an active effort also runs the turn under
+`store: false` with encrypted reasoning content so replayed reasoning rides inline.
+
 ---
 
 ## `network.js` / `network.json`

@@ -36,6 +36,9 @@ const BACKOFF_MAX_MS = 4 * 3600_000; // 4h cap — prevents runaway backoff from
 const BACKOFF_MULTIPLIER = 2;
 const BACKOFF_RESET_MS = 10 * 60_000; // 10min of success resets consecutive failure count
 
+/** Copilot token managers keyed by token-store path; every backend over one file shares one. */
+const copilotTokenManagers = new Map<string, CopilotTokenManager>();
+
 /**
  * Wraps multiple backends under the same logical ID.
  * Sorted by tier (ascending, best first), then by input price (ascending, cheapest first).
@@ -704,21 +707,30 @@ function createBackendFromConfig(
 
 		case "github-copilot": {
 			const contextWindow = config.contextWindow ?? 128000;
-			const store = new FileCopilotTokenStore(config.tokenStorePath ?? "config/copilot-auth.json");
-			const tokens = store.load();
-			if (!tokens) {
-				throw new Error("GitHub Copilot is not logged in — run `bound login --copilot`");
-			}
+			const storePath = config.tokenStorePath ?? "config/copilot-auth.json";
 			const deps = { fetch: fetch ?? globalThis.fetch };
-			const tokenManager = new CopilotTokenManager(tokens, deps, store);
+			// One token manager per store file. Refresh rotates the ghr_ token (the
+			// old one dies), so N backends holding N managers over one file would
+			// race the same refresh token when they expire together.
+			let tokenManager = copilotTokenManagers.get(storePath);
+			if (!tokenManager) {
+				const store = new FileCopilotTokenStore(storePath);
+				const tokens = store.load();
+				if (!tokens) {
+					throw new Error("GitHub Copilot is not logged in — run `bound login --copilot`");
+				}
+				tokenManager = new CopilotTokenManager(tokens, deps, store);
+				copilotTokenManagers.set(storePath, tokenManager);
+			}
+			const manager = tokenManager;
 			return new GitHubCopilotDriver({
-				tokenManager,
+				tokenManager: manager,
 				model: config.model,
 				contextWindow,
 				// The validated Copilot API endpoint is plan-specific and comes from
 				// the account lookup — resolved once, lazily, on first chat.
 				resolveAccount: () =>
-					tokenManager.getAccessToken().then((accessToken) => fetchAccountInfo(deps, accessToken)),
+					manager.getAccessToken().then((accessToken) => fetchAccountInfo(deps, accessToken)),
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,

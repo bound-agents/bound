@@ -307,4 +307,239 @@ describe("GitHubCopilotDriver routing", () => {
 		expect(caps.tool_use).toBe(true);
 		expect(caps.max_context).toBe(200000);
 	});
+
+	it("reports extended_thinking true when the configured model routes to messages", () => {
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "claude-sonnet-4.5",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({ requests: [] }),
+		});
+		expect(driver.capabilities().extended_thinking).toBe(true);
+	});
+
+	it("reports extended_thinking false when the configured model routes to responses or chat", () => {
+		const responses = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-5.6",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({ requests: [] }),
+		});
+		expect(responses.capabilities().extended_thinking).toBe(false);
+		const chat = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-4.1",
+			contextWindow: 128000,
+			account,
+			fetch: makeFetch({ requests: [] }),
+		});
+		expect(chat.capabilities().extended_thinking).toBe(false);
+	});
+});
+
+describe("GitHubCopilotDriver system prompt (Messages route)", () => {
+	it("sends the system text in the request body on a Claude turn with a system prompt", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "claude-sonnet-4.5",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({
+				catalog: [{ id: "claude-sonnet-4.5", supported_endpoints: ["/v1/messages"] }],
+				requests,
+			}),
+		});
+		// Before the fix this threw synchronously: streamText rejects a role:"system"
+		// message without allowSystemInMessages, so the request never left.
+		await drain(
+			driver.chat({
+				system: "You are a careful assistant.",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+		const inf = inferenceRequest(requests);
+		expect(new URL(inf.url).pathname).toBe("/v1/messages");
+		const body = JSON.parse(await inf.text()) as {
+			system?: Array<{ type?: string; text?: string; cache_control?: unknown }> | string;
+		};
+		const systemText =
+			typeof body.system === "string"
+				? body.system
+				: (body.system ?? []).map((b) => b.text ?? "").join("");
+		expect(systemText).toContain("You are a careful assistant.");
+	});
+
+	it("carries cache_control on the system block when caching is enabled", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "claude-sonnet-4.5",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({
+				catalog: [{ id: "claude-sonnet-4.5", supported_endpoints: ["/v1/messages"] }],
+				requests,
+			}),
+		});
+		await drain(
+			driver.chat({
+				system: "You are a careful assistant.",
+				cache_ttl: "5m",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+		const inf = inferenceRequest(requests);
+		const body = JSON.parse(await inf.text()) as {
+			system?: Array<{ type?: string; text?: string; cache_control?: unknown }>;
+		};
+		expect(Array.isArray(body.system)).toBe(true);
+		const block = (body.system ?? []).find((b) => (b.text ?? "").includes("careful"));
+		expect(block?.cache_control).toBeDefined();
+	});
+});
+
+describe("GitHubCopilotDriver reasoning effort (Responses route)", () => {
+	async function responsesBody(
+		params: Parameters<GitHubCopilotDriver["chat"]>[0],
+		catalog: unknown[],
+	): Promise<Record<string, unknown>> {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-5.6",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({ catalog, requests }),
+		});
+		await drain(driver.chat(params));
+		const inf = inferenceRequest(requests);
+		expect(new URL(inf.url).pathname).toBe("/responses");
+		return JSON.parse(await inf.text()) as Record<string, unknown>;
+	}
+
+	const gpt56Catalog = [
+		{
+			id: "gpt-5.6",
+			supported_endpoints: ["/responses"],
+			capabilities: {
+				supports: { reasoning_effort: ["none", "low", "medium", "high", "xhigh", "max"] },
+			},
+		},
+	];
+
+	it("forwards reasoning.effort when the model advertises the value", async () => {
+		const body = await responsesBody(
+			{ model: "gpt-5.6", effort: "high", messages: [{ role: "user", content: "hi" }] },
+			gpt56Catalog,
+		);
+		const reasoning = body.reasoning as { effort?: string } | undefined;
+		expect(reasoning?.effort).toBe("high");
+		// store:false + encrypted_content ride inline so replayed reasoning works.
+		expect(body.store).toBe(false);
+		expect(body.include).toContain("reasoning.encrypted_content");
+	});
+
+	it("omits reasoning.effort when no effort is requested", async () => {
+		const body = await responsesBody(
+			{ model: "gpt-5.6", messages: [{ role: "user", content: "hi" }] },
+			gpt56Catalog,
+		);
+		const reasoning = body.reasoning as { effort?: string } | undefined;
+		expect(reasoning?.effort).toBeUndefined();
+	});
+
+	it("drops an effort the model does not advertise", async () => {
+		const body = await responsesBody(
+			{ model: "gpt-5.6", effort: "none", messages: [{ role: "user", content: "hi" }] },
+			[
+				{
+					id: "gpt-5.6",
+					supported_endpoints: ["/responses"],
+					// list omits "none" → unlisted value dropped
+					capabilities: { supports: { reasoning_effort: ["low", "medium", "high"] } },
+				},
+			],
+		);
+		const reasoning = body.reasoning as { effort?: string } | undefined;
+		expect(reasoning?.effort).toBeUndefined();
+	});
+
+	it("maps effort:max to the highest advertised level when max is absent", async () => {
+		const body = await responsesBody(
+			{ model: "gpt-5.6", effort: "max", messages: [{ role: "user", content: "hi" }] },
+			[
+				{
+					id: "gpt-5.6",
+					supported_endpoints: ["/responses"],
+					capabilities: { supports: { reasoning_effort: ["low", "medium", "high", "xhigh"] } },
+				},
+			],
+		);
+		const reasoning = body.reasoning as { effort?: string } | undefined;
+		expect(reasoning?.effort).toBe("xhigh");
+	});
+
+	it("maps thinking disabled to effort:none when the model advertises none", async () => {
+		const body = await responsesBody(
+			{
+				model: "gpt-5.6",
+				thinking: { type: "disabled" },
+				messages: [{ role: "user", content: "hi" }],
+			},
+			gpt56Catalog,
+		);
+		const reasoning = body.reasoning as { effort?: string } | undefined;
+		expect(reasoning?.effort).toBe("none");
+	});
+});
+
+describe("GitHubCopilotDriver reasoning effort (Chat route)", () => {
+	it("forwards reasoning_effort on chat completions when the model advertises it", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gemini-2.5-pro",
+			contextWindow: 128000,
+			account,
+			fetch: makeFetch({
+				catalog: [
+					{
+						id: "gemini-2.5-pro",
+						supported_endpoints: ["/chat/completions"],
+						capabilities: { supports: { reasoning_effort: ["low", "medium", "high"] } },
+					},
+				],
+				requests,
+			}),
+		});
+		await drain(
+			driver.chat({
+				model: "gemini-2.5-pro",
+				effort: "medium",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+		const inf = inferenceRequest(requests);
+		expect(new URL(inf.url).pathname).toBe("/chat/completions");
+		const body = JSON.parse(await inf.text()) as { reasoning_effort?: string };
+		expect(body.reasoning_effort).toBe("medium");
+	});
+
+	it("omits reasoning_effort on chat completions when no effort resolves", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-4.1",
+			contextWindow: 128000,
+			account,
+			fetch: makeFetch({ catalog: [], requests }),
+		});
+		await drain(driver.chat({ model: "gpt-4.1", messages: [{ role: "user", content: "hi" }] }));
+		const inf = inferenceRequest(requests);
+		const body = JSON.parse(await inf.text()) as { reasoning_effort?: string };
+		expect(body.reasoning_effort).toBeUndefined();
+	});
 });

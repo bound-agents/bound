@@ -115,4 +115,61 @@ describe("CopilotTokenManager", () => {
 		expect(b).toBe("ghu_new");
 		expect(postCount).toBe(1);
 	});
+
+	it("adopts a newer persisted bundle on refresh instead of POSTing (second instance / re-login)", async () => {
+		const path = tempPath();
+		const store = new FileCopilotTokenStore(path);
+		// A second process already refreshed and persisted a non-expired bundle.
+		const persisted = tokens({
+			accessToken: "ghu_fromdisk",
+			refreshToken: "ghr_fromdisk",
+			accessTokenExpiresAt: 9_000_000,
+		});
+		store.save(persisted);
+
+		let postCount = 0;
+		const deps: AuthCoreDeps = {
+			fetch: (async () => {
+				postCount++;
+				return new Response(
+					JSON.stringify({
+						access_token: "ghu_posted",
+						refresh_token: "ghr_posted",
+						expires_in: 28800,
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}) as typeof fetch,
+			now: () => 5_000_000, // our in-memory bundle is expired, disk bundle is not
+		};
+		// Our in-memory copy holds the stale pre-rotation bundle.
+		const mgr = new CopilotTokenManager(tokens({ accessTokenExpiresAt: 1_000_000 }), deps, store);
+		const token = await mgr.getAccessToken();
+		expect(token).toBe("ghu_fromdisk");
+		expect(postCount).toBe(0);
+	});
+
+	it("POSTs a refresh when the persisted bundle is also expired", async () => {
+		const path = tempPath();
+		const store = new FileCopilotTokenStore(path);
+		store.save(tokens({ accessTokenExpiresAt: 1_000_000 }));
+		let postCount = 0;
+		const deps: AuthCoreDeps = {
+			fetch: (async () => {
+				postCount++;
+				return new Response(
+					JSON.stringify({
+						access_token: "ghu_new",
+						refresh_token: "ghr_new",
+						expires_in: 28800,
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}) as typeof fetch,
+			now: () => 5_000_000,
+		};
+		const mgr = new CopilotTokenManager(tokens({ accessTokenExpiresAt: 1_000_000 }), deps, store);
+		expect(await mgr.getAccessToken()).toBe("ghu_new");
+		expect(postCount).toBe(1);
+	});
 });

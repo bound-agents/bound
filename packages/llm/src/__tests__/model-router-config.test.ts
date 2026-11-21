@@ -256,3 +256,44 @@ describe("PooledBackend — network-error fall-through and exhaustion", () => {
 		expect(caught).toBeInstanceOf(LLMError);
 	});
 });
+
+describe("createBackendFromConfig — github-copilot token sharing", () => {
+	it("shares one token manager across backends over the same store file", async () => {
+		const { mkdtempSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { cleanupTmpDirSync } = await import("@bound/shared/test-utils");
+		const dir = mkdtempSync(join(tmpdir(), "copilot-share-"));
+		try {
+			const storePath = join(dir, "copilot-auth.json");
+			writeFileSync(
+				storePath,
+				JSON.stringify({
+					accessToken: "ghu_a",
+					refreshToken: "ghr_a",
+					accessTokenExpiresAt: Date.now() + 3_600_000,
+				}),
+			);
+			const router = createModelRouter({
+				backends: [
+					{
+						id: "c1",
+						provider: "github-copilot",
+						model: "claude-sonnet-5.5",
+						tokenStorePath: storePath,
+					},
+					{ id: "c2", provider: "github-copilot", model: "gpt-6.2-sol", tokenStorePath: storePath },
+				],
+				default: "c1",
+			});
+			const managerOf = (id: string) =>
+				(router.getBackend(id) as unknown as { tokenManager: unknown }).tokenManager;
+			expect(managerOf("c1")).toBeDefined();
+			expect(managerOf("c1")).toBe(managerOf("c2"));
+			expect(router.getBackend("c1").capabilities().extended_thinking).toBe(true);
+			expect(router.getBackend("c2").capabilities().extended_thinking).toBe(false);
+		} finally {
+			cleanupTmpDirSync(dir);
+		}
+	});
+});

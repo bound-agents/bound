@@ -265,10 +265,12 @@ export class AnthropicDriver implements LLMBackend {
 		// before the first content event, which would trip the relay silence
 		// timeout. Matches the Bedrock driver's messageStart behavior.
 		yield { type: "heartbeat" };
-
 		const result = streamText({
 			model: this.provider.languageModel(modelId),
 			messages,
+			// The system prompt rides as a role:"system" ModelMessage at index 0 (see
+			// buildAnthropicSystemMessage); ai@7 streamText rejects it unless we opt in.
+			allowSystemInMessages: true,
 			...(tools && { tools }),
 			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
 			// Anthropic disallows temperature when extended thinking / effort is

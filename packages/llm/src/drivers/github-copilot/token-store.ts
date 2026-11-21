@@ -45,7 +45,8 @@ export class CopilotTokenManager {
 	constructor(
 		private tokens: CopilotTokens,
 		private readonly deps: AuthCoreDeps,
-		private readonly store: Pick<FileCopilotTokenStore, "save">,
+		private readonly store: Pick<FileCopilotTokenStore, "save"> &
+			Partial<Pick<FileCopilotTokenStore, "load">>,
 	) {}
 
 	async getAccessToken(): Promise<string> {
@@ -58,6 +59,19 @@ export class CopilotTokenManager {
 	private refresh(): Promise<CopilotTokens> {
 		if (!this.refreshInFlight) {
 			this.refreshInFlight = (async () => {
+				// Another instance on the same store — or a fresh re-login — may already
+				// have rotated the bundle to disk. Our refresh token is dead the moment
+				// the first instance POSTs, so adopt a non-expired persisted bundle that
+				// differs from ours rather than POSTing with a stale refresh token.
+				const persisted = this.store.load?.() ?? null;
+				if (
+					persisted &&
+					persisted.refreshToken !== this.tokens.refreshToken &&
+					!isExpired(persisted, (this.deps.now ?? Date.now)())
+				) {
+					this.tokens = persisted;
+					return persisted;
+				}
 				const rotated = await refreshTokens(this.deps, this.tokens);
 				await this.store.save(rotated);
 				this.tokens = rotated;

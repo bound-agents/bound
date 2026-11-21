@@ -28,6 +28,8 @@ export interface CopilotModelEntry {
 	maxContextWindowTokens?: number;
 	supportsToolCalls?: boolean;
 	supportsVision?: boolean;
+	/** Reasoning-effort levels the model advertises (e.g. ["low","medium","high","max"]). */
+	reasoningEfforts?: string[];
 	/** True when every token price is 0 (Free-callable). */
 	zeroPriced?: boolean;
 	policyState?: string;
@@ -44,7 +46,7 @@ interface RawModelEntry {
 			max_output_tokens?: number;
 			max_context_window_tokens?: number;
 		};
-		supports?: { tool_calls?: boolean; vision?: boolean };
+		supports?: { tool_calls?: boolean; vision?: boolean; reasoning_effort?: string[] };
 	};
 	policy?: { state?: string };
 	model_picker_enabled?: boolean;
@@ -77,6 +79,7 @@ function parseEntry(raw: RawModelEntry): CopilotModelEntry | null {
 		maxContextWindowTokens: raw.capabilities?.limits?.max_context_window_tokens,
 		supportsToolCalls: raw.capabilities?.supports?.tool_calls,
 		supportsVision: raw.capabilities?.supports?.vision,
+		reasoningEfforts: raw.capabilities?.supports?.reasoning_effort,
 		...(zeroPriced !== undefined && { zeroPriced }),
 		policyState: raw.policy?.state,
 	};
