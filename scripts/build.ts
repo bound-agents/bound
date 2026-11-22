@@ -194,6 +194,16 @@ async function compileBinary(
 		// This handles packages that have an `exports` map with an "esnext" entry
 		// (e.g., @opentelemetry/otlp-exporter-base).
 		conditions: ["esnext"],
+		// Precompile the bundle to JSC bytecode so each binary skips the parse +
+		// first-tier compile of its (large) JS payload at startup. `format: "esm"`
+		// is REQUIRED, not cosmetic: `bytecode: true` flips Bun's default output
+		// format to "cjs", and the bound/boundctl entrypoint shims use top-level
+		// `await import(...)` to sequence the reflect-metadata polyfill ahead of
+		// tsyringe (see packages/cli/src/bound.ts). CJS forbids top-level await, so
+		// without this the two shim binaries fail to compile. ESM + bytecode is
+		// supported by Bun 1.4.5's compile path.
+		format: "esm",
+		bytecode: true,
 		plugins,
 	});
 
