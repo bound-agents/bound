@@ -214,7 +214,11 @@ export function decideSandboxSpawn(
  * (cwd + tmpdir read-write, "/" read-only, network gated) is the security heart
  * of the feature and must hold regardless of whether the binary can run here.
  */
-export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
+export function buildPolicy(
+	cwd: string,
+	cfg: ResolvedSandboxConfig,
+	platform: NodeJS.Platform = process.platform,
+) {
 	return {
 		filesystem: {
 			readwritePaths: computeWritableRoots(cwd, cfg),
@@ -242,14 +246,29 @@ export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 		// silently breaking tests and dev servers under the shell. Seatbelt rejects
 		// hostLoopback='allow' with ingress.default='deny' (an omitted hostLoopback
 		// is 'deny', not an inherit of default), so BOTH ingress fields are 'allow'.
-		network:
-			cfg.network === "open"
-				? {
-						egress: { default: "allow" as const },
-						ingress: { default: "allow" as const, hostLoopback: "allow" as const },
-					}
-				: {},
+		network: cfg.network === "open" ? openNetwork(platform) : {},
 	};
+}
+
+/**
+ * The "open" directional network posture for the host's mxc backend.
+ *
+ * Seatbelt (macOS) rejects hostLoopback='allow' with ingress.default='deny', so
+ * both ingress fields are 'allow'. Bubblewrap (Linux) rejects
+ * ingress.default='allow': the sandbox runs in a private network namespace
+ * behind slirp with no inbound route, so it requires 'deny' there. Listeners
+ * inside the sandbox stay reachable from inside it on either backend.
+ */
+export function openNetwork(platform: NodeJS.Platform) {
+	return platform === "linux"
+		? {
+				egress: { default: "allow" as const },
+				ingress: { default: "deny" as const, hostLoopback: "allow" as const },
+			}
+		: {
+				egress: { default: "allow" as const },
+				ingress: { default: "allow" as const, hostLoopback: "allow" as const },
+			};
 }
 
 /**

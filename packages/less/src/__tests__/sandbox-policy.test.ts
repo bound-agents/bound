@@ -145,8 +145,16 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		}
 	});
 
+	it("uses ingress.default='deny' on Linux, which bubblewrap requires", () => {
+		const policy = buildPolicy(process.cwd(), enabled, "linux");
+		expect(policy.network).toEqual({
+			egress: { default: "allow" },
+			ingress: { default: "deny", hostLoopback: "allow" },
+		});
+	});
+
 	it("opens egress and host-loopback ingress when network is 'open'", () => {
-		const policy = buildPolicy(process.cwd(), enabled);
+		const policy = buildPolicy(process.cwd(), enabled, "darwin");
 		// v1 DirectionalNetworkConfig: "open" allows all outbound (egress.default)
 		// and permits inbound/host-loopback (ingress.default + hostLoopback).
 		// Seatbelt rejects hostLoopback='allow' with ingress.default='deny', and an
