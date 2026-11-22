@@ -19,6 +19,7 @@ import {
 	computeGitProtectedPaths,
 	computeWritableRoots,
 	decideSandboxSpawn,
+	dnsSocketPaths,
 	formatWriteDenied,
 	nonInteractiveEnv,
 	readableRoots,
@@ -144,6 +145,14 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		} finally {
 			rmSync(extra, { recursive: true, force: true });
 		}
+	});
+
+	it("opens the mDNSResponder socket on macOS only when the network is open", () => {
+		expect(dnsSocketPaths("darwin", "open")).toEqual(["/private/var/run/mDNSResponder"]);
+		expect(dnsSocketPaths("darwin", "blocked")).toEqual([]);
+		expect(dnsSocketPaths("linux", "open")).toEqual([]);
+		const rw = buildPolicy(process.cwd(), enabled, "darwin").filesystem.readwritePaths;
+		expect(rw).toContain("/private/var/run/mDNSResponder");
 	});
 
 	it("grants writable device nodes on macOS only", () => {

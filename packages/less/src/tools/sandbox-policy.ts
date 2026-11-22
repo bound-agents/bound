@@ -68,6 +68,17 @@ export const DNS_MACH_LOOKUPS: readonly string[] = [
 	"com.apple.SystemConfiguration.DNSConfiguration",
 ];
 
+/**
+ * Unix sockets macOS name resolution connects to. libinfo's `getaddrinfo(3)`
+ * talks to mDNSResponder over this socket; mxc's seatbelt profile grants
+ * `network-outbound` to a path only through `readwritePaths`, so the socket is
+ * listed there when the network is open. It is a socket node, so the grant
+ * cannot create or modify files.
+ */
+export function dnsSocketPaths(platform: NodeJS.Platform, network: SandboxNetwork): string[] {
+	return platform === "darwin" && network === "open" ? ["/private/var/run/mDNSResponder"] : [];
+}
+
 export type SandboxNetwork = "open" | "blocked";
 export type SandboxOnUnavailable = "passthrough" | "error";
 
@@ -239,7 +250,11 @@ export function buildPolicy(
 	cfg: ResolvedSandboxConfig,
 	platform: NodeJS.Platform = process.platform,
 ) {
-	const readwritePaths = [...computeWritableRoots(cwd, cfg), ...writableDevices(platform)];
+	const readwritePaths = [
+		...computeWritableRoots(cwd, cfg),
+		...writableDevices(platform),
+		...dnsSocketPaths(platform, cfg.network),
+	];
 	// mxc resolves a path listed as both readonly and readwrite to readonly, so a
 	// top-level root that is itself writable (Linux /tmp) stays out of the read set.
 	const writable = new Set(readwritePaths);
