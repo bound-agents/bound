@@ -27,6 +27,11 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "../bridge";
+import type { DiscoveredModel } from "../catalog/discovery";
+import {
+	parseBedrockFoundationModels,
+	parseBedrockInferenceProfiles,
+} from "../catalog/discovery-fetch";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
@@ -37,6 +42,7 @@ import {
 	serverToolsRanInChunks,
 } from "./credit-redemption-config";
 import { buildReasoningOrigin, resolveProviderFetch, runProviderStream } from "./shared";
+import { createSigV4Fetch } from "./sigv4-fetch";
 interface BedrockReasoningConfig {
 	type?: "enabled" | "disabled" | "adaptive";
 	budgetTokens?: number;
@@ -178,6 +184,12 @@ export class BedrockDriver implements LLMBackend {
 	// redeemable here; `planCreditRedemption` compares the credit's minting
 	// endpoint to this. Empty string when the host didn't configure a site id.
 	private readonly reasoningOrigin: string;
+	// Discovery (slice 6, R-MC3): region + profile needed to sign a SigV4 control-
+	// plane request to the Bedrock models-list endpoints. Stored so `discoverModels()`
+	// can enumerate this host's own entitled lineup without reaching into the AI SDK.
+	private readonly discoveryRegion: string;
+	private readonly discoveryProfile: string | undefined;
+	private readonly discoveryFetch: typeof fetch | undefined;
 
 	constructor(config: {
 		region: string;
@@ -220,6 +232,9 @@ export class BedrockDriver implements LLMBackend {
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
+		this.discoveryRegion = config.region;
+		this.discoveryProfile = config.profile;
+		this.discoveryFetch = config.fetch;
 		this.reasoningOrigin =
 			buildReasoningOrigin({ siteId: config.siteId, provider: "bedrock", detail: config.region }) ??
 			"";
@@ -241,6 +256,49 @@ export class BedrockDriver implements LLMBackend {
 			...(credentialProvider && { credentialProvider }),
 			...(customFetch && { fetch: customFetch }),
 		});
+	}
+
+	/**
+	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): enumerate this
+	 * host's own entitled Bedrock lineup via the control-plane
+	 * `ListFoundationModels` + `ListInferenceProfiles` endpoints, signed with the
+	 * host's ambient AWS credentials (SigV4, same credential chain as the data
+	 * plane). Foundation models supply base ids + vendor + modality; inference
+	 * profiles add the region-prefixed cross-region routing ids, which
+	 * normalization folds back onto the bare family. Throws on a non-OK response
+	 * or transport failure so the caller falls back to config + `models.dev`
+	 * without blocking startup; a reachable-but-empty account returns `[]`.
+	 *
+	 * A `fetch` override (harness/test) is used verbatim and unsigned so tests
+	 * can stub the two endpoint bodies without AWS credentials.
+	 */
+	async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+		const host = `bedrock.${this.discoveryRegion}.amazonaws.com`;
+		const fetchImpl =
+			this.discoveryFetch ??
+			createSigV4Fetch({
+				credentials: () => resolveAwsCredentials(this.discoveryProfile),
+				service: "bedrock",
+				region: this.discoveryRegion,
+			});
+		const get = async (path: string): Promise<unknown> => {
+			const res = await fetchImpl(`https://${host}${path}`, {
+				headers: { accept: "application/json" },
+				...(signal && { signal }),
+			});
+			if (!res.ok) {
+				throw new Error(`bedrock model discovery failed: HTTP ${res.status} (${path})`);
+			}
+			return res.json();
+		};
+		const [foundation, profiles] = await Promise.all([
+			get("/foundation-models"),
+			get("/inference-profiles"),
+		]);
+		return [
+			...parseBedrockFoundationModels(foundation),
+			...parseBedrockInferenceProfiles(profiles),
+		];
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {

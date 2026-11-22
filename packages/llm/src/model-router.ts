@@ -42,6 +42,20 @@ export function makeRouteId(siteId: string, provider: string, backendId: string)
 }
 
 /**
+ * Sentinel context window handed to a driver constructed WITHOUT a resolved
+ * `max_context` in local config (slice 6, R-MC4). The catalog layer resolves a
+ * backend's real window from config / provider discovery / `models.dev`; a
+ * driver is only built here from static config, before resolution runs, so when
+ * `config.contextWindow` is absent we pass `0` rather than a hardcoded guess.
+ * `capabilities().max_context === 0` means "advertises no max_context", which
+ * `2026-11-21-model-routing.md` R-RT2 (§5 candidate pool) already treats as
+ * ineligible, and which the catalog readiness gate (`gateUnreadyBackends`)
+ * surfaces as a configuration gap — so a turn is never dispatched on a guessed
+ * window. A backend that sets `context_window` in config keeps its real number.
+ */
+const UNRESOLVED_CONTEXT_WINDOW = 0;
+
+/**
  * A local route entry in the flat {@link ModelRouter} registry. Each carries
  * its {@link RouteId} (addressing/ranking/health/stickiness) and, separately,
  * its provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`, for
@@ -393,6 +407,19 @@ export class ModelRouter {
 	}
 
 	/**
+	 * Mark a backend not-ready so it is excluded from `listBackends`/
+	 * `listEligible`/`resolveModel` (deferred as `transient-unavailable`) and
+	 * from advertisement. Symmetric with {@link clearNotReady}. The catalog
+	 * readiness gate (R-MC4) uses this to exclude a resolved static backend
+	 * whose `max_context` is unresolved across all metadata layers, reusing the
+	 * same not-ready mechanism readiness-bearing backends rely on rather than a
+	 * parallel gate. No-op if the id is unknown to the router.
+	 */
+	markNotReady(id: string): void {
+		if (this.backends.has(id)) this.notReady.add(id);
+	}
+
+	/**
 	 * Redirect the default backend id if it currently points at `fromId` (e.g.
 	 * the namespace placeholder) — repoint it at a concrete expanded id. No-op
 	 * if the default isn't `fromId`.
@@ -589,7 +616,7 @@ function createBackendFromConfig(
 				throw new Error("Bedrock driver requires region in config");
 			}
 			const profile = config.profile as string | undefined;
-			const contextWindow = config.contextWindow ?? 200000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new BedrockDriver({
 				region,
 				model: config.model,
@@ -606,7 +633,7 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("Anthropic driver requires apiKey in config");
 			}
-			const contextWindow = config.contextWindow ?? 200000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new AnthropicDriver({
 				apiKey,
 				model: config.model,
@@ -624,7 +651,7 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("OpenAI-compatible driver requires apiKey in config");
 			}
-			const contextWindow = config.contextWindow ?? 8192;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenAICompatibleDriver({
 				baseUrl,
 				apiKey,
@@ -644,7 +671,7 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("Cerebras driver requires apiKey in config");
 			}
-			const contextWindow = config.contextWindow ?? 128000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenAICompatibleDriver({
 				baseUrl,
 				apiKey,
@@ -664,7 +691,7 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("z.AI driver requires apiKey in config");
 			}
-			const contextWindow = config.contextWindow ?? 128000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenAICompatibleDriver({
 				baseUrl,
 				apiKey,
@@ -679,7 +706,7 @@ function createBackendFromConfig(
 		}
 
 		case "chatgpt-oauth": {
-			const contextWindow = config.contextWindow ?? 128000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			const store = new FileTokenStore(config.tokenStorePath ?? "config/chatgpt-auth.json");
 			const tokens = store.load();
 			if (!tokens) {
@@ -697,7 +724,7 @@ function createBackendFromConfig(
 		}
 
 		case "github-copilot": {
-			const contextWindow = config.contextWindow ?? 128000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			const storePath = config.tokenStorePath ?? "config/copilot-auth.json";
 			const deps = { fetch: fetch ?? globalThis.fetch };
 			// One token manager per store file. Refresh rotates the ghr_ token (the
@@ -734,7 +761,7 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("OpenCode Go driver requires apiKey in config");
 			}
-			const contextWindow = config.contextWindow ?? 128000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenCodeGoDriver({
 				apiKey,
 				model: config.model,
@@ -782,7 +809,7 @@ function createBackendFromConfig(
 				throw new Error("Bedrock Mantle driver requires providerMode in config");
 			}
 			const profile = config.profile as string | undefined;
-			const contextWindow = config.contextWindow ?? 272000;
+			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new BedrockMantleDriver({
 				region,
 				model: config.model,

@@ -42,8 +42,10 @@ import type { StageEntry, Vc15Tunables } from "../../summary-extraction";
 import {
 	type LoadedStableInputs,
 	collectStableVolatileInputs,
+	loadClusterModels,
 	projectStableVolatileInputs,
 } from "../collect";
+import { renderClusterModels } from "../compose";
 import { hashStableVolatileInputs } from "../hash";
 
 const SITE_ID = "test-site";
@@ -238,6 +240,59 @@ describe("collectStableVolatileInputs — integration tests", () => {
 		const calm = hashStableVolatileInputs(collectStableVolatileInputs(db, false));
 		const pressured = hashStableVolatileInputs(collectStableVolatileInputs(db, true));
 		expect(calm).not.toBe(pressured);
+		db.close();
+	});
+
+	it("K8: cluster-model render from the real collector never emits pricing (no false price legend)", () => {
+		// The objection this test pins: the stable-context legend and
+		// renderClusterModels promise price_in/price_out, but loadClusterModels —
+		// the SOLE production collector feeding ClusterModelView — reads only
+		// capability fields from the synced hosts.models JSON, which carries no
+		// pricing. Drive the full collector path (hosts row -> loadClusterModels ->
+		// composeStableVolatileSubsection) and assert no price attribute or legend
+		// text can appear. The bogus `price_per_m_input` on the entry proves the
+		// collector ignores any pricing a host might advertise, not merely that the
+		// test omitted it.
+		const db = freshDb();
+		const ts = "2026-05-25T11:00:00Z";
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: SITE_ID,
+				host_name: "host-a",
+				models: JSON.stringify([
+					{
+						id: "gpt-6-astra",
+						max_output_tokens: 64000,
+						price_per_m_input: 2.5,
+						price_per_m_output: 10,
+						capabilities: { max_context: 700000, vision: true, extended_thinking: false },
+					},
+				]),
+				online_at: ts,
+				modified_at: ts,
+				deleted: 0,
+				work_spool_capable: 0,
+			},
+			SITE_ID,
+		);
+
+		// Render via the PRODUCTION path (context-assembly.ts:1152 folds the
+		// cluster block in as `renderClusterModels(loadClusterModels(...))`, NOT
+		// through the metadata-stripping R-VC25 projector), so this exercises the
+		// exact bytes a cold rebuild emits.
+		const rendered = renderClusterModels(loadClusterModels(db, SITE_ID)).join("\n");
+
+		// The honest capability signal still rides through.
+		expect(rendered).toContain('<model name="gpt-6-astra"');
+		expect(rendered).toContain('context="700000"');
+		expect(rendered).toContain('max_output="64000"');
+		// The false pricing promise is gone end-to-end: no legend text, no attrs.
+		expect(rendered).not.toContain("price_in");
+		expect(rendered).not.toContain("price_out");
+		expect(rendered).not.toContain("USD per million");
+		expect(rendered).not.toContain("2.5");
 		db.close();
 	});
 });

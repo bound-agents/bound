@@ -18,14 +18,22 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { DiscoveredModel } from "../catalog/discovery";
+import { parseOpenAIModelsList } from "../catalog/discovery-fetch";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import { LLMError } from "../types";
 import { resolveProviderFetch, runProviderStream } from "./shared";
 export class OpenAICompatibleDriver implements LLMBackend {
 	private provider: ReturnType<typeof createOpenAICompatible>;
 	private model: string;
 	private contextWindow: number;
 	private providerName: string;
+	// Discovery (slice 6, R-MC3): raw endpoint + key for on-demand `/v1/models`.
+	private readonly discoveryBaseUrl: string;
+	private readonly discoveryApiKey: string;
+	private readonly discoveryHeaders?: Record<string, string>;
+	private readonly discoveryFetch: typeof fetch;
 
 	constructor(config: {
 		baseUrl: string;
@@ -77,6 +85,38 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			...(config.additionalHeaders && { headers: config.additionalHeaders }),
 			...(customFetch && { fetch: customFetch }),
 		});
+		this.discoveryBaseUrl = config.baseUrl;
+		this.discoveryApiKey = config.apiKey;
+		this.discoveryHeaders = config.additionalHeaders;
+		this.discoveryFetch = customFetch ?? globalThis.fetch;
+	}
+
+	/**
+	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): query the OpenAI-
+	 * compatible `/v1/models` endpoint with this host's own key. These endpoints
+	 * expose only model ids; capability/pricing metadata fills from `models.dev`
+	 * + local config via the layered resolver. Throws on a non-OK response or
+	 * transport failure so the caller falls back without blocking startup; a
+	 * reachable-but-empty lineup returns `[]`.
+	 */
+	async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+		const url = `${this.discoveryBaseUrl.replace(/\/$/, "")}/models`;
+		const res = await this.discoveryFetch(url, {
+			headers: {
+				accept: "application/json",
+				authorization: `Bearer ${this.discoveryApiKey}`,
+				...this.discoveryHeaders,
+			},
+			...(signal && { signal }),
+		});
+		if (!res.ok) {
+			throw new LLMError(
+				`${this.providerName} model discovery failed: HTTP ${res.status}`,
+				this.providerName,
+				res.status,
+			);
+		}
+		return parseOpenAIModelsList(await res.json());
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {

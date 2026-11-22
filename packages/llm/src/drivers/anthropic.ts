@@ -36,9 +36,12 @@ import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import type { ModelMessage } from "ai";
 import { ANTHROPIC_ENVELOPE, mapChunks, mapError, toModelMessages, toToolSet } from "../bridge";
+import type { DiscoveredModel } from "../catalog/discovery";
+import { parseAnthropicModelsList } from "../catalog/discovery-fetch";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import { createLoggingFetch } from "../fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import { LLMError } from "../types";
 import { quantizeCacheTtl } from "./bedrock";
 import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
 import {
@@ -190,6 +193,12 @@ export class AnthropicDriver implements LLMBackend {
 	// Endpoint identity for the inline credit-redemption co-location check
 	// (slice 5, R-RT18). Empty string when the host didn't configure a site id.
 	private readonly reasoningOrigin: string;
+	// Discovery (slice 6, R-MC3): the raw credentials/endpoint needed to query
+	// `/v1/models` on demand. Stored so `discoverModels()` can hit the inventory
+	// endpoint with this host's own key without reaching into the AI SDK provider.
+	private readonly discoveryApiKey: string;
+	private readonly discoveryBaseUrl: string;
+	private readonly discoveryFetch: typeof fetch;
 
 	constructor(config: {
 		apiKey: string;
@@ -238,11 +247,42 @@ export class AnthropicDriver implements LLMBackend {
 			(config.logger
 				? createLoggingFetch(config.logger, "anthropic", config.connectTimeoutMs)
 				: undefined);
+		this.discoveryApiKey = config.apiKey;
+		this.discoveryBaseUrl = config.baseUrl ?? "https://api.anthropic.com/v1";
+		this.discoveryFetch = customFetch ?? globalThis.fetch;
 		this.provider = createAnthropic({
 			apiKey: config.apiKey,
 			...(config.baseUrl && { baseURL: config.baseUrl }),
 			...(customFetch && { fetch: customFetch }),
 		});
+	}
+
+	/**
+	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): query Anthropic
+	 * `/v1/models` with this host's own key. Sends the fallback beta header so
+	 * each row may carry `allowed_fallback_models`. Total: a non-OK response or
+	 * transport failure throws so the caller falls back to config + `models.dev`
+	 * without blocking startup; a reachable-but-empty lineup returns `[]`.
+	 */
+	async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+		const url = `${this.discoveryBaseUrl.replace(/\/$/, "")}/models`;
+		const res = await this.discoveryFetch(url, {
+			headers: {
+				accept: "application/json",
+				"x-api-key": this.discoveryApiKey,
+				"anthropic-version": "2023-06-01",
+				"anthropic-beta": "server-side-fallback-2026-07-01",
+			},
+			...(signal && { signal }),
+		});
+		if (!res.ok) {
+			throw new LLMError(
+				`anthropic model discovery failed: HTTP ${res.status}`,
+				"anthropic",
+				res.status,
+			);
+		}
+		return parseAnthropicModelsList(await res.json());
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {

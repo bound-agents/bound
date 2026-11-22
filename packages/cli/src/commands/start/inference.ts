@@ -3,15 +3,26 @@
  * and post-restart summary extraction.
  */
 
+import { dirname, join } from "node:path";
 import { extractSummaryAndMemories } from "@bound/agent";
 import type { AppContext } from "@bound/core";
-import { updateRow } from "@bound/core";
-import { createModelRouter, makeRouteId } from "@bound/llm";
+import { listModelAliases, updateRow } from "@bound/core";
+import {
+	ModelsDevCache,
+	createModelRouter,
+	makeRouteId,
+	resolveCatalog,
+	supportsModelDiscovery,
+} from "@bound/llm";
 import type {
 	BackendConfig,
+	CatalogBackendInput,
+	DiscoveredModel,
+	MetadataLayer,
 	ModelBackendsConfig,
 	ModelDescriptor,
 	ModelRegistrar,
+	ResolvedBackend,
 } from "@bound/llm";
 import type {
 	HostModelEntry,
@@ -135,15 +146,27 @@ export function advertiseLocalModels(
 	appContext: AppContext,
 	modelRouter: ReturnType<typeof createModelRouter>,
 	rawBackends: SharedModelBackendsConfig,
+	/**
+	 * Resolved per-backend catalog metadata (slice 6, R-MC2/R-MC9) keyed by
+	 * backend id. When present, each advertised route carries its resolved
+	 * `logical_model` (alias/config/normalization) and resolved `max_context`
+	 * from the three-layer merge instead of the backend-id placeholder. Absent
+	 * on early boot or when catalog resolution produced nothing (R-MC6: never
+	 * blocks advertisement).
+	 */
+	catalog?: ReadonlyMap<string, ResolvedBackend>,
 ): void {
 	const modelEntries: HostModelEntry[] = modelRouter.listBackends().map((b) => {
 		const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
-		// R-RT2: advertise route identity + metadata; `tier` is gone (R-RT3).
-		// `logical_model` is the backend id for now (dynamic grouping = slice 6).
+		const resolved = catalog?.get(b.id);
+		// R-RT2/R-MC9: advertise route identity + metadata; `tier` is gone (R-RT3).
+		// `logical_model` comes from catalog grouping when resolved, else the
+		// backend id as a conservative pre-resolution placeholder.
+		const resolvedMaxContext = resolved?.metadata.capabilities.max_context;
 		const entry: HostModelEntry = {
 			id: b.id,
 			route_id: modelRouter.getRouteId(b.id) ?? undefined,
-			logical_model: b.id,
+			logical_model: resolved ? (resolved.logicalModel ?? undefined) : b.id,
 			provider_model_id: rawBackend?.model,
 			max_output_tokens: modelRouter.getMaxOutputTokens(b.id),
 			cache_ttl: modelRouter.getCacheTtl(b.id),
@@ -151,7 +174,10 @@ export function advertiseLocalModels(
 				typeof rawBackend?.thinking === "object" && rawBackend.thinking?.type === "tool"
 					? "tool"
 					: undefined,
-			capabilities: b.capabilities,
+			capabilities:
+				resolvedMaxContext !== undefined
+					? { ...b.capabilities, max_context: resolvedMaxContext }
+					: b.capabilities,
 		};
 		return entry;
 	});
@@ -169,6 +195,55 @@ export function advertiseLocalModels(
 			appContext.siteId,
 		);
 	}
+}
+
+/**
+ * R-MC4 readiness gate (slice 6, `2026-11-21-model-catalog.md` §3.2). The pure
+ * `resolveCatalog` decides per backend whether `max_context` resolved across the
+ * three metadata layers (`ready`) and, when it did not, a human-readable
+ * `configGap`. This is the production consumer of that decision: it marks every
+ * unready backend not-ready on the router — so `listBackends`/`listEligible`/
+ * `resolveModel` exclude it, which in turn keeps it out of `advertiseLocalModels`
+ * (R-MC4: "shall not be advertised as routable") and out of local routing — and
+ * logs its gap once so an operator knows which `context_window` to set. It
+ * reuses the router's existing not-ready mechanism rather than inventing a
+ * parallel gate.
+ *
+ * Idempotent and reversible: a backend the catalog now reports as ready has its
+ * not-ready flag CLEARED. This is the hinge of the first-boot trap fix — after a
+ * `models.dev` refresh supplies a previously-missing `max_context`, re-resolving
+ * and re-calling this flips newly-ready backends back on without a restart. Only
+ * backends present in `catalog` are touched; readiness-bearing namespace
+ * placeholders (umans) are absent from the catalog and keep their own
+ * expansion-driven not-ready state untouched.
+ *
+ * Returns the set of backend ids that were newly gated unready on this call, so
+ * the caller can decide whether a re-advertise is warranted.
+ */
+export function gateUnreadyBackends(
+	modelRouter: ReturnType<typeof createModelRouter>,
+	catalog: ReadonlyMap<string, ResolvedBackend>,
+	logger: Pick<AppContext["logger"], "warn">,
+): Set<string> {
+	const newlyGated = new Set<string>();
+	for (const [backendId, resolved] of catalog) {
+		if (resolved.ready) {
+			// A previously-gapped backend whose metadata now resolves (e.g. after a
+			// models.dev refresh) becomes selectable again. No-op when already ready.
+			if (modelRouter.isNotReady(backendId)) modelRouter.clearNotReady(backendId);
+			continue;
+		}
+		// Unready: exclude from selection + advertisement and surface the gap once.
+		if (!modelRouter.isNotReady(backendId)) {
+			modelRouter.markNotReady(backendId);
+			newlyGated.add(backendId);
+			logger.warn("[llm] Backend unready — excluded from advertisement + routing (R-MC4)", {
+				backend: backendId,
+				configGap: resolved.configGap,
+			});
+		}
+	}
+	return newlyGated;
 }
 
 /**
@@ -306,6 +381,84 @@ function buildSharedRow(
 	} as SharedBackendRow;
 }
 
+/**
+ * Resolve the local model catalog (slice 6, R-MC2/R-MC3/R-MC4/R-MC9) for the
+ * host's statically-configured backends: merge the three metadata layers and
+ * group logical models across every backend.
+ *
+ * This is the production consumer of the catalog pipeline. For each backend it
+ * collects the config layer from `rawBackends`, runs the driver's
+ * `discoverModels()` hook (layer 2) when the driver implements it, and reads the
+ * cached `models.dev` snapshot (layer 3) via the shared index, then hands all
+ * three to `resolveCatalog`.
+ *
+ * Resilience (R-MC6): a driver whose discovery fetch throws (transport /
+ * credential failure) contributes an empty provider layer and never blocks
+ * startup — resolution still succeeds from config + `models.dev`. Dynamic
+ * (readiness-bearing) namespaces are skipped here: their concrete per-model
+ * backends are resolved on expansion, not from the static config rows.
+ *
+ * Pure dependencies are injected: `modelRouter` supplies the live backend set +
+ * drivers, `cache` supplies the `models.dev` index. Aliases come from the
+ * synced `model_aliases` table (slice 3); passed in as a map so this stays
+ * testable without a DB.
+ */
+export async function resolveLocalCatalog(
+	modelRouter: ReturnType<typeof createModelRouter>,
+	rawBackends: SharedModelBackendsConfig,
+	cache: ModelsDevCache | null,
+	aliases: ReadonlyMap<string, string | null>,
+	logger?: Pick<AppContext["logger"], "warn">,
+): Promise<Map<string, ResolvedBackend>> {
+	const modelsDev = cache?.getIndex() ?? new Map<string, MetadataLayer>();
+
+	// Run discovery once per backend that implements the hook. A failing fetch
+	// degrades to an empty lineup for that backend (R-MC6); it never rejects out
+	// of here.
+	const inputs: CatalogBackendInput[] = [];
+	for (const b of modelRouter.listBackends()) {
+		// Skip not-ready namespace placeholders (dynamic providers like umans):
+		// their concrete models are resolved on readiness expansion.
+		if (modelRouter.isNotReady(b.id)) continue;
+		const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
+		if (!rawBackend) continue;
+
+		const backend = modelRouter.tryGetBackend(b.id);
+		let discovery: DiscoveredModel[] = [];
+		if (backend && supportsModelDiscovery(backend)) {
+			try {
+				discovery = await backend.discoverModels();
+			} catch (error) {
+				logger?.warn("[llm] Provider discovery failed; falling back to config + models.dev", {
+					backend: b.id,
+					error: formatError(error as Error),
+				});
+			}
+		}
+
+		const config: MetadataLayer = {};
+		if (rawBackend.context_window !== undefined) {
+			config.capabilities = { max_context: rawBackend.context_window };
+		}
+		if (rawBackend.max_output_tokens !== undefined) {
+			config.max_output_tokens = rawBackend.max_output_tokens;
+		}
+		if (typeof rawBackend.logical_model === "string") {
+			config.logical_model = rawBackend.logical_model;
+		}
+
+		inputs.push({
+			backendId: b.id,
+			provider: rawBackend.provider,
+			providerModelId: rawBackend.model ?? "",
+			config,
+			discovery,
+		});
+	}
+
+	return resolveCatalog({ backends: inputs, modelsDev, aliases });
+}
+
 export async function initInference(
 	appContext: AppContext,
 	commandContext: Record<string, unknown> | null,
@@ -353,7 +506,67 @@ export async function initInference(
 
 	// Register local model capabilities in hosts.models for sync advertisement
 	if (modelRouter) {
-		advertiseLocalModels(appContext, modelRouter, rawBackends);
+		// Build the local-only `models.dev` cache (slice 6, R-MC5/R-MC6) from the
+		// optional config block. Load the on-disk snapshot and kick off a
+		// conditional ETag refresh; neither blocks startup — an unreachable
+		// registry degrades to the cached snapshot or to config + provider
+		// discovery alone (R-MC6). The cache lives beside the node's data, never in
+		// a synced table.
+		const modelsDevCfg = rawBackends.models_dev;
+		const modelsDevCache =
+			modelsDevCfg?.enabled === false
+				? null
+				: new ModelsDevCache({
+						cachePath: join(dirname(appContext.db.filename), "models-dev-cache.json"),
+						...(modelsDevCfg?.url && { url: modelsDevCfg.url }),
+						...(modelsDevCfg?.refresh_interval_ms !== undefined && {
+							refreshIntervalMs: modelsDevCfg.refresh_interval_ms,
+						}),
+					});
+		if (modelsDevCache) {
+			await modelsDevCache.load();
+			void modelsDevCache.refresh().then(async (status) => {
+				appContext.logger.info(`[llm] models.dev cache refresh: ${status}`);
+				// First-boot trap (R-MC4): a fresh host with no cache resolves against
+				// an empty snapshot, so a backend that depends on models.dev for its
+				// max_context starts unready. When the refresh lands a CHANGED snapshot,
+				// re-resolve the catalog, flip any newly-ready backends on
+				// (`gateUnreadyBackends` clears their not-ready flag), and re-advertise
+				// so peers learn them — all without a restart.
+				if (status !== "updated") return;
+				const refreshedCatalog = await resolveLocalCatalog(
+					modelRouter,
+					rawBackends,
+					modelsDevCache,
+					aliases,
+					appContext.logger,
+				);
+				gateUnreadyBackends(modelRouter, refreshedCatalog, appContext.logger);
+				advertiseLocalModels(appContext, modelRouter, rawBackends, refreshedCatalog);
+			});
+		}
+
+		// Resolve the catalog (three-layer metadata + logical grouping) and
+		// advertise with resolved `logical_model` + `max_context`. Discovery runs
+		// per backend using each host's own credentials (R-MC3); a failed fetch
+		// degrades to config + models.dev without blocking (R-MC6).
+		const aliases = new Map<string, string | null>(
+			listModelAliases(appContext.db).map((a) => [a.provider_key, a.logical_model]),
+		);
+		const catalog = await resolveLocalCatalog(
+			modelRouter,
+			rawBackends,
+			modelsDevCache,
+			aliases,
+			appContext.logger,
+		);
+
+		// R-MC4 readiness gate: mark every backend the catalog could not resolve a
+		// max_context for as not-ready, so it is neither advertised nor routable
+		// and its configuration gap is logged once. Must run BEFORE advertisement.
+		gateUnreadyBackends(modelRouter, catalog, appContext.logger);
+
+		advertiseLocalModels(appContext, modelRouter, rawBackends, catalog);
 		// Kick off any self-configuring backends' background lineup fetch. Does
 		// NOT block startup — readiness backends stay not-ready (excluded from
 		// selection) until their fetch lands. Generic; umans is the first user.

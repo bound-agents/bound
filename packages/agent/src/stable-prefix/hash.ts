@@ -124,11 +124,15 @@ function canonicalizeInputs(inputs: StableVolatileInputs): CanonicalInputs {
 			// classify a metadata-driven rerender as a compose leak. `?? null`
 			// keeps JSON.stringify from dropping absent fields, so "undefined" and
 			// "absent" canonicalize identically.
-			tier: m.tier ?? null,
+			// Slice 6 (R-MC12): `tier` is retired; `role` joins the byte-influencing
+			// set. Pricing is NOT here: the production collector cannot populate
+			// `inputPerM`/`outputPerM` (no pricing in the `hosts.models` payload), so
+			// the renderer never emits a price attribute for it to fingerprint.
 			contextWindow: m.contextWindow ?? null,
 			maxOutput: m.maxOutput ?? null,
 			vision: m.vision ?? null,
 			thinking: m.thinking ?? null,
+			role: m.role ?? null,
 		})),
 	};
 }

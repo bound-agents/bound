@@ -119,3 +119,46 @@ export {
 	classifyGeminiInteractions400,
 	type ModelDeclinedOutcome,
 } from "./model-declined";
+
+export { normalizeModelKey, type NormalizedModelKey } from "./catalog/normalize";
+export {
+	resolveModelMetadata,
+	type FieldSource,
+	type ModelMetadata,
+	type MetadataLayer,
+	type ResolvedCapabilities,
+	type ResolvedPricing,
+	type ResolveMetadataArgs,
+	type ResolveMetadataResult,
+} from "./catalog/resolve-metadata";
+export {
+	resolveLogicalModel,
+	type GroupingSource,
+	type ResolveGroupingArgs,
+	type ResolveGroupingResult,
+} from "./catalog/resolve-grouping";
+export {
+	supportsModelDiscovery,
+	type DiscoveredModel,
+	type SupportsModelDiscovery,
+} from "./catalog/discovery";
+export {
+	indexModelsDevSnapshot,
+	lookupModelsDev,
+	ModelsDevCache,
+	type ModelsDevCacheOptions,
+	type RefreshStatus,
+} from "./catalog/models-dev-cache";
+export {
+	resolveCatalog,
+	type CatalogBackendInput,
+	type ResolveCatalogArgs,
+	type ResolvedBackend,
+} from "./catalog/resolve-catalog";
+export {
+	parseAnthropicModelsList,
+	parseBedrockFoundationModels,
+	parseBedrockInferenceProfiles,
+	parseOllamaTags,
+	parseOpenAIModelsList,
+} from "./catalog/discovery-fetch";

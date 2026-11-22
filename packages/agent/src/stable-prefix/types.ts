@@ -130,12 +130,21 @@ export interface ClusterModelView {
 	 * advertise a capability every serving host has). All of it derives from
 	 * host config, so it shifts only with the model set — the same covering
 	 * `hosts` change_log write the drift detector already keys on.
+	 *
+	 * Slice 6 (R-MC12): `tier` is gone. The capability signal for picking an
+	 * aux/`infer()` model is now the resolved `max_context` plus the named cluster
+	 * `role` (`default` / `heavy` / `fast`) this logical model is assigned in synced
+	 * `routing.model_roles` — not an opaque integer. Pricing is deliberately absent:
+	 * the production collector (`loadClusterModels`) reads only capability fields
+	 * from the synced `hosts.models` JSON, which carries no pricing, so there is no
+	 * price field here to render as a promise the data path cannot keep.
 	 */
-	tier?: number;
 	contextWindow?: number;
 	maxOutput?: number;
 	vision?: boolean;
 	thinking?: boolean;
+	/** Named cluster role assigned to this logical model in `routing.model_roles`. */
+	role?: "default" | "heavy" | "fast";
 }
 
 /**

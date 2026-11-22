@@ -183,6 +183,12 @@ const modelBackendSchema = z
 		region: z.string().optional(),
 		profile: z.string().optional(),
 		context_window: z.number().int().positive().optional(),
+		// Operator-declared logical model id (slice 6, R-MC8, 2026-11-21-model-catalog.md
+		// §6.1 step 2). Groups this backend under a cluster logical model when no
+		// higher-precedence synced `model_aliases` override exists. Omitted → the
+		// backend's logical model is resolved by structural normalization (§6.1 step 3)
+		// or stays unassigned.
+		logical_model: z.string().optional(),
 		price_per_m_input: z.number().min(0).default(0),
 		price_per_m_output: z.number().min(0).default(0),
 		price_per_m_cache_write: z.number().min(0).optional(),
@@ -282,6 +288,19 @@ export const modelBackendsSchema = z
 		// Opt-in cache-warming driver (issue #10). Co-located here because its
 		// economics derive from per-backend `cache_ttl` + cache pricing above.
 		cache_warming: cacheWarmingConfigSchema.optional(),
+		// `models.dev` fallback-registry settings (slice 6, R-MC5/R-MC6,
+		// 2026-11-21-model-catalog.md §5). The registry is a gap-filling metadata
+		// source only — it never grants model availability. All optional with safe
+		// defaults so an absent block means "fetch api.json every 24h". Operators in
+		// air-gapped environments set `enabled: false`; a custom mirror sets `url`.
+		models_dev: z
+			.object({
+				enabled: z.boolean().default(true),
+				url: z.string().url().default("https://models.dev/api.json"),
+				refresh_interval_ms: durationMsSchema().default(24 * 60 * 60 * 1000),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict()
 	.refine(

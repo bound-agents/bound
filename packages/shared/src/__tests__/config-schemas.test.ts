@@ -126,6 +126,66 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("accepts an optional models_dev block and applies defaults when present", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "b",
+						provider: "bedrock",
+						model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+						region: "us-east-1",
+						context_window: 200_000,
+					},
+				],
+				default: "b",
+				models_dev: { enabled: false },
+			});
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.data.models_dev?.enabled).toBe(false);
+				// Unset fields take their schema defaults.
+				expect(result.data.models_dev?.url).toBe("https://models.dev/api.json");
+				expect(result.data.models_dev?.refresh_interval_ms).toBe(24 * 60 * 60 * 1000);
+			}
+		});
+
+		it("rejects an unknown key inside models_dev (strict)", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "b",
+						provider: "bedrock",
+						model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+						region: "us-east-1",
+						context_window: 200_000,
+					},
+				],
+				default: "b",
+				models_dev: { enabled: true, bogus: 1 },
+			});
+			expect(result.success).toBe(false);
+		});
+
+		it("accepts an optional logical_model on a backend", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "opus",
+						provider: "bedrock",
+						model: "anthropic.claude-opus-4-20250101-v1:0",
+						region: "us-east-1",
+						context_window: 200_000,
+						logical_model: "claude-opus-4",
+					},
+				],
+				default: "opus",
+			});
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.data.backends[0].logical_model).toBe("claude-opus-4");
+			}
+		});
+
 		it("rejects empty backends array with non-empty default", () => {
 			const config = {
 				backends: [],

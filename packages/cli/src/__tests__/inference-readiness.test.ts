@@ -16,8 +16,15 @@ import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { createModelRouter } from "@bound/llm";
 import type { UmansModelMeta, UmansUsage } from "@bound/llm";
+import type { ResolvedBackend } from "@bound/llm";
 import { createLogger } from "@bound/shared";
-import { toRouterConfig, wireBackendReadiness } from "../commands/start/inference";
+import {
+	advertiseLocalModels,
+	gateUnreadyBackends,
+	resolveLocalCatalog,
+	toRouterConfig,
+	wireBackendReadiness,
+} from "../commands/start/inference";
 
 let db: Database;
 let dbPath: string;
@@ -223,5 +230,178 @@ describe("no startup network dependency (AC.14)", () => {
 		// umans stays not-ready / unselectable.
 		expect(router.isNotReady("umans")).toBe(true);
 		expect(router.listBackends().map((b) => b.id)).not.toContain("umans");
+	});
+});
+
+// --- R-MC4 production-path readiness gate (slice 6) --------------------------
+// The pure `resolveCatalog` computes ready/configGap per backend; these tests
+// prove the production start path CONSUMES them: an unready backend (no
+// max_context in any of config/provider/models.dev) is marked not-ready on the
+// real router, so it is neither advertised in hosts.models nor routable, and
+// its configGap is logged once. A later models.dev refresh that supplies the
+// missing max_context flips it ready and re-advertises WITHOUT a restart. A
+// local config context_window makes a backend ready with no models.dev.
+
+/**
+ * Build a real router over two static openai-compatible backends (constructs
+ * without live network): `ready-one` (will resolve a max_context) and `gapped`
+ * (will not). Both start selectable — no readiness wiring on a static driver.
+ */
+function buildRouterWithTwoStatic() {
+	const shared = {
+		backends: [
+			{
+				id: "ready-one",
+				provider: "openai-compatible",
+				api_key: "sk-test",
+				base_url: "http://localhost:8000",
+				model: "ready-model",
+				context_window: 128000,
+			},
+			{
+				id: "gapped",
+				provider: "openai-compatible",
+				api_key: "sk-test",
+				base_url: "http://localhost:8000",
+				model: "gapped-model",
+			},
+		],
+		default: "ready-one",
+	};
+	const router = createModelRouter(toRouterConfig(shared as never));
+	return { router, shared };
+}
+
+/** A resolved-catalog entry fixture with/without a resolved max_context. */
+function resolvedEntry(ready: boolean, providerModelId: string): ResolvedBackend {
+	return {
+		metadata: {
+			provider_model_id: providerModelId,
+			logical_model: null,
+			vendor: null,
+			capabilities: ready ? { max_context: 128000 } : {},
+			field_sources: ready ? { max_context: "config" } : {},
+		},
+		ready,
+		configGap: ready
+			? ""
+			: `${providerModelId}: max_context is unresolved across local config, provider discovery, and models.dev — set context_window in model_backends to make this route ready`,
+		logicalModel: null,
+		groupingSource: "none",
+	};
+}
+
+describe("R-MC4 readiness gate on the production path", () => {
+	it("does not advertise or route an unready backend and logs its configGap once", () => {
+		const { router, shared } = buildRouterWithTwoStatic();
+		const appContext = makeAppContext(shared);
+		const warnings: Array<{ msg: string; meta?: unknown }> = [];
+		(appContext.logger as unknown as { warn: unknown }).warn = (msg: string, meta?: unknown) => {
+			warnings.push({ msg, meta });
+		};
+
+		const catalog = new Map<string, ResolvedBackend>([
+			["ready-one", resolvedEntry(true, "ready-model")],
+			["gapped", resolvedEntry(false, "gapped-model")],
+		]);
+
+		// Before gating both are selectable (static drivers are born ready).
+		expect(
+			router
+				.listBackends()
+				.map((b) => b.id)
+				.sort(),
+		).toEqual(["gapped", "ready-one"]);
+
+		gateUnreadyBackends(router, catalog, appContext.logger);
+
+		// The gapped backend is now excluded from selection + eligibility.
+		expect(router.isNotReady("gapped")).toBe(true);
+		expect(router.listBackends().map((b) => b.id)).toEqual(["ready-one"]);
+		expect(router.listEligible().map((b) => b.id)).not.toContain("gapped");
+
+		// configGap logged exactly once, naming the field to set.
+		const gapLogs = warnings.filter(
+			(w) => w.msg.includes("gapped-model") || JSON.stringify(w.meta).includes("gapped"),
+		);
+		expect(gapLogs.length).toBe(1);
+		expect(JSON.stringify(gapLogs[0])).toContain("context_window");
+
+		// Advertisement (hosts.models) excludes the gapped backend.
+		advertiseLocalModels(appContext, router, shared as never, catalog);
+		const row = db.query("SELECT models FROM hosts WHERE site_id = ?").get(siteId) as {
+			models: string;
+		};
+		const advertised = JSON.parse(row.models) as Array<{ id: string }>;
+		expect(advertised.map((m) => m.id)).toEqual(["ready-one"]);
+	});
+
+	it("flips a newly-ready backend to ready and re-advertises after a models.dev refresh (first-boot trap)", () => {
+		const { router, shared } = buildRouterWithTwoStatic();
+		const appContext = makeAppContext(shared);
+
+		// First boot: no models.dev cache, gapped lacks max_context — unready.
+		const beforeRefresh = new Map<string, ResolvedBackend>([
+			["ready-one", resolvedEntry(true, "ready-model")],
+			["gapped", resolvedEntry(false, "gapped-model")],
+		]);
+		gateUnreadyBackends(router, beforeRefresh, appContext.logger);
+		advertiseLocalModels(appContext, router, shared as never, beforeRefresh);
+		expect(router.isNotReady("gapped")).toBe(true);
+		expect(router.listBackends().map((b) => b.id)).toEqual(["ready-one"]);
+
+		// A refresh lands a models.dev snapshot supplying gapped's max_context.
+		// Re-resolution now reports gapped as ready; the gate must flip it back.
+		const afterRefresh = new Map<string, ResolvedBackend>([
+			["ready-one", resolvedEntry(true, "ready-model")],
+			["gapped", resolvedEntry(true, "gapped-model")],
+		]);
+		gateUnreadyBackends(router, afterRefresh, appContext.logger);
+		advertiseLocalModels(appContext, router, shared as never, afterRefresh);
+
+		expect(router.isNotReady("gapped")).toBe(false);
+		expect(
+			router
+				.listBackends()
+				.map((b) => b.id)
+				.sort(),
+		).toEqual(["gapped", "ready-one"]);
+		const row = db.query("SELECT models FROM hosts WHERE site_id = ?").get(siteId) as {
+			models: string;
+		};
+		const advertised = JSON.parse(row.models) as Array<{ id: string }>;
+		expect(advertised.map((m) => m.id).sort()).toEqual(["gapped", "ready-one"]);
+	});
+
+	it("a local config context_window makes a backend ready with no models.dev", async () => {
+		// Drive the REAL resolveLocalCatalog over a router whose only backend
+		// carries context_window in config and has no models.dev snapshot. The
+		// resolved entry must be ready purely from the config layer.
+		const shared = {
+			backends: [
+				{
+					id: "cfg-only",
+					provider: "openai-compatible",
+					api_key: "sk-test",
+					base_url: "http://localhost:8000",
+					model: "cfg-model",
+					context_window: 65536,
+				},
+			],
+			default: "cfg-only",
+		};
+		const router = createModelRouter(toRouterConfig(shared as never));
+		// cache = null (no models.dev), empty aliases.
+		const catalog = await resolveLocalCatalog(router, shared as never, null, new Map());
+		const resolved = catalog.get("cfg-only");
+		expect(resolved?.ready).toBe(true);
+		expect(resolved?.metadata.capabilities.max_context).toBe(65536);
+		expect(resolved?.metadata.field_sources.max_context).toBe("config");
+
+		// And the gate keeps it selectable.
+		const appContext = makeAppContext(shared);
+		gateUnreadyBackends(router, catalog, appContext.logger);
+		expect(router.isNotReady("cfg-only")).toBe(false);
+		expect(router.listBackends().map((b) => b.id)).toContain("cfg-only");
 	});
 });

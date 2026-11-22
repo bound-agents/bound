@@ -114,7 +114,7 @@ describe("composeStableVolatileSubsection — Discoverable Archive tiers", () =>
 		const out = composeStableVolatileSubsection(
 			baseInputs({
 				skillIndex: [{ name: "my-skill", description: "does a thing" }],
-				clusterModels: [{ name: "opus", hosts: ["h1"], local: true, tier: 1 }],
+				clusterModels: [{ name: "opus", hosts: ["h1"], local: true, role: "heavy" }],
 			}),
 		).join("\n");
 		expect(out).toContain("<available_skills>");
@@ -128,13 +128,13 @@ describe("renderClusterModels", () => {
 		expect(renderClusterModels([])).toEqual([]);
 	});
 
-	it("renders all optional decision-metadata attributes when present", () => {
+	it("renders all optional decision-metadata attributes when present (R-MC12: role replaces tier)", () => {
 		const lines = renderClusterModels([
 			{
 				name: "gpt-6-astra",
 				hosts: ["a", "b"],
 				local: true,
-				tier: 1,
+				role: "default",
 				contextWindow: 700000,
 				maxOutput: 64000,
 				vision: true,
@@ -146,11 +146,20 @@ describe("renderClusterModels", () => {
 		expect(joined).toContain('name="gpt-6-astra"');
 		expect(joined).toContain('local="true"');
 		expect(joined).toContain('hosts="a,b"');
-		expect(joined).toContain('tier="1"');
+		expect(joined).toContain('role="default"');
 		expect(joined).toContain('context="700000"');
 		expect(joined).toContain('max_output="64000"');
 		expect(joined).toContain('vision="true"');
 		expect(joined).toContain('thinking="false"');
+		// R-MC12: the retired `tier` attribute is never emitted.
+		expect(joined).not.toContain("tier=");
+		// Pricing is NOT on the stable-context data path: `loadClusterModels`
+		// (the sole production collector) reads only capability fields from the
+		// `hosts.models` JSON, which carries no pricing. The legend must not
+		// promise price_in/price_out, and no model line may emit them.
+		expect(joined).not.toContain("price_in");
+		expect(joined).not.toContain("price_out");
+		expect(joined).not.toContain("USD per million");
 		expect(joined).toContain("</stable-context>");
 	});
 
@@ -158,7 +167,7 @@ describe("renderClusterModels", () => {
 		const lines = renderClusterModels([{ name: "alias-only", hosts: ["h"], local: false }]);
 		const joined = lines.join("\n");
 		expect(joined).toContain('name="alias-only"');
-		expect(joined).not.toContain("tier=");
+		expect(joined).not.toContain("role=");
 		expect(joined).not.toContain("context=");
 		expect(joined).not.toContain("vision=");
 	});

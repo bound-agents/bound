@@ -90,18 +90,23 @@ export function renderClusterModels(
 		name: string;
 		hosts: ReadonlyArray<string>;
 		local: boolean;
-		tier?: number;
 		contextWindow?: number;
 		maxOutput?: number;
 		vision?: boolean;
 		thinking?: boolean;
+		role?: "default" | "heavy" | "fast";
 	}>,
 ): string[] {
 	if (models.length === 0) return [];
-	// The legend rides the opening tag so the metadata is self-describing:
-	// without it, "tier" is an opaque number and the agent is back to guessing.
+	// The legend rides the opening tag so the metadata is self-describing. Slice 6
+	// (R-MC12): `tier` is retired. The capability signal is now the named cluster
+	// `role` (default/heavy/fast) plus resolved `context`/`max_output`; prefer
+	// explicit metadata over model-name vibes. Pricing is deliberately NOT
+	// advertised: the sole production collector (`loadClusterModels`) reads only
+	// capability fields from the synced `hosts.models` JSON, which carries no
+	// pricing, so a price legend would be a promise the data path cannot keep.
 	const lines: string[] = [
-		'<stable-context note="tier 1 is the most capable class, higher numbers are lighter/cheaper; context and max_output are token counts; prefer explicit metadata over model-name vibes when picking aux/infer() models">',
+		'<stable-context note="role is the model\'s cluster assignment (default/heavy/fast); context and max_output are token counts; prefer explicit metadata and role over model-name vibes when picking aux/infer() models">',
 	];
 	for (const m of models) {
 		let attrs =
@@ -110,7 +115,7 @@ export function renderClusterModels(
 		// Decision metadata (optional — absent for string-alias host rows).
 		// Numerics are validated finite upstream (loadClusterModels), so plain
 		// interpolation is XML-safe without escaping.
-		if (m.tier !== undefined) attrs += ` tier="${m.tier}"`;
+		if (m.role !== undefined) attrs += ` role="${m.role}"`;
 		if (m.contextWindow !== undefined) attrs += ` context="${m.contextWindow}"`;
 		if (m.maxOutput !== undefined) attrs += ` max_output="${m.maxOutput}"`;
 		if (m.vision !== undefined) attrs += ` vision="${m.vision}"`;

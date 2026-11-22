@@ -312,7 +312,7 @@ describe("ModelRouter", () => {
 		expect(() => createModelRouter(config)).toThrow("Provider not supported");
 	});
 
-	it("should use default values for openai-compatible config", () => {
+	it("reports max_context 0 (unresolved) for openai-compatible config with no context_window (R-MC4)", () => {
 		const config: ModelBackendsConfig = {
 			backends: [
 				{
@@ -328,8 +328,11 @@ describe("ModelRouter", () => {
 		const router = createModelRouter(config);
 		const backend = router.getBackend();
 		const caps = backend.capabilities();
-		// openai-compatible driver defaults contextWindow to 8192 when omitted.
-		expect(caps.max_context).toBe(8192);
+		// No hardcoded context-window guess (slice 6, R-MC4): a backend built from
+		// static config WITHOUT context_window reports max_context 0 ("unresolved"),
+		// which R-RT2 treats as ineligible and the catalog gate surfaces as a
+		// config gap — rather than dispatching a turn on a guessed 8192 window.
+		expect(caps.max_context).toBe(0);
 	});
 
 	it("should create router from config with OpenCode Go backend", () => {
@@ -1433,6 +1436,33 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
 		router.addDynamicBackend("m-x", stub, { ...READY_CAPS }, undefined);
 		expect(router.getMaxOutputTokens("m-x")).toBeUndefined();
+	});
+
+	it("markNotReady excludes a resolved static backend from selection + advertisement (R-MC4)", () => {
+		// A static (non-readiness) backend starts ready. When the catalog layer
+		// determines it lacks a resolved max_context, the CLI layer marks it
+		// not-ready through this primitive so listBackends/listEligible exclude
+		// it — the same mechanism readiness backends use — rather than inventing
+		// a parallel gate. markNotReady/clearNotReady are symmetric.
+		const backends = new Map<string, LLMBackend>([
+			["ready-one", new MockBackend("ready-one")],
+			["gapped", new MockBackend("gapped")],
+		]);
+		const router = new ModelRouter(backends, "ready-one");
+
+		// Both start selectable (no readiness wiring).
+		expect(router.isNotReady("gapped")).toBe(false);
+		expect(router.listBackends().map((b) => b.id)).toContain("gapped");
+
+		router.markNotReady("gapped");
+		expect(router.isNotReady("gapped")).toBe(true);
+		expect(router.listBackends().map((b) => b.id)).not.toContain("gapped");
+		expect(router.listEligible().map((b) => b.id)).not.toContain("gapped");
+
+		// A later refresh resolves the gap — clearNotReady flips it back.
+		router.clearNotReady("gapped");
+		expect(router.isNotReady("gapped")).toBe(false);
+		expect(router.listBackends().map((b) => b.id)).toContain("gapped");
 	});
 
 	it("disposes superseded readiness backends on reload (AC.5)", () => {

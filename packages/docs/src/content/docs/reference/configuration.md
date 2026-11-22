@@ -95,6 +95,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `backends` | array&lt;backend&gt; | — | The backends this host can serve locally. May be empty (hub-only). |
 | `default` | string | `""` | Backend `id` used when a turn names no model. Must reference a real backend, or be `""` when `backends` is empty. |
 | `daily_budget_usd` | number ≥ 0 | absent | Optional soft daily spend ceiling. |
+| `models_dev` | models.dev block | absent | `models.dev` fallback-registry settings (see below). Absent means fetch the public catalog every 24h. |
 
 **Backend entry:**
 
@@ -110,6 +111,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `region` | string | absent | AWS region (Bedrock, and required for `bedrock-mantle` — the Mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
 | `context_window` | int > 0 | — | Token budget bound for context assembly. Omitted for `umans` (fetched per-model). |
+| `logical_model` | string | absent | Operator-declared logical model this backend joins. Takes precedence over structural normalization but is overridden by a synced `model_aliases` entry. Absent → the logical model is resolved by normalization, or left unassigned when confidence is low. |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens (the 5m-TTL rate; also the fallback rate for 1h-TTL writes). |
@@ -127,9 +129,15 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `additional_headers` | map (string→string) | absent | Extra upstream HTTP headers for `openai-compatible`, `cerebras`, and `zai`. They apply on the host making the request and may override a same-named provider header, including `Authorization`. |
 
 **Capabilities override** (`capabilities`) — all fields optional booleans except
-`max_context`; set only to override the driver's autodetected defaults:
-`streaming`, `tool_use`, `system_prompt`, `prompt_caching`, `vision` (bool),
-`max_context` (int > 0).
+`max_context`; set only to override what the catalog resolves from provider
+discovery and `models.dev`: `streaming`, `tool_use`, `system_prompt`,
+`prompt_caching`, `vision` (bool), `max_context` (int > 0). There is no hardcoded
+per-driver `max_context` default: a backend whose `max_context` is set by none of
+local config (`context_window` or this override), provider discovery, or
+`models.dev` stays **unready** — it is not advertised and not routable, and the
+host logs the configuration gap naming the field to set — rather than dispatching
+a turn on a guessed window. Set `context_window` for any model absent from both
+your provider's discovery API and `models.dev`.
 
 **Thinking config** (`thinking`) — either the literal `true` (legacy shorthand), or an
 object:
@@ -153,6 +161,25 @@ cache-read instead of a cache-write. Off by default.
 
 The poke window is not configured — it is derived per-thread from that thread's backend
 `cache_ttl` (a poke fires only when the cache would otherwise lapse before the next scan).
+
+**models.dev block** (`models_dev`) — settings for the `models.dev` fallback
+registry, the gap-filling metadata source that fills capability, context-window,
+and pricing fields a backend's local config and live provider discovery leave
+unset. It never grants model availability: a model present in `models.dev` but
+absent from a host's own provider discovery is never served by that host. The
+snapshot is cached on local disk only and never synced. Absent → fetch the public
+catalog every 24 hours.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `enabled` | bool | `true` | Master toggle. Set `false` in air-gapped environments to skip all network fetches; a pre-seeded disk cache is still used. |
+| `url` | url | `https://models.dev/api.json` | Catalog endpoint. Point at a private mirror when the public host is unreachable. |
+| `refresh_interval_ms` | duration | `24h` | Background refresh cadence. Refreshes send `If-None-Match` with the cached `ETag`; a `304` keeps the existing snapshot. |
+
+A failed fetch never blocks startup: the host falls back to its cached snapshot,
+or to local config and provider APIs alone when no cache exists. A backend whose
+`max_context` is unresolved across all three layers (local config, provider
+discovery, `models.dev`) stays unready rather than running on a guessed window.
 
 ### Price callback
 

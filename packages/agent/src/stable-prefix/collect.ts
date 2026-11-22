@@ -46,7 +46,8 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { compareBytewise } from "@bound/shared";
+import { findClusterConfigValueByKey } from "@bound/core";
+import { type ClusterModelRoles, ROUTING_MODEL_ROLES_KEY, compareBytewise } from "@bound/shared";
 import {
 	buildParentSummaryMap,
 	buildStaleChildrenMap,
@@ -130,6 +131,31 @@ export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableV
 }
 
 /**
+ * Resolve the synced cluster role map (`routing.model_roles`) into a
+ * model→role lookup (R-MC12). An absent or malformed map yields an empty map,
+ * so the stable-context simply omits `role` on every model rather than guessing.
+ * A logical model named by more than one role resolves to the first match in
+ * declaration order (`default` → `heavy` → `fast`).
+ */
+export function loadClusterModelRoles(db: Database): Map<string, "default" | "heavy" | "fast"> {
+	const out = new Map<string, "default" | "heavy" | "fast">();
+	const row = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
+	if (!row) return out;
+	try {
+		const roles = JSON.parse(row.value) as ClusterModelRoles;
+		for (const role of ["default", "heavy", "fast"] as const) {
+			const model = roles[role];
+			if (typeof model === "string" && model.length > 0 && !out.has(model)) {
+				out.set(model, role);
+			}
+		}
+	} catch {
+		// Malformed roles JSON — no annotations.
+	}
+	return out;
+}
+
+/**
  * Read cluster model topology from the synced `hosts` table and project it
  * into the `<stable-context>` shape. Pure-after-read: no clock, no env.
  *
@@ -155,7 +181,6 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 	}
 
 	interface MetaAccumulator {
-		tier?: number;
 		contextWindow?: number;
 		maxOutput?: number;
 		vision?: boolean;
@@ -192,13 +217,14 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 			set.add(row.host_name);
 			hostsByModel.set(name, set);
 			if (siteId && row.site_id === siteId) localModels.add(name);
-			// Decision metadata (tier / context / output / vision / thinking) from
-			// the object entry form. Conservative cross-host merge: MIN for
-			// numerics (a bound that holds wherever the relay routes the call),
-			// AND for booleans (only advertise what every serving host has).
+			// Decision metadata (context / output / vision / thinking) from the
+			// object entry form. Conservative cross-host merge: MIN for numerics (a
+			// bound that holds wherever the relay routes the call), AND for booleans
+			// (only advertise what every serving host has). Slice 6 (R-MC12): `tier`
+			// is no longer read — the role assignment is resolved from the synced
+			// `routing.model_roles` map below instead.
 			if (entry && typeof entry === "object") {
 				const obj = entry as {
-					tier?: unknown;
 					max_output_tokens?: unknown;
 					capabilities?: {
 						max_context?: unknown;
@@ -208,7 +234,6 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 				};
 				const prior = metaByModel.get(name) ?? {};
 				metaByModel.set(name, {
-					tier: mergeMin(prior.tier, asFiniteNumber(obj.tier)),
 					contextWindow: mergeMin(
 						prior.contextWindow,
 						asFiniteNumber(obj.capabilities?.max_context),
@@ -221,6 +246,12 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 		}
 	}
 
+	// Resolve the cluster role map (R-MC12): a logical model assigned `default` /
+	// `heavy` / `fast` in synced `routing.model_roles` is annotated so the
+	// stable-context exposes the role in place of the retired `tier`. A malformed
+	// or absent map leaves every model role-less — the render simply omits `role`.
+	const roleByModel = loadClusterModelRoles(db);
+
 	return [...hostsByModel.entries()]
 		.map(([name, set]) => {
 			const meta = metaByModel.get(name) ?? {};
@@ -228,11 +259,11 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 				name,
 				hosts: [...set].sort(compareBytewise),
 				local: localModels.has(name),
-				tier: meta.tier,
 				contextWindow: meta.contextWindow,
 				maxOutput: meta.maxOutput,
 				vision: meta.vision,
 				thinking: meta.thinking,
+				role: roleByModel.get(name),
 			};
 		})
 		.sort((a, b) => compareBytewise(a.name, b.name));
