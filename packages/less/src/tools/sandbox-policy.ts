@@ -221,7 +221,7 @@ export function buildPolicy(
 ) {
 	return {
 		filesystem: {
-			readwritePaths: computeWritableRoots(cwd, cfg),
+			readwritePaths: [...computeWritableRoots(cwd, cfg), ...writableDevices(platform)],
 			// Deny-writes-only: the entire filesystem is readable; only the
 			// writable set above can be written. Anything not under a
 			// readwritePath inherits read-only from this root grant.
@@ -248,6 +248,18 @@ export function buildPolicy(
 		// is 'deny', not an inherit of default), so BOTH ingress fields are 'allow'.
 		network: cfg.network === "open" ? openNetwork(platform) : {},
 	};
+}
+
+/**
+ * Device nodes a shell needs to write even under write confinement. mxc 1.1.0's
+ * seatbelt profile denies writes to `/dev/null`, which breaks every `>/dev/null`
+ * redirect and `git status` ("could not open '/dev/null' for reading and
+ * writing"); `/dev/fd` backs `/dev/stdout` and `/dev/stderr`. These grant no
+ * persistent storage. Bubblewrap mounts its own writable `/dev`, so Linux needs
+ * none.
+ */
+export function writableDevices(platform: NodeJS.Platform): string[] {
+	return platform === "darwin" ? ["/dev/null", "/dev/zero", "/dev/fd"] : [];
 }
 
 /**

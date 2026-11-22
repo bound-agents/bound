@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkSandboxAvailable, spawnSandboxed } from "../tools/sandbox";
@@ -64,7 +64,11 @@ const nestedRunner = (() => {
 		writeFileSync(probe, "probe");
 		rmSync(probe, { force: true });
 		return false;
-	} catch {
+	} catch (e) {
+		// Only a permission error means "nested"; anything else is a test bug.
+		const code = (e as NodeJS.ErrnoException).code;
+		if (code !== "EPERM" && code !== "EACCES") throw e;
+		console.warn(`[sandbox.test] real enforcement skipped: nested sandbox (${code})`);
 		return true;
 	}
 })();
@@ -113,13 +117,31 @@ describe.skipIf(!sandboxLive || nestedRunner)("spawnSandboxed (real enforcement)
 	// lookups that back it; we re-allow them via IDENTITY_MACH_LOOKUPS. The
 	// regression signature is precise: `whoami` prints the bare numeric uid
 	// instead of the username when the lookup is denied.
+	// stdout must stream back (mxc 1.1.0's Socket-wrapped pipes delivered
+	// nothing under Bun), and /dev/null must be writable (1.1.0's seatbelt
+	// profile denies it, which breaks `git status` and every redirect).
+	it("streams stdout and allows writes to /dev/null", async () => {
+		const proc = await spawnSandboxed(
+			"echo out; echo discard > /dev/null && echo null-ok; git status --short >/dev/null && echo git-ok",
+			process.cwd(),
+			enabled,
+		);
+		const [out, code] = await Promise.all([
+			proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+			proc.exited,
+		]);
+		expect(code).toBe(0);
+		expect(out).toContain("out");
+		expect(out).toContain("null-ok");
+		expect(out).toContain("git-ok");
+	});
+
 	it("resolves the current user via getpwuid (whoami is not a bare uid)", async () => {
 		const proc = await spawnSandboxed("whoami", process.cwd(), enabled);
-		let out = "";
-		proc.stdout?.on("data", (d: Buffer) => {
-			out += d.toString();
-		});
-		const code = await proc.exited;
+		const [out, code] = await Promise.all([
+			proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+			proc.exited,
+		]);
 		const who = out.trim();
 		expect(code).toBe(0);
 		// The bug surfaces as a purely-numeric uid; a resolved name is not.

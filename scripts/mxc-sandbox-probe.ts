@@ -67,6 +67,23 @@ async function main(): Promise<void> {
 	}
 	console.log("write-denied: OK (blocked)");
 
+	// 3. stdout must stream back and /dev/null must be writable. mxc 1.1.0's
+	// Socket-wrapped pipes delivered nothing under Bun, and its seatbelt profile
+	// denies /dev/null; both broke every command while exit codes stayed 0.
+	const io = await spawnSandboxed(
+		"echo probe-out; echo x > /dev/null && echo null-ok",
+		process.cwd(),
+		cfg,
+	);
+	const [ioOut, ioCode] = await Promise.all([
+		io.stdout ? new Response(io.stdout).text() : Promise.resolve(""),
+		io.exited,
+	]);
+	if (ioCode !== 0 || !ioOut.includes("probe-out") || !ioOut.includes("null-ok")) {
+		throw new Error(`stdout/dev-null check failed: exit=${ioCode} stdout=${JSON.stringify(ioOut)}`);
+	}
+	console.log("stdout + /dev/null: OK");
+
 	console.log("mxc sandbox enforced from the compiled binary (koffi + libmxc_ffi loaded)");
 }
 

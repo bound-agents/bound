@@ -145,6 +145,13 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		}
 	});
 
+	it("grants writable device nodes on macOS only", () => {
+		const mac = buildPolicy(process.cwd(), enabled, "darwin").filesystem.readwritePaths;
+		expect(mac).toEqual(expect.arrayContaining(["/dev/null", "/dev/zero", "/dev/fd"]));
+		const linux = buildPolicy(process.cwd(), enabled, "linux").filesystem.readwritePaths;
+		expect(linux).not.toContain("/dev/null");
+	});
+
 	it("denies both ingress fields on Linux, which bubblewrap requires", () => {
 		const policy = buildPolicy(process.cwd(), enabled, "linux");
 		expect(policy.network).toEqual({

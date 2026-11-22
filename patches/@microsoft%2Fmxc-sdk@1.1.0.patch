@@ -1,0 +1,47 @@
+--- a/dist/bindings/native-stdio.js
++++ b/dist/bindings/native-stdio.js
+@@ -3,6 +3,7 @@
+ import * as fs from 'node:fs';
+ import * as net from 'node:net';
+ import * as os from 'node:os';
++import { Readable } from 'node:stream';
+ import { satisfies as semverSatisfies, valid as semverValid, } from 'semver';
+ import { MxcError } from '../v1/errors.js';
+ export function destroyNativeStreams(streams) {
+@@ -40,6 +41,26 @@
+     }
+     return fd;
+ }
++// Bun: net.Socket({ fd }) never emits data for these pipe descriptors, and
++// fs.createReadStream fails on them with EAGAIN because they are non-blocking.
++// Bun.file(fd).stream() reads them correctly but does not close the fd, so the
++// wrapper closes it once the stream closes.
++function bunFdReadable(fd) {
++    const stream = Readable.fromWeb(Bun.file(fd).stream());
++    let closed = false;
++    stream.once('close', () => {
++        if (closed)
++            return;
++        closed = true;
++        try {
++            fs.closeSync(fd);
++        }
++        catch {
++            // Already closed.
++        }
++    });
++    return stream;
++}
+ const nodeStreamDependencies = {
+     createReadStream: (path, options) => fs.createReadStream(path, options),
+     createWriteStream: (path, options) => fs.createWriteStream(path, options),
+@@ -53,6 +74,9 @@
+             if (platform === 'win32') {
+                 return dependencies.createReadStream('', windowsHandleOptions(handle));
+             }
++            if (typeof Bun !== 'undefined' && dependencies === nodeStreamDependencies) {
++                return bunFdReadable(unixFd(handle));
++            }
+             return dependencies.createSocket({
+                 fd: unixFd(handle),
+                 readable: true,
