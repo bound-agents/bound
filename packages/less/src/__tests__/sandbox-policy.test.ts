@@ -153,13 +153,17 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		expect(linux).not.toContain("/dev/null");
 	});
 
-	it("keeps a writable top-level root out of the Linux read set", () => {
-		const policy = buildPolicy(process.cwd(), { ...enabled, writablePaths: ["/tmp"] }, "linux");
-		expect(policy.filesystem.readwritePaths).toContain(realpathSync("/tmp"));
-		for (const rw of policy.filesystem.readwritePaths) {
-			expect(policy.filesystem.readonlyPaths).not.toContain(rw);
-		}
-	});
+	// POSIX-only: the collision is a writable /tmp also listed as a readable root.
+	it.skipIf(process.platform === "win32")(
+		"keeps a writable top-level root out of the Linux read set",
+		() => {
+			const policy = buildPolicy(process.cwd(), { ...enabled, writablePaths: ["/tmp"] }, "linux");
+			expect(policy.filesystem.readwritePaths).toContain(realpathSync("/tmp"));
+			for (const rw of policy.filesystem.readwritePaths) {
+				expect(policy.filesystem.readonlyPaths).not.toContain(rw);
+			}
+		},
+	);
 
 	it("grants read on / directly except under bubblewrap, which keeps its own /dev /proc /sys", () => {
 		expect(readableRoots("darwin")).toEqual(["/"]);
