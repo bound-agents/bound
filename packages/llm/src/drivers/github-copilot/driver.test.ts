@@ -479,6 +479,83 @@ describe("GitHubCopilotDriver routing", () => {
 		expect(new URL(inferenceRequest(requests).url).pathname).toBe("/chat/completions");
 	});
 
+	it("surfaces a chat-route reasoning_opaque delta as a thinking chunk carrying the opaque blob", async () => {
+		// LIVE SSE SHAPE (captured against Copilot /chat/completions for gemini-4-neon,
+		// 2026-11-22): the model's reasoning rides in a non-standard `delta.reasoning_opaque`
+		// field @ai-sdk/openai .chat drops entirely. A turn that spends its whole output
+		// budget on reasoning then surfaces NOTHING — recorded as a silent success. The
+		// driver must lift reasoning_opaque into a thinking chunk so the output is visible
+		// and the loop's degenerate-turn guard sees thinking present.
+		const reasoningOpaqueChatSse = () => {
+			const events = [
+				JSON.stringify({
+					id: "c1",
+					object: "chat.completion.chunk",
+					model: "gemini-4-neon",
+					choices: [
+						{
+							index: 0,
+							delta: {
+								role: "assistant",
+								content: null,
+								reasoning_opaque: "OPAQUE-REASONING-BLOB",
+							},
+							finish_reason: null,
+						},
+					],
+				}),
+				JSON.stringify({
+					id: "c1",
+					object: "chat.completion.chunk",
+					model: "gemini-4-neon",
+					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+					usage: {
+						prompt_tokens: 59,
+						completion_tokens: 131,
+						total_tokens: 190,
+						completion_tokens_details: { reasoning_tokens: 120 },
+					},
+				}),
+				"[DONE]",
+			]
+				.map((d) => `data: ${d}`)
+				.join("\n\n");
+			return new Response(`${events}\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+		const requests: Request[] = [];
+		const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const req = new Request(input, init);
+			requests.push(req);
+			const url = new URL(req.url);
+			if (url.pathname.endsWith("/models")) {
+				return new Response(JSON.stringify({ data: [] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			if (url.pathname.endsWith("/chat/completions")) return reasoningOpaqueChatSse();
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gemini-4-neon",
+			contextWindow: 700_000,
+			account,
+			fetch: fetchImpl,
+		});
+		const chunks = (await collectChunks(
+			driver.chat({ messages: [{ role: "user", content: "hi" }] }),
+		)) as Array<Record<string, unknown>>;
+		expect(new URL(inferenceRequest(requests).url).pathname).toBe("/chat/completions");
+		const thinking = chunks.find(
+			(c) => c.type === "thinking" && c.reasoning_encrypted_content === "OPAQUE-REASONING-BLOB",
+		);
+		expect(thinking).toBeDefined();
+	});
+
 	it("sets x-initiator agent when the latest message is a tool result", async () => {
 		const requests: Request[] = [];
 		const driver = new GitHubCopilotDriver({

@@ -169,6 +169,124 @@ function isSessionError(err: unknown): boolean {
 	return s !== undefined && s >= 400 && s < 500;
 }
 
+/**
+ * Wrap a fetch so each Chat Completions SSE `data:` line's non-standard
+ * `delta.reasoning_opaque` is accumulated into `collected`. Some models reached
+ * over the chat route (verified live: Gemini via Copilot) carry their reasoning
+ * in this field, which @ai-sdk/openai .chat has no schema for and drops. We tap
+ * the response body here (the only place the raw field survives), accumulate the
+ * blob, and leave the stream otherwise untouched — the SDK still parses the
+ * standard `content`/`tool_calls` deltas from the teed copy. Non-SSE responses
+ * (errors) pass through unmodified.
+ */
+/**
+ * Per-attempt capture of chat-route `reasoning_opaque` deltas. `scan` is the
+ * in-flight tee scanner, awaited before injection so the blob is complete even
+ * when the SDK's branch reaches `done` first.
+ */
+interface ReasoningOpaqueCapture {
+	reasoningOpaque: string;
+	scan: Promise<void> | null;
+}
+
+/** Origin stamped on chat-route opaque reasoning. It matches no Responses deployment's
+ * origin, so the bridge drops the blob instead of replaying it to a provider that can't
+ * decrypt it. */
+const CHAT_OPAQUE_ORIGIN_SUFFIX = "chat-reasoning-opaque";
+
+function captureReasoningOpaque(
+	baseFetch: typeof fetch,
+	collected: ReasoningOpaqueCapture,
+): typeof fetch {
+	return (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const res = await baseFetch(input, init);
+		const contentType = res.headers.get("content-type") ?? "";
+		if (!res.body || !contentType.includes("text/event-stream")) return res;
+		// Tee: one branch is scanned for reasoning_opaque, the other is handed to
+		// the SDK. A TransformStream scanner keeps the SDK's branch streaming.
+		const [forSdk, forScan] = res.body.tee();
+		collected.scan = scanReasoningOpaque(forScan, collected);
+		return new Response(forSdk, {
+			status: res.status,
+			statusText: res.statusText,
+			headers: res.headers,
+		});
+	}) as typeof fetch;
+}
+
+/** Scan an SSE byte stream for `delta.reasoning_opaque` and accumulate it. */
+async function scanReasoningOpaque(
+	stream: ReadableStream<Uint8Array>,
+	collected: ReasoningOpaqueCapture,
+): Promise<void> {
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			let nl: number;
+			// biome-ignore lint/suspicious/noAssignInExpressions: standard line-splitter loop
+			while ((nl = buffer.indexOf("\n")) >= 0) {
+				const line = buffer.slice(0, nl);
+				buffer = buffer.slice(nl + 1);
+				if (!line.startsWith("data:")) continue;
+				const payload = line.slice(5).trim();
+				if (payload === "" || payload === "[DONE]") continue;
+				try {
+					const parsed = JSON.parse(payload) as {
+						choices?: Array<{ delta?: { reasoning_opaque?: unknown } }>;
+					};
+					const opaque = parsed.choices?.[0]?.delta?.reasoning_opaque;
+					if (typeof opaque === "string" && opaque.length > 0) {
+						collected.reasoningOpaque += opaque;
+					}
+				} catch {
+					// A non-JSON data line is not ours to interpret; skip it.
+				}
+			}
+		}
+	} catch {
+		// A scan failure must never affect the SDK's branch — swallow and stop.
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+/**
+ * Emit the accumulated chat-route `reasoning_opaque` blob as a thinking chunk
+ * just before the terminal `done`, so a turn whose output was all reasoning the
+ * SDK dropped surfaces visible thinking (and the loop's degenerate guard sees
+ * it). The blob is opaque per-provider state; it rides `reasoning_encrypted_content`
+ * and carries no `reasoning_origin`, so the PERMISSIVE replay path (chat route sets
+ * no `reasoningProviderOptions`) drops it on the next turn rather than replaying
+ * an un-decryptable blob. Emits nothing when no reasoning_opaque was seen.
+ */
+async function* injectReasoningOpaque(
+	stream: AsyncIterable<StreamChunk>,
+	collected: ReasoningOpaqueCapture,
+	reasoningOrigin: string,
+): AsyncIterable<StreamChunk> {
+	let injected = false;
+	for await (const chunk of stream) {
+		if (chunk.type === "done" && !injected) {
+			if (collected.scan) await collected.scan;
+			if (collected.reasoningOpaque.length > 0) {
+				injected = true;
+				yield {
+					type: "thinking",
+					content: "",
+					reasoning_encrypted_content: collected.reasoningOpaque,
+					reasoning_origin: reasoningOrigin,
+				};
+			}
+		}
+		yield chunk;
+	}
+}
+
 export class GitHubCopilotDriver implements LLMBackend {
 	private readonly tokenManager: CopilotTokenManager;
 	private readonly model: string;
@@ -318,12 +436,32 @@ export class GitHubCopilotDriver implements LLMBackend {
 
 		yield { type: "heartbeat" };
 
-		const runAttempt = (stripEncryptedReasoning: boolean): AsyncIterable<StreamChunk> =>
-			mapProviderStream({
+		// The chat route taps `reasoning_opaque` SSE deltas into this ref (shared
+		// with streamChat's fetch wrapper) so injectReasoningOpaque can surface the
+		// accumulated blob as a thinking chunk. A fresh object per chatStream call
+		// scopes capture to this turn; each withEmptyRetry re-issue rebuilds the
+		// stream via the `stream` thunk, resetting the buffer below.
+		const collectedReasoningOpaque: ReasoningOpaqueCapture = { reasoningOpaque: "", scan: null };
+
+		const runAttempt = (stripEncryptedReasoning: boolean): AsyncIterable<StreamChunk> => {
+			const mapped = mapProviderStream({
 				providerName: PROVIDER_NAME,
 				modelId,
-				stream: () =>
-					this.streamForRoute(route, modelId, apiEndpoint, params, entry, stripEncryptedReasoning),
+				stream: () => {
+					// Reset the per-attempt capture buffer: a re-issue is a clean new
+					// request whose reasoning must not inherit the prior attempt's blob.
+					collectedReasoningOpaque.reasoningOpaque = "";
+					collectedReasoningOpaque.scan = null;
+					return this.streamForRoute(
+						route,
+						modelId,
+						apiEndpoint,
+						params,
+						entry,
+						stripEncryptedReasoning,
+						collectedReasoningOpaque,
+					);
+				},
 				// The messages route goes to @ai-sdk/anthropic, which surfaces the
 				// cache-write total (and the 1h/5m split) under providerMetadata.anthropic.
 				// Tag it so the bridge extracts both; the structured
@@ -340,6 +478,17 @@ export class GitHubCopilotDriver implements LLMBackend {
 						this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
 				},
 			});
+			// The chat route can carry reasoning in a non-standard delta field the SDK
+			// drops; surface it as a thinking chunk so the output is visible and the
+			// loop's degenerate guard sees thinking present. No-op on other routes.
+			return route === "chat"
+				? injectReasoningOpaque(
+						mapped,
+						collectedReasoningOpaque,
+						`${this.reasoningOrigin ?? PROVIDER_NAME}:${CHAT_OPAQUE_ORIGIN_SUFFIX}`,
+					)
+				: mapped;
+		};
 
 		const routedThroughAuto = configuredModel === AUTO_MODEL;
 		try {
@@ -426,11 +575,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 		params: ChatParams,
 		entry: CopilotModelEntry | null,
 		stripEncryptedReasoning: boolean,
+		collectedReasoningOpaque: ReasoningOpaqueCapture,
 	): AsyncIterable<unknown> {
 		if (route === "messages") return this.streamMessages(modelId, apiEndpoint, params);
 		if (route === "responses")
 			return this.streamResponses(modelId, apiEndpoint, params, entry, stripEncryptedReasoning);
-		return this.streamChat(modelId, apiEndpoint, params, entry);
+		return this.streamChat(modelId, apiEndpoint, params, entry, collectedReasoningOpaque);
 	}
 
 	/** Anthropic Messages route via @ai-sdk/anthropic, baseURL `${api}/v1`. */
@@ -545,18 +695,38 @@ export class GitHubCopilotDriver implements LLMBackend {
 		}).fullStream;
 	}
 
-	/** Chat Completions route via @ai-sdk/openai .chat, baseURL `${api}`. */
+	/**
+	 * Chat Completions route via @ai-sdk/openai .chat, baseURL `${api}`.
+	 *
+	 * Some models reached over this route (verified live: Gemini via Copilot)
+	 * carry their reasoning in a NON-STANDARD `delta.reasoning_opaque` field that
+	 * @ai-sdk/openai .chat has no schema for and drops silently. A turn that
+	 * spends its whole output budget on reasoning then surfaces no text and no
+	 * tool call — output_tokens > 0 but nothing visible — which slips past both the
+	 * driver empty-retry (keyed on output_tokens === 0) and the loop's
+	 * thinking-gated degenerate guard, recording as a silent success.
+	 *
+	 * `captureReasoningOpaque` taps the raw SSE at the fetch layer and accumulates
+	 * any `reasoning_opaque` deltas into `collected`; `injectReasoningOpaque`
+	 * (applied to the mapped StreamChunk stream) emits the accumulated blob as a
+	 * thinking chunk so the output is visible and the degenerate guard sees
+	 * thinking present. The blob is opaque per-provider state; it rides
+	 * `reasoning_encrypted_content`, which the PERMISSIVE replay path drops on the
+	 * next turn (the chat route sets no `reasoningProviderOptions`), so it is
+	 * surfaced for this turn without being replayed to a provider that can't use it.
+	 */
 	private streamChat(
 		modelId: string,
 		apiEndpoint: string,
 		params: ChatParams,
 		entry: CopilotModelEntry | null,
+		collected: ReasoningOpaqueCapture,
 	): AsyncIterable<unknown> {
 		const provider = createOpenAI({
 			name: PROVIDER_NAME,
 			apiKey: "copilot",
 			baseURL: apiEndpoint,
-			fetch: this.copilotFetch(),
+			fetch: captureReasoningOpaque(this.copilotFetch(), collected),
 		});
 		const messages = toModelMessages(params.messages, {
 			cacheProvider: null,
