@@ -38,7 +38,12 @@ describe("checkSandboxAvailable", () => {
  * instead: tmpdir() (always in the writable set → allowed) and a home-dir path
  * (outside it → denied).
  */
-const sandboxLive = (await checkSandboxAvailable()).supported;
+const sandboxAvailability = await checkSandboxAvailable();
+const sandboxLive = sandboxAvailability.supported;
+if (!sandboxLive) {
+	// Say why in CI logs: a silent skip hides a runner that can't contain at all.
+	console.warn(`[sandbox.test] real enforcement skipped: ${sandboxAvailability.reason}`);
+}
 
 /**
  * Detect a NESTED runner — i.e. this test process is itself running inside a

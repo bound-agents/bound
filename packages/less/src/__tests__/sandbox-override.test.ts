@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
 	type SandboxOverride,
 	SandboxOverrideStore,
@@ -140,9 +140,9 @@ describe("SandboxOverrideStore — per-thread, session-scoped", () => {
 			const result = store.addWritablePath("thread-a", dir);
 			expect(result.ok).toBe(true);
 			if (result.ok) {
-				// realpath may prepend /private on macOS; the stored path is absolute
-				// and resolves to the same inode.
-				expect(result.value.startsWith("/")).toBe(true);
+				// realpath may prepend /private on macOS or return a drive-letter path on
+				// Windows; either way the stored path is absolute.
+				expect(isAbsolute(result.value)).toBe(true);
 			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

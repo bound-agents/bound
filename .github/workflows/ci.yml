@@ -155,6 +155,16 @@ jobs:
           export NODE_GYP_NODEDIR="$HEADER_DIR"
           bun run scripts/tree-sitter-native-staging.ts
 
+      # mxc's Linux backend is bubblewrap, which the runner image lacks, and
+      # Ubuntu 24.04's AppArmor blocks the unprivileged user namespaces it needs.
+      # Without both, sandbox.test.ts skips its real-enforcement suite.
+      - name: Prepare Linux bubblewrap sandbox
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Build Windows AppContainer lowbox helper
         if: ${{ runner.os == 'Windows' }}
         shell: bash

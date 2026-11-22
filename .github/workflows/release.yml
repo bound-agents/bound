@@ -61,6 +61,17 @@ jobs:
       - name: Build
         run: bun run build
 
+      # The compiled sandbox must load koffi + libmxc_ffi with no node_modules.
+      # Run the probe from an empty dir with a bare environment, on the runner
+      # (a container's default seccomp profile blocks bubblewrap's namespaces).
+      - name: Smoke-test compiled mxc sandbox
+        run: |
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          probe_dir="$(mktemp -d)"
+          cd "$probe_dir"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "$GITHUB_WORKSPACE/dist/mxc-sandbox-probe"
+
       # Stage binaries for Docker context
       - name: Stage binaries for Docker
         run: |
