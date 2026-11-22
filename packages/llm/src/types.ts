@@ -21,6 +21,17 @@ export interface LLMBackend {
 	 * model id. No umans-specific symbol leaks into the router or CLI.
 	 */
 	readiness?: BackendReadiness;
+	/**
+	 * Optional, provider-neutral auth-refresh hook (#285, spec §6.1, R-RT13). The
+	 * agent loop calls this when a route fails with an auth-expiry classification
+	 * (`401`/`403`) BEFORE tripping backoff: a token-bearing driver attempts a
+	 * silent credential refresh and resolves `true` on success. Only a failed (or
+	 * absent) refresh places the route in backoff and raises a re-login advisory,
+	 * because re-login needs a human. Absent on drivers with no refreshable
+	 * credential (static apiKey, Bedrock SigV4) — the loop then treats the auth
+	 * failure as unrecoverable and advises immediately.
+	 */
+	refreshAuth?(): Promise<boolean>;
 }
 
 /**

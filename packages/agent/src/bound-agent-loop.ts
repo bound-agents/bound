@@ -20,6 +20,7 @@ import type {
 	StreamChunk,
 	ToolDefinition,
 } from "@bound/llm";
+import { LLMRefusalError } from "@bound/llm";
 import type { InferenceRequestPayload } from "@bound/llm";
 import {
 	type LoopGuardReason,
@@ -33,6 +34,7 @@ import {
 	SILENCE_HEARTBEAT_INTERVAL_MS,
 	type ToolExecutionResult,
 	type ToolResultErrorKind,
+	classifyRouteError,
 	getLlmRetryAfterMs,
 	getLlmStatusCode,
 	scaledMaxRetries,
@@ -81,6 +83,7 @@ import {
 	timeout,
 } from "rxjs";
 
+import { createAdvisory } from "./advisories";
 import {
 	buildCommandOutput,
 	clampMaxOutputTokens,
@@ -858,30 +861,35 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
-	 * Bound route-failure failover policy. The base loop already handled
-	 * transient transport retries and detected the rate-limit/quota condition;
-	 * here we cool the failed route down (per-RouteId cooldown; #285 route health)
-	 * and fail over to the NEXT ranked route for the SAME logical model — local
-	 * or remote (R-RT7/R-RT8, §7.1). There is no cross-model same-tier
-	 * substitution: switching to a different model happens only on a model
-	 * refusal (slice 5). Return a retry decision when another route is found, or
-	 * null to fall through to terminal handling.
+	 * Bound route-failure policy (#285, spec §6.1, R-RT11–R-RT13). The base loop
+	 * already handled transient transport retries and detected the
+	 * rate-limit/quota condition; this hook fires once that recovery is exhausted
+	 * for a rate-limit-shaped error. It records the failure against the local
+	 * route's health (moving it to `backoff`) and fails over to the NEXT ranked
+	 * route for the SAME logical model — local or remote (R-RT7/R-RT8, §7.1). There
+	 * is no cross-model same-tier substitution: switching to a different model
+	 * happens only on a model refusal (slice 5). Returns a retry decision when
+	 * another route is found, or null to fall through to terminal handling, where
+	 * {@link recordTerminalRouteFailure} records non-rate-limit kinds.
 	 */
-	protected override onRateLimitError(
+	protected override async onRateLimitError(
 		error: unknown,
 		frame: BoundPreparedFrame,
-	): LoopTurnDecision | null {
-		const statusCode = getLlmStatusCode(error);
+	): Promise<LoopTurnDecision | null> {
 		const backendId =
 			this.lastModelResolution?.kind === "local" ? this.lastModelResolution.modelId : null;
 		if (!backendId) {
 			return null;
 		}
-		this.modelRouter.markRateLimited(backendId, getLlmRetryAfterMs(error) || 60_000);
+		// Record the failure against route health with the classified kind so the
+		// backoff schedule (and R-RT13 advisory handling) react to the real error,
+		// not just a 429. A supplied Retry-After is honored verbatim for rate limits.
+		await this.recordRouteFailure(backendId, error);
 		// Re-resolve the SAME logical model: the unified candidate pool (§5.1) now
 		// excludes the cooled route and returns the next ranked route for this
 		// model (another local route or a remote host). Cross-route failover strips
 		// route-bound state at the boundary via the driver's reasoning_origin check.
+		const statusCode = getLlmStatusCode(error);
 		if (statusCode === 429 || statusCode === 529) {
 			const newResolution = resolveModel(
 				this.config.modelId,
@@ -901,11 +909,171 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
+	 * Advisory-dedup set: driver-bug `400` and auth-refresh-failure advisories are
+	 * raised at most once per backend per loop lifetime (R-RT13 — "a SINGLE
+	 * advisory"). A fresh loop instance per turn would re-raise, so the set lives
+	 * on the per-thread cached turn state is overkill here; the spec's intent is
+	 * "don't spam", which the advisories layer's own idempotency does not cover.
+	 * Kept instance-local: the dominant spam source is the half-open retry storm
+	 * within one turn's failover chain, all on one loop instance.
+	 */
+	private routeAdvisoriesRaised = new Set<string>();
+
+	/**
+	 * Record a classified route failure against the local route's health (#285,
+	 * spec §6.1, R-RT11/R-RT13) and apply the error-specific handling:
+	 *
+	 * - `auth` (401/403): attempt a silent token refresh via the driver's
+	 *   `refreshAuth` hook FIRST. A successful refresh does NOT trip backoff — the
+	 *   route stays healthy so the turn's transport retry re-sends with the rotated
+	 *   token. Only a failed or unsupported refresh backs the route off and raises
+	 *   a re-login advisory, because re-login needs a human.
+	 * - `driver_bug` (sustained non-refusal 400s): back off and raise a single
+	 *   advisory while half-open recovery keeps running.
+	 * - everything else: back off on the exponential schedule (or the exact
+	 *   Retry-After for a rate limit).
+	 *
+	 * Returns true if the route was backed off, false if an auth refresh succeeded
+	 * and the route was left healthy for an immediate retry.
+	 */
+	protected async recordRouteFailure(backendId: string, error: unknown): Promise<boolean> {
+		// A model refusal (R-RT15) is NOT a route failure: the request reached the
+		// model and a safety classifier declined it. It must never touch route health
+		// — no backoff, no advisory — even though it arrives as a 400-shaped error.
+		if (error instanceof LLMRefusalError) {
+			return false;
+		}
+		const errorKind = classifyRouteError(error);
+		const retryAfterMs = getLlmRetryAfterMs(error);
+
+		if (errorKind === "auth") {
+			const backend = this.modelRouter.tryGetBackend(backendId);
+			// R-RT13: try a token refresh before tripping backoff. Attempt it at most
+			// once per backend per loop — a 401 that survives a fresh token is a real
+			// auth failure, not a stale-token blip.
+			if (backend?.refreshAuth && !this.authRefreshAttempted.has(backendId)) {
+				this.authRefreshAttempted.add(backendId);
+				let refreshed = false;
+				try {
+					refreshed = await backend.refreshAuth();
+				} catch {
+					refreshed = false;
+				}
+				if (refreshed) {
+					// Credentials rotated: leave the route healthy so the turn retries
+					// immediately with the new token. No backoff, no advisory.
+					return false;
+				}
+			}
+			// No refresh hook, refresh already tried, or refresh failed → back off and
+			// raise a re-login advisory (human action required).
+			this.modelRouter.recordRouteFailure(backendId, { errorKind, retryAfterMs });
+			this.raiseRouteAdvisoryOnce(backendId, "auth", error);
+			return true;
+		}
+
+		this.modelRouter.recordRouteFailure(backendId, { errorKind, retryAfterMs });
+		if (errorKind === "driver_bug") {
+			this.raiseRouteAdvisoryOnce(backendId, "driver_bug", error);
+		}
+		return true;
+	}
+
+	/** Backends whose auth refresh has been attempted this loop (R-RT13 single-shot). */
+	private authRefreshAttempted = new Set<string>();
+
+	/**
+	 * Raise a route-health operator advisory at most once per backend+kind per loop
+	 * (R-RT13 — "a single advisory"). `auth` means a token refresh failed and
+	 * re-login is required; `driver_bug` means the provider keeps returning
+	 * malformed-request 400s that are not refusals.
+	 */
+	private raiseRouteAdvisoryOnce(
+		backendId: string,
+		kind: "auth" | "driver_bug",
+		error: unknown,
+	): void {
+		const dedupKey = `${kind}:${backendId}`;
+		if (this.routeAdvisoriesRaised.has(dedupKey)) return;
+		this.routeAdvisoriesRaised.add(dedupKey);
+		const routeId = this.modelRouter.getRouteId(backendId) ?? backendId;
+		const detail = error instanceof Error ? error.message : String(error);
+		try {
+			if (kind === "auth") {
+				createAdvisory(
+					this.ctx.db,
+					{
+						type: "route_auth_expired",
+						status: "proposed",
+						title: `Route ${routeId} auth expired — re-login required`,
+						detail: `A token refresh for route ${routeId} failed, so the route is backing off. Re-authenticate the provider (e.g. \`bound login\`) to restore it. Underlying error: ${detail}`,
+						action: null,
+						impact:
+							"This route is unavailable until its credentials are refreshed; turns fail over to other routes for the same model.",
+						evidence: detail,
+					},
+					this.ctx.siteId,
+					this.config.threadId,
+				);
+			} else {
+				createAdvisory(
+					this.ctx.db,
+					{
+						type: "route_driver_bug",
+						status: "proposed",
+						title: `Route ${routeId} returning malformed-request errors`,
+						detail: `Route ${routeId} keeps returning non-refusal 400 errors (a driver/provider bug, not a safety refusal). The route backs off and keeps auto-recovering via half-open trials, so a deployed fix is picked up without operator action. Underlying error: ${detail}`,
+						action: null,
+						impact:
+							"Turns fail over to other routes for the same model while this route recovers automatically.",
+						evidence: detail,
+					},
+					this.ctx.siteId,
+					this.config.threadId,
+				);
+			}
+		} catch (advisoryError) {
+			this.ctx.logger.warn("[agent-loop] Failed to raise route-health advisory", {
+				backendId,
+				kind,
+				error: advisoryError instanceof Error ? advisoryError.message : String(advisoryError),
+			});
+		}
+	}
+	/**
 	 * Bound terminal model-error handling: salvage any partial streamed text into
 	 * a developer message so work isn't lost, then emit an alert and end the turn
 	 * with an error. Runs once base retries + rate-limit fallback are exhausted.
 	 */
-	protected override onModelErrorTerminal(error: unknown, chunks: StreamChunk[]): LoopTurnDecision {
+	protected override async onModelErrorTerminal(
+		error: unknown,
+		chunks: StreamChunk[],
+	): Promise<LoopTurnDecision> {
+		// Record the route failure against health before surfacing the error (#285,
+		// R-RT11/R-RT13). This is the live seam for EVERY non-rate-limit terminal
+		// error — 5xx, transport, 401 auth, driver-bug 400 — that base retries and the
+		// rate-limit failover did not resolve. Rate-limit-shaped errors already
+		// recorded in onRateLimitError and short-circuited to this terminal only when
+		// no failover route existed; recording again there is a harmless re-backoff on
+		// the already-cooled route, but we only reach here for the non-rate-limit
+		// kinds because the rate-limit path returns a decision. A local resolution is
+		// required to know which backend to cool.
+		if (this.lastModelResolution?.kind === "local") {
+			const backendId = this.lastModelResolution.modelId;
+			const errorKind = classifyRouteError(error);
+			// Skip rate-limit kinds here: onRateLimitError already recorded them. Record
+			// every other classified kind so non-429 failures actually trip backoff.
+			if (errorKind !== "rate_limit") {
+				try {
+					await this.recordRouteFailure(backendId, error);
+				} catch (recordError) {
+					this.ctx.logger.warn("[agent-loop] Failed to record terminal route failure", {
+						backendId,
+						error: recordError instanceof Error ? recordError.message : String(recordError),
+					});
+				}
+			}
+		}
 		const errMsg = error instanceof Error ? error.message : String(error);
 		if (chunks.length > 0) {
 			try {
@@ -1077,6 +1245,16 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				this.ctx.siteId,
 			);
 			this.currentTurnId = turnId;
+			// Record a route SUCCESS against local health (#285, R-RT12): a completed
+			// local turn is the real-traffic trial that brings a recovering route back
+			// to `healthy`, and keeps a healthy route healthy. This is the ONLY live
+			// success input into route health — before this wiring no live turn ever
+			// recorded success, so no route could leave backoff/half_open. Remote turns
+			// ran on the executing host and recorded success in ITS own loop; this host
+			// only tracks health for its local routes.
+			if (metrics.status === "success" && this.lastModelResolution?.kind === "local") {
+				this.modelRouter.recordRouteSuccess(this.lastModelResolution.modelId);
+			}
 			return turnId;
 		} catch (error) {
 			this.ctx.logger.warn("Failed to record turn metrics", {

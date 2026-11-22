@@ -323,10 +323,32 @@ export function resolveModel(
 	// the route from normal selection on first/cold/no-prior-turn resolutions,
 	// not only inside the sticky pool — so resolution falls through to a
 	// non-drained remote route for the same model.
+	//
+	// Half-open trial gating (#285, R-RT12): when the local route is `half_open`
+	// (its backoff window expired and it is selectable again) it accepts at most
+	// ONE concurrent trial turn per host, and only from a NEW or cold-cache thread
+	// — never a warm sticky thread (the sticky pool already excluded it via
+	// isHealthyForSticky, so a warm thread arrives here only with no prior turn).
+	// Claim the single per-host trial slot here; a losing claim (slot already held
+	// by a concurrent trial) drops the local route from THIS resolution so it falls
+	// through to a remote route for the same model. A `healthy` route needs no
+	// claim. `canTrialRoute` with `claim: true` is a no-op for non-half_open routes
+	// (returns false), so it is only consulted when the route is actually half_open.
+	const localTrialClaimable = (() => {
+		if (!localBackend) return true; // no local route; condition below handles it
+		if (modelRouter.getRouteHealthState(effectiveModelId).status !== "half_open") {
+			return true; // healthy (or backoff, excluded by isRateLimited) — no claim needed
+		}
+		const coldOrNewThread = prefs?.threadId
+			? findLatestOkTurnRouteByThread(db, prefs.threadId) === null
+			: true;
+		return modelRouter.canTrialRoute(effectiveModelId, { coldOrNewThread, claim: true });
+	})();
 	if (
 		localBackend &&
 		!modelRouter.isRateLimited(effectiveModelId) &&
-		!(localRouteId && drainedRouteIds.has(localRouteId))
+		!(localRouteId && drainedRouteIds.has(localRouteId)) &&
+		localTrialClaimable
 	) {
 		// Phase 2: Qualify (local)
 		if (requirements) {
@@ -644,10 +666,14 @@ function resolveStickyForThread(
 	const eligible = new Set<string>();
 	const ttlMsByRoute = new Map<string, number | null>();
 
-	// Local: the requested backend id, when registered, ready, not rate-limited,
-	// not drained, and meeting the turn's capability requirements.
+	// Local: the requested backend id, when registered, ready, HEALTHY (not in
+	// backoff OR half_open), not drained, and meeting the turn's capability
+	// requirements. A half_open route is deliberately excluded from the sticky
+	// pool (#285, R-RT12): a warm sticky thread must never be used as the trial —
+	// only a new/cold-cache thread may trial it, which it does via the ranked
+	// first-resolution path below where isRateLimited (backoff-only) gates.
 	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
-	if (localBackend && !modelRouter.isRateLimited(effectiveModelId)) {
+	if (localBackend && modelRouter.isHealthyForSticky(effectiveModelId)) {
 		const localRouteId = modelRouter.getRouteId(effectiveModelId);
 		const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);
 		const meets =

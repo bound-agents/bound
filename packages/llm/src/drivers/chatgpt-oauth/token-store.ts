@@ -55,6 +55,23 @@ export class TokenManager {
 		return { accessToken: this.tokens.accessToken, accountId: this.tokens.accountId };
 	}
 
+	/**
+	 * Force a credential refresh regardless of the cached token's expiry (#285,
+	 * R-RT13). Called by the driver's `refreshAuth` hook after a live `401`, where
+	 * the provider has rejected the current token even though our local
+	 * expiry-clock thinks it is still valid (clock skew, server-side revocation).
+	 * Resolves `true` on a successful rotation, `false` if the refresh itself
+	 * fails (expired/revoked refresh token → human re-login required).
+	 */
+	async forceRefresh(): Promise<boolean> {
+		try {
+			this.tokens = await this.refresh();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	private refresh(): Promise<ChatGptTokens> {
 		if (!this.refreshInFlight) {
 			this.refreshInFlight = (async () => {

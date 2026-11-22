@@ -42,6 +42,7 @@ export function createChatGptOAuthFetch(config: {
 /** ChatGPT subscription OAuth driver over the native OpenAI Responses surface. */
 export class ChatGptOAuthDriver implements LLMBackend {
 	private readonly provider: ReturnType<typeof createOpenAI>;
+	private readonly tokenManager: TokenManager;
 	private readonly model: string;
 	private readonly contextWindow: number;
 	private readonly logger?: Logger;
@@ -72,6 +73,7 @@ export class ChatGptOAuthDriver implements LLMBackend {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
 		this.logger = config.logger;
+		this.tokenManager = config.tokenManager;
 		this.reasoningOrigin = buildReasoningOrigin({
 			siteId: config.siteId,
 			provider: PROVIDER_NAME,
@@ -90,6 +92,17 @@ export class ChatGptOAuthDriver implements LLMBackend {
 
 	chat(params: ChatParams): AsyncIterable<StreamChunk> {
 		return bindAsyncIterable(context.active(), this.chatStream(params));
+	}
+
+	/**
+	 * Provider-neutral auth-refresh hook (#285, R-RT13). A live `401` means the
+	 * provider rejected the current access token; force a token rotation through
+	 * the shared TokenManager. `true` on a successful rotation lets the loop retry
+	 * without backing off; `false` (expired/revoked refresh token) makes the loop
+	 * back off and raise a re-login advisory.
+	 */
+	async refreshAuth(): Promise<boolean> {
+		return this.tokenManager.forceRefresh();
 	}
 
 	private async *chatStream(params: ChatParams): AsyncIterable<StreamChunk> {

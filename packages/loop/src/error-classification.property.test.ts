@@ -20,7 +20,12 @@
 import { describe, expect, it } from "bun:test";
 import { LLMError } from "@bound/llm";
 import fc from "fast-check";
-import { isQuotaCapMessage, isRateLimitStatus, isTransientLLMError } from "./error-classification";
+import {
+	classifyRouteError,
+	isQuotaCapMessage,
+	isRateLimitStatus,
+	isTransientLLMError,
+} from "./error-classification";
 
 const err = (statusCode: number | undefined, message = "boom") =>
 	new LLMError(message, "test-provider", statusCode);
@@ -142,5 +147,48 @@ describe("isQuotaCapMessage", () => {
 				},
 			),
 		);
+	});
+});
+
+describe("classifyRouteError (#285, R-RT11/R-RT13 partition)", () => {
+	it("maps 429 / 529 / 402 and quota-cap messages to rate_limit", () => {
+		expect(classifyRouteError(err(429))).toBe("rate_limit");
+		expect(classifyRouteError(err(529))).toBe("rate_limit");
+		expect(classifyRouteError(err(402))).toBe("rate_limit");
+		expect(classifyRouteError(new Error("weekly usage limit reached"))).toBe("rate_limit");
+	});
+
+	it("maps 401 / 403 to auth", () => {
+		expect(classifyRouteError(err(401))).toBe("auth");
+		expect(classifyRouteError(err(403))).toBe("auth");
+	});
+
+	it("maps a non-refusal 400 to driver_bug", () => {
+		expect(classifyRouteError(err(400, "malformed request"))).toBe("driver_bug");
+	});
+
+	it("maps 5xx to server", () => {
+		fc.assert(
+			fc.property(
+				fc.integer({ min: 500, max: 599 }).filter((c) => c !== 529),
+				(statusCode) => {
+					expect(classifyRouteError(err(statusCode))).toBe("server");
+				},
+			),
+		);
+	});
+
+	it("maps a status-less transient transport signature to transport", () => {
+		expect(classifyRouteError(new Error("socket hang up"))).toBe("transport");
+		expect(classifyRouteError(new Error("ECONNRESET while reading"))).toBe("transport");
+	});
+
+	it("maps a status-less non-transport error to server (still backs the route off)", () => {
+		expect(classifyRouteError(new Error("something unexpected"))).toBe("server");
+	});
+
+	it("maps an uncommon hard 4xx (404/422) to driver_bug", () => {
+		expect(classifyRouteError(err(404))).toBe("driver_bug");
+		expect(classifyRouteError(err(422))).toBe("driver_bug");
 	});
 });

@@ -56,6 +56,23 @@ export class CopilotTokenManager {
 		return this.tokens.accessToken;
 	}
 
+	/**
+	 * Force a credential refresh regardless of the cached token's expiry (#285,
+	 * R-RT13). Called by the driver's `refreshAuth` hook after a live `401`, where
+	 * the Copilot API rejected the current token even though our expiry-clock
+	 * thought it was still valid. Resolves `true` on a successful rotation (or when
+	 * another instance already rotated a valid bundle to the shared store), `false`
+	 * if the refresh itself fails (dead refresh token → human re-login required).
+	 */
+	async forceRefresh(): Promise<boolean> {
+		try {
+			this.tokens = await this.refresh();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	private refresh(): Promise<CopilotTokens> {
 		if (!this.refreshInFlight) {
 			this.refreshInFlight = (async () => {

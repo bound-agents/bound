@@ -3,10 +3,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema } from "@bound/core";
+import { applyMetricsSchema, applySchema } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
 import { type ModelResolution, resolveModel, resolveTargetCapabilities } from "../model-resolution";
-
+import { findAnyRemoteModel } from "../relay-router";
 // Test database setup
 let db: Database;
 let testDbPath: string;
@@ -17,6 +17,7 @@ beforeEach(() => {
 	const sqlite3 = require("bun:sqlite");
 	db = new sqlite3.Database(testDbPath);
 	applySchema(db);
+	applyMetricsSchema(db);
 });
 
 afterEach(() => {
@@ -1070,11 +1071,146 @@ describe("Model Resolution", () => {
 	});
 });
 
+describe("route health half-open trial gating (#285, R-RT12)", () => {
+	function makeLocalRouter(modelId: string, clock?: () => number): ModelRouter {
+		const backend = {
+			id: modelId,
+			chat: async function* () {
+				yield { type: "text" as const, text: "ok" };
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				extended_thinking: false,
+				max_context: 200000,
+			}),
+		};
+		const routeId = `local-site:test:${modelId}` as const;
+		return new ModelRouter(
+			new Map([[modelId, backend]]),
+			modelId,
+			undefined,
+			undefined,
+			undefined,
+			clock,
+			new Map([[modelId, { routeId, reasoningOrigin: "local-site:test" }]]),
+		);
+	}
+
+	function insertPriorOkTurn(threadId: string, modelId: string, routeId: string): void {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO turns (id, thread_id, model_id, route_id, tokens_in, tokens_out, cost_usd, created_at, status, modified_at, deleted)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+			[
+				`turn-${Math.random().toString(16).slice(2)}`,
+				threadId,
+				modelId,
+				routeId,
+				100,
+				5,
+				0.01,
+				now,
+				"ok",
+				now,
+			],
+		);
+	}
+
+	it("a WARM sticky thread is NEVER stuck to a backing-off/half_open route; it falls through to ranked [Done-when #4]", () => {
+		const modelId = "gpt-5.6-sol";
+		const router = makeLocalRouter(modelId);
+		const routeId = router.getRouteId(modelId);
+		expect(routeId).not.toBeNull();
+
+		// A warm sticky thread with a prior ok turn on the local route.
+		const threadId = "warm-thread";
+		insertPriorOkTurn(threadId, modelId, routeId as string);
+
+		// Trip the route into backoff. A non-healthy route is excluded from the
+		// sticky pool (isHealthyForSticky === false), so a warm thread never trials
+		// it.
+		router.recordRouteFailure(modelId, { errorKind: "server" });
+		expect(router.isHealthyForSticky(modelId)).toBe(false);
+
+		// With no other route for the model, resolution surfaces a transient-
+		// unavailable error rather than quietly reusing the recovering route under a
+		// warm thread.
+		const resolution = resolveModel(modelId, router, db, "local-site", undefined, {
+			threadId,
+			nowMs: Date.now(),
+		});
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.reason).toBe("transient-unavailable");
+		}
+	});
+
+	it("a NEW/cold thread (no prior turn) trials a half_open route via the ranked path [Done-when #2]", () => {
+		const modelId = "gpt-5.6-sol";
+		let nowMs = 1_000_000;
+		const router = makeLocalRouter(modelId, () => nowMs);
+
+		router.recordRouteFailure(modelId, { errorKind: "server" }); // 30s backoff
+		expect(router.isRateLimited(modelId)).toBe(true); // backoff → unavailable
+		nowMs += 30_000; // expire the window → half_open on next read
+		expect(router.isRateLimited(modelId)).toBe(false); // half_open → selectable
+
+		// A new/cold thread (no prior ok turn) resolves onto the half_open route —
+		// this IS the real-traffic trial. No stickiness because there is no prior turn.
+		const resolution = resolveModel(modelId, router, db, "local-site", undefined, {
+			threadId: "cold-new-thread",
+			nowMs,
+		});
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") {
+			expect(resolution.modelId).toBe(modelId);
+		}
+	});
+
+	it("claims the single per-host trial slot: a SECOND concurrent cold thread does not also trial a half_open route [R-RT12]", () => {
+		const modelId = "gpt-5.6-sol";
+		let nowMs = 1_000_000;
+		const router = makeLocalRouter(modelId, () => nowMs);
+
+		router.recordRouteFailure(modelId, { errorKind: "server" }); // 30s backoff
+		nowMs += 30_000; // expire the window → half_open
+		expect(router.getRouteHealthState(modelId).status).toBe("half_open");
+
+		// First cold thread resolves onto the half_open route and claims the single
+		// per-host trial slot.
+		const first = resolveModel(modelId, router, db, "local-site", undefined, {
+			threadId: "cold-thread-A",
+			nowMs,
+		});
+		expect(first.kind).toBe("local");
+		expect(router.getRouteHealthState(modelId).status).toBe("half_open");
+		if (router.getRouteHealthState(modelId).status === "half_open") {
+			// The slot is now held — trial_in_flight is true.
+			const state = router.getRouteHealthState(modelId);
+			if (state.status === "half_open") expect(state.trial_in_flight).toBe(true);
+		}
+
+		// A SECOND concurrent cold thread must NOT also trial the same route: the slot
+		// is taken, so resolution surfaces transient-unavailable (no other route for
+		// this model) rather than sending a second concurrent trial.
+		const second = resolveModel(modelId, router, db, "local-site", undefined, {
+			threadId: "cold-thread-B",
+			nowMs,
+		});
+		expect(second.kind).toBe("error");
+		if (second.kind === "error") {
+			expect(second.reason).toBe("transient-unavailable");
+		}
+	});
+});
+
 // ──────────────────────────────────────────────────────────────────────────────
 // findAnyRemoteModel + hub-only resolveModel path
 // ──────────────────────────────────────────────────────────────────────────────
-
-import { findAnyRemoteModel } from "../relay-router";
 
 describe("findAnyRemoteModel", () => {
 	it("returns the best remote model when a spoke has advertised models", () => {

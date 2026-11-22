@@ -10,6 +10,7 @@ import { CopilotTokenManager, FileCopilotTokenStore } from "./drivers/github-cop
 import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 import { OpenCodeGoDriver } from "./drivers/opencode-go";
 import { UmansDriver, createUmansAccount } from "./drivers/umans";
+import { type RouteErrorKind, RouteHealth } from "./route-health";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -61,7 +62,14 @@ export class ModelRouter {
 	private backends: Map<string, LLMBackend>;
 	private defaultId: string;
 	private effectiveCaps: Map<string, BackendCapabilities>;
-	private rateLimits: Map<string, number>; // backendId → cooldown expiry timestamp (ms)
+	/**
+	 * Per-host route health (#285, spec §6.1, R-RT11–R-RT13). Keyed by local
+	 * `backendId` (1:1 with `RouteId`). Replaces the former `rateLimits` map and
+	 * the slice-2 interim cooldown: a backend in `backoff` is unavailable, a
+	 * `half_open` backend accepts one real trial turn per host, and `healthy`
+	 * routes route normally. Local-only, never synced (Invariant #3).
+	 */
+	private routeHealth: RouteHealth;
 	private backendConfigs: Map<string, BackendConfig>; // backendId → raw config
 	/**
 	 * Per-backendId route identity: the `RouteId` (`${siteId}:${provider}:${backendId}`)
@@ -72,7 +80,7 @@ export class ModelRouter {
 	private routeIdentities: Map<string, { routeId: RouteId; reasoningOrigin: string }>;
 	private clock: () => number;
 	/**
-	 * Generic readiness gate (parallel to rateLimits): ids of backends whose
+	// (formerly parallel to rateLimits; now parallel to routeHealth): ids of
 	 * `readiness` exists and `isReady() === false`. A not-ready backend is
 	 * excluded from `listEligible`/`listBackends` and `resolveModel` defers to
 	 * it as `transient-unavailable`. Seeded from any backend exposing
@@ -95,7 +103,7 @@ export class ModelRouter {
 		this.effectiveCaps =
 			effectiveCaps ??
 			new Map(Array.from(backends.entries()).map(([id, b]) => [id, b.capabilities()]));
-		this.rateLimits = new Map();
+		this.routeHealth = new RouteHealth(clock);
 		this.backendConfigs = backendConfigs ?? new Map();
 		this.clock = clock;
 		this.routeIdentities = routeIdentities ?? new Map();
@@ -137,7 +145,7 @@ export class ModelRouter {
 		this.effectiveCaps = next.effectiveCaps;
 		this.routeIdentities = next.routeIdentities;
 		this.backendConfigs = next.backendConfigs;
-		this.rateLimits = new Map();
+		this.routeHealth.reset();
 		// Re-seed not-ready from the freshly-constructed readiness backends.
 		this.notReady = new Set(
 			Array.from(next.backends.entries())
@@ -240,28 +248,88 @@ export class ModelRouter {
 	}
 
 	/**
-	 * Marks a backend as rate-limited for the given duration.
-	 * The backend will be excluded from `listEligible()` for `retryAfterMs` milliseconds.
+	 * Compatibility shim over {@link RouteHealth} (#285): records a route failure
+	 * and places the backend in `backoff`. Historically this took a verbatim
+	 * cooldown duration; it now feeds the health machine. When `retryAfterMs` is
+	 * supplied (a `429` with a `Retry-After`), the exact duration is honored; when
+	 * it is the legacy 60s default sentinel, the exponential schedule applies
+	 * instead so repeated failures grow the backoff per R-RT11.
 	 *
-	 * @param id - Backend ID to mark rate-limited
-	 * @param retryAfterMs - Duration in milliseconds (use 60_000 as default if Retry-After header is absent)
+	 * Prefer {@link recordRouteFailure} for new call sites — it carries the error
+	 * kind needed for R-RT13 advisory handling.
+	 *
+	 * @param id - Backend ID (1:1 with its `RouteId`) to mark unhealthy
+	 * @param retryAfterMs - Exact `Retry-After` duration in ms, or the legacy
+	 *   60_000 default when the header was absent
 	 */
 	markRateLimited(id: string, retryAfterMs: number): void {
-		this.rateLimits.set(id, this.clock() + retryAfterMs);
+		// The legacy call site passes `getLlmRetryAfterMs(error) || 60_000`. A real
+		// Retry-After is an exact rate-limit wait; the 60s fallback is a placeholder
+		// that must defer to the exponential schedule so backoff actually grows.
+		const hasExplicitRetryAfter = retryAfterMs !== 60_000;
+		this.routeHealth.recordFailure(id, {
+			errorKind: "rate_limit",
+			retryAfterMs: hasExplicitRetryAfter ? retryAfterMs : undefined,
+		});
 	}
 
 	/**
-	 * Returns true if the backend is currently rate-limited.
-	 * Automatically cleans up expired entries.
+	 * Record a classified route failure against a route's health (#285, R-RT11/
+	 * R-RT13). Moves the backend to `backoff` with the exponential schedule, or
+	 * the exact `retryAfterMs` for a `429`. The `errorKind` drives the error-
+	 * specific handling in §6.1 (auth refresh, driver-bug advisories).
+	 */
+	recordRouteFailure(id: string, opts: { errorKind: RouteErrorKind; retryAfterMs?: number }): void {
+		this.routeHealth.recordFailure(id, opts);
+	}
+
+	/**
+	 * Record a successful turn against a route's health (#285, R-RT12). A success
+	 * on a `half_open` trial route restores it to `healthy`.
+	 */
+	recordRouteSuccess(id: string): void {
+		this.routeHealth.recordSuccess(id);
+	}
+
+	/**
+	 * Whether a `half_open` route may accept a trial turn from this candidate
+	 * thread right now (#285, R-RT12): at most one concurrent trial per host, and
+	 * only from a new or cold-cache thread — never a warm sticky thread. Claims
+	 * the single per-host trial slot when `claim` is set and the slot is free.
+	 */
+	canTrialRoute(id: string, opts: { coldOrNewThread: boolean; claim?: boolean }): boolean {
+		if (opts.claim) {
+			if (!this.routeHealth.canTrial(id, opts)) return false;
+			return this.routeHealth.beginTrial(id);
+		}
+		return this.routeHealth.canTrial(id, opts);
+	}
+
+	/** Returns the local route-health state for a backend (#285). */
+	getRouteHealthState(id: string): ReturnType<RouteHealth["getState"]> {
+		return this.routeHealth.getState(id);
+	}
+
+	/**
+	 * Returns true if the backend is NOT currently selectable for routing — i.e.
+	 * its route is in `backoff` (#285). A `half_open` route returns false here
+	 * because it accepts one real trial turn per host; `healthy` returns false.
+	 * Named `isRateLimited` for call-site compatibility; the predicate is now
+	 * "unavailable due to route health", which subsumes rate limits.
 	 */
 	isRateLimited(id: string): boolean {
-		const expiry = this.rateLimits.get(id);
-		if (expiry === undefined) return false;
-		if (this.clock() >= expiry) {
-			this.rateLimits.delete(id); // Clean up expired entry
-			return false;
-		}
-		return true;
+		return !this.routeHealth.isAvailable(id);
+	}
+
+	/**
+	 * Whether a route is reusable by a WARM sticky thread (#285, R-RT12). Only
+	 * `healthy` routes qualify: a `half_open` route must be trialled by a NEW or
+	 * cold-cache thread, never pulled back under a warm thread that is already
+	 * working elsewhere. The sticky pool uses this instead of `!isRateLimited`,
+	 * which would (incorrectly) re-admit a `half_open` route to a warm thread.
+	 */
+	isHealthyForSticky(id: string): boolean {
+		return this.routeHealth.getState(id).status === "healthy";
 	}
 
 	/**
@@ -316,7 +384,7 @@ export class ModelRouter {
 		this.effectiveCaps.delete(id);
 		this.routeIdentities.delete(id);
 		this.notReady.delete(id);
-		this.rateLimits.delete(id);
+		this.routeHealth.clear(id);
 	}
 
 	/** Clear the not-ready flag for an id (it has become selectable). */
@@ -348,26 +416,22 @@ export class ModelRouter {
 	}
 
 	/**
-	 * Returns the earliest expiry timestamp (ms) among rate-limited backends that
+	 * Returns the earliest trial timestamp (ms) among backing-off backends that
 	 * satisfy the given capability requirements. Returns null if no such backend exists.
 	 * Used by resolveModel() to populate `earliestRecovery` on transient-unavailable errors.
 	 */
 	getEarliestCapableRecovery(requirements?: CapabilityRequirements): number | null {
-		let earliest: number | null = null;
-		for (const [id, expiry] of this.rateLimits) {
+		return this.routeHealth.earliestRecovery((id) => {
 			const caps = this.effectiveCaps.get(id);
-			if (!caps) continue;
+			if (!caps) return false;
 			if (requirements) {
-				if (requirements.vision && !caps.vision) continue;
-				if (requirements.tool_use && !caps.tool_use) continue;
-				if (requirements.system_prompt && !caps.system_prompt) continue;
-				if (requirements.prompt_caching && !caps.prompt_caching) continue;
+				if (requirements.vision && !caps.vision) return false;
+				if (requirements.tool_use && !caps.tool_use) return false;
+				if (requirements.system_prompt && !caps.system_prompt) return false;
+				if (requirements.prompt_caching && !caps.prompt_caching) return false;
 			}
-			if (earliest === null || expiry < earliest) {
-				earliest = expiry;
-			}
-		}
-		return earliest;
+			return true;
+		});
 	}
 
 	/**

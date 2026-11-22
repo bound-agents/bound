@@ -363,6 +363,17 @@ export class GitHubCopilotDriver implements LLMBackend {
 					});
 	}
 
+	/**
+	 * Provider-neutral auth-refresh hook (#285, R-RT13). A live `401` means the
+	 * Copilot API rejected the current token; force a token rotation through the
+	 * shared CopilotTokenManager. `true` on a successful rotation lets the loop
+	 * retry without backing off; `false` (dead refresh token) makes the loop back
+	 * off and raise a re-login advisory.
+	 */
+	async refreshAuth(): Promise<boolean> {
+		return this.tokenManager.forceRefresh();
+	}
+
 	/** Build (once) the endpoint-scoped catalog + auto-session machinery. */
 	private endpoint(): Promise<{
 		apiEndpoint: string;

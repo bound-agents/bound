@@ -98,7 +98,39 @@ change it. Bound therefore treats a refusal differently from a route failure:
 An HTTP 400 that carries a recognized safety signal is a refusal. An HTTP 400 without one is
 a route failure and counts toward route health like any other bad request.
 
-## Routing preferences, drains, and pins
+## Route health and recovery
+
+Each host tracks the health of every route on its own, and never shares that health
+with other hosts. Health is short-lived failure state, not durable configuration, so
+replicating it would flood the cluster with churn; a recovering route simply gets one
+trial from each live host instead. A route is in one of three states.
+
+**Healthy** is the normal state: the route is a full candidate for any turn.
+
+**Backing off** starts the moment a route fails. The host stops routing new turns to it
+and waits before trying again. The wait starts at 30 seconds and doubles on each further
+failure — 30 seconds, one minute, two minutes, and so on — up to a ceiling of four hours.
+When a rate-limited provider sends a `Retry-After`, the host waits exactly that long
+instead of the doubling schedule.
+
+**Half-open** is the recovery probe. When the wait expires, the route becomes a candidate
+again, but only for a real turn from a new or cold-cache thread — never a warm thread that
+is already working on another route, and never a synthetic health ping. Each host lets at
+most one such trial through at a time. The trial is an ordinary turn that happens to land
+on the recovering route:
+
+- If it succeeds, the route returns to healthy. The failure count clears after ten minutes
+  without another failure.
+- If it fails, the wait doubles again (still capped at four hours) and that turn fails over
+  immediately to the next ranked route for the same model, so the trial never costs the
+  thread its turn.
+
+Some failures also raise an operator alert, because they need a human. An expired
+authentication token (`401`) first tries a token refresh; the route only backs off and
+alerts if the refresh itself fails, since re-login is a human action. A provider that keeps
+returning malformed-request errors (a driver bug, not a refusal) raises a single alert
+while automatic recovery keeps running, so a later fix is picked up without operator
+action.
 
 The candidate pool and its ranking are shaped by cluster-wide preferences that replicate
 to every host, so a thread sees the same routing decision wherever its next turn runs.

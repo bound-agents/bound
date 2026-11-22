@@ -74,3 +74,48 @@ export function isRateLimitStatus(statusCode: number | undefined, message: strin
 		(statusCode === undefined && isQuotaCapMessage(message))
 	);
 }
+
+/**
+ * The classification of a route failure, aligned with `RouteErrorKind` in
+ * `@bound/llm` route-health. This is the single live classifier the agent loop
+ * feeds into `recordRouteFailure` so route health reacts to EVERY terminal model
+ * error — not only the 429/529 rate-limit path (#285, spec §6.1, R-RT11/R-RT13).
+ *
+ * Partition (by HTTP status first, message second):
+ * - `rate_limit` — 429 / 529 / 402, or (no status) a quota/billing-cap message.
+ *   402 is a payment/credit cap, which backs off like a rate limit rather than a
+ *   generic server fault.
+ * - `auth`       — 401 / 403. The loop attempts a token refresh before backing
+ *   off and only advises the operator when refresh fails (R-RT13).
+ * - `driver_bug` — any other 400. A refusal 400 is classified upstream as a model
+ *   refusal (R-RT15) and never reaches route health, so a 400 arriving here is a
+ *   malformed-request/driver bug: back off and raise a single advisory while
+ *   half-open recovery keeps running (R-RT13).
+ * - `transport`  — no HTTP status but a known transient transport signature
+ *   (socket reset, TLS/DNS, relay timeout).
+ * - `server`     — any 5xx, or any other non-transport fault.
+ *
+ * `unknown` is reserved for a genuinely unclassifiable shape; in practice every
+ * terminal error lands in one of the concrete kinds above.
+ */
+export type RouteErrorClassification =
+	"rate_limit" | "auth" | "driver_bug" | "server" | "transport" | "unknown";
+
+export function classifyRouteError(error: unknown): RouteErrorClassification {
+	const message = error instanceof Error ? error.message : String(error);
+	const statusCode = getLlmStatusCode(error);
+
+	if (isRateLimitStatus(statusCode, message)) return "rate_limit";
+	if (statusCode === 401 || statusCode === 403) return "auth";
+	if (statusCode === 400) return "driver_bug";
+	if (statusCode !== undefined && statusCode >= 500) return "server";
+	// No HTTP status: a known transport signature is a transport fault; anything
+	// else that reached terminal handling is treated as a server-class failure so
+	// the route still backs off rather than silently never recording.
+	if (statusCode === undefined) {
+		return isTransientLLMError(error) ? "transport" : "server";
+	}
+	// A 4xx other than 400/401/403/402/429 (e.g. 404/422) is a hard client error;
+	// classify as driver_bug so it backs off and advises rather than looping.
+	return "driver_bug";
+}

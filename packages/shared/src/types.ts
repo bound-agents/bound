@@ -7,7 +7,16 @@ export type TaskStatus = "pending" | "claimed" | "running" | "completed" | "fail
 
 export type InjectMode = "results" | "status" | "file";
 
-export type AdvisoryType = "cost" | "frequency" | "memory" | "model" | "general";
+export type AdvisoryType =
+	| "cost"
+	| "frequency"
+	| "memory"
+	| "model"
+	| "general"
+	// Route-health advisories (#285, R-RT13): auth refresh failed (re-login
+	// required) and sustained non-refusal driver-bug 400s on a route.
+	| "route_auth_expired"
+	| "route_driver_bug";
 
 export type AdvisoryStatus = "proposed" | "approved" | "dismissed" | "deferred" | "applied";
 

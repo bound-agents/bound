@@ -853,6 +853,195 @@ describe("MainAgentLoop", () => {
 		expect(router.isRateLimited("claude-opus")).toBe(false);
 	});
 
+	it("records a route SUCCESS on a completed local turn, returning a half_open route to healthy (#285, R-RT12, Done-when #2)", async () => {
+		// Wire-into-the-loop proof: a real completed turn must call
+		// recordRouteSuccess so a recovering route actually comes back to healthy —
+		// not just the route-health unit in isolation.
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("done");
+		// Inject a clock so we can expire the backoff window into half_open — a route
+		// in backoff is unselectable (cannot run a turn), but a half_open route IS
+		// selectable and accepts exactly the real trial turn this test drives.
+		let nowMs = 1_000_000;
+		const backends = new Map<string, LLMBackend>([["claude-opus", mockBackend]]);
+		const router = new ModelRouter(
+			backends,
+			"claude-opus",
+			undefined,
+			undefined,
+			undefined,
+			() => nowMs,
+		);
+
+		router.recordRouteFailure("claude-opus", { errorKind: "server" }); // 30s backoff
+		expect(router.getRouteHealthState("claude-opus").status).toBe("backoff");
+		nowMs += 30_000; // expire the window → half_open on next read
+		expect(router.getRouteHealthState("claude-opus").status).toBe("half_open");
+
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+		});
+		const result = await agentLoop.run();
+		expect(result.error).toBeUndefined();
+
+		// The completed turn recorded success → route is healthy again.
+		expect(router.getRouteHealthState("claude-opus").status).toBe("healthy");
+	});
+
+	it("records a route FAILURE on a non-429 terminal error so the route backs off (#285, R-RT11)", async () => {
+		// Wire-into-the-loop proof: a 5xx/transport/400 terminal failure must trip
+		// backoff on the live route, not only a 429. Before this fix only
+		// markRateLimited (429/529) recorded anything.
+		const { LLMError } = await import("@bound/llm");
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(() => {
+			// biome-ignore lint/correctness/useYield: throws before first yield
+			async function* boom(): AsyncGenerator<StreamChunk> {
+				throw new LLMError("malformed request", "test-provider", 400);
+			}
+			return boom();
+		});
+		const router = createMockRouter(mockBackend);
+		expect(router.getRouteHealthState("claude-opus").status).toBe("healthy");
+
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+		});
+		const result = await agentLoop.run();
+		expect(result.error).toBeDefined();
+
+		// The 400 terminal failure tripped backoff on the live route.
+		const state = router.getRouteHealthState("claude-opus");
+		expect(state.status).toBe("backoff");
+		if (state.status === "backoff") {
+			expect(state.last_error_kind).toBe("driver_bug");
+		}
+	});
+
+	it("R-RT13: a 401 attempts token refresh FIRST; a successful refresh does NOT back off the route", async () => {
+		// A live 401 means the provider rejected the current token. The loop asks the
+		// driver's refreshAuth hook to rotate credentials before tripping backoff; a
+		// successful rotation leaves the route healthy so a retry re-sends.
+		const { LLMError } = await import("@bound/llm");
+		let refreshCalls = 0;
+		const backend: LLMBackend = {
+			// biome-ignore lint/correctness/useYield: throws before first yield
+			async *chat() {
+				throw new LLMError("unauthorized", "test-provider", 401);
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8000,
+			}),
+			async refreshAuth() {
+				refreshCalls++;
+				return true; // rotation succeeds
+			},
+		};
+		const router = new ModelRouter(new Map([["claude-opus", backend]]), "claude-opus");
+
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+		});
+		await agentLoop.run();
+
+		expect(refreshCalls).toBe(1); // refresh attempted before backoff
+		// Refresh succeeded → route NOT backed off, and no auth advisory raised.
+		expect(router.getRouteHealthState("claude-opus").status).toBe("healthy");
+		const advisories = db
+			.query("SELECT type FROM advisories WHERE thread_id = ? AND deleted = 0")
+			.all(threadId) as Array<{ type: string }>;
+		expect(advisories.find((a) => a.type === "route_auth_expired")).toBeUndefined();
+	});
+
+	it("R-RT13: a 401 whose refresh FAILS backs off the route and raises a single re-login advisory", async () => {
+		const { LLMError } = await import("@bound/llm");
+		const backend: LLMBackend = {
+			// biome-ignore lint/correctness/useYield: throws before first yield
+			async *chat() {
+				throw new LLMError("unauthorized", "test-provider", 401);
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8000,
+			}),
+			async refreshAuth() {
+				return false; // dead refresh token → human re-login required
+			},
+		};
+		const router = new ModelRouter(new Map([["claude-opus", backend]]), "claude-opus");
+
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+		});
+		await agentLoop.run();
+
+		// Refresh failed → route backs off with the auth kind.
+		const state = router.getRouteHealthState("claude-opus");
+		expect(state.status).toBe("backoff");
+		if (state.status === "backoff") {
+			expect(state.last_error_kind).toBe("auth");
+		}
+		// Exactly one re-login advisory raised.
+		const advisories = db
+			.query(
+				"SELECT type FROM advisories WHERE thread_id = ? AND type = 'route_auth_expired' AND deleted = 0",
+			)
+			.all(threadId) as Array<{ type: string }>;
+		expect(advisories.length).toBe(1);
+	});
+
+	it("R-RT13: a sustained driver-bug 400 raises a single advisory while the route keeps recovering", async () => {
+		const { LLMError } = await import("@bound/llm");
+		const backend: LLMBackend = {
+			// biome-ignore lint/correctness/useYield: throws before first yield
+			async *chat() {
+				throw new LLMError("malformed request body", "test-provider", 400);
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8000,
+			}),
+		};
+		const router = new ModelRouter(new Map([["claude-opus", backend]]), "claude-opus");
+
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+		});
+		await agentLoop.run();
+
+		// The 400 is a driver bug (not a refusal) → route backs off and recovers via
+		// half-open trials; a single advisory flags the operator.
+		const state = router.getRouteHealthState("claude-opus");
+		expect(state.status).toBe("backoff");
+		if (state.status === "backoff") {
+			expect(state.last_error_kind).toBe("driver_bug");
+		}
+		const advisories = db
+			.query(
+				"SELECT type FROM advisories WHERE thread_id = ? AND type = 'route_driver_bug' AND deleted = 0",
+			)
+			.all(threadId) as Array<{ type: string }>;
+		expect(advisories.length).toBe(1);
+	});
+
 	it("should handle multiple tool calls in sequence", async () => {
 		const mockBackend = new MockLLMBackend();
 
