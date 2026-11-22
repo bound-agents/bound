@@ -1,0 +1,420 @@
+import { Database } from "bun:sqlite";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { applyMetricsSchema, applySchema, insertRow, recordTurn } from "@bound/core";
+import type { BackendCapabilities, LLMBackend } from "@bound/llm";
+import { ModelRouter, makeRouteId } from "@bound/llm";
+import { ROUTING_MODEL_ROLES_KEY } from "@bound/shared";
+import { resolveModel } from "../model-resolution";
+
+const SITE = "site-local";
+
+function caps(over: Partial<BackendCapabilities> = {}): BackendCapabilities {
+	return {
+		streaming: true,
+		tool_use: true,
+		system_prompt: true,
+		prompt_caching: false,
+		vision: false,
+		extended_thinking: false,
+		max_context: 200000,
+		...over,
+	};
+}
+
+/** Minimal LLMBackend stub — resolution only reads capabilities(). */
+function stubBackend(): LLMBackend {
+	return {
+		capabilities: () => caps(),
+		chat: () => {
+			throw new Error("not called");
+		},
+	} as unknown as LLMBackend;
+}
+
+/**
+ * Build a router with one local backend `opus` whose RouteId is
+ * `site-local:bedrock:opus`, plus a route identity so getRouteId resolves.
+ */
+function routerWithOpus(): ModelRouter {
+	const backends = new Map<string, LLMBackend>([["opus", stubBackend()]]);
+	const effectiveCaps = new Map([["opus", caps()]]);
+	const routeIdentities = new Map([
+		[
+			"opus",
+			{
+				routeId: makeRouteId(SITE, "bedrock", "opus"),
+				reasoningOrigin: `${SITE}:bedrock`,
+			},
+		],
+	]);
+	return new ModelRouter(
+		backends,
+		"opus",
+		effectiveCaps,
+		new Map(),
+		undefined,
+		Date.now,
+		routeIdentities,
+	);
+}
+
+function freshDb(): Database {
+	const db = new Database(":memory:");
+	db.run("PRAGMA journal_mode = WAL");
+	applySchema(db);
+	applyMetricsSchema(db);
+	return db;
+}
+
+describe("resolveModel — default-model resolution (§5.1, R-RT9/R-RT14)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("resolves 'default' to the local backend default when no cluster role is set", () => {
+		const router = routerWithOpus();
+		const res = resolveModel("default", router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("prefers the synced cluster role default when it names a local backend", () => {
+		const router = routerWithOpus();
+		// Add a second local backend 'sonnet' and make it the cluster role default.
+		router.addDynamicBackend("sonnet", stubBackend(), caps(), undefined, {
+			routeId: makeRouteId(SITE, "anthropic", "sonnet"),
+			reasoningOrigin: `${SITE}:anthropic`,
+		});
+		insertRow(
+			db,
+			"cluster_config",
+			{
+				key: ROUTING_MODEL_ROLES_KEY,
+				value: JSON.stringify({ default: "sonnet" }),
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			SITE,
+		);
+		const res = resolveModel(undefined, router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("sonnet");
+	});
+
+	it("ignores a cluster role default that names no locally-held backend (bootstrap floor wins)", () => {
+		const router = routerWithOpus();
+		insertRow(
+			db,
+			"cluster_config",
+			{
+				key: ROUTING_MODEL_ROLES_KEY,
+				value: JSON.stringify({ default: "some-remote-only-model" }),
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			SITE,
+		);
+		const res = resolveModel("default", router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+});
+
+describe("resolveModel — hard route pin (§5.4)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("resolves to the pinned local route", () => {
+		const router = routerWithOpus();
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			pin: { routeId: makeRouteId(SITE, "bedrock", "opus") },
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("errors 'no longer exists' when the pinned route is absent cluster-wide (never fails over)", () => {
+		const router = routerWithOpus();
+		// Pin a route that no backend or host advertises.
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			pin: { routeId: "site-ghost:bedrock:opus" },
+		});
+		expect(res.kind).toBe("error");
+		if (res.kind === "error") {
+			expect(res.reason).toBe("unknown-model");
+			expect(res.error).toContain("no longer exists");
+			// Crucially: it did NOT fall back to the eligible local 'opus' route.
+		}
+	});
+});
+
+describe("resolveModel — thread stickiness (§5.3, Done-when #2)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("reuses the prior ok turn's route within its cache window", () => {
+		const router = routerWithOpus();
+		const routeId = makeRouteId(SITE, "bedrock", "opus");
+		// Record a prior ok turn on this thread that ran the opus route recently.
+		recordTurn(
+			db,
+			{
+				thread_id: "thread-1",
+				model_id: "opus",
+				tokens_in: 10,
+				tokens_out: 10,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date().toISOString(),
+				route_id: routeId,
+			},
+			SITE,
+		);
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-1",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("does not stick to a prior turn whose route is no longer eligible", () => {
+		const router = routerWithOpus();
+		// Prior turn ran a route that no longer exists; falls through to ranked
+		// selection, which finds the live local opus backend.
+		recordTurn(
+			db,
+			{
+				thread_id: "thread-2",
+				model_id: "opus",
+				tokens_in: 10,
+				tokens_out: 10,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date().toISOString(),
+				route_id: "site-ghost:bedrock:opus",
+			},
+			SITE,
+		);
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-2",
+			nowMs: Date.now(),
+		});
+		// Falls through to the live local opus (ranked selection), not an error.
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("falls through to ranked selection past the sticky cache window", () => {
+		const router = routerWithOpus();
+		const routeId = makeRouteId(SITE, "bedrock", "opus");
+		// Prior turn is 2 hours old; opus has no cache_ttl, so the window is the 5m
+		// floor — long cold. Resolution still lands on the live opus via ranking.
+		recordTurn(
+			db,
+			{
+				thread_id: "thread-3",
+				model_id: "opus",
+				tokens_in: 10,
+				tokens_out: 10,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+				route_id: routeId,
+			},
+			SITE,
+		);
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-3",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+	});
+
+	it("ignores a failed/aborted prior turn (status gate) for stickiness", () => {
+		const router = routerWithOpus();
+		recordTurn(
+			db,
+			{
+				thread_id: "thread-4",
+				model_id: "opus",
+				tokens_in: 10,
+				tokens_out: 10,
+				tokens_cache_write: null,
+				tokens_cache_read: null,
+				created_at: new Date().toISOString(),
+				route_id: "site-ghost:bedrock:opus",
+				status: "error",
+			},
+			SITE,
+		);
+		// The only prior turn errored, so stickiness does not consider it and
+		// resolution falls to ranked local opus.
+		const res = resolveModel("opus", router, db, SITE, undefined, {
+			threadId: "thread-4",
+			nowMs: Date.now(),
+		});
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+});
+
+describe("resolveModel — drain exclusion in normal (non-sticky) resolution (§6.2, R-RT6/R-RT14, Done-when #4)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	/** Insert a non-stale remote host advertising `opus` on `routeId`. */
+	function insertRemoteOpus(siteId: string, routeId: string): void {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				siteId,
+				`Host ${siteId}`,
+				JSON.stringify([
+					{
+						id: "opus",
+						route_id: routeId,
+						logical_model: "opus",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				0,
+				now,
+				now,
+			],
+		);
+	}
+
+	function drainRoute(routeId: string): void {
+		insertRow(
+			db,
+			"route_drains",
+			{
+				route_id: routeId,
+				drained_at: new Date().toISOString(),
+				reason: null,
+				deleted: 0,
+				modified_at: new Date().toISOString(),
+			},
+			SITE,
+		);
+	}
+
+	it("excludes a drained LOCAL route on a first turn, falling through to a non-drained remote route", () => {
+		const router = routerWithOpus();
+		const localRoute = makeRouteId(SITE, "bedrock", "opus");
+		const remoteRoute = "site-remote:anthropic:opus";
+		insertRemoteOpus("site-remote", remoteRoute);
+		// Drain the local route. With no threadId (first turn), the drained local
+		// backend must NOT win just by existing — resolution falls through to the
+		// non-drained remote route serving the same model.
+		drainRoute(localRoute);
+		const res = resolveModel("opus", router, db, SITE);
+		expect(res.kind).toBe("remote");
+		if (res.kind === "remote") {
+			expect(res.hosts[0].site_id).toBe("site-remote");
+			expect(res.hosts[0].routeId).toBe(remoteRoute);
+		}
+	});
+
+	it("excludes a drained REMOTE route from normal resolution (no local backend for the model)", () => {
+		// A router that holds no 'opus' backend: resolution goes straight to remote.
+		const router = new ModelRouter(new Map<string, LLMBackend>(), "other");
+		const remoteRoute = "site-remote:anthropic:opus";
+		insertRemoteOpus("site-remote", remoteRoute);
+		drainRoute(remoteRoute);
+		// The only candidate route is drained → no eligible host → error.
+		const res = resolveModel("opus", router, db, SITE);
+		expect(res.kind).toBe("error");
+	});
+
+	it("keeps a non-drained remote route selectable when a DIFFERENT route is drained", () => {
+		const router = new ModelRouter(new Map<string, LLMBackend>(), "other");
+		const drainedRoute = "site-a:anthropic:opus";
+		const liveRoute = "site-b:openai:opus";
+		insertRemoteOpus("site-a", drainedRoute);
+		insertRemoteOpus("site-b", liveRoute);
+		drainRoute(drainedRoute);
+		const res = resolveModel("opus", router, db, SITE);
+		expect(res.kind).toBe("remote");
+		if (res.kind === "remote") {
+			expect(res.hosts.some((h) => h.routeId === drainedRoute)).toBe(false);
+			expect(res.hosts[0].routeId).toBe(liveRoute);
+		}
+	});
+});
+
+describe("resolveModel — route_order consulted in normal (non-sticky) resolution (§5.2, R-RT8, Done-when #1/#5)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	function insertRemoteOpus(siteId: string, routeId: string): void {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				siteId,
+				`Host ${siteId}`,
+				JSON.stringify([
+					{
+						id: "opus",
+						route_id: routeId,
+						logical_model: "opus",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				0,
+				now,
+				now,
+			],
+		);
+	}
+
+	it("ranks a route_order-listed remote route ahead of a lexically-smaller unlisted one", () => {
+		const router = new ModelRouter(new Map<string, LLMBackend>(), "other");
+		// 'bbb' is lexically after 'aaa', so without route_order 'aaa' ranks first.
+		const routeAaa = "aaa-site:anthropic:opus";
+		const routeBbb = "bbb-site:openai:opus";
+		insertRemoteOpus("aaa-site", routeAaa);
+		insertRemoteOpus("bbb-site", routeBbb);
+
+		// Baseline: no route_order → lexical 'aaa' first.
+		const baseline = resolveModel("opus", router, db, SITE);
+		expect(baseline.kind).toBe("remote");
+		if (baseline.kind === "remote") expect(baseline.hosts[0].routeId).toBe(routeAaa);
+
+		// Operator route_order puts 'bbb' first — ranked selection must honor it.
+		insertRow(
+			db,
+			"model_routing_rules",
+			{
+				logical_model: "opus",
+				route_order: JSON.stringify([routeBbb]),
+				fallback_policy: null,
+				deleted: 0,
+				modified_at: new Date().toISOString(),
+			},
+			SITE,
+		);
+		const ordered = resolveModel("opus", router, db, SITE);
+		expect(ordered.kind).toBe("remote");
+		if (ordered.kind === "remote") expect(ordered.hosts[0].routeId).toBe(routeBbb);
+	});
+});

@@ -218,7 +218,7 @@ Column names for LWW tables are additionally cross-referenced against the live s
 Last-write-wins strategy. Behaviour depends on whether the row already exists:
 
 - **Row does not exist** — inserts using only columns that are both present in the event and present in the schema.
-- **Row exists** — compares `modified_at` fields. The update is applied only if `event.row_data.modified_at` is strictly greater than the stored value. Columns not in the schema are ignored; only non-PK columns are updated. The PK column is `id` for most tables, `site_id` for `hosts`, and `key` for `cluster_config`.
+- **Row exists** — compares `modified_at` fields. The update is applied only if `event.row_data.modified_at` is strictly greater than the stored value. Columns not in the schema are ignored; only non-PK columns are updated. The PK column is `id` for most tables, `site_id` for `hosts`, `key` for `cluster_config`, `logical_model` for `model_routing_rules`, `route_id` for `route_drains`, and `provider_key` for `model_aliases`.
 
 Returns `{ applied: true }` if the underlying SQL statement changed at least one row.
 

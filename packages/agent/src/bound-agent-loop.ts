@@ -87,6 +87,7 @@ import {
 	createFileRefResolver,
 	deriveCapabilityRequirements,
 	getResolvedModelId,
+	getResolvedRouteId,
 	insertThreadMessage,
 	parseContentBlocks,
 	resolveTurnCost,
@@ -109,6 +110,7 @@ import { createRelayBackend } from "./relay-backend";
 import { type EligibleHost, resolveTopologyRole, routeRelayRequest } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
+import { parseModelHint } from "./routing-preferences";
 import { fromEventBus } from "./rx-utils";
 import {
 	THINK_FORCE_SCAN_LIMIT,
@@ -515,12 +517,21 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		this.setPhase("ASSEMBLE_CONTEXT");
 		const hasTools = !!(this.config.tools && this.config.tools.length > 0);
 		this.requirements = deriveCapabilityRequirements(this.ctx.db, this.config.threadId, hasTools);
+		// §5.4: a model hint of the form `logical_model@RouteId` hard-pins the route
+		// (failover + substitution disabled). §5.3: an unpinned call resolves
+		// thread-sticky, reusing the thread's last ok route while it is warm+eligible.
+		const { logicalModel: hintedModel, pin } = parseModelHint(this.config.modelId);
+		const resolvePrefs = {
+			threadId: this.config.threadId,
+			pin,
+		} as const;
 		this.lastModelResolution = resolveModel(
-			this.config.modelId,
+			hintedModel,
 			this.modelRouter,
 			this.ctx.db,
 			this.ctx.siteId,
 			this.requirements,
+			resolvePrefs,
 		);
 		// A stale host row means the requested remote model is known but its relay
 		// is reconnecting. Wait here, at inference dispatch only: resolveModel()
@@ -530,11 +541,12 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				initial: this.lastModelResolution,
 				resolve: () =>
 					resolveModel(
-						this.config.modelId,
+						hintedModel,
 						this.modelRouter,
 						this.ctx.db,
 						this.ctx.siteId,
 						this.requirements,
+						resolvePrefs,
 					),
 				timeoutMs: Math.min(this.inferenceTimeoutMs, MAX_MODEL_RECONNECT_WAIT_MS),
 				signal: this.config.abortSignal,
@@ -1052,6 +1064,13 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 					tokens_cache_read: metrics.response.usage.cacheReadTokens,
 					cost_usd,
 					cost_breakdown,
+					// Route provenance for thread-sticky routing (§5.3): the RouteId that
+					// served this turn so the NEXT turn can reuse it while warm+eligible.
+					// substituted_from stays null here — refusal substitution (slice 5,
+					// §7.3) sets it when it rewrites the served model.
+					route_id: getResolvedRouteId(this.lastModelResolution, (id) =>
+						this.modelRouter.getRouteId(id),
+					),
 					status: metrics.status === "success" ? "ok" : metrics.status,
 					created_at: new Date().toISOString(),
 				},

@@ -31,6 +31,9 @@ export type SyncedTableName =
 	| "rss_feeds"
 	| "client_sessions"
 	| "mcp_auth_challenges"
+	| "model_routing_rules"
+	| "route_drains"
+	| "model_aliases"
 	| "turns";
 export type ReducerType = "lww" | "append-only";
 
@@ -456,8 +459,57 @@ export interface Turn extends SoftDeletable {
 	context_debug: string | null;
 	/** JSON `{ input, output, cacheRead, cacheWrite }` in USD; null when unknown. */
 	cost_breakdown: string | null;
+	/**
+	 * The `RouteId` (`${siteId}:${provider}:${backendId}`) that served this turn,
+	 * or null for legacy / pre-identity rows. Read on the next turn for
+	 * thread-sticky routing (2026-11-21-model-routing.md §5.3).
+	 */
+	route_id: string | null;
+	/**
+	 * Originally-requested logical model when a refusal fallback substituted
+	 * another model (§5.3); null on a normal turn.
+	 */
+	substituted_from: string | null;
 	host_origin: string | null;
 	modified_at: string | null;
+}
+
+/**
+ * `model_routing_rules` row: per-logical-model route priority and refusal-
+ * fallback override (synced, LWW; 2026-11-21-model-routing.md §4.2). Both JSON
+ * payload columns are nullable so an operator can set just one. `route_order`
+ * serializes a `RouteId[]`; `fallback_policy` serializes a `ModelFallbackPolicy`.
+ */
+export interface ModelRoutingRuleRow extends SoftDeletable {
+	logical_model: string;
+	/** JSON `RouteId[]` of preferred routes in declared order, or null. */
+	route_order: string | null;
+	/** JSON `ModelFallbackPolicy` refusal-fallback override, or null. */
+	fallback_policy: string | null;
+	modified_at: string;
+}
+
+/**
+ * `route_drains` row: an operator drain keyed by `RouteId` (synced, LWW;
+ * §6.2). A live row (deleted = 0) excludes the route from all candidate lists
+ * and half-open trials; re-enabling soft-deletes the row.
+ */
+export interface RouteDrainRow extends SoftDeletable {
+	route_id: string;
+	drained_at: string;
+	reason: string | null;
+	modified_at: string;
+}
+
+/**
+ * `model_aliases` row: a cluster-global alias override keyed by `provider_key`
+ * (`${provider}:${provider_model_id}`; synced, LWW; §4.2). `logical_model` may
+ * be null to keep a provider model deliberately ungrouped.
+ */
+export interface ModelAliasRow extends SoftDeletable {
+	provider_key: string;
+	logical_model: string | null;
+	modified_at: string;
 }
 
 export interface SyncedTableRowMap {
@@ -478,6 +530,9 @@ export interface SyncedTableRowMap {
 	rss_feeds: RssFeed;
 	client_sessions: ClientSession;
 	mcp_auth_challenges: McpAuthChallenge;
+	model_routing_rules: ModelRoutingRuleRow;
+	route_drains: RouteDrainRow;
+	model_aliases: ModelAliasRow;
 	turns: Turn;
 }
 
@@ -522,6 +577,28 @@ export const MAX_PERSONA_BYTES = 64 * 1024; // 64 KB
  */
 export const WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY = "webhooks_allow_unauthenticated";
 
+/**
+ * `cluster_config` key holding the ordered cluster-default refusal-fallback list
+ * (JSON `LogicalModelId[]`; 2026-11-21-model-routing.md §4.2). Consulted when a
+ * model has no per-model `fallback_policy` override.
+ */
+export const ROUTING_DEFAULT_FALLBACK_MODELS_KEY = "routing.default_fallback_models";
+
+/**
+ * `cluster_config` key holding the cluster model-role map (JSON `ClusterModelRoles`
+ * = `{ default, heavy?, fast? }`; §4.2). An omitted/"default" model resolves to
+ * `routing.model_roles.default` before the per-host `model_backends.default`
+ * bootstrap fallback (R-RT9/R-RT14).
+ */
+export const ROUTING_MODEL_ROLES_KEY = "routing.model_roles";
+
+/** Shape of the JSON stored under {@link ROUTING_MODEL_ROLES_KEY}. */
+export interface ClusterModelRoles {
+	default?: string;
+	heavy?: string;
+	fast?: string;
+}
+
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",
 	threads: "lww",
@@ -540,6 +617,9 @@ export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	rss_feeds: "lww",
 	client_sessions: "lww",
 	mcp_auth_challenges: "lww",
+	model_routing_rules: "lww",
+	route_drains: "lww",
+	model_aliases: "lww",
 	// turns are append-only facts about what the model did on a given host.
 	// Recorded once when the turn completes; never mutated after insert except
 	// for local-only columns (context_debug, relay_target, relay_latency_ms)

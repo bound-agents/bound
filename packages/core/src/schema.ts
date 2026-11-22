@@ -671,6 +671,54 @@ export function applySchema(db: Database): void {
 		ON mcp_auth_challenges(status) WHERE deleted = 0
 	`);
 
+	// 14d. Routing preferences (synced, LWW) — cluster-wide model-routing
+	// preferences split into three independently-editable STRICT tables so
+	// row-level LWW resolves concurrent edits to different models/routes/aliases
+	// cleanly (2026-11-21-model-routing.md §4.2, R-RT5). No foreign keys
+	// (invariant #20): a route_order / drain / alias entry may reference a
+	// RouteId or logical model not yet (or no longer) advertised — such rows are
+	// retained as dormant no-ops (§6.3) rather than rejected or cascaded.
+	//
+	// model_routing_rules: per-logical-model route priority (route_order, a JSON
+	// RouteId[]) and refusal-fallback override (fallback_policy, a JSON
+	// ModelFallbackPolicy). Both fields co-reside on one row keyed by
+	// logical_model, so concurrent edits to either field of the same model
+	// resolve at row granularity (last full-row write wins).
+	db.run(`
+		CREATE TABLE IF NOT EXISTS model_routing_rules (
+			logical_model   TEXT PRIMARY KEY,
+			route_order     TEXT,
+			fallback_policy TEXT,
+			deleted         INTEGER NOT NULL DEFAULT 0,
+			modified_at     TEXT NOT NULL
+		) STRICT
+	`);
+
+	// route_drains: operator drains keyed by RouteId. A drained route is excluded
+	// from all normal candidate lists and half-open trials until the operator
+	// re-enables it (§6.2). Automatic health transitions never touch this table.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS route_drains (
+			route_id    TEXT PRIMARY KEY,
+			drained_at  TEXT NOT NULL,
+			reason      TEXT,
+			deleted     INTEGER NOT NULL DEFAULT 0,
+			modified_at TEXT NOT NULL
+		) STRICT
+	`);
+
+	// model_aliases: cluster-global alias overrides keyed by provider_key
+	// (`${provider}:${provider_model_id}`). logical_model may be null to keep a
+	// provider model deliberately ungrouped (§4.2).
+	db.run(`
+		CREATE TABLE IF NOT EXISTS model_aliases (
+			provider_key  TEXT PRIMARY KEY,
+			logical_model TEXT,
+			deleted       INTEGER NOT NULL DEFAULT 0,
+			modified_at   TEXT NOT NULL
+		) STRICT
+	`);
+
 	// 15. change_log (non-replicated, local-only)
 	// Migration: if old seq-based table exists, migrate to HLC-based table
 	migrateChangeLogToHlc(db);

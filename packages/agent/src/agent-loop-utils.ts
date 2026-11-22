@@ -446,6 +446,22 @@ export function getResolvedModelId(resolution: ModelResolution | null, fallback?
 }
 
 /**
+ * The `RouteId` that served a resolution, or null when unavailable. For a local
+ * resolution it is the router's recorded route identity for the backend id; for
+ * a remote resolution it is the serving host's advertised `routeId`. Recorded on
+ * the turn row (`turns.route_id`) so the NEXT turn can resolve thread-sticky
+ * routing (2026-11-21-model-routing.md §5.3).
+ */
+export function getResolvedRouteId(
+	resolution: ModelResolution | null,
+	getLocalRouteId: (backendId: string) => string | null,
+): string | null {
+	if (!resolution || resolution.kind === "error") return null;
+	if (resolution.kind === "local") return getLocalRouteId(resolution.modelId);
+	return resolution.hosts[0]?.routeId ?? null;
+}
+
+/**
  * Conservative output budget used when neither the loop nor the backend
  * advertises one. This must stay aligned with context assembly's fallback
  * reserve: the number subtracted from the context window is also the number

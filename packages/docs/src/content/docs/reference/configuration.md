@@ -411,3 +411,20 @@ Pinned-memory caps — a context-management control. Absent means the defaults b
 `persona` is a single replicated, cluster-wide Markdown value included in the system prompt
 and capped at 64 KB. A fresh install has no persona. Manage it with `boundctl set-persona`,
 the web UI's **Persona** view, or the corresponding API.
+
+### `routing.model_roles`
+
+`routing.model_roles` is a replicated, cluster-wide JSON object naming the logical models
+that fill cluster roles: `{ "default": "<logical-model>", "heavy"?: "...", "fast"?: "..." }`.
+A turn that requests no model, or the literal `"default"`, resolves to `routing.model_roles.default`
+first. The per-host [`model_backends` `default`](#model_backendsjs--model_backendsjson) is only
+a bootstrap fallback used when the cluster role is unset or names a model the host cannot serve
+locally. Because the role is replicated, every host agrees on what `"default"` means.
+
+### `routing.default_fallback_models`
+
+`routing.default_fallback_models` is a replicated, cluster-wide JSON array of logical model IDs
+(`["...", "..."]`) giving the ordered cluster-default list to try when a model refusal calls for
+a different model and no per-model fallback override applies. It names models, never routes:
+route-level failover for the same model is automatic and separate (see
+[Inference and model routing](/bound/concepts/inference/#route-failures-and-model-refusals)).

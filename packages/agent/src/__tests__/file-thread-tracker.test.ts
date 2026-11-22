@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -27,6 +27,7 @@ describe("File-Thread Tracker (R-E20)", () => {
 		const dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 
 		// Set up host_meta for change-log outbox
 		db.run("INSERT INTO host_meta (key, value) VALUES ('site_id', 'test-site-id')");

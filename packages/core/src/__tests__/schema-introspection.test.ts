@@ -27,6 +27,9 @@ const EXPECTED_SYNCED_TABLES: readonly SyncedTableName[] = [
 	"turns",
 	"client_sessions",
 	"mcp_auth_challenges",
+	"model_routing_rules",
+	"route_drains",
+	"model_aliases",
 ];
 
 describe("getSyncedTableSchemas", () => {

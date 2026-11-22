@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { LLMBackend } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
@@ -64,6 +64,7 @@ describe("Concurrent agent loops with WAL serialization (R-U3)", () => {
 		dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 
 		// Create a test user
 		userId = randomUUID();
@@ -304,6 +305,7 @@ describe("findPendingUserMessage — queue-skip re-trigger detection", () => {
 		const dbPath = join(tmpDir, "test.db");
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 		threadId = randomUUID();
 		const userId = randomUUID();
 		db.run(

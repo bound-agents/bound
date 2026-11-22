@@ -39,6 +39,20 @@ export interface TurnRecord {
 	 * (`null`) for legacy rows and plain-number `price(turn)` callbacks.
 	 */
 	cost_breakdown?: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+	/**
+	 * The `RouteId` (`${siteId}:${provider}:${backendId}`) that served this turn.
+	 * Null for legacy rows and turns recorded before route identity existed.
+	 * Read on the NEXT turn for thread-sticky routing (2026-11-21-model-routing.md
+	 * §5.3): a thread stays on its last ok turn's route while that route is
+	 * eligible and within its cache window.
+	 */
+	route_id?: string | null;
+	/**
+	 * When a model refusal substituted a different model, the ORIGINALLY requested
+	 * logical model (§5.3). Null on a normal turn. Lets a sticky refusal
+	 * substitution persist across turns until the operator clears it.
+	 */
+	substituted_from?: string | null;
 }
 
 export function applyMetricsSchema(db: Database): void {
@@ -107,6 +121,16 @@ export function applyMetricsSchema(db: Database): void {
 		// append-only reducer drops this key on older peers that haven't migrated
 		// (forward-compat; see packages/sync/src/reducers.ts).
 		["cost_breakdown", "TEXT"],
+		// Route identity + refusal-substitution provenance for thread-sticky
+		// routing (2026-11-21-model-routing.md §5.3). route_id is the RouteId that
+		// served the turn; substituted_from is the originally requested logical
+		// model when a refusal fallback substituted another. Both nullable — legacy
+		// rows and pre-identity turns leave them NULL. The LWW/append-only reducers
+		// drop these keys on older peers that haven't migrated (forward-compat;
+		// eafa66f8, see packages/sync/src/reducers.ts), so a mixed-version peer
+		// falls back to ranked selection instead of wedging the batch.
+		["route_id", "TEXT"],
+		["substituted_from", "TEXT"],
 	] as const) {
 		try {
 			db.run(`ALTER TABLE turns ADD COLUMN ${colName} ${decl}`);
@@ -224,6 +248,8 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		relay_latency_ms: null,
 		context_debug: null,
 		cost_breakdown: turn.cost_breakdown ? JSON.stringify(turn.cost_breakdown) : null,
+		route_id: turn.route_id ?? null,
+		substituted_from: turn.substituted_from ?? null,
 		deleted: 0,
 	};
 

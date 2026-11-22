@@ -152,6 +152,12 @@ export function findEligibleHostsByModel(
 	modelId: string,
 	localSiteId: string,
 	requirements?: CapabilityRequirements,
+	prefs?: {
+		/** Per-model route_order (RouteId[]) — listed routes rank first (§5.2). */
+		routeOrder?: string[] | null;
+		/** RouteIds currently drained (§6.2) — excluded from candidates entirely. */
+		drainedRouteIds?: ReadonlySet<string>;
+	},
 ): RelayRoutingResult | RelayRoutingError {
 	const rows = db
 		.query(
@@ -209,6 +215,8 @@ export function findEligibleHostsByModel(
 				// New object format: HostModelEntry with id, route metadata, capabilities
 				const hostEntry = entry as HostModelEntry;
 				if (hostEntry.id !== modelId) continue;
+				// §6.2: a drained route is excluded from candidates entirely.
+				if (hostEntry.route_id && prefs?.drainedRouteIds?.has(hostEntry.route_id)) continue;
 
 				const host: EligibleHost = {
 					site_id: row.site_id,
@@ -261,11 +269,22 @@ export function findEligibleHostsByModel(
 	}
 
 	// Sort deterministically without consulting heartbeat freshness (R-RT8):
-	// verified before unverified, then stable RouteId lexical order (falling back
-	// to site_id when a legacy advertisement carries no route_id). Heartbeat
-	// timestamps gate liveness (staleness filtering upstream) only; they never
-	// break ties between live routes. `tier` is gone (R-RT3).
+	// per-model route_order first (§5.2), then verified before unverified, then
+	// stable RouteId lexical order (falling back to site_id when a legacy
+	// advertisement carries no route_id). Heartbeat timestamps gate liveness
+	// (staleness filtering upstream) only; they never break ties between live
+	// routes. `tier` is gone (R-RT3).
+	const order = prefs?.routeOrder ?? [];
+	const orderIndex = new Map<string, number>();
+	order.forEach((id, i) => {
+		if (!orderIndex.has(id)) orderIndex.set(id, i);
+	});
+	const rank = (h: EligibleHost): number =>
+		h.routeId ? (orderIndex.get(h.routeId) ?? Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
 	eligible.sort((a, b) => {
+		const ar = rank(a);
+		const br = rank(b);
+		if (ar !== br) return ar - br;
 		if (!a.unverified && b.unverified) return -1;
 		if (a.unverified && !b.unverified) return 1;
 		const aKey = a.routeId ?? a.site_id;

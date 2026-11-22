@@ -54,6 +54,9 @@ export const SYNCED_TABLE_NAMES: SyncedTableName[] = [
 export const TABLE_PK_COLUMN: Partial<Record<SyncedTableName, string>> = {
 	hosts: "site_id",
 	cluster_config: "key",
+	model_routing_rules: "logical_model",
+	route_drains: "route_id",
+	model_aliases: "provider_key",
 };
 
 export function getPkColumn(table: SyncedTableName): string {

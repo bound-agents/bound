@@ -427,6 +427,29 @@ const FULL_SCHEMA = `
 		created_at TEXT NOT NULL,
 		modified_at TEXT NOT NULL
 	) STRICT;
+
+	CREATE TABLE model_routing_rules (
+		logical_model   TEXT PRIMARY KEY,
+		route_order     TEXT,
+		fallback_policy TEXT,
+		deleted         INTEGER NOT NULL DEFAULT 0,
+		modified_at     TEXT NOT NULL
+	) STRICT;
+
+	CREATE TABLE route_drains (
+		route_id    TEXT PRIMARY KEY,
+		drained_at  TEXT NOT NULL,
+		reason      TEXT,
+		deleted     INTEGER NOT NULL DEFAULT 0,
+		modified_at TEXT NOT NULL
+	) STRICT;
+
+	CREATE TABLE model_aliases (
+		provider_key  TEXT PRIMARY KEY,
+		logical_model TEXT,
+		deleted       INTEGER NOT NULL DEFAULT 0,
+		modified_at   TEXT NOT NULL
+	) STRICT;
 `;
 
 /**

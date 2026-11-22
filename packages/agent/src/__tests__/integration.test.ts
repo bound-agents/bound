@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, createDatabase, insertRow } from "@bound/core";
+import { applyMetricsSchema, applySchema, createDatabase, insertRow } from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { TypedEventEmitter } from "@bound/shared";
@@ -28,6 +28,7 @@ describe("Agent Loop End-to-End Integration", () => {
 
 		db = createDatabase(dbPath);
 		applySchema(db);
+		applyMetricsSchema(db);
 	});
 
 	afterAll(async () => {

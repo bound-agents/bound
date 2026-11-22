@@ -41,6 +41,9 @@ const SYNCED_TABLE_NAMES: readonly SyncedTableName[] = [
 	"rss_feeds",
 	"client_sessions",
 	"mcp_auth_challenges",
+	"model_routing_rules",
+	"route_drains",
+	"model_aliases",
 	"turns",
 ];
 

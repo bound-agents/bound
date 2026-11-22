@@ -97,3 +97,50 @@ change it. Bound therefore treats a refusal differently from a route failure:
 
 An HTTP 400 that carries a recognized safety signal is a refusal. An HTTP 400 without one is
 a route failure and counts toward route health like any other bad request.
+
+## Routing preferences, drains, and pins
+
+The candidate pool and its ranking are shaped by cluster-wide preferences that replicate
+to every host, so a thread sees the same routing decision wherever its next turn runs.
+
+### Route order
+
+An operator can declare a preferred order of routes for a logical model. When set, the
+listed routes rank first in their declared order; any eligible route that is not listed
+follows, ordered by locality (local before remote) and then by a stable route identity.
+Route order is a preference over identity, never over liveness — a listed route that is
+offline, unhealthy, or lacks a capability the turn needs is skipped, not forced.
+
+### Drains
+
+An operator can **drain** a route by its identity. A drained route is removed from every
+candidate list and from health-recovery trials until the operator un-drains it. Draining
+is the manual counterpart to automatic health backoff: health transitions never set or
+clear a drain, and a drain never expires on its own. Draining a route a thread is currently
+using moves that thread to the next ranked route on its next turn.
+
+### Thread stickiness
+
+After a thread runs a turn on a route, it stays on that route for subsequent turns while
+the route remains eligible and the turn is still within the route's prompt-cache window
+(at least five minutes, longer when the route advertises a longer cache TTL). Stickiness
+holds even when a higher-ranked route recovers in the meantime, and it holds across hosts:
+if the next turn triggers on a different host, that host reads the same prior-turn record
+and makes the same choice. This keeps a warm thread on its warm cache and its
+provider-bound state instead of flapping back to a just-recovered route. Once the cache
+window goes cold, or the sticky route becomes ineligible, the thread resolves from the
+ranked list again. Only a successful prior turn pins a thread; a failed or aborted turn
+never holds a thread to a dead route.
+
+### Hard route pins
+
+A thread, scheduled task, or auxiliary invocation can **pin** a single route for debugging.
+A pin is expressed in the model hint as `logical_model@RouteId` (or `@RouteId` to pin a
+route regardless of its logical model). A pinned call considers only that route: route
+failover and model substitution are both disabled, and any route error or model refusal
+surfaces verbatim rather than being retried elsewhere. If the pinned route no longer
+exists anywhere in the cluster, the call fails with a clear error rather than silently
+falling back to another route.
+
+See the [configuration reference](/bound/reference/configuration/#replicated-control-state)
+for the cluster-wide default-model role and fallback-list keys.

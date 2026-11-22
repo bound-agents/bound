@@ -7,8 +7,22 @@ import type {
 	ModelRouter,
 } from "@bound/llm";
 
-import { listAllHostModels } from "@bound/core";
-import type { HostModelEntry } from "@bound/shared";
+import {
+	findClusterConfigValueByKey,
+	findLatestOkTurnRouteByThread,
+	listAllHostModels,
+} from "@bound/core";
+import {
+	type ClusterModelRoles,
+	type HostModelEntry,
+	ROUTING_MODEL_ROLES_KEY,
+} from "@bound/shared";
+import {
+	cacheTtlToMs,
+	loadDrainedRouteIds,
+	loadRouteOrder,
+	resolveStickyRoute,
+} from "./routing-preferences";
 
 import { type EligibleHost, findAnyRemoteModel, findEligibleHostsByModel } from "./relay-router";
 
@@ -215,14 +229,35 @@ export async function waitForModelResolution({
 	return latest;
 }
 
+export interface ResolveModelPrefs {
+	/**
+	 * The thread whose latest ok turn drives stickiness (§5.3). When absent,
+	 * stickiness is skipped and resolution behaves as pure ranked selection.
+	 */
+	threadId?: string;
+	/**
+	 * A hard route pin (§5.4). When present, candidate selection considers ONLY
+	 * this RouteId and failover/substitution are disabled — the caller enforces
+	 * the raw-error surface. resolveModel restricts to the pinned route here.
+	 */
+	pin?: { routeId: string } | null;
+	/** `now` in ms for the sticky cache-window test; defaults to `Date.now()`. */
+	nowMs?: number;
+}
+
 export function resolveModel(
 	modelId: string | undefined,
 	modelRouter: ModelRouter,
 	db: Database,
 	localSiteId: string,
 	requirements?: CapabilityRequirements,
+	prefs?: ResolveModelPrefs,
 ): ModelResolution {
-	const effectiveModelId = !modelId || modelId === "default" ? modelRouter.getDefaultId() : modelId;
+	// Default-model resolution (§5.1, R-RT9/R-RT14): an omitted or "default"
+	// request resolves to the synced cluster role `routing.model_roles.default`
+	// first, then to the local `model_backends.default` as a bootstrap fallback.
+	const effectiveModelId =
+		!modelId || modelId === "default" ? resolveDefaultModelId(db, modelRouter) : modelId;
 
 	// Phase 0: Readiness gate. A backend exposing async self-configuration
 	// (`readiness`) registers a not-ready placeholder/namespace id until its
@@ -243,14 +278,56 @@ export function resolveModel(
 		};
 	}
 
+	// Synced routing preferences (§5.2/§6.2): the per-model route_order ranks
+	// candidates, and drained routes are excluded from EVERY normal candidate
+	// list and half-open trial — not just the sticky pool (R-RT6/R-RT8/R-RT14).
+	// Load both once so the sticky-pool builder, the local short-circuit, and
+	// the remote finder all honor the same operator preferences.
+	const routeOrder = loadRouteOrder(db, effectiveModelId);
+	const drainedRouteIds = loadDrainedRouteIds(db);
+
+	// disables failover/substitution. Resolve it directly to that route (local
+	// backend whose RouteId matches, else the remote host advertising it). The
+	// caller is responsible for surfacing any error raw (no retry/substitution).
+	if (prefs?.pin) {
+		return resolvePinnedRoute(prefs.pin.routeId, effectiveModelId, modelRouter, db, localSiteId);
+	}
+
+	// §5.3 thread-sticky routing: if the thread's latest ok turn ran an eligible
+	// route still inside its cache window, reuse it directly even if a
+	// higher-ranked route has since recovered. Skipped when no threadId is given
+	// (startup/listing/validation callers) or no prior ok turn exists.
+	if (prefs?.threadId) {
+		const sticky = resolveStickyForThread(
+			prefs.threadId,
+			effectiveModelId,
+			modelRouter,
+			db,
+			localSiteId,
+			requirements,
+			prefs.nowMs ?? Date.now(),
+			routeOrder,
+			drainedRouteIds,
+		);
+		if (sticky) return sticky;
+	}
 	// Phase 1: Identify — check local backends first
 	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
+	const localRouteId = localBackend ? modelRouter.getRouteId(effectiveModelId) : null;
 
 	// A local route no longer wins just by existing (R-RT7): when this backend
 	// id is within its per-RouteId cooldown (rate-limited / backoff), skip the
 	// local short-circuit so resolution falls through to a remote route serving
-	// the SAME logical model. Failover never crosses to a different model.
-	if (localBackend && !modelRouter.isRateLimited(effectiveModelId)) {
+	// the SAME logical model. Failover never crosses to a different model. A
+	// drained local route (§6.2) is likewise skipped — an operator drain removes
+	// the route from normal selection on first/cold/no-prior-turn resolutions,
+	// not only inside the sticky pool — so resolution falls through to a
+	// non-drained remote route for the same model.
+	if (
+		localBackend &&
+		!modelRouter.isRateLimited(effectiveModelId) &&
+		!(localRouteId && drainedRouteIds.has(localRouteId))
+	) {
 		// Phase 2: Qualify (local)
 		if (requirements) {
 			const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);
@@ -344,7 +421,10 @@ export function resolveModel(
 	}
 
 	// Phase 1 fallback: check remote hosts
-	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements);
+	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements, {
+		routeOrder,
+		drainedRouteIds,
+	});
 	if (remoteResult.ok) {
 		// Phase 2: Qualify (remote) — remote capability filtering via requirements parameter
 		const max_context = remoteResult.hosts[0]?.capabilities?.max_context;
@@ -423,4 +503,192 @@ function isModelRegisteredInCluster(
 		}
 	}
 	return false;
+}
+
+/**
+ * Resolve the backend id for an omitted/"default" request (§5.1, R-RT9/R-RT14).
+ * Order: synced cluster role `routing.model_roles.default` (when it names a
+ * backend this router actually holds), else the local `model_backends.default`
+ * bootstrap fallback. An unresolvable cluster role never wins over a working
+ * local default — the role is a preference, the local default is the floor.
+ */
+function resolveDefaultModelId(db: Database, modelRouter: ModelRouter): string {
+	const localDefault = modelRouter.getDefaultId();
+	const row = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
+	if (row) {
+		try {
+			const roles = JSON.parse(row.value) as ClusterModelRoles;
+			const roleDefault = roles.default;
+			// Use the cluster role only when it names a backend this host can serve
+			// locally; otherwise a role pointing at a remote-only model would shadow a
+			// perfectly good local default on every omitted-model turn. Remote-only
+			// role defaults are a later slice's concern; the bootstrap floor is local.
+			if (roleDefault && modelRouter.tryGetBackend(roleDefault)) return roleDefault;
+		} catch {
+			// Malformed roles JSON — fall through to the local bootstrap default.
+		}
+	}
+	return localDefault;
+}
+
+/**
+ * Resolve a hard route pin (§5.4) to a single route. Considers ONLY the pinned
+ * `RouteId`: a local backend whose recorded RouteId matches, else the remote
+ * host advertising it. Failover and substitution are disabled — if the pinned
+ * route is not currently available the result is a typed error the caller
+ * surfaces raw (no fallback to another route or model). When the pinned route
+ * is gone entirely the error is permanent-shaped so the caller can report
+ * "pinned route no longer exists" (§6.3).
+ */
+function resolvePinnedRoute(
+	routeId: string,
+	effectiveModelId: string,
+	modelRouter: ModelRouter,
+	db: Database,
+	localSiteId: string,
+): ModelResolution {
+	// Local match: a registered backend whose recorded RouteId equals the pin.
+	for (const info of modelRouter.listBackends()) {
+		if (modelRouter.getRouteId(info.id) === routeId) {
+			const backend = modelRouter.tryGetBackend(info.id);
+			if (backend) {
+				const resolution = buildLocalResolution(modelRouter, backend, info.id, false);
+				if (resolution) return resolution;
+			}
+		}
+	}
+
+	// Remote match: a non-stale host advertising exactly this RouteId for the model.
+	const remote = findEligibleHostsByModel(db, effectiveModelId, localSiteId);
+	if (remote.ok) {
+		const host = remote.hosts.find((h) => h.routeId === routeId);
+		const max_context = host?.capabilities?.max_context;
+		if (host && max_context !== undefined) {
+			return {
+				kind: "remote",
+				hosts: [host],
+				modelId: effectiveModelId,
+				thinkingTool: host.thinkingMode === "tool",
+				thinkingConfig: host.thinkingMode === "tool" ? { type: "disabled" } : undefined,
+				maxOutputTokens: host.maxOutputTokens,
+				max_context,
+			};
+		}
+	}
+
+	// Pinned route is not currently available. A pin disables failover, so this is
+	// terminal for the caller. Distinguish "route gone from the whole cluster"
+	// (permanent) from "momentarily unreachable" (retryable) using the drain/host
+	// advertisement: if any host still advertises the RouteId it may return.
+	const stillAdvertised = isRouteAdvertisedInCluster(routeId, modelRouter, db);
+	return {
+		kind: "error",
+		error: stillAdvertised
+			? `Pinned route "${routeId}" is momentarily unavailable`
+			: `Pinned route "${routeId}" no longer exists`,
+		reason: stillAdvertised ? "transient-unavailable" : "unknown-model",
+	};
+}
+
+/** True when any host (or the local router) advertises `routeId`, staleness-ignored. */
+function isRouteAdvertisedInCluster(
+	routeId: string,
+	modelRouter: ModelRouter,
+	db: Database,
+): boolean {
+	for (const info of modelRouter.listBackends()) {
+		if (modelRouter.getRouteId(info.id) === routeId) return true;
+	}
+	const rows = listAllHostModels(db);
+	for (const row of rows) {
+		if (!row.models) continue;
+		let rawModels: unknown;
+		try {
+			rawModels = JSON.parse(row.models);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(rawModels)) continue;
+		for (const entry of rawModels) {
+			if (entry && typeof entry === "object" && (entry as HostModelEntry).route_id === routeId) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * Thread-sticky resolution (§5.3). Reads the thread's latest ok turn, builds the
+ * set of currently-eligible routes for the requested model (local + remote,
+ * drain-filtered), and reuses the prior route when it is still eligible and
+ * within its cache window. Returns null to fall through to ranked selection.
+ */
+function resolveStickyForThread(
+	threadId: string,
+	effectiveModelId: string,
+	modelRouter: ModelRouter,
+	db: Database,
+	localSiteId: string,
+	requirements: CapabilityRequirements | undefined,
+	nowMs: number,
+	routeOrder: string[] | null,
+	drained: ReadonlySet<string>,
+): ModelResolution | null {
+	const prior = findLatestOkTurnRouteByThread(db, threadId);
+	if (!prior || !prior.route_id) return null;
+
+	// Build the eligible-route pool for the requested model and a RouteId -> TTL
+	// lookup, spanning local backends and non-stale remote hosts (drain-filtered).
+	// `drained` and `routeOrder` are the caller's single load (§5.2/§6.2).
+	const eligible = new Set<string>();
+	const ttlMsByRoute = new Map<string, number | null>();
+
+	// Local: the requested backend id, when registered, ready, not rate-limited,
+	// not drained, and meeting the turn's capability requirements.
+	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
+	if (localBackend && !modelRouter.isRateLimited(effectiveModelId)) {
+		const localRouteId = modelRouter.getRouteId(effectiveModelId);
+		const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);
+		const meets =
+			!requirements || (caps ? getUnmetCapabilities(caps, requirements).length === 0 : false);
+		if (localRouteId && !drained.has(localRouteId) && meets) {
+			eligible.add(localRouteId);
+			ttlMsByRoute.set(localRouteId, cacheTtlToMs(modelRouter.getCacheTtl(effectiveModelId)));
+		}
+	}
+
+	// Remote: non-stale hosts advertising the model, drain-filtered by the finder.
+	const remote = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements, {
+		routeOrder,
+		drainedRouteIds: drained,
+	});
+	if (remote.ok) {
+		for (const host of remote.hosts) {
+			if (host.routeId) {
+				eligible.add(host.routeId);
+				// Remote hosts advertise cache_ttl via the HostModelEntry; the finder
+				// does not surface it here, so fall back to the 5m floor (null).
+				if (!ttlMsByRoute.has(host.routeId)) ttlMsByRoute.set(host.routeId, null);
+			}
+		}
+	}
+
+	const decision = resolveStickyRoute({
+		priorTurn: {
+			modelId: prior.model_id,
+			routeId: prior.route_id,
+			substitutedFrom: prior.substituted_from,
+			createdAt: prior.created_at,
+		},
+		requestedModel: effectiveModelId,
+		eligibleRouteIds: eligible,
+		cacheTtlMsByRoute: (routeId) => ttlMsByRoute.get(routeId) ?? null,
+		nowMs,
+	});
+	if (decision.kind !== "sticky") return null;
+
+	// The sticky route is eligible — resolve it directly (pin-style, but WITHOUT
+	// disabling failover: a later route failure re-resolves normally).
+	return resolvePinnedRoute(decision.routeId, effectiveModelId, modelRouter, db, localSiteId);
 }

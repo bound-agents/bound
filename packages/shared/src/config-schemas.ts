@@ -271,7 +271,12 @@ export const modelBackendsSchema = z
 	.object({
 		// An empty array is valid for hub-only nodes that relay inference to spokes.
 		backends: z.array(modelBackendSchema).min(0),
-		// Empty string is the sentinel value meaning "no local default" (hub-only mode).
+		// Empty string is the sentinel value meaning "no local default" — the
+		// backend to serve an omitted/"default" model is resolved cluster-wide from
+		// synced `routing.model_roles.default` first (2026-11-21-model-routing.md
+		// §4.2, R-RT9/R-RT14); a non-empty local `default` is only a bootstrap
+		// fallback when that cluster role is unset. So `default` is optional even
+		// with non-empty backends.
 		default: z.string().default(""),
 		daily_budget_usd: z.number().min(0).optional(),
 		// Opt-in cache-warming driver (issue #10). Co-located here because its
@@ -281,14 +286,14 @@ export const modelBackendsSchema = z
 	.strict()
 	.refine(
 		(data) => {
-			// Hub-only mode: empty backends must have empty default ("").
-			if (data.backends.length === 0) return data.default === "";
-			// Normal mode: default must reference a valid backend ID.
+			// `default` is optional (resolved from the cluster role at runtime), but
+			// when set it must name a real backend. Empty is always valid: hub-only
+			// nodes have no backends, and normal nodes may defer to the cluster role.
+			if (data.default === "") return true;
 			return data.backends.some((b) => b.id === data.default);
 		},
 		{
-			message:
-				"default must reference a backend ID defined in backends (or be empty when backends is empty)",
+			message: "default, when set, must reference a backend ID defined in backends",
 		},
 	)
 	.refine(

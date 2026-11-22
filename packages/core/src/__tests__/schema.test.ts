@@ -68,18 +68,20 @@ describe("Database Schema", () => {
 		expect(tableNames).toContain("dispatch_queue");
 
 		// FTS5 virtual table + its shadow tables
-		// Still exactly 32 tables (26 base after relay_outbox/relay_inbox retired at
-		// release N+1, mcp_auth_challenges added at MCP OAuth slice 1, and local-only
-		// mcp_auth_waiters added at MCP OAuth slice 3, incl. local-only durable_work,
-		// local_flags, row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
-		expect(tables.length).toBe(32);
+		// Still exactly 35 tables (29 base after relay_outbox/relay_inbox retired at
+		// release N+1, mcp_auth_challenges added at MCP OAuth slice 1, routing
+		// preferences split into model_routing_rules/route_drains/model_aliases at
+		// routing slice 3, incl. local-only durable_work, local_flags,
+		// row_state_hashes cache, + 1 FTS5 virtual + 5 FTS5 shadow)
+		expect(tables.length).toBe(35);
 
-		// 26 base tables (relay_outbox/relay_inbox retired at release N+1; includes
+		// 29 base tables (relay_outbox/relay_inbox retired at release N+1; includes
 		// local-only row_state_hashes cache, durable_work, and local_flags; +
 		// mcp_auth_challenges at MCP OAuth slice 1; + local-only mcp_auth_waiters at
-		// MCP OAuth slice 3) + FTS5 virtual table + 5 FTS5 shadow tables = 32
+		// MCP OAuth slice 3; + model_routing_rules/route_drains/model_aliases at
+		// routing slice 3) + FTS5 virtual table + 5 FTS5 shadow tables = 35
 		const baseTables = tableNames.filter((n) => !n.startsWith("semantic_memory_fts_"));
-		expect(baseTables.length).toBe(27); // 26 base + 1 FTS5 virtual table
+		expect(baseTables.length).toBe(30); // 29 base + 1 FTS5 virtual table
 
 		db.close();
 	});
@@ -262,12 +264,13 @@ describe("Database Schema", () => {
 			.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 			.all() as Array<{ name: string }>;
 
-		// Still exactly 32 tables (25 base after relay_outbox/relay_inbox retired at
-		// release N+1, mcp_auth_challenges added at MCP OAuth slice 1, and
-		// local-only mcp_auth_waiters added at MCP OAuth slice 3, incl. local-only
-		// durable_work, local_flags, row_state_hashes cache, + 1 FTS5 virtual + 5
+		// Still exactly 35 tables (29 base after relay_outbox/relay_inbox retired at
+		// release N+1, mcp_auth_challenges added at MCP OAuth slice 1, routing
+		// preferences split into model_routing_rules/route_drains/model_aliases at
+		// routing slice 3, incl. local-only durable_work, local_flags,
+		// row_state_hashes cache, + 1 FTS5 virtual + 5
 		// FTS5 shadow)
-		expect(tables.length).toBe(32);
+		expect(tables.length).toBe(35);
 
 		db.close();
 	});

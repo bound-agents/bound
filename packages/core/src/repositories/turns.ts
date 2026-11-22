@@ -3,6 +3,40 @@ import type { Database } from "bun:sqlite";
 /** Read repository for the `turns` table. See ./index.ts for conventions. */
 
 /**
+ * Latest OK turn for a thread, projecting the columns thread-sticky routing
+ * needs (2026-11-21-model-routing.md §5.3). "OK" follows the turns status
+ * convention where legacy `NULL` means ok (`status IS NULL OR status = 'ok'`),
+ * so a failed/aborted turn never pins a thread to a dead route. Returns null
+ * when the thread has no prior ok turn (first turn, or every prior turn errored).
+ */
+export function findLatestOkTurnRouteByThread(
+	db: Database,
+	threadId: string,
+): {
+	model_id: string;
+	route_id: string | null;
+	substituted_from: string | null;
+	created_at: string;
+} | null {
+	return db
+		.query(
+			`SELECT model_id, route_id, substituted_from, created_at
+			 FROM turns
+			 WHERE thread_id = ?
+			   AND deleted = 0
+			   AND (status IS NULL OR status = 'ok')
+			 ORDER BY created_at DESC, rowid DESC
+			 LIMIT 1`,
+		)
+		.get(threadId) as {
+		model_id: string;
+		route_id: string | null;
+		substituted_from: string | null;
+		created_at: string;
+	} | null;
+}
+
+/**
  * Latest turn for a thread, projecting only the cache-state columns needed by
  * the cache predictor. Used by cache-prediction.ts.
  */
