@@ -8,6 +8,7 @@
  */
 
 import { type Logger, createLogger } from "@bound/shared";
+import { classifyCopilotFinishReason } from "../model-declined";
 import type { LLMFinishReason, LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import { mapError } from "./errors";
@@ -418,6 +419,16 @@ export async function* mapChunks(
 					);
 				}
 				const totalUsage = part.totalUsage as FinishState["totalUsage"];
+				const finishReason = part.finishReason as LLMFinishReason;
+				// 200-shaped model refusal: the AI SDK collapses every provider's
+				// safety/policy stop (OpenAI content_filter, Anthropic refusal, Gemini
+				// SAFETY, Copilot) to finishReason="content-filter" before the bridge
+				// sees it, so this is the one 200-path signal we can classify. Carry the
+				// structured outcome on the done chunk (R-RT15); a 200 finish never trips
+				// route failover, so the route stays healthy and the agent loop drops the
+				// refused partial. Error-shaped refusals (Gemini Interactions 400) travel
+				// as a thrown LLMRefusalError from mapError instead.
+				const declined = classifyCopilotFinishReason(finishReason) ?? undefined;
 				yield {
 					type: "done",
 					usage: extractUsage(
@@ -434,7 +445,8 @@ export async function* mapChunks(
 					// `refusal` stopReason: safety stops arrive as `content_filtered`,
 					// which the AI SDK maps to `content-filter`. The "error" case is
 					// already thrown above, so it never reaches here.
-					finish_reason: part.finishReason as LLMFinishReason,
+					finish_reason: finishReason,
+					...(declined && { declined }),
 				};
 				break;
 			}

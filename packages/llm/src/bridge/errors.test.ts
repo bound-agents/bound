@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { LLMRefusalError } from "../model-declined";
 import { LLMError } from "../types";
 import { mapError } from "./errors";
 
@@ -82,5 +83,94 @@ describe("mapError", () => {
 		const err = apiCallError({ message: "Service Unavailable", statusCode: 503 });
 		const msg = mapError(err, "p").message;
 		expect(msg).toBe("p request failed: Service Unavailable");
+	});
+});
+
+describe("mapError — Gemini Interactions API safety blocks (R-RT15)", () => {
+	// The Gemini Interactions API surfaces a safety block as an HTTP 400 whose
+	// JSON body carries an error `code` naming the block. Unlike a 200-shaped
+	// refusal, this arrives on the AI SDK error path, so mapError is the only
+	// place the raw 400 body is still visible before router error handling runs.
+	// A safety-coded 400 must become an LLMRefusalError (a refusal, not a route
+	// failure); any other 400 stays a plain LLMError that PooledBackend backs off.
+
+	it("classifies a safety-coded 400 as an LLMRefusalError, not a route failure", () => {
+		const err = apiCallError({
+			message: "Bad Request",
+			statusCode: 400,
+			responseBody: '{"error":{"code":"safety","message":"Blocked by safety filter"}}',
+		});
+		const mapped = mapError(err, "gemini");
+		expect(mapped).toBeInstanceOf(LLMRefusalError);
+		const refusal = mapped as LLMRefusalError;
+		expect(refusal.statusCode).toBe(400);
+		expect(refusal.outcome.kind).toBe("model-declined");
+		expect(refusal.outcome.vendor).toBe("google");
+		expect(refusal.outcome.category).toBe("safety");
+		expect(refusal.outcome.raw_reason).toBe("safety");
+		expect(refusal.outcome.substitutable).toBe(true);
+	});
+
+	it("classifies each recognized safety code (jailbreak, prohibited_content, blocklist)", () => {
+		for (const code of ["jailbreak", "prohibited_content", "blocklist"]) {
+			const err = apiCallError({
+				message: "Bad Request",
+				statusCode: 400,
+				responseBody: JSON.stringify({ error: { code, message: "blocked" } }),
+			});
+			const mapped = mapError(err, "gemini");
+			expect(mapped).toBeInstanceOf(LLMRefusalError);
+			expect((mapped as LLMRefusalError).outcome.category).toBe(code);
+		}
+	});
+
+	it("reads a top-level `code` field as well as a nested error.code", () => {
+		const err = apiCallError({
+			message: "Bad Request",
+			statusCode: 400,
+			responseBody: '{"code":"prohibited_content","message":"blocked"}',
+		});
+		const mapped = mapError(err, "gemini");
+		expect(mapped).toBeInstanceOf(LLMRefusalError);
+		expect((mapped as LLMRefusalError).outcome.category).toBe("prohibited_content");
+	});
+
+	it("leaves a 400 WITHOUT a safety code as a plain LLMError route failure", () => {
+		// R-RT15: a malformed-request 400 (e.g. invalid argument) is a genuine
+		// route failure. It must NOT become an LLMRefusalError, so PooledBackend
+		// still backs off the entry and the normal 400 path applies.
+		const err = apiCallError({
+			message: "Bad Request",
+			statusCode: 400,
+			responseBody: '{"error":{"code":"invalid_argument","message":"bad field"}}',
+		});
+		const mapped = mapError(err, "gemini");
+		expect(mapped).toBeInstanceOf(LLMError);
+		expect(mapped).not.toBeInstanceOf(LLMRefusalError);
+		expect(mapped.statusCode).toBe(400);
+	});
+
+	it("leaves a 400 with no parseable body as a plain LLMError", () => {
+		const err = apiCallError({
+			message: "Bad Request",
+			statusCode: 400,
+			responseBody: "not json at all",
+		});
+		const mapped = mapError(err, "gemini");
+		expect(mapped).toBeInstanceOf(LLMError);
+		expect(mapped).not.toBeInstanceOf(LLMRefusalError);
+	});
+
+	it("does not classify a non-400 status even if the body carries a safety code", () => {
+		// The Interactions safety block is specifically a 400. A 500 that happens
+		// to echo a safety-looking code is a server fault (route failure).
+		const err = apiCallError({
+			message: "Server Error",
+			statusCode: 500,
+			responseBody: '{"error":{"code":"safety"}}',
+		});
+		const mapped = mapError(err, "gemini");
+		expect(mapped).toBeInstanceOf(LLMError);
+		expect(mapped).not.toBeInstanceOf(LLMRefusalError);
 	});
 });

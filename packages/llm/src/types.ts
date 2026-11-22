@@ -1,4 +1,5 @@
 import type { ContextSegment } from "@bound/shared";
+import type { ModelDeclinedOutcome } from "./model-declined";
 
 export interface LLMBackend {
 	chat(params: ChatParams): AsyncIterable<StreamChunk>;
@@ -393,6 +394,18 @@ export type StreamChunk =
 			 * operator alert on `"content-filter"` rather than retrying.
 			 */
 			finish_reason?: LLMFinishReason;
+			/**
+			 * A normalized model refusal classified from a 200-shaped stream finish
+			 * (R-RT15). The AI SDK collapses every provider's 200-shaped refusal
+			 * (OpenAI `content_filter`, Anthropic `refusal`, Gemini `SAFETY`,
+			 * Copilot) to `finish_reason: "content-filter"`, so the bridge runs the
+			 * classifier on that collapsed signal and carries the structured outcome
+			 * here. A 200 finish never trips route failover, so the route stays
+			 * healthy; the agent loop drops the refused partial rather than persisting
+			 * it. Absent on a clean finish. Error-shaped refusals (Gemini Interactions
+			 * 400) travel as a thrown `LLMRefusalError` instead, never on this chunk.
+			 */
+			declined?: ModelDeclinedOutcome;
 	  }
 	| { type: "error"; error: string }
 	| { type: "heartbeat" };

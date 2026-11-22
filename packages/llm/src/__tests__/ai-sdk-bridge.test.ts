@@ -2307,6 +2307,53 @@ describe("mapChunks — tool_use streaming-boundary semantics", () => {
 		}
 	});
 
+	it("attaches a ModelDeclinedOutcome to the done chunk on a content-filter finish", async () => {
+		// 200-shaped refusals (OpenAI content_filter, Anthropic refusal, Gemini
+		// SAFETY, Copilot) are all collapsed by the AI SDK to a single
+		// finishReason="content-filter" before the bridge sees them. mapChunks runs
+		// the Copilot classifier on that collapsed signal so the done chunk carries
+		// a structured ModelDeclinedOutcome (category null, substitutable) rather
+		// than only the bare finish_reason. The agent loop still drops the refused
+		// text; a 200-shaped finish never trips PooledBackend backoff, so the route
+		// stays healthy.
+		const stream = events(
+			{ type: "text-delta", id: "t0", text: "I can't help with that." },
+			{
+				type: "finish",
+				finishReason: "content-filter",
+				totalUsage: { inputTokens: 5, outputTokens: 7 },
+			},
+		);
+		const chunks: StreamChunk[] = [];
+		for await (const c of mapChunks(stream)) chunks.push(c);
+		const done = chunks.find((c) => c.type === "done");
+		expect(done).toBeDefined();
+		if (done && done.type === "done") {
+			expect(done.finish_reason).toBe("content-filter");
+			expect(done.declined).toBeDefined();
+			expect(done.declined?.kind).toBe("model-declined");
+			expect(done.declined?.category).toBeNull();
+			expect(done.declined?.raw_reason).toBe("content-filter");
+			expect(done.declined?.substitutable).toBe(true);
+		}
+	});
+
+	it("does not attach a declined outcome on a normal finish", async () => {
+		for (const finishReason of ["stop", "tool-calls", "length"] as const) {
+			const stream = events({
+				type: "finish",
+				finishReason,
+				totalUsage: { inputTokens: 1, outputTokens: 1 },
+			});
+			const chunks: StreamChunk[] = [];
+			for await (const c of mapChunks(stream)) chunks.push(c);
+			const done = chunks.find((c) => c.type === "done");
+			if (done && done.type === "done") {
+				expect(done.declined).toBeUndefined();
+			}
+		}
+	});
+
 	it("does not log when an illegal-charset id passes through within the length cap", async () => {
 		// Pathology signal == length-anomaly only. A 16-char `functions.memory:5`
 		// id is well under the 64-char cap, so no warn fires; that's normal AI

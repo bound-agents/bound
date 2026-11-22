@@ -3,6 +3,7 @@
  */
 
 import { formatError } from "@bound/shared";
+import { LLMRefusalError, classifyGeminiInteractions400 } from "../model-declined";
 import { LLMError } from "../types";
 
 /**
@@ -45,6 +46,16 @@ export function mapError(err: unknown, provider: string): LLMError {
 	// relay, never crosses the wire — only the opaque status text does). Surface
 	// the response body when present so a remote inference failure is diagnosable
 	// from the requesting host, not just the executing one's logs.
+	// Gemini Interactions API safety block: an HTTP 400 whose JSON body carries
+	// a recognized safety `code` is a model refusal, not a route failure (R-RT15).
+	// This is the only place the raw 400 body is still visible before router error
+	// handling runs, so classify it here and raise an LLMRefusalError so the
+	// PooledBackend propagates it immediately instead of backing off the entry and
+	// retrying the same model. Any other 400 falls through to a plain LLMError.
+	if (statusCode === 400) {
+		const refusal = classifyGeminiInteractionsFromBody(e?.responseBody, provider);
+		if (refusal) return refusal;
+	}
 	const responseDetail = formatResponseBody(e?.responseBody);
 	const baseMessage = formatError(err);
 	const message =
@@ -85,4 +96,36 @@ function parseRetryAfter(header: string): number | undefined {
 	const ts = Date.parse(header);
 	if (!Number.isNaN(ts)) return Math.max(0, ts - Date.now());
 	return undefined;
+}
+
+/**
+ * Classify a Gemini Interactions API HTTP 400 body as a safety block. The
+ * provider returns the block code as a JSON `code` either at the top level or
+ * nested under `error.code`. Returns an LLMRefusalError when the code is a
+ * recognized safety block (so the router treats it as a refusal, not a route
+ * failure), else undefined so the caller falls through to a plain LLMError.
+ */
+function classifyGeminiInteractionsFromBody(
+	body: unknown,
+	provider: string,
+): LLMRefusalError | undefined {
+	if (typeof body !== "string" || body.length === 0) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		return undefined;
+	}
+	if (typeof parsed !== "object" || parsed === null) return undefined;
+	const root = parsed as { code?: unknown; error?: { code?: unknown } };
+	const rawCode = root.error?.code ?? root.code;
+	const code = typeof rawCode === "string" ? rawCode : undefined;
+	const outcome = classifyGeminiInteractions400(code);
+	if (!outcome) return undefined;
+	return new LLMRefusalError(
+		`${provider} refused the request (Gemini Interactions safety block: ${outcome.raw_reason})`,
+		provider,
+		outcome,
+		400,
+	);
 }
