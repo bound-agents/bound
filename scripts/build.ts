@@ -103,6 +103,46 @@ export default { spawn: unavailable };
 }
 
 /**
+ * Patch koffi's bundled loader so it resolves its native `.node` from
+ * `$MXC_FFI_DIR` first. koffi (pulled in transitively by `@microsoft/mxc-sdk`'s
+ * v1 FFI path) resolves its prebuilt addon via `createRequire` over a
+ * string-concatenated path (`${import.meta.dirname}/../../../@koromix/koffi-…`
+ * and `resourcesPath`-rooted fallbacks). In a `bun build --compile` binary
+ * `import.meta.dirname` is `/$bunfs/root` and `resourcesPath` is undefined, so
+ * every candidate misses and koffi throws "Cannot find the native Koffi
+ * module" — the same class of failure node-pty's `pty.node` hits.
+ *
+ * `scripts/build-mxc-runtime.ts` stages `koffi.node` alongside `libmxc_ffi.*`,
+ * `ensureMxcRuntime` materializes both to `$MXC_FFI_DIR`, and this plugin
+ * prepends `$MXC_FFI_DIR/koffi.node` to koffi's candidate list so the
+ * materialized addon loads. The injection is additive: a non-compiled run with
+ * `MXC_FFI_DIR` unset keeps koffi's normal node_modules resolution. The anchor
+ * (`let names = [`) is asserted present so a koffi loader-shape change fails the
+ * build loudly instead of silently shipping an unloadable binary.
+ */
+function patchKoffiLoaderPlugin(): BunPlugin {
+	return {
+		name: "patch-koffi-loader",
+		setup(build) {
+			build.onLoad({ filter: /koffi[\\/]src[\\/]koffi[\\/]index\.js$/ }, async (args) => {
+				const source = readFileSync(args.path, "utf8");
+				const anchor = "let names = [";
+				if (!source.includes(anchor)) {
+					throw new Error(
+						"patch-koffi-loader: koffi loader shape changed (no `let names = [` anchor in src/koffi/index.js). The compiled boundless would ship without a loadable koffi addon. Re-verify the koffi version and update patchKoffiLoaderPlugin.",
+					);
+				}
+				const patched = source.replace(
+					anchor,
+					`let names = [...(process.env.MXC_FFI_DIR ? [process.env.MXC_FFI_DIR + "/koffi.node"] : []),`,
+				);
+				return { contents: patched, loader: "js" };
+			});
+		},
+	};
+}
+
+/**
  * Stub out `react-devtools-core` (ink@5's optional peer, never installed).
  * See stubReactDevtoolsPlugin for why the boundless compile needs it.
  */
@@ -142,6 +182,13 @@ interface CompileBinaryOptions {
 	 * `@microsoft/mxc-sdk`), and its native addon can't ride into a
 	 * `bun build --compile` binary — see `stubNodePtyPlugin`.
 	 */
+	stubNodePty?: boolean;
+	/**
+	 * Patch koffi's loader to resolve its native `.node` from `$MXC_FFI_DIR`.
+	 * Only `boundless` needs it (koffi arrives via `@microsoft/mxc-sdk`'s v1 FFI
+	 * path) — see `patchKoffiLoaderPlugin`.
+	 */
+	patchKoffiLoader?: boolean;
 	/**
 	 * Stub out `react-devtools-core` (ink's optional peer, never installed).
 	 * Only `boundless` bundles ink — see stubReactDevtoolsPlugin.
@@ -179,6 +226,9 @@ async function compileBinary(
 	}
 	if (options.stubNodePty) {
 		plugins.push(stubNodePtyPlugin());
+	}
+	if (options.patchKoffiLoader) {
+		plugins.push(patchKoffiLoaderPlugin());
 	}
 	if (options.stubReactDevtools) {
 		plugins.push(stubReactDevtoolsPlugin());
@@ -344,6 +394,20 @@ async function build() {
 	console.log("\n3b. Compiling Tree-sitter native probe...");
 	await compileBinary("scripts/tree-sitter-native-probe.ts", "dist/tree-sitter-native-probe");
 
+	// Step 3c: Compile an isolated mxc sandbox probe for release-image smoke tests.
+	// It drives checkSandboxAvailable() + a write-allowed/write-denied command
+	// through the real spawnSandboxed() path, proving koffi and the embedded
+	// libmxc_ffi both load and the sandbox enforces from a node_modules-free
+	// binary. Uses the same node-pty stub and koffi loader patch as boundless.
+	// Skipped on Windows, which never uses mxc.
+	if (process.platform !== "win32") {
+		console.log("\n3c. Compiling mxc sandbox probe...");
+		await compileBinary("scripts/mxc-sandbox-probe.ts", "dist/mxc-sandbox-probe", {
+			stubNodePty: true,
+			patchKoffiLoader: true,
+		});
+	}
+
 	// Step 4: Compile boundctl (management CLI)
 	console.log("\n4. Compiling boundctl binary...");
 	try {
@@ -376,6 +440,7 @@ async function build() {
 		await compileBinary("packages/less/src/boundless.tsx", "dist/boundless", {
 			stubNodePty: true,
 			stubReactDevtools: true,
+			patchKoffiLoader: true,
 		});
 	} catch (e) {
 		console.error("boundless compilation failed:", formatBuildError(e));

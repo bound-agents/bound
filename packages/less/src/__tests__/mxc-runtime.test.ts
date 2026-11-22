@@ -13,39 +13,43 @@ import { ensureMxcRuntime } from "../tools/mxc-runtime";
  */
 describe("ensureMxcRuntime materialization", () => {
 	let tmp: string;
-	let binDirSaved: string | undefined;
+	let ffiDirSaved: string | undefined;
 	let srcBin: string;
 
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "mxc-runtime-"));
 		srcBin = join(tmp, "source-binary");
 		writeFileSync(srcBin, "MXC-BINARY-BYTES");
-		// The body short-circuits when MXC_BIN_DIR is set; clear it so the write
+		// The body short-circuits when MXC_FFI_DIR is set; clear it so the write
 		// path runs, and restore the ambient value afterward.
-		binDirSaved = process.env.MXC_BIN_DIR;
-		Reflect.deleteProperty(process.env, "MXC_BIN_DIR");
+		ffiDirSaved = process.env.MXC_FFI_DIR;
+		Reflect.deleteProperty(process.env, "MXC_FFI_DIR");
 	});
 
 	afterEach(() => {
-		if (binDirSaved === undefined) Reflect.deleteProperty(process.env, "MXC_BIN_DIR");
-		else process.env.MXC_BIN_DIR = binDirSaved;
+		if (ffiDirSaved === undefined) Reflect.deleteProperty(process.env, "MXC_FFI_DIR");
+		else process.env.MXC_FFI_DIR = ffiDirSaved;
 		rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
-	it("writes each embedded asset to <baseDir>/<hash>/<arch>/<name> and points MXC_BIN_DIR there", () => {
+	it("writes each embedded asset to <baseDir>/<hash>/<arch>/<name> and points MXC_FFI_DIR at the host-arch dir", () => {
 		const base = join(tmp, "out");
+		const hostArch = process.arch === "arm64" ? "arm64" : "x64";
 		ensureMxcRuntime({
 			latch: { done: false },
 			baseDir: base,
 			hash: "deadbeef",
-			assets: [{ name: "mxc-exec", arch: "arm64", executable: true, path: srcBin }],
+			assets: [{ name: "libmxc_ffi.dylib", arch: hostArch, executable: true, path: srcBin }],
 		});
 
 		const root = join(base, "deadbeef");
-		const dest = join(root, "arm64", "mxc-exec");
+		const archDir = join(root, hostArch);
+		const dest = join(archDir, "libmxc_ffi.dylib");
 		expect(existsSync(dest)).toBe(true);
 		expect(readFileSync(dest, "utf8")).toBe("MXC-BINARY-BYTES");
-		expect(process.env.MXC_BIN_DIR).toBe(root);
+		// The SDK loader looks for <MXC_FFI_DIR>/libmxc_ffi.<ext> directly, so
+		// MXC_FFI_DIR must be the arch-level dir that holds the library.
+		expect(process.env.MXC_FFI_DIR).toBe(archDir);
 	});
 
 	it("marks an executable asset mode 0o755 and leaves a non-executable asset untouched", () => {
@@ -83,7 +87,7 @@ describe("ensureMxcRuntime materialization", () => {
 		// Mutate the materialized file, then re-run with a fresh latch: the
 		// existing-dest guard must NOT overwrite it.
 		writeFileSync(dest, "LOCAL-EDIT");
-		process.env.MXC_BIN_DIR = undefined;
+		process.env.MXC_FFI_DIR = undefined;
 		ensureMxcRuntime({
 			latch: { done: false },
 			baseDir: base,
@@ -102,12 +106,12 @@ describe("ensureMxcRuntime materialization", () => {
 			assets: [{ name: "bin", arch: "arm64", executable: true, path: srcBin }],
 		});
 		expect(existsSync(join(base, "h3"))).toBe(false);
-		expect(process.env.MXC_BIN_DIR).toBeUndefined();
+		expect(process.env.MXC_FFI_DIR).toBeUndefined();
 	});
 
-	it("respects a pre-set MXC_BIN_DIR and does not stage over an operator override", () => {
+	it("respects a pre-set MXC_FFI_DIR and does not stage over an operator override", () => {
 		const base = join(tmp, "override");
-		process.env.MXC_BIN_DIR = "/operator/chosen/dir";
+		process.env.MXC_FFI_DIR = "/operator/chosen/dir";
 		ensureMxcRuntime({
 			latch: { done: false },
 			baseDir: base,
@@ -115,16 +119,16 @@ describe("ensureMxcRuntime materialization", () => {
 			assets: [{ name: "bin", arch: "arm64", executable: true, path: srcBin }],
 		});
 		expect(existsSync(join(base, "h4"))).toBe(false);
-		expect(process.env.MXC_BIN_DIR).toBe("/operator/chosen/dir");
+		expect(process.env.MXC_FFI_DIR).toBe("/operator/chosen/dir");
 	});
 
-	it("no-ops on an empty asset list and leaves MXC_BIN_DIR unset", () => {
+	it("no-ops on an empty asset list and leaves MXC_FFI_DIR unset", () => {
 		ensureMxcRuntime({
 			latch: { done: false },
 			baseDir: join(tmp, "empty"),
 			hash: "h5",
 			assets: [],
 		});
-		expect(process.env.MXC_BIN_DIR).toBeUndefined();
+		expect(process.env.MXC_FFI_DIR).toBeUndefined();
 	});
 });

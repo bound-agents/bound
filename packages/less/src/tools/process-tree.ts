@@ -1,15 +1,14 @@
 /**
  * Kill a spawned command together with everything it started.
  *
- * Signalling only the direct child is not enough on POSIX hosts. The mxc
- * wrapper (`mxc-exec-mac` / bubblewrap) runs the command's shell in its own
- * session, so `kill(-wrapperPid)` reaches nothing (ESRCH) and `kill(wrapperPid)`
- * leaves the shell and its descendants running. Under seatbelt the sandboxed
- * processes can only signal themselves (`(allow signal (target self))`), so
- * nothing inside the sandbox — not the shell, not `timeout(1)` — can reap them
- * either; only the unsandboxed host process can. Survivors that ignore SIGHUP
- * (a node started by a test installs a SIGHUP hot-reload handler) then outlive
- * the tool call indefinitely.
+ * Signalling only the direct child is not enough on POSIX hosts: a shell's
+ * descendants can sit in other process groups, and survivors that ignore
+ * SIGHUP (a node started by a test installs a SIGHUP hot-reload handler)
+ * outlive the tool call indefinitely. The unsandboxed bash path depends on
+ * this killer entirely. On the mxc path, 1.1.0's native `MxcProcess.kill()`
+ * already reaps the sandbox's tree; this killer runs first as a host-side
+ * fallback (under mxc 0.7.0 a sandboxed process could only signal itself, so
+ * this was the only reaper).
  *
  * The killer walks the host process table from the root pid, collects every
  * descendant and every process group they lead or belong to, and signals each

@@ -1,8 +1,8 @@
 /**
- * Stages Microsoft mxc's prebuilt sandbox binary out of `@microsoft/mxc-sdk`'s
- * node_modules and into `packages/less/src/_mxc/`, then generates the
- * `embedded.ts` importer that `bun build --compile` reads to embed the binary
- * into the compiled `boundless`. Mirrors `scripts/build-sandbox-runtime.ts`
+ * Stages mxc's FFI library (`libmxc_ffi.dylib`/`.so`) and koffi's prebuilt
+ * `koffi.node` out of node_modules and into `packages/less/src/_mxc/`, then
+ * generates the `embedded.ts` importer that `bun build --compile` reads to
+ * embed them into the compiled `boundless`. Mirrors `scripts/build-sandbox-runtime.ts`
  * (which does the same for `just-bash`'s worker assets).
  *
  * Runs from both `postinstall` and the compile step in `scripts/build.ts`, so
@@ -14,9 +14,9 @@
  * on a fresh clone before this script has run.
  *
  * mxc ships its binaries under `bin/<arch>/<name>` (arch = arm64 | x64). The
- * SDK's own resolver looks for them at `$MXC_BIN_DIR/<arch>/<name>`, which is
- * the layout the loader recreates at runtime. We stage only the host
- * platform's binary set for the host arch — the compiled binary runs on the
+ * runtime loader materializes them to `<root>/<arch>/<name>` and points
+ * `$MXC_FFI_DIR` at the host arch's dir, where the SDK's FFI loader and the
+ * patched koffi loader both look. We stage only the host platform's set for the host arch — the compiled binary runs on the
  * machine that built it, so cross-platform embedding would only bloat it.
  */
 import { createHash } from "node:crypto";
@@ -29,29 +29,27 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const SDK_PKG = "@microsoft/mxc-sdk";
 const OUT_DIR = join(ROOT, "packages/less/src/_mxc");
 
-/** The mxc binaries the SDK resolver looks for, keyed by host platform. */
+/**
+ * The mxc native library the v1 FFI loader resolves, keyed by host platform.
+ * v1's `run()`/`spawn()` path is pure FFI (koffi → `libmxc_ffi.*`), so the old
+ * per-backend exec stubs (`mxc-exec-mac`, `lxc-exec`, the Windows `wxc-*`
+ * executables) are no longer part of the macOS/Linux execution path and are not
+ * staged. Windows dispatches through Bound's own AppContainer lowbox before mxc
+ * is ever reached, so no Windows mxc binary is needed here either.
+ */
 function hostBinaryNames(platform: NodeJS.Platform): string[] {
 	switch (platform) {
 		case "darwin":
-			return ["mxc-exec-mac"];
+			return ["libmxc_ffi.dylib"];
 		case "linux":
-			return ["lxc-exec"];
-		case "win32":
-			return [
-				"wxc-exec.exe",
-				"wxc-windows-sandbox-daemon.exe",
-				"wxc-windows-sandbox-guest.exe",
-				"winhttp-proxy-shim.exe",
-				"wslcsdk.dll",
-				"wxc-host-prep.exe",
-				"mxc-diagnostic-console.exe",
-			];
+			return ["libmxc_ffi.so"];
+		// Windows uses Bound's lowbox helper, not mxc — nothing to stage.
 		default:
 			return [];
 	}
@@ -62,21 +60,66 @@ function sdkArch(arch: NodeJS.Architecture): string {
 	return arch === "arm64" ? "arm64" : "x64";
 }
 
-/** Locate the SDK package dir, accounting for Bun's `.bun/` hoist layout. */
+/**
+ * Locate the INSTALLED SDK package dir. Bun's global `.bun/` store can retain
+ * multiple versions of a package (e.g. a stale `@0.7.0` alongside the current
+ * `@1.1.0`), so a lexical scan of `.bun` entries can resolve the wrong one.
+ * Resolve through Bun's module resolver from the package that declares the
+ * dependency (`packages/less`), which honors the lockfile and returns the
+ * version actually linked for the build.
+ */
 function findSdkDir(): string {
-	const direct = join(ROOT, "node_modules", SDK_PKG);
-	if (existsSync(join(direct, "package.json"))) return direct;
-
-	const bunCache = join(ROOT, "node_modules/.bun");
-	if (existsSync(bunCache)) {
-		const slug = `${SDK_PKG.replace("/", "+")}@`;
-		const entries = readdirSync(bunCache).filter((n) => n.startsWith(slug));
-		if (entries.length > 0) {
-			const candidate = join(bunCache, entries[0], "node_modules", SDK_PKG);
-			if (existsSync(join(candidate, "package.json"))) return candidate;
+	try {
+		const manifest = Bun.resolveSync(`${SDK_PKG}/package.json`, join(ROOT, "packages", "less"));
+		return dirname(manifest);
+	} catch {
+		// Fall back to a direct root hoist, then a `.bun` scan, for layouts where
+		// the resolver can't see the dep (e.g. a partial install).
+		const direct = join(ROOT, "node_modules", SDK_PKG);
+		if (existsSync(join(direct, "package.json"))) return direct;
+		const bunCache = join(ROOT, "node_modules/.bun");
+		if (existsSync(bunCache)) {
+			const slug = `${SDK_PKG.replace("/", "+")}@`;
+			const entries = readdirSync(bunCache)
+				.filter((n) => n.startsWith(slug))
+				.sort()
+				.reverse();
+			for (const entry of entries) {
+				const candidate = join(bunCache, entry, "node_modules", SDK_PKG);
+				if (existsSync(join(candidate, "package.json"))) return candidate;
+			}
 		}
+		throw new Error(`Could not locate ${SDK_PKG} in node_modules. Run \`bun install\` first.`);
 	}
-	throw new Error(`Could not locate ${SDK_PKG} in node_modules. Run \`bun install\` first.`);
+}
+
+/**
+ * Locate koffi's prebuilt native addon (`koffi.node`). koffi ships the binary in
+ * a per-platform optional dependency (`@koromix/koffi-<platform>-<arch>`) whose
+ * entry is `module.exports = require('./<triplet>/koffi.node')`. koffi is a
+ * TRANSITIVE dependency of `@microsoft/mxc-sdk` (not hoisted to `packages/less`),
+ * so resolve koffi from the SDK dir first, then the platform package from
+ * koffi's own dir. Returns undefined when koffi (or its platform addon) isn't
+ * installed for the host — the caller degrades to sandbox-unavailable.
+ */
+function findKoffiNode(sdkDir: string): string | undefined {
+	const platformPkg = `@koromix/koffi-${process.platform}-${sdkArch(process.arch)}`;
+	try {
+		const koffiManifest = Bun.resolveSync("koffi/package.json", sdkDir);
+		const koffiDir = dirname(koffiManifest);
+		const manifest = Bun.resolveSync(`${platformPkg}/package.json`, koffiDir);
+		const pkgDir = dirname(manifest);
+		// The addon lives under a `<platform>_<arch>` subdir (e.g. darwin_arm64).
+		for (const sub of readdirSync(pkgDir)) {
+			const candidate = join(pkgDir, sub, "koffi.node");
+			if (existsSync(candidate)) return candidate;
+		}
+		// Fall back to a direct child if the layout is flat.
+		const flat = join(pkgDir, "koffi.node");
+		return existsSync(flat) ? flat : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -137,6 +180,26 @@ function main(): void {
 		// .dll and the like are loaded, not executed; only exec stubs need +x.
 		const executable = !name.endsWith(".dll");
 		staged.push({ name, arch, executable });
+	}
+
+	// Stage koffi's prebuilt native addon alongside the FFI library. v1's run()/
+	// spawn() path loads libmxc_ffi.* THROUGH koffi, and koffi resolves its own
+	// `.node` via a concatenated path invisible to `bun build --compile` (the
+	// same class of problem node-pty has). The compiled boundless embeds this
+	// staged `.node` and the koffi loader is patched (patchKoffiLoaderPlugin in
+	// scripts/build.ts) to resolve it from MXC_FFI_DIR, where ensureMxcRuntime
+	// materializes both files. Skipped on Windows (no mxc there) and whenever the
+	// mxc library itself didn't stage (koffi alone is useless).
+	if (staged.length > 0) {
+		const koffiNode = findKoffiNode(sdkDir);
+		if (koffiNode) {
+			copyFileSync(koffiNode, join(OUT_DIR, arch, "koffi.node.mxcbin"));
+			staged.push({ name: "koffi.node", arch, executable: true });
+		} else {
+			console.warn(
+				"[build-mxc-runtime] koffi native addon not found; the compiled binary will not be able to load mxc's FFI. Sandboxing will be unavailable (passthrough).",
+			);
+		}
 	}
 
 	if (staged.length === 0) {

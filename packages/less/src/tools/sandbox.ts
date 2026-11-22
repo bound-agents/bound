@@ -22,8 +22,8 @@
  * sandboxed, and a broken/missing prebuilt degrades to `onUnavailable` rather
  * than failing the import.
  */
-import type { ChildProcess } from "node:child_process";
 import { Readable } from "node:stream";
+import type { ContainerRequest, MxcProcess } from "@microsoft/mxc-sdk/v1";
 import { ensureMxcRuntime } from "./mxc-runtime";
 import { createTreeKiller } from "./process-tree";
 import { IDENTITY_MACH_LOOKUPS, buildPolicy, nonInteractiveEnv } from "./sandbox-policy";
@@ -33,25 +33,25 @@ import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy
 // working unchanged.
 export * from "./sandbox-policy";
 
-/** Lazily-loaded `@microsoft/mxc-sdk`, memoized after the first import. */
-type MxcSdk = typeof import("@microsoft/mxc-sdk");
+/** Lazily-loaded `@microsoft/mxc-sdk/v1`, memoized after the first import. */
+type MxcSdk = typeof import("@microsoft/mxc-sdk/v1");
 let sdkPromise: Promise<MxcSdk> | undefined;
 
 /**
- * Dynamically import the mxc SDK, memoizing the promise. Deferring the import
- * to call-time (rather than a static top-level import) keeps node-pty — which
- * the SDK loads transitively at module-eval — out of the import graph until a
- * command is actually sandboxed.
+ * Dynamically import the mxc v1 SDK, memoizing the promise. Deferring the
+ * import to call-time (rather than a static top-level import) keeps node-pty —
+ * which the SDK can load transitively — and the koffi→libmxc_ffi FFI load out
+ * of the import graph until a command is actually sandboxed.
  */
 function loadMxcSdk(): Promise<MxcSdk> {
-	if (!sdkPromise) sdkPromise = import("@microsoft/mxc-sdk");
+	if (!sdkPromise) sdkPromise = import("@microsoft/mxc-sdk/v1");
 	return sdkPromise;
 }
 
 /**
  * Whether mxc can sandbox on this platform right now. Calls `ensureMxcRuntime`
  * first so the embedded binary (in a compiled boundless) is materialized and
- * `MXC_BIN_DIR` is set before the SDK probes for an executable. Returns a
+ * `MXC_FFI_DIR` is set before the SDK loads its FFI library. Returns a
  * reason string when unsupported, suitable for the `onUnavailable` warning.
  *
  * Async because the SDK is lazy-loaded — and the try/catch also absorbs a
@@ -135,30 +135,44 @@ async function runSandboxProbe(): Promise<{ supported: boolean; reason?: string 
 const SANDBOX_PROBE_TIMEOUT = -2;
 
 /**
- * Adapt a Node `ChildProcess` to the {@link SandboxSpawnResult} contract.
+ * Adapt a v1 {@link MxcProcess} to the {@link SandboxSpawnResult} contract.
  * `kill` signals the whole process tree, not just the mxc wrapper: the
  * sandboxed shell runs in its own session under the wrapper, and sandboxed
  * processes can only signal themselves, so killing the wrapper alone orphans
- * every descendant. See `process-tree.ts`.
+ * every descendant. Under mxc 1.1.0 the native `MxcProcess.kill()` reaps the
+ * whole descendant tree (verified, including children that trap SIGTERM);
+ * `process-tree.ts` still runs first as a host-side fallback. See
+ * `process-tree.ts`.
+ *
+ * `MxcProcess.standardOutput`/`standardError` are Node `Readable`s; the bash
+ * streaming loop consumes web `ReadableStream`s, so they are wrapped. They must
+ * be taken BEFORE `wait()` (which drains any untaken output internally), so the
+ * wrap happens eagerly here, before the `wait()` promise is created.
  */
-function adaptChildProcess(child: ChildProcess): SandboxSpawnResult {
-	const toWeb = (stream: ChildProcess["stdout"]): ReadableStream<Uint8Array> | null =>
-		stream ? (Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>) : null;
-	const pid = child.pid ?? -1;
+function adaptChildProcess(proc: MxcProcess): SandboxSpawnResult {
+	const toWeb = (stream: NodeJS.ReadableStream | null): ReadableStream<Uint8Array> | null =>
+		stream ? (Readable.toWeb(stream as Readable) as unknown as ReadableStream<Uint8Array>) : null;
+	// Take the streams up front: wait() drains untaken output and then getters throw.
+	const stdout = toWeb(proc.standardOutput as NodeJS.ReadableStream | null);
+	const stderr = toWeb(proc.standardError as NodeJS.ReadableStream | null);
+	// MxcProcess.id is the OS pid for process backends (seatbelt/bubblewrap), 0 when none.
+	const pid = proc.id > 0 ? proc.id : -1;
 	const killTree = pid > 0 ? createTreeKiller(pid) : null;
 
 	return {
-		stdout: toWeb(child.stdout),
-		stderr: toWeb(child.stderr),
-		exited: new Promise<number>((resolve) => {
-			child.once("close", (code) => resolve(code ?? -1));
-			child.once("error", () => resolve(-1));
-		}),
+		stdout,
+		stderr,
+		exited: proc.wait().then(
+			(r) => r.exitCode,
+			() => -1,
+		),
 		pid,
 		kill: (signal) => {
+			// Host-side tree reaper first (it honors the caller's SIGTERM→SIGKILL
+			// escalation), then the native handle, which reaps the sandbox's tree.
 			killTree?.(signal ?? "SIGTERM");
 			try {
-				child.kill(signal as NodeJS.Signals);
+				proc.kill();
 			} catch {
 				// Process may already be gone.
 			}
@@ -181,38 +195,37 @@ export async function spawnSandboxed(
 	cfg: ResolvedSandboxConfig,
 	policyCwd: string = cwd,
 ): Promise<SandboxSpawnResult> {
-	const { buildSandboxPayload, spawnSandboxFromConfig } = await loadMxcSdk();
+	const { spawn } = await loadMxcSdk();
 	const policy = buildPolicy(policyCwd, cfg);
-	const config = buildSandboxPayload(command, policy, cwd, undefined, "process");
 	// Restore user/group identity resolution under seatbelt. mxc's baseline
 	// profile blocks the opendirectoryd Mach lookups that back getpwuid(3), so
 	// `whoami` reports a bare uid and `ssh` (hence `git push`) fails to resolve
 	// the user. These are read-only identity lookups — consistent with
 	// deny-writes-only — re-allowed via the SDK's `extraMachLookups` escape
-	// hatch. `experimental.seatbelt` is `{}` here on the seatbelt path and
-	// absent on others (bubblewrap/Windows resolve identity via NSS/SAM, so
-	// the guard is a no-op there).
-	if (config.seatbelt) {
-		config.seatbelt.extraMachLookups = [
-			...(config.seatbelt.extraMachLookups ?? []),
-			...IDENTITY_MACH_LOOKUPS,
-		];
-	}
-	// `usePty: false` returns a Node ChildProcess (vs a node-pty handle);
-	// `experimental: true` is required by the SDK to opt into the non-pty path.
-	// 3rd arg is workingDirectory, 4th is the child env — see the non-interactive
-	// pager/prompt rationale on `nonInteractiveEnv`. `confineBunCache` points
-	// bun's install cache at a tmpdir-local path so `bun add`/`bun install`
-	// work under write confinement (the global ~/.bun cache is outside the
-	// writable roots and fails with a misleading tempdir error).
-	const child = spawnSandboxFromConfig(
-		config,
-		{
-			usePty: false,
-			experimental: true,
-		} as Parameters<typeof spawnSandboxFromConfig>[1],
-		cwd,
-		nonInteractiveEnv({ confineBunCache: true }),
-	) as unknown as ChildProcess;
-	return adaptChildProcess(child);
+	// hatch, which lives only on SeatbeltConfig. On Linux we omit `containment`
+	// so the abstract default resolves to bubblewrap (bubblewrap resolves
+	// identity via NSS, so no Mach-lookup escape hatch is needed or available);
+	// Windows never reaches this path (it dispatches to the lowbox in bash.ts).
+	const request: ContainerRequest = {
+		command,
+		// 3rd-party `run`/`spawn` interpret `command` as a shell script, the same
+		// way `sh -c "<command>"` would on POSIX hosts.
+		workingDirectory: cwd,
+		filesystem: policy.filesystem,
+		network: policy.network,
+		// `confineBunCache` points bun's install cache at a tmpdir-local path so
+		// `bun add`/`bun install` work under write confinement (the global ~/.bun
+		// cache is outside the writable roots and fails with a misleading tempdir
+		// error). See the non-interactive pager/prompt rationale on `nonInteractiveEnv`.
+		environment: nonInteractiveEnv({ confineBunCache: true }),
+		// Seatbelt gets the identity Mach-lookup escape hatch; elsewhere the
+		// abstract "process" intent resolves to the host's native backend
+		// (bubblewrap on Linux).
+		containment:
+			process.platform === "darwin"
+				? { type: "seatbelt", config: { extraMachLookups: [...IDENTITY_MACH_LOOKUPS] } }
+				: { type: "process" },
+	};
+	const proc = await spawn(request);
+	return adaptChildProcess(proc);
 }

@@ -145,26 +145,23 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		}
 	});
 
-	it("opens outbound network and allows local listeners when network is 'open'", () => {
+	it("opens egress and host-loopback ingress when network is 'open'", () => {
 		const policy = buildPolicy(process.cwd(), enabled);
-		expect(policy.network).toEqual({ allowOutbound: true, allowLocalNetwork: true });
+		// v1 DirectionalNetworkConfig: "open" allows all outbound (egress.default)
+		// and permits inbound/host-loopback (ingress.default + hostLoopback).
+		// Seatbelt rejects hostLoopback='allow' with ingress.default='deny', and an
+		// omitted hostLoopback is 'deny' not an inherit, so BOTH must be 'allow'.
+		expect(policy.network).toEqual({
+			egress: { default: "allow" },
+			ingress: { default: "allow", hostLoopback: "allow" },
+		});
 	});
 
 	it("denies all network when network is 'blocked'", () => {
 		const policy = buildPolicy(process.cwd(), { ...enabled, network: "blocked" });
+		// Omitted egress/ingress defaults are 'deny' in v1, so the empty object is
+		// a full block — matching the old `{}` flat-config semantics.
 		expect(policy.network).toEqual({});
-	});
-
-	it("stamps a single schema version on every platform (NOT a backend selector)", () => {
-		// Regression guard against re-introducing a per-platform version pin. The
-		// schema version does not select the mxc backend: an earlier revision pinned
-		// win32 to 0.4.0-alpha believing it fell back to AppContainer, and it was
-		// verified inert (the native wxc-exec probe picks base-container by API-symbol
-		// presence regardless of version). The Windows sandbox is gated on
-		// feature-velocity keys, not the schema version. If this needs to differ per
-		// platform, the reason must NOT be "to change the backend".
-		const policy = buildPolicy(process.cwd(), enabled);
-		expect(policy.version).toBe("0.6.0-alpha");
 	});
 });
 

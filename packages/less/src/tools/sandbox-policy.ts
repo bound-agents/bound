@@ -19,18 +19,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 /**
- * mxc SandboxPolicy schema version. The SDK validates this against its own
- * [MIN_VERSION, SUPPORTED_VERSION] window — 0.4.0-alpha .. 0.7.0-alpha as of
- * `@microsoft/mxc-sdk@0.6.1`. A missing or out-of-window version throws at
- * spawn. Bump this in lockstep with the dependency.
- *
- * NOT a backend selector. This schema version applies only to the mxc-backed
- * POSIX path (seatbelt on macOS and bubblewrap on Linux). Windows dispatches
- * directly to Bound's native lowbox helper before this policy reaches mxc, so a
- * per-platform version pin cannot change the Windows backend.
+ * v1 does not take a schema version. The `@microsoft/mxc-sdk/v1` entrypoint
+ * pins `SDK_CONTRACT_VERSION` itself and {@link ContainerRequest} carries no
+ * `version` field, so the old `POLICY_VERSION` pin is gone. {@link buildPolicy}
+ * returns the cross-backend restriction shape (`filesystem` + directional
+ * `network`) consumed directly by `run()` / `spawn()`.
  */
-export const POLICY_VERSION = "0.6.0-alpha";
-
 /**
  * opendirectoryd Mach services that back user/group identity resolution on
  * macOS. `getpwuid(3)`/`getgrgid(3)` (and everything layered on them —
@@ -222,7 +216,6 @@ export function decideSandboxSpawn(
  */
 export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 	return {
-		version: POLICY_VERSION,
 		filesystem: {
 			readwritePaths: computeWritableRoots(cwd, cfg),
 			// Deny-writes-only: the entire filesystem is readable; only the
@@ -241,14 +234,21 @@ export function buildPolicy(cwd: string, cfg: ResolvedSandboxConfig) {
 			// except Windows.
 			readonlyPaths: ["/", ...computeGitProtectedPaths(cwd, undefined, cfg.gitWorktreeMetadata)],
 		},
-		// All network flags default to false (no access) when `network` is
-		// omitted, so "blocked" is the empty object. "open" must be genuinely
-		// open: allowOutbound covers egress, and allowLocalNetwork lets the
-		// sandboxed process bind()+listen() on local IP listeners (per the mxc
-		// NetworkConfig contract). Without the latter, `listen()` is EPERM'd —
-		// which silently breaks running tests and dev servers (anything that
-		// opens a localhost port) under the shell, contradicting "network open".
-		network: cfg.network === "open" ? { allowOutbound: true, allowLocalNetwork: true } : {},
+		// v1 directional network. All egress/ingress defaults are 'deny' when
+		// omitted, so "blocked" is the empty object (a full block). "open" must be
+		// genuinely open: egress.default 'allow' covers all outbound, and the
+		// ingress pair lets the sandboxed process bind()+listen() on local IP
+		// listeners and accept host-loopback — without which `listen()` is EPERM'd,
+		// silently breaking tests and dev servers under the shell. Seatbelt rejects
+		// hostLoopback='allow' with ingress.default='deny' (an omitted hostLoopback
+		// is 'deny', not an inherit of default), so BOTH ingress fields are 'allow'.
+		network:
+			cfg.network === "open"
+				? {
+						egress: { default: "allow" as const },
+						ingress: { default: "allow" as const, hostLoopback: "allow" as const },
+					}
+				: {},
 	};
 }
 

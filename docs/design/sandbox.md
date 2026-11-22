@@ -318,13 +318,13 @@ const result = await persistWorkspaceChanges(
 
 ### The policy shape
 
-One rule, three knobs: read anything, write almost nothing, talk to the network freely. `buildPolicy` produces an mxc `SandboxPolicy` with:
+One rule, three knobs: read anything, write almost nothing, talk to the network freely. `buildPolicy` produces the cross-backend restriction shape that rides on an mxc 1.1.0 `ContainerRequest` (`filesystem` + directional `network`), with:
 
 - **`readonlyPaths: ["/"]`** — the whole filesystem is readable. Compilers and tools need system headers, libraries, and configs.
 - **`readwritePaths: [cwd, tmpdir, ...extras]`** — writes are confined to the working directory, the system temp dir, and any operator-listed extra paths. A command can edit the project it is working in but cannot clobber `~/.ssh`, `/etc`, or a sibling checkout.
-- **Network open** — outbound requests are unrestricted (package installs, API calls).
+- **Network open** — outbound requests are unrestricted (package installs, API calls). In v1 this maps to a directional policy: `egress.default: "allow"` for outbound, and `ingress.default: "allow"` + `ingress.hostLoopback: "allow"` so a sandboxed process can also bind/listen on local ports (seatbelt rejects `hostLoopback: "allow"` paired with `ingress.default: "deny"`, and an omitted `hostLoopback` is `"deny"`, not an inherit — so both are set). "blocked" is the empty object, since every omitted egress/ingress default is `"deny"`.
 
-On macOS and Linux, mxc compiles this abstract `process` containment to seatbelt and bubblewrap. Windows bypasses mxc and maps the same policy to Bound's AppContainer token, scoped filesystem DACLs, and kill-on-close Job Object. `POLICY_VERSION` (`"0.6.0-alpha"`) validates the mxc SDK's supported window on the POSIX path; it does not select the Windows backend.
+On macOS and Linux, `spawnSandboxed` calls mxc's `spawn(ContainerRequest)` and the SDK's v1 FFI path (`libmxc_ffi.dylib`/`.so` loaded in-process via koffi) compiles the request to seatbelt (macOS) or bubblewrap (Linux). macOS passes `containment: { type: "seatbelt", config: { extraMachLookups } }` — the identity Mach-lookup escape hatch that keeps `getpwuid(3)` (hence `whoami`, `ssh`, `git push`) working — while Linux omits `containment` so the abstract `process` intent resolves to bubblewrap (which resolves identity via NSS, needing no escape hatch). Windows bypasses mxc and maps the same policy to Bound's AppContainer token, scoped filesystem DACLs, and kill-on-close Job Object. v1 pins its own contract version (`SDK_CONTRACT_VERSION`); callers no longer pass a schema version, so the old `POLICY_VERSION` pin is gone.
 
 ### The `.git` carve-out
 
