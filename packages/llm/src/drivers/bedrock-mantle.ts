@@ -56,8 +56,17 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "../bridge";
+import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
+// Re-exported for the driver test suite; canonical definition lives in ./shared.
+import { quantizeCacheTtl } from "./bedrock";
+import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
+import {
+	creditTokenOf,
+	resolveFallbackTargetFromParams,
+	serverToolsRanInChunks,
+} from "./credit-redemption-config";
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	bindAsyncIterable,
@@ -68,9 +77,6 @@ import {
 	withEncryptedReasoningRetry,
 } from "./shared";
 import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
-
-// Re-exported for the driver test suite; canonical definition lives in ./shared.
-import { quantizeCacheTtl } from "./bedrock";
 export { withEmptyRetry } from "./shared";
 
 /**
@@ -301,40 +307,80 @@ export class BedrockMantleDriver implements LLMBackend {
 				reasoningProviderOptions: "anthropic",
 				midConversationSystem: true,
 			});
-			const runAttempt = (): AsyncIterable<StreamChunk> =>
-				mapProviderStream({
-					providerName: PROVIDER_NAME,
-					stream: () =>
-						streamText({
-							model: provider.messages(modelId),
-							messages,
-							allowSystemInMessages: true,
-							...(params.system && { system: params.system }),
-							...(tools && { tools }),
-							...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-							...(params.temperature !== undefined && { temperature: params.temperature }),
-							...(params.top_p !== undefined && { topP: params.top_p }),
-							...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
-							abortSignal: params.signal,
-							...(params.thinking?.type === "disabled" && {
+			// Build one Mantle Anthropic-mode attempt for `effectiveModel`. `credit`,
+			// when set, carries the fallback-credit redemption state for an inline
+			// credited retry (R-RT18, §7.3): the `fallback-credit-2026-07-01` beta rides
+			// in the `anthropic-beta` header, the `fallback_credit_token` is added, and
+			// earlier thinking blocks are NOT stripped. withEmptyRetry still guards the
+			// empty-completion case per attempt.
+			const buildStream = (
+				effectiveModel: string,
+				credit?: { step: CreditStep; token: string },
+			): AsyncIterable<StreamChunk> => {
+				const runAttempt = (): AsyncIterable<StreamChunk> =>
+					mapProviderStream({
+						providerName: PROVIDER_NAME,
+						stream: () =>
+							streamText({
+								model: provider.messages(effectiveModel),
+								messages,
+								allowSystemInMessages: true,
+								...(params.system && { system: params.system }),
+								...(tools && { tools }),
+								...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+								...(params.temperature !== undefined && { temperature: params.temperature }),
+								...(params.top_p !== undefined && { topP: params.top_p }),
+								...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
+								abortSignal: params.signal,
 								providerOptions: {
-									anthropic: { thinking: { type: "disabled" } },
-								},
-							}),
-						}).fullStream,
-					map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
-				});
+									anthropic: {
+										...(params.thinking?.type === "disabled" && {
+											thinking: { type: "disabled" },
+										}),
+										// Credited retry: the beta rides in the anthropic-beta header
+										// and the token is sent when the step carries it (drop-token
+										// forfeits the credit by omitting both).
+										...(credit && { anthropicBeta: ["fallback-credit-2026-07-01"] }),
+										...(credit?.step.includeToken && {
+											fallbackCreditToken: credit.token,
+										}),
+									},
+								} as Record<string, unknown> as never,
+							}).fullStream,
+						map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
+					});
 
-			yield* withEmptyRetry(runAttempt, {
-				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-				isAborted: () => params.signal?.aborted ?? false,
-				providerName: PROVIDER_NAME,
-				modelId,
-				onRetry: (attempt) =>
-					this.logger?.warn?.(
-						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-						{ model: modelId },
-					),
+				return withEmptyRetry(runAttempt, {
+					maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+					isAborted: () => params.signal?.aborted ?? false,
+					providerName: PROVIDER_NAME,
+					modelId: effectiveModel,
+					onRetry: (attempt) =>
+						this.logger?.warn?.(
+							`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+							{ model: effectiveModel },
+						),
+				});
+			};
+
+			// Wrap the primary attempt with the inline credit-redemption executor
+			// (R-RT18, §7.3). A co-located credit-bearing refusal replays the step-down
+			// against the fallback target; a non-co-located / token-less refusal flows
+			// through for the loop-host router. `reasoningOrigin` is this deployment's
+			// identity, which the bridge stamps onto the refusal's credit endpoint.
+			const endpoint = this.reasoningOrigin ?? "";
+			yield* redeemFallbackCredit(buildStream(modelId), {
+				driver: this.fallbackSupport(),
+				executingEndpoint: endpoint,
+				resolveTarget: () => resolveFallbackTargetFromParams(params, endpoint),
+				serverToolsRan: serverToolsRanInChunks,
+				runStep: (step, target, refusedChunks) => {
+					const token = creditTokenOf(refusedChunks);
+					return buildStream(
+						target.targetModel,
+						step.includeToken ? { step, token } : { step, token: "" },
+					);
+				},
 			});
 			return;
 		}
@@ -493,6 +539,16 @@ export class BedrockMantleDriver implements LLMBackend {
 			vision: true,
 			extended_thinking: this.providerMode === "anthropic",
 			max_context: this.contextWindow,
+		};
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// Bedrock Mantle: same protocol surface as Bedrock Runtime for fallback —
+		// no server-side auto, no published targets, mints/redeems credit (catalog §4.2).
+		return {
+			server_side_auto: false,
+			publishes_allowed_targets: false,
+			supports_fallback_credit: true,
 		};
 	}
 }

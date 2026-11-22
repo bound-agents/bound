@@ -18,8 +18,23 @@ export type {
 	StreamChunkPayload,
 	StreamEndPayload,
 } from "./types";
-
 export { LLMError } from "./types";
+
+export type {
+	DriverFallbackSupport,
+	ModelFallbackPolicy,
+	ResolvedFallbackChain,
+	ResolveFallbackChainArgs,
+} from "./fallback-policy";
+export { resolveFallbackChain } from "./fallback-policy";
+export type {
+	CreditIneligibleReason,
+	CreditRedemptionContext,
+	CreditRedemptionPlan,
+	CreditStep,
+	CreditStepKind,
+} from "./fallback-credit";
+export { isTransientRedemptionError, planCreditRedemption } from "./fallback-credit";
 
 export { AnthropicDriver } from "./drivers/anthropic";
 

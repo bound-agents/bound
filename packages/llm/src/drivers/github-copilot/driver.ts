@@ -36,6 +36,7 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "../../bridge";
+import type { DriverFallbackSupport } from "../../fallback-policy";
 import type {
 	BackendCapabilities,
 	ChatParams,
@@ -790,6 +791,16 @@ export class GitHubCopilotDriver implements LLMBackend {
 			// catalog isn't available synchronously, so route from the model name.
 			extended_thinking: routeFromModelName(this.model) === "messages",
 			max_context: this.contextWindow,
+		};
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// GitHub Copilot exposes no refusal-fallback protocol to Bound (catalog
+		// §4.2). A refusal walks the loop-host router.
+		return {
+			server_side_auto: false,
+			publishes_allowed_targets: false,
+			supports_fallback_credit: false,
 		};
 	}
 }

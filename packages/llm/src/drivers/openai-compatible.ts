@@ -18,9 +18,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveProviderFetch, runProviderStream } from "./shared";
-
 export class OpenAICompatibleDriver implements LLMBackend {
 	private provider: ReturnType<typeof createOpenAICompatible>;
 	private model: string;
@@ -157,6 +157,16 @@ export class OpenAICompatibleDriver implements LLMBackend {
 			vision: true,
 			extended_thinking: false,
 			max_context: this.contextWindow,
+		};
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// Generic OpenAI-compatible endpoints expose no refusal-fallback protocol
+		// (catalog §4.2). A refusal here walks the cluster's loop-host router.
+		return {
+			server_side_auto: false,
+			publishes_allowed_targets: false,
+			supports_fallback_credit: false,
 		};
 	}
 }

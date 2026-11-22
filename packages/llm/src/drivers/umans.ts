@@ -29,6 +29,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { ANTHROPIC_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { DriverFallbackSupport } from "../fallback-policy";
 import type {
 	BackendCapabilities,
 	BackendReadiness,
@@ -603,5 +604,16 @@ export class UmansDriver implements LLMBackend {
 
 	capabilities(): BackendCapabilities {
 		return this.caps;
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// umans routes through the Anthropic Messages API but exposes no
+		// refusal-fallback protocol to Bound (catalog §4.2). A refusal walks the
+		// loop-host router.
+		return {
+			server_side_auto: false,
+			publishes_allowed_targets: false,
+			supports_fallback_credit: false,
+		};
 	}
 }

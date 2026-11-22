@@ -36,9 +36,15 @@ import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import type { ModelMessage } from "ai";
 import { ANTHROPIC_ENVELOPE, mapChunks, mapError, toModelMessages, toToolSet } from "../bridge";
+import type { DriverFallbackSupport } from "../fallback-policy";
 import { createLoggingFetch } from "../fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { quantizeCacheTtl } from "./bedrock";
+import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
+import {
+	resolveFallbackTargetFromParams,
+	serverToolsRanInChunks,
+} from "./credit-redemption-config";
 
 /**
  * The `providerOptions.anthropic` reasoning payload. Mirrors the subset of
@@ -181,6 +187,9 @@ export class AnthropicDriver implements LLMBackend {
 	private provider: AnthropicProvider;
 	private model: string;
 	private contextWindow: number;
+	// Endpoint identity for the inline credit-redemption co-location check
+	// (slice 5, R-RT18). Empty string when the host didn't configure a site id.
+	private readonly reasoningOrigin: string;
 
 	constructor(config: {
 		apiKey: string;
@@ -214,9 +223,16 @@ export class AnthropicDriver implements LLMBackend {
 		 * used verbatim. See `createLoggingFetch`.
 		 */
 		connectTimeoutMs?: number;
+		/**
+		 * This host's site id, used to form the deployment identity (`reasoningOrigin`)
+		 * for the inline credit-redemption co-location check (R-RT18). Omitted in tests
+		 * that don't exercise the credited-retry path.
+		 */
+		siteId?: string;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
+		this.reasoningOrigin = config.siteId ? `${config.siteId}:anthropic` : "";
 		const customFetch =
 			config.fetch ??
 			(config.logger
@@ -265,34 +281,64 @@ export class AnthropicDriver implements LLMBackend {
 		// before the first content event, which would trip the relay silence
 		// timeout. Matches the Bedrock driver's messageStart behavior.
 		yield { type: "heartbeat" };
-		const result = streamText({
-			model: this.provider.languageModel(modelId),
-			messages,
-			// The system prompt rides as a role:"system" ModelMessage at index 0 (see
-			// buildAnthropicSystemMessage); ai@7 streamText rejects it unless we opt in.
-			allowSystemInMessages: true,
-			...(tools && { tools }),
-			...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-			// Anthropic disallows temperature when extended thinking / effort is
-			// active; only set it when we're not asking for reasoning.
-			...(params.temperature !== undefined && !reasoning && { temperature: params.temperature }),
-			abortSignal: params.signal,
-			...(reasoning && {
-				providerOptions: {
-					anthropic: reasoning as Record<string, unknown> as never,
-				},
-			}),
-		});
 
-		try {
-			yield* mapChunks(result.fullStream, {
-				usageProvider: "anthropic",
-				estimateInputFromMessages: params.messages,
-				providerName: "anthropic",
+		// Build one Anthropic streaming attempt. `serverSideFallback`, when true,
+		// expresses the provider's server-side automatic fallback (R-RT18, §7.3):
+		// `fallbacks: "default"` + the `server-side-fallback-2026-07-01` beta, so the
+		// API picks a substitute itself rather than Bound replaying a different model.
+		// Earlier thinking blocks are NEVER stripped on the credited retry.
+		const buildStream = (serverSideFallback: boolean): AsyncIterable<StreamChunk> => {
+			const result = streamText({
+				model: this.provider.languageModel(modelId),
+				messages,
+				// The system prompt rides as a role:"system" ModelMessage at index 0 (see
+				// buildAnthropicSystemMessage); ai@7 streamText rejects it unless we opt in.
+				allowSystemInMessages: true,
+				...(tools && { tools }),
+				...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+				// Anthropic disallows temperature when extended thinking / effort is
+				// active; only set it when we're not asking for reasoning.
+				...(params.temperature !== undefined && !reasoning && { temperature: params.temperature }),
+				abortSignal: params.signal,
+				...((reasoning || serverSideFallback) && {
+					providerOptions: {
+						anthropic: {
+							...(reasoning ?? {}),
+							// Server-side automatic fallback: the API selects a substitute
+							// model and redeems the prompt-cache credit inline.
+							...(serverSideFallback && {
+								fallbacks: "default",
+								anthropicBeta: ["server-side-fallback-2026-07-01"],
+							}),
+						} as Record<string, unknown> as never,
+					},
+				}),
 			});
-		} catch (err) {
-			throw mapError(err, "anthropic");
-		}
+			return (async function* () {
+				try {
+					yield* mapChunks(result.fullStream, {
+						usageProvider: "anthropic",
+						estimateInputFromMessages: params.messages,
+						providerName: "anthropic",
+					});
+				} catch (err) {
+					throw mapError(err, "anthropic");
+				}
+			})();
+		};
+
+		// Wrap the primary attempt with the inline credit-redemption executor. On a
+		// co-located credit-bearing refusal the planner (server_side_auto) returns a
+		// single server-side-fallback step, so the replay re-issues with the
+		// server-side fallback directive; a non-co-located / token-less refusal flows
+		// through to the loop-host router.
+		yield* redeemFallbackCredit(buildStream(false), {
+			driver: this.fallbackSupport(),
+			executingEndpoint: this.reasoningOrigin,
+			resolveTarget: () => resolveFallbackTargetFromParams(params, this.reasoningOrigin),
+			serverToolsRan: serverToolsRanInChunks,
+			runStep: (step: CreditStep) => buildStream(step.kind === "server-side-fallback"),
+		});
 	}
 
 	capabilities(): BackendCapabilities {
@@ -304,6 +350,16 @@ export class AnthropicDriver implements LLMBackend {
 			vision: true,
 			extended_thinking: true,
 			max_context: this.contextWindow,
+		};
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// Anthropic direct API: server-side automatic fallback, publishes per-model
+		// allowed_fallback_models, and mints/redeems fallback-credit tokens (catalog §4.2).
+		return {
+			server_side_auto: true,
+			publishes_allowed_targets: true,
+			supports_fallback_credit: true,
 		};
 	}
 }

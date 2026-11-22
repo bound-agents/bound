@@ -484,6 +484,14 @@ export interface Turn extends SoftDeletable {
 }
 
 /**
+ * Per-model refusal-fallback policy (slice 5, 2026-11-21-model-catalog.md §7.1).
+ * Serialized into `model_routing_rules.fallback_policy`. An absent row means
+ * `{ mode: "auto" }`.
+ */
+export type ModelFallbackPolicy =
+	{ mode: "auto" } | { mode: "never" } | { mode: "custom"; models: string[] };
+
+/**
  * `model_routing_rules` row: per-logical-model route priority and refusal-
  * fallback override (synced, LWW; 2026-11-21-model-routing.md §4.2). Both JSON
  * payload columns are nullable so an operator can set just one. `route_order`

@@ -27,17 +27,22 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "../bridge";
+import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
-import { resolveProviderFetch, runProviderStream } from "./shared";
-
+import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
+import {
+	creditTokenOf,
+	resolveFallbackTargetFromParams,
+	serverToolsRanInChunks,
+} from "./credit-redemption-config";
+import { buildReasoningOrigin, resolveProviderFetch, runProviderStream } from "./shared";
 interface BedrockReasoningConfig {
 	type?: "enabled" | "disabled" | "adaptive";
 	budgetTokens?: number;
 	maxReasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 	display?: "omitted" | "summarized";
 }
-
 /**
  * Bedrock system-block builder.
  *
@@ -168,6 +173,11 @@ export class BedrockDriver implements LLMBackend {
 	private provider: AmazonBedrockProvider;
 	private model: string;
 	private contextWindow: number;
+	// Endpoint identity for the inline credit-redemption co-location check
+	// (slice 5, R-RT18). A fallback credit minted on this endpoint is only
+	// redeemable here; `planCreditRedemption` compares the credit's minting
+	// endpoint to this. Empty string when the host didn't configure a site id.
+	private readonly reasoningOrigin: string;
 
 	constructor(config: {
 		region: string;
@@ -201,9 +211,18 @@ export class BedrockDriver implements LLMBackend {
 		 * (harness/test) is used verbatim. See `createLoggingFetch`.
 		 */
 		connectTimeoutMs?: number;
+		/**
+		 * This host's site id. Combined with region to form the deployment identity
+		 * (`reasoningOrigin`) used for the inline credit-redemption co-location check
+		 * (R-RT18). Omitted in tests that don't exercise the credited-retry path.
+		 */
+		siteId?: string;
 	}) {
 		this.model = config.model;
 		this.contextWindow = config.contextWindow;
+		this.reasoningOrigin =
+			buildReasoningOrigin({ siteId: config.siteId, provider: "bedrock", detail: config.region }) ??
+			"";
 		// Auth precedence (matches @ai-sdk/amazon-bedrock@4 behavior):
 		//   1. apiKey / AWS_BEARER_TOKEN_BEDROCK if set (handled by the SDK)
 		//   2. explicit profile via fromIni (honors SSO, sts:AssumeRole, MFA)
@@ -275,32 +294,66 @@ export class BedrockDriver implements LLMBackend {
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);
 
-		// Emit heartbeat immediately. Extended thinking can produce a 60s+ gap
-		// before the first content event, which would trip the relay silence
-		// timeout. This matches the legacy driver's messageStart behavior.
-		yield* runProviderStream({
-			modelId,
-			providerName: "bedrock",
-			signal: params.signal,
-			stream: () =>
-				streamText({
-					model: this.provider.languageModel(modelId),
-					messages,
-					allowSystemInMessages: true,
-					...(tools && { tools }),
-					...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
-					// Reasoning requests disallow temperature on Anthropic; only set it
-					// when we're not in thinking mode. Mirrors the old validator gate.
-					...(params.temperature !== undefined &&
-						!reasoningConfig && { temperature: params.temperature }),
-					abortSignal: params.signal,
-					providerOptions: {
-						bedrock: {
-							...(reasoningConfig && { reasoningConfig }),
-						} as Record<string, unknown> as never,
-					},
-				}).fullStream,
-			map: { usageProvider: "bedrock", estimateInputFromMessages: params.messages },
+		// Build one Bedrock streaming attempt for `effectiveModel`. `credit`, when
+		// set, carries the fallback-credit redemption state for an inline credited
+		// retry (R-RT18, §7.3): the `fallback-credit-2026-07-01` beta rides in
+		// `anthropic_beta`, the `fallback_credit_token` is added, and earlier thinking
+		// blocks are NOT stripped (the shared executor's CreditStep carries
+		// stripThinking:false). The step kind decides whether the token is present.
+		const buildStream = (
+			effectiveModel: string,
+			credit?: { step: CreditStep; token: string },
+		): AsyncIterable<StreamChunk> => {
+			const betaFlags = credit ? ["fallback-credit-2026-07-01"] : undefined;
+			return runProviderStream({
+				modelId: effectiveModel,
+				providerName: "bedrock",
+				signal: params.signal,
+				stream: () =>
+					streamText({
+						model: this.provider.languageModel(effectiveModel),
+						messages,
+						allowSystemInMessages: true,
+						...(tools && { tools }),
+						...(params.max_tokens && { maxOutputTokens: params.max_tokens }),
+						// Reasoning requests disallow temperature on Anthropic; only set it
+						// when we're not in thinking mode. Mirrors the old validator gate.
+						...(params.temperature !== undefined &&
+							!reasoningConfig && { temperature: params.temperature }),
+						abortSignal: params.signal,
+						providerOptions: {
+							bedrock: {
+								...(reasoningConfig && { reasoningConfig }),
+								// Credited retry: send the fallback-credit beta in anthropic_beta
+								// and the redemption token when the step carries it. A drop-token
+								// step forfeits the credit and omits the token.
+								...(betaFlags && { anthropic_beta: betaFlags }),
+								...(credit?.step.includeToken && {
+									additionalModelRequestFields: { fallback_credit_token: credit.token },
+								}),
+							} as Record<string, unknown> as never,
+						},
+					}).fullStream,
+				map: { usageProvider: "bedrock", estimateInputFromMessages: params.messages },
+			});
+		};
+
+		// Wrap the primary attempt with the inline credit-redemption executor
+		// (R-RT18, §7.3). On a co-located credit-bearing refusal it walks the planned
+		// step-down, replaying the refused prompt against the fallback target; a
+		// non-co-located / token-less refusal flows through for the loop-host router.
+		yield* redeemFallbackCredit(buildStream(modelId), {
+			driver: this.fallbackSupport(),
+			executingEndpoint: this.reasoningOrigin,
+			resolveTarget: () => resolveFallbackTargetFromParams(params, this.reasoningOrigin),
+			serverToolsRan: serverToolsRanInChunks,
+			runStep: (step, target, refusedChunks) => {
+				const token = creditTokenOf(refusedChunks);
+				return buildStream(
+					target.targetModel,
+					step.includeToken ? { step, token } : { step, token: "" },
+				);
+			},
 		});
 	}
 
@@ -313,6 +366,16 @@ export class BedrockDriver implements LLMBackend {
 			vision: true,
 			extended_thinking: true,
 			max_context: this.contextWindow,
+		};
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// Bedrock Runtime: no server-side auto fallback and no published allowed
+		// targets, but mints/redeems fallback-credit tokens (catalog §4.2).
+		return {
+			server_side_auto: false,
+			publishes_allowed_targets: false,
+			supports_fallback_credit: true,
 		};
 	}
 }

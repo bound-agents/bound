@@ -3,6 +3,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { ANTHROPIC_ENVELOPE, PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
+import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
@@ -10,7 +11,6 @@ import {
 	resolveProviderFetch,
 	withEmptyRetry,
 } from "./shared";
-
 const DEFAULT_OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1";
 const PROVIDER_NAME = "opencode-go";
 const BOUND_USER_AGENT = "bound";
@@ -189,6 +189,16 @@ export class OpenCodeGoDriver implements LLMBackend {
 			vision: false,
 			extended_thinking: false,
 			max_context: this.contextWindow,
+		};
+	}
+
+	fallbackSupport(): DriverFallbackSupport {
+		// OpenCode Go proxies OpenAI-compatible endpoints: no refusal-fallback
+		// protocol (catalog §4.2). A refusal walks the loop-host router.
+		return {
+			server_side_auto: false,
+			publishes_allowed_targets: false,
+			supports_fallback_credit: false,
 		};
 	}
 }

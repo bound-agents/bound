@@ -8,7 +8,11 @@
  */
 
 import { type Logger, createLogger } from "@bound/shared";
-import { classifyCopilotFinishReason } from "../model-declined";
+import {
+	type AnthropicStopDetails,
+	classifyAnthropicRefusal,
+	classifyCopilotFinishReason,
+} from "../model-declined";
 import type { LLMFinishReason, LLMMessage, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import { mapError } from "./errors";
@@ -256,6 +260,14 @@ export async function* mapChunks(
 	// token bills at the 5m rate.
 	let cacheWrite1hAccum = 0;
 	let cacheWrite1hSeen = false;
+	// Last finish-step's raw Anthropic stop block (R-RT18, slice 5). The AI SDK
+	// collapses a 200-shaped Anthropic `stop_reason: "refusal"` to
+	// finishReason="content-filter" at the `finish` layer, but the raw stop block —
+	// carrying the refusal `category` and the provider's `fallback_credit_token` —
+	// rides on the preceding `finish-step` providerMetadata. Hold it so the `finish`
+	// handler can classify the Anthropic refusal (with its credit) rather than only
+	// the category-less Copilot collapse.
+	let lastAnthropicStop: { stopReason?: string; stopDetails?: AnthropicStopDetails } | null = null;
 
 	for await (const raw of stream) {
 		const part = raw as { type: string } & Record<string, unknown>;
@@ -395,6 +407,19 @@ export async function* mapChunks(
 					cacheWrite1hAccum += step1h;
 					cacheWrite1hSeen = true;
 				}
+				// Capture a raw Anthropic refusal stop block (R-RT18, slice 5). The
+				// anthropic/bedrock adapters surface `stop_reason` + `stop_details` on
+				// the finish-step providerMetadata; a 200-shaped `refusal` carries the
+				// provider's `fallback_credit_token` here. Held for the `finish`
+				// handler, which classifies it into `done.declined` with its credit.
+				const anthropicMeta = meta?.anthropic as
+					{ stopReason?: unknown; stopDetails?: unknown } | undefined;
+				if (anthropicMeta?.stopReason === "refusal") {
+					lastAnthropicStop = {
+						stopReason: "refusal",
+						stopDetails: anthropicMeta.stopDetails as AnthropicStopDetails | undefined,
+					};
+				}
 				break;
 			}
 			case "finish": {
@@ -428,7 +453,21 @@ export async function* mapChunks(
 				// route failover, so the route stays healthy and the agent loop drops the
 				// refused partial. Error-shaped refusals (Gemini Interactions 400) travel
 				// as a thrown LLMRefusalError from mapError instead.
-				const declined = classifyCopilotFinishReason(finishReason) ?? undefined;
+				//
+				// When a preceding finish-step carried a raw Anthropic `refusal` stop
+				// block (R-RT18, slice 5), prefer that classification: it recovers the
+				// refusal `category` and the provider's `fallback_credit_token` that the
+				// content-filter collapse discards, stamping the credit's endpoint from
+				// this deployment's `reasoningOrigin` for the later co-location check.
+				const anthropicDeclined = lastAnthropicStop
+					? classifyAnthropicRefusal(
+							lastAnthropicStop.stopReason,
+							lastAnthropicStop.stopDetails,
+							opts.reasoningOrigin,
+						)
+					: null;
+				const declined =
+					anthropicDeclined ?? classifyCopilotFinishReason(finishReason) ?? undefined;
 				yield {
 					type: "done",
 					usage: extractUsage(

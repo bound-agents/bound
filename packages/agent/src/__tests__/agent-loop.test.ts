@@ -4,7 +4,13 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
+import {
+	applyMetricsSchema,
+	applySchema,
+	createDatabase,
+	insertRow,
+	softDelete,
+} from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { BackendConfig, ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { LLMRefusalError, type ModelDeclinedOutcome, ModelRouter } from "@bound/llm";
@@ -367,6 +373,146 @@ describe("MainAgentLoop", () => {
 			.query("SELECT id FROM messages WHERE thread_id = ? AND role = 'alert'")
 			.all(threadId) as Array<{ id: string }>;
 		expect(alerts.length).toBe(0);
+	});
+
+	it("resolves the request fallback chain and sets fallback_policy/fallback_models on ChatParams (R-RT18)", async () => {
+		// The loop host reads the logical model's model_routing_rules.fallback_policy
+		// (custom) and ships the resolved policy + ordered candidate list on the
+		// outgoing ChatParams, so a local driver's inline redemption (or a relay
+		// carrier's copy-through) sees the chain. Without this the fields are always
+		// undefined and no substitution ever runs.
+		insertRow(
+			db,
+			"model_routing_rules",
+			{
+				logical_model: "claude-opus",
+				route_order: null,
+				fallback_policy: JSON.stringify({
+					mode: "custom",
+					models: ["claude-opus", "backup-model"],
+				}),
+				modified_at: new Date().toISOString(),
+			},
+			"test-site-id",
+		);
+
+		const capture = new CaptureParamsBackend();
+		const router = createMockRouter(capture);
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+			modelId: "claude-opus",
+		});
+
+		await agentLoop.run();
+
+		expect(capture.capturedParams.length).toBeGreaterThan(0);
+		const params = capture.capturedParams[0];
+		expect(params.fallback_policy).toEqual({ mode: "custom" });
+		// The refused model is excluded; only the real substitute remains.
+		expect(params.fallback_models).toEqual(["backup-model"]);
+	});
+
+	it("ships an auto policy with no fallback_models when no routing rule exists (R-RT18 default)", async () => {
+		// A missing model_routing_rules row means `auto`; with no cluster default
+		// list the loop still ships the policy so the driver branches on its own
+		// DriverFallbackSupport, carrying an empty candidate list. Any rule seeded by
+		// a prior test on the shared DB is tombstoned first so this asserts the
+		// genuine absent-row path.
+		softDelete(db, "model_routing_rules", "claude-opus", "test-site-id");
+		const freshThread = randomUUID();
+		const capture = new CaptureParamsBackend();
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), createMockRouter(capture), {
+			threadId: freshThread,
+			userId: "test-user",
+			modelId: "claude-opus",
+		});
+
+		await agentLoop.run();
+
+		const params = capture.capturedParams[0];
+		expect(params.fallback_policy).toEqual({ mode: "auto" });
+		expect(params.fallback_models).toEqual([]);
+	});
+
+	it("records two attempt entries and emits llm:refusal + llm:fallback when a refusal is followed by a served retry (R-RT21)", async () => {
+		// The driver-level inline credit redemption yields a refused done chunk AND a
+		// served done chunk on ONE stream (slice 5, R-RT18). recordTurn must record
+		// BOTH as cost_breakdown attempts (never summing tokens across them) and emit
+		// the dedicated llm:refusal + llm:fallback observability events (R-RT21).
+		const captured: Array<{ event: string; payload: unknown }> = [];
+		const ctx = makeCtx();
+		(ctx as unknown as { eventBus: { emit: (e: string, p: unknown) => void } }).eventBus = {
+			on: () => {},
+			off: () => {},
+			emit: (event: string, payload: unknown) => captured.push({ event, payload }),
+		} as never;
+
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(async function* () {
+			yield { type: "text" as const, content: "refused partial" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 10,
+					output_tokens: 0,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+				finish_reason: "content-filter" as const,
+				declined: {
+					kind: "model-declined" as const,
+					vendor: "anthropic" as const,
+					category: "cyber",
+					raw_reason: "refusal",
+					substitutable: true,
+				},
+			};
+			yield { type: "text" as const, content: "here is a safe answer" };
+			yield {
+				type: "done" as const,
+				usage: {
+					input_tokens: 12,
+					output_tokens: 20,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+				finish_reason: "stop" as const,
+			};
+		});
+
+		const freshThread = randomUUID();
+		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), createMockRouter(mockBackend), {
+			threadId: freshThread,
+			userId: "test-user",
+			modelId: "claude-opus",
+		});
+		await agentLoop.run();
+
+		// The turn row records two attempt entries in cost_breakdown (R-RT21).
+		const row = db
+			.query(
+				"SELECT cost_breakdown FROM turns WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+			)
+			.get(freshThread) as { cost_breakdown: string | null } | null;
+		expect(row?.cost_breakdown).toBeTruthy();
+		const breakdown = JSON.parse(row?.cost_breakdown ?? "{}") as {
+			attempts?: Array<{ outcome: string; refusal_category: string | null }>;
+		};
+		expect(breakdown.attempts).toHaveLength(2);
+		expect(breakdown.attempts?.[0].outcome).toBe("refusal");
+		expect(breakdown.attempts?.[0].refusal_category).toBe("cyber");
+		expect(breakdown.attempts?.[1].outcome).toBe("ok");
+
+		// Both observability events fired (R-RT21), independent of HTTP error metrics.
+		const refusal = captured.find((c) => c.event === "llm:refusal");
+		const fallback = captured.find((c) => c.event === "llm:fallback");
+		expect(refusal).toBeDefined();
+		expect((refusal?.payload as { category: string | null }).category).toBe("cyber");
+		expect(fallback).toBeDefined();
+		expect((fallback?.payload as { credit_redeemed: boolean }).credit_redeemed).toBe(false);
 	});
 
 	it("should fire onActivity for heartbeat chunks (regression: Bedrock stall)", async () => {

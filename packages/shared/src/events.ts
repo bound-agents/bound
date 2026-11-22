@@ -28,6 +28,37 @@ export interface EventMap {
 		task_id?: string;
 		reason: string;
 	};
+	/**
+	 * A classified model refusal (slice 5, R-RT21, 2026-11-21-model-routing.md
+	 * §7.4). Emitted for EVERY classified refusal, independent of HTTP error-rate
+	 * monitoring, so refusal volume is observable on its own axis.
+	 */
+	"llm:refusal": {
+		thread_id: string;
+		task_id?: string;
+		model: string;
+		route_id: string | null;
+		vendor: string;
+		category: string | null;
+		substitutable: boolean;
+	};
+	/**
+	 * The outcome of a refusal-fallback walk (slice 5, R-RT21). Emitted once per
+	 * substitution attempt chain: whether a substitute served the turn, which
+	 * model, and whether an endpoint-bound credit was redeemed. Paired with
+	 * `llm:refusal`, independent of HTTP error metrics.
+	 */
+	"llm:fallback": {
+		thread_id: string;
+		task_id?: string;
+		refused_model: string;
+		/** The substitute logical model that served the turn, or null when none did. */
+		substitute_model: string | null;
+		/** Whether an endpoint-bound fallback credit was redeemed inline. */
+		credit_redeemed: boolean;
+		/** Resolved policy mode that governed the walk. */
+		policy_mode: "auto" | "never" | "custom";
+	};
 	"changelog:written": { hlc: string; tableName: string; siteId: string };
 	"relay:outbox-written": { id: string; target_site_id: string };
 	/** Emitted after a NEW durable_work row is committed (never on INSERT-OR-IGNORE

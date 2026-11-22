@@ -1,5 +1,4 @@
-import type { LLMFinishReason, StreamChunk } from "@bound/llm";
-
+import type { LLMFinishReason, ModelDeclinedOutcome, StreamChunk } from "@bound/llm";
 export interface ParsedToolCall {
 	id: string;
 	name: string;
@@ -7,6 +6,31 @@ export interface ParsedToolCall {
 	argsJson: string;
 	/** True when the tool_use args JSON failed to parse, usually due to output truncation. */
 	truncated?: boolean;
+}
+
+/**
+ * One inference attempt's terminal outcome, captured from a single `done` chunk
+ * (slice 5, R-RT21). A turn that executed a refusal followed by a credited
+ * retry yields two of these, in stream order.
+ */
+export interface ParsedAttempt {
+	finishReason: LLMFinishReason | null;
+	declined: ModelDeclinedOutcome | null;
+	usage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheWriteTokens: number | null;
+		cacheWrite1hTokens: number | null;
+		cacheReadTokens: number | null;
+		usageEstimated: boolean;
+	};
+	costUsdFromHub: number | null;
+	costBreakdownFromHub: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	} | null;
 }
 
 export interface ParsedResponse {
@@ -24,6 +48,23 @@ export interface ParsedResponse {
 	thinkingReasoningOrigin: string | null;
 	toolCalls: ParsedToolCall[];
 	finishReason: LLMFinishReason | null;
+	/**
+	 * The structured model-refusal outcome from the done chunk (slice 5,
+	 * R-RT15/R-RT17). Present only on a 200-shaped refusal the bridge classified
+	 * (`finishReason==='content-filter'`); null on a clean stop. Carries the
+	 * refusal category, `substitutable` flag, and any `fallback_credit_token` so
+	 * the loop host can drive the refusal-fallback walk.
+	 */
+	declined: ModelDeclinedOutcome | null;
+	/**
+	 * Every inference attempt observed on the stream, in order (slice 5, R-RT21).
+	 * A single clean turn produces one entry; a driver-level inline credit
+	 * redemption (R-RT18) yields the refused primary attempt's `done` chunk AND
+	 * the served retry's `done` chunk on ONE stream, so this captures each as a
+	 * distinct attempt for per-attempt cost accounting. The top-level
+	 * `finishReason` / `declined` / `usage` reflect the LAST (served) attempt.
+	 */
+	attempts: ParsedAttempt[];
 	usage: {
 		inputTokens: number;
 		outputTokens: number;
@@ -108,6 +149,8 @@ export function parseResponseChunks(
 	let costUsdFromHub: number | null = null;
 	let costBreakdownFromHub: ParsedResponse["costBreakdownFromHub"] = null;
 	let finishReason: LLMFinishReason | null = null;
+	let declined: ModelDeclinedOutcome | null = null;
+	const attempts: ParsedAttempt[] = [];
 
 	for (const chunk of remappedChunks) {
 		switch (chunk.type) {
@@ -166,6 +209,21 @@ export function parseResponseChunks(
 				costUsdFromHub = chunk.cost_usd ?? null;
 				costBreakdownFromHub = chunk.cost_breakdown ?? null;
 				finishReason = chunk.finish_reason ?? null;
+				declined = chunk.declined ?? null;
+				attempts.push({
+					finishReason: chunk.finish_reason ?? null,
+					declined: chunk.declined ?? null,
+					usage: {
+						inputTokens: chunk.usage.input_tokens,
+						outputTokens: chunk.usage.output_tokens,
+						cacheWriteTokens: chunk.usage.cache_write_tokens,
+						cacheWrite1hTokens: chunk.usage.cache_write_1h_tokens ?? null,
+						cacheReadTokens: chunk.usage.cache_read_tokens,
+						usageEstimated: chunk.usage.estimated,
+					},
+					costUsdFromHub: chunk.cost_usd ?? null,
+					costBreakdownFromHub: chunk.cost_breakdown ?? null,
+				});
 				break;
 			case "error":
 				logger?.warn("[agent-loop] Stream error chunk in response", {
@@ -190,6 +248,8 @@ export function parseResponseChunks(
 		thinkingReasoningOrigin,
 		toolCalls: dropSupersededToolCallDrafts(toolCalls),
 		finishReason,
+		declined,
+		attempts,
 		usage: {
 			inputTokens,
 			outputTokens,

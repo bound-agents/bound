@@ -2099,6 +2099,14 @@ export class RelayProcessor {
 				thinking: effectiveThinking,
 				effort: effectiveEffort,
 				cache_ttl: payload.cache_ttl ?? this.modelRouter.getCacheTtl(payload.model),
+				// R-RT18 / §7.3 step 2: forward the resolved fallback chain so the
+				// executing driver can run inline credit redemption on a remote turn.
+				// Without these the driver sees fallback_models === undefined and
+				// resolveFallbackTargetFromParams returns null. Not subject to the
+				// invariant #11 model-alias passthrough rule — these are logical IDs
+				// the driver compares against its own endpoint, not a backend model.
+				fallback_policy: payload.fallback_policy,
+				fallback_models: payload.fallback_models,
 				resolveFileRef: createFileRefResolver(this.db),
 				signal: abortController.signal,
 			});

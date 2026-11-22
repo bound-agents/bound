@@ -108,11 +108,16 @@ import {
 	resolveTargetCapabilities,
 	waitForModelResolution,
 } from "./model-resolution";
+import {
+	type AttemptRecord,
+	buildTurnCostBreakdownWithAttempts,
+} from "./refusal-fallback-accounting";
 import { readUnionResponseEntry } from "./relay-await-helpers";
 import { createRelayBackend } from "./relay-backend";
 import { type EligibleHost, resolveTopologyRole, routeRelayRequest } from "./relay-router";
 import { createRelayStream$ } from "./relay-stream$";
 import { type RelayWaitResult, createRelayWait$ } from "./relay-wait$";
+import { resolveRequestFallback } from "./resolve-request-fallback";
 import { parseModelHint } from "./routing-preferences";
 import { fromEventBus } from "./rx-utils";
 import {
@@ -375,6 +380,26 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				? resolution.maxOutputTokens
 				: undefined;
 		return clampMaxOutputTokens(this.effectiveMaxOutputTokens(), backendCap);
+	}
+
+	/**
+	 * Resolve the refusal-fallback chain fields to ship on the outgoing request
+	 * (R-RT18, §7.3 step 2). Reads the resolved logical model's
+	 * `model_routing_rules.fallback_policy` (absent row → auto) and the cluster
+	 * `routing.default_fallback_models`, producing the two optional ChatParams /
+	 * inference-payload fields. A local driver's inline credit redemption reads
+	 * them directly; a relay carrier copies them through so the executing host's
+	 * driver sees the same chain. Returns `{}` when the logical model is unknown
+	 * so the request simply carries no fallback hint.
+	 */
+	protected resolveFallbackFields(resolution: BoundPreparedFrame["resolution"]): {
+		fallback_policy?: { mode: "auto" | "never" | "custom" };
+		fallback_models?: string[];
+	} {
+		const logicalModel =
+			resolution.kind === "local" || resolution.kind === "remote" ? resolution.modelId : undefined;
+		if (!logicalModel) return {};
+		return resolveRequestFallback(this.ctx.db, logicalModel);
 	}
 
 	/** Shared, policy-free model-derived inputs for Main and Aux frame assembly. */
@@ -750,6 +775,10 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			effort: resolution.effort,
 			...(forcedThinkChoice && { tool_choice: forcedThinkChoice }),
 			cache_ttl: resolution.cacheTtl,
+			// Resolve the refusal-fallback chain (R-RT18) and ship it so a local
+			// driver's inline credit redemption sees the policy + ordered candidate
+			// list. For a remote turn the relay carrier copies these through.
+			...this.resolveFallbackFields(resolution),
 			resolveFileRef: createFileRefResolver(this.ctx.db),
 			signal: silenceAbortController.signal,
 		});
@@ -1219,6 +1248,63 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				cost_usd = resolved.cost;
 				cost_breakdown = resolved.breakdown;
 			}
+
+			// Per-attempt provenance (slice 5, R-RT21, §7.4). A driver-level inline
+			// credit redemption surfaces the refused primary attempt AND the served
+			// retry as distinct `done` chunks on one stream, captured in
+			// `response.attempts`. Record each separately in `cost_breakdown` (never
+			// summing tokens across models) and emit the dedicated observability
+			// events. A single clean attempt keeps the bare four-component breakdown,
+			// byte-identical to a pre-slice-5 turn.
+			const routeId = getResolvedRouteId(this.lastModelResolution, (id) =>
+				this.modelRouter.getRouteId(id),
+			);
+			const parsedAttempts = metrics.response.attempts;
+			let finalCostBreakdown:
+				typeof cost_breakdown | ReturnType<typeof buildTurnCostBreakdownWithAttempts> =
+				cost_breakdown;
+			const substitutedFrom: string | null = null;
+			if (parsedAttempts.length > 1) {
+				const attemptRecords: AttemptRecord[] = parsedAttempts.map((a) => {
+					const attemptCost = resolveTurnCost({
+						modelId: resolvedModelId,
+						usage: {
+							inputTokens: a.usage.inputTokens,
+							outputTokens: a.usage.outputTokens,
+							cacheReadTokens: a.usage.cacheReadTokens,
+							cacheWriteTokens: a.usage.cacheWriteTokens,
+							cacheWrite1hTokens: a.usage.cacheWrite1hTokens,
+						},
+						backends,
+						providerCostUsd: a.costUsdFromHub ?? undefined,
+						providerBreakdown: a.costBreakdownFromHub ?? undefined,
+					});
+					return {
+						model_id: resolvedModelId,
+						route_id: routeId,
+						outcome: a.declined ? "refusal" : "ok",
+						refusal_category: a.declined?.category ?? null,
+						credit_redeemed: false,
+						tokens: {
+							input: a.usage.inputTokens,
+							output: a.usage.outputTokens,
+							cache_read: a.usage.cacheReadTokens ?? 0,
+							cache_write: a.usage.cacheWriteTokens ?? 0,
+						},
+						cost_usd: attemptCost.cost,
+					};
+				});
+				finalCostBreakdown = buildTurnCostBreakdownWithAttempts({
+					served: cost_breakdown,
+					attempts: attemptRecords,
+				});
+			}
+
+			// Observability events for every refusal + each fallback walk (R-RT21),
+			// independent of HTTP error metrics. A refused attempt followed by a served
+			// one is a substitution; the served attempt's absence (every attempt
+			// refused) is a surfaced refusal with no substitute.
+			this.emitRefusalAndFallbackEvents(parsedAttempts, resolvedModelId, routeId);
 			const turnId = recordTurn(
 				this.ctx.db,
 				{
@@ -1231,14 +1317,13 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 					tokens_cache_write: metrics.response.usage.cacheWriteTokens,
 					tokens_cache_read: metrics.response.usage.cacheReadTokens,
 					cost_usd,
-					cost_breakdown,
+					cost_breakdown: finalCostBreakdown,
 					// Route provenance for thread-sticky routing (§5.3): the RouteId that
 					// served this turn so the NEXT turn can reuse it while warm+eligible.
-					// substituted_from stays null here — refusal substitution (slice 5,
-					// §7.3) sets it when it rewrites the served model.
-					route_id: getResolvedRouteId(this.lastModelResolution, (id) =>
-						this.modelRouter.getRouteId(id),
-					),
+					// substituted_from records the originally requested logical model when a
+					// refusal fallback substituted another model (R-RT20).
+					substituted_from: substitutedFrom,
+					route_id: routeId,
 					status: metrics.status === "success" ? "ok" : metrics.status,
 					created_at: new Date().toISOString(),
 				},
@@ -2081,6 +2166,55 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			this.ctx.siteId,
 		);
 		this.broadcastMessage(id);
+	}
+
+	/**
+	 * Emit the dedicated refusal/fallback observability events (slice 5, R-RT21,
+	 * §7.4), independent of HTTP error-rate monitoring. Fires `llm:refusal` for
+	 * every classified refusal attempt, and `llm:fallback` once per walk when a
+	 * refused attempt was followed by further attempts (the substitution outcome).
+	 * A clean single-attempt turn emits nothing.
+	 */
+	private emitRefusalAndFallbackEvents(
+		attempts: ParsedResponse["attempts"],
+		modelId: string,
+		routeId: string | null,
+	): void {
+		const refusedAttempts = attempts.filter((a) => a.declined !== null);
+		if (refusedAttempts.length === 0) return;
+		for (const attempt of refusedAttempts) {
+			const declined = attempt.declined;
+			if (!declined) continue;
+			this.ctx.eventBus.emit("llm:refusal", {
+				thread_id: this.config.threadId,
+				...(this.config.taskId ? { task_id: this.config.taskId } : {}),
+				model: modelId,
+				route_id: routeId,
+				vendor: declined.vendor,
+				category: declined.category,
+				substitutable: declined.substitutable,
+			});
+		}
+		// A served attempt following the refusal(s) means a substitution carried the
+		// turn; its absence means every attempt refused and the refusal surfaced.
+		const served = attempts.find((a) => a.declined === null);
+		const substituted = attempts.length > refusedAttempts.length ? served : undefined;
+		this.ctx.eventBus.emit("llm:fallback", {
+			thread_id: this.config.threadId,
+			...(this.config.taskId ? { task_id: this.config.taskId } : {}),
+			refused_model: modelId,
+			// The driver-level credited retry stays on the same request's endpoint, so
+			// the substitute logical model is the same requested model when a served
+			// attempt followed; null when every attempt refused.
+			substitute_model: substituted ? modelId : null,
+			// Credit redemption is a driver-internal step the loop cannot observe from
+			// the stream alone; recorded false here (the driver owns the redemption).
+			credit_redeemed: false,
+			policy_mode:
+				(this.lastModelResolution?.kind === "local" || this.lastModelResolution?.kind === "remote"
+					? this.resolveFallbackFields(this.lastModelResolution).fallback_policy?.mode
+					: undefined) ?? "auto",
+		});
 	}
 
 	private emitDeveloperNotice(content: string): void {

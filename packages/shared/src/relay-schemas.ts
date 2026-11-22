@@ -212,6 +212,19 @@ export const inferenceRequestPayloadSchema = z.object({
 	// chose; the executing host's driver validates/maps it.
 	effort: z.string().min(1).optional(),
 	cache_ttl: durationStringSchema().optional(),
+	// Resolved refusal-fallback chain for the turn (R-RT18, Invariant #16). The
+	// loop host resolves the effective policy and ordered candidate list and
+	// ships them so a remote inference host knows what to do on a refusal. Both
+	// optional: an older inference host that never sets them (and an older peer
+	// that receives them) stays valid — the host simply returns the refusal
+	// unchanged. `fallback_models` is an ordered `LogicalModelId[]` already
+	// filtered by the turn's CapabilityRequirements.
+	fallback_policy: z
+		.object({
+			mode: z.enum(["auto", "never", "custom"]),
+		})
+		.optional(),
+	fallback_models: z.array(z.string()).optional(),
 });
 
 export const intakePayloadSchema = z.object({

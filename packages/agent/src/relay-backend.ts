@@ -1,6 +1,7 @@
 import type {
 	BackendCapabilities,
 	ChatParams,
+	DriverFallbackSupport,
 	InferenceRequestPayload,
 	LLMBackend,
 	StreamChunk,
@@ -123,6 +124,8 @@ export function createRelayBackend(
 			if (params.thinking !== undefined) payload.thinking = params.thinking;
 			if (params.effort !== undefined) payload.effort = params.effort;
 			if (params.cache_ttl !== undefined) payload.cache_ttl = params.cache_ttl;
+			if (params.fallback_policy !== undefined) payload.fallback_policy = params.fallback_policy;
+			if (params.fallback_models !== undefined) payload.fallback_models = params.fallback_models;
 
 			const stream$ = createRelayStream$(
 				deps,
@@ -145,6 +148,17 @@ export function createRelayBackend(
 				vision: false,
 				extended_thinking: false,
 				max_context: 0,
+			};
+		},
+		fallbackSupport(): DriverFallbackSupport {
+			// Permissive stub: the relay carrier itself does no server-side fallback
+			// or credit redemption — that happens on whichever remote backend actually
+			// services the request. Advertise no fallback protocol here so the loop
+			// host treats a relayed refusal as a plain loop-host-router fallback.
+			return {
+				server_side_auto: false,
+				publishes_allowed_targets: false,
+				supports_fallback_credit: false,
 			};
 		},
 	};

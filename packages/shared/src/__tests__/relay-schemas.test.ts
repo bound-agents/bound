@@ -105,6 +105,58 @@ describe("inferenceRequestPayloadSchema cache_ttl field", () => {
 	});
 });
 
+describe("inferenceRequestPayloadSchema fallback_policy + fallback_models (R-RT18, Invariant #16)", () => {
+	const base = {
+		model: "opus",
+		segments: [{ kind: "inline" as const, message: { role: "user" as const, content: "hi" } }],
+		nowMs: 0,
+		timeout_ms: 5000,
+	};
+
+	it("accepts a resolved fallback_policy and ordered fallback_models", () => {
+		const result = inferenceRequestPayloadSchema.safeParse({
+			...base,
+			fallback_policy: { mode: "auto" },
+			fallback_models: ["sonnet", "haiku"],
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts each policy mode", () => {
+		for (const fallback_policy of [
+			{ mode: "auto" as const },
+			{ mode: "never" as const },
+			{ mode: "custom" as const },
+		]) {
+			expect(
+				inferenceRequestPayloadSchema.safeParse({ ...base, fallback_policy }).success,
+				fallback_policy.mode,
+			).toBe(true);
+		}
+	});
+
+	it("omits both fields for a legacy producer and an older inference host (both stay valid)", () => {
+		// Invariant #16: an older inference host ignores both fields and returns the
+		// refusal unchanged; a payload without them must still parse.
+		expect(inferenceRequestPayloadSchema.safeParse(base).success).toBe(true);
+	});
+
+	it("rejects an unknown fallback_policy mode", () => {
+		expect(
+			inferenceRequestPayloadSchema.safeParse({
+				...base,
+				fallback_policy: { mode: "sideways" },
+			}).success,
+		).toBe(false);
+	});
+
+	it("rejects non-string fallback_models entries", () => {
+		expect(
+			inferenceRequestPayloadSchema.safeParse({ ...base, fallback_models: [1, 2] }).success,
+		).toBe(false);
+	});
+});
+
 describe("streamChunkPayloadSchema thinking field", () => {
 	it("accepts payload with thinking content", () => {
 		const payload = {

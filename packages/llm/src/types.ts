@@ -1,9 +1,18 @@
 import type { ContextSegment } from "@bound/shared";
+import type { DriverFallbackSupport } from "./fallback-policy";
 import type { ModelDeclinedOutcome } from "./model-declined";
-
 export interface LLMBackend {
 	chat(params: ChatParams): AsyncIterable<StreamChunk>;
 	capabilities(): BackendCapabilities;
+	/**
+	 * Static refusal-fallback protocol capabilities (slice 5, R-MC7, catalog
+	 * §4.2). Routing and refusal-fallback logic branch on this descriptor rather
+	 * than provider-name conditionals. Every driver declares it; the three flags
+	 * (`server_side_auto`, `publishes_allowed_targets`, `supports_fallback_credit`)
+	 * decide whether an `auto`-mode refusal delegates server-side, walks published
+	 * allowed targets, or redeems an endpoint-bound credit inline.
+	 */
+	fallbackSupport(): DriverFallbackSupport;
 	/**
 	 * Optional, provider-neutral self-configuration contract. Present only on
 	 * drivers that resolve their model lineup asynchronously (e.g. fetch model
@@ -167,6 +176,14 @@ export interface ChatParams {
 	 * its provider accepts; unknown values are dropped, not sent blindly.
 	 */
 	effort?: string;
+	/**
+	 * Resolved refusal-fallback chain for the turn (slice 5, R-RT18). When the
+	 * loop host resolves a fallback policy + ordered candidate list, it threads
+	 * them here so a relay carrier forwards them on the inference request. Local
+	 * drivers ignore them; the fallback walk happens in the loop/driver layer.
+	 */
+	fallback_policy?: { mode: "auto" | "never" | "custom" };
+	fallback_models?: string[];
 	signal?: AbortSignal;
 	/**
 	 * Resolves a `file_ref` source (image or document) to inline base64
@@ -558,6 +575,12 @@ export interface InferenceRequestPayload {
 	// Free-form, provider-validated; see ChatParams.effort.
 	effort?: string;
 	cache_ttl?: string;
+	// Resolved refusal-fallback chain for the turn (R-RT18, Invariant #16).
+	// Mirrors inferenceRequestPayloadSchema. Both optional: an older inference
+	// host ignores them and returns the refusal unchanged. `fallback_models` is
+	// an ordered `LogicalModelId[]` already filtered by turn capabilities.
+	fallback_policy?: { mode: "auto" | "never" | "custom" };
+	fallback_models?: string[];
 	timeout_ms: number;
 }
 

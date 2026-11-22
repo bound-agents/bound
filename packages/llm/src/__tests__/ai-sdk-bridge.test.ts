@@ -2338,6 +2338,79 @@ describe("mapChunks — tool_use streaming-boundary semantics", () => {
 		}
 	});
 
+	it("carries an Anthropic refusal's fallback_credit_token from finish-step metadata onto done.declined.credit", async () => {
+		// The AI SDK collapses a 200-shaped Anthropic `stop_reason: "refusal"` to
+		// finishReason="content-filter", but the raw stop block — including the
+		// provider's `fallback_credit_token` and `fallback_has_prefill_claim` — rides
+		// on the preceding finish-step's providerMetadata. The bridge lifts the credit
+		// off that metadata so the driver-level inline redemption path (R-RT18, §7.3)
+		// has a token to redeem. The endpoint is stamped from `opts.reasoningOrigin`
+		// (this deployment's identity), which is what the co-location check compares.
+		const stream = events(
+			{ type: "text-delta", id: "t0", text: "I can't continue." },
+			{
+				type: "finish-step",
+				providerMetadata: {
+					anthropic: {
+						stopReason: "refusal",
+						stopDetails: {
+							category: "cyber",
+							fallback_credit_token: "fct-abc",
+							fallback_has_prefill_claim: true,
+						},
+					},
+				},
+			},
+			{
+				type: "finish",
+				finishReason: "content-filter",
+				totalUsage: { inputTokens: 5, outputTokens: 7 },
+			},
+		);
+		const chunks: StreamChunk[] = [];
+		for await (const c of mapChunks(stream, { reasoningOrigin: "anthropic:site-A:us-east-1" }))
+			chunks.push(c);
+		const done = chunks.find((c) => c.type === "done");
+		expect(done).toBeDefined();
+		if (done && done.type === "done") {
+			expect(done.declined?.vendor).toBe("anthropic");
+			expect(done.declined?.category).toBe("cyber");
+			expect(done.declined?.substitutable).toBe(true);
+			expect(done.declined?.credit?.token).toBe("fct-abc");
+			expect(done.declined?.credit?.has_prefill_claim).toBe(true);
+			expect(done.declined?.credit?.endpoint).toBe("anthropic:site-A:us-east-1");
+		}
+	});
+
+	it("a reasoning_extraction Anthropic refusal is non-substitutable and carries no inline substitution", async () => {
+		// reasoning_extraction is prompt-fixable: substitutable:false, so the driver
+		// surfaces it rather than redeeming any credit (R-RT17, §7.3 step 3).
+		const stream = events(
+			{
+				type: "finish-step",
+				providerMetadata: {
+					anthropic: {
+						stopReason: "refusal",
+						stopDetails: { category: "reasoning_extraction" },
+					},
+				},
+			},
+			{
+				type: "finish",
+				finishReason: "content-filter",
+				totalUsage: { inputTokens: 5, outputTokens: 1 },
+			},
+		);
+		const chunks: StreamChunk[] = [];
+		for await (const c of mapChunks(stream)) chunks.push(c);
+		const done = chunks.find((c) => c.type === "done");
+		if (done && done.type === "done") {
+			expect(done.declined?.category).toBe("reasoning_extraction");
+			expect(done.declined?.substitutable).toBe(false);
+			expect(done.declined?.credit).toBeUndefined();
+		}
+	});
+
 	it("does not attach a declined outcome on a normal finish", async () => {
 		for (const finishReason of ["stop", "tool-calls", "length"] as const) {
 			const stream = events({

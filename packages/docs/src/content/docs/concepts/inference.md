@@ -98,6 +98,61 @@ change it. Bound therefore treats a refusal differently from a route failure:
 An HTTP 400 that carries a recognized safety signal is a refusal. An HTTP 400 without one is
 a route failure and counts toward route health like any other bad request.
 
+### Refusal fallback
+
+When a refusal is substitutable, Bound can answer the turn on a different model instead of
+stopping. Each logical model has a **fallback policy** that decides whether, and how, a
+substitution happens:
+
+- **Automatic** (the default when no policy is set) delegates to the provider when the
+  provider supports an automatic server-side fallback, and otherwise walks the cluster's
+  default fallback list. A provider that publishes its own allowed fallback models is
+  consulted before the cluster list.
+- **Custom** walks an operator-declared list of models in order.
+- **Never** shows the refusal and substitutes nothing.
+
+A candidate model is skipped when it cannot meet the capabilities the turn needs. Some
+refusals are prompt-fixable rather than model-specific — a request for reasoning the model
+will not expose, for example. Bound marks these as not substitutable and surfaces the refusal
+cause directly so the prompt or tool schema can be corrected, rather than retrying another
+model that would decline for the same reason. A [hard-pinned](#hard-route-pins) turn never
+substitutes.
+
+After a substitution succeeds, the thread stays on the substitute model while its
+prompt-cache window is warm, so a run of similar turns does not pay repeated refusals. An
+operator action returns the thread to the original model. Auxiliary agents and Yard
+`infer()` calls resolve their own fallback chain per request and do not inherit a thread's
+substitution.
+
+The loop host resolves the policy and the ordered candidate list and sends them with the
+inference request, so a remote inference host knows the resolved chain. An older inference
+host that does not understand these fields ignores them and returns the refusal unchanged.
+
+### Fallback credit
+
+Some providers mint a **fallback credit** on a refusal: a short-lived token that lets Bound
+retry a different model against the same prompt cache without paying to process the prompt
+again. Credit is bound to the endpoint that minted it and expires in five minutes.
+
+Bound redeems a credit only when the next candidate model is served by the same endpoint on
+the inference host that holds the credit. The retry reuses the refused prompt with the same
+provider options and keeps earlier reasoning content in place. If the provider rejects the
+credited form, Bound steps down cleanly — it tries a continuation of the refused response,
+then the unchanged prompt with the credit, then the prompt without the credit — and stops
+stepping down if billed server tools already ran on the refused attempt, surfacing the
+refusal instead of running those tools again uncredited. A candidate on a different endpoint,
+host, or provider forfeits the credit and goes back through the loop host's router as an
+ordinary substitution, which strips provider-bound state such as encrypted reasoning at the
+boundary.
+
+### Cost of a substituted turn
+
+A turn that refuses and then substitutes runs more than one model attempt. Bound records each
+attempt on its own — the model, the route, the outcome, whether a credit was redeemed, and
+the tokens and cost — and never adds one model's tokens into another model's totals. The
+thread's cost view shows the attempts separately so a substituted turn's spend is attributed
+to the model that actually incurred it.
+
 ## Route health and recovery
 
 Each host tracks the health of every route on its own, and never shares that health
