@@ -833,3 +833,99 @@ describe("BoundClient event registry", () => {
 		expect(() => client.off("open", () => {})).not.toThrow();
 	});
 });
+
+describe("BoundClient HTTP — model routing & provenance", () => {
+	it("getRoutingModels / getClusterDefaults GET their routes", async () => {
+		fake.route("GET /api/routing/models", () => json({ models: [] }));
+		fake.route("GET /api/routing/cluster-defaults", () =>
+			json({ default_fallback_models: [], roles: {}, aliases: [] }),
+		);
+		expect(await client.getRoutingModels()).toEqual({ models: [] } as never);
+		expect(await client.getClusterDefaults()).toEqual({
+			default_fallback_models: [],
+			roles: {},
+			aliases: [],
+		} as never);
+		expect(fake.requests.at(-1)?.method).toBe("GET");
+	});
+
+	it("setRouteOrder PUTs the route_order body and URL-encodes the logical model", async () => {
+		fake.route("PUT /api/routing/models/gpt-5.5%2Fsol/route-order", () => json({ ok: true }));
+		const result = await client.setRouteOrder("gpt-5.5/sol", ["route-a", "route-b"]);
+		expect(result).toEqual({ ok: true });
+		const req = fake.requests.at(-1);
+		expect(req?.method).toBe("PUT");
+		expect(req?.path).toBe("/api/routing/models/gpt-5.5%2Fsol/route-order");
+		expect(req?.headers.get("content-type")).toContain("application/json");
+		expect(req?.body).toEqual({ route_order: ["route-a", "route-b"] });
+	});
+
+	it("setFallbackPolicy PUTs the policy object verbatim", async () => {
+		fake.route("PUT /api/routing/models/opus/fallback-policy", () => json({ ok: true }));
+		const result = await client.setFallbackPolicy("opus", {
+			mode: "custom",
+			models: ["haiku", "glm-5"],
+		});
+		expect(result).toEqual({ ok: true });
+		const req = fake.requests.at(-1);
+		expect(req?.method).toBe("PUT");
+		expect(req?.body).toEqual({ mode: "custom", models: ["haiku", "glm-5"] });
+	});
+
+	it("drainRoute POSTs the reason, defaulting a missing reason to null", async () => {
+		fake.route("POST /api/routing/routes/host-a%3Aopus/drain", () => json({ ok: true }));
+		await client.drainRoute("host-a:opus", "maintenance");
+		expect(fake.requests.at(-1)?.body).toEqual({ reason: "maintenance" });
+		await client.drainRoute("host-a:opus");
+		const req = fake.requests.at(-1);
+		expect(req?.method).toBe("POST");
+		expect(req?.path).toBe("/api/routing/routes/host-a%3Aopus/drain");
+		expect(req?.body).toEqual({ reason: null });
+	});
+
+	it("undrainRoute DELETEs the drain route", async () => {
+		fake.route("DELETE /api/routing/routes/host-a%3Aopus/drain", () => json({ ok: true }));
+		const result = await client.undrainRoute("host-a:opus");
+		expect(result).toEqual({ ok: true });
+		expect(fake.requests.at(-1)?.method).toBe("DELETE");
+	});
+
+	it("setModelAlias PUTs the logical_model; clearModelAlias DELETEs", async () => {
+		fake.route("PUT /api/routing/aliases/provider%2Fkey", () => json({ ok: true }));
+		fake.route("DELETE /api/routing/aliases/provider%2Fkey", () => json({ ok: true }));
+		await client.setModelAlias("provider/key", "opus");
+		let req = fake.requests.at(-1);
+		expect(req?.method).toBe("PUT");
+		expect(req?.body).toEqual({ logical_model: "opus" });
+		await client.setModelAlias("provider/key", null);
+		expect(fake.requests.at(-1)?.body).toEqual({ logical_model: null });
+		await client.clearModelAlias("provider/key");
+		req = fake.requests.at(-1);
+		expect(req?.method).toBe("DELETE");
+		expect(req?.path).toBe("/api/routing/aliases/provider%2Fkey");
+	});
+
+	it("setClusterDefaults PUTs the payload", async () => {
+		fake.route("PUT /api/routing/cluster-defaults", () => json({ ok: true }));
+		const result = await client.setClusterDefaults({
+			default_fallback_models: ["haiku"],
+			roles: { default: "opus", heavy: "opus", fast: "haiku" },
+		});
+		expect(result).toEqual({ ok: true });
+		const req = fake.requests.at(-1);
+		expect(req?.method).toBe("PUT");
+		expect(req?.body).toEqual({
+			default_fallback_models: ["haiku"],
+			roles: { default: "opus", heavy: "opus", fast: "haiku" },
+		});
+	});
+
+	it("getThreadProvenance GETs the thread provenance route, URL-encoding the id", async () => {
+		fake.route("GET /api/threads/thread%2F1/provenance", () => json({ turns: [] }));
+		const result = await client.getThreadProvenance("thread/1");
+		expect(result).toEqual({ turns: [] } as never);
+		const req = fake.requests.at(-1);
+		expect(req?.method).toBe("GET");
+		expect(req?.path).toBe("/api/threads/thread%2F1/provenance");
+	});
+});
