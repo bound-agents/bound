@@ -251,15 +251,17 @@ export function buildPolicy(
 }
 
 /**
- * Device nodes a shell needs to write even under write confinement. mxc 1.1.0's
- * seatbelt profile denies writes to `/dev/null`, which breaks every `>/dev/null`
- * redirect and `git status` ("could not open '/dev/null' for reading and
- * writing"); `/dev/fd` backs `/dev/stdout` and `/dev/stderr`. These grant no
- * persistent storage. Bubblewrap mounts its own writable `/dev`, so Linux needs
- * none.
+ * Device nodes a shell needs to write even under write confinement. mxc 1.1.0
+ * denies writes to `/dev/null` on both seatbelt and bubblewrap, which breaks
+ * every `>/dev/null` redirect and `git status` ("could not open '/dev/null' for
+ * reading and writing"). On macOS `/dev/fd` also backs `/dev/stdout` and
+ * `/dev/stderr`; on Linux it is a symlink into `/proc`, so it is not granted.
+ * These grant no persistent storage.
  */
 export function writableDevices(platform: NodeJS.Platform): string[] {
-	return platform === "darwin" ? ["/dev/null", "/dev/zero", "/dev/fd"] : [];
+	if (platform === "darwin") return ["/dev/null", "/dev/zero", "/dev/fd"];
+	if (platform === "linux") return ["/dev/null", "/dev/zero"];
+	return [];
 }
 
 /**

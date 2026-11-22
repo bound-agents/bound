@@ -126,11 +126,13 @@ describe.skipIf(!sandboxLive || nestedRunner)("spawnSandboxed (real enforcement)
 			process.cwd(),
 			enabled,
 		);
-		const [out, code] = await Promise.all([
+		const [out, err, code] = await Promise.all([
 			proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+			proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
 			proc.exited,
 		]);
-		expect(code).toBe(0);
+		// Carry stderr into the assertion so a CI failure says what was denied.
+		expect({ code, err }).toEqual({ code: 0, err: "" });
 		expect(out).toContain("out");
 		expect(out).toContain("null-ok");
 		expect(out).toContain("git-ok");
