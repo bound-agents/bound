@@ -145,11 +145,11 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		}
 	});
 
-	it("uses ingress.default='deny' on Linux, which bubblewrap requires", () => {
+	it("denies both ingress fields on Linux, which bubblewrap requires", () => {
 		const policy = buildPolicy(process.cwd(), enabled, "linux");
 		expect(policy.network).toEqual({
 			egress: { default: "allow" },
-			ingress: { default: "deny", hostLoopback: "allow" },
+			ingress: { default: "deny", hostLoopback: "deny" },
 		});
 	});
 

@@ -254,16 +254,17 @@ export function buildPolicy(
  * The "open" directional network posture for the host's mxc backend.
  *
  * Seatbelt (macOS) rejects hostLoopback='allow' with ingress.default='deny', so
- * both ingress fields are 'allow'. Bubblewrap (Linux) rejects
- * ingress.default='allow': the sandbox runs in a private network namespace
- * behind slirp with no inbound route, so it requires 'deny' there. Listeners
- * inside the sandbox stay reachable from inside it on either backend.
+ * both ingress fields are 'allow'. Bubblewrap (Linux) rejects both as 'allow':
+ * the sandbox runs in its own network namespace behind slirp, with no inbound
+ * route from the LAN and a loopback that isn't the host's, so both must be
+ * 'deny' there. Listeners inside the sandbox stay reachable from inside it on
+ * either backend.
  */
 export function openNetwork(platform: NodeJS.Platform) {
 	return platform === "linux"
 		? {
 				egress: { default: "allow" as const },
-				ingress: { default: "deny" as const, hostLoopback: "allow" as const },
+				ingress: { default: "deny" as const, hostLoopback: "deny" as const },
 			}
 		: {
 				egress: { default: "allow" as const },
