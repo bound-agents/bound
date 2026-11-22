@@ -100,7 +100,7 @@ Each host's local `model_backends.js` / `model_backends.json` remains closed-sch
 - optional `safety_settings` for providers with configurable content-filter thresholds (Gemini);
 - optional `default` (bootstrap fallback only when synced `ClusterModelRoles.default` is unset; see `2026-11-21-model-catalog.md`, `R-MC10`).
 
-`tier` is not part of the validated schema. To prevent startup failures on existing configs, the loader strips any `tier` key before strict validation and logs a one-line warning naming its replacements.
+`tier` is not part of the schema. Like any undeclared key, a config that declares it fails strict validation (Invariant #13).
 
 ### 4.2 Cluster-synced routing preferences
 
@@ -316,7 +316,7 @@ A single turn can execute multiple attempts (for example, a refused primary atte
 
 **R-MR2.** Each host shall advertise its ready local routes in `hosts.models` with `route_id`, `logical_model` (nullable when unassigned), `provider_model_id`, effective `capabilities` (including `max_context`), `max_output_tokens`, `cache_ttl`, and `thinking_mode`. Not-ready self-configuring backends shall be excluded from advertisements and candidate selection.
 
-**R-MR3.** `tier` shall not exist in validated backend configuration schemas, router state, or host model advertisements. The config loader shall strip any legacy `tier` key before strict validation and emit a one-line warning naming its replacements.
+**R-MR3.** `tier` shall not exist in backend configuration schemas, router state, or host model advertisements. A config declaring `tier` shall fail strict validation like any other undeclared key.
 
 **R-MR4.** Logical model grouping and metadata resolution shall follow `2026-11-21-model-catalog.md` (`R-MC1`–`R-MC9`). Unmatched auto-registered models shall be advertised with `logical_model: null` and surfaced for operator mapping.
 
@@ -400,7 +400,7 @@ One operator page manages synced cluster preferences while displaying read-only 
 - **Unified ranking:** a test cluster with a local route and a remote route for the same logical model selects the remote route when `route_order` places it first, and defaults to local-before-remote then lexicographical `RouteId` when unordered; identical preferences on two hosts produce identical route ordering regardless of heartbeat timestamps.
 - **Same-model cross-host failover:** when a local route fails with `429`, `5xx`, or a driver-bug `400`, the turn fails over to a healthy remote route serving the same logical model and completes without surfacing an error.
 - **Auto-registered pooling:** an auto-registered backend whose provider-specific ID matches structural normalization (or a synced alias override per `2026-11-21-model-catalog.md`) pools with a static backend for the same logical model across hosts; an unmapped backend appears as unassigned and does not silently pool.
-- **No `tier` (strip-and-warn):** a legacy config containing `tier` loads with a deprecation warning after stripping `tier`; `tier` is absent from the validated schema, router state, and `hosts.models`; `PooledBackend` is removed and all ranking, fallback, and Yard/aux selection tests pass.
+- **No `tier`:** `tier` is absent from the schema (a config declaring it fails strict validation), router state, and `hosts.models`; `PooledBackend` is removed and all ranking, fallback, and Yard/aux selection tests pass.
 - **Concurrent synced preference edits:** concurrent edits on two hosts to different logical models in `model_routing_rules`, different routes in `route_drains`, or different keys in `model_aliases` both survive LWW sync without clobbering each other.
 - **Stickiness and hysteresis (cross-host via `turns`):** a thread pinned to route B after route A backs off writes `turns.route_id = B`, remains on route B even if the next turn triggers on a different host while within route B's cache window, and does not snap back when route A recovers; a new or cold-cache thread runs the per-host half-open trial on route A.
 - **Automatic recovery vs. manual drain:** a route in backoff transitions to `half_open` on expiry, recovers on a single successful real turn per host without synthetic pings, and caps backoff at 4 hours on repeated failure; a manually drained route stays excluded until explicitly un-drained.
