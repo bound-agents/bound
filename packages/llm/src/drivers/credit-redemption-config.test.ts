@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { ChatParams, StreamChunk } from "../types";
 import {
+	creditTokenOf,
 	resolveFallbackTargetFromParams,
 	serverToolsRanInChunks,
 } from "./credit-redemption-config";
@@ -73,5 +74,47 @@ describe("serverToolsRanInChunks", () => {
 			{ type: "text", content: "I can't help" },
 		];
 		expect(serverToolsRanInChunks(chunks)).toBe(false);
+	});
+});
+
+describe("creditTokenOf", () => {
+	function doneChunk(token?: string): StreamChunk {
+		return {
+			type: "done",
+			usage: {
+				input_tokens: 10,
+				output_tokens: 0,
+				cache_read_tokens: 0,
+				cache_write_tokens: 0,
+			},
+			...(token !== undefined
+				? {
+						declined: {
+							kind: "model-declined" as const,
+							reason: "refusal" as const,
+							message: "declined",
+							credit: { token, endpoint: "ep-A" },
+						},
+					}
+				: {}),
+		};
+	}
+
+	it("returns the credit token from the refused attempt's done chunk", () => {
+		const chunks: StreamChunk[] = [{ type: "text", content: "I can't help" }, doneChunk("tok-xyz")];
+		expect(creditTokenOf(chunks)).toBe("tok-xyz");
+	});
+
+	it("reads the last done chunk when more than one is present", () => {
+		const chunks: StreamChunk[] = [doneChunk("tok-old"), doneChunk("tok-new")];
+		expect(creditTokenOf(chunks)).toBe("tok-new");
+	});
+
+	it("returns an empty string when the done chunk carries no credit", () => {
+		expect(creditTokenOf([{ type: "text", content: "hi" }, doneChunk()])).toBe("");
+	});
+
+	it("returns an empty string when there is no done chunk at all", () => {
+		expect(creditTokenOf([{ type: "text", content: "hi" }])).toBe("");
 	});
 });
