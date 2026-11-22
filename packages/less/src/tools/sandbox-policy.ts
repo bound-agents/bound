@@ -226,9 +226,13 @@ export function buildPolicy(
 	cfg: ResolvedSandboxConfig,
 	platform: NodeJS.Platform = process.platform,
 ) {
+	const readwritePaths = [...computeWritableRoots(cwd, cfg), ...writableDevices(platform)];
+	// mxc resolves a path listed as both readonly and readwrite to readonly, so a
+	// top-level root that is itself writable (Linux /tmp) stays out of the read set.
+	const writable = new Set(readwritePaths);
 	return {
 		filesystem: {
-			readwritePaths: [...computeWritableRoots(cwd, cfg), ...writableDevices(platform)],
+			readwritePaths,
 			// Deny-writes-only: the entire filesystem is readable; only the
 			// writable set above can be written. Anything not under a
 			// readwritePath inherits read-only from this root grant.
@@ -244,7 +248,7 @@ export function buildPolicy(
 			// enforces the same carve-out for the TS file tools on every platform
 			// except Windows.
 			readonlyPaths: [
-				...readableRoots(platform),
+				...readableRoots(platform).filter((root) => !writable.has(root)),
 				...computeGitProtectedPaths(cwd, undefined, cfg.gitWorktreeMetadata),
 			],
 		},

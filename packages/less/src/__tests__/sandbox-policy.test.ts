@@ -153,6 +153,14 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		expect(linux).not.toContain("/dev/null");
 	});
 
+	it("keeps a writable top-level root out of the Linux read set", () => {
+		const policy = buildPolicy(process.cwd(), { ...enabled, writablePaths: ["/tmp"] }, "linux");
+		expect(policy.filesystem.readwritePaths).toContain(realpathSync("/tmp"));
+		for (const rw of policy.filesystem.readwritePaths) {
+			expect(policy.filesystem.readonlyPaths).not.toContain(rw);
+		}
+	});
+
 	it("grants read on / directly except under bubblewrap, which keeps its own /dev /proc /sys", () => {
 		expect(readableRoots("darwin")).toEqual(["/"]);
 		const linux = readableRoots("linux", () => ["usr", "dev", "home", "proc", "sys", "etc"]);
@@ -615,7 +623,7 @@ describe(".git exec-surface protection", () => {
 	it.skipIf(process.platform === "win32")(
 		"buildPolicy layers the protected paths into readonlyPaths after the cwd grant (non-win32)",
 		() => {
-			const policy = buildPolicy(repo, cfg);
+			const policy = buildPolicy(repo, cfg, "darwin");
 			const ro = policy.filesystem.readonlyPaths;
 			expect(ro[0]).toBe("/");
 			expect(ro).toContain(realpathSync(join(repo, ".git", "hooks")));
