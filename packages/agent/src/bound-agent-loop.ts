@@ -1235,6 +1235,19 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		} else {
 			assistantContent = parsed.textContent || "";
 		}
+		// A `content-filter` finish is a model refusal: the request reached the
+		// model and a safety classifier declined it. Per R-RT16 the refused
+		// partial output must NEVER be persisted as an ordinary assistant
+		// `messages` row — on the next turn the model would otherwise read that
+		// partial as a complete reply it wrote. Surface an operator alert instead
+		// and end the turn without retrying.
+		if (parsed.finishReason === "content-filter") {
+			this.emitAlert(
+				"Model safety filter stopped generation (finishReason=content-filter). " +
+					"The refused partial output was not persisted; the turn was not retried.",
+			);
+			return;
+		}
 		if (assistantContent) {
 			const assistantMsgId = insertThreadMessage(
 				this.ctx.db,
@@ -1249,12 +1262,6 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			);
 			this.broadcastMessage(assistantMsgId);
 			this.messagesCreated++;
-		}
-		if (parsed.finishReason === "content-filter") {
-			this.emitAlert(
-				"Model safety filter stopped generation (finishReason=content-filter). " +
-					"Any partial output above was persisted; the turn was not retried.",
-			);
 		}
 	}
 

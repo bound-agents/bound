@@ -10,6 +10,7 @@ import { CopilotTokenManager, FileCopilotTokenStore } from "./drivers/github-cop
 import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 import { OpenCodeGoDriver } from "./drivers/opencode-go";
 import { UmansDriver, createUmansAccount } from "./drivers/umans";
+import { LLMRefusalError } from "./model-declined";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -113,6 +114,14 @@ export class PooledBackend implements LLMBackend {
 				return;
 			} catch (error) {
 				lastError = error;
+				// A classified model refusal is NOT a route failure: the request
+				// reached the model and a safety/policy classifier declined it.
+				// Backing off this entry and retrying the same model on the next
+				// pool entry can never get past the refusal, so surface it
+				// immediately without marking the route unhealthy (R-RT15).
+				if (error instanceof LLMRefusalError) {
+					throw error;
+				}
 				if (error instanceof LLMError && error.statusCode !== undefined) {
 					const isRateLimit = error.statusCode === 429;
 					const isPaymentRequired = error.statusCode === 402;

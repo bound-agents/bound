@@ -60,3 +60,33 @@ thinking budget. Bound passes supported controls through the selected backend, b
 meaning and availability remain provider-specific. A fallback route must support the
 capabilities the turn requests; controls should not be assumed to behave identically across
 providers.
+
+### Route failures and model refusals
+
+A request can end in two distinct ways that both stop the turn. Bound separates them
+because they call for opposite responses.
+
+A **route failure** means the chosen backend or relay could not complete the request: a
+transport fault, a rate limit, a server error, or a malformed request. Bound can retry a
+route failure on another eligible route for the same model. When a route failure interrupts
+a response that had already started streaming, Bound preserves the partial text as a
+separate note so the work is not lost.
+
+A **model refusal** means the request reached the model and its safety or policy classifier
+declined to answer. Each provider signals a refusal differently: Anthropic and Bedrock
+return a refusal stop reason, OpenAI returns a refusal message or a content-filter finish,
+and Gemini returns a safety block reason. Some arrive as a successful HTTP response and some
+as an HTTP 400. Each backend maps its provider's signal to one normalized refusal outcome
+before routing decides what to do.
+
+A refusal is a decision by the model, so retrying the same model on another route cannot
+change it. Bound therefore treats a refusal differently from a route failure:
+
+- A refusal never retries the same model on another route and never marks a route
+  unhealthy.
+- Bound keeps any partial text the model produced before the refusal out of the
+  conversation history, so a later turn does not read it as a complete answer.
+- An operator alert reports the refusal.
+
+An HTTP 400 that carries a recognized safety signal is a refusal. An HTTP 400 without one is
+a route failure and counts toward route health like any other bad request.

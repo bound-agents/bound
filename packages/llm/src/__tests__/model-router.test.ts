@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { LLMRefusalError, classifyGeminiInteractions400 } from "../model-declined";
 import { ModelRouter, PooledBackend, createModelRouter } from "../model-router";
 import type {
 	BackendCapabilities,
@@ -1098,6 +1099,54 @@ describe("PooledBackend", () => {
 		expect(backend1.chatCalled).toBe(true);
 		expect(backend2.chatCalled).toBe(true);
 		expect(chunks.length).toBeGreaterThan(0);
+	});
+
+	function createRefusingBackend(_id: string): LLMBackend & { chatCalled: boolean } {
+		const backend = {
+			chatCalled: false,
+			// biome-ignore lint/correctness/useYield: throwing before yield is intentional
+			async *chat(): AsyncIterable<StreamChunk> {
+				backend.chatCalled = true;
+				const outcome = classifyGeminiInteractions400("safety");
+				if (!outcome) throw new Error("expected a classified refusal");
+				throw new LLMRefusalError(
+					"Gemini Interactions API safety block",
+					"test-provider",
+					outcome,
+					400,
+				);
+			},
+			capabilities: () => defaultCaps,
+		};
+		return backend;
+	}
+
+	it("propagates a classified refusal (safety-coded 400) immediately without pool failover", async () => {
+		// A refusal is not a route failure: a Gemini Interactions API 400 whose
+		// code is a recognized safety block must surface as an LLMRefusalError
+		// rather than backing off the entry and retrying the same model on the
+		// next pool entry (R-RT15).
+		const backend1 = createRefusingBackend("b1");
+		const backend2 = createSuccessBackend("b2");
+		const pool = new PooledBackend([
+			{ backend: backend1, tier: 1, pricePerMInput: 0 },
+			{ backend: backend2, tier: 2, pricePerMInput: 0 },
+		]);
+
+		let caught: LLMRefusalError | null = null;
+		try {
+			for await (const _chunk of pool.chat(mockParams)) {
+				// should not reach here
+			}
+		} catch (error) {
+			caught = error as LLMRefusalError;
+		}
+
+		expect(caught).toBeInstanceOf(LLMRefusalError);
+		expect(caught?.outcome.kind).toBe("model-declined");
+		expect(caught?.statusCode).toBe(400);
+		expect(backend1.chatCalled).toBe(true);
+		expect(backend2.chatCalled).toBe(false); // No same-model failover on a refusal
 	});
 
 	it("propagates 403 client error immediately without fallback", async () => {

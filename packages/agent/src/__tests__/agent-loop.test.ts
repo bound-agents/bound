@@ -300,12 +300,14 @@ describe("MainAgentLoop", () => {
 		expect(msgs[0].content).toBe("The answer is 42.");
 	});
 
-	it("persists the partial and emits an alert on a content-filter (refusal) stop", async () => {
+	it("does not persist refused partial output as an assistant row on a content-filter stop", async () => {
 		// Bedrock has no `refusal` stopReason: a safety stop arrives as a clean
-		// `done` carrying finish_reason "content-filter". The loop should treat
-		// it as a completed turn — persist whatever partial text streamed — AND
-		// surface an operator-visible alert so the refusal isn't mistaken for a
-		// short answer. The turn is NOT retried.
+		// `done` carrying finish_reason "content-filter". Per R-RT16 the loop
+		// treats it as a completed turn but must NOT persist the partial refused
+		// text as an ordinary assistant `messages` row — on the next turn the
+		// model would otherwise read that partial as a complete reply it wrote.
+		// An operator-visible alert still surfaces so the refusal isn't mistaken
+		// for a short answer, and the turn is NOT retried.
 		const mockBackend = new MockLLMBackend();
 		mockBackend.pushResponse(async function* () {
 			yield { type: "text" as const, content: "I can't help with that." };
@@ -336,11 +338,11 @@ describe("MainAgentLoop", () => {
 			.query("SELECT role, content FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
 			.all(threadId) as Array<{ role: string; content: string }>;
 
-		// The partial assistant text is persisted...
+		// No assistant row is written for the refused partial output (R-RT16)...
 		const assistant = msgs.find((m) => m.role === "assistant");
-		expect(assistant?.content).toBe("I can't help with that.");
+		expect(assistant).toBeUndefined();
 
-		// ...and an operator alert is emitted alongside it.
+		// ...and an operator alert is emitted so the refusal surfaces.
 		const alert = msgs.find((m) => m.role === "alert");
 		expect(alert).toBeDefined();
 		expect(alert?.content).toContain("content-filter");
