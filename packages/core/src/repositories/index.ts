@@ -68,3 +68,4 @@ export * from "./queries/threads-needing-summary";
 export * from "./queries/thread-cost";
 export * from "./queries/webhook-response-by-id";
 export * from "./queries/interrupted-tool-use";
+export * from "./queries/model-reference-health";

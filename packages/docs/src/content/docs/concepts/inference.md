@@ -229,5 +229,43 @@ surfaces verbatim rather than being retried elsewhere. If the pinned route no lo
 exists anywhere in the cluster, the call fails with a clear error rather than silently
 falling back to another route.
 
+### Route and model removal
+
+Routes and models come and go as providers are added, removed, or temporarily lose
+their lineup. Bound distinguishes a route or model that is **momentarily down** from one
+that is **gone for good**, and never destroys operator preferences on the former in case
+it returns.
+
+**Removing one route of several.** When a host drops a route — a provider is removed from
+its config, or a lineup refresh no longer lists it — that route leaves the host's
+advertisement and its local health state is discarded. Threads sticky to the removed
+route move to the next ranked route for the same model on their next turn. A hard pin on
+the removed route fails loudly rather than silently switching routes. Any route order,
+drain, alias, or fallback-list entry that named the route is left in place as a dormant
+no-op — it does nothing while the route is absent, and Settings › Models marks it stale so
+it can be pruned by hand. A reverted config edit or a provider that comes back restores
+those entries without reconfiguration.
+
+**Removing the last route for a model.** A model becomes decommissioned only once no
+non-deleted host in the cluster advertises it. A host that is merely offline or stale
+still counts: while its row survives, the model it advertised stays *transiently
+unavailable* (retryable, shown as a grey dot), not decommissioned. Only when cluster
+host-liveness eviction removes the dead host's row does the model flip to
+*decommissioned*. A decommissioned model leaves the picker for new threads and tasks.
+Existing threads that target it stay readable and, on the next turn, surface a notice
+asking the operator to pick another model — Bound does not silently substitute one.
+Scheduled tasks naming the model literally park with an advisory (a task targeting a
+cluster role follows the role instead). A cluster role or auxiliary agent pointing at the
+decommissioned model raises an operator advisory rather than being silently reassigned.
+Historical turn records keep the model and route that originally served each turn.
+
+**When the model comes back.** Once any host advertises a ready route for the model again,
+it reappears in the picker and existing threads resume on their next turn. Dormant
+preferences that were never pruned take effect again, and the dangling-reference advisories
+resolve on their own. A hard pin resumes only if the exact same route identity returns.
+Scheduled tasks that parked while the model was gone stay parked — their advisory notes
+the model's return so the operator can resume them deliberately, rather than firing a
+burst of catch-up runs after a long absence.
+
 See the [configuration reference](/bound/reference/configuration/#replicated-control-state)
 for the cluster-wide default-model role and fallback-list keys.

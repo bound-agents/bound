@@ -111,6 +111,7 @@ function parseTraceCarrier(raw: string | null | undefined): Record<string, strin
 import { PASSIVE_INTAKE_KINDS } from "./intake-kind-registry.js";
 import { buildMCPDispatchRegistry, formatMcpHelp, formatToolParamHint } from "./mcp-bridge.js";
 import type { MCPClient } from "./mcp-client.js";
+import { reconcileModelReferenceAdvisories } from "./model-reference-reconciler.js";
 import { fromEventBus } from "./rx-utils.js";
 import type { AgentLoopConfig } from "./types.js";
 import { deliverNotificationWakeup } from "./wakeup-routing.js";
@@ -423,6 +424,25 @@ export class RelayProcessor {
 					}
 				} catch (error) {
 					this.logger.error("Dark connector handle reconcile failed", { error });
+				}
+				// Model-catalog analogue (#288, R-MC13): raise an operator advisory for
+				// a cluster-role / aux-agent reference to a model no non-deleted host
+				// advertises (decommissioned), and auto-resolve it when the model is
+				// re-advertised. Gated behind the same startup grace window: a host
+				// lineup still settling on boot would otherwise flag a transiently-absent
+				// model as dangling before every host has published its `hosts.models`.
+				if (this.now() >= this.intakeReconciliationNotBeforeMs) {
+					try {
+						const { raised, resolved } = reconcileModelReferenceAdvisories(this.db, this.siteId);
+						if (raised > 0 || resolved > 0) {
+							this.logger.warn("[relay] Model reference reconcile acted", {
+								raised,
+								resolved,
+							});
+						}
+					} catch (error) {
+						this.logger.error("Model reference reconcile failed", { error });
+					}
 				}
 			}),
 		);

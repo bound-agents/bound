@@ -16,7 +16,11 @@ export type AdvisoryType =
 	// Route-health advisories (#285, R-RT13): auth refresh failed (re-login
 	// required) and sustained non-refusal driver-bug 400s on a route.
 	| "route_auth_expired"
-	| "route_driver_bug";
+	| "route_driver_bug"
+	// Route/model removal lifecycle (#288, R-MC13): a cluster role or aux-agent
+	// model_hint points at a logical model advertised by no non-deleted host
+	// (decommissioned). Auto-resolves when the model is re-advertised.
+	| "model_reference_dangling";
 
 export type AdvisoryStatus = "proposed" | "approved" | "dismissed" | "deferred" | "applied";
 

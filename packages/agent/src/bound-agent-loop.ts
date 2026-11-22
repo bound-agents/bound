@@ -586,6 +586,18 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// (R-RT7, R-RT8) a model whose routes are all down returns
 			// transient-unavailable and is NOT substituted onto a different model.
 			// Cross-model fallback happens only on a model refusal (slice 5).
+			//
+			// §6.3/R-RT23: a `unknown-model` reason means the model is advertised by
+			// no non-deleted host in the cluster — decommissioned, not momentarily
+			// down. An existing thread targeting it must be prompted to pick another
+			// model (never silently substituted), with language distinct from a
+			// transient outage so the operator knows retrying won't help.
+			if (this.lastModelResolution.reason === "unknown-model") {
+				return {
+					kind: "error",
+					error: `Model "${this.config.modelId}" is no longer available anywhere in the cluster (decommissioned). Pick another model for this thread — Bound will not substitute one automatically. Details: ${this.lastModelResolution.error}`,
+				};
+			}
 			return {
 				kind: "error",
 				error: `Failed to resolve requested model "${this.config.modelId}": ${this.lastModelResolution.error}`,

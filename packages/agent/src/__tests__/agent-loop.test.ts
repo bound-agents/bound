@@ -2067,7 +2067,9 @@ describe("MainAgentLoop", () => {
 
 		expect(alerts.length).toBeGreaterThan(0);
 		expect(alerts[0].content).toContain("nonexistent-model");
-		expect(alerts[0].content).toContain("Failed to resolve");
+		// Registered nowhere → decommissioned; the operator is prompted to pick
+		// another model, with no silent fallback to the default (R-RT23).
+		expect(alerts[0].content).toContain("no longer available");
 	});
 
 	it("does not substitute a different model when the requested model has no route (R-RT3, slice 2)", async () => {
@@ -2131,6 +2133,45 @@ describe("MainAgentLoop", () => {
 		expect(result.error).toBeDefined();
 		expect(result.error).toContain("glm");
 		expect(result.messagesCreated).toBe(0);
+	});
+
+	it("surfaces a pick-another-model notice for a decommissioned (unknown) model (R-RT23)", async () => {
+		// An existing thread whose model_hint targets a model advertised by no host
+		// in the cluster is NOT silently substituted; the operator is prompted to
+		// pick another model. The notice is distinct from a transient outage so the
+		// thread reads "decommissioned", not "try again later".
+		const mockBackend = new MockLLMBackend();
+		mockBackend.setTextResponse("Should not be called.");
+
+		const mockBash = createMockSandbox();
+		const ctx = makeCtx();
+
+		// Only "opus" is registered; "glm" is registered on no host (decommissioned).
+		const backends = new Map<string, LLMBackend>([["opus", mockBackend]]);
+		const router = new ModelRouter(backends, "opus");
+
+		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
+			threadId,
+			userId: "test-user",
+			modelId: "glm",
+		});
+
+		const result = await agentLoop.run();
+
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("glm");
+		expect(result.messagesCreated).toBe(0);
+		expect(mockBackend.getCallCount()).toBe(0);
+
+		const alerts = db
+			.query(
+				"SELECT content FROM messages WHERE thread_id = ? AND role = 'alert' ORDER BY created_at ASC",
+			)
+			.all(threadId) as Array<{ content: string }>;
+		expect(alerts.length).toBeGreaterThan(0);
+		// Decommissioned-specific language, not a generic resolve failure.
+		expect(alerts[0].content).toContain("no longer available");
+		expect(alerts[0].content.toLowerCase()).toContain("pick another model");
 	});
 
 	it("does not cross-model substitute when the resolved model errors at inference with a quota cap (402) (R-RT3)", async () => {

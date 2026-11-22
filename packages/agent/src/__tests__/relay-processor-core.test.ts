@@ -237,6 +237,115 @@ describe("RelayProcessor", () => {
 			handle.stop();
 		});
 
+		it("reconciles dangling model-reference advisories on the prune cadence, gated by the grace window (#288, R-MC13)", () => {
+			// Slice-6 precedent: the model-catalog reconcile cadence is the same
+			// prune$ tick that fires the webhook/connector reconcilers. A cluster
+			// role pointing at a model no host advertises is a dangling reference;
+			// the reconciler raises an operator advisory — but only after the
+			// startup grace window, so a host lineup still settling on boot does not
+			// raise a false advisory before every host has re-advertised its models.
+			const { TypedEventEmitter } = require("@bound/shared");
+			const { ROUTING_MODEL_ROLES_KEY } = require("@bound/shared");
+			const { insertRow, listActiveAdvisories } = require("@bound/core");
+
+			// One host advertises only "opus"; the "heavy" role points at "glm",
+			// which no non-deleted host advertises → dangling.
+			insertRow(
+				db,
+				"hosts",
+				{
+					site_id: "host-x",
+					host_name: "host-x",
+					version: "test",
+					sync_url: null,
+					mcp_servers: null,
+					mcp_tools: null,
+					models: JSON.stringify([
+						{ id: "opus", logical_model: "opus", route_id: "host-x:p:opus" },
+					]),
+					online_at: "2026-01-01T00:00:00.000Z",
+					platforms: null,
+					mcp_tool_annotations: null,
+					commit_hash: null,
+					mcp_capabilities: null,
+					work_spool_capable: 0,
+					deleted: 0,
+					modified_at: "2026-01-01T00:00:00.000Z",
+				},
+				"target-site",
+			);
+			insertRow(
+				db,
+				"cluster_config",
+				{
+					key: ROUTING_MODEL_ROLES_KEY,
+					value: JSON.stringify({ heavy: "glm" }),
+					deleted: 0,
+					modified_at: "2026-01-01T00:00:00.000Z",
+				},
+				"target-site",
+			);
+
+			const dangling = () =>
+				(listActiveAdvisories(db) as Array<{ type: string }>).filter(
+					(a) => a.type === "model_reference_dangling",
+				);
+
+			const callbacks: Array<() => void> = [];
+			let now = 0;
+			const scheduler: SchedulerLike = {
+				now: () => now,
+				schedule: (work, _delay, state) => {
+					callbacks.push(() =>
+						work.call(
+							{
+								schedule: () => ({ unsubscribe: () => {} }),
+								unsubscribe: () => {},
+								closed: false,
+							} as SchedulerAction<unknown>,
+							state,
+						),
+					);
+					return { unsubscribe: () => {} };
+				},
+			};
+			const processor = new RelayProcessor(
+				db,
+				"target-site",
+				new Map<string, MCPClient>(),
+				createMockModelRouter(),
+				createMockLogger(),
+				new TypedEventEmitter(),
+				null,
+				undefined,
+				undefined,
+				undefined,
+				() => now,
+			);
+
+			const handle = processor.start(10, scheduler);
+			const pruneTick = callbacks.at(-1);
+			expect(pruneTick).toBeDefined();
+
+			// Before the grace window: no advisory is raised even though the
+			// reference is already dangling.
+			pruneTick?.();
+			expect(dangling()).toHaveLength(0);
+
+			// After the grace window: the reconciler fires and raises exactly one.
+			now = INTAKE_RECONCILIATION_STARTUP_GRACE_MS;
+			pruneTick?.();
+			const raised = dangling();
+			expect(raised).toHaveLength(1);
+			expect(raised[0].type).toBe("model_reference_dangling");
+
+			// Idempotent: a second tick does not re-raise.
+			pruneTick?.();
+			expect(dangling()).toHaveLength(1);
+
+			handle.stop();
+		});
+
 		it("polls pending durable_work entries on a regular interval", async () => {
 			const mockClient = new MockMCPClient(
 				"test-tool",
