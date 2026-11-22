@@ -1217,8 +1217,8 @@ describe("spool transfer (4D-B)", () => {
 			receiver.stop();
 		});
 
-		function infoLogs(node: Node, message: string): LogRecord[] {
-			return node.logs.filter((l) => l.level === "info" && l.message === message);
+		function debugLogs(node: Node, message: string): LogRecord[] {
+			return node.logs.filter((l) => l.level === "debug" && l.message === message);
 		}
 
 		it("logs one send attempt per batch with peer, entry count, frame bytes, and send result", () => {
@@ -1226,7 +1226,7 @@ describe("spool transfer (4D-B)", () => {
 			connect(sender, "receiver");
 			seedPendingRow(sender, { id: "obs-1", target_site_id: "receiver", source_site: "sender" });
 
-			const sends = infoLogs(sender, "WsTransport spool send");
+			const sends = debugLogs(sender, "WsTransport spool send");
 			expect(sends).toHaveLength(1);
 			expect(sends[0].context).toMatchObject({
 				peerSiteId: "receiver",
@@ -1249,7 +1249,7 @@ describe("spool transfer (4D-B)", () => {
 
 			sender.transport.drainDurableWorkSpool("receiver", "reconnect");
 
-			const drains = infoLogs(sender, "WsTransport spool drain");
+			const drains = debugLogs(sender, "WsTransport spool drain");
 			expect(drains).toHaveLength(1);
 			expect(drains[0].context).toMatchObject({
 				peerSiteId: "receiver",
@@ -1267,8 +1267,8 @@ describe("spool transfer (4D-B)", () => {
 			// Drain with an empty spool: no send, no drain summary.
 			sender.transport.drainDurableWorkSpool("receiver", "reconnect");
 
-			expect(infoLogs(sender, "WsTransport spool send")).toHaveLength(0);
-			expect(infoLogs(sender, "WsTransport spool drain")).toHaveLength(0);
+			expect(debugLogs(sender, "WsTransport spool send")).toHaveLength(0);
+			expect(debugLogs(sender, "WsTransport spool drain")).toHaveLength(0);
 		});
 
 		it("logs a warn with peer when a send is refused (backpressured channel)", () => {
@@ -1309,7 +1309,7 @@ describe("spool transfer (4D-B)", () => {
 
 			sender.transport.handleSpoolTransferAck("receiver", ack);
 
-			const acks = infoLogs(sender, "WsTransport spool ack");
+			const acks = debugLogs(sender, "WsTransport spool ack");
 			expect(acks).toHaveLength(1);
 			expect(acks[0].context).toMatchObject({ retired: 1 });
 		});
@@ -1350,8 +1350,8 @@ describe("spool transfer (4D-B)", () => {
 		function warns(node: Node, message: string): LogRecord[] {
 			return node.logs.filter((l) => l.level === "warn" && l.message === message);
 		}
-		function infoLogs(node: Node, message: string): LogRecord[] {
-			return node.logs.filter((l) => l.level === "info" && l.message === message);
+		function debugLogs(node: Node, message: string): LogRecord[] {
+			return node.logs.filter((l) => l.level === "debug" && l.message === message);
 		}
 
 		it("inserts+acks the valid siblings, skips the poison entry, warns, and never throws", () => {
@@ -1445,7 +1445,7 @@ describe("spool transfer (4D-B)", () => {
 
 			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", payload));
 
-			const received = infoLogs(receiver, "WsTransport spool received");
+			const received = debugLogs(receiver, "WsTransport spool received");
 			expect(received).toHaveLength(1);
 			expect(received[0].context).toMatchObject({ sourceSiteId: "sender", entryCount: 2 });
 		});
@@ -1455,7 +1455,7 @@ describe("spool transfer (4D-B)", () => {
 			act(receiver, () => receiver.transport.handleSpoolTransfer("sender", { entries: [] }));
 			// Canary #2: the received-info now fires ABOVE the empty-guard so an empty
 			// batch names itself instead of returning silently.
-			const received = infoLogs(receiver, "WsTransport spool received");
+			const received = debugLogs(receiver, "WsTransport spool received");
 			expect(received).toHaveLength(1);
 			expect(received[0].context).toMatchObject({ sourceSiteId: "sender", entryCount: 0 });
 			// Behavior unchanged: nothing inserted, no ack frame emitted.

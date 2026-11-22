@@ -958,10 +958,10 @@ export class WsTransport {
 		};
 		const frame = encodeFrame(WsMessageType.SPOOL_TRANSFER, payload, peer.symmetricKey);
 		const sent = peer.sendFrame(frame);
-		// #253 send-path observability: one info per batch send attempt so a wedge can be
+		// #253 send-path observability: one debug line per batch send attempt so a wedge can be
 		// diagnosed as spoke-send vs hub-drop from the logs alone. Quiet when nothing is
 		// sent — the caller only reaches here with a non-empty batch.
-		this.config.logger?.info("WsTransport spool send", {
+		this.config.logger?.debug("WsTransport spool send", {
 			peerSiteId,
 			ownerId: peer.ownerId,
 			entryCount: rows.length,
@@ -1083,11 +1083,11 @@ export class WsTransport {
 			sentCount += batch.length;
 		}
 
-		// #253 send-path observability: one info per completed drain that shipped work.
+		// #253 send-path observability: one debug line per completed drain that shipped work.
 		// Quiet when the spool was empty (early return above). `begun` counts pending
 		// rows this pass flipped to transferring; `sent` counts rows whose batch reached
 		// the socket; `rolledBack` counts begun rows re-pended after a refused batch.
-		this.config.logger?.info("WsTransport spool drain", {
+		this.config.logger?.debug("WsTransport spool drain", {
 			peerSiteId,
 			reason,
 			begun: begun.length,
@@ -1189,7 +1189,7 @@ export class WsTransport {
 		// silently — a wedge is then visible from logs alone (before this the receive
 		// side was entirely silent, which is why every incident layer needed a live
 		// deploy to diagnose).
-		this.config.logger?.info("WsTransport spool received", {
+		this.config.logger?.debug("WsTransport spool received", {
 			sourceSiteId,
 			entryCount: payload.entries?.length ?? 0,
 		});
@@ -1336,7 +1336,7 @@ export class WsTransport {
 		// arriving is visible in the logs. Quiet when the fence rejected every echoed token
 		// (a stale ack for a re-begun generation) — nothing was retired, nothing to report.
 		if (retired > 0) {
-			this.config.logger?.info("WsTransport spool ack", { retired });
+			this.config.logger?.debug("WsTransport spool ack", { retired });
 		}
 	}
 

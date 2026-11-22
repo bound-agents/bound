@@ -287,7 +287,7 @@ export class WsSyncClient {
 			const bufferedBefore = isSpool ? this.ws.bufferedAmount : 0;
 			this.ws.send(buffer);
 			if (isSpool) {
-				this.config.logger?.info("WsSyncClient spool frame write", {
+				this.config.logger?.debug("WsSyncClient spool frame write", {
 					instanceId: this.instanceId,
 					socketGeneration: this.socketGeneration,
 					peerSiteId: this.config.hubSiteId,

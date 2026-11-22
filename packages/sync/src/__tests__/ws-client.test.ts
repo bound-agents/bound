@@ -394,7 +394,7 @@ describe("WsSyncClient", () => {
 			expect(internal.send(spoolFrame)).toBe(true);
 
 			const writeLogs = entries.filter(
-				(e) => e.level === "info" && e.msg === "WsSyncClient spool frame write",
+				(e) => e.level === "debug" && e.msg === "WsSyncClient spool frame write",
 			);
 			expect(writeLogs).toHaveLength(1);
 			const meta = writeLogs[0]?.meta as Record<string, unknown>;
