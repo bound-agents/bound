@@ -12,8 +12,4 @@
  *   V8 No embedded newlines in any single emitted line.
  */
 
-export {
-	buildVaryingPrefix,
-	type BuildVaryingPrefixParams,
-	type RelayInfo,
-} from "./build";
+export { buildVaryingPrefix, type BuildVaryingPrefixParams, type RelayInfo } from "./build";

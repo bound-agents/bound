@@ -1,122 +1,122 @@
 <script lang="ts">
-import { client } from "../lib/bound";
-import Btn from "./Btn.svelte";
+	import { client } from "../lib/bound";
+	import Btn from "./Btn.svelte";
 
-interface Props {
-	onClose: () => void;
-	onCreated: () => void;
-}
-let { onClose, onCreated }: Props = $props();
+	interface Props {
+		onClose: () => void;
+		onCreated: () => void;
+	}
+	let { onClose, onCreated }: Props = $props();
 
-let mode = $state<"form" | "upload">("form");
-let submitting = $state(false);
-let serverError = $state<string | null>(null);
+	let mode = $state<"form" | "upload">("form");
+	let submitting = $state(false);
+	let serverError = $state<string | null>(null);
 
-// Form state
-let name = $state("");
-let description = $state("");
-let body = $state("");
-let allowedTools = $state("");
-let compatibility = $state("");
-let showAdvanced = $state(false);
+	// Form state
+	let name = $state("");
+	let description = $state("");
+	let body = $state("");
+	let allowedTools = $state("");
+	let compatibility = $state("");
+	let showAdvanced = $state(false);
 
-// Validation constants
-const SKILL_NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const MAX_NAME_LENGTH = 64;
-const MAX_DESCRIPTION_LENGTH = 1024;
+	// Validation constants
+	const SKILL_NAME_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+	const MAX_NAME_LENGTH = 64;
+	const MAX_DESCRIPTION_LENGTH = 1024;
 
-// Form validation
-const nameError = $derived(
-	name.length === 0
-		? null
-		: name.length > MAX_NAME_LENGTH
-			? "Name must be 64 characters or fewer"
-			: !SKILL_NAME_REGEX.test(name)
-				? "Name must be lowercase alphanumeric with hyphens only (e.g., my-skill-name)"
+	// Form validation
+	const nameError = $derived(
+		name.length === 0
+			? null
+			: name.length > MAX_NAME_LENGTH
+				? "Name must be 64 characters or fewer"
+				: !SKILL_NAME_REGEX.test(name)
+					? "Name must be lowercase alphanumeric with hyphens only (e.g., my-skill-name)"
+					: null,
+	);
+
+	const descriptionError = $derived(
+		description.length === 0
+			? null
+			: description.length > MAX_DESCRIPTION_LENGTH
+				? `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`
 				: null,
-);
+	);
 
-const descriptionError = $derived(
-	description.length === 0
-		? null
-		: description.length > MAX_DESCRIPTION_LENGTH
-			? `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`
+	const formValid = $derived(
+		name.length > 0 && !nameError && description.length > 0 && !descriptionError && body.length > 0,
+	);
+
+	// Upload state
+	let selectedFile = $state<File | null>(null);
+	let fileInputEl = $state<HTMLInputElement>();
+
+	// Upload validation
+	const uploadValid = $derived(
+		selectedFile !== null &&
+			(selectedFile.name.endsWith(".md") || selectedFile.name.endsWith(".zip")),
+	);
+
+	const uploadError = $derived(
+		selectedFile && !selectedFile.name.endsWith(".md") && !selectedFile.name.endsWith(".zip")
+			? "Only .md and .zip files are accepted"
 			: null,
-);
+	);
 
-const formValid = $derived(
-	name.length > 0 && !nameError && description.length > 0 && !descriptionError && body.length > 0,
-);
-
-// Upload state
-let selectedFile = $state<File | null>(null);
-let fileInputEl = $state<HTMLInputElement>();
-
-// Upload validation
-const uploadValid = $derived(
-	selectedFile !== null &&
-		(selectedFile.name.endsWith(".md") || selectedFile.name.endsWith(".zip")),
-);
-
-const uploadError = $derived(
-	selectedFile && !selectedFile.name.endsWith(".md") && !selectedFile.name.endsWith(".zip")
-		? "Only .md and .zip files are accepted"
-		: null,
-);
-
-function handleKeydown(e: KeyboardEvent): void {
-	if (e.key === "Escape") {
-		onClose();
+	function handleKeydown(e: KeyboardEvent): void {
+		if (e.key === "Escape") {
+			onClose();
+		}
 	}
-}
 
-function switchMode(newMode: "form" | "upload"): void {
-	mode = newMode;
-	serverError = null;
-	if (newMode === "form") {
-		selectedFile = null;
-	} else {
-		name = "";
-		description = "";
-		body = "";
-		allowedTools = "";
-		compatibility = "";
+	function switchMode(newMode: "form" | "upload"): void {
+		mode = newMode;
+		serverError = null;
+		if (newMode === "form") {
+			selectedFile = null;
+		} else {
+			name = "";
+			description = "";
+			body = "";
+			allowedTools = "";
+			compatibility = "";
+		}
 	}
-}
 
-async function submitForm(): Promise<void> {
-	if (!formValid || submitting) return;
-	submitting = true;
-	serverError = null;
-	try {
-		await client.createSkill({
-			name,
-			description,
-			body,
-			allowed_tools: allowedTools || undefined,
-			compatibility: compatibility || undefined,
-		});
-		onCreated();
-	} catch (error) {
-		serverError = error instanceof Error ? error.message : "Failed to create skill";
+	async function submitForm(): Promise<void> {
+		if (!formValid || submitting) return;
+		submitting = true;
+		serverError = null;
+		try {
+			await client.createSkill({
+				name,
+				description,
+				body,
+				allowed_tools: allowedTools || undefined,
+				compatibility: compatibility || undefined,
+			});
+			onCreated();
+		} catch (error) {
+			serverError = error instanceof Error ? error.message : "Failed to create skill";
+		}
+		submitting = false;
 	}
-	submitting = false;
-}
 
-async function submitUpload(): Promise<void> {
-	if (!uploadValid || submitting || !selectedFile) return;
-	submitting = true;
-	serverError = null;
-	try {
-		const formData = new FormData();
-		formData.append("skillfile", selectedFile);
-		await client.createSkill(formData);
-		onCreated();
-	} catch (error) {
-		serverError = error instanceof Error ? error.message : "Failed to upload skill";
+	async function submitUpload(): Promise<void> {
+		if (!uploadValid || submitting || !selectedFile) return;
+		submitting = true;
+		serverError = null;
+		try {
+			const formData = new FormData();
+			formData.append("skillfile", selectedFile);
+			await client.createSkill(formData);
+			onCreated();
+		} catch (error) {
+			serverError = error instanceof Error ? error.message : "Failed to upload skill";
+		}
+		submitting = false;
 	}
-	submitting = false;
-}
 </script>
 
 <div class="modal-backdrop" onclick={onClose} onkeydown={handleKeydown} role="presentation">
@@ -132,8 +132,18 @@ async function submitUpload(): Promise<void> {
 		<header class="modal-header">
 			<h2>Create Skill</h2>
 			<div class="mode-tabs">
-				<button class:active={mode === "form"} onclick={() => { switchMode("form"); }}>Form</button>
-				<button class:active={mode === "upload"} onclick={() => { switchMode("upload"); }}>Upload</button>
+				<button
+					class:active={mode === "form"}
+					onclick={() => {
+						switchMode("form");
+					}}>Form</button
+				>
+				<button
+					class:active={mode === "upload"}
+					onclick={() => {
+						switchMode("upload");
+					}}>Upload</button
+				>
 			</div>
 		</header>
 
@@ -149,7 +159,12 @@ async function submitUpload(): Promise<void> {
 
 				<div class="form-group">
 					<label for="skill-desc">Description</label>
-					<input id="skill-desc" type="text" bind:value={description} placeholder="What this skill does" />
+					<input
+						id="skill-desc"
+						type="text"
+						bind:value={description}
+						placeholder="What this skill does"
+					/>
 					<span class="char-count" class:over={description.length > MAX_DESCRIPTION_LENGTH}>
 						{description.length}/{MAX_DESCRIPTION_LENGTH}
 					</span>
@@ -160,21 +175,37 @@ async function submitUpload(): Promise<void> {
 
 				<div class="form-group">
 					<label for="skill-body">Body (Markdown)</label>
-					<textarea id="skill-body" bind:value={body} rows={10} placeholder="Skill instructions..."></textarea>
+					<textarea id="skill-body" bind:value={body} rows={10} placeholder="Skill instructions..."
+					></textarea>
 				</div>
 
-				<button class="advanced-toggle" onclick={() => { showAdvanced = !showAdvanced; }}>
+				<button
+					class="advanced-toggle"
+					onclick={() => {
+						showAdvanced = !showAdvanced;
+					}}
+				>
 					{showAdvanced ? "▼" : "▶"} Advanced
 				</button>
 
 				{#if showAdvanced}
 					<div class="form-group">
 						<label for="skill-tools">Allowed Tools (comma-separated)</label>
-						<input id="skill-tools" type="text" bind:value={allowedTools} placeholder="tool1, tool2" />
+						<input
+							id="skill-tools"
+							type="text"
+							bind:value={allowedTools}
+							placeholder="tool1, tool2"
+						/>
 					</div>
 					<div class="form-group">
 						<label for="skill-compat">Compatibility</label>
-						<input id="skill-compat" type="text" bind:value={compatibility} placeholder="e.g., model >= opus-4" />
+						<input
+							id="skill-compat"
+							type="text"
+							bind:value={compatibility}
+							placeholder="e.g., model >= opus-4"
+						/>
 					</div>
 				{/if}
 
@@ -288,7 +319,9 @@ async function submitUpload(): Promise<void> {
 		font-weight: 500;
 		cursor: pointer;
 		border-radius: 0;
-		transition: background 0.2s, border-color 0.2s;
+		transition:
+			background 0.2s,
+			border-color 0.2s;
 	}
 
 	.mode-tabs button:hover {

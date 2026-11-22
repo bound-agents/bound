@@ -61,9 +61,9 @@ class TestAgentLoop extends ModularAgentLoop {
 		return this.strategy.resolveModel();
 	}
 
-	protected async prepareFrame(_input: { resolution: PreparedLoopFrame["resolution"] }): Promise<
-		Omit<PreparedLoopFrame, "resolution">
-	> {
+	protected async prepareFrame(_input: {
+		resolution: PreparedLoopFrame["resolution"];
+	}): Promise<Omit<PreparedLoopFrame, "resolution">> {
 		const tools = this.loopConfig.noTools ? [] : this.strategy.listTools();
 		const toolDefinitions = tools.map((tool) => tool.toolDefinition);
 		const assembled = await this.strategy.assembleContext();

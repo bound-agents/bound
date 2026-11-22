@@ -54,10 +54,12 @@ describe("computeInflationRatio — per-thread tiktoken vs actual ratio", () => 
 						truncated: 0,
 					});
 
-		db.prepare(`
+		db.prepare(
+			`
 			INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, cost_usd, created_at, context_debug)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
+		`,
+		).run(
 			randomUUID(),
 			threadId,
 			"opus",

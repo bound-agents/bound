@@ -1,162 +1,162 @@
 <script lang="ts">
-import type { TaskListEntry } from "@bound/client";
-import { onDestroy, onMount } from "svelte";
-import DepartureBoard from "../components/DepartureBoard.svelte";
-import LineBadge from "../components/LineBadge.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import StatusChip from "../components/StatusChip.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import { client } from "../lib/bound";
-import { getLineColor } from "../lib/metro-lines";
-import { navigateTo } from "../lib/router";
-import { sortTasks } from "../lib/task-sort";
+	import type { TaskListEntry } from "@bound/client";
+	import { onDestroy, onMount } from "svelte";
+	import DepartureBoard from "../components/DepartureBoard.svelte";
+	import LineBadge from "../components/LineBadge.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import StatusChip from "../components/StatusChip.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import { client } from "../lib/bound";
+	import { getLineColor } from "../lib/metro-lines";
+	import { navigateTo } from "../lib/router";
+	import { sortTasks } from "../lib/task-sort";
 
-let allTasks: TaskListEntry[] = $state([]);
-let loading = $state(true);
-let activeFilters = $state<Set<string>>(new Set());
-let expandedTaskId = $state<string | null>(null);
+	let allTasks: TaskListEntry[] = $state([]);
+	let loading = $state(true);
+	let activeFilters = $state<Set<string>>(new Set());
+	let expandedTaskId = $state<string | null>(null);
 
-const sortedTasks = $derived(sortTasks(allTasks) as unknown as TaskListEntry[]);
+	const sortedTasks = $derived(sortTasks(allTasks) as unknown as TaskListEntry[]);
 
-const filteredTasks = $derived(
-	sortedTasks.filter((t) => {
-		if (activeFilters.size === 0) return true;
-		if (activeFilters.has(t.status)) return true;
-		if (activeFilters.has("running") && t.status === "claimed") return true;
-		return false;
-	}),
-);
+	const filteredTasks = $derived(
+		sortedTasks.filter((t) => {
+			if (activeFilters.size === 0) return true;
+			if (activeFilters.has(t.status)) return true;
+			if (activeFilters.has("running") && t.status === "claimed") return true;
+			return false;
+		}),
+	);
 
-const TYPE_TO_LINE: Record<string, number> = {
-	cron: 0,
-	heartbeat: 7,
-	deferred: 3,
-	event: 6,
-};
+	const TYPE_TO_LINE: Record<string, number> = {
+		cron: 0,
+		heartbeat: 7,
+		deferred: 3,
+		event: 6,
+	};
 
-function getLineIndex(type: string): number {
-	return TYPE_TO_LINE[type] ?? 0;
-}
+	function getLineIndex(type: string): number {
+		return TYPE_TO_LINE[type] ?? 0;
+	}
 
-function formatDuration(ms: number | null): string {
-	if (!ms) return "—";
-	if (ms < 1000) return `${Math.round(ms)}ms`;
-	const secs = ms / 1000;
-	if (secs < 60) return `${secs.toFixed(1)}s`;
-	const mins = secs / 60;
-	if (mins < 60) return `${mins.toFixed(1)}m`;
-	return `${(mins / 60).toFixed(1)}h`;
-}
+	function formatDuration(ms: number | null): string {
+		if (!ms) return "—";
+		if (ms < 1000) return `${Math.round(ms)}ms`;
+		const secs = ms / 1000;
+		if (secs < 60) return `${secs.toFixed(1)}s`;
+		const mins = secs / 60;
+		if (mins < 60) return `${mins.toFixed(1)}m`;
+		return `${(mins / 60).toFixed(1)}h`;
+	}
 
-function formatTime(iso: string | null): string {
-	if (!iso) return "—";
-	const d = new Date(iso);
-	const diff = d.getTime() - Date.now();
-	if (diff > 0) {
-		const mins = Math.floor(diff / 60_000);
-		if (mins < 1) return "< 1m";
-		if (mins < 60) return `in ${mins}m`;
+	function formatTime(iso: string | null): string {
+		if (!iso) return "—";
+		const d = new Date(iso);
+		const diff = d.getTime() - Date.now();
+		if (diff > 0) {
+			const mins = Math.floor(diff / 60_000);
+			if (mins < 1) return "< 1m";
+			if (mins < 60) return `in ${mins}m`;
+			const hours = Math.floor(mins / 60);
+			if (hours < 24) return `in ${hours}h`;
+			return d.toLocaleDateString();
+		}
+		const elapsed = Math.abs(diff);
+		const mins = Math.floor(elapsed / 60_000);
+		if (mins < 1) return "just now";
+		if (mins < 60) return `${mins}m ago`;
 		const hours = Math.floor(mins / 60);
-		if (hours < 24) return `in ${hours}h`;
+		if (hours < 24) return `${hours}h ago`;
 		return d.toLocaleDateString();
 	}
-	const elapsed = Math.abs(diff);
-	const mins = Math.floor(elapsed / 60_000);
-	if (mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	return d.toLocaleDateString();
-}
 
-function toggleFilter(status: string): void {
-	const next = new Set(activeFilters);
-	if (next.has(status)) next.delete(status);
-	else next.add(status);
-	activeFilters = next;
-}
-
-function toggleTaskExpansion(taskId: string): void {
-	expandedTaskId = expandedTaskId === taskId ? null : taskId;
-}
-
-async function loadTasks(): Promise<void> {
-	try {
-		allTasks = await client.listTasks();
-	} catch (error) {
-		console.error("Failed to load tasks:", error);
+	function toggleFilter(status: string): void {
+		const next = new Set(activeFilters);
+		if (next.has(status)) next.delete(status);
+		else next.add(status);
+		activeFilters = next;
 	}
-	loading = false;
-}
 
-async function cancelTask(taskId: string): Promise<void> {
-	try {
-		await client.cancelTask(taskId);
-		await loadTasks();
-	} catch (error) {
-		console.error("Failed to cancel task:", error);
+	function toggleTaskExpansion(taskId: string): void {
+		expandedTaskId = expandedTaskId === taskId ? null : taskId;
 	}
-}
 
-let togglingHistoryId = $state<string | null>(null);
-
-async function toggleNoHistory(task: TaskListEntry): Promise<void> {
-	togglingHistoryId = task.id;
-	try {
-		await client.updateTask(task.id, { no_history: !task.no_history });
-		await loadTasks();
-	} catch (error) {
-		console.error("Failed to toggle task history:", error);
-	} finally {
-		togglingHistoryId = null;
+	async function loadTasks(): Promise<void> {
+		try {
+			allTasks = await client.listTasks();
+		} catch (error) {
+			console.error("Failed to load tasks:", error);
+		}
+		loading = false;
 	}
-}
 
-function canCancel(status: string): boolean {
-	return status === "pending" || status === "running" || status === "claimed";
-}
-
-const statusCounts = $derived.by(() => {
-	const out: Record<string, number> = {
-		pending: 0,
-		running: 0,
-		failed: 0,
-		cancelled: 0,
-		completed: 0,
-	};
-	for (const t of allTasks) {
-		if (t.status === "claimed") out.running++;
-		else if (out[t.status] != null) out[t.status]++;
+	async function cancelTask(taskId: string): Promise<void> {
+		try {
+			await client.cancelTask(taskId);
+			await loadTasks();
+		} catch (error) {
+			console.error("Failed to cancel task:", error);
+		}
 	}
-	return out;
-});
 
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let togglingHistoryId = $state<string | null>(null);
 
-onMount(() => {
-	loadTasks();
-	pollInterval = setInterval(loadTasks, 5000);
-});
+	async function toggleNoHistory(task: TaskListEntry): Promise<void> {
+		togglingHistoryId = task.id;
+		try {
+			await client.updateTask(task.id, { no_history: !task.no_history });
+			await loadTasks();
+		} catch (error) {
+			console.error("Failed to toggle task history:", error);
+		} finally {
+			togglingHistoryId = null;
+		}
+	}
 
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
+	function canCancel(status: string): boolean {
+		return status === "pending" || status === "running" || status === "claimed";
+	}
 
-function departureBoardData(tasks: TaskListEntry[]) {
-	return tasks.map((t) => ({
-		id: t.id,
-		type: t.type,
-		displayName: t.displayName,
-		status: t.status,
-		schedule: t.schedule,
-		hostName: t.hostName,
-		next_run_at: t.next_run_at,
-		last_run_at: t.last_run_at,
-	}));
-}
+	const statusCounts = $derived.by(() => {
+		const out: Record<string, number> = {
+			pending: 0,
+			running: 0,
+			failed: 0,
+			cancelled: 0,
+			completed: 0,
+		};
+		for (const t of allTasks) {
+			if (t.status === "claimed") out.running++;
+			else if (out[t.status] != null) out[t.status]++;
+		}
+		return out;
+	});
 
-const statuses = ["pending", "running", "failed", "cancelled", "completed"];
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	onMount(() => {
+		loadTasks();
+		pollInterval = setInterval(loadTasks, 5000);
+	});
+
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+	});
+
+	function departureBoardData(tasks: TaskListEntry[]) {
+		return tasks.map((t) => ({
+			id: t.id,
+			type: t.type,
+			displayName: t.displayName,
+			status: t.status,
+			schedule: t.schedule,
+			hostName: t.hostName,
+			next_run_at: t.next_run_at,
+			last_run_at: t.last_run_at,
+		}));
+	}
+
+	const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 </script>
 
 <Page>
@@ -213,14 +213,17 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 						role="button"
 						tabindex="0"
 						onclick={() => toggleTaskExpansion(task.id)}
-						onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTaskExpansion(task.id); } }}
+						onkeydown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								e.preventDefault();
+								toggleTaskExpansion(task.id);
+							}
+						}}
 					>
 						<div class="line-accent" style="background: {getLineColor(lineIdx)}"></div>
 						<span class="chevron" class:open={expanded}>›</span>
 						<span>
-							<StatusChip
-								status={task.status === "claimed" ? "running" : (task.status as never)}
-							/>
+							<StatusChip status={task.status === "claimed" ? "running" : (task.status as never)} />
 						</span>
 						<span class="task-name mono">{task.displayName}</span>
 						<span class="task-type">
@@ -320,7 +323,9 @@ const statuses = ["pending", "running", "failed", "cancelled", "completed"];
 												{@const fail = (i * 7) % 23 === 0}
 												<span
 													class="history-bar"
-													style="height: {h}px; background: {fail ? 'var(--err)' : getLineColor(lineIdx)}"
+													style="height: {h}px; background: {fail
+														? 'var(--err)'
+														: getLineColor(lineIdx)}"
 												></span>
 											{/each}
 										</div>

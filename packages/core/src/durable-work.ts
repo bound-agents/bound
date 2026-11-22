@@ -24,11 +24,7 @@ export function setDurableWorkEventBus(eventBus: TypedEventEmitter | null): void
 export const LOCAL_WORK_TARGET = "local";
 
 export type DurableWorkClaimState =
-	| "pending"
-	| "processing"
-	| "transferring"
-	| "consumed"
-	| "dead_letter";
+	"pending" | "processing" | "transferring" | "consumed" | "dead_letter";
 export type WorkClaimDiscipline = "local-exclusive" | "optimistic-lease" | "none";
 export type WorkRetirementRule = "single-ack" | "all-subscriber-cursors-past";
 

@@ -53,7 +53,4 @@ export {
 	partitionLiveYards,
 	YardExecutionCard,
 } from "./YardExecutionCard.js";
-export type {
-	YardExecutionCardProps,
-	YardRegionPartition,
-} from "./YardExecutionCard.js";
+export type { YardExecutionCardProps, YardRegionPartition } from "./YardExecutionCard.js";

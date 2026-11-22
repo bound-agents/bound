@@ -1,14 +1,14 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+	import type { Snippet } from "svelte";
 
-interface Props {
-	children: Snippet;
-	pad?: string;
-	/** Disable the max-width/center container (used by split-pane views that should fill the width) */
-	flush?: boolean;
-}
+	interface Props {
+		children: Snippet;
+		pad?: string;
+		/** Disable the max-width/center container (used by split-pane views that should fill the width) */
+		flush?: boolean;
+	}
 
-let { children, pad = "28px 36px", flush = false }: Props = $props();
+	let { children, pad = "28px 36px", flush = false }: Props = $props();
 </script>
 
 <main class="page">

@@ -1,122 +1,123 @@
 <script lang="ts">
-import type { CacheMarker } from "@bound/client";
-import { type CacheMarkerState, deriveCacheMarkerStates } from "../lib/cache-marker-state";
-import { CACHE_MARKER_COLORS, FREE_SPACE_COLOR, SECTION_COLORS } from "../lib/context-colors";
-import InfoPopover from "./InfoPopover.svelte";
+	import type { CacheMarker } from "@bound/client";
+	import { type CacheMarkerState, deriveCacheMarkerStates } from "../lib/cache-marker-state";
+	import { CACHE_MARKER_COLORS, FREE_SPACE_COLOR, SECTION_COLORS } from "../lib/context-colors";
+	import InfoPopover from "./InfoPopover.svelte";
 
-interface Props {
-	sections: Array<{
-		name: string;
-		tokens: number;
-		children?: Array<{ name: string; tokens: number }>;
-	}>;
-	contextWindow: number;
-	/**
-	 * Actual LLM-reported total input tokens for the turn. When present and
-	 * larger than the summed section estimate, the gap is rendered as an
-	 * "estimator drift" segment so the bar's fill matches the headline's actual
-	 * percentage instead of the (smaller) estimate. Undefined on assembly-only
-	 * snapshots that haven't been correlated with a response yet.
-	 */
-	actualTotalTokens?: number;
-	/**
-	 * Cache breakpoint descriptors recorded for the turn. Up to two entries
-	 * (system + message). Absent for turns persisted before this field existed.
-	 */
-	cacheMarkers?: CacheMarker[];
-	/**
-	 * Cache-read tokens for this turn (sum across all breakpoints — AI SDK
-	 * aggregates). Used to derive marker state and inline labels.
-	 */
-	cacheReadTokens?: number | null;
-	/** Cache-write tokens for this turn. */
-	cacheWriteTokens?: number | null;
-}
+	interface Props {
+		sections: Array<{
+			name: string;
+			tokens: number;
+			children?: Array<{ name: string; tokens: number }>;
+		}>;
+		contextWindow: number;
+		/**
+		 * Actual LLM-reported total input tokens for the turn. When present and
+		 * larger than the summed section estimate, the gap is rendered as an
+		 * "estimator drift" segment so the bar's fill matches the headline's actual
+		 * percentage instead of the (smaller) estimate. Undefined on assembly-only
+		 * snapshots that haven't been correlated with a response yet.
+		 */
+		actualTotalTokens?: number;
+		/**
+		 * Cache breakpoint descriptors recorded for the turn. Up to two entries
+		 * (system + message). Absent for turns persisted before this field existed.
+		 */
+		cacheMarkers?: CacheMarker[];
+		/**
+		 * Cache-read tokens for this turn (sum across all breakpoints — AI SDK
+		 * aggregates). Used to derive marker state and inline labels.
+		 */
+		cacheReadTokens?: number | null;
+		/** Cache-write tokens for this turn. */
+		cacheWriteTokens?: number | null;
+	}
 
-const {
-	sections,
-	contextWindow,
-	actualTotalTokens,
-	cacheMarkers,
-	cacheReadTokens,
-	cacheWriteTokens,
-}: Props = $props();
+	const {
+		sections,
+		contextWindow,
+		actualTotalTokens,
+		cacheMarkers,
+		cacheReadTokens,
+		cacheWriteTokens,
+	}: Props = $props();
 
-const estimatedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
-// Drift = how much the real wire prompt exceeds the cl100k_base estimate. The
-// estimate is non-uniformly low (thinking-heavy history inflates most), and we
-// have no per-section actuals — so rather than fabricate scaled section widths,
-// the drift is surfaced as a single explicit segment. `0` when no actual is
-// known yet or the estimate ran high.
-const driftTokens = $derived(
-	actualTotalTokens != null ? Math.max(0, actualTotalTokens - estimatedTokens) : 0,
-);
-// Tokens that actually occupy the window: the real total when known, else the
-// estimate. Drives the free-space figure so the bar agrees with the headline.
-const usedTokens = $derived(actualTotalTokens != null ? actualTotalTokens : estimatedTokens);
-const driftPct = $derived(Math.max(0, Math.min(100, (driftTokens / contextWindow) * 100)));
-const freePct = $derived(Math.max(0, 100 - (usedTokens / contextWindow) * 100));
+	const estimatedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
+	// Drift = how much the real wire prompt exceeds the cl100k_base estimate. The
+	// estimate is non-uniformly low (thinking-heavy history inflates most), and we
+	// have no per-section actuals — so rather than fabricate scaled section widths,
+	// the drift is surfaced as a single explicit segment. `0` when no actual is
+	// known yet or the estimate ran high.
+	const driftTokens = $derived(
+		actualTotalTokens != null ? Math.max(0, actualTotalTokens - estimatedTokens) : 0,
+	);
+	// Tokens that actually occupy the window: the real total when known, else the
+	// estimate. Drives the free-space figure so the bar agrees with the headline.
+	const usedTokens = $derived(actualTotalTokens != null ? actualTotalTokens : estimatedTokens);
+	const driftPct = $derived(Math.max(0, Math.min(100, (driftTokens / contextWindow) * 100)));
+	const freePct = $derived(Math.max(0, 100 - (usedTokens / contextWindow) * 100));
 
-// Compact 1k/1M formatter for the inline tick label. Token counts on the bar
-// are large (200k+ context windows), so `1.2M` / `230k` reads cleaner than
-// `230,400` next to a 14px tick.
-function formatTokensCompact(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`;
-	return String(n);
-}
+	// Compact 1k/1M formatter for the inline tick label. Token counts on the bar
+	// are large (200k+ context windows), so `1.2M` / `230k` reads cleaner than
+	// `230,400` next to a 14px tick.
+	function formatTokensCompact(n: number): string {
+		if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+		if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+		return String(n);
+	}
 
-// Marker states show cache reads, writes, disabled caching, or idle capability. Uniform request-level
-// accounting gives both markers one state; mixed turns infer a system-prefix hit and message-tail write.
-// Split turns label each marker; uniform turns label only the message marker to avoid duplicate values.
+	// Marker states show cache reads, writes, disabled caching, or idle capability. Uniform request-level
+	// accounting gives both markers one state; mixed turns infer a system-prefix hit and message-tail write.
+	// Split turns label each marker; uniform turns label only the message marker to avoid duplicate values.
 
-interface RenderedMarker {
-	pct: number;
-	state: CacheMarkerState;
-	color: string;
-	label: string;
-	tooltip: string;
-}
+	interface RenderedMarker {
+		pct: number;
+		state: CacheMarkerState;
+		color: string;
+		label: string;
+		tooltip: string;
+	}
 
-const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
-	if (!cacheMarkers || cacheMarkers.length === 0) return [];
-	const cacheRead = cacheReadTokens ?? 0;
-	const cacheWrite = cacheWriteTokens ?? 0;
-	const states = deriveCacheMarkerStates(cacheMarkers, cacheRead, cacheWrite);
-	// A split turn carries both a hit tick and a write tick; only then do the
-	// two markers show different numbers.
-	const isSplit = states.includes("hit") && states.includes("write");
+	const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
+		if (!cacheMarkers || cacheMarkers.length === 0) return [];
+		const cacheRead = cacheReadTokens ?? 0;
+		const cacheWrite = cacheWriteTokens ?? 0;
+		const states = deriveCacheMarkerStates(cacheMarkers, cacheRead, cacheWrite);
+		// A split turn carries both a hit tick and a write tick; only then do the
+		// two markers show different numbers.
+		const isSplit = states.includes("hit") && states.includes("write");
 
-	return cacheMarkers.map((m, i) => {
-		const pct = Math.max(0, Math.min(100, (m.positionTokens / contextWindow) * 100));
-		const state: CacheMarkerState = states[i] ?? "idle";
-		const color = CACHE_MARKER_COLORS[state];
+		return cacheMarkers.map((m, i) => {
+			const pct = Math.max(0, Math.min(100, (m.positionTokens / contextWindow) * 100));
+			const state: CacheMarkerState = states[i] ?? "idle";
+			const color = CACHE_MARKER_COLORS[state];
 
-		let label = "";
-		if (isSplit) {
-			if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
-			else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
-		} else if (m.kind === "message") {
-			if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
-			else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
-			else if (state === "idle") label = m.ttl;
-		}
+			let label = "";
+			if (isSplit) {
+				if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
+				else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
+			} else if (m.kind === "message") {
+				if (state === "hit") label = `↑ ${formatTokensCompact(cacheRead)}`;
+				else if (state === "write") label = `↓ ${formatTokensCompact(cacheWrite)}`;
+				else if (state === "idle") label = m.ttl;
+			}
 
-		const variantLabel = m.kind === "system" ? "system" : `message · ${m.variant}`;
-		const tooltipParts = [
-			`${variantLabel} cache breakpoint`,
-			`offset: ${m.positionTokens.toLocaleString()} tokens (${pct.toFixed(1)}%)`,
-			`ttl: ${m.ttl}`,
-		];
-		if (state === "disabled") tooltipParts.push("backend prompt-caching disabled");
-		else if (state === "hit") tooltipParts.push(`cache read: ${cacheRead.toLocaleString()} tokens`);
-		else if (state === "write")
-			tooltipParts.push(`cache write: ${cacheWrite.toLocaleString()} tokens`);
-		const tooltip = tooltipParts.join(" · ");
+			const variantLabel = m.kind === "system" ? "system" : `message · ${m.variant}`;
+			const tooltipParts = [
+				`${variantLabel} cache breakpoint`,
+				`offset: ${m.positionTokens.toLocaleString()} tokens (${pct.toFixed(1)}%)`,
+				`ttl: ${m.ttl}`,
+			];
+			if (state === "disabled") tooltipParts.push("backend prompt-caching disabled");
+			else if (state === "hit")
+				tooltipParts.push(`cache read: ${cacheRead.toLocaleString()} tokens`);
+			else if (state === "write")
+				tooltipParts.push(`cache write: ${cacheWrite.toLocaleString()} tokens`);
+			const tooltip = tooltipParts.join(" · ");
 
-		return { pct, state, color, label, tooltip };
+			return { pct, state, color, label, tooltip };
+		});
 	});
-});
 </script>
 
 <div class="context-bar-wrap">
@@ -126,7 +127,8 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 			{#if pct > 0}
 				<div
 					class="bar-segment"
-					style="flex-basis: {pct}%; background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'};"
+					style="flex-basis: {pct}%; background: {SECTION_COLORS[section.name] ??
+						'var(--text-muted)'};"
 					title="{section.name}: {section.tokens.toLocaleString()} tokens ({pct.toFixed(1)}%)"
 				></div>
 			{/if}
@@ -135,14 +137,20 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 			<div
 				class="bar-segment drift"
 				style="flex-basis: {driftPct}%;"
-				title="Estimator drift: {Math.round(driftTokens).toLocaleString()} tokens ({driftPct.toFixed(1)}%) — the real prompt exceeds the cl100k_base estimate (mostly thinking-heavy history)."
+				title="Estimator drift: {Math.round(
+					driftTokens,
+				).toLocaleString()} tokens ({driftPct.toFixed(
+					1,
+				)}%) — the real prompt exceeds the cl100k_base estimate (mostly thinking-heavy history)."
 			></div>
 		{/if}
 		{#if freePct > 0}
 			<div
 				class="bar-segment free"
 				style="flex-basis: {freePct}%; background: {FREE_SPACE_COLOR};"
-				title="Free space: {Math.round(contextWindow - usedTokens).toLocaleString()} tokens ({freePct.toFixed(1)}%){actualTotalTokens != null
+				title="Free space: {Math.round(
+					contextWindow - usedTokens,
+				).toLocaleString()} tokens ({freePct.toFixed(1)}%){actualTotalTokens != null
 					? ' — vs. the actual wire total'
 					: ''}"
 			></div>
@@ -153,7 +161,7 @@ const renderedMarkers = $derived.by<RenderedMarker[]>(() => {
 				placement="bottom"
 				triggerClass="bare"
 				triggerStyle="position:absolute; top:-3px; bottom:-3px; width:2px; transform:translateX(-1px); z-index:2; cursor:help; left:{m.pct}%; {m.state ===
-					'disabled'
+				'disabled'
 					? `background:transparent; border-left:2px dashed ${m.color}; opacity:0.6;`
 					: m.state === 'idle'
 						? `background:${m.color}; opacity:0.55;`

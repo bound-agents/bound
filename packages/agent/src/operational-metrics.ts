@@ -24,11 +24,7 @@ const schedulerExecutionDuration = histogram("bound.scheduler.execution.duration
 });
 
 type AgentMetricName =
-	| "tool_dispatch"
-	| "scheduler"
-	| "scheduler_queue"
-	| "scheduler_claim"
-	| "scheduler_execution";
+	"tool_dispatch" | "scheduler" | "scheduler_queue" | "scheduler_claim" | "scheduler_execution";
 type AgentMetricRecorder = (
 	name: AgentMetricName,
 	value: number,

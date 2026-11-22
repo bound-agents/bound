@@ -114,10 +114,15 @@ body::before {
 	inset: 0;
 	pointer-events: none;
 	z-index: 0;
-	background-image: radial-gradient(rgba(26, 24, 20, 0.035) 1px, transparent 1px),
+	background-image:
+		radial-gradient(rgba(26, 24, 20, 0.035) 1px, transparent 1px),
 		radial-gradient(rgba(26, 24, 20, 0.02) 1px, transparent 1px);
-	background-size: 3px 3px, 7px 7px;
-	background-position: 0 0, 1.5px 1.5px;
+	background-size:
+		3px 3px,
+		7px 7px;
+	background-position:
+		0 0,
+		1.5px 1.5px;
 }
 
 /* ── Navigation bar ──────────────────────────────────────────── */
@@ -168,7 +173,9 @@ header[data-theme] {
 	font-size: 0.875rem !important;
 	color: var(--bound-ink-2) !important;
 	text-decoration: none !important;
-	transition: background 0.12s ease, color 0.12s ease !important;
+	transition:
+		background 0.12s ease,
+		color 0.12s ease !important;
 }
 
 .sidebar a[href]:hover {
@@ -378,7 +385,9 @@ aside[data-type="danger"] {
 	background: var(--bound-paper-2) !important;
 	border: 1px solid var(--bound-rule-faint) !important;
 	border-radius: 4px !important;
-	transition: border-color 0.12s ease, background 0.12s ease !important;
+	transition:
+		border-color 0.12s ease,
+		background 0.12s ease !important;
 }
 
 .card:hover {

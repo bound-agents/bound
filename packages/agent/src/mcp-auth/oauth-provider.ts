@@ -231,7 +231,6 @@ export class McpOAuthProvider {
 
 	discoveryState(): OAuthDiscoveryState | undefined {
 		return this.store.getBundle(this.server.name)?.discoveryState as
-			| OAuthDiscoveryState
-			| undefined;
+			OAuthDiscoveryState | undefined;
 	}
 }

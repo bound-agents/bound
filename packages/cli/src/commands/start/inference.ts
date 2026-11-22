@@ -91,40 +91,38 @@ export async function runStartupSummaryRecovery(
  */
 export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBackendsConfig {
 	return {
-		backends: rawBackends.backends.map(
-			(b): BackendConfig => ({
-				id: b.id,
-				provider: b.provider,
-				providerMode: b.provider_mode,
-				// umans is a self-configuring namespace with no operator-set
-				// model — the lineup is fetched at runtime. Coerce to "" so the
-				// loose BackendConfig.model stays a string; the umans driver
-				// never reads config.model (it uses the per-model `modelId`).
-				model: b.model ?? "",
-				baseUrl: b.base_url,
-				contextWindow: b.context_window,
-				apiKey: b.api_key,
-				tokenStorePath: b.token_store_path,
-				region: b.region,
-				profile: b.profile,
-				capabilities: b.capabilities,
-				tier: b.tier,
-				pricePerMInput: b.price_per_m_input,
-				thinking: b.thinking,
-				effort: b.effort,
-				maxOutputTokens: b.max_output_tokens,
-				systemPromptSuffix: b.system_prompt_suffix,
-				cacheTtl: b.cache_ttl,
-				cacheWarming: b.cache_warming
-					? {
-							enabled: b.cache_warming.enabled,
-							maxPokes: b.cache_warming.max_pokes,
-						}
-					: undefined,
-				connectTimeoutMs: b.connect_timeout_ms,
-				additionalHeaders: b.additional_headers,
-			}),
-		),
+		backends: rawBackends.backends.map((b): BackendConfig => ({
+			id: b.id,
+			provider: b.provider,
+			providerMode: b.provider_mode,
+			// umans is a self-configuring namespace with no operator-set
+			// model — the lineup is fetched at runtime. Coerce to "" so the
+			// loose BackendConfig.model stays a string; the umans driver
+			// never reads config.model (it uses the per-model `modelId`).
+			model: b.model ?? "",
+			baseUrl: b.base_url,
+			contextWindow: b.context_window,
+			apiKey: b.api_key,
+			tokenStorePath: b.token_store_path,
+			region: b.region,
+			profile: b.profile,
+			capabilities: b.capabilities,
+			tier: b.tier,
+			pricePerMInput: b.price_per_m_input,
+			thinking: b.thinking,
+			effort: b.effort,
+			maxOutputTokens: b.max_output_tokens,
+			systemPromptSuffix: b.system_prompt_suffix,
+			cacheTtl: b.cache_ttl,
+			cacheWarming: b.cache_warming
+				? {
+						enabled: b.cache_warming.enabled,
+						maxPokes: b.cache_warming.max_pokes,
+					}
+				: undefined,
+			connectTimeoutMs: b.connect_timeout_ms,
+			additionalHeaders: b.additional_headers,
+		})),
 		default: rawBackends.default,
 	};
 }

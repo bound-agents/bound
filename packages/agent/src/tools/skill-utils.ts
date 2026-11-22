@@ -285,8 +285,7 @@ export async function importSkillFromFiles(
 		// `deleted = 0` lookup would miss it and the INSERT below would collide on the
 		// tombstone; a deleted OR retired row is instead treated as a re-activation.
 		const existingSkill = findSkillByIdIncludingDeleted(db, skillId) as
-			| (Record<string, unknown> & { activation_count: number; deleted: number })
-			| null;
+			(Record<string, unknown> & { activation_count: number; deleted: number }) | null;
 
 		// Step 8: Compute deterministic UUID (already done above)
 		// Step 9: Compute content_hash

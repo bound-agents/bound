@@ -140,8 +140,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 	private refreshVolatileTailForNextTurn(
 		llmMessages: import("@bound/llm").LLMMessage[],
 		relayInfo:
-			| { remoteHost: string; localHost: string; model: string; provider: string }
-			| undefined,
+			{ remoteHost: string; localHost: string; model: string; provider: string } | undefined,
 		resolvedModelForDebug: string | undefined,
 	): void {
 		const freshVol = buildVolatileContext({

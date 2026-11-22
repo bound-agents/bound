@@ -80,8 +80,7 @@ export function persistImageBlocksAsFileRefs(
 	const out = blocks.map((block) => {
 		if (block.type !== "image") return block;
 		const source = block.source as
-			| { type?: string; data?: string; media_type?: string }
-			| undefined;
+			{ type?: string; data?: string; media_type?: string } | undefined;
 		if (source?.type !== "base64" || !source.data) return block;
 		const fileId = persistBinaryResource(db, siteId, source.data);
 		changed = true;
@@ -93,11 +92,7 @@ export function persistImageBlocksAsFileRefs(
 				// Carry the media_type hint so substitution re-emits the right
 				// image/* type; files has no media_type column to fall back on.
 				media_type: source.media_type as
-					| "image/jpeg"
-					| "image/png"
-					| "image/gif"
-					| "image/webp"
-					| undefined,
+					"image/jpeg" | "image/png" | "image/gif" | "image/webp" | undefined,
 			},
 		};
 	});

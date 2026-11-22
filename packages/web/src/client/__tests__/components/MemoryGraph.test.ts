@@ -68,7 +68,7 @@ describe("MemoryGraph", () => {
 		const nodeGroups = target.querySelectorAll('g[role="button"]');
 		expect(nodeGroups.length).toBe(3);
 		// Stats strip reflects node/edge counts.
-		expect(target.textContent).toContain("Nodes");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Nodes");
 		const statNumbers = [...target.querySelectorAll(".stat-bit .mono")].map((s) =>
 			s.textContent?.trim(),
 		);
@@ -96,7 +96,7 @@ describe("MemoryGraph", () => {
 
 	it("renders the empty state when there are no memories", async () => {
 		const { target } = await mount({ nodes: [], edges: [] });
-		expect(target.textContent).toContain("No memories yet");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("No memories yet");
 	});
 
 	it("shows an error and retries on button click", async () => {
@@ -160,10 +160,10 @@ describe("MemoryGraph", () => {
 		const pinnedPill = pills.find((p) => p.textContent?.includes("PINNED"));
 		expect(pinnedPill?.textContent).toMatch(/PINNED\s*2/);
 		// Footnote shows "Showing N of M" — all visible initially.
-		expect(target.textContent).toContain("Showing 3 of 3 nodes");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Showing 3 of 3 nodes");
 		await dom.fire(pinnedPill as Element, "click");
 		// Now only the 2 pinned nodes count as shown.
-		expect(target.textContent).toContain("Showing 2 of 3 nodes");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Showing 2 of 3 nodes");
 	});
 
 	it("navigates to the source thread from the detail panel", async () => {

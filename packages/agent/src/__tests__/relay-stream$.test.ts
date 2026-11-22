@@ -746,11 +746,13 @@ describe("createRelayStream$ — 4D-D durable chunk union", () => {
 	): void {
 		const now = new Date().toISOString();
 		database
-			.prepare(`
+			.prepare(
+				`
 				INSERT INTO durable_work
 				(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, stream_id, source_site)
 				VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-			`)
+			`,
+			)
 			.run(
 				opts.id,
 				opts.target,

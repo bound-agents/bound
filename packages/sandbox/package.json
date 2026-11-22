@@ -13,6 +13,6 @@
 		"uuid": "^13.0.0"
 	},
 	"scripts": {
-		"typecheck": "tsc -p . --noEmit"
+		"typecheck": "bun check --no-script -p ."
 	}
 }

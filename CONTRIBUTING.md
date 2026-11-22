@@ -37,12 +37,12 @@ bun test packages/core/src/__tests__/schema.test.ts  # Single file
 bun test --test-name-pattern "pattern"               # Filter by name
 bun run test:e2e                                     # Playwright e2e
 
-# Lint / format (biome)
+# Lint (biome) + format check (bun fmt)
 bun run lint
-bun run lint:fix
+bun run lint:fix                                     # biome --write, then bun fmt
 
-# Typecheck (per-package — no composite mode at root)
-tsc -p packages/shared --noEmit
+# Typecheck with bun check (per-package — no composite mode at root)
+bun check --no-script -p packages/shared
 bun run typecheck                                    # All packages, sequentially
 
 # Build (produces binaries in dist/)
@@ -84,7 +84,9 @@ For design rationale per package, see `docs/design/` — seven topic files cover
 - **DI**: tsyringe + reflect-metadata (decorator-based singletons, setter injection)
 - **Validation**: Zod v4
 - **Web**: Hono (server) + Svelte 5 (client, Vite build)
-- **Linting**: Biome (tabs, double quotes, semicolons, 100-char lines)
+- **Linting**: Biome linter (its formatter is disabled)
+- **Formatting**: `bun fmt` (tabs, 100-char lines, configured in `bunfig.toml` `[fmt]`; Markdown and YAML excluded via `.prettierignore`)
+- **Typechecking**: `bun check` (tsc-compatible diagnostics, multi-threaded)
 - **Testing**: `bun:test`, Playwright for e2e, `fast-check` for property-based tests (currently used only for the R-VC25 stable-prefix purity properties in `packages/agent/src/stable-prefix/__tests__/`)
 
 ## Testing Conventions

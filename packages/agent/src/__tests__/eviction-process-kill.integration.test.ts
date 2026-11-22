@@ -179,8 +179,7 @@ describe("Eviction process-kill atomicity (AC3.2)", () => {
 				// If failed, must not have claim metadata
 				if (row.status === "failed") {
 					const fullRow = db.query("SELECT claimed_by FROM tasks WHERE id = ?").get(taskId) as
-						| { claimed_by: string | null }
-						| undefined;
+						{ claimed_by: string | null } | undefined;
 					expect(fullRow?.claimed_by).toBeNull();
 				}
 			}

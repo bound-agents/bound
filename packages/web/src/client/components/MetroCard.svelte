@@ -1,16 +1,21 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+	import type { Snippet } from "svelte";
 
-interface Props {
-	accentColor?: string;
-	interactive?: boolean;
-	children: Snippet;
-}
+	interface Props {
+		accentColor?: string;
+		interactive?: boolean;
+		children: Snippet;
+	}
 
-let { accentColor, interactive = false, children }: Props = $props();
+	let { accentColor, interactive = false, children }: Props = $props();
 </script>
 
-<div class="metro-card" class:interactive class:accented={!!accentColor} style={accentColor ? `--accent-color: ${accentColor}` : ""}>
+<div
+	class="metro-card"
+	class:interactive
+	class:accented={!!accentColor}
+	style={accentColor ? `--accent-color: ${accentColor}` : ""}
+>
 	{@render children()}
 </div>
 

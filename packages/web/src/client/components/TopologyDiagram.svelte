@@ -1,63 +1,63 @@
 <script lang="ts">
-interface Host {
-	site_id: string;
-	host_name: string;
-	version?: string | null;
-	online_at?: string | null;
-	modified_at?: string | null;
-}
-
-type Health = "healthy" | "degraded" | "unreachable" | "unknown";
-
-interface Props {
-	hosts: Host[];
-	hub: { siteId: string; hostName: string } | null;
-	syncHealth: Map<string, Health>;
-	localSiteId?: string;
-}
-
-let { hosts, hub, syncHealth, localSiteId }: Props = $props();
-
-const VB_W = 1100;
-const VB_H = 380;
-const CX = VB_W / 2;
-const CY = VB_H / 2 - 10;
-const R = 150;
-
-// Separate hub/peers. Hub goes in the center; peers orbit around.
-const hubHost = $derived(hosts.find((h) => h.site_id === hub?.siteId) ?? null);
-const peerHosts = $derived(hosts.filter((h) => h.site_id !== hub?.siteId));
-
-const positions = $derived(
-	peerHosts.map((h, i) => {
-		const angle = (Math.PI * 2 * i) / Math.max(1, peerHosts.length) - Math.PI / 2;
-		return {
-			host: h,
-			x: CX + Math.cos(angle) * R,
-			y: CY + Math.sin(angle) * R * 0.85,
-		};
-	}),
-);
-
-function linkColor(health: Health): string {
-	switch (health) {
-		case "healthy":
-			return "var(--ok)";
-		case "degraded":
-			return "var(--warn)";
-		case "unreachable":
-			return "var(--err)";
-		default:
-			return "var(--ink-4)";
+	interface Host {
+		site_id: string;
+		host_name: string;
+		version?: string | null;
+		online_at?: string | null;
+		modified_at?: string | null;
 	}
-}
 
-function isOnline(host: Host): boolean {
-	if (host.site_id === localSiteId) return true;
-	const ts = host.modified_at ?? host.online_at;
-	if (!ts) return false;
-	return Date.now() - new Date(ts).getTime() < 5 * 60 * 1000;
-}
+	type Health = "healthy" | "degraded" | "unreachable" | "unknown";
+
+	interface Props {
+		hosts: Host[];
+		hub: { siteId: string; hostName: string } | null;
+		syncHealth: Map<string, Health>;
+		localSiteId?: string;
+	}
+
+	let { hosts, hub, syncHealth, localSiteId }: Props = $props();
+
+	const VB_W = 1100;
+	const VB_H = 380;
+	const CX = VB_W / 2;
+	const CY = VB_H / 2 - 10;
+	const R = 150;
+
+	// Separate hub/peers. Hub goes in the center; peers orbit around.
+	const hubHost = $derived(hosts.find((h) => h.site_id === hub?.siteId) ?? null);
+	const peerHosts = $derived(hosts.filter((h) => h.site_id !== hub?.siteId));
+
+	const positions = $derived(
+		peerHosts.map((h, i) => {
+			const angle = (Math.PI * 2 * i) / Math.max(1, peerHosts.length) - Math.PI / 2;
+			return {
+				host: h,
+				x: CX + Math.cos(angle) * R,
+				y: CY + Math.sin(angle) * R * 0.85,
+			};
+		}),
+	);
+
+	function linkColor(health: Health): string {
+		switch (health) {
+			case "healthy":
+				return "var(--ok)";
+			case "degraded":
+				return "var(--warn)";
+			case "unreachable":
+				return "var(--err)";
+			default:
+				return "var(--ink-4)";
+		}
+	}
+
+	function isOnline(host: Host): boolean {
+		if (host.site_id === localSiteId) return true;
+		const ts = host.modified_at ?? host.online_at;
+		if (!ts) return false;
+		return Date.now() - new Date(ts).getTime() < 5 * 60 * 1000;
+	}
 </script>
 
 <div class="topology">
@@ -78,9 +78,33 @@ function isOnline(host: Host): boolean {
 	<svg viewBox="0 0 {VB_W} {VB_H}" preserveAspectRatio="xMidYMid meet" class="topology-svg">
 		<!-- Background compass rings -->
 		<g opacity="0.2">
-			<circle cx={CX} cy={CY} r="80" fill="none" stroke="var(--ink)" stroke-width="0.5" stroke-dasharray="2 4" />
-			<circle cx={CX} cy={CY} r={R} fill="none" stroke="var(--ink)" stroke-width="0.5" stroke-dasharray="2 4" />
-			<circle cx={CX} cy={CY} r="200" fill="none" stroke="var(--ink)" stroke-width="0.5" stroke-dasharray="2 4" />
+			<circle
+				cx={CX}
+				cy={CY}
+				r="80"
+				fill="none"
+				stroke="var(--ink)"
+				stroke-width="0.5"
+				stroke-dasharray="2 4"
+			/>
+			<circle
+				cx={CX}
+				cy={CY}
+				r={R}
+				fill="none"
+				stroke="var(--ink)"
+				stroke-width="0.5"
+				stroke-dasharray="2 4"
+			/>
+			<circle
+				cx={CX}
+				cy={CY}
+				r="200"
+				fill="none"
+				stroke="var(--ink)"
+				stroke-width="0.5"
+				stroke-dasharray="2 4"
+			/>
 		</g>
 
 		<!-- Spokes + animated pulse dot for healthy edges -->
@@ -117,8 +141,8 @@ function isOnline(host: Host): boolean {
 					fill="var(--paper)"
 					font-family="var(--font-mono)"
 					font-size="9"
-					letter-spacing="0.24em"
-				>HUB</text>
+					letter-spacing="0.24em">HUB</text
+				>
 				<text
 					text-anchor="middle"
 					y="12"
@@ -128,16 +152,16 @@ function isOnline(host: Host): boolean {
 					paint-order="stroke"
 					font-family="var(--font-display)"
 					font-size="13"
-					font-weight="600"
-				>{hubHost.host_name}</text>
+					font-weight="600">{hubHost.host_name}</text
+				>
 				{#if hubHost.version}
 					<text
 						text-anchor="middle"
 						y="26"
 						fill="rgba(255,255,255,0.55)"
 						font-family="var(--font-mono)"
-						font-size="9"
-					>{hubHost.version}</text>
+						font-size="9">{hubHost.version}</text
+					>
 				{/if}
 			</g>
 		{/if}
@@ -155,16 +179,16 @@ function isOnline(host: Host): boolean {
 					fill="var(--ink)"
 					font-family="var(--font-display)"
 					font-size="12"
-					font-weight="600"
-				>{host.host_name}</text>
+					font-weight="600">{host.host_name}</text
+				>
 				<text
 					text-anchor="middle"
 					y="60"
 					fill="var(--ink-3)"
 					font-family="var(--font-mono)"
 					font-size="9.5"
-					letter-spacing="0.12em"
-				>{online ? "ONLINE" : "OFFLINE"}</text>
+					letter-spacing="0.12em">{online ? "ONLINE" : "OFFLINE"}</text
+				>
 			</g>
 		{/each}
 	</svg>

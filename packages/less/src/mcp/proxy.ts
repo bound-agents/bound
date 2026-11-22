@@ -91,10 +91,7 @@ export async function proxyToolCall(
 					// Validate media type against supported set, fall through to unsupported if invalid
 					if (SUPPORTED_IMAGE_TYPES.has(mcpItem.mimeType)) {
 						const mediaType = mcpItem.mimeType as
-							| "image/jpeg"
-							| "image/png"
-							| "image/gif"
-							| "image/webp";
+							"image/jpeg" | "image/png" | "image/gif" | "image/webp";
 						blocks.push({
 							type: "image",
 							source: {

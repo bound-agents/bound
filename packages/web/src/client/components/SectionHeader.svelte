@@ -1,16 +1,16 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+	import type { Snippet } from "svelte";
 
-interface Props {
-	title: string;
-	subtitle?: string;
-	number?: number;
-	actions?: Snippet;
-}
+	interface Props {
+		title: string;
+		subtitle?: string;
+		number?: number;
+		actions?: Snippet;
+	}
 
-let { title, subtitle, number, actions }: Props = $props();
+	let { title, subtitle, number, actions }: Props = $props();
 
-const paddedNumber = $derived(number != null ? String(number).padStart(2, "0") : null);
+	const paddedNumber = $derived(number != null ? String(number).padStart(2, "0") : null);
 </script>
 
 <div class="section-header">

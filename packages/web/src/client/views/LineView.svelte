@@ -1,436 +1,440 @@
 <script lang="ts">
-import type { ThreadDetail } from "@bound/client";
-import type { YardExecutionEvent } from "@bound/shared";
-import { ChevronLeft, Paperclip } from "lucide-svelte";
-import { onDestroy, onMount } from "svelte";
-import Btn from "../components/Btn.svelte";
-import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
-import LineBadge from "../components/LineBadge.svelte";
-import McpAppPanel from "../components/McpAppPanel.svelte";
-import MessageList from "../components/MessageList.svelte";
-import ModelSelector from "../components/ModelSelector.svelte";
-import StatusChip from "../components/StatusChip.svelte";
-import { reduceActiveAuxRuns } from "../lib/aux-invoke-cards";
-import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
-import { formatRelativeTime } from "../lib/format-time";
-import type { McpAppHost } from "../lib/mcp-app-host";
-import {
-	type McpAppInstanceMap,
-	instancesForThread,
-	mcpAppHost,
-	mcpAppInstances,
-	reconstructInstancesFromMessages,
-} from "../lib/mcp-app-store";
-import { contentPreviewText } from "../lib/message-grouping";
-import { getLineColor, getLineName } from "../lib/metro-lines";
-import { modelStore } from "../lib/modelStore";
-import { navigateTo } from "../lib/router";
-import {
-	EMPTY_YARD_STATE,
-	type YardExecutionState,
-	reconcileYardExecutions,
-	reduceYardExecution,
-} from "../lib/yard-execution";
-import { shouldClearWaiting } from "../utils/waiting";
+	import type { ThreadDetail } from "@bound/client";
+	import type { YardExecutionEvent } from "@bound/shared";
+	import { ChevronLeft, Paperclip } from "lucide-svelte";
+	import { onDestroy, onMount } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
+	import LineBadge from "../components/LineBadge.svelte";
+	import McpAppPanel from "../components/McpAppPanel.svelte";
+	import MessageList from "../components/MessageList.svelte";
+	import ModelSelector from "../components/ModelSelector.svelte";
+	import StatusChip from "../components/StatusChip.svelte";
+	import { reduceActiveAuxRuns } from "../lib/aux-invoke-cards";
+	import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
+	import { formatRelativeTime } from "../lib/format-time";
+	import type { McpAppHost } from "../lib/mcp-app-host";
+	import {
+		type McpAppInstanceMap,
+		instancesForThread,
+		mcpAppHost,
+		mcpAppInstances,
+		reconstructInstancesFromMessages,
+	} from "../lib/mcp-app-store";
+	import { contentPreviewText } from "../lib/message-grouping";
+	import { getLineColor, getLineName } from "../lib/metro-lines";
+	import { modelStore } from "../lib/modelStore";
+	import { navigateTo } from "../lib/router";
+	import {
+		EMPTY_YARD_STATE,
+		type YardExecutionState,
+		reconcileYardExecutions,
+		reduceYardExecution,
+	} from "../lib/yard-execution";
+	import { shouldClearWaiting } from "../utils/waiting";
 
-const { threadId, from } = $props<{ threadId: string; from?: string }>();
+	const { threadId, from } = $props<{ threadId: string; from?: string }>();
 
-interface LocalMessage {
-	id: string;
-	role: string;
-	content: string;
-	tool_name?: string | null;
-	model_id?: string | null;
-	created_at?: string;
-}
-
-let messages = $state<LocalMessage[]>([]);
-let inputText = $state("");
-let sending = $state(false);
-let waiting = $state(false);
-let waitingSinceMessageCount = $state(0);
-let agentActive = $state(false);
-let agentState = $state<string | null>(null);
-let uploadStatus = $state<string | null>(null);
-let pendingFiles = $state<File[]>([]);
-let activeAuxRuns = $state<Array<{ threadId: string; agentName: string }>>([]);
-let thread = $state<ThreadDetail | null>(null);
-let panelMode = $state<"context" | "debugger">("context");
-
-// Streaming state: accumulates partial text and reasoning from the agent while
-// it's generating. Cleared when the full persisted message arrives via message:created.
-let streamingText = $state("");
-let streamingReasoning = $state("");
-
-// A selected-turn range emitted by the debugger's turn scrubber. When set, the
-// conversation dims other turns and scrolls the selected one into view.
-let turnRange = $state<{ from: string; to: string | null } | null>(null);
-// Context-panel turn click → scroll the conversation to that message. The nonce
-// bumps per click so clicking the same turn twice still re-fires the scroll.
-let scrollRequest = $state<{ messageId: string; nonce: number } | null>(null);
-let scrollNonce = 0;
-function scrollToTurn(messageId: string | undefined): void {
-	if (!messageId) return;
-	scrollNonce += 1;
-	scrollRequest = { messageId, nonce: scrollNonce };
-}
-
-let yardState = $state<YardExecutionState>(EMPTY_YARD_STATE);
-const yardTrees = $derived([...yardState.live.values(), ...yardState.completed]);
-const onYardExecution = (event: YardExecutionEvent): void => {
-	if (event.thread_id === threadId) yardState = reduceYardExecution(yardState, event);
-};
-
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-// Live MCP App renders for UI-bearing tool calls in this thread. The store is
-// populated by the tool-call handler (createToolCallHandler) when the agent
-// invokes a UI-bearing MCP tool; we filter to this thread and render a panel
-// per instance below the conversation.
-let appInstanceMap = $state<McpAppInstanceMap>({});
-const unsubscribeApps = mcpAppInstances.subscribe((map) => {
-	appInstanceMap = map;
-});
-const threadAppInstances = $derived(instancesForThread(appInstanceMap, threadId));
-
-// Reload + live render trigger: the in-memory instance store is empty on a
-// fresh page load, but the agent's UI-bearing tool_call rows survive in the
-// message history AND new ones stream in live over the WS. Whenever the MCP
-// host is connected (so we can resolve tool names — including the agent's
-// omnibus `<server>`-command shape, where the real tool is in
-// `input.subcommand` — back to UI-bearing registrations) and this thread has
-// messages, (re)scan them and register any UI-bearing instance not already
-// live. Host-ready and messages-loaded can land in either order, and live
-// messages arrive incrementally, so the scan runs from all of: the host
-// subscription, onMount, the poll, and each live message:created. It's
-// idempotent — the callId guard never clobbers or re-mounts an instance already
-// in the store — so re-running it per message is cheap.
-let appHost = $state<McpAppHost | null>(null);
-const unsubscribeHost = mcpAppHost.subscribe((h) => {
-	appHost = h;
-	scanForAppPanels();
-});
-
-function scanForAppPanels(): void {
-	if (!appHost || messages.length === 0) return;
-	const live = appInstanceMap;
-	for (const inst of reconstructInstancesFromMessages(messages, appHost, threadId)) {
-		if (!(inst.callId in live)) mcpAppInstances.register(inst);
+	interface LocalMessage {
+		id: string;
+		role: string;
+		content: string;
+		tool_name?: string | null;
+		model_id?: string | null;
+		created_at?: string;
 	}
-}
 
-// Subscribe to WebSocket events and append new messages
-const unsubscribeWs = wsEvents.subscribe((events) => {
-	if (events.length === 0) return;
-	const last = events[events.length - 1];
-	if (last?.type === "aux:started" && typeof last.data === "object" && last.data !== null) {
-		const aux = last.data as { thread_id?: string; parent_thread_id?: string; agent_name?: string };
-		if (aux.parent_thread_id === threadId && aux.thread_id && aux.agent_name) {
-			activeAuxRuns = reduceActiveAuxRuns(activeAuxRuns, {
-				type: "aux:started",
-				thread_id: aux.thread_id,
-				agent_name: aux.agent_name,
-			});
+	let messages = $state<LocalMessage[]>([]);
+	let inputText = $state("");
+	let sending = $state(false);
+	let waiting = $state(false);
+	let waitingSinceMessageCount = $state(0);
+	let agentActive = $state(false);
+	let agentState = $state<string | null>(null);
+	let uploadStatus = $state<string | null>(null);
+	let pendingFiles = $state<File[]>([]);
+	let activeAuxRuns = $state<Array<{ threadId: string; agentName: string }>>([]);
+	let thread = $state<ThreadDetail | null>(null);
+	let panelMode = $state<"context" | "debugger">("context");
+
+	// Streaming state: accumulates partial text and reasoning from the agent while
+	// it's generating. Cleared when the full persisted message arrives via message:created.
+	let streamingText = $state("");
+	let streamingReasoning = $state("");
+
+	// A selected-turn range emitted by the debugger's turn scrubber. When set, the
+	// conversation dims other turns and scrolls the selected one into view.
+	let turnRange = $state<{ from: string; to: string | null } | null>(null);
+	// Context-panel turn click → scroll the conversation to that message. The nonce
+	// bumps per click so clicking the same turn twice still re-fires the scroll.
+	let scrollRequest = $state<{ messageId: string; nonce: number } | null>(null);
+	let scrollNonce = 0;
+	function scrollToTurn(messageId: string | undefined): void {
+		if (!messageId) return;
+		scrollNonce += 1;
+		scrollRequest = { messageId, nonce: scrollNonce };
+	}
+
+	let yardState = $state<YardExecutionState>(EMPTY_YARD_STATE);
+	const yardTrees = $derived([...yardState.live.values(), ...yardState.completed]);
+	const onYardExecution = (event: YardExecutionEvent): void => {
+		if (event.thread_id === threadId) yardState = reduceYardExecution(yardState, event);
+	};
+
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	// Live MCP App renders for UI-bearing tool calls in this thread. The store is
+	// populated by the tool-call handler (createToolCallHandler) when the agent
+	// invokes a UI-bearing MCP tool; we filter to this thread and render a panel
+	// per instance below the conversation.
+	let appInstanceMap = $state<McpAppInstanceMap>({});
+	const unsubscribeApps = mcpAppInstances.subscribe((map) => {
+		appInstanceMap = map;
+	});
+	const threadAppInstances = $derived(instancesForThread(appInstanceMap, threadId));
+
+	// Reload + live render trigger: the in-memory instance store is empty on a
+	// fresh page load, but the agent's UI-bearing tool_call rows survive in the
+	// message history AND new ones stream in live over the WS. Whenever the MCP
+	// host is connected (so we can resolve tool names — including the agent's
+	// omnibus `<server>`-command shape, where the real tool is in
+	// `input.subcommand` — back to UI-bearing registrations) and this thread has
+	// messages, (re)scan them and register any UI-bearing instance not already
+	// live. Host-ready and messages-loaded can land in either order, and live
+	// messages arrive incrementally, so the scan runs from all of: the host
+	// subscription, onMount, the poll, and each live message:created. It's
+	// idempotent — the callId guard never clobbers or re-mounts an instance already
+	// in the store — so re-running it per message is cheap.
+	let appHost = $state<McpAppHost | null>(null);
+	const unsubscribeHost = mcpAppHost.subscribe((h) => {
+		appHost = h;
+		scanForAppPanels();
+	});
+
+	function scanForAppPanels(): void {
+		if (!appHost || messages.length === 0) return;
+		const live = appInstanceMap;
+		for (const inst of reconstructInstancesFromMessages(messages, appHost, threadId)) {
+			if (!(inst.callId in live)) mcpAppInstances.register(inst);
 		}
-		return;
 	}
-	if (last?.type === "aux:completed" && typeof last.data === "object" && last.data !== null) {
-		const aux = last.data as { thread_id?: string; parent_thread_id?: string };
-		if (aux.parent_thread_id === threadId && aux.thread_id)
-			activeAuxRuns = reduceActiveAuxRuns(activeAuxRuns, {
-				type: "aux:completed",
-				thread_id: aux.thread_id,
-			});
-		return;
-	}
-	if (
-		last &&
-		last.type === "message:created" &&
-		typeof last.data === "object" &&
-		last.data !== null
-	) {
-		const msg = last.data as { thread_id?: string; id?: string; role?: string };
-		if (msg.thread_id === threadId) {
-			const exists = messages.some((m) => m.id === msg.id);
-			if (!exists) {
-				messages = [...messages, last.data as LocalMessage];
-				yardState = reconcileYardExecutions(yardState, messages);
-				// A UI-bearing tool_call/result just streamed in — (re)scan so its
-				// app panel mounts live, not only on the next reload.
-				scanForAppPanels();
+
+	// Subscribe to WebSocket events and append new messages
+	const unsubscribeWs = wsEvents.subscribe((events) => {
+		if (events.length === 0) return;
+		const last = events[events.length - 1];
+		if (last?.type === "aux:started" && typeof last.data === "object" && last.data !== null) {
+			const aux = last.data as {
+				thread_id?: string;
+				parent_thread_id?: string;
+				agent_name?: string;
+			};
+			if (aux.parent_thread_id === threadId && aux.thread_id && aux.agent_name) {
+				activeAuxRuns = reduceActiveAuxRuns(activeAuxRuns, {
+					type: "aux:started",
+					thread_id: aux.thread_id,
+					agent_name: aux.agent_name,
+				});
 			}
-			if (shouldClearWaiting(msg.role ?? "")) {
+			return;
+		}
+		if (last?.type === "aux:completed" && typeof last.data === "object" && last.data !== null) {
+			const aux = last.data as { thread_id?: string; parent_thread_id?: string };
+			if (aux.parent_thread_id === threadId && aux.thread_id)
+				activeAuxRuns = reduceActiveAuxRuns(activeAuxRuns, {
+					type: "aux:completed",
+					thread_id: aux.thread_id,
+				});
+			return;
+		}
+		if (
+			last &&
+			last.type === "message:created" &&
+			typeof last.data === "object" &&
+			last.data !== null
+		) {
+			const msg = last.data as { thread_id?: string; id?: string; role?: string };
+			if (msg.thread_id === threadId) {
+				const exists = messages.some((m) => m.id === msg.id);
+				if (!exists) {
+					messages = [...messages, last.data as LocalMessage];
+					yardState = reconcileYardExecutions(yardState, messages);
+					// A UI-bearing tool_call/result just streamed in — (re)scan so its
+					// app panel mounts live, not only on the next reload.
+					scanForAppPanels();
+				}
+				if (shouldClearWaiting(msg.role ?? "")) {
+					waiting = false;
+				}
+				// Clear streaming text when any agent-side message lands (assistant,
+				// tool_call, or tool_result). The first persisted message after
+				// streaming means the turn progressed past the streaming phase.
+				if (msg.role !== "user") {
+					streamingText = "";
+					streamingReasoning = "";
+				}
+			}
+		}
+	});
+
+	async function pollMessages(): Promise<void> {
+		try {
+			const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+			// If poll discovers new non-user messages, clear streaming text —
+			// the persisted content supersedes the streaming preview.
+			if ((streamingText || streamingReasoning) && latest.length > messages.length) {
+				const newMessages = latest.slice(messages.length);
+				if (newMessages.some((m) => m.role !== "user")) {
+					streamingText = "";
+					streamingReasoning = "";
+				}
+			}
+			messages = latest;
+			yardState = reconcileYardExecutions(yardState, messages);
+			scanForAppPanels();
+			if (
+				waiting &&
+				latest.length > waitingSinceMessageCount &&
+				latest.slice(waitingSinceMessageCount).some((m) => shouldClearWaiting(m.role))
+			) {
 				waiting = false;
 			}
-			// Clear streaming text when any agent-side message lands (assistant,
-			// tool_call, or tool_result). The first persisted message after
-			// streaming means the turn progressed past the streaming phase.
-			if (msg.role !== "user") {
-				streamingText = "";
-				streamingReasoning = "";
-			}
+		} catch (error) {
+			console.error("Failed to poll messages:", error);
 		}
 	}
-});
 
-async function pollMessages(): Promise<void> {
-	try {
-		const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
-		// If poll discovers new non-user messages, clear streaming text —
-		// the persisted content supersedes the streaming preview.
-		if ((streamingText || streamingReasoning) && latest.length > messages.length) {
-			const newMessages = latest.slice(messages.length);
-			if (newMessages.some((m) => m.role !== "user")) {
-				streamingText = "";
-				streamingReasoning = "";
-			}
+	// Re-poll the server-computed thread status on the same cadence as messages.
+	// The status chip otherwise only updates from live `thread:status` WS events,
+	// which the scheduler does not emit cross-host — so a thread woken by an event
+	// on another host would stay "idle" in this view. The `/status` endpoint
+	// derives `active` from the synced `tasks.status='running'` signal, which is
+	// correct regardless of which host runs the task (#42).
+	async function pollStatus(): Promise<void> {
+		try {
+			const data = await client.getThreadStatus(threadId);
+			handleThreadStatus(data);
+		} catch {
+			// Transient — the next tick retries. Don't spam the console.
 		}
-		messages = latest;
-		yardState = reconcileYardExecutions(yardState, messages);
-		scanForAppPanels();
-		if (
-			waiting &&
-			latest.length > waitingSinceMessageCount &&
-			latest.slice(waitingSinceMessageCount).some((m) => shouldClearWaiting(m.role))
-		) {
-			waiting = false;
+	}
+
+	function handleThreadStatus(data: unknown): void {
+		const status = data as { thread_id?: string; active?: boolean; state?: string | null };
+		// `thread:status` is a global event — filter to events for this thread only,
+		// otherwise activity in any sibling thread flips this view's indicator on.
+		if (status.thread_id && status.thread_id !== threadId) return;
+		agentActive = status.active ?? false;
+		agentState = status.state ?? null;
+		if (waiting && !status.active) waiting = false;
+		// Clear streaming text when the agent goes idle — defense-in-depth for
+		// cases where message:created arrives late or is dropped entirely.
+		if (!status.active && (streamingText || streamingReasoning)) {
+			streamingText = "";
+			streamingReasoning = "";
 		}
-	} catch (error) {
-		console.error("Failed to poll messages:", error);
-	}
-}
-
-// Re-poll the server-computed thread status on the same cadence as messages.
-// The status chip otherwise only updates from live `thread:status` WS events,
-// which the scheduler does not emit cross-host — so a thread woken by an event
-// on another host would stay "idle" in this view. The `/status` endpoint
-// derives `active` from the synced `tasks.status='running'` signal, which is
-// correct regardless of which host runs the task (#42).
-async function pollStatus(): Promise<void> {
-	try {
-		const data = await client.getThreadStatus(threadId);
-		handleThreadStatus(data);
-	} catch {
-		// Transient — the next tick retries. Don't spam the console.
-	}
-}
-
-function handleThreadStatus(data: unknown): void {
-	const status = data as { thread_id?: string; active?: boolean; state?: string | null };
-	// `thread:status` is a global event — filter to events for this thread only,
-	// otherwise activity in any sibling thread flips this view's indicator on.
-	if (status.thread_id && status.thread_id !== threadId) return;
-	agentActive = status.active ?? false;
-	agentState = status.state ?? null;
-	if (waiting && !status.active) waiting = false;
-	// Clear streaming text when the agent goes idle — defense-in-depth for
-	// cases where message:created arrives late or is dropped entirely.
-	if (!status.active && (streamingText || streamingReasoning)) {
-		streamingText = "";
-		streamingReasoning = "";
-	}
-}
-
-function handleStreamChunk(data: unknown): void {
-	const evt = data as {
-		thread_id?: string;
-		chunk?: { type?: string; content?: string; redacted_data?: string };
-	};
-	if (evt.thread_id !== threadId) return;
-	if (evt.chunk?.type === "text" && evt.chunk.content) {
-		streamingText += evt.chunk.content;
-	}
-	if (evt.chunk?.type === "thinking" && evt.chunk.content) {
-		streamingReasoning += evt.chunk.content;
-	}
-}
-
-onMount(async () => {
-	client.on("yard:execution", onYardExecution);
-	try {
-		thread = await client.getThread(threadId);
-		messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
-		yardState = reconcileYardExecutions(yardState, messages);
-		scanForAppPanels();
-		connectWebSocket();
-		subscribeToThread(threadId);
-	} catch (error) {
-		console.error("Failed to load thread:", error);
 	}
 
-	pollInterval = setInterval(() => {
-		void pollMessages();
-		void pollStatus();
-	}, 5000);
-	client.on("thread:status", handleThreadStatus);
-	client.on("stream:chunk", handleStreamChunk);
-
-	try {
-		const data = await client.getThreadStatus(threadId);
-		handleThreadStatus(data);
-	} catch (error) {
-		console.error("Failed to load thread status:", error);
+	function handleStreamChunk(data: unknown): void {
+		const evt = data as {
+			thread_id?: string;
+			chunk?: { type?: string; content?: string; redacted_data?: string };
+		};
+		if (evt.thread_id !== threadId) return;
+		if (evt.chunk?.type === "text" && evt.chunk.content) {
+			streamingText += evt.chunk.content;
+		}
+		if (evt.chunk?.type === "thinking" && evt.chunk.content) {
+			streamingReasoning += evt.chunk.content;
+		}
 	}
-});
 
-onDestroy(() => {
-	client.off("yard:execution", onYardExecution);
-	unsubscribeWs();
-	unsubscribeApps();
-	unsubscribeHost();
-	// Drop only this thread's subscription. The WebSocket itself is shared
-	// app-wide (SystemMap status chips, FilesView updates, MCP App tool
-	// dispatch) — closing it here would silently kill those for the rest of
-	// the tab's life. The unsubscribe also soft-deletes this connection's
-	// client_sessions row server-side.
-	client.unsubscribe(threadId);
-	if (pollInterval !== null) clearInterval(pollInterval);
-	client.off("thread:status", handleThreadStatus);
-	client.off("stream:chunk", handleStreamChunk);
-});
+	onMount(async () => {
+		client.on("yard:execution", onYardExecution);
+		try {
+			thread = await client.getThread(threadId);
+			messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+			yardState = reconcileYardExecutions(yardState, messages);
+			scanForAppPanels();
+			connectWebSocket();
+			subscribeToThread(threadId);
+		} catch (error) {
+			console.error("Failed to load thread:", error);
+		}
 
-async function handleSendMessage(): Promise<void> {
-	if (!inputText.trim() && pendingFiles.length === 0) return;
-	if (sending) return;
-	sending = true;
-	try {
-		// #158: the attachment is held client-side until now and uploaded as
-		// part of the send. If the upload fails, abort the whole send — keep the
-		// text and the held file so the user can retry — rather than dispatching
-		// a message that references a file that never landed.
-		const fileIds: string[] = [];
-		if (pendingFiles.length > 0) {
-			uploadStatus = `Uploading ${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"}…`;
-			try {
-				for (const file of pendingFiles) {
-					const uploaded = await client.uploadFile(file, file.name);
-					if (uploaded.id) fileIds.push(uploaded.id);
+		pollInterval = setInterval(() => {
+			void pollMessages();
+			void pollStatus();
+		}, 5000);
+		client.on("thread:status", handleThreadStatus);
+		client.on("stream:chunk", handleStreamChunk);
+
+		try {
+			const data = await client.getThreadStatus(threadId);
+			handleThreadStatus(data);
+		} catch (error) {
+			console.error("Failed to load thread status:", error);
+		}
+	});
+
+	onDestroy(() => {
+		client.off("yard:execution", onYardExecution);
+		unsubscribeWs();
+		unsubscribeApps();
+		unsubscribeHost();
+		// Drop only this thread's subscription. The WebSocket itself is shared
+		// app-wide (SystemMap status chips, FilesView updates, MCP App tool
+		// dispatch) — closing it here would silently kill those for the rest of
+		// the tab's life. The unsubscribe also soft-deletes this connection's
+		// client_sessions row server-side.
+		client.unsubscribe(threadId);
+		if (pollInterval !== null) clearInterval(pollInterval);
+		client.off("thread:status", handleThreadStatus);
+		client.off("stream:chunk", handleStreamChunk);
+	});
+
+	async function handleSendMessage(): Promise<void> {
+		if (!inputText.trim() && pendingFiles.length === 0) return;
+		if (sending) return;
+		sending = true;
+		try {
+			// #158: the attachment is held client-side until now and uploaded as
+			// part of the send. If the upload fails, abort the whole send — keep the
+			// text and the held file so the user can retry — rather than dispatching
+			// a message that references a file that never landed.
+			const fileIds: string[] = [];
+			if (pendingFiles.length > 0) {
+				uploadStatus = `Uploading ${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"}…`;
+				try {
+					for (const file of pendingFiles) {
+						const uploaded = await client.uploadFile(file, file.name);
+						if (uploaded.id) fileIds.push(uploaded.id);
+					}
+				} catch (error) {
+					console.error("Failed to upload attachment:", error);
+					uploadStatus = "Upload failed — message not sent";
+					return;
 				}
-			} catch (error) {
-				console.error("Failed to upload attachment:", error);
-				uploadStatus = "Upload failed — message not sent";
-				return;
 			}
+			client.sendMessage(threadId, inputText.trim(), {
+				modelId: modelStore.getModel() || undefined,
+				fileIds,
+			});
+			inputText = "";
+			pendingFiles = [];
+			uploadStatus = null;
+			waitingSinceMessageCount = messages.length;
+			waiting = true;
+		} catch (error) {
+			console.error("Failed to send message:", error);
+		} finally {
+			sending = false;
 		}
-		client.sendMessage(threadId, inputText.trim(), {
-			modelId: modelStore.getModel() || undefined,
-			fileIds,
-		});
-		inputText = "";
-		pendingFiles = [];
-		uploadStatus = null;
-		waitingSinceMessageCount = messages.length;
-		waiting = true;
-	} catch (error) {
-		console.error("Failed to send message:", error);
-	} finally {
-		sending = false;
 	}
-}
 
-async function handleCancel(): Promise<void> {
-	try {
-		await client.cancelThread(threadId);
-	} catch (error) {
-		console.error("Failed to cancel agent:", error);
+	async function handleCancel(): Promise<void> {
+		try {
+			await client.cancelThread(threadId);
+		} catch (error) {
+			console.error("Failed to cancel agent:", error);
+		}
 	}
-}
 
-let fileInputEl: HTMLInputElement | null = null;
+	let fileInputEl: HTMLInputElement | null = null;
 
-function handleFileChange(e: Event): void {
-	const input = e.target as HTMLInputElement;
-	if (!input.files || input.files.length === 0) return;
-	// #158: hold files, don't upload yet — upload happens atomically on send.
-	pendingFiles = [...pendingFiles, ...Array.from(input.files)];
-	uploadStatus = `${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"} staged`;
-	input.value = "";
-}
+	function handleFileChange(e: Event): void {
+		const input = e.target as HTMLInputElement;
+		if (!input.files || input.files.length === 0) return;
+		// #158: hold files, don't upload yet — upload happens atomically on send.
+		pendingFiles = [...pendingFiles, ...Array.from(input.files)];
+		uploadStatus = `${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"} staged`;
+		input.value = "";
+	}
 
-function handleBackClick(): void {
-	navigateTo(from ?? "/");
-}
+	function handleBackClick(): void {
+		navigateTo(from ?? "/");
+	}
 
-function handlePaste(e: ClipboardEvent): void {
-	const imageFiles = Array.from(e.clipboardData?.files ?? []).filter((file) =>
-		file.type.startsWith("image/"),
-	);
-	if (imageFiles.length === 0) return;
-	// Let text paste retain the browser default; image clipboard items become
-	// ordinary staged attachments and travel through the same upload path.
-	e.preventDefault();
-	pendingFiles = [...pendingFiles, ...imageFiles];
-	uploadStatus = `${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"} staged`;
-}
-
-function handleKeydown(e: KeyboardEvent): void {
-	// isComposing: the Enter that commits an IME composition (CJK input) must
-	// not dispatch the half-composed message.
-	if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+	function handlePaste(e: ClipboardEvent): void {
+		const imageFiles = Array.from(e.clipboardData?.files ?? []).filter((file) =>
+			file.type.startsWith("image/"),
+		);
+		if (imageFiles.length === 0) return;
+		// Let text paste retain the browser default; image clipboard items become
+		// ordinary staged attachments and travel through the same upload path.
 		e.preventDefault();
-		handleSendMessage();
+		pendingFiles = [...pendingFiles, ...imageFiles];
+		uploadStatus = `${pendingFiles.length} attachment${pendingFiles.length === 1 ? "" : "s"} staged`;
 	}
-}
 
-function viewTitle(): string {
-	if (thread?.title && thread.title.trim().length > 0) return thread.title.trim();
-	if (messages.length === 0) return "New Conversation";
-	return "Conversation";
-}
-
-function getAttachedSessionHosts(): string[] {
-	return Array.isArray(thread?.attachedSessionHosts) ? thread.attachedSessionHosts : [];
-}
-
-function formatAttachedSessionLabel(hosts: string[]): string {
-	if (hosts.length === 0) return "";
-	if (hosts.length === 1) return hosts[0];
-	return `${hosts[0]} +${hosts.length - 1}`;
-}
-
-function attachedSessionTitle(hosts: string[]): string {
-	const plural = hosts.length === 1 ? "session" : "sessions";
-	return `Attached ${plural} on ${hosts.join(", ")}`;
-}
-
-const lineColor = $derived(thread ? getLineColor(thread.color) : "#999");
-const lineName = $derived(thread ? getLineName(thread.color) : "");
-
-// Right-side Context pane info
-const allToolCalls = $derived(messages.filter((m) => m.role === "tool_call").length);
-const firstMessageAt = $derived(messages[0]?.created_at ?? null);
-
-// Thread's active model: prefer the most recent assistant/tool_call message's
-// model_id (reflects any operator model switch mid-thread), falling back to
-// the global modelStore's selection.
-const activeModel = $derived.by((): string => {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const mid = messages[i].model_id;
-		if (mid) return mid;
+	function handleKeydown(e: KeyboardEvent): void {
+		// isComposing: the Enter that commits an IME composition (CJK input) must
+		// not dispatch the half-composed message.
+		if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+			e.preventDefault();
+			handleSendMessage();
+		}
 	}
-	return modelStore.getModel() || "—";
-});
 
-// User-message turn stops for the mini-timeline in the Context pane. Each
-// user message is a "stop" on the line; the last is the current turn.
-const userTurns = $derived(messages.filter((m) => m.role === "user"));
-
-function fmtHhmm(iso: string | undefined | null): string {
-	if (!iso) return "";
-	try {
-		const d = new Date(iso);
-		if (Number.isNaN(d.getTime())) return "";
-		return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-	} catch {
-		return "";
+	function viewTitle(): string {
+		if (thread?.title && thread.title.trim().length > 0) return thread.title.trim();
+		if (messages.length === 0) return "New Conversation";
+		return "Conversation";
 	}
-}
 
-function turnPreview(content: string): string {
-	const compact = contentPreviewText(content).replace(/\s+/g, " ").trim();
-	if (compact.length <= 56) return compact;
-	return `${compact.slice(0, 55)}…`;
-}
+	function getAttachedSessionHosts(): string[] {
+		return Array.isArray(thread?.attachedSessionHosts) ? thread.attachedSessionHosts : [];
+	}
+
+	function formatAttachedSessionLabel(hosts: string[]): string {
+		if (hosts.length === 0) return "";
+		if (hosts.length === 1) return hosts[0];
+		return `${hosts[0]} +${hosts.length - 1}`;
+	}
+
+	function attachedSessionTitle(hosts: string[]): string {
+		const plural = hosts.length === 1 ? "session" : "sessions";
+		return `Attached ${plural} on ${hosts.join(", ")}`;
+	}
+
+	const lineColor = $derived(thread ? getLineColor(thread.color) : "#999");
+	const lineName = $derived(thread ? getLineName(thread.color) : "");
+
+	// Right-side Context pane info
+	const allToolCalls = $derived(messages.filter((m) => m.role === "tool_call").length);
+	const firstMessageAt = $derived(messages[0]?.created_at ?? null);
+
+	// Thread's active model: prefer the most recent assistant/tool_call message's
+	// model_id (reflects any operator model switch mid-thread), falling back to
+	// the global modelStore's selection.
+	const activeModel = $derived.by((): string => {
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const mid = messages[i].model_id;
+			if (mid) return mid;
+		}
+		return modelStore.getModel() || "—";
+	});
+
+	// User-message turn stops for the mini-timeline in the Context pane. Each
+	// user message is a "stop" on the line; the last is the current turn.
+	const userTurns = $derived(messages.filter((m) => m.role === "user"));
+
+	function fmtHhmm(iso: string | undefined | null): string {
+		if (!iso) return "";
+		try {
+			const d = new Date(iso);
+			if (Number.isNaN(d.getTime())) return "";
+			return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+		} catch {
+			return "";
+		}
+	}
+
+	function turnPreview(content: string): string {
+		const compact = contentPreviewText(content).replace(/\s+/g, " ").trim();
+		if (compact.length <= 56) return compact;
+		return `${compact.slice(0, 55)}…`;
+	}
 </script>
 
 <div class="line-view" style="--line-color: {lineColor}">
@@ -484,12 +488,12 @@ function turnPreview(content: string): string {
 				{streamingText}
 				{streamingReasoning}
 				turnRange={panelMode === "debugger" ? turnRange : null}
-					scrollRequest={panelMode === "context" ? scrollRequest : null}
+				scrollRequest={panelMode === "context" ? scrollRequest : null}
 				threadColor={thread?.color ?? 0}
 				{lineColor}
 				isAgentActive={agentActive}
 				appInstances={threadAppInstances}
-				yardTrees={yardTrees}
+				{yardTrees}
 			/>
 
 			<!-- Input bar -->
@@ -501,8 +505,7 @@ function turnPreview(content: string): string {
 						rows={2}
 						disabled={sending}
 						onkeydown={handleKeydown}
-						onpaste={handlePaste}
-					></textarea>
+						onpaste={handlePaste}></textarea>
 					<button
 						class="dispatch"
 						class:active={inputText.trim().length > 0}
@@ -585,10 +588,7 @@ function turnPreview(content: string): string {
 								</div>
 								<div class="field">
 									<span class="kicker">Status</span>
-									<span
-										class="mono"
-										style="color: {agentActive ? 'var(--ok)' : 'var(--ink-3)'}"
-									>
+									<span class="mono" style="color: {agentActive ? 'var(--ok)' : 'var(--ink-3)'}">
 										{agentActive ? "Live" : "Idle"}
 									</span>
 								</div>
@@ -600,13 +600,16 @@ function turnPreview(content: string): string {
 									<div class="turns-list">
 										{#each userTurns as turn, i}
 											{@const isLast = i === userTurns.length - 1}
-											<button type="button" class="turn-stop" class:turn-stop-current={isLast} onclick={() => scrollToTurn(turn.id)} title="Jump to this message in the conversation">
+											<button
+												type="button"
+												class="turn-stop"
+												class:turn-stop-current={isLast}
+												onclick={() => scrollToTurn(turn.id)}
+												title="Jump to this message in the conversation"
+											>
 												<div class="turn-rail">
 													{#if !isLast}
-														<div
-															class="turn-rail-line"
-															style="background: {lineColor}"
-														></div>
+														<div class="turn-rail-line" style="background: {lineColor}"></div>
 													{/if}
 													<div
 														class="turn-dot"
@@ -632,11 +635,7 @@ function turnPreview(content: string): string {
 						{/if}
 					</div>
 				{:else}
-					<ContextDebugPanel
-						{threadId}
-						{wsEvents}
-						onTurnChange={(range) => (turnRange = range)}
-					/>
+					<ContextDebugPanel {threadId} {wsEvents} onTurnChange={(range) => (turnRange = range)} />
 				{/if}
 			</div>
 		</aside>

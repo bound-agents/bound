@@ -178,8 +178,7 @@ describe("healStuckTasks: cross-path coverage (AC4.3)", () => {
 			// Exactly one change_log entry should exist for this task
 			// (Phase 2 R-LR11: rescheduleHeartbeat now routes through outbox)
 			const changeLogEntries = db.query("SELECT * FROM change_log WHERE row_id = ?").all(taskId) as
-				| Array<{ id: string; row_id: string; siteId: string }>
-				| undefined;
+				Array<{ id: string; row_id: string; siteId: string }> | undefined;
 
 			// All task types (including heartbeat) now use updateRow which creates changelog
 			expect(changeLogEntries?.length).toBe(1);

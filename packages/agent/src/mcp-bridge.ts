@@ -220,8 +220,7 @@ export function getRemoteMcpToolAnnotations(
  */
 export function formatToolParamLines(inputSchema: unknown): string[] {
 	const schema = inputSchema as
-		| { properties?: Record<string, unknown>; required?: string[] }
-		| undefined;
+		{ properties?: Record<string, unknown>; required?: string[] } | undefined;
 	const props = schema?.properties ?? {};
 	const required = new Set(schema?.required ?? []);
 	const lines: string[] = [];

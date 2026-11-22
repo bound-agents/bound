@@ -2418,9 +2418,7 @@ export class RelayProcessor {
 			? this.agentLoopFactory(loopConfig)
 			: new MainAgentLoop(
 					localCtx,
-					{
-						/* sandbox not available — no tools in context */
-					} as object,
+					{/* sandbox not available — no tools in context */} as object,
 					// biome-ignore lint/style/noNonNullAssertion: modelRouter checked before entering runLocalThreadLoop
 					this.modelRouter!,
 					loopConfig,

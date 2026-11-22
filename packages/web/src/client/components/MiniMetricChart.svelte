@@ -1,117 +1,117 @@
 <script lang="ts">
-import { scaleLinear, scaleTime } from "d3-scale";
-import {
-	type BucketPoint,
-	formatBucketAxisLabel,
-	formatBucketTooltipLabel,
-	parseBucket,
-} from "../lib/chart-time";
-import { observeWidth } from "../lib/responsive-svg";
-import ChartTooltip from "./ChartTooltip.svelte";
+	import { scaleLinear, scaleTime } from "d3-scale";
+	import {
+		type BucketPoint,
+		formatBucketAxisLabel,
+		formatBucketTooltipLabel,
+		parseBucket,
+	} from "../lib/chart-time";
+	import { observeWidth } from "../lib/responsive-svg";
+	import ChartTooltip from "./ChartTooltip.svelte";
 
-interface Props {
-	title: string;
-	color: string;
-	yMin?: number;
-	yMax?: number;
-	formatValue: (v: number) => string;
-	formatAxis?: (v: number) => string;
-	data: Array<{ date: string; value: number }>;
-}
-
-let { title, color, yMin = 0, yMax, formatValue, formatAxis, data }: Props = $props();
-
-let tooltipVisible = $state(false);
-let tooltipX = $state(0);
-let tooltipY = $state(0);
-let tooltipLines = $state<string[]>([]);
-let containerEl: HTMLDivElement | undefined = $state(undefined);
-
-let measuredWidth = $state(360);
-
-const parsedData = $derived.by(() => {
-	return data
-		.map((d) => {
-			const bucket = parseBucket(d.date);
-			return { value: d.value, bucket, dateObj: bucket.dateObj };
-		})
-		.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
-});
-
-const hasData = $derived(parsedData.length > 0);
-
-const width = $derived(Math.max(measuredWidth, 200));
-const height = 120;
-const padding = { top: 10, right: 8, bottom: 22, left: 44 };
-const innerWidth = $derived(width - padding.left - padding.right);
-const innerHeight = height - padding.top - padding.bottom;
-
-const xScale = $derived.by(() => {
-	if (!hasData) return scaleTime().domain([new Date(), new Date()]).range([0, innerWidth]);
-	const t0 = parsedData[0]?.dateObj ?? new Date();
-	const tN = parsedData[parsedData.length - 1]?.dateObj ?? new Date();
-	return scaleTime().domain([t0, tN]).range([0, innerWidth]);
-});
-
-const computedMax = $derived.by(() => {
-	if (yMax !== undefined) return yMax;
-	const m = Math.max(...parsedData.map((d) => d.value), 0);
-	return m === 0 ? 1 : m;
-});
-
-const yScale = $derived.by(() => {
-	return scaleLinear().domain([yMin, computedMax]).range([innerHeight, 0]).nice();
-});
-
-const yTicks = $derived.by(() => {
-	const [lo, hi] = yScale.domain();
-	return [lo, lo + (hi - lo) / 2, hi];
-});
-
-const formatTickLabel = (v: number): string => (formatAxis ?? formatValue)(v);
-
-const pathData = $derived.by(() => {
-	return parsedData
-		.map((p, i) => {
-			const x = padding.left + xScale(p.dateObj);
-			const y = padding.top + yScale(p.value);
-			return `${i === 0 ? "M" : "L"}${x},${y}`;
-		})
-		.join(" ");
-});
-
-const areaData = $derived.by(() => {
-	if (!hasData) return "";
-	let path = pathData;
-	const last = parsedData[parsedData.length - 1];
-	const first = parsedData[0];
-	if (last) {
-		path += ` L${padding.left + xScale(last.dateObj)},${padding.top + innerHeight}`;
+	interface Props {
+		title: string;
+		color: string;
+		yMin?: number;
+		yMax?: number;
+		formatValue: (v: number) => string;
+		formatAxis?: (v: number) => string;
+		data: Array<{ date: string; value: number }>;
 	}
-	if (first) {
-		path += ` L${padding.left + xScale(first.dateObj)},${padding.top + innerHeight} Z`;
+
+	let { title, color, yMin = 0, yMax, formatValue, formatAxis, data }: Props = $props();
+
+	let tooltipVisible = $state(false);
+	let tooltipX = $state(0);
+	let tooltipY = $state(0);
+	let tooltipLines = $state<string[]>([]);
+	let containerEl: HTMLDivElement | undefined = $state(undefined);
+
+	let measuredWidth = $state(360);
+
+	const parsedData = $derived.by(() => {
+		return data
+			.map((d) => {
+				const bucket = parseBucket(d.date);
+				return { value: d.value, bucket, dateObj: bucket.dateObj };
+			})
+			.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+	});
+
+	const hasData = $derived(parsedData.length > 0);
+
+	const width = $derived(Math.max(measuredWidth, 200));
+	const height = 120;
+	const padding = { top: 10, right: 8, bottom: 22, left: 44 };
+	const innerWidth = $derived(width - padding.left - padding.right);
+	const innerHeight = height - padding.top - padding.bottom;
+
+	const xScale = $derived.by(() => {
+		if (!hasData) return scaleTime().domain([new Date(), new Date()]).range([0, innerWidth]);
+		const t0 = parsedData[0]?.dateObj ?? new Date();
+		const tN = parsedData[parsedData.length - 1]?.dateObj ?? new Date();
+		return scaleTime().domain([t0, tN]).range([0, innerWidth]);
+	});
+
+	const computedMax = $derived.by(() => {
+		if (yMax !== undefined) return yMax;
+		const m = Math.max(...parsedData.map((d) => d.value), 0);
+		return m === 0 ? 1 : m;
+	});
+
+	const yScale = $derived.by(() => {
+		return scaleLinear().domain([yMin, computedMax]).range([innerHeight, 0]).nice();
+	});
+
+	const yTicks = $derived.by(() => {
+		const [lo, hi] = yScale.domain();
+		return [lo, lo + (hi - lo) / 2, hi];
+	});
+
+	const formatTickLabel = (v: number): string => (formatAxis ?? formatValue)(v);
+
+	const pathData = $derived.by(() => {
+		return parsedData
+			.map((p, i) => {
+				const x = padding.left + xScale(p.dateObj);
+				const y = padding.top + yScale(p.value);
+				return `${i === 0 ? "M" : "L"}${x},${y}`;
+			})
+			.join(" ");
+	});
+
+	const areaData = $derived.by(() => {
+		if (!hasData) return "";
+		let path = pathData;
+		const last = parsedData[parsedData.length - 1];
+		const first = parsedData[0];
+		if (last) {
+			path += ` L${padding.left + xScale(last.dateObj)},${padding.top + innerHeight}`;
+		}
+		if (first) {
+			path += ` L${padding.left + xScale(first.dateObj)},${padding.top + innerHeight} Z`;
+		}
+		return path;
+	});
+
+	const xTicks = $derived.by(() => {
+		if (parsedData.length <= 4) return parsedData;
+		const step = Math.ceil(parsedData.length / 4);
+		return parsedData.filter((_, i) => i % step === 0);
+	});
+
+	function showTooltip(event: MouseEvent, p: { bucket: BucketPoint; value: number }): void {
+		if (!containerEl) return;
+		const rect = containerEl.getBoundingClientRect();
+		tooltipX = event.clientX - rect.left;
+		tooltipY = event.clientY - rect.top;
+		tooltipLines = [formatBucketTooltipLabel(p.bucket), `${title}: ${formatValue(p.value)}`];
+		tooltipVisible = true;
 	}
-	return path;
-});
 
-const xTicks = $derived.by(() => {
-	if (parsedData.length <= 4) return parsedData;
-	const step = Math.ceil(parsedData.length / 4);
-	return parsedData.filter((_, i) => i % step === 0);
-});
-
-function showTooltip(event: MouseEvent, p: { bucket: BucketPoint; value: number }): void {
-	if (!containerEl) return;
-	const rect = containerEl.getBoundingClientRect();
-	tooltipX = event.clientX - rect.left;
-	tooltipY = event.clientY - rect.top;
-	tooltipLines = [formatBucketTooltipLabel(p.bucket), `${title}: ${formatValue(p.value)}`];
-	tooltipVisible = true;
-}
-
-function hideTooltip(): void {
-	tooltipVisible = false;
-}
+	function hideTooltip(): void {
+		tooltipVisible = false;
+	}
 </script>
 
 <div
@@ -187,9 +187,7 @@ function hideTooltip(): void {
 				</text>
 			{/each}
 		{:else}
-			<text x={width / 2} y={height / 2} text-anchor="middle" class="no-data-label">
-				No data
-			</text>
+			<text x={width / 2} y={height / 2} text-anchor="middle" class="no-data-label"> No data </text>
 		{/if}
 
 		<line

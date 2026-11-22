@@ -1,54 +1,54 @@
 <script lang="ts">
-// Collapsible disclosure widget for model reasoning/thinking content.
-// Mirrors the ThinkingBlock pattern from the redesign spec: italic-serif
-// label with a word count, left-border accent in the thread's line color.
-// The expanded body renders the reasoning text as markdown so numbered
-// lists, emphasis, inline code, and fenced blocks (which modern models
-// routinely emit inside reasoning) display the same way they would in a
-// normal assistant turn.
+	// Collapsible disclosure widget for model reasoning/thinking content.
+	// Mirrors the ThinkingBlock pattern from the redesign spec: italic-serif
+	// label with a word count, left-border accent in the thread's line color.
+	// The expanded body renders the reasoning text as markdown so numbered
+	// lists, emphasis, inline code, and fenced blocks (which modern models
+	// routinely emit inside reasoning) display the same way they would in a
+	// normal assistant turn.
 
-import { renderMarkdown } from "../lib/markdown";
-import { mermaid } from "../lib/mermaid";
+	import { renderMarkdown } from "../lib/markdown";
+	import { mermaid } from "../lib/mermaid";
 
-interface Props {
-	text: string;
-	lineColor?: string;
-	redacted?: boolean;
-}
-
-const { text, lineColor = "var(--rule-soft)", redacted = false }: Props = $props();
-
-let open = $state(false);
-
-const wordCount = $derived(text.trim().split(/\s+/).filter(Boolean).length);
-
-let rendered = $state("");
-
-$effect(() => {
-	if (!text || redacted) {
-		rendered = "";
-		return;
+	interface Props {
+		text: string;
+		lineColor?: string;
+		redacted?: boolean;
 	}
-	renderMarkdown(text)
-		.then((html) => {
-			rendered = html;
-		})
-		.catch((err: unknown) => {
-			console.error("[markdown] renderMarkdown failed:", err);
+
+	const { text, lineColor = "var(--rule-soft)", redacted = false }: Props = $props();
+
+	let open = $state(false);
+
+	const wordCount = $derived(text.trim().split(/\s+/).filter(Boolean).length);
+
+	let rendered = $state("");
+
+	$effect(() => {
+		if (!text || redacted) {
 			rendered = "";
-		});
-});
+			return;
+		}
+		renderMarkdown(text)
+			.then((html) => {
+				rendered = html;
+			})
+			.catch((err: unknown) => {
+				console.error("[markdown] renderMarkdown failed:", err);
+				rendered = "";
+			});
+	});
 
-function toggle(): void {
-	open = !open;
-}
-
-function onKey(e: KeyboardEvent): void {
-	if (e.key === "Enter" || e.key === " ") {
-		e.preventDefault();
-		toggle();
+	function toggle(): void {
+		open = !open;
 	}
-}
+
+	function onKey(e: KeyboardEvent): void {
+		if (e.key === "Enter" || e.key === " ") {
+			e.preventDefault();
+			toggle();
+		}
+	}
 </script>
 
 <div class="reasoning-block">

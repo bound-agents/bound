@@ -1,55 +1,55 @@
 <script lang="ts">
-import type { TaskListEntry } from "@bound/client";
-import { CalendarClock } from "lucide-svelte";
-import { onDestroy, onMount } from "svelte";
-import { client } from "../lib/bound";
-import StatusChip from "./StatusChip.svelte";
-import ThreadLinkCard from "./ThreadLinkCard.svelte";
+	import type { TaskListEntry } from "@bound/client";
+	import { CalendarClock } from "lucide-svelte";
+	import { onDestroy, onMount } from "svelte";
+	import { client } from "../lib/bound";
+	import StatusChip from "./StatusChip.svelte";
+	import ThreadLinkCard from "./ThreadLinkCard.svelte";
 
-// Inline card for a task the agent just scheduled (#90). Shows the task's
-// display name, schedule, and live status, with a link to its thread once the
-// task has run and acquired one. A freshly-scheduled task has no thread yet
-// (thread_id is null until first run), so the card refreshes on `task:updated`
-// and surfaces the link the moment the thread resolves.
-//
-// The frame (icon slot, open-thread action, pending note) is the shared
-// ThreadLinkCard shell; this component owns only the task-specific body and
-// the load/refresh lifecycle.
+	// Inline card for a task the agent just scheduled (#90). Shows the task's
+	// display name, schedule, and live status, with a link to its thread once the
+	// task has run and acquired one. A freshly-scheduled task has no thread yet
+	// (thread_id is null until first run), so the card refreshes on `task:updated`
+	// and surfaces the link the moment the thread resolves.
+	//
+	// The frame (icon slot, open-thread action, pending note) is the shared
+	// ThreadLinkCard shell; this component owns only the task-specific body and
+	// the load/refresh lifecycle.
 
-interface Props {
-	taskId: string;
-	lineColor?: string;
-}
-
-const { taskId, lineColor = "var(--rule-soft)" }: Props = $props();
-
-let task = $state<TaskListEntry | null>(null);
-let loadError = $state(false);
-
-async function load(): Promise<void> {
-	try {
-		task = await client.getTask(taskId);
-		loadError = false;
-	} catch {
-		loadError = true;
+	interface Props {
+		taskId: string;
+		lineColor?: string;
 	}
-}
 
-function onTaskUpdated(data: { taskId: string; status: string }): void {
-	if (data.taskId === taskId) void load();
-}
+	const { taskId, lineColor = "var(--rule-soft)" }: Props = $props();
 
-onMount(() => {
-	void load();
-	client.on("task:updated", onTaskUpdated);
-});
+	let task = $state<TaskListEntry | null>(null);
+	let loadError = $state(false);
 
-onDestroy(() => {
-	client.off("task:updated", onTaskUpdated);
-});
+	async function load(): Promise<void> {
+		try {
+			task = await client.getTask(taskId);
+			loadError = false;
+		} catch {
+			loadError = true;
+		}
+	}
 
-// `claimed` is an in-flight task; render it as "running" to match the Timetable.
-const chipStatus = $derived(task?.status === "claimed" ? "running" : (task?.status ?? "pending"));
+	function onTaskUpdated(data: { taskId: string; status: string }): void {
+		if (data.taskId === taskId) void load();
+	}
+
+	onMount(() => {
+		void load();
+		client.on("task:updated", onTaskUpdated);
+	});
+
+	onDestroy(() => {
+		client.off("task:updated", onTaskUpdated);
+	});
+
+	// `claimed` is an in-flight task; render it as "running" to match the Timetable.
+	const chipStatus = $derived(task?.status === "claimed" ? "running" : (task?.status ?? "pending"));
 </script>
 
 <ThreadLinkCard

@@ -131,23 +131,23 @@ describe("MetricsView", () => {
 	it("loads metrics and renders the token totals summary", async () => {
 		const { target } = await mountMetrics(() => sampleMetrics());
 		expect(dom.requests.some((r) => r.path.startsWith("/api/metrics"))).toBe(true);
-		expect(target.textContent).toContain("Tokens");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Tokens");
 		// Total tokens = in + out + cache_read + cache_write = 1800.
-		expect(target.textContent).toContain("1,800");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("1,800");
 		// Total cost rendered to 4 dp.
-		expect(target.textContent).toContain("$1.2345");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("$1.2345");
 		// Turn count.
-		expect(target.textContent).toContain("Turn Count");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Turn Count");
 	});
 
 	it("renders the relay performance section with success rate and latency", async () => {
 		const { target } = await mountMetrics(() => sampleMetrics());
-		expect(target.textContent).toContain("Relay Performance");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Relay Performance");
 		// success_rate 0.9 → "90.0%".
-		expect(target.textContent).toContain("90.0%");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("90.0%");
 		// avg_latency_ms rounds to 119ms.
-		expect(target.textContent).toContain("119ms");
-		expect(target.textContent).toContain("Expired Count");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("119ms");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Expired Count");
 	});
 
 	it("renders the relay cycles table with formatted status and latency", async () => {
@@ -159,22 +159,24 @@ describe("MetricsView", () => {
 		expect(tableText).toContain("120ms");
 		expect(tableText).toContain("—");
 		// Caption: two cycles shown of ten in range.
-		expect(target.textContent).toContain("Latest 2 of 10 cycles in range");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Latest 2 of 10 cycles in range");
 	});
 
 	it("renders the context assembly section with cache hit rate", async () => {
 		const { target } = await mountMetrics(() => sampleMetrics());
-		expect(target.textContent).toContain("Context Assembly");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Context Assembly");
 		// last_cache_hit_rate 0.82 → "82.0%".
-		expect(target.textContent).toContain("82.0%");
-		expect(target.textContent).toContain("Budget Pressure");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("82.0%");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Budget Pressure");
 		// avg_truncated_messages 3.4 → "3.4".
-		expect(target.textContent).toContain("3.4");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("3.4");
 	});
 
 	it("shows the no-data state when every section is empty", async () => {
 		const { target } = await mountMetrics(() => emptyMetrics());
-		expect(target.textContent).toContain("No data recorded in the selected range");
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain(
+			"No data recorded in the selected range",
+		);
 	});
 
 	it("renders the DateRangeBar with preset buttons", async () => {

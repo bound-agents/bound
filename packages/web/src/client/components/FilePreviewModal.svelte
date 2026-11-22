@@ -1,151 +1,147 @@
 <script lang="ts">
-import { Download, X } from "lucide-svelte";
-import { onDestroy, onMount } from "svelte";
-import { client } from "../lib/bound";
-import { extensionToLanguage, getFileCategory } from "../lib/file-categories";
-import type { FileMetadata } from "../lib/file-tree";
-import { mermaid } from "../lib/mermaid";
+	import { Download, X } from "lucide-svelte";
+	import { onDestroy, onMount } from "svelte";
+	import { client } from "../lib/bound";
+	import { extensionToLanguage, getFileCategory } from "../lib/file-categories";
+	import type { FileMetadata } from "../lib/file-tree";
+	import { mermaid } from "../lib/mermaid";
 
-interface Props {
-	file: FileMetadata;
-	onClose: () => void;
-}
+	interface Props {
+		file: FileMetadata;
+		onClose: () => void;
+	}
 
-const { file, onClose }: Props = $props();
+	const { file, onClose }: Props = $props();
 
-let content = $state<string | null>(null);
-let loading = $state(true);
-let error = $state<string | null>(null);
-let renderedHtml = $state<string | null>(null);
-let blobUrl = $state<string | null>(null);
+	let content = $state<string | null>(null);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
+	let renderedHtml = $state<string | null>(null);
+	let blobUrl = $state<string | null>(null);
 
-let modalRef: HTMLDivElement | undefined;
-let previouslyFocused: HTMLElement | null = null;
+	let modalRef: HTMLDivElement | undefined;
+	let previouslyFocused: HTMLElement | null = null;
 
-const category = $derived(getFileCategory(file.path.split("/").pop() || "", file.is_binary));
+	const category = $derived(getFileCategory(file.path.split("/").pop() || "", file.is_binary));
 
-onMount(async () => {
-	await fetchContent();
-	setupFocusTrap();
-});
+	onMount(async () => {
+		await fetchContent();
+		setupFocusTrap();
+	});
 
-onDestroy(() => {
-	if (blobUrl) URL.revokeObjectURL(blobUrl);
-	previouslyFocused?.focus();
-});
+	onDestroy(() => {
+		if (blobUrl) URL.revokeObjectURL(blobUrl);
+		previouslyFocused?.focus();
+	});
 
-async function fetchContent(): Promise<void> {
-	try {
-		loading = true;
-		error = null;
-		const data = await client.getFile(file.path);
+	async function fetchContent(): Promise<void> {
+		try {
+			loading = true;
+			error = null;
+			const data = await client.getFile(file.path);
 
-		if (data.content === null || data.size_bytes === 0) {
-			// AC2.10: Empty file
-			content = "";
-			loading = false;
-			return;
-		}
-
-		content = data.content;
-
-		// Render based on category
-		if (category === "code") {
-			const ext = `.${(file.path.split(".").pop() || "").toLowerCase()}`;
-			const lang = extensionToLanguage(ext) || "plaintext";
-			const { highlightCode } = await import("../lib/markdown");
-			if (content) {
-				renderedHtml = await highlightCode(content, lang);
+			if (data.content === null || data.size_bytes === 0) {
+				// AC2.10: Empty file
+				content = "";
+				loading = false;
+				return;
 			}
-		} else if (category === "markdown") {
-			const { renderMarkdown } = await import("../lib/markdown");
-			if (content) {
-				renderedHtml = await renderMarkdown(content);
-			}
-		} else if (category === "image") {
-			const ext = file.path.split(".").pop()?.toLowerCase() || "";
-			const mimeMap: Record<string, string> = {
-				png: "image/png",
-				jpg: "image/jpeg",
-				jpeg: "image/jpeg",
-				gif: "image/gif",
-				svg: "image/svg+xml",
-				webp: "image/webp",
-			};
-			const mime = mimeMap[ext] || "application/octet-stream";
 
-			// SVG files from the agent VFS have is_binary=0 and raw XML text
-			// content (not base64). Other image types have is_binary=1 and
-			// base64-encoded content. Handle both cases.
-			if (file.is_binary === 0) {
-				// Raw text content (e.g., SVG XML)
+			content = data.content;
+
+			// Render based on category
+			if (category === "code") {
+				const ext = `.${(file.path.split(".").pop() || "").toLowerCase()}`;
+				const lang = extensionToLanguage(ext) || "plaintext";
+				const { highlightCode } = await import("../lib/markdown");
 				if (content) {
-					const blob = new Blob([content], { type: mime });
+					renderedHtml = await highlightCode(content, lang);
+				}
+			} else if (category === "markdown") {
+				const { renderMarkdown } = await import("../lib/markdown");
+				if (content) {
+					renderedHtml = await renderMarkdown(content);
+				}
+			} else if (category === "image") {
+				const ext = file.path.split(".").pop()?.toLowerCase() || "";
+				const mimeMap: Record<string, string> = {
+					png: "image/png",
+					jpg: "image/jpeg",
+					jpeg: "image/jpeg",
+					gif: "image/gif",
+					svg: "image/svg+xml",
+					webp: "image/webp",
+				};
+				const mime = mimeMap[ext] || "application/octet-stream";
+
+				// SVG files from the agent VFS have is_binary=0 and raw XML text
+				// content (not base64). Other image types have is_binary=1 and
+				// base64-encoded content. Handle both cases.
+				if (file.is_binary === 0) {
+					// Raw text content (e.g., SVG XML)
+					if (content) {
+						const blob = new Blob([content], { type: mime });
+						blobUrl = URL.createObjectURL(blob);
+					}
+				} else if (content) {
+					// Base64-encoded binary content
+					const binary = atob(content);
+					const bytes = new Uint8Array(binary.length);
+					for (let i = 0; i < binary.length; i++) {
+						bytes[i] = binary.charCodeAt(i);
+					}
+					const blob = new Blob([bytes], { type: mime });
 					blobUrl = URL.createObjectURL(blob);
 				}
-			} else if (content) {
-				// Base64-encoded binary content
-				const binary = atob(content);
-				const bytes = new Uint8Array(binary.length);
-				for (let i = 0; i < binary.length; i++) {
-					bytes[i] = binary.charCodeAt(i);
-				}
-				const blob = new Blob([bytes], { type: mime });
-				blobUrl = URL.createObjectURL(blob);
+			}
+			// "text" and "binary" categories use raw content directly in template
+		} catch (err) {
+			error = err instanceof Error ? err.message : "Failed to load file";
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function retry(): Promise<void> {
+		await fetchContent();
+	}
+
+	function setupFocusTrap(): void {
+		previouslyFocused = document.activeElement as HTMLElement;
+		// Focus the modal container
+		modalRef?.focus();
+	}
+
+	function handleKeydown(e: KeyboardEvent): void {
+		if (e.key === "Escape") {
+			e.preventDefault();
+			onClose();
+			return;
+		}
+		if (e.key === "Tab" && modalRef) {
+			const focusable = modalRef.querySelectorAll<HTMLElement>(
+				'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+			);
+			if (focusable.length === 0) return;
+			const first = focusable[0];
+			const last = focusable[focusable.length - 1];
+			if (e.shiftKey && document.activeElement === first) {
+				e.preventDefault();
+				last.focus();
+			} else if (!e.shiftKey && document.activeElement === last) {
+				e.preventDefault();
+				first.focus();
 			}
 		}
-		// "text" and "binary" categories use raw content directly in template
-	} catch (err) {
-		error = err instanceof Error ? err.message : "Failed to load file";
-	} finally {
-		loading = false;
 	}
-}
 
-async function retry(): Promise<void> {
-	await fetchContent();
-}
-
-function setupFocusTrap(): void {
-	previouslyFocused = document.activeElement as HTMLElement;
-	// Focus the modal container
-	modalRef?.focus();
-}
-
-function handleKeydown(e: KeyboardEvent): void {
-	if (e.key === "Escape") {
-		e.preventDefault();
-		onClose();
-		return;
+	function download(): void {
+		window.location.href = `/api/files/download?path=${encodeURIComponent(file.path)}`;
 	}
-	if (e.key === "Tab" && modalRef) {
-		const focusable = modalRef.querySelectorAll<HTMLElement>(
-			'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-		);
-		if (focusable.length === 0) return;
-		const first = focusable[0];
-		const last = focusable[focusable.length - 1];
-		if (e.shiftKey && document.activeElement === first) {
-			e.preventDefault();
-			last.focus();
-		} else if (!e.shiftKey && document.activeElement === last) {
-			e.preventDefault();
-			first.focus();
-		}
-	}
-}
-
-function download(): void {
-	window.location.href = `/api/files/download?path=${encodeURIComponent(file.path)}`;
-}
 </script>
 
 <div class="modal-backdrop">
-	<button
-		class="backdrop-close"
-		onclick={onClose}
-		aria-label="Close file preview"
-		tabindex={-1}
+	<button class="backdrop-close" onclick={onClose} aria-label="Close file preview" tabindex={-1}
 	></button>
 	<div
 		class="modal-panel"
@@ -362,8 +358,12 @@ function download(): void {
 	}
 
 	@keyframes loadingSlide {
-		0% { left: -40%; }
-		100% { left: 100%; }
+		0% {
+			left: -40%;
+		}
+		100% {
+			left: 100%;
+		}
 	}
 
 	.modal-loading p {
@@ -529,10 +529,7 @@ function download(): void {
 		align-items: center;
 		justify-content: center;
 		padding: 24px;
-		background: repeating-conic-gradient(
-			var(--paper-2) 0% 25%,
-			var(--paper) 0% 50%
-		) 50% / 20px 20px;
+		background: repeating-conic-gradient(var(--paper-2) 0% 25%, var(--paper) 0% 50%) 50% / 20px 20px;
 	}
 
 	.preview-image img {

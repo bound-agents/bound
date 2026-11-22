@@ -1,133 +1,133 @@
 <script lang="ts">
-import { renderMarkdown } from "../lib/markdown";
-import { mermaid } from "../lib/mermaid";
-import { getLineColor } from "../lib/metro-lines";
-import ReasoningBlock from "./ReasoningBlock.svelte";
+	import { renderMarkdown } from "../lib/markdown";
+	import { mermaid } from "../lib/mermaid";
+	import { getLineColor } from "../lib/metro-lines";
+	import ReasoningBlock from "./ReasoningBlock.svelte";
 
-interface Props {
-	role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
-	content: string;
-	toolName?: string | null;
-	modelId?: string | null;
-	exitCode?: number | null;
-	threadColor?: number;
-}
-
-const {
-	role,
-	content,
-	toolName: _toolName = null,
-	modelId = null,
-	exitCode = null,
-	threadColor = 0,
-}: Props = $props();
-
-const isError = $derived(role === "tool_result" && exitCode !== null && exitCode !== 0);
-
-const lineColor = $derived(getLineColor(threadColor));
-
-const roleLabel = $derived.by(() => {
-	switch (role) {
-		case "user":
-			return "You";
-		case "assistant":
-			return "Agent";
-		case "alert":
-			return "System";
-		case "system":
-			return "";
-		case "tool_result":
-			return isError ? "Error" : "Result";
-		case "tool_call":
-			return "Tool";
-		default:
-			return role;
+	interface Props {
+		role: "user" | "assistant" | "tool_call" | "tool_result" | "alert" | "system";
+		content: string;
+		toolName?: string | null;
+		modelId?: string | null;
+		exitCode?: number | null;
+		threadColor?: number;
 	}
-});
 
-// Parse content: if the DB row is a JSON-serialized ContentBlock[],
-// split into typed display blocks (text, image, or fallback text).
-interface TextBlock {
-	kind: "text";
-	text: string;
-}
-interface ImageBlock {
-	kind: "image";
-	src: string;
-	alt: string;
-}
-interface ThinkingBlock {
-	kind: "thinking";
-	text: string;
-	redacted?: boolean;
-}
-type DisplayBlock = TextBlock | ImageBlock | ThinkingBlock;
+	const {
+		role,
+		content,
+		toolName: _toolName = null,
+		modelId = null,
+		exitCode = null,
+		threadColor = 0,
+	}: Props = $props();
 
-const displayBlocks = $derived.by((): DisplayBlock[] => {
-	if (role !== "user" && role !== "assistant") return [{ kind: "text", text: content }];
-	if (!content.startsWith("[")) return [{ kind: "text", text: content }];
-	try {
-		const parsed = JSON.parse(content);
-		if (!Array.isArray(parsed) || parsed.length === 0) return [{ kind: "text", text: content }];
-		return parsed
-			.map((b: Record<string, unknown>): DisplayBlock | null => {
-				if (b.type === "thinking") {
-					const text = typeof b.thinking === "string" ? b.thinking : "";
-					const redacted = b.redacted_data != null || b.reasoning_encrypted_content != null;
-					if (!text && !redacted) return null;
-					return { kind: "thinking", text, redacted };
-				}
-				if (b.type === "text" && typeof b.text === "string" && b.text) {
-					return { kind: "text", text: b.text };
-				}
-				if (b.type === "image") {
-					const source = b.source as Record<string, unknown> | undefined;
-					if (!source) return null;
-					const alt = typeof b.description === "string" ? b.description : "image";
-					if (source.type === "base64" && typeof source.data === "string") {
-						const media = (source.media_type as string) || "image/png";
-						return { kind: "image", src: `data:${media};base64,${source.data}`, alt };
-					}
-					if (source.type === "file_ref" && typeof source.file_id === "string") {
-						return {
-							kind: "image",
-							src: `/api/files/download?id=${encodeURIComponent(source.file_id)}`,
-							alt,
-						};
-					}
-				}
-				return null;
-			})
-			.filter((b): b is DisplayBlock => b !== null);
-	} catch {
-		// Not JSON — plain text
-	}
-	return [{ kind: "text", text: content }];
-});
+	const isError = $derived(role === "tool_result" && exitCode !== null && exitCode !== 0);
 
-// Rendered HTML keyed by displayBlocks index (text blocks only).
-let renderedMap = $state<Record<number, string>>({});
+	const lineColor = $derived(getLineColor(threadColor));
 
-$effect(() => {
-	if (role !== "assistant" && role !== "user") {
-		renderedMap = {};
-		return;
-	}
-	const entries: Array<{ idx: number; src: string }> = [];
-	for (let i = 0; i < displayBlocks.length; i++) {
-		const b = displayBlocks[i];
-		if (b.kind === "text") entries.push({ idx: i, src: b.text });
-	}
-	Promise.all(
-		entries.map(({ src }) => (src ? renderMarkdown(src).catch(() => "") : Promise.resolve(""))),
-	).then((results) => {
-		const map: Record<number, string> = {};
-		for (let j = 0; j < entries.length; j++) {
-			map[entries[j].idx] = results[j];
+	const roleLabel = $derived.by(() => {
+		switch (role) {
+			case "user":
+				return "You";
+			case "assistant":
+				return "Agent";
+			case "alert":
+				return "System";
+			case "system":
+				return "";
+			case "tool_result":
+				return isError ? "Error" : "Result";
+			case "tool_call":
+				return "Tool";
+			default:
+				return role;
 		}
-		renderedMap = map;
 	});
-});
+
+	// Parse content: if the DB row is a JSON-serialized ContentBlock[],
+	// split into typed display blocks (text, image, or fallback text).
+	interface TextBlock {
+		kind: "text";
+		text: string;
+	}
+	interface ImageBlock {
+		kind: "image";
+		src: string;
+		alt: string;
+	}
+	interface ThinkingBlock {
+		kind: "thinking";
+		text: string;
+		redacted?: boolean;
+	}
+	type DisplayBlock = TextBlock | ImageBlock | ThinkingBlock;
+
+	const displayBlocks = $derived.by((): DisplayBlock[] => {
+		if (role !== "user" && role !== "assistant") return [{ kind: "text", text: content }];
+		if (!content.startsWith("[")) return [{ kind: "text", text: content }];
+		try {
+			const parsed = JSON.parse(content);
+			if (!Array.isArray(parsed) || parsed.length === 0) return [{ kind: "text", text: content }];
+			return parsed
+				.map((b: Record<string, unknown>): DisplayBlock | null => {
+					if (b.type === "thinking") {
+						const text = typeof b.thinking === "string" ? b.thinking : "";
+						const redacted = b.redacted_data != null || b.reasoning_encrypted_content != null;
+						if (!text && !redacted) return null;
+						return { kind: "thinking", text, redacted };
+					}
+					if (b.type === "text" && typeof b.text === "string" && b.text) {
+						return { kind: "text", text: b.text };
+					}
+					if (b.type === "image") {
+						const source = b.source as Record<string, unknown> | undefined;
+						if (!source) return null;
+						const alt = typeof b.description === "string" ? b.description : "image";
+						if (source.type === "base64" && typeof source.data === "string") {
+							const media = (source.media_type as string) || "image/png";
+							return { kind: "image", src: `data:${media};base64,${source.data}`, alt };
+						}
+						if (source.type === "file_ref" && typeof source.file_id === "string") {
+							return {
+								kind: "image",
+								src: `/api/files/download?id=${encodeURIComponent(source.file_id)}`,
+								alt,
+							};
+						}
+					}
+					return null;
+				})
+				.filter((b): b is DisplayBlock => b !== null);
+		} catch {
+			// Not JSON — plain text
+		}
+		return [{ kind: "text", text: content }];
+	});
+
+	// Rendered HTML keyed by displayBlocks index (text blocks only).
+	let renderedMap = $state<Record<number, string>>({});
+
+	$effect(() => {
+		if (role !== "assistant" && role !== "user") {
+			renderedMap = {};
+			return;
+		}
+		const entries: Array<{ idx: number; src: string }> = [];
+		for (let i = 0; i < displayBlocks.length; i++) {
+			const b = displayBlocks[i];
+			if (b.kind === "text") entries.push({ idx: i, src: b.text });
+		}
+		Promise.all(
+			entries.map(({ src }) => (src ? renderMarkdown(src).catch(() => "") : Promise.resolve(""))),
+		).then((results) => {
+			const map: Record<number, string> = {};
+			for (let j = 0; j < entries.length; j++) {
+				map[entries[j].idx] = results[j];
+			}
+			renderedMap = map;
+		});
+	});
 </script>
 
 {#if role === "tool_result"}
@@ -307,7 +307,9 @@ $effect(() => {
 	}
 
 	/* ---- Markdown rendering ---- */
-	:global(.md-content > *:first-child) { margin-top: 0; }
+	:global(.md-content > *:first-child) {
+		margin-top: 0;
+	}
 
 	:global(.md-content h1) {
 		font-size: 1.3rem;

@@ -30,8 +30,4 @@ export {
 	ANCIENT_RATIO,
 } from "./tier-allocation";
 
-export {
-	foldMessages,
-	type FoldedLine,
-	MAX_FOLDED_LINE_CHARS,
-} from "./tool-cycle-fold";
+export { foldMessages, type FoldedLine, MAX_FOLDED_LINE_CHARS } from "./tool-cycle-fold";

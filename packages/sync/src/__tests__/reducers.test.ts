@@ -107,8 +107,7 @@ describe("reducers", () => {
 
 			expect(result.applied).toBe(true);
 			const row = db.query("SELECT * FROM messages WHERE id = ?").get("msg-1") as
-				| Record<string, unknown>
-				| undefined;
+				Record<string, unknown> | undefined;
 			expect(row).toBeDefined();
 			expect(row?.content).toBe("hello");
 		});
@@ -292,8 +291,7 @@ describe("reducers", () => {
 
 			expect(result.applied).toBe(true);
 			const row = db.query("SELECT * FROM semantic_memory WHERE id = ?").get("mem-1") as
-				| Record<string, unknown>
-				| undefined;
+				Record<string, unknown> | undefined;
 			expect(row).toBeDefined();
 			expect(row?.value).toBe("value-a");
 		});

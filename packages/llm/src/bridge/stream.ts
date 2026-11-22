@@ -175,8 +175,7 @@ function readStepCacheWrite1hTokens(
 	if (!meta) return null;
 	if (usageProvider === "bedrock") {
 		const bedrockUsage = meta.bedrock?.usage as
-			| { cacheDetails?: Array<{ inputTokens?: number; ttl?: string }> }
-			| undefined;
+			{ cacheDetails?: Array<{ inputTokens?: number; ttl?: string }> } | undefined;
 		const details = bedrockUsage?.cacheDetails;
 		if (!Array.isArray(details)) return null;
 		let sum = 0;

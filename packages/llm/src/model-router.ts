@@ -776,11 +776,9 @@ function createBackendFromConfig(
 				// Optional test-injectable fetchers, threaded via the BackendConfig
 				// index signature. Production config never sets these.
 				metadataFetch: config.metadataFetch as
-					| Parameters<typeof createUmansAccount>[0]["metadataFetch"]
-					| undefined,
+					Parameters<typeof createUmansAccount>[0]["metadataFetch"] | undefined,
 				usageFetch: config.usageFetch as
-					| Parameters<typeof createUmansAccount>[0]["usageFetch"]
-					| undefined,
+					Parameters<typeof createUmansAccount>[0]["usageFetch"] | undefined,
 			});
 			return new UmansDriver({ account, namespaceId: config.id, logger });
 		}

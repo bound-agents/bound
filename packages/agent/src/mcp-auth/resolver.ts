@@ -70,11 +70,7 @@ export interface ResolverAttempt {
 /** A terminal resolver-side failure that cannot forward an outcome to the owner. */
 export interface ResolverError {
 	kind:
-		| "no_challenge"
-		| "not_pending"
-		| "discovery_failed"
-		| "no_registration"
-		| "as_metadata_failed";
+		"no_challenge" | "not_pending" | "discovery_failed" | "no_registration" | "as_metadata_failed";
 	detail: string;
 }
 

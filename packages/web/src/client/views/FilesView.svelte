@@ -1,125 +1,125 @@
 <script lang="ts">
-import { File, FileCode, FileText, Folder, Image, Table } from "lucide-svelte";
-import { type Component, onDestroy, onMount } from "svelte";
-import { SvelteSet } from "svelte/reactivity";
-import FilePreviewModal from "../components/FilePreviewModal.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import TreeNode from "../components/TreeNode.svelte";
-import { client, wsEvents } from "../lib/bound";
-import {
-	type FileMetadata,
-	type FileTreeNode,
-	buildFileTree,
-	findNodeByPath,
-} from "../lib/file-tree";
+	import { File, FileCode, FileText, Folder, Image, Table } from "lucide-svelte";
+	import { type Component, onDestroy, onMount } from "svelte";
+	import { SvelteSet } from "svelte/reactivity";
+	import FilePreviewModal from "../components/FilePreviewModal.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import TreeNode from "../components/TreeNode.svelte";
+	import { client, wsEvents } from "../lib/bound";
+	import {
+		type FileMetadata,
+		type FileTreeNode,
+		buildFileTree,
+		findNodeByPath,
+	} from "../lib/file-tree";
 
-let tree: FileTreeNode[] = $state([]);
-let loading = $state(true);
-let error = $state<string | null>(null);
+	let tree: FileTreeNode[] = $state([]);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
 
-let expandedPaths = $state(new SvelteSet<string>());
-let selectedPath = $state("/");
-let selectedFile = $state<FileMetadata | null>(null);
+	let expandedPaths = $state(new SvelteSet<string>());
+	let selectedPath = $state("/");
+	let selectedFile = $state<FileMetadata | null>(null);
 
-const breadcrumbSegments = $derived.by(() => {
-	if (selectedPath === "/") return [] as string[];
-	return selectedPath.split("/").filter(Boolean);
-});
+	const breadcrumbSegments = $derived.by(() => {
+		if (selectedPath === "/") return [] as string[];
+		return selectedPath.split("/").filter(Boolean);
+	});
 
-const currentDirectoryContents = $derived.by<FileTreeNode[]>(() => {
-	if (selectedPath === "/") return tree;
-	const node = findNodeByPath(tree, selectedPath);
-	return node ? node.children : [];
-});
+	const currentDirectoryContents = $derived.by<FileTreeNode[]>(() => {
+		if (selectedPath === "/") return tree;
+		const node = findNodeByPath(tree, selectedPath);
+		return node ? node.children : [];
+	});
 
-const fileCount = $derived(currentDirectoryContents.filter((n) => n.type === "file").length);
-const dirCount = $derived(currentDirectoryContents.filter((n) => n.type === "dir").length);
+	const fileCount = $derived(currentDirectoryContents.filter((n) => n.type === "file").length);
+	const dirCount = $derived(currentDirectoryContents.filter((n) => n.type === "dir").length);
 
-async function loadFiles(): Promise<void> {
-	try {
-		loading = true;
-		error = null;
-		const files = (await client.listFiles()) as FileMetadata[];
-		tree = buildFileTree(files);
-		expandedPaths.clear();
-		for (const node of tree) expandAllRecursive(node);
-		selectedPath = "/";
-	} catch (err) {
-		error = err instanceof Error ? err.message : "Failed to load files";
-	} finally {
-		loading = false;
-	}
-}
-
-function expandAllRecursive(node: FileTreeNode): void {
-	if (node.type === "dir") {
-		expandedPaths.add(node.fullPath);
-		for (const child of node.children) expandAllRecursive(child);
-	}
-}
-
-function toggleExpanded(path: string): void {
-	if (expandedPaths.has(path)) expandedPaths.delete(path);
-	else expandedPaths.add(path);
-}
-
-function navigateToDirectory(path: string): void {
-	selectedPath = path;
-	if (path !== "/") {
-		const parts = path.split("/");
-		for (let i = 1; i <= parts.length; i++) {
-			expandedPaths.add(parts.slice(0, i).join("/"));
+	async function loadFiles(): Promise<void> {
+		try {
+			loading = true;
+			error = null;
+			const files = (await client.listFiles()) as FileMetadata[];
+			tree = buildFileTree(files);
+			expandedPaths.clear();
+			for (const node of tree) expandAllRecursive(node);
+			selectedPath = "/";
+		} catch (err) {
+			error = err instanceof Error ? err.message : "Failed to load files";
+		} finally {
+			loading = false;
 		}
 	}
-}
 
-function formatFileSize(bytes: number): string {
-	if (bytes === 0) return "0 B";
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
+	function expandAllRecursive(node: FileTreeNode): void {
+		if (node.type === "dir") {
+			expandedPaths.add(node.fullPath);
+			for (const child of node.children) expandAllRecursive(child);
+		}
+	}
 
-function relativeTime(iso: string | null): string {
-	if (!iso) return "—";
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60_000);
-	if (mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	return `${Math.floor(hours / 24)}d ago`;
-}
+	function toggleExpanded(path: string): void {
+		if (expandedPaths.has(path)) expandedPaths.delete(path);
+		else expandedPaths.add(path);
+	}
 
-function downloadFile(path: string): void {
-	window.location.href = `/api/files/download?path=${encodeURIComponent(path)}`;
-}
+	function navigateToDirectory(path: string): void {
+		selectedPath = path;
+		if (path !== "/") {
+			const parts = path.split("/");
+			for (let i = 1; i <= parts.length; i++) {
+				expandedPaths.add(parts.slice(0, i).join("/"));
+			}
+		}
+	}
 
-let unsubscribe: (() => void) | null = null;
+	function formatFileSize(bytes: number): string {
+		if (bytes === 0) return "0 B";
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+	}
 
-onMount(() => {
-	loadFiles();
-	unsubscribe = wsEvents.subscribe((events) => {
-		const last = events[events.length - 1];
-		if (last?.type === "file:updated") loadFiles();
+	function relativeTime(iso: string | null): string {
+		if (!iso) return "—";
+		const diff = Date.now() - new Date(iso).getTime();
+		const mins = Math.floor(diff / 60_000);
+		if (mins < 1) return "just now";
+		if (mins < 60) return `${mins}m ago`;
+		const hours = Math.floor(mins / 60);
+		if (hours < 24) return `${hours}h ago`;
+		return `${Math.floor(hours / 24)}d ago`;
+	}
+
+	function downloadFile(path: string): void {
+		window.location.href = `/api/files/download?path=${encodeURIComponent(path)}`;
+	}
+
+	let unsubscribe: (() => void) | null = null;
+
+	onMount(() => {
+		loadFiles();
+		unsubscribe = wsEvents.subscribe((events) => {
+			const last = events[events.length - 1];
+			if (last?.type === "file:updated") loadFiles();
+		});
 	});
-});
 
-onDestroy(() => {
-	if (unsubscribe) unsubscribe();
-});
+	onDestroy(() => {
+		if (unsubscribe) unsubscribe();
+	});
 
-function iconFor(name: string): Component {
-	const lower = name.toLowerCase();
-	if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
-	if (/\.(ts|js|json|py|rs|go|yaml|yml)$/.test(lower)) return FileCode;
-	if (/\.(png|jpg|jpeg|gif|svg|webp)$/.test(lower)) return Image;
-	if (/\.(csv|xlsx|xls)$/.test(lower)) return Table;
-	return File;
-}
+	function iconFor(name: string): Component {
+		const lower = name.toLowerCase();
+		if (lower.endsWith(".md") || lower.endsWith(".txt")) return FileText;
+		if (/\.(ts|js|json|py|rs|go|yaml|yml)$/.test(lower)) return FileCode;
+		if (/\.(png|jpg|jpeg|gif|svg|webp)$/.test(lower)) return Image;
+		if (/\.(csv|xlsx|xls)$/.test(lower)) return Table;
+		return File;
+	}
 </script>
 
 <Page>

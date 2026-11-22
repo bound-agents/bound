@@ -267,8 +267,7 @@ describe("AcpSession permission gating", () => {
 		// the collection, so the completion frame must NOT send content on success
 		// or the diff is clobbered. It should leave the diff in place (delta).
 		const pending = rec.updates.find((u) => u.sessionUpdate === "tool_call") as
-			| { toolCallId: string; content?: Array<{ type: string }> }
-			| undefined;
+			{ toolCallId: string; content?: Array<{ type: string }> } | undefined;
 		expect(pending).toBeDefined();
 		const toolCallId = pending?.toolCallId;
 		expect(toolCallId?.startsWith("c-edit-t")).toBe(true);
@@ -311,8 +310,7 @@ describe("AcpSession permission gating", () => {
 
 		expect(result.is_error).toBe(true);
 		const pending = rec.updates.find((u) => u.sessionUpdate === "tool_call") as
-			| { toolCallId: string }
-			| undefined;
+			{ toolCallId: string } | undefined;
 		expect(pending?.toolCallId.startsWith("c-edit-fail-t")).toBe(true);
 		const failed = rec.updates.find(
 			(u) =>

@@ -350,8 +350,7 @@ describe("healStuckTasks", () => {
 			expect(recovered).toBe(0);
 
 			const updatedTask = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
+				Partial<Task> | undefined;
 
 			expect(updatedTask?.status).toBe("failed");
 		});
@@ -417,8 +416,7 @@ describe("healStuckTasks", () => {
 
 			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(0);
 			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
+				Partial<Task> | undefined;
 			expect(updated?.status).toBe("cancelled");
 		});
 
@@ -450,8 +448,7 @@ describe("healStuckTasks", () => {
 
 			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(0);
 			const updated = db.query("SELECT status, claimed_by FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
+				Partial<Task> | undefined;
 			expect(updated?.status).toBe("failed");
 			expect(updated?.claimed_by).toBe("peer-A");
 		});
@@ -494,8 +491,7 @@ describe("healStuckTasks", () => {
 
 			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(1);
 			const updated = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
+				Partial<Task> | undefined;
 			expect(updated?.status).toBe("pending");
 		});
 
@@ -506,8 +502,7 @@ describe("healStuckTasks", () => {
 
 			expect(healStuckTasks(db, appContext.logger, siteId, new Date())).toBe(1);
 			const updated = db.query("SELECT status, next_run_at FROM tasks WHERE id = ?").get(taskId) as
-				| Partial<Task>
-				| undefined;
+				Partial<Task> | undefined;
 			expect(updated?.status).toBe("pending");
 			expect(updated?.next_run_at).not.toBeNull();
 		});

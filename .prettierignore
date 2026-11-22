@@ -1,0 +1,13 @@
+# Read by `bun fmt` (its default ignore-path includes .prettierignore) on top of .gitignore.
+# Markdown and YAML are governed by markdownlint and hand-authored layout, not the formatter.
+*.md
+*.mdx
+*.yml
+*.yaml
+*.generated.ts
+*.db
+*.db-wal
+*.db-shm
+.claude/
+.polytoken/
+**/.astro/

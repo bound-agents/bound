@@ -1,39 +1,41 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
-import type { Writable } from "svelte/store";
-import type { WebSocketMessage } from "../lib/bound";
-import ContextDebugPanel from "./ContextDebugPanel.svelte";
+	import type { Snippet } from "svelte";
+	import type { Writable } from "svelte/store";
+	import type { WebSocketMessage } from "../lib/bound";
+	import ContextDebugPanel from "./ContextDebugPanel.svelte";
 
-export interface TurnRange {
-	from: string;
-	to: string | null;
-}
-
-interface Props {
-	threadId: string | null;
-	wsEvents: Writable<WebSocketMessage[]>;
-	children: Snippet<[{ debugOpen: boolean; toggleDebug: () => void; turnRange: TurnRange | null }]>;
-}
-
-const { threadId, wsEvents, children }: Props = $props();
-
-let debugOpen = $state(false);
-let debugMounted = $state(false);
-let turnRange = $state<TurnRange | null>(null);
-
-function toggleDebug(): void {
-	debugOpen = !debugOpen;
-	if (debugOpen && !debugMounted) {
-		debugMounted = true;
+	export interface TurnRange {
+		from: string;
+		to: string | null;
 	}
-	if (!debugOpen) {
-		turnRange = null;
-	}
-}
 
-function handleTurnChange(range: TurnRange | null): void {
-	turnRange = range;
-}
+	interface Props {
+		threadId: string | null;
+		wsEvents: Writable<WebSocketMessage[]>;
+		children: Snippet<
+			[{ debugOpen: boolean; toggleDebug: () => void; turnRange: TurnRange | null }]
+		>;
+	}
+
+	const { threadId, wsEvents, children }: Props = $props();
+
+	let debugOpen = $state(false);
+	let debugMounted = $state(false);
+	let turnRange = $state<TurnRange | null>(null);
+
+	function toggleDebug(): void {
+		debugOpen = !debugOpen;
+		if (debugOpen && !debugMounted) {
+			debugMounted = true;
+		}
+		if (!debugOpen) {
+			turnRange = null;
+		}
+	}
+
+	function handleTurnChange(range: TurnRange | null): void {
+		turnRange = range;
+	}
 </script>
 
 <div class="debug-wrapper" class:panel-open={debugOpen}>
@@ -42,7 +44,7 @@ function handleTurnChange(range: TurnRange | null): void {
 	</div>
 	{#if debugMounted && threadId}
 		<div class="debug-panel-container" class:hidden={!debugOpen}>
-			<ContextDebugPanel threadId={threadId} {wsEvents} onTurnChange={handleTurnChange} />
+			<ContextDebugPanel {threadId} {wsEvents} onTurnChange={handleTurnChange} />
 		</div>
 	{/if}
 </div>

@@ -1,6 +1,5 @@
 export type SidebarItem =
-	| { label: string; slug: string }
-	| { label: string; autogenerate: { directory: string } };
+	{ label: string; slug: string } | { label: string; autogenerate: { directory: string } };
 
 export interface SidebarGroup {
 	label: string;

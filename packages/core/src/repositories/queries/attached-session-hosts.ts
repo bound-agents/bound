@@ -22,7 +22,8 @@ export interface AttachedSessionHostRow {
  */
 export function getAttachedSessionHosts(db: Database, threadId: string): AttachedSessionHostRow[] {
 	return db
-		.query(`
+		.query(
+			`
 			SELECT label
 			FROM (
 				SELECT COALESCE(h.host_name, cs.site_id) as label
@@ -32,6 +33,7 @@ export function getAttachedSessionHosts(db: Database, threadId: string): Attache
 				GROUP BY cs.site_id, label
 				ORDER BY label ASC
 			)
-		`)
+		`,
+		)
 		.all(threadId) as AttachedSessionHostRow[];
 }

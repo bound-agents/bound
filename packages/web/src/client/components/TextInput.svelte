@@ -1,15 +1,15 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+	import type { Snippet } from "svelte";
 
-interface Props {
-	value: string;
-	onchange: (value: string) => void;
-	placeholder?: string;
-	icon?: Snippet;
-	fullWidth?: boolean;
-}
+	interface Props {
+		value: string;
+		onchange: (value: string) => void;
+		placeholder?: string;
+		icon?: Snippet;
+		fullWidth?: boolean;
+	}
 
-let { value, onchange, placeholder, icon, fullWidth = false }: Props = $props();
+	let { value, onchange, placeholder, icon, fullWidth = false }: Props = $props();
 </script>
 
 <label class="input-wrap" class:full={fullWidth}>

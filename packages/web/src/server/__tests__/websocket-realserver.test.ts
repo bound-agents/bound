@@ -527,8 +527,7 @@ describe("websocket real-server protocol", () => {
 		// Persisted as a JSON ContentBlock[] because a non-text block is present.
 		const blocks = JSON.parse(row.content) as Array<Record<string, unknown>>;
 		const image = blocks.find((b) => b.type === "image") as
-			| { source: { type: string; file_id?: string; data?: string } }
-			| undefined;
+			{ source: { type: string; file_id?: string; data?: string } } | undefined;
 		expect(image).toBeDefined();
 		// The inline base64 was lifted out to a file_ref; the raw bytes are gone.
 		expect(image?.source.type).toBe("file_ref");
@@ -619,8 +618,7 @@ describe("websocket real-server protocol", () => {
 		const blocks = JSON.parse(row.content) as Array<Record<string, unknown>>;
 		expect(blocks.some((b) => b.type === "text")).toBe(true);
 		const image = blocks.find((b) => b.type === "image") as
-			| { source: { type: string; data?: string } }
-			| undefined;
+			{ source: { type: string; data?: string } } | undefined;
 		expect(image).toBeDefined();
 		// The screenshot-sized base64 was lightened to a file_ref, not left inline.
 		expect(image?.source.type).toBe("file_ref");

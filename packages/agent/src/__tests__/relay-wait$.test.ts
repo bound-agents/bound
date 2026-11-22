@@ -43,17 +43,15 @@ describe("createRelayWait$", () => {
 	// durable_work row; the awaiter (createRelayWait$ → readUnionResponseEntry)
 	// resolves from a durable response row keyed by the request's ref_id and
 	// consumes it exactly-once via the token-fenced claim/ack lifecycle.
-	function insertDurableRequest(opts: {
-		id: string;
-		kind: string;
-		targetSiteId: string;
-	}): void {
+	function insertDurableRequest(opts: { id: string; kind: string; targetSiteId: string }): void {
 		const now = new Date().toISOString();
-		db.prepare(`
+		db.prepare(
+			`
 			INSERT INTO durable_work
 			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, expires_at, source_site)
 			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-		`).run(
+		`,
+		).run(
 			opts.id,
 			opts.targetSiteId,
 			opts.kind,
@@ -72,11 +70,13 @@ describe("createRelayWait$", () => {
 		payload: unknown;
 	}): void {
 		const now = new Date().toISOString();
-		db.prepare(`
+		db.prepare(
+			`
 			INSERT INTO durable_work
 			(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, ref_id, source_site)
 			VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-		`).run(
+		`,
+		).run(
 			opts.id,
 			siteId,
 			opts.kind,
@@ -181,10 +181,12 @@ describe("createRelayWait$", () => {
 
 		// Create turns entry directly
 		const turnCreatedAt = new Date().toISOString();
-		db.prepare(`
+		db.prepare(
+			`
 			INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, cost_usd, created_at, relay_target, relay_latency_ms)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(turnId, threadId, "test-model", 1000, 500, 0.01, turnCreatedAt, null, null);
+		`,
+		).run(turnId, threadId, "test-model", 1000, 500, 0.01, turnCreatedAt, null, null);
 
 		const aborted$ = new Subject<void>();
 
@@ -556,11 +558,13 @@ describe("createRelayWait$", () => {
 			payload: unknown;
 		}): void {
 			const now = new Date().toISOString();
-			db.prepare(`
+			db.prepare(
+				`
 				INSERT INTO durable_work
 				(id, target_site_id, kind, payload, idempotency_key, claim_state, attempt_count, created_at, ref_id, source_site)
 				VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
-			`).run(
+			`,
+			).run(
 				opts.id,
 				siteId,
 				opts.kind,

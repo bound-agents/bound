@@ -289,18 +289,11 @@ export class WsTransport {
 	private changelogCoalescer: MicrotaskCoalescer<ChangeLogEntry>;
 	private peerConnections: Map<string, PeerConnection> = new Map();
 	private changelogWrittenListener:
-		| ((event: {
-				hlc: string;
-				tableName: string;
-				siteId: string;
-		  }) => void)
-		| null = null;
+		((event: { hlc: string; tableName: string; siteId: string }) => void) | null = null;
 	private relayOutboxWrittenListener:
-		| ((event: { id: string; target_site_id: string }) => void)
-		| null = null;
+		((event: { id: string; target_site_id: string }) => void) | null = null;
 	private durableWorkWrittenListener:
-		| ((event: { id: string; target_site_id: string }) => void)
-		| null = null;
+		((event: { id: string; target_site_id: string }) => void) | null = null;
 	/** Periodic stale durable-work recovery sweep (R-DW10/R-DW11 running-process leg). */
 	private staleDurableWorkSweepTimer: ReturnType<typeof setInterval> | null = null;
 	/** Per-peer snapshot seeding progress. */
@@ -690,17 +683,15 @@ export class WsTransport {
 					timestamp: string;
 					row_data: string;
 				}>
-			).map(
-				(row): ChangeLogEntry => ({
-					hlc: row.hlc,
-					// biome-ignore lint/suspicious/noExplicitAny: table_name is string from DB query, ChangeLogEntry needs SyncedTableName
-					table_name: row.table_name as any,
-					row_id: row.row_id,
-					site_id: row.site_id,
-					timestamp: row.timestamp,
-					row_data: row.row_data,
-				}),
-			);
+			).map((row): ChangeLogEntry => ({
+				hlc: row.hlc,
+				// biome-ignore lint/suspicious/noExplicitAny: table_name is string from DB query, ChangeLogEntry needs SyncedTableName
+				table_name: row.table_name as any,
+				row_id: row.row_id,
+				site_id: row.site_id,
+				timestamp: row.timestamp,
+				row_data: row.row_data,
+			}));
 
 			if (allEntries.length === 0) {
 				this.config.logger?.debug("WsTransport drain - no missed entries", {

@@ -1,317 +1,327 @@
 <script lang="ts">
-import { onMount, tick } from "svelte";
-import type { McpAppInstance } from "../lib/mcp-app-store";
-import {
-	type DisplayItem as GroupedDisplayItem,
-	groupMessages,
-	toolUseIdsInItem,
-} from "../lib/message-grouping";
-import { anchorYardTrees } from "../lib/yard-anchoring";
-import type { YardTreeSnapshot } from "../lib/yard-execution";
-import McpAppPanel from "./McpAppPanel.svelte";
-import McpChallengeCard from "./McpChallengeCard.svelte";
-import MessageBubble from "./MessageBubble.svelte";
-import ReasoningBlock from "./ReasoningBlock.svelte";
-import ToolCallCard from "./ToolCallCard.svelte";
-import YardExecutionPanel from "./YardExecutionPanel.svelte";
+	import { onMount, tick } from "svelte";
+	import type { McpAppInstance } from "../lib/mcp-app-store";
+	import {
+		type DisplayItem as GroupedDisplayItem,
+		groupMessages,
+		toolUseIdsInItem,
+	} from "../lib/message-grouping";
+	import { anchorYardTrees } from "../lib/yard-anchoring";
+	import type { YardTreeSnapshot } from "../lib/yard-execution";
+	import McpAppPanel from "./McpAppPanel.svelte";
+	import McpChallengeCard from "./McpChallengeCard.svelte";
+	import MessageBubble from "./MessageBubble.svelte";
+	import ReasoningBlock from "./ReasoningBlock.svelte";
+	import ToolCallCard from "./ToolCallCard.svelte";
+	import YardExecutionPanel from "./YardExecutionPanel.svelte";
 
-interface Message {
-	role: string;
-	content: string;
-	tool_name?: string | null;
-	model_id?: string | null;
-	created_at?: string;
-	id?: string;
-	exit_code?: number | null;
-	metadata?: string | Record<string, unknown> | null;
-}
+	interface Message {
+		role: string;
+		content: string;
+		tool_name?: string | null;
+		model_id?: string | null;
+		created_at?: string;
+		id?: string;
+		exit_code?: number | null;
+		metadata?: string | Record<string, unknown> | null;
+	}
 
-interface TurnRange {
-	from: string;
-	to: string | null;
-}
+	interface TurnRange {
+		from: string;
+		to: string | null;
+	}
 
-// A one-shot scroll request from the context panel (turn click). `nonce` bumps
-// on every click so repeat-clicks on the same message re-fire the scroll.
-interface ScrollRequest {
-	messageId: string;
-	nonce: number;
-}
+	// A one-shot scroll request from the context panel (turn click). `nonce` bumps
+	// on every click so repeat-clicks on the same message re-fire the scroll.
+	interface ScrollRequest {
+		messageId: string;
+		nonce: number;
+	}
 
-interface Props {
-	messages: Message[];
-	waiting?: boolean;
-	streamingText?: string;
-	streamingReasoning?: string;
-	emptyText?: string | null;
-	turnRange?: TurnRange | null;
-	scrollRequest?: ScrollRequest | null;
-	threadColor?: number;
-	lineColor?: string;
-	isAgentActive?: boolean;
-	appInstances?: McpAppInstance[];
-	yardTrees?: YardTreeSnapshot[];
-}
+	interface Props {
+		messages: Message[];
+		waiting?: boolean;
+		streamingText?: string;
+		streamingReasoning?: string;
+		emptyText?: string | null;
+		turnRange?: TurnRange | null;
+		scrollRequest?: ScrollRequest | null;
+		threadColor?: number;
+		lineColor?: string;
+		isAgentActive?: boolean;
+		appInstances?: McpAppInstance[];
+		yardTrees?: YardTreeSnapshot[];
+	}
 
-const {
-	messages,
-	waiting = false,
-	streamingText = "",
-	streamingReasoning = "",
-	emptyText = null,
-	turnRange = null,
-	scrollRequest = null,
-	threadColor = 0,
-	lineColor = "#999",
-	isAgentActive = false,
-	appInstances = [],
-	yardTrees = [],
-}: Props = $props();
+	const {
+		messages,
+		waiting = false,
+		streamingText = "",
+		streamingReasoning = "",
+		emptyText = null,
+		turnRange = null,
+		scrollRequest = null,
+		threadColor = 0,
+		lineColor = "#999",
+		isAgentActive = false,
+		appInstances = [],
+		yardTrees = [],
+	}: Props = $props();
 
-// --- Auto-scroll logic ---
-let scrollContainer = $state<HTMLDivElement | null>(null);
-let prevMessageCount = 0;
-let isAtBottom = true;
-const BOTTOM_THRESHOLD = 80;
+	// --- Auto-scroll logic ---
+	let scrollContainer = $state<HTMLDivElement | null>(null);
+	let prevMessageCount = 0;
+	let isAtBottom = true;
+	const BOTTOM_THRESHOLD = 80;
 
-function checkIsAtBottom(): boolean {
-	if (!scrollContainer) return true;
-	const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-	return scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD;
-}
+	function checkIsAtBottom(): boolean {
+		if (!scrollContainer) return true;
+		const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+		return scrollHeight - scrollTop - clientHeight < BOTTOM_THRESHOLD;
+	}
 
-function scrollToBottom(smooth = true): void {
-	if (!scrollContainer) return;
-	requestAnimationFrame(() => {
+	function scrollToBottom(smooth = true): void {
 		if (!scrollContainer) return;
-		scrollContainer.scrollTo({
-			// Read scrollHeight inside the frame (#241): content can grow
-			// between the call and the frame it lands in (streaming chunks,
-			// async markdown/mermaid, trailing yard/MCP panels relocating
-			// when their source row arrives), and a target captured at call
-			// time strands the viewport above the new bottom.
-			top: scrollContainer.scrollHeight,
-			behavior: smooth ? "smooth" : "instant",
-		});
-	});
-}
-
-function handleScroll(): void {
-	isAtBottom = checkIsAtBottom();
-}
-
-onMount(() => {
-	// Initial position: instant. There is nothing to animate to on load, and
-	// a smooth glide from the top is visible garbage on long threads.
-	tick().then(() => scrollToBottom(false));
-
-	// #241: async content growth changes scrollHeight WITHOUT a
-	// messages.length change — content-visibility rows realizing their real
-	// heights (#175), async markdown/mermaid, a trailing yard/MCP panel
-	// relocating when its source row arrives — so the count-based effect
-	// never re-fires and the viewport drifts up off the bottom. Re-pin the
-	// viewport whenever the scroller's box changes while the user is at the
-	// bottom: the same invariant the count effect enforces for appends,
-	// extended to growth the effect cannot see. Instant, not smooth — this
-	// is correction, not motion. `isAtBottom` is maintained by handleScroll,
-	// so a viewport that left the bottom (user scroll, or the scroll event
-	// a pinned re-layout naturally emits) is never yanked back down.
-	if (scrollContainer) {
-		const ro = new ResizeObserver(() => {
-			if (scrollContainer && isAtBottom) {
-				scrollContainer.scrollTop = scrollContainer.scrollHeight;
-			}
-		});
-		ro.observe(scrollContainer);
-		return () => ro.disconnect();
-	}
-});
-
-$effect(() => {
-	const count = messages.length;
-	if (count === prevMessageCount) return;
-
-	const lastMsg = messages[count - 1];
-	const isNewUserMessage = lastMsg?.role === "user";
-
-	if (isNewUserMessage || isAtBottom) {
-		tick().then(() => scrollToBottom());
-	}
-
-	prevMessageCount = count;
-});
-
-// Auto-scroll during streaming when user is already at the bottom
-$effect(() => {
-	if (streamingText && isAtBottom) {
-		tick().then(() => scrollToBottom(false));
-	}
-});
-
-// --- Turn range highlighting + scroll ---
-function tsInRange(ts: string | undefined, range: TurnRange): boolean {
-	if (!ts) return false;
-	if (ts < range.from) return false;
-	if (range.to !== null && ts >= range.to) return false;
-	return true;
-}
-
-let prevTurnFrom: string | null = null;
-$effect(() => {
-	const from = turnRange?.from ?? null;
-	if (from === prevTurnFrom) return;
-	prevTurnFrom = from;
-	if (!from || !scrollContainer) return;
-
-	tick().then(() => {
 		requestAnimationFrame(() => {
 			if (!scrollContainer) return;
-			const target = scrollContainer.querySelector("[data-turn-active]") as HTMLElement | null;
-			if (target) {
+			scrollContainer.scrollTo({
+				// Read scrollHeight inside the frame (#241): content can grow
+				// between the call and the frame it lands in (streaming chunks,
+				// async markdown/mermaid, trailing yard/MCP panels relocating
+				// when their source row arrives), and a target captured at call
+				// time strands the viewport above the new bottom.
+				top: scrollContainer.scrollHeight,
+				behavior: smooth ? "smooth" : "instant",
+			});
+		});
+	}
+
+	function handleScroll(): void {
+		isAtBottom = checkIsAtBottom();
+	}
+
+	onMount(() => {
+		// Initial position: instant. There is nothing to animate to on load, and
+		// a smooth glide from the top is visible garbage on long threads.
+		tick().then(() => scrollToBottom(false));
+
+		// #241: async content growth changes scrollHeight WITHOUT a
+		// messages.length change — content-visibility rows realizing their real
+		// heights (#175), async markdown/mermaid, a trailing yard/MCP panel
+		// relocating when its source row arrives — so the count-based effect
+		// never re-fires and the viewport drifts up off the bottom. Re-pin the
+		// viewport whenever the scroller's box changes while the user is at the
+		// bottom: the same invariant the count effect enforces for appends,
+		// extended to growth the effect cannot see. Instant, not smooth — this
+		// is correction, not motion. `isAtBottom` is maintained by handleScroll,
+		// so a viewport that left the bottom (user scroll, or the scroll event
+		// a pinned re-layout naturally emits) is never yanked back down.
+		if (scrollContainer) {
+			const ro = new ResizeObserver(() => {
+				if (scrollContainer && isAtBottom) {
+					scrollContainer.scrollTop = scrollContainer.scrollHeight;
+				}
+			});
+			ro.observe(scrollContainer);
+			return () => ro.disconnect();
+		}
+	});
+
+	$effect(() => {
+		const count = messages.length;
+		if (count === prevMessageCount) return;
+
+		const lastMsg = messages[count - 1];
+		const isNewUserMessage = lastMsg?.role === "user";
+
+		if (isNewUserMessage || isAtBottom) {
+			tick().then(() => scrollToBottom());
+		}
+
+		prevMessageCount = count;
+	});
+
+	// Auto-scroll during streaming when user is already at the bottom
+	$effect(() => {
+		if (streamingText && isAtBottom) {
+			tick().then(() => scrollToBottom(false));
+		}
+	});
+
+	// --- Turn range highlighting + scroll ---
+	function tsInRange(ts: string | undefined, range: TurnRange): boolean {
+		if (!ts) return false;
+		if (ts < range.from) return false;
+		if (range.to !== null && ts >= range.to) return false;
+		return true;
+	}
+
+	let prevTurnFrom: string | null = null;
+	$effect(() => {
+		const from = turnRange?.from ?? null;
+		if (from === prevTurnFrom) return;
+		prevTurnFrom = from;
+		if (!from || !scrollContainer) return;
+
+		tick().then(() => {
+			requestAnimationFrame(() => {
+				if (!scrollContainer) return;
+				const target = scrollContainer.querySelector("[data-turn-active]") as HTMLElement | null;
+				if (target) {
+					const containerTop = scrollContainer.getBoundingClientRect().top;
+					const targetTop = target.getBoundingClientRect().top;
+					const offset = targetTop - containerTop + scrollContainer.scrollTop - 12;
+					scrollContainer.scrollTo({ top: offset, behavior: "smooth" });
+				}
+			});
+		});
+	});
+
+	// --- Scroll-to-message (context-panel turn click) ---
+	// Mirrors the turn-range scroll above but keys off a specific message id and
+	// deliberately does NOT set `turnRange`, so no rows are dimmed — just a jump.
+	let prevScrollNonce = -1;
+	$effect(() => {
+		const req = scrollRequest;
+		if (!req || req.nonce === prevScrollNonce) return;
+		prevScrollNonce = req.nonce;
+		if (!scrollContainer) return;
+		const { messageId } = req;
+		const selectorId =
+			typeof CSS !== "undefined" && typeof CSS.escape === "function"
+				? CSS.escape(messageId)
+				: messageId;
+		tick().then(() => {
+			requestAnimationFrame(() => {
+				if (!scrollContainer) return;
+				const target = scrollContainer.querySelector(
+					`[data-message-id="${selectorId}"]`,
+				) as HTMLElement | null;
+				if (!target) return;
 				const containerTop = scrollContainer.getBoundingClientRect().top;
 				const targetTop = target.getBoundingClientRect().top;
 				const offset = targetTop - containerTop + scrollContainer.scrollTop - 12;
 				scrollContainer.scrollTo({ top: offset, behavior: "smooth" });
-			}
+			});
 		});
 	});
-});
 
-// --- Scroll-to-message (context-panel turn click) ---
-// Mirrors the turn-range scroll above but keys off a specific message id and
-// deliberately does NOT set `turnRange`, so no rows are dimmed — just a jump.
-let prevScrollNonce = -1;
-$effect(() => {
-	const req = scrollRequest;
-	if (!req || req.nonce === prevScrollNonce) return;
-	prevScrollNonce = req.nonce;
-	if (!scrollContainer) return;
-	const { messageId } = req;
-	const selectorId =
-		typeof CSS !== "undefined" && typeof CSS.escape === "function"
-			? CSS.escape(messageId)
-			: messageId;
-	tick().then(() => {
-		requestAnimationFrame(() => {
-			if (!scrollContainer) return;
-			const target = scrollContainer.querySelector(
-				`[data-message-id="${selectorId}"]`,
-			) as HTMLElement | null;
-			if (!target) return;
-			const containerTop = scrollContainer.getBoundingClientRect().top;
-			const targetTop = target.getBoundingClientRect().top;
-			const offset = targetTop - containerTop + scrollContainer.scrollTop - 12;
-			scrollContainer.scrollTo({ top: offset, behavior: "smooth" });
-		});
-	});
-});
-
-// Build a lookup from tool_use id → tool_result message so ToolCallCard can
-// surface the result inline beneath its originating tool_use row.
-interface ToolResultMsg {
-	content: string;
-	exit_code?: number | null;
-	tool_name?: string | null;
-	metadata?: string | Record<string, unknown> | null;
-}
-
-const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
-	const map: Record<string, ToolResultMsg> = {};
-	for (const m of messages) {
-		if (m.role === "tool_result" && m.tool_name) {
-			map[m.tool_name] = {
-				content: m.content,
-				exit_code: m.exit_code ?? null,
-				tool_name: m.tool_name,
-				metadata: m.metadata ?? null,
-			};
-		}
+	// Build a lookup from tool_use id → tool_result message so ToolCallCard can
+	// surface the result inline beneath its originating tool_use row.
+	interface ToolResultMsg {
+		content: string;
+		exit_code?: number | null;
+		tool_name?: string | null;
+		metadata?: string | Record<string, unknown> | null;
 	}
-	return map;
-});
 
-// Group consecutive tool_call messages into a single display item. The pure
-// grouping logic (incl. issue #66's break-on-user-facing-text rule) lives in
-// ../lib/message-grouping so it can be unit-tested without mounting the view.
-type DisplayItem = GroupedDisplayItem<Message>;
+	const resultsByToolUseId = $derived.by((): Record<string, ToolResultMsg> => {
+		const map: Record<string, ToolResultMsg> = {};
+		for (const m of messages) {
+			if (m.role === "tool_result" && m.tool_name) {
+				map[m.tool_name] = {
+					content: m.content,
+					exit_code: m.exit_code ?? null,
+					tool_name: m.tool_name,
+					metadata: m.metadata ?? null,
+				};
+			}
+		}
+		return map;
+	});
 
-const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
+	// Group consecutive tool_call messages into a single display item. The pure
+	// grouping logic (incl. issue #66's break-on-user-facing-text rule) lives in
+	// ../lib/message-grouping so it can be unit-tested without mounting the view.
+	type DisplayItem = GroupedDisplayItem<Message>;
 
-// Lifecycle events can precede their persisted tool_call. Keep unmatched trees
-// trailing until polling supplies their source row, then relocate every trace for that call.
-const anchoredYardTrees = $derived.by(() =>
-	anchorYardTrees(
-		yardTrees,
-		displayItems.map((item) => ({ key: item.key, toolCallIds: toolUseIdsInItem(item) })),
-	),
-);
+	const displayItems = $derived.by((): DisplayItem[] => groupMessages(messages));
 
-// Anchor each live MCP App panel beneath the display item carrying the tool_use
-// that spawned it (instance.callId === the persisted tool_use.id). `perItem`
-// keys panels by display-item key for inline render; `trailing` holds instances
-// with no matching item yet — in-flight calls whose tool_call message hasn't
-// streamed in — which fall to the end of the stream until their row arrives.
-const anchoredInstances = $derived.by(
-	(): {
-		perItem: Map<string, McpAppInstance[]>;
-		trailing: McpAppInstance[];
-	} => {
-		const byCallId = new Map<string, McpAppInstance>();
-		for (const inst of appInstances) byCallId.set(inst.callId, inst);
-		const perItem = new Map<string, McpAppInstance[]>();
-		const placed = new Set<string>();
-		for (const item of displayItems) {
-			const matched: McpAppInstance[] = [];
-			for (const id of toolUseIdsInItem(item)) {
-				const inst = byCallId.get(id);
-				if (inst && !placed.has(id)) {
-					matched.push(inst);
-					placed.add(id);
+	// Lifecycle events can precede their persisted tool_call. Keep unmatched trees
+	// trailing until polling supplies their source row, then relocate every trace for that call.
+	const anchoredYardTrees = $derived.by(() =>
+		anchorYardTrees(
+			yardTrees,
+			displayItems.map((item) => ({ key: item.key, toolCallIds: toolUseIdsInItem(item) })),
+		),
+	);
+
+	// Anchor each live MCP App panel beneath the display item carrying the tool_use
+	// that spawned it (instance.callId === the persisted tool_use.id). `perItem`
+	// keys panels by display-item key for inline render; `trailing` holds instances
+	// with no matching item yet — in-flight calls whose tool_call message hasn't
+	// streamed in — which fall to the end of the stream until their row arrives.
+	const anchoredInstances = $derived.by(
+		(): {
+			perItem: Map<string, McpAppInstance[]>;
+			trailing: McpAppInstance[];
+		} => {
+			const byCallId = new Map<string, McpAppInstance>();
+			for (const inst of appInstances) byCallId.set(inst.callId, inst);
+			const perItem = new Map<string, McpAppInstance[]>();
+			const placed = new Set<string>();
+			for (const item of displayItems) {
+				const matched: McpAppInstance[] = [];
+				for (const id of toolUseIdsInItem(item)) {
+					const inst = byCallId.get(id);
+					if (inst && !placed.has(id)) {
+						matched.push(inst);
+						placed.add(id);
+					}
 				}
+				if (matched.length) perItem.set(item.key, matched);
 			}
-			if (matched.length) perItem.set(item.key, matched);
+			const trailing = appInstances.filter((inst) => !placed.has(inst.callId));
+			return { perItem, trailing };
+		},
+	);
+
+	function isItemInRange(item: DisplayItem): boolean {
+		if (!turnRange) return true;
+		if (item.kind === "toolGroup") {
+			return item.timestamps.some((ts) => tsInRange(ts, turnRange));
 		}
-		const trailing = appInstances.filter((inst) => !placed.has(inst.callId));
-		return { perItem, trailing };
-	},
-);
-
-function isItemInRange(item: DisplayItem): boolean {
-	if (!turnRange) return true;
-	if (item.kind === "toolGroup") {
-		return item.timestamps.some((ts) => tsInRange(ts, turnRange));
+		return tsInRange(item.earliest, turnRange);
 	}
-	return tsInRange(item.earliest, turnRange);
-}
 
-// Render time as HH:MM in the local timezone — matches the reference
-// signage aesthetic (tabular-numeric mono, 24-hour).
-function fmtTime(iso: string | undefined): string {
-	if (!iso) return "";
-	try {
-		const d = new Date(iso);
-		if (Number.isNaN(d.getTime())) return "";
-		return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-	} catch {
-		return "";
+	// Render time as HH:MM in the local timezone — matches the reference
+	// signage aesthetic (tabular-numeric mono, 24-hour).
+	function fmtTime(iso: string | undefined): string {
+		if (!iso) return "";
+		try {
+			const d = new Date(iso);
+			if (Number.isNaN(d.getTime())) return "";
+			return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+		} catch {
+			return "";
+		}
 	}
-}
 
-function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
-	if (item.kind === "toolGroup") return "assistant";
-	const role = item.msg.role;
-	if (role === "user") return "user";
-	if (role === "alert") return "alert";
-	if (role === "system") return "system";
-	return "assistant";
-}
+	function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
+		if (item.kind === "toolGroup") return "assistant";
+		const role = item.msg.role;
+		if (role === "user") return "user";
+		if (role === "alert") return "alert";
+		if (role === "system") return "system";
+		return "assistant";
+	}
 </script>
 
 <div class="board">
 	<div class="messages" bind:this={scrollContainer} onscroll={handleScroll}>
 		<McpChallengeCard />
 		{#snippet yardPanelRow(tree: YardTreeSnapshot)}
-			<div class="turn-row" data-message-role="tool_call"><div class="time-gutter mono"></div><div class="rail"><div class="rail-line" style="background: {lineColor}"></div><div class="rail-dot rail-dot-assistant" style="background: {lineColor}; border-color: {lineColor}"></div></div><div class="row-content"><YardExecutionPanel {tree} /></div></div>
+			<div class="turn-row" data-message-role="tool_call">
+				<div class="time-gutter mono"></div>
+				<div class="rail">
+					<div class="rail-line" style="background: {lineColor}"></div>
+					<div
+						class="rail-dot rail-dot-assistant"
+						style="background: {lineColor}; border-color: {lineColor}"
+					></div>
+				</div>
+				<div class="row-content"><YardExecutionPanel {tree} /></div>
+			</div>
 		{/snippet}
 		{#snippet panelRow(instance: McpAppInstance)}
 			<div class="turn-row" data-message-role="tool_call">
@@ -352,19 +362,18 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 						{/if}
 						<div
 							class="rail-dot rail-dot-{kind}"
-							style={kind === "assistant" ? `background: ${lineColor}; border-color: ${lineColor}` : ""}
+							style={kind === "assistant"
+								? `background: ${lineColor}; border-color: ${lineColor}`
+								: ""}
 						></div>
 					</div>
 					<div class="row-content">
 						{#if item.kind === "toolGroup"}
-							<ToolCallCard
-								messages={item.messages}
-								resultsByToolUseId={resultsByToolUseId}
-								{lineColor}
-							/>
+							<ToolCallCard messages={item.messages} {resultsByToolUseId} {lineColor} />
 						{:else}
 							<MessageBubble
-								role={item.msg.role as "user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
+								role={item.msg.role as
+									"user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
 								content={item.msg.content}
 								toolName={item.msg.tool_name}
 								modelId={item.msg.model_id}
@@ -387,21 +396,14 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 				<div class="time-gutter"></div>
 				<div class="rail">
 					<div class="rail-line rail-line-dashed" style="border-left-color: {lineColor}"></div>
-					<div
-						class="rail-dot rail-dot-pulsing"
-						style="border-color: {lineColor}"
-					></div>
+					<div class="rail-dot rail-dot-pulsing" style="border-color: {lineColor}"></div>
 				</div>
 				<div class="row-content">
 					{#if streamingReasoning}
 						<ReasoningBlock text={streamingReasoning} {lineColor} />
 					{/if}
 					{#if streamingText}
-						<MessageBubble
-							role="assistant"
-							content={streamingText}
-							{threadColor}
-						/>
+						<MessageBubble role="assistant" content={streamingText} {threadColor} />
 					{:else if !streamingReasoning}
 						<div class="role-label">Agent</div>
 						<div class="thinking-caption">
@@ -560,8 +562,15 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 	}
 
 	@keyframes rail-dot-pulse {
-		0%, 100% { transform: scale(1); opacity: 1; }
-		50% { transform: scale(1.15); opacity: 0.7; }
+		0%,
+		100% {
+			transform: scale(1);
+			opacity: 1;
+		}
+		50% {
+			transform: scale(1.15);
+			opacity: 0.7;
+		}
 	}
 
 	.row-content {
@@ -602,12 +611,24 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 		animation: thinking-dot 1.4s ease-in-out infinite;
 	}
 
-	.dots .dot:nth-child(2) { animation-delay: 0.2s; }
-	.dots .dot:nth-child(3) { animation-delay: 0.4s; }
+	.dots .dot:nth-child(2) {
+		animation-delay: 0.2s;
+	}
+	.dots .dot:nth-child(3) {
+		animation-delay: 0.4s;
+	}
 
 	@keyframes thinking-dot {
-		0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
-		40% { opacity: 1; transform: scale(1); }
+		0%,
+		80%,
+		100% {
+			opacity: 0.3;
+			transform: scale(0.85);
+		}
+		40% {
+			opacity: 1;
+			transform: scale(1);
+		}
 	}
 
 	.empty-state {
@@ -620,8 +641,14 @@ function dotKind(item: DisplayItem): "user" | "assistant" | "alert" | "system" {
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.rail-dot-pulsing { animation: none; }
-		.dots .dot { animation: none; }
-		.messages { scroll-behavior: auto; }
+		.rail-dot-pulsing {
+			animation: none;
+		}
+		.dots .dot {
+			animation: none;
+		}
+		.messages {
+			scroll-behavior: auto;
+		}
 	}
 </style>

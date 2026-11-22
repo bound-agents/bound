@@ -6,7 +6,7 @@
 	"main": "src/index.ts",
 	"types": "src/index.ts",
 	"scripts": {
-		"typecheck": "tsc -p . --noEmit",
+		"typecheck": "bun check --no-script -p .",
 		"dev": "vite",
 		"build": "vite build && bun run ../../scripts/embed-assets.ts",
 		"preview": "vite preview"

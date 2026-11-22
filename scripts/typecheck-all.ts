@@ -1,12 +1,11 @@
 /**
  * Sequential workspace typecheck runner.
  *
- * Replaces `bun run --filter "*" --parallel typecheck`, whose concurrent tsc
- * processes need more commit charge than a memory-constrained host has free
- * (observed live: repeated native V8 "Zone" OOM kills during the pre-commit
- * gate with ~2GB free). Bun's filtered runner schedules workspaces
- * concurrently even without --parallel, so an explicit loop is the only way
- * to bound memory to one compiler at a time.
+ * Each package's `typecheck` script runs `bun check`, which already uses every
+ * CPU core, so running packages one at a time loses nothing and bounds memory
+ * to one checker. (Bun's filtered runner schedules workspaces concurrently
+ * even without --parallel, which with tsc caused native V8 "Zone" OOM kills
+ * during the pre-commit gate on memory-constrained hosts.)
  *
  * Usage: bun scripts/typecheck-all.ts [package ...]
  * Set BOUND_TYPECHECK_CONCURRENCY > 1 to restore parallelism where memory

@@ -1,107 +1,201 @@
 <script lang="ts">
-import type { ClusterModelInfo, RssFeedListEntry } from "@bound/client";
-import { onMount } from "svelte";
-import Btn from "../components/Btn.svelte";
-import DataTable from "../components/DataTable.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import TaskCard from "../components/TaskCard.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import { client } from "../lib/bound";
+	import type { ClusterModelInfo, RssFeedListEntry } from "@bound/client";
+	import { onMount } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import DataTable from "../components/DataTable.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import TaskCard from "../components/TaskCard.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import { client } from "../lib/bound";
 
-let feeds: RssFeedListEntry[] = $state([]);
-let loading = $state(true);
-let view = $state<"list" | "create" | "detail">("list");
-let selectedFeed = $state<RssFeedListEntry | null>(null);
-let error = $state<string | null>(null);
+	let feeds: RssFeedListEntry[] = $state([]);
+	let loading = $state(true);
+	let view = $state<"list" | "create" | "detail">("list");
+	let selectedFeed = $state<RssFeedListEntry | null>(null);
+	let error = $state<string | null>(null);
 
-// Cluster model catalogue (for dropdowns). Empty = use cluster default.
-let availableModels: ClusterModelInfo[] = $state([]);
-let defaultModel = $state("");
+	// Cluster model catalogue (for dropdowns). Empty = use cluster default.
+	let availableModels: ClusterModelInfo[] = $state([]);
+	let defaultModel = $state("");
 
-// Create form state
-let createName = $state("");
-let createUrl = $state("");
-let createDescription = $state("");
-let createPrompt = $state("");
-let createInterval = $state(900);
-let createModel = $state(""); // "" = use cluster default
-let createNoHistory = $state(false);
-let createError = $state<string | null>(null);
+	// Create form state
+	let createName = $state("");
+	let createUrl = $state("");
+	let createDescription = $state("");
+	let createPrompt = $state("");
+	let createInterval = $state(900);
+	let createModel = $state(""); // "" = use cluster default
+	let createNoHistory = $state(false);
+	let createError = $state<string | null>(null);
 
-// Edit form state
-let editUrl = $state("");
-let editDescription = $state("");
-let editPrompt = $state("");
-let editInterval = $state(900);
-let editModel = $state(""); // "" = use cluster default
-let editNoHistory = $state(false);
-let editError = $state<string | null>(null);
+	// Edit form state
+	let editUrl = $state("");
+	let editDescription = $state("");
+	let editPrompt = $state("");
+	let editInterval = $state(900);
+	let editModel = $state(""); // "" = use cluster default
+	let editNoHistory = $state(false);
+	let editError = $state<string | null>(null);
 
-// Loading states
-let actionInProgress = $state<string | null>(null);
+	// Loading states
+	let actionInProgress = $state<string | null>(null);
 
-const columns = [
-	{ key: "name", label: "Name", width: "2fr", mono: true },
-	{ key: "url", label: "Feed URL", width: "3fr", mono: true },
-	{ key: "interval", label: "Poll every", width: "1fr" },
-	{ key: "created_at", label: "Created", width: "2fr" },
-];
+	const columns = [
+		{ key: "name", label: "Name", width: "2fr", mono: true },
+		{ key: "url", label: "Feed URL", width: "3fr", mono: true },
+		{ key: "interval", label: "Poll every", width: "1fr" },
+		{ key: "created_at", label: "Created", width: "2fr" },
+	];
 
-onMount(() => {
-	loadFeeds();
-	loadModels();
-});
+	onMount(() => {
+		loadFeeds();
+		loadModels();
+	});
 
-async function loadFeeds(): Promise<void> {
-	try {
-		loading = true;
-		error = null;
-		feeds = await client.listRssFeeds();
-	} catch (err: unknown) {
-		console.error("Failed to load RSS feeds:", err);
-		error = err instanceof Error ? err.message : "Failed to load RSS feeds. Please try again.";
-	} finally {
-		loading = false;
-	}
-}
-
-async function loadModels(): Promise<void> {
-	// Best-effort: dropdown still falls back to a free-text default if /models fails.
-	try {
-		const resp = await client.listModels();
-		availableModels = resp.models;
-		defaultModel = resp.default;
-	} catch (err: unknown) {
-		console.error("Failed to load models for RSS feed dropdown:", err);
-	}
-}
-
-async function handleCreate(): Promise<void> {
-	if (!createName.trim()) {
-		createError = "Name is required";
-		return;
-	}
-	if (!createUrl.trim()) {
-		createError = "Feed URL is required";
-		return;
+	async function loadFeeds(): Promise<void> {
+		try {
+			loading = true;
+			error = null;
+			feeds = await client.listRssFeeds();
+		} catch (err: unknown) {
+			console.error("Failed to load RSS feeds:", err);
+			error = err instanceof Error ? err.message : "Failed to load RSS feeds. Please try again.";
+		} finally {
+			loading = false;
+		}
 	}
 
-	actionInProgress = "create";
-	createError = null;
+	async function loadModels(): Promise<void> {
+		// Best-effort: dropdown still falls back to a free-text default if /models fails.
+		try {
+			const resp = await client.listModels();
+			availableModels = resp.models;
+			defaultModel = resp.default;
+		} catch (err: unknown) {
+			console.error("Failed to load models for RSS feed dropdown:", err);
+		}
+	}
 
-	try {
-		await client.createRssFeed({
-			name: createName,
-			url: createUrl,
-			description: createDescription || undefined,
-			prompt: createPrompt || undefined,
-			poll_interval_seconds: createInterval,
-			model_hint: createModel || null,
-			no_history: createNoHistory,
-		});
+	async function handleCreate(): Promise<void> {
+		if (!createName.trim()) {
+			createError = "Name is required";
+			return;
+		}
+		if (!createUrl.trim()) {
+			createError = "Feed URL is required";
+			return;
+		}
 
-		// Reset form
+		actionInProgress = "create";
+		createError = null;
+
+		try {
+			await client.createRssFeed({
+				name: createName,
+				url: createUrl,
+				description: createDescription || undefined,
+				prompt: createPrompt || undefined,
+				poll_interval_seconds: createInterval,
+				model_hint: createModel || null,
+				no_history: createNoHistory,
+			});
+
+			// Reset form
+			createName = "";
+			createUrl = "";
+			createDescription = "";
+			createPrompt = "";
+			createInterval = 900;
+			createModel = "";
+			createNoHistory = false;
+
+			await loadFeeds();
+			view = "list";
+		} catch (err: unknown) {
+			console.error("Failed to create RSS feed:", err);
+			createError =
+				err instanceof Error ? err.message : "Failed to create RSS feed. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	async function handleDelete(id: string): Promise<void> {
+		if (!confirm("Are you sure you want to delete this feed? This action cannot be undone.")) {
+			return;
+		}
+
+		actionInProgress = `delete:${id}`;
+
+		try {
+			await client.deleteRssFeed(id);
+			await loadFeeds();
+			view = "list";
+			selectedFeed = null;
+		} catch (err: unknown) {
+			console.error("Failed to delete RSS feed:", err);
+			error = err instanceof Error ? err.message : "Failed to delete RSS feed. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	async function handleUpdate(id: string): Promise<void> {
+		actionInProgress = `update:${id}`;
+		editError = null;
+
+		try {
+			await client.updateRssFeed(id, {
+				url: editUrl || undefined,
+				description: editDescription || undefined,
+				prompt: editPrompt || undefined,
+				poll_interval_seconds: editInterval,
+				model_hint: editModel || null,
+				no_history: editNoHistory,
+			});
+
+			await loadFeeds();
+
+			const updated = feeds.find((f) => f.id === id);
+			if (updated) {
+				selectedFeed = updated;
+			}
+		} catch (err: unknown) {
+			console.error("Failed to update RSS feed:", err);
+			editError =
+				err instanceof Error ? err.message : "Failed to update RSS feed. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	function handleSelectFeed(feed: RssFeedListEntry): void {
+		selectedFeed = feed;
+		editUrl = feed.url;
+		editDescription = feed.description ?? "";
+		editPrompt = feed.prompt ?? "";
+		editInterval = feed.poll_interval_seconds;
+		editModel = feed.model_hint ?? "";
+		editNoHistory = feed.no_history === true;
+		editError = null;
+		view = "detail";
+	}
+
+	function handleBackToList(): void {
+		view = "list";
+		selectedFeed = null;
+		editUrl = "";
+		editDescription = "";
+		editPrompt = "";
+		editInterval = 900;
+		editModel = "";
+		editNoHistory = false;
+		editError = null;
+	}
+
+	function handleCreateNew(): void {
+		view = "create";
 		createName = "";
 		createUrl = "";
 		createDescription = "";
@@ -109,128 +203,31 @@ async function handleCreate(): Promise<void> {
 		createInterval = 900;
 		createModel = "";
 		createNoHistory = false;
-
-		await loadFeeds();
-		view = "list";
-	} catch (err: unknown) {
-		console.error("Failed to create RSS feed:", err);
-		createError =
-			err instanceof Error ? err.message : "Failed to create RSS feed. Please try again.";
-	} finally {
-		actionInProgress = null;
-	}
-}
-
-async function handleDelete(id: string): Promise<void> {
-	if (!confirm("Are you sure you want to delete this feed? This action cannot be undone.")) {
-		return;
+		createError = null;
 	}
 
-	actionInProgress = `delete:${id}`;
-
-	try {
-		await client.deleteRssFeed(id);
-		await loadFeeds();
-		view = "list";
-		selectedFeed = null;
-	} catch (err: unknown) {
-		console.error("Failed to delete RSS feed:", err);
-		error = err instanceof Error ? err.message : "Failed to delete RSS feed. Please try again.";
-	} finally {
-		actionInProgress = null;
+	function formatInterval(seconds: number): string {
+		if (seconds % 3600 === 0) return `${seconds / 3600}h`;
+		if (seconds % 60 === 0) return `${seconds / 60}m`;
+		return `${seconds}s`;
 	}
-}
 
-async function handleUpdate(id: string): Promise<void> {
-	actionInProgress = `update:${id}`;
-	editError = null;
-
-	try {
-		await client.updateRssFeed(id, {
-			url: editUrl || undefined,
-			description: editDescription || undefined,
-			prompt: editPrompt || undefined,
-			poll_interval_seconds: editInterval,
-			model_hint: editModel || null,
-			no_history: editNoHistory,
-		});
-
-		await loadFeeds();
-
-		const updated = feeds.find((f) => f.id === id);
-		if (updated) {
-			selectedFeed = updated;
+	function formatDate(iso: string): string {
+		try {
+			return new Date(iso).toLocaleDateString("en-US", {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+			});
+		} catch {
+			return iso;
 		}
-	} catch (err: unknown) {
-		console.error("Failed to update RSS feed:", err);
-		editError = err instanceof Error ? err.message : "Failed to update RSS feed. Please try again.";
-	} finally {
-		actionInProgress = null;
 	}
-}
-
-function handleSelectFeed(feed: RssFeedListEntry): void {
-	selectedFeed = feed;
-	editUrl = feed.url;
-	editDescription = feed.description ?? "";
-	editPrompt = feed.prompt ?? "";
-	editInterval = feed.poll_interval_seconds;
-	editModel = feed.model_hint ?? "";
-	editNoHistory = feed.no_history === true;
-	editError = null;
-	view = "detail";
-}
-
-function handleBackToList(): void {
-	view = "list";
-	selectedFeed = null;
-	editUrl = "";
-	editDescription = "";
-	editPrompt = "";
-	editInterval = 900;
-	editModel = "";
-	editNoHistory = false;
-	editError = null;
-}
-
-function handleCreateNew(): void {
-	view = "create";
-	createName = "";
-	createUrl = "";
-	createDescription = "";
-	createPrompt = "";
-	createInterval = 900;
-	createModel = "";
-	createNoHistory = false;
-	createError = null;
-}
-
-function formatInterval(seconds: number): string {
-	if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-	if (seconds % 60 === 0) return `${seconds / 60}m`;
-	return `${seconds}s`;
-}
-
-function formatDate(iso: string): string {
-	try {
-		return new Date(iso).toLocaleDateString("en-US", {
-			month: "short",
-			day: "numeric",
-			year: "numeric",
-		});
-	} catch {
-		return iso;
-	}
-}
 </script>
 
 <Page>
 	{#snippet children()}
-		<SectionHeader
-			number={6}
-			subtitle="Polled feed subscriptions"
-			title="RSS Feeds"
-		>
+		<SectionHeader number={6} subtitle="Polled feed subscriptions" title="RSS Feeds">
 			{#snippet actions()}
 				<TicketTab color="var(--accent)">
 					{#snippet children()}{feeds.length} active{/snippet}
@@ -254,11 +251,7 @@ function formatDate(iso: string): string {
 				<div class="list-header">
 					<h2 class="section-title">RSS Feeds · {feeds.length}</h2>
 					<div class="spacer"></div>
-					<Btn
-						variant="accent"
-						size="sm"
-						onclick={handleCreateNew}
-					>
+					<Btn variant="accent" size="sm" onclick={handleCreateNew}>
 						{#snippet children()}New Feed{/snippet}
 					</Btn>
 				</div>
@@ -284,11 +277,7 @@ function formatDate(iso: string): string {
 			<div class="form-view">
 				<div class="form-header">
 					<h2 class="section-title">Create RSS Feed</h2>
-					<button
-						class="back-btn"
-						onclick={handleBackToList}
-						aria-label="Back to list"
-					>
+					<button class="back-btn" onclick={handleBackToList} aria-label="Back to list">
 						← Back
 					</button>
 				</div>
@@ -317,8 +306,8 @@ function formatDate(iso: string): string {
 							required
 						/>
 						<p class="help-text">
-							Lowercase identifier (a-z, 0-9, dashes, underscores). Used as the routing
-							key for the feed's event task.
+							Lowercase identifier (a-z, 0-9, dashes, underscores). Used as the routing key for the
+							feed's event task.
 						</p>
 					</div>
 
@@ -365,13 +354,10 @@ function formatDate(iso: string): string {
 							bind:value={createModel}
 							disabled={actionInProgress === "create"}
 						>
-							<option value=""
-								>Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
-							>
+							<option value="">Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option>
 							{#each availableModels as m (`${m.host}/${m.id}`)}
 								<option value={m.id}
-									>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
-									"offline?"
+									>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status === "offline?"
 										? " (offline?)"
 										: ""}</option
 								>
@@ -386,8 +372,7 @@ function formatDate(iso: string): string {
 							bind:value={createPrompt}
 							placeholder="Instructions for handling new items from this feed (optional)"
 							rows={4}
-							disabled={actionInProgress === "create"}
-						></textarea>
+							disabled={actionInProgress === "create"}></textarea>
 					</div>
 
 					<div class="form-group checkbox-group">
@@ -401,8 +386,8 @@ function formatDate(iso: string): string {
 							Disable history (no_history)
 						</label>
 						<p class="help-text">
-							When enabled, each delivery starts from a clean context window. Saves
-							tokens for stateless handlers.
+							When enabled, each delivery starts from a clean context window. Saves tokens for
+							stateless handlers.
 						</p>
 					</div>
 
@@ -410,9 +395,7 @@ function formatDate(iso: string): string {
 						<Btn
 							variant="accent"
 							type="submit"
-							disabled={actionInProgress === "create" ||
-								!createName.trim() ||
-								!createUrl.trim()}
+							disabled={actionInProgress === "create" || !createName.trim() || !createUrl.trim()}
 						>
 							{#snippet children()}
 								{actionInProgress === "create" ? "Creating…" : "Create"}
@@ -433,11 +416,7 @@ function formatDate(iso: string): string {
 			<div class="detail-view">
 				<div class="detail-header">
 					<h2 class="section-title">{selectedFeed.name}</h2>
-					<button
-						class="back-btn"
-						onclick={handleBackToList}
-						aria-label="Back to list"
-					>
+					<button class="back-btn" onclick={handleBackToList} aria-label="Back to list">
 						← Back
 					</button>
 				</div>
@@ -488,8 +467,8 @@ function formatDate(iso: string): string {
 								disabled={actionInProgress !== null}
 							/>
 							<p class="help-text">
-								Changing the URL resets the feed's seen-items cursor — the next
-								poll seeds from the new feed without delivering its backlog.
+								Changing the URL resets the feed's seen-items cursor — the next poll seeds from the
+								new feed without delivering its backlog.
 							</p>
 						</div>
 
@@ -518,20 +497,11 @@ function formatDate(iso: string): string {
 
 						<div class="form-group">
 							<label for="edit-model">Model</label>
-							<select
-								id="edit-model"
-								bind:value={editModel}
-								disabled={actionInProgress !== null}
-							>
-								<option value=""
-									>Cluster default{defaultModel
-										? ` (${defaultModel})`
-										: ""}</option
-								>
+							<select id="edit-model" bind:value={editModel} disabled={actionInProgress !== null}>
+								<option value="">Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option>
 								{#each availableModels as m (`${m.host}/${m.id}`)}
 									<option value={m.id}
-										>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
-										"offline?"
+										>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status === "offline?"
 											? " (offline?)"
 											: ""}</option
 									>
@@ -546,8 +516,7 @@ function formatDate(iso: string): string {
 								bind:value={editPrompt}
 								placeholder="Instructions for handling new items from this feed (optional)"
 								rows={4}
-								disabled={actionInProgress !== null}
-							></textarea>
+								disabled={actionInProgress !== null}></textarea>
 						</div>
 
 						<div class="form-group checkbox-group">
@@ -566,15 +535,9 @@ function formatDate(iso: string): string {
 						</div>
 
 						<div class="form-actions">
-							<Btn
-								variant="accent"
-								type="submit"
-								disabled={actionInProgress !== null}
-							>
+							<Btn variant="accent" type="submit" disabled={actionInProgress !== null}>
 								{#snippet children()}
-									{actionInProgress?.startsWith("update:")
-										? "Saving…"
-										: "Save"}
+									{actionInProgress?.startsWith("update:") ? "Saving…" : "Save"}
 								{/snippet}
 							</Btn>
 							<Btn
@@ -601,13 +564,10 @@ function formatDate(iso: string): string {
 							variant="ghost"
 							size="sm"
 							disabled={actionInProgress?.startsWith("delete:") ?? false}
-							onclick={() =>
-								handleDelete(selectedFeed!.id)}
+							onclick={() => handleDelete(selectedFeed!.id)}
 						>
 							{#snippet children()}
-								{actionInProgress?.startsWith("delete:")
-									? "Deleting…"
-									: "Delete"}
+								{actionInProgress?.startsWith("delete:") ? "Deleting…" : "Delete"}
 							{/snippet}
 						</Btn>
 					</div>

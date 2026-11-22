@@ -1,52 +1,47 @@
 <script lang="ts">
-interface Props {
-	turns: Array<{ context_debug: { totalEstimated: number; contextWindow: number } }>;
-	selectedIdx: number;
-	onSelectTurn?: (idx: number) => void;
-}
+	interface Props {
+		turns: Array<{ context_debug: { totalEstimated: number; contextWindow: number } }>;
+		selectedIdx: number;
+		onSelectTurn?: (idx: number) => void;
+	}
 
-const { turns, selectedIdx, onSelectTurn }: Props = $props();
+	const { turns, selectedIdx, onSelectTurn }: Props = $props();
 
-const WIDTH = 288; // 320px panel - 32px padding
-const HEIGHT = 48;
+	const WIDTH = 288; // 320px panel - 32px padding
+	const HEIGHT = 48;
 
-interface Point {
-	x: number;
-	y: number;
-}
+	interface Point {
+		x: number;
+		y: number;
+	}
 
-const points = $derived.by<Point[]>(() => {
-	if (turns.length === 0) return [];
-	const maxTokens = Math.max(
-		...turns.map((t: Props["turns"][number]) => t.context_debug.contextWindow),
-	);
-	return turns.map((turn: Props["turns"][number], i: number) => ({
-		x: turns.length === 1 ? WIDTH / 2 : (i / (turns.length - 1)) * WIDTH,
-		y: HEIGHT - (turn.context_debug.totalEstimated / maxTokens) * (HEIGHT - 4),
-	}));
-});
+	const points = $derived.by<Point[]>(() => {
+		if (turns.length === 0) return [];
+		const maxTokens = Math.max(
+			...turns.map((t: Props["turns"][number]) => t.context_debug.contextWindow),
+		);
+		return turns.map((turn: Props["turns"][number], i: number) => ({
+			x: turns.length === 1 ? WIDTH / 2 : (i / (turns.length - 1)) * WIDTH,
+			y: HEIGHT - (turn.context_debug.totalEstimated / maxTokens) * (HEIGHT - 4),
+		}));
+	});
 
-const pathD = $derived.by(() => {
-	if (points.length === 0) return "";
-	const line = points
-		.map((p: Point, i: number) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
-		.join(" ");
-	return `${line} L ${points[points.length - 1].x} ${HEIGHT} L ${points[0].x} ${HEIGHT} Z`;
-});
+	const pathD = $derived.by(() => {
+		if (points.length === 0) return "";
+		const line = points
+			.map((p: Point, i: number) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`)
+			.join(" ");
+		return `${line} L ${points[points.length - 1].x} ${HEIGHT} L ${points[0].x} ${HEIGHT} Z`;
+	});
 
-const selectedPoint = $derived.by(() => {
-	const idx = selectedIdx >= 0 ? selectedIdx : points.length - 1;
-	return points[idx] ?? null;
-});
+	const selectedPoint = $derived.by(() => {
+		const idx = selectedIdx >= 0 ? selectedIdx : points.length - 1;
+		return points[idx] ?? null;
+	});
 </script>
 
 <div class="sparkline-container">
-	<svg
-		viewBox="0 0 {WIDTH} {HEIGHT}"
-		width="100%"
-		height={HEIGHT}
-		preserveAspectRatio="none"
-	>
+	<svg viewBox="0 0 {WIDTH} {HEIGHT}" width="100%" height={HEIGHT} preserveAspectRatio="none">
 		<!-- Area fill -->
 		{#if pathD}
 			<path d={pathD} fill="var(--ink)" opacity="0.1" />

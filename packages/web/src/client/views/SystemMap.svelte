@@ -1,208 +1,208 @@
 <script lang="ts">
-import type { ThreadListEntry } from "@bound/client";
-import { Search } from "lucide-svelte";
-import { onDestroy, onMount } from "svelte";
-import Btn from "../components/Btn.svelte";
-import MemoryGraph from "../components/MemoryGraph.svelte";
-import TextInput from "../components/TextInput.svelte";
-import ThreadList from "../components/ThreadList.svelte";
-import { client, connectWebSocket, subscribeToThread } from "../lib/bound";
-import { navigateTo } from "../lib/router";
+	import type { ThreadListEntry } from "@bound/client";
+	import { Search } from "lucide-svelte";
+	import { onDestroy, onMount } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import MemoryGraph from "../components/MemoryGraph.svelte";
+	import TextInput from "../components/TextInput.svelte";
+	import ThreadList from "../components/ThreadList.svelte";
+	import { client, connectWebSocket, subscribeToThread } from "../lib/bound";
+	import { navigateTo } from "../lib/router";
 
-interface ThreadStatus {
-	active: boolean;
-}
+	interface ThreadStatus {
+		active: boolean;
+	}
 
-// PAGE_SIZE is large enough to cover most viewports without immediately
-// triggering a "load more" on mount, small enough to keep the SQL bounded.
-// Server caps at 200 - see packages/web/src/server/routes/threads.ts.
-const PAGE_SIZE = 50;
+	// PAGE_SIZE is large enough to cover most viewports without immediately
+	// triggering a "load more" on mount, small enough to keep the SQL bounded.
+	// Server caps at 200 - see packages/web/src/server/routes/threads.ts.
+	const PAGE_SIZE = 50;
 
-// Source of truth is the id-entry map; the directory list is derived from it.
-// Holding the map lets us merge poll results without throwing away threads
-// loaded by paginated "load more" calls.
-let threadsById: Map<string, ThreadListEntry> = $state(new Map());
-// Server-reported total of threads matching the directory filter, independent
-// of how many pages are currently loaded. Drives the "Active Lines · N" count
-// so it reflects the full set rather than the loaded window (#94).
-let totalThreadCount = $state(0);
-let hasMoreThreads = $state(false);
-let isLoadingMore = $state(false);
-let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
-let hoveredThreadId: string | null = $state(null);
-let searchQuery = $state("");
-let creating = $state(false);
-let subscribedIds = new Set<string>();
+	// Source of truth is the id-entry map; the directory list is derived from it.
+	// Holding the map lets us merge poll results without throwing away threads
+	// loaded by paginated "load more" calls.
+	let threadsById: Map<string, ThreadListEntry> = $state(new Map());
+	// Server-reported total of threads matching the directory filter, independent
+	// of how many pages are currently loaded. Drives the "Active Lines · N" count
+	// so it reflects the full set rather than the loaded window (#94).
+	let totalThreadCount = $state(0);
+	let hasMoreThreads = $state(false);
+	let isLoadingMore = $state(false);
+	let threadStatuses: Map<string, ThreadStatus> = $state(new Map());
+	let hoveredThreadId: string | null = $state(null);
+	let searchQuery = $state("");
+	let creating = $state(false);
+	let subscribedIds = new Set<string>();
 
-const threads = $derived.by(() => {
-	const arr = [...threadsById.values()];
-	arr.sort((a, b) => {
-		if (a.last_message_at !== b.last_message_at) {
-			return b.last_message_at.localeCompare(a.last_message_at);
-		}
-		return b.id.localeCompare(a.id);
-	});
-	return arr;
-});
-
-const filteredThreads = $derived(
-	searchQuery.trim()
-		? threads.filter((t) => {
-				const q = searchQuery.toLowerCase();
-				return (
-					(t.title?.toLowerCase().includes(q) ?? false) ||
-					(t.summary?.toLowerCase().includes(q) ?? false)
-				);
-			})
-		: threads,
-);
-
-const hoveredThread = $derived(
-	hoveredThreadId ? threads.find((t) => t.id === hoveredThreadId) : null,
-);
-
-// Merge a freshly-fetched batch into the local map and seed status/subscriptions.
-// `prunePage1Window` is true only for the polling fetch; it removes any cached
-// thread that *should* have appeared in this page-1 result but didn't,
-// catching deletions of threads currently in the newest-N window.
-// `last_message_at` is monotonic (only bumps forward when a new message
-// arrives), so a thread cannot fall off page 1 by being bumped - only by
-// deletion.
-function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean } = {}): void {
-	const map = new Map(threadsById);
-	const status = new Map(threadStatuses);
-
-	if (opts.prunePage1Window) {
-		const liveIds = new Set(batch.map((t) => t.id));
-		if (batch.length === PAGE_SIZE) {
-			const cursor = batch[batch.length - 1].last_message_at;
-			for (const [id, t] of map) {
-				if (t.last_message_at >= cursor && !liveIds.has(id)) {
-					map.delete(id);
-					status.delete(id);
-				}
+	const threads = $derived.by(() => {
+		const arr = [...threadsById.values()];
+		arr.sort((a, b) => {
+			if (a.last_message_at !== b.last_message_at) {
+				return b.last_message_at.localeCompare(a.last_message_at);
 			}
-		} else {
-			// Fewer than PAGE_SIZE - that's the entire visible set.
-			for (const id of [...map.keys()]) {
-				if (!liveIds.has(id)) {
-					map.delete(id);
-					status.delete(id);
-				}
-			}
-		}
-	}
-
-	for (const t of batch) {
-		map.set(t.id, t);
-		// For poll refreshes (prunePage1Window), always use the REST API's active
-		// flag -- it derives from the synced tasks.status='running' and is correct
-		// for remote-host tasks that don't emit cross-host WS status events (#42).
-		// For load-more pages, only seed status for new entries not yet tracked.
-		if (opts.prunePage1Window || !status.has(t.id)) {
-			status.set(t.id, { active: t.active });
-		}
-		if (!subscribedIds.has(t.id)) {
-			subscribeToThread(t.id);
-			subscribedIds.add(t.id);
-		}
-	}
-
-	threadsById = map;
-	threadStatuses = status;
-}
-
-// Refresh the visible head of the thread list. Polled every 15s plus run on
-// mount; status updates between polls flow over the WS `thread:status`
-// channel. Older paginated pages remain in the map - they don't get
-// re-fetched per-poll, but their per-thread status updates flow over WS.
-async function loadThreads(): Promise<void> {
-	try {
-		const { threads: next, total } = await client.listThreadsPage({ limit: PAGE_SIZE });
-		totalThreadCount = total;
-		mergeBatch(next, { prunePage1Window: true });
-		// We only know "no more" definitively when the page came back short;
-		// a full page tells us nothing about further pages without paginating.
-		if (next.length < PAGE_SIZE) {
-			hasMoreThreads = false;
-		} else if (threadsById.size === next.length) {
-			// First-ever load returned a full page - assume there might be more.
-			hasMoreThreads = true;
-		}
-	} catch (error) {
-		console.error("Failed to load threads:", error);
-	}
-}
-
-async function loadMoreThreads(): Promise<void> {
-	if (!hasMoreThreads || isLoadingMore) return;
-	const list = threads;
-	if (list.length === 0) return;
-	const last = list[list.length - 1];
-	isLoadingMore = true;
-	try {
-		const { threads: next, total } = await client.listThreadsPage({
-			limit: PAGE_SIZE,
-			before: { last_message_at: last.last_message_at, id: last.id },
+			return b.id.localeCompare(a.id);
 		});
-		totalThreadCount = total;
-		mergeBatch(next);
-		hasMoreThreads = next.length === PAGE_SIZE;
-	} catch (error) {
-		console.error("Failed to load more threads:", error);
-	} finally {
-		isLoadingMore = false;
+		return arr;
+	});
+
+	const filteredThreads = $derived(
+		searchQuery.trim()
+			? threads.filter((t) => {
+					const q = searchQuery.toLowerCase();
+					return (
+						(t.title?.toLowerCase().includes(q) ?? false) ||
+						(t.summary?.toLowerCase().includes(q) ?? false)
+					);
+				})
+			: threads,
+	);
+
+	const hoveredThread = $derived(
+		hoveredThreadId ? threads.find((t) => t.id === hoveredThreadId) : null,
+	);
+
+	// Merge a freshly-fetched batch into the local map and seed status/subscriptions.
+	// `prunePage1Window` is true only for the polling fetch; it removes any cached
+	// thread that *should* have appeared in this page-1 result but didn't,
+	// catching deletions of threads currently in the newest-N window.
+	// `last_message_at` is monotonic (only bumps forward when a new message
+	// arrives), so a thread cannot fall off page 1 by being bumped - only by
+	// deletion.
+	function mergeBatch(batch: ThreadListEntry[], opts: { prunePage1Window?: boolean } = {}): void {
+		const map = new Map(threadsById);
+		const status = new Map(threadStatuses);
+
+		if (opts.prunePage1Window) {
+			const liveIds = new Set(batch.map((t) => t.id));
+			if (batch.length === PAGE_SIZE) {
+				const cursor = batch[batch.length - 1].last_message_at;
+				for (const [id, t] of map) {
+					if (t.last_message_at >= cursor && !liveIds.has(id)) {
+						map.delete(id);
+						status.delete(id);
+					}
+				}
+			} else {
+				// Fewer than PAGE_SIZE - that's the entire visible set.
+				for (const id of [...map.keys()]) {
+					if (!liveIds.has(id)) {
+						map.delete(id);
+						status.delete(id);
+					}
+				}
+			}
+		}
+
+		for (const t of batch) {
+			map.set(t.id, t);
+			// For poll refreshes (prunePage1Window), always use the REST API's active
+			// flag -- it derives from the synced tasks.status='running' and is correct
+			// for remote-host tasks that don't emit cross-host WS status events (#42).
+			// For load-more pages, only seed status for new entries not yet tracked.
+			if (opts.prunePage1Window || !status.has(t.id)) {
+				status.set(t.id, { active: t.active });
+			}
+			if (!subscribedIds.has(t.id)) {
+				subscribeToThread(t.id);
+				subscribedIds.add(t.id);
+			}
+		}
+
+		threadsById = map;
+		threadStatuses = status;
 	}
-}
 
-function handleThreadStatus(data: unknown): void {
-	const s = data as {
-		thread_id?: string;
-		active?: boolean;
-	};
-	if (!s.thread_id) return;
-	const next = new Map(threadStatuses);
-	next.set(s.thread_id, { active: s.active ?? false });
-	threadStatuses = next;
-}
-
-async function newThread(): Promise<void> {
-	creating = true;
-	try {
-		const thread = await client.createThread();
-		navigateTo(`/line/${thread.id}`);
-	} catch (error) {
-		console.error("Failed to create thread:", error);
-		creating = false;
+	// Refresh the visible head of the thread list. Polled every 15s plus run on
+	// mount; status updates between polls flow over the WS `thread:status`
+	// channel. Older paginated pages remain in the map - they don't get
+	// re-fetched per-poll, but their per-thread status updates flow over WS.
+	async function loadThreads(): Promise<void> {
+		try {
+			const { threads: next, total } = await client.listThreadsPage({ limit: PAGE_SIZE });
+			totalThreadCount = total;
+			mergeBatch(next, { prunePage1Window: true });
+			// We only know "no more" definitively when the page came back short;
+			// a full page tells us nothing about further pages without paginating.
+			if (next.length < PAGE_SIZE) {
+				hasMoreThreads = false;
+			} else if (threadsById.size === next.length) {
+				// First-ever load returned a full page - assume there might be more.
+				hasMoreThreads = true;
+			}
+		} catch (error) {
+			console.error("Failed to load threads:", error);
+		}
 	}
-}
 
-async function renameThread(id: string, title: string): Promise<void> {
-	const updated = await client.renameThread(id, title);
-	const next = new Map(threadsById);
-	const current = next.get(id);
-	if (current) next.set(id, { ...current, title: updated.title });
-	threadsById = next;
-}
+	async function loadMoreThreads(): Promise<void> {
+		if (!hasMoreThreads || isLoadingMore) return;
+		const list = threads;
+		if (list.length === 0) return;
+		const last = list[list.length - 1];
+		isLoadingMore = true;
+		try {
+			const { threads: next, total } = await client.listThreadsPage({
+				limit: PAGE_SIZE,
+				before: { last_message_at: last.last_message_at, id: last.id },
+			});
+			totalThreadCount = total;
+			mergeBatch(next);
+			hasMoreThreads = next.length === PAGE_SIZE;
+		} catch (error) {
+			console.error("Failed to load more threads:", error);
+		} finally {
+			isLoadingMore = false;
+		}
+	}
 
-function goToThread(id: string): void {
-	navigateTo(`/line/${id}`);
-}
+	function handleThreadStatus(data: unknown): void {
+		const s = data as {
+			thread_id?: string;
+			active?: boolean;
+		};
+		if (!s.thread_id) return;
+		const next = new Map(threadStatuses);
+		next.set(s.thread_id, { active: s.active ?? false });
+		threadStatuses = next;
+	}
 
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+	async function newThread(): Promise<void> {
+		creating = true;
+		try {
+			const thread = await client.createThread();
+			navigateTo(`/line/${thread.id}`);
+		} catch (error) {
+			console.error("Failed to create thread:", error);
+			creating = false;
+		}
+	}
 
-onMount(async () => {
-	connectWebSocket();
-	client.on("thread:status", handleThreadStatus);
-	await loadThreads();
-	// Re-fetch the head of the list less aggressively; status updates come via WS.
-	pollInterval = setInterval(loadThreads, 15000);
-});
+	async function renameThread(id: string, title: string): Promise<void> {
+		const updated = await client.renameThread(id, title);
+		const next = new Map(threadsById);
+		const current = next.get(id);
+		if (current) next.set(id, { ...current, title: updated.title });
+		threadsById = next;
+	}
 
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-	client.off("thread:status", handleThreadStatus);
-});
+	function goToThread(id: string): void {
+		navigateTo(`/line/${id}`);
+	}
+
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	onMount(async () => {
+		connectWebSocket();
+		client.on("thread:status", handleThreadStatus);
+		await loadThreads();
+		// Re-fetch the head of the list less aggressively; status updates come via WS.
+		pollInterval = setInterval(loadThreads, 15000);
+	});
+
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+		client.off("thread:status", handleThreadStatus);
+	});
 </script>
 
 <div class="system-map">
@@ -214,7 +214,13 @@ onDestroy(() => {
 					<div class="kicker">Active Lines · {totalThreadCount}</div>
 					<h2 class="panel-title">Directory</h2>
 				</div>
-				<Btn variant="accent" size="sm" onclick={newThread} disabled={creating} title="Start a new thread">
+				<Btn
+					variant="accent"
+					size="sm"
+					onclick={newThread}
+					disabled={creating}
+					title="Start a new thread"
+				>
 					{#snippet children()}
 						+ New Line
 					{/snippet}
@@ -243,7 +249,7 @@ onDestroy(() => {
 				onRenameThread={renameThread}
 				onLoadMore={loadMoreThreads}
 				hasMore={hasMoreThreads && !searchQuery.trim()}
-				isLoadingMore={isLoadingMore}
+				{isLoadingMore}
 			/>
 		</div>
 	</div>

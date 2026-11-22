@@ -125,7 +125,8 @@ export function countThreadsDirectory(
 	args: { userId: string; includeEmpty: boolean },
 ): { total: number } | null {
 	return db
-		.query(`
+		.query(
+			`
 			SELECT COUNT(*) as total
 			FROM threads t
 			WHERE t.deleted = 0 AND t.user_id = ? AND t.agent_id IS NULL
@@ -136,6 +137,7 @@ export function countThreadsDirectory(
 						WHERE m.thread_id = t.id AND m.role = 'user' AND m.deleted = 0
 					)
 				)
-		`)
+		`,
+		)
 		.get(args.userId, args.includeEmpty ? 1 : 0) as { total: number } | null;
 }

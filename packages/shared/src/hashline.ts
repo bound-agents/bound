@@ -46,8 +46,7 @@ export interface HashlineEditRegion {
 }
 
 export type HashlineApplyResult =
-	| { ok: true; content: string; regions: HashlineEditRegion[] }
-	| { ok: false; error: string };
+	{ ok: true; content: string; regions: HashlineEditRegion[] } | { ok: false; error: string };
 
 export type AnchorResolution = { ok: true; index: number } | { ok: false; error: string };
 

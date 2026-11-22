@@ -1,21 +1,21 @@
 <script lang="ts">
-import { getLineCode, getLineColor } from "../lib/metro-lines";
+	import { getLineCode, getLineColor } from "../lib/metro-lines";
 
-interface Props {
-	lineIndex: number;
-	size?: "compact" | "standard" | "large";
-	label?: string | null;
-}
+	interface Props {
+		lineIndex: number;
+		size?: "compact" | "standard" | "large";
+		label?: string | null;
+	}
 
-let { lineIndex, size = "standard", label = null }: Props = $props();
+	let { lineIndex, size = "standard", label = null }: Props = $props();
 
-const code = $derived(label ?? getLineCode(lineIndex));
-const color = $derived(getLineColor(lineIndex));
-const diameter = $derived(size === "compact" ? 18 : size === "large" ? 40 : 26);
-const fontSize = $derived(size === "compact" ? 9 : size === "large" ? 17 : 12);
-// Tokyo Metro marks are a thick colored annulus around a white field. The ring
-// is ~22% of the diameter; scale the border with size so the proportion holds.
-const ringWidth = $derived(size === "compact" ? 3 : size === "large" ? 7 : 4);
+	const code = $derived(label ?? getLineCode(lineIndex));
+	const color = $derived(getLineColor(lineIndex));
+	const diameter = $derived(size === "compact" ? 18 : size === "large" ? 40 : 26);
+	const fontSize = $derived(size === "compact" ? 9 : size === "large" ? 17 : 12);
+	// Tokyo Metro marks are a thick colored annulus around a white field. The ring
+	// is ~22% of the diameter; scale the border with size so the proportion holds.
+	const ringWidth = $derived(size === "compact" ? 3 : size === "large" ? 7 : 4);
 </script>
 
 <span

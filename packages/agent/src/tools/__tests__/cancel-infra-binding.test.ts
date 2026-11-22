@@ -57,8 +57,7 @@ function insertEventTask(db: Database.Database, siteId: string, triggerSpec: str
 
 function status(db: Database.Database, taskId: string): string | undefined {
 	const row = db.prepare("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-		| { status: string }
-		| undefined;
+		{ status: string } | undefined;
 	return row?.status;
 }
 

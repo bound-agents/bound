@@ -107,8 +107,7 @@ describe("Scheduler Integration", () => {
 			() =>
 				(
 					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-						| { status: string }
-						| undefined
+						{ status: string } | undefined
 				)?.status === "completed",
 			{ message: "deferred task did not complete" },
 		);
@@ -116,8 +115,7 @@ describe("Scheduler Integration", () => {
 		stop();
 
 		const updatedTask = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-			| { status: string }
-			| undefined;
+			{ status: string } | undefined;
 
 		expect(updatedTask).toBeDefined();
 		expect(updatedTask?.status).toBe("completed");
@@ -260,16 +258,14 @@ describe("Scheduler Integration", () => {
 			() =>
 				(
 					db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-						| { status: string }
-						| undefined
+						{ status: string } | undefined
 				)?.status !== "pending",
 			{ message: "dependent task did not run" },
 		);
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-			| { status: string }
-			| undefined;
+			{ status: string } | undefined;
 
 		// Task should have progressed beyond pending (dependencies were satisfied)
 		expect(task).toBeDefined();
@@ -365,8 +361,7 @@ describe("Scheduler Integration", () => {
 		stop();
 
 		const task = db.query("SELECT status FROM tasks WHERE id = ?").get(taskId) as
-			| { status: string }
-			| undefined;
+			{ status: string } | undefined;
 
 		// Task should remain pending since host doesn't match
 		expect(task?.status).toBe("pending");
@@ -803,8 +798,7 @@ describe("Scheduler Integration", () => {
 		const scheduler = new Scheduler(appContext as any, agentLoopFactory);
 
 		const task = db.query("SELECT * FROM tasks WHERE id = ?").get(taskId) as
-			| Record<string, unknown>
-			| undefined;
+			Record<string, unknown> | undefined;
 		expect(task).toBeDefined();
 
 		// Drive runTask directly. This performs the local claimed→running CAS

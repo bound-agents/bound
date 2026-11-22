@@ -1,60 +1,60 @@
 <script lang="ts">
-import { onMount } from "svelte";
-import TopBar from "./components/TopBar.svelte";
-import { initMcpApps } from "./lib/mcp-apps-bootstrap";
-import { parseLineRoute } from "./lib/route-utils";
-import AdvisoryView from "./views/AdvisoryView.svelte";
-import ConnectionsView from "./views/ConnectionsView.svelte";
-import FilesView from "./views/FilesView.svelte";
-import LineView from "./views/LineView.svelte";
-import MetricsView from "./views/MetricsView.svelte";
-import NetworkStatus from "./views/NetworkStatus.svelte";
-import PersonaView from "./views/PersonaView.svelte";
-import SystemMap from "./views/SystemMap.svelte";
-import Timetable from "./views/Timetable.svelte";
+	import { onMount } from "svelte";
+	import TopBar from "./components/TopBar.svelte";
+	import { initMcpApps } from "./lib/mcp-apps-bootstrap";
+	import { parseLineRoute } from "./lib/route-utils";
+	import AdvisoryView from "./views/AdvisoryView.svelte";
+	import ConnectionsView from "./views/ConnectionsView.svelte";
+	import FilesView from "./views/FilesView.svelte";
+	import LineView from "./views/LineView.svelte";
+	import MetricsView from "./views/MetricsView.svelte";
+	import NetworkStatus from "./views/NetworkStatus.svelte";
+	import PersonaView from "./views/PersonaView.svelte";
+	import SystemMap from "./views/SystemMap.svelte";
+	import Timetable from "./views/Timetable.svelte";
 
-// Legacy routes that moved under the consolidated Connections tab. Normalized
-// via location.replace so the address bar, TopBar highlight, and history all
-// land on the canonical hash.
-const ROUTE_REDIRECTS: Record<string, string> = {
-	"/webhooks": "/connections/webhooks",
-	"/skills": "/connections/skills",
-};
+	// Legacy routes that moved under the consolidated Connections tab. Normalized
+	// via location.replace so the address bar, TopBar highlight, and history all
+	// land on the canonical hash.
+	const ROUTE_REDIRECTS: Record<string, string> = {
+		"/webhooks": "/connections/webhooks",
+		"/skills": "/connections/skills",
+	};
 
-function currentRoute(): string {
-	const r = window.location.hash.slice(1) || "/";
-	const target = ROUTE_REDIRECTS[r];
-	if (target) {
-		window.location.replace(`#${target}`);
-		return target;
+	function currentRoute(): string {
+		const r = window.location.hash.slice(1) || "/";
+		const target = ROUTE_REDIRECTS[r];
+		if (target) {
+			window.location.replace(`#${target}`);
+			return target;
+		}
+		return r;
 	}
-	return r;
-}
 
-let route = $state(currentRoute());
+	let route = $state(currentRoute());
 
-onMount(() => {
-	window.addEventListener("hashchange", () => {
-		route = currentRoute();
+	onMount(() => {
+		window.addEventListener("hashchange", () => {
+			route = currentRoute();
+		});
+		// Connect to configured MCP App servers and register their tools on the
+		// shared BoundClient (the boundless client-tools pattern). Fire-and-forget:
+		// failures are logged and never block the UI.
+		void initMcpApps();
 	});
-	// Connect to configured MCP App servers and register their tools on the
-	// shared BoundClient (the boundless client-tools pattern). Fire-and-forget:
-	// failures are logged and never block the UI.
-	void initMcpApps();
-});
 
-function screenLabel(r: string): string {
-	if (r === "/" || r === "") return "01 System Map";
-	if (r.startsWith("/line/")) return "02 Line";
-	if (r === "/timetable") return "03 Timetable";
-	if (r === "/network") return "04 Network";
-	if (r === "/advisories") return "05 Advisories";
-	if (r === "/files") return "06 Files";
-	if (r.startsWith("/connections")) return "07 Connections";
-	if (r === "/metrics") return "08 Metrics";
-	if (r === "/persona") return "09 Persona";
-	return "00 Unknown";
-}
+	function screenLabel(r: string): string {
+		if (r === "/" || r === "") return "01 System Map";
+		if (r.startsWith("/line/")) return "02 Line";
+		if (r === "/timetable") return "03 Timetable";
+		if (r === "/network") return "04 Network";
+		if (r === "/advisories") return "05 Advisories";
+		if (r === "/files") return "06 Files";
+		if (r.startsWith("/connections")) return "07 Connections";
+		if (r === "/metrics") return "08 Metrics";
+		if (r === "/persona") return "09 Persona";
+		return "00 Unknown";
+	}
 </script>
 
 <div class="container" data-screen-label={screenLabel(route)}>
@@ -106,34 +106,34 @@ function screenLabel(r: string): string {
 <style>
 	:global(:root) {
 		/* Signage paper — warm, matte, not quite white */
-		--paper:       #EFEAE0;
-		--paper-2:     #E8E2D5;
-		--paper-3:     #DFD8C7;
-		--rule:        #1A1814;
-		--rule-soft:   rgba(26,24,20,0.18);
-		--rule-faint:  rgba(26,24,20,0.08);
-		--ink:         #1A1814;
-		--ink-2:       #3A342B;
-		--ink-3:       #6B6558;
-		--ink-4:       #9A937F;
+		--paper: #EFEAE0;
+		--paper-2: #E8E2D5;
+		--paper-3: #DFD8C7;
+		--rule: #1A1814;
+		--rule-soft: rgba(26,24,20,0.18);
+		--rule-faint: rgba(26,24,20,0.08);
+		--ink: #1A1814;
+		--ink-2: #3A342B;
+		--ink-3: #6B6558;
+		--ink-4: #9A937F;
 
 		/* One signal accent — vermilion */
-		--accent:      #C8331C;
-		--accent-2:    #9B2613;
+		--accent: #C8331C;
+		--accent-2: #9B2613;
 		--accent-wash: rgba(200, 51, 28, 0.08);
 
 		/* Line identity palette — muted to sit on paper. Indexes 0..9 mirror the
 		   canonical Tokyo Metro order (G, M, H, T, C, Y, Z, N, F, E). */
-		--line-0: #D9861A;   /* Ginza      — amber   */
-		--line-1: #C8331C;   /* Marunouchi — red     */
-		--line-2: #7D8B93;   /* Hibiya     — silver  */
-		--line-3: #1E7FA8;   /* Tozai      — blue    */
-		--line-4: #2E7D47;   /* Chiyoda    — green   */
-		--line-5: #A8885A;   /* Yurakucho  — gold    */
-		--line-6: #6B5BB3;   /* Hanzomon   — violet  */
-		--line-7: #0E8E83;   /* Namboku    — teal    */
-		--line-8: #8B5E34;   /* Fukutoshin — brown   */
-		--line-9: #9B2A6E;   /* Oedo       — ruby    */
+		--line-0: #D9861A; /* Ginza      — amber   */
+		--line-1: #C8331C; /* Marunouchi — red     */
+		--line-2: #7D8B93; /* Hibiya     — silver  */
+		--line-3: #1E7FA8; /* Tozai      — blue    */
+		--line-4: #2E7D47; /* Chiyoda    — green   */
+		--line-5: #A8885A; /* Yurakucho  — gold    */
+		--line-6: #6B5BB3; /* Hanzomon   — violet  */
+		--line-7: #0E8E83; /* Namboku    — teal    */
+		--line-8: #8B5E34; /* Fukutoshin — brown   */
+		--line-9: #9B2A6E; /* Oedo       — ruby    */
 
 		/* Mirror the line-N vars under single-letter aliases for code that
 		   prefers --line-M / --line-T / etc. */
@@ -149,23 +149,23 @@ function screenLabel(r: string): string {
 		--line-E: var(--line-9);
 
 		/* Semantic (back-compat + new names) */
-		--ok:        #2E7D47;
-		--warn:      #C37A0F;
-		--err:       #B82817;
-		--idle:      #9A937F;
-		--status-active:    var(--ok);
-		--status-idle:      var(--idle);
-		--alert-warning:    var(--warn);
+		--ok: #2E7D47;
+		--warn: #C37A0F;
+		--err: #B82817;
+		--idle: #9A937F;
+		--status-active: var(--ok);
+		--status-idle: var(--idle);
+		--alert-warning: var(--warn);
 		--alert-disruption: var(--err);
 
 		/* Back-compat — maps old bg / text vars to signage tones so any
 		   uncorrected component still reads as paper. */
-		--bg-primary:   var(--paper);
+		--bg-primary: var(--paper);
 		--bg-secondary: var(--paper-2);
-		--bg-surface:   var(--paper-3);
-		--text-primary:   var(--ink);
+		--bg-surface: var(--paper-3);
+		--text-primary: var(--ink);
 		--text-secondary: var(--ink-2);
-		--text-muted:     var(--ink-3);
+		--text-muted: var(--ink-3);
 
 		/* Dimensions */
 		--line-weight: 4px;
@@ -175,10 +175,10 @@ function screenLabel(r: string): string {
 
 		/* Typography */
 		--font-display: "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
-		--font-body:    "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
-		--font-header:  "Helvetica Neue", Helvetica, "Arial Black", Arial, sans-serif;
-		--font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-		--font-serif:   "Fraunces", Georgia, serif;
+		--font-body: "Space Grotesk", "Helvetica Neue", Helvetica, Arial, sans-serif;
+		--font-header: "Helvetica Neue", Helvetica, "Arial Black", Arial, sans-serif;
+		--font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+		--font-serif: "Fraunces", Georgia, serif;
 
 		--text-xs: 0.75rem;
 		--text-sm: 0.875rem;
@@ -192,8 +192,16 @@ function screenLabel(r: string): string {
 		color-scheme: light;
 	}
 
-	:global(*), :global(*::before), :global(*::after) { box-sizing: border-box; }
-	:global(html), :global(body), :global(#app) { height: 100%; }
+	:global(*),
+	:global(*::before),
+	:global(*::after) {
+		box-sizing: border-box;
+	}
+	:global(html),
+	:global(body),
+	:global(#app) {
+		height: 100%;
+	}
 
 	:global(body) {
 		margin: 0;
@@ -216,29 +224,47 @@ function screenLabel(r: string): string {
 		pointer-events: none;
 		z-index: 1;
 		background-image:
-			radial-gradient(rgba(26,24,20,0.035) 1px, transparent 1px),
-			radial-gradient(rgba(26,24,20,0.02) 1px, transparent 1px);
-		background-size: 3px 3px, 7px 7px;
-		background-position: 0 0, 1px 2px;
+			radial-gradient(rgba(26, 24, 20, 0.035) 1px, transparent 1px),
+			radial-gradient(rgba(26, 24, 20, 0.02) 1px, transparent 1px);
+		background-size:
+			3px 3px,
+			7px 7px;
+		background-position:
+			0 0,
+			1px 2px;
 		mix-blend-mode: multiply;
 		opacity: 0.6;
 	}
 
-	:global(button) { font-family: inherit; color: inherit; }
-	:global(input), :global(textarea), :global(select) { font-family: inherit; }
+	:global(button) {
+		font-family: inherit;
+		color: inherit;
+	}
+	:global(input),
+	:global(textarea),
+	:global(select) {
+		font-family: inherit;
+	}
 
 	/* Scrollbars */
-	:global(::-webkit-scrollbar) { width: 10px; height: 10px; }
-	:global(::-webkit-scrollbar-track) { background: transparent; }
+	:global(::-webkit-scrollbar) {
+		width: 10px;
+		height: 10px;
+	}
+	:global(::-webkit-scrollbar-track) {
+		background: transparent;
+	}
 	:global(::-webkit-scrollbar-thumb) {
-		background: rgba(26,24,20,0.18);
+		background: rgba(26, 24, 20, 0.18);
 		border-radius: 10px;
 		border: 2px solid var(--paper);
 	}
-	:global(::-webkit-scrollbar-thumb:hover) { background: rgba(26,24,20,0.3); }
+	:global(::-webkit-scrollbar-thumb:hover) {
+		background: rgba(26, 24, 20, 0.3);
+	}
 	:global(*) {
 		scrollbar-width: thin;
-		scrollbar-color: rgba(26,24,20,0.18) transparent;
+		scrollbar-color: rgba(26, 24, 20, 0.18) transparent;
 	}
 
 	/* Reusable helpers */
@@ -246,7 +272,9 @@ function screenLabel(r: string): string {
 		font-family: var(--font-mono);
 		font-variant-numeric: tabular-nums;
 	}
-	:global(.tnum) { font-variant-numeric: tabular-nums; }
+	:global(.tnum) {
+		font-variant-numeric: tabular-nums;
+	}
 	:global(.kicker) {
 		font-size: 11px;
 		font-weight: 600;
@@ -284,16 +312,31 @@ function screenLabel(r: string): string {
 	/* Global keyframes — placed inside :global {} so Svelte doesn't scope them. */
 	:global {
 		@keyframes pulse {
-			0%, 100% { opacity: 1; }
-			50% { opacity: 0.25; }
+			0%,
+			100% {
+				opacity: 1;
+			}
+			50% {
+				opacity: 0.25;
+			}
 		}
 		@keyframes marquee {
-			from { transform: translateX(0); }
-			to { transform: translateX(-50%); }
+			from {
+				transform: translateX(0);
+			}
+			to {
+				transform: translateX(-50%);
+			}
 		}
 		@keyframes fadeIn {
-			from { opacity: 0; transform: translateY(4px); }
-			to { opacity: 1; transform: translateY(0); }
+			from {
+				opacity: 0;
+				transform: translateY(4px);
+			}
+			to {
+				opacity: 1;
+				transform: translateY(0);
+			}
 		}
 	}
 
@@ -338,11 +381,19 @@ function screenLabel(r: string): string {
 	}
 
 	@keyframes viewFadeIn {
-		from { opacity: 0; transform: translateY(4px); }
-		to { opacity: 1; transform: translateY(0); }
+		from {
+			opacity: 0;
+			transform: translateY(4px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.view-transition { animation: none; }
+		.view-transition {
+			animation: none;
+		}
 	}
 </style>

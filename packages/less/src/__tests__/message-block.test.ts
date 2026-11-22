@@ -1212,9 +1212,8 @@ describe("image content blocks", () => {
 	});
 
 	it("prefers the graphics escape over half-blocks when a payload is cached", async () => {
-		const { storeImagePreview, storeImageGraphics, clearImagePreviews } = await import(
-			"../tui/util/image-preview"
-		);
+		const { storeImagePreview, storeImageGraphics, clearImagePreviews } =
+			await import("../tui/util/image-preview");
 		clearImagePreviews();
 		// Both representations cached for the same hash: half-block lines AND a
 		// graphics escape. Graphics must win.

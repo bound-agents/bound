@@ -1,68 +1,68 @@
 <script lang="ts">
-import type { Skill } from "@bound/shared";
-import { untrack } from "svelte";
-import { client } from "../lib/bound";
-import Btn from "./Btn.svelte";
+	import type { Skill } from "@bound/shared";
+	import { untrack } from "svelte";
+	import { client } from "../lib/bound";
+	import Btn from "./Btn.svelte";
 
-interface Props {
-	skill: Skill;
-	content: string;
-	onClose: () => void;
-	onSaved: () => void;
-}
-let { skill, content, onClose, onSaved }: Props = $props();
-
-// Parse frontmatter to extract body for pre-filling the editor.
-// Format: ---\nkey: value\n---\nbody content
-function parseSkillBody(raw: string): string {
-	const match = raw.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n([\s\S]*))?$/);
-	if (!match) return raw;
-	return match[1] ?? "";
-}
-
-let description = $state(untrack(() => skill.description ?? ""));
-let body = $state(untrack(() => parseSkillBody(content)));
-let allowedTools = $state(untrack(() => skill.allowed_tools ?? ""));
-let compatibility = $state(untrack(() => skill.compatibility ?? ""));
-let showAdvanced = $state(untrack(() => Boolean(skill.allowed_tools || skill.compatibility)));
-
-let submitting = $state(false);
-let serverError = $state<string | null>(null);
-
-// Validation (mirrors SkillCreateModal)
-const MAX_DESCRIPTION_LENGTH = 1024;
-
-const descriptionError = $derived(
-	description.length === 0
-		? null
-		: description.length > MAX_DESCRIPTION_LENGTH
-			? `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`
-			: null,
-);
-
-const formValid = $derived(description.length > 0 && !descriptionError && body.length > 0);
-
-function handleKeydown(e: KeyboardEvent): void {
-	if (e.key === "Escape") onClose();
-}
-
-async function submitEdit(): Promise<void> {
-	if (!formValid || submitting) return;
-	submitting = true;
-	serverError = null;
-	try {
-		await client.updateSkill(skill.id, {
-			description,
-			body,
-			allowed_tools: allowedTools || undefined,
-			compatibility: compatibility || undefined,
-		});
-		onSaved();
-	} catch (error) {
-		serverError = error instanceof Error ? error.message : "Failed to update skill";
+	interface Props {
+		skill: Skill;
+		content: string;
+		onClose: () => void;
+		onSaved: () => void;
 	}
-	submitting = false;
-}
+	let { skill, content, onClose, onSaved }: Props = $props();
+
+	// Parse frontmatter to extract body for pre-filling the editor.
+	// Format: ---\nkey: value\n---\nbody content
+	function parseSkillBody(raw: string): string {
+		const match = raw.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n([\s\S]*))?$/);
+		if (!match) return raw;
+		return match[1] ?? "";
+	}
+
+	let description = $state(untrack(() => skill.description ?? ""));
+	let body = $state(untrack(() => parseSkillBody(content)));
+	let allowedTools = $state(untrack(() => skill.allowed_tools ?? ""));
+	let compatibility = $state(untrack(() => skill.compatibility ?? ""));
+	let showAdvanced = $state(untrack(() => Boolean(skill.allowed_tools || skill.compatibility)));
+
+	let submitting = $state(false);
+	let serverError = $state<string | null>(null);
+
+	// Validation (mirrors SkillCreateModal)
+	const MAX_DESCRIPTION_LENGTH = 1024;
+
+	const descriptionError = $derived(
+		description.length === 0
+			? null
+			: description.length > MAX_DESCRIPTION_LENGTH
+				? `Description must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`
+				: null,
+	);
+
+	const formValid = $derived(description.length > 0 && !descriptionError && body.length > 0);
+
+	function handleKeydown(e: KeyboardEvent): void {
+		if (e.key === "Escape") onClose();
+	}
+
+	async function submitEdit(): Promise<void> {
+		if (!formValid || submitting) return;
+		submitting = true;
+		serverError = null;
+		try {
+			await client.updateSkill(skill.id, {
+				description,
+				body,
+				allowed_tools: allowedTools || undefined,
+				compatibility: compatibility || undefined,
+			});
+			onSaved();
+		} catch (error) {
+			serverError = error instanceof Error ? error.message : "Failed to update skill";
+		}
+		submitting = false;
+	}
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -84,7 +84,12 @@ async function submitEdit(): Promise<void> {
 		<div class="modal-body">
 			<div class="form-group">
 				<label for="edit-desc">Description</label>
-				<input id="edit-desc" type="text" bind:value={description} placeholder="What this skill does" />
+				<input
+					id="edit-desc"
+					type="text"
+					bind:value={description}
+					placeholder="What this skill does"
+				/>
 				<span class="char-count" class:over={description.length > MAX_DESCRIPTION_LENGTH}>
 					{description.length}/{MAX_DESCRIPTION_LENGTH}
 				</span>
@@ -95,10 +100,16 @@ async function submitEdit(): Promise<void> {
 
 			<div class="form-group">
 				<label for="edit-body">Body (Markdown)</label>
-				<textarea id="edit-body" bind:value={body} rows={12} placeholder="Skill instructions..."></textarea>
+				<textarea id="edit-body" bind:value={body} rows={12} placeholder="Skill instructions..."
+				></textarea>
 			</div>
 
-			<button class="advanced-toggle" onclick={() => { showAdvanced = !showAdvanced; }}>
+			<button
+				class="advanced-toggle"
+				onclick={() => {
+					showAdvanced = !showAdvanced;
+				}}
+			>
 				{showAdvanced ? "▼" : "▶"} Advanced
 			</button>
 
@@ -109,7 +120,12 @@ async function submitEdit(): Promise<void> {
 				</div>
 				<div class="form-group">
 					<label for="edit-compat">Compatibility</label>
-					<input id="edit-compat" type="text" bind:value={compatibility} placeholder="e.g., model >= opus-4" />
+					<input
+						id="edit-compat"
+						type="text"
+						bind:value={compatibility}
+						placeholder="e.g., model >= opus-4"
+					/>
 				</div>
 			{/if}
 
@@ -122,11 +138,7 @@ async function submitEdit(): Promise<void> {
 			<Btn variant="default" onclick={onClose}>
 				{#snippet children()}Cancel{/snippet}
 			</Btn>
-			<Btn
-				variant="primary"
-				disabled={!formValid || submitting}
-				onclick={submitEdit}
-			>
+			<Btn variant="primary" disabled={!formValid || submitting} onclick={submitEdit}>
 				{#snippet children()}{submitting ? "Saving..." : "Save"}{/snippet}
 			</Btn>
 		</div>

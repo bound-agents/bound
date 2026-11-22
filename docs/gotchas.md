@@ -24,7 +24,7 @@ Never compare `datetime('now', '-Nh hours')` (which returns `2026-03-28 22:23:33
 
 ### Typecheck is per-package
 
-There is no composite mode at the root. Run `tsc -p packages/<name> --noEmit` for one package, or `bun run typecheck` for all of them — that fans out via `bun run --filter '*' --parallel typecheck`, so each package's diagnostics arrive prefixed with `@bound/<pkg>:typecheck` and a failure in a depended-on package surfaces in every consumer that reaches it, not just the first link of an `&&` chain.
+There is no composite mode at the root, so `bun check -b` from the root fails with TS6306 ("must have setting composite"). Run `bun check --no-script -p packages/<name>` for one package, or `bun run typecheck` for all of them — `scripts/typecheck-all.ts` runs each package's `typecheck` script in turn and reports every failing package. Pass `--no-script` whenever you invoke `bun check` directly: the root `package.json` has a `check` script (the full pre-commit gate), and without the flag `bun check` runs that script instead of the type checker.
 
 ### bun test cli prints init stdout
 

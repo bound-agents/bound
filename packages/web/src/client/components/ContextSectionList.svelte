@@ -1,64 +1,64 @@
 <script lang="ts">
-import { ChevronRight } from "lucide-svelte";
-import { SECTION_COLORS } from "../lib/context-colors";
-import InfoPopover from "./InfoPopover.svelte";
+	import { ChevronRight } from "lucide-svelte";
+	import { SECTION_COLORS } from "../lib/context-colors";
+	import InfoPopover from "./InfoPopover.svelte";
 
-interface Props {
-	sections: Array<{
-		name: string;
-		tokens: number;
-		children?: Array<{ name: string; tokens: number }>;
-	}>;
-	contextWindow: number;
-	/** Actual LLM-reported total; when present, drives the drift row + real free space. */
-	actualTotalTokens?: number;
-}
+	interface Props {
+		sections: Array<{
+			name: string;
+			tokens: number;
+			children?: Array<{ name: string; tokens: number }>;
+		}>;
+		contextWindow: number;
+		/** Actual LLM-reported total; when present, drives the drift row + real free space. */
+		actualTotalTokens?: number;
+	}
 
-const { sections, contextWindow, actualTotalTokens }: Props = $props();
+	const { sections, contextWindow, actualTotalTokens }: Props = $props();
 
-/** Terse, declarative explanations keyed by section name. */
-const SECTION_INFO: Record<string, string> = {
-	system:
-		"Stable system prefix: persona, orientation, DB schema, skill body. Cached across threads.",
-	"volatile-prefix":
-		"Stable volatile half: Working Knowledge, Discoverable Archive titles, skill index. Rides the system cache breakpoint.",
-	"ancient-marker": "Oldest history, shed to a fixed-size summary marker plus drop count.",
-	"middle-digest":
-		"Older tool cycles folded to a one-line action log. Recall preserved; no LLM summary.",
-	history: "Recent messages at full resolution — the working set this turn.",
-	"volatile-tail":
-		"Varying volatile half: Live State, memory deltas, per-turn injectables. Developer-role tail.",
-	tools: "Tool-definition JSON schemas, sent at the request level.",
-	"free space": "Unused budget below the context window.",
-	user: "User-role messages in the recent window.",
-	assistant: "Assistant and tool-call messages in the recent window.",
-	tool_result: "Tool-result messages in the recent window.",
-	memory: "Semantic-memory entries in the volatile tail.",
-	"volatile-other": "Live State, digests, per-turn injectables in the volatile tail.",
-	"task-digest": "Cross-thread task digest lines.",
-};
+	/** Terse, declarative explanations keyed by section name. */
+	const SECTION_INFO: Record<string, string> = {
+		system:
+			"Stable system prefix: persona, orientation, DB schema, skill body. Cached across threads.",
+		"volatile-prefix":
+			"Stable volatile half: Working Knowledge, Discoverable Archive titles, skill index. Rides the system cache breakpoint.",
+		"ancient-marker": "Oldest history, shed to a fixed-size summary marker plus drop count.",
+		"middle-digest":
+			"Older tool cycles folded to a one-line action log. Recall preserved; no LLM summary.",
+		history: "Recent messages at full resolution — the working set this turn.",
+		"volatile-tail":
+			"Varying volatile half: Live State, memory deltas, per-turn injectables. Developer-role tail.",
+		tools: "Tool-definition JSON schemas, sent at the request level.",
+		"free space": "Unused budget below the context window.",
+		user: "User-role messages in the recent window.",
+		assistant: "Assistant and tool-call messages in the recent window.",
+		tool_result: "Tool-result messages in the recent window.",
+		memory: "Semantic-memory entries in the volatile tail.",
+		"volatile-other": "Live State, digests, per-turn injectables in the volatile tail.",
+		"task-digest": "Cross-thread task digest lines.",
+	};
 
-let expandedSections = $state(new Set<string>());
+	let expandedSections = $state(new Set<string>());
 
-function toggleSection(name: string): void {
-	const next = new Set(expandedSections);
-	if (next.has(name)) next.delete(name);
-	else next.add(name);
-	expandedSections = next;
-}
+	function toggleSection(name: string): void {
+		const next = new Set(expandedSections);
+		if (next.has(name)) next.delete(name);
+		else next.add(name);
+		expandedSections = next;
+	}
 
-const estimatedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
-// Drift = real wire total − summed section estimates. Shown as its own row so
-// the list's free-space figure agrees with the headline's actual percentage;
-// we have no per-section actuals, so attributing drift to a single row is the
-// honest representation rather than scaling each section by a guessed ratio.
-const driftTokens = $derived(
-	actualTotalTokens != null ? Math.max(0, actualTotalTokens - estimatedTokens) : 0,
-);
-const driftPct = $derived(contextWindow > 0 ? (driftTokens / contextWindow) * 100 : 0);
-const usedTokens = $derived(actualTotalTokens != null ? actualTotalTokens : estimatedTokens);
-const freeTokens = $derived(Math.max(0, contextWindow - usedTokens));
-const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 : 0);
+	const estimatedTokens = $derived(sections.reduce((s: number, sec) => s + sec.tokens, 0));
+	// Drift = real wire total − summed section estimates. Shown as its own row so
+	// the list's free-space figure agrees with the headline's actual percentage;
+	// we have no per-section actuals, so attributing drift to a single row is the
+	// honest representation rather than scaling each section by a guessed ratio.
+	const driftTokens = $derived(
+		actualTotalTokens != null ? Math.max(0, actualTotalTokens - estimatedTokens) : 0,
+	);
+	const driftPct = $derived(contextWindow > 0 ? (driftTokens / contextWindow) * 100 : 0);
+	const usedTokens = $derived(actualTotalTokens != null ? actualTotalTokens : estimatedTokens);
+	const freeTokens = $derived(Math.max(0, contextWindow - usedTokens));
+	const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 : 0);
 </script>
 
 <div class="section-list">
@@ -85,7 +85,8 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 						<ChevronRight size={12} />
 					</span>
 				{/if}
-				<span class="dot" style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}"></span>
+				<span class="dot" style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}"
+				></span>
 				{#if SECTION_INFO[section.name]}
 					<InfoPopover placement="bottom" label={SECTION_INFO[section.name]}>
 						{#snippet trigger()}<span class="name">{section.name}</span>{/snippet}
@@ -102,7 +103,10 @@ const freePct = $derived(contextWindow > 0 ? (freeTokens / contextWindow) * 100 
 				{@const childPct = contextWindow > 0 ? (child.tokens / contextWindow) * 100 : 0}
 				<div class="section-row child">
 					<span class="indent"></span>
-					<span class="dot small" style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}; opacity: 0.6;"></span>
+					<span
+						class="dot small"
+						style="background: {SECTION_COLORS[section.name] ?? 'var(--text-muted)'}; opacity: 0.6;"
+					></span>
 					{#if SECTION_INFO[child.name]}
 						<InfoPopover placement="bottom" label={SECTION_INFO[child.name]}>
 							{#snippet trigger()}<span class="name">{child.name}</span>{/snippet}

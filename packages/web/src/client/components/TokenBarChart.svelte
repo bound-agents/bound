@@ -1,103 +1,103 @@
 <script lang="ts">
-import { scaleLinear } from "d3-scale";
-import { observeWidth } from "../lib/responsive-svg";
-import ChartTooltip from "./ChartTooltip.svelte";
+	import { scaleLinear } from "d3-scale";
+	import { observeWidth } from "../lib/responsive-svg";
+	import ChartTooltip from "./ChartTooltip.svelte";
 
-interface Props {
-	data: Array<{
-		model_id: string;
+	interface Props {
+		data: Array<{
+			model_id: string;
+			tokens_in: number;
+			tokens_out: number;
+			cache_read: number;
+			cache_write: number;
+		}>;
+	}
+
+	let { data }: Props = $props();
+
+	// Tooltip state
+	let tooltipVisible = $state(false);
+	let tooltipX = $state(0);
+	let tooltipY = $state(0);
+	let tooltipLines = $state<string[]>([]);
+	let containerEl: HTMLDivElement | undefined = $state(undefined);
+
+	// Track the chart's rendered width so we can size the SVG 1:1 with pixels.
+	// Without this, width="100%" on a fixed viewBox stretches the entire SVG
+	// (text included) — model labels balloon on wide screens.
+	let measuredWidth = $state(600);
+
+	// Total per row spans all four token classes so cache traffic is visible.
+	function rowTotal(d: {
 		tokens_in: number;
 		tokens_out: number;
 		cache_read: number;
 		cache_write: number;
-	}>;
-}
+	}): number {
+		return d.tokens_in + d.tokens_out + d.cache_read + d.cache_write;
+	}
 
-let { data }: Props = $props();
+	// Filter out models with zero total tokens (AC2.5)
+	const filteredData = $derived.by(() => {
+		return data.filter((d) => rowTotal(d) > 0);
+	});
 
-// Tooltip state
-let tooltipVisible = $state(false);
-let tooltipX = $state(0);
-let tooltipY = $state(0);
-let tooltipLines = $state<string[]>([]);
-let containerEl: HTMLDivElement | undefined = $state(undefined);
+	// Sort defensively by total tokens descending
+	const sortedData = $derived.by(() => {
+		return [...filteredData].sort((a, b) => rowTotal(b) - rowTotal(a));
+	});
 
-// Track the chart's rendered width so we can size the SVG 1:1 with pixels.
-// Without this, width="100%" on a fixed viewBox stretches the entire SVG
-// (text included) — model labels balloon on wide screens.
-let measuredWidth = $state(600);
+	// Calculate dimensions — viewBox tracks the actual rendered pixel width,
+	// so absolute font-sizes in CSS render at their true sizes.
+	const rowHeight = 32;
+	const padding = { top: 12, right: 16, bottom: 12, left: 140 };
+	const contentWidth = $derived(Math.max(measuredWidth, 320));
+	const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
 
-// Total per row spans all four token classes so cache traffic is visible.
-function rowTotal(d: {
-	tokens_in: number;
-	tokens_out: number;
-	cache_read: number;
-	cache_write: number;
-}): number {
-	return d.tokens_in + d.tokens_out + d.cache_read + d.cache_write;
-}
+	// Compute max total tokens for x scale domain
+	const maxTokens = $derived.by(() => {
+		return Math.max(...sortedData.map(rowTotal), 1);
+	});
 
-// Filter out models with zero total tokens (AC2.5)
-const filteredData = $derived.by(() => {
-	return data.filter((d) => rowTotal(d) > 0);
-});
+	// Create x scale
+	const xScale = $derived.by(() => {
+		return scaleLinear()
+			.domain([0, maxTokens])
+			.range([0, contentWidth - padding.left - padding.right]);
+	});
 
-// Sort defensively by total tokens descending
-const sortedData = $derived.by(() => {
-	return [...filteredData].sort((a, b) => rowTotal(b) - rowTotal(a));
-});
+	// Tooltip lists every token class regardless of which segment is hovered, so
+	// the operator always sees the full breakdown — picking which class drove the
+	// row matters less than seeing all four side-by-side.
+	function showTooltip(
+		event: MouseEvent,
+		d: {
+			model_id: string;
+			tokens_in: number;
+			tokens_out: number;
+			cache_read: number;
+			cache_write: number;
+		},
+	): void {
+		if (!containerEl) return;
+		const rect = containerEl.getBoundingClientRect();
+		tooltipX = event.clientX - rect.left;
+		tooltipY = event.clientY - rect.top;
+		const total = rowTotal(d);
+		tooltipLines = [
+			d.model_id,
+			`Input:       ${d.tokens_in.toLocaleString()}`,
+			`Output:      ${d.tokens_out.toLocaleString()}`,
+			`Cache read:  ${d.cache_read.toLocaleString()}`,
+			`Cache write: ${d.cache_write.toLocaleString()}`,
+			`Total:       ${total.toLocaleString()}`,
+		];
+		tooltipVisible = true;
+	}
 
-// Calculate dimensions — viewBox tracks the actual rendered pixel width,
-// so absolute font-sizes in CSS render at their true sizes.
-const rowHeight = 32;
-const padding = { top: 12, right: 16, bottom: 12, left: 140 };
-const contentWidth = $derived(Math.max(measuredWidth, 320));
-const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
-
-// Compute max total tokens for x scale domain
-const maxTokens = $derived.by(() => {
-	return Math.max(...sortedData.map(rowTotal), 1);
-});
-
-// Create x scale
-const xScale = $derived.by(() => {
-	return scaleLinear()
-		.domain([0, maxTokens])
-		.range([0, contentWidth - padding.left - padding.right]);
-});
-
-// Tooltip lists every token class regardless of which segment is hovered, so
-// the operator always sees the full breakdown — picking which class drove the
-// row matters less than seeing all four side-by-side.
-function showTooltip(
-	event: MouseEvent,
-	d: {
-		model_id: string;
-		tokens_in: number;
-		tokens_out: number;
-		cache_read: number;
-		cache_write: number;
-	},
-): void {
-	if (!containerEl) return;
-	const rect = containerEl.getBoundingClientRect();
-	tooltipX = event.clientX - rect.left;
-	tooltipY = event.clientY - rect.top;
-	const total = rowTotal(d);
-	tooltipLines = [
-		d.model_id,
-		`Input:       ${d.tokens_in.toLocaleString()}`,
-		`Output:      ${d.tokens_out.toLocaleString()}`,
-		`Cache read:  ${d.cache_read.toLocaleString()}`,
-		`Cache write: ${d.cache_write.toLocaleString()}`,
-		`Total:       ${total.toLocaleString()}`,
-	];
-	tooltipVisible = true;
-}
-
-function hideTooltip(): void {
-	tooltipVisible = false;
-}
+	function hideTooltip(): void {
+		tooltipVisible = false;
+	}
 </script>
 
 <div

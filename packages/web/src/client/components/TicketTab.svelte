@@ -1,14 +1,14 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+	import type { Snippet } from "svelte";
 
-interface Props {
-	children: Snippet;
-	color?: string;
-}
+	interface Props {
+		children: Snippet;
+		color?: string;
+	}
 
-let { children, color = "var(--ink)" }: Props = $props();
+	let { children, color = "var(--ink)" }: Props = $props();
 
-const washColor = $derived(color.startsWith("var(") ? "rgba(26,24,20,0.05)" : `${color}11`);
+	const washColor = $derived(color.startsWith("var(") ? "rgba(26,24,20,0.05)" : `${color}11`);
 </script>
 
 <span
@@ -35,10 +35,6 @@ const washColor = $derived(color.startsWith("var(") ? "rgba(26,24,20,0.05)" : `$
 		color: var(--tab-color);
 		border: 1px solid var(--tab-color);
 		border-radius: 2px;
-		background: repeating-linear-gradient(
-			135deg,
-			transparent 0 6px,
-			var(--tab-wash) 6px 7px
-		);
+		background: repeating-linear-gradient(135deg, transparent 0 6px, var(--tab-wash) 6px 7px);
 	}
 </style>

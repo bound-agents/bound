@@ -1,349 +1,351 @@
 <script lang="ts">
-import type { MemoryGraphNode, MemoryGraphResponse, ThreadListEntry } from "@bound/client";
-import { onMount } from "svelte";
-import { client } from "../lib/bound";
-import { renderMarkdown } from "../lib/markdown";
-import { mermaid } from "../lib/mermaid";
-import { getLineCssVar } from "../lib/metro-lines";
+	import type { MemoryGraphNode, MemoryGraphResponse, ThreadListEntry } from "@bound/client";
+	import { onMount } from "svelte";
+	import { client } from "../lib/bound";
+	import { renderMarkdown } from "../lib/markdown";
+	import { mermaid } from "../lib/mermaid";
+	import { getLineCssVar } from "../lib/metro-lines";
 
-interface Props {
-	/** When set, dim nodes that don't belong to this thread id. */
-	selectedThreadId?: string | null;
-	/** When set, show a small "Memories from ..." chip with the thread title. */
-	hoveredThreadTitle?: string | null;
-	hoveredThreadColor?: number | null;
-	/** Threads, used to resolve `source` -> line color for a node. */
-	threads?: ThreadListEntry[];
-	/** Navigate helper (clicking a source-thread chip). */
-	onNavigate?: (route: string) => void;
-}
-
-let {
-	selectedThreadId,
-	hoveredThreadTitle,
-	hoveredThreadColor,
-	threads = [],
-	onNavigate,
-}: Props = $props();
-
-type Tier = "pinned" | "summary" | "default" | "detail";
-
-const TIER_ORDER: Tier[] = ["pinned", "summary", "default", "detail"];
-const TIER_LABEL: Record<Tier, string> = {
-	pinned: "PINNED",
-	summary: "SUMMARY",
-	default: "DEFAULT",
-	detail: "DETAIL",
-};
-const TIER_RADIUS: Record<Tier, number> = {
-	pinned: 9.5,
-	summary: 7,
-	default: 5.5,
-	detail: 4.5,
-};
-const TIER_STROKE: Record<Tier, { color: string; width: number }> = {
-	pinned: { color: "var(--accent)", width: 1.6 },
-	summary: { color: "var(--ink)", width: 1.2 },
-	default: { color: "var(--paper-2)", width: 0.6 },
-	detail: { color: "var(--rule-soft)", width: 0.4 },
-};
-const TIER_TEXT: Record<Tier, string> = {
-	pinned: "var(--accent)",
-	summary: "var(--ink)",
-	default: "var(--ink-2)",
-	detail: "var(--ink-4)",
-};
-
-// Layout constants — mirrors web/src/client/lib/graph-layout.ts for arc geometry.
-const VB_W = 1100;
-const VB_H = 640;
-const CX = VB_W / 2;
-const TIER_Y: Record<Tier, number> = {
-	pinned: VB_H * 0.16,
-	summary: VB_H * 0.39,
-	default: VB_H * 0.62,
-	detail: VB_H * 0.84,
-};
-const TIER_SPAN: Record<Tier, number> = {
-	pinned: Math.PI * 0.3,
-	summary: Math.PI * 0.46,
-	default: Math.PI * 0.62,
-	detail: Math.PI * 0.72,
-};
-const TIER_RAD: Record<Tier, number> = {
-	pinned: 230,
-	summary: 330,
-	default: 430,
-	detail: 510,
-};
-
-interface PlacedNode extends MemoryGraphNode {
-	id: string;
-	x: number;
-	y: number;
-	radius: number;
-	lineColor: string;
-}
-
-let graph = $state<MemoryGraphResponse | null>(null);
-let loading = $state(true);
-let error = $state<string | null>(null);
-
-let tierFilter = $state<Tier | null>(null);
-let selectedNodeId = $state<string | null>(null);
-
-let zoom = $state(1);
-let pan = $state({ x: 0, y: 0 });
-let svgEl = $state<SVGSVGElement | null>(null);
-let dragState = $state<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
-
-// Thread id -> color index lookup (for source coloring).
-const threadColorMap = $derived(new Map(threads.map((t) => [t.id, t.color] as const)));
-
-async function load(): Promise<void> {
-	try {
-		loading = true;
-		error = null;
-		graph = await client.getMemoryGraph();
-	} catch (e) {
-		error = e instanceof Error ? e.message : "Failed to load memory graph";
-		graph = null;
-	} finally {
-		loading = false;
+	interface Props {
+		/** When set, dim nodes that don't belong to this thread id. */
+		selectedThreadId?: string | null;
+		/** When set, show a small "Memories from ..." chip with the thread title. */
+		hoveredThreadTitle?: string | null;
+		hoveredThreadColor?: number | null;
+		/** Threads, used to resolve `source` -> line color for a node. */
+		threads?: ThreadListEntry[];
+		/** Navigate helper (clicking a source-thread chip). */
+		onNavigate?: (route: string) => void;
 	}
-}
 
-onMount(() => {
-	load();
-});
+	let {
+		selectedThreadId,
+		hoveredThreadTitle,
+		hoveredThreadColor,
+		threads = [],
+		onNavigate,
+	}: Props = $props();
 
-// Deterministic placement along each tier's arc. Nodes from the same source
-// thread sort together, so same-color "bouquets" form along the arc.
-const placed = $derived.by<PlacedNode[]>(() => {
-	if (!graph || graph.nodes.length === 0) return [];
+	type Tier = "pinned" | "summary" | "default" | "detail";
 
-	const byTier: Record<Tier, MemoryGraphNode[]> = {
-		pinned: [],
-		summary: [],
-		default: [],
-		detail: [],
+	const TIER_ORDER: Tier[] = ["pinned", "summary", "default", "detail"];
+	const TIER_LABEL: Record<Tier, string> = {
+		pinned: "PINNED",
+		summary: "SUMMARY",
+		default: "DEFAULT",
+		detail: "DETAIL",
 	};
-	for (const n of graph.nodes) {
-		const t = (TIER_ORDER.includes(n.tier as Tier) ? n.tier : "default") as Tier;
-		byTier[t].push(n);
+	const TIER_RADIUS: Record<Tier, number> = {
+		pinned: 9.5,
+		summary: 7,
+		default: 5.5,
+		detail: 4.5,
+	};
+	const TIER_STROKE: Record<Tier, { color: string; width: number }> = {
+		pinned: { color: "var(--accent)", width: 1.6 },
+		summary: { color: "var(--ink)", width: 1.2 },
+		default: { color: "var(--paper-2)", width: 0.6 },
+		detail: { color: "var(--rule-soft)", width: 0.4 },
+	};
+	const TIER_TEXT: Record<Tier, string> = {
+		pinned: "var(--accent)",
+		summary: "var(--ink)",
+		default: "var(--ink-2)",
+		detail: "var(--ink-4)",
+	};
+
+	// Layout constants — mirrors web/src/client/lib/graph-layout.ts for arc geometry.
+	const VB_W = 1100;
+	const VB_H = 640;
+	const CX = VB_W / 2;
+	const TIER_Y: Record<Tier, number> = {
+		pinned: VB_H * 0.16,
+		summary: VB_H * 0.39,
+		default: VB_H * 0.62,
+		detail: VB_H * 0.84,
+	};
+	const TIER_SPAN: Record<Tier, number> = {
+		pinned: Math.PI * 0.3,
+		summary: Math.PI * 0.46,
+		default: Math.PI * 0.62,
+		detail: Math.PI * 0.72,
+	};
+	const TIER_RAD: Record<Tier, number> = {
+		pinned: 230,
+		summary: 330,
+		default: 430,
+		detail: 510,
+	};
+
+	interface PlacedNode extends MemoryGraphNode {
+		id: string;
+		x: number;
+		y: number;
+		radius: number;
+		lineColor: string;
 	}
 
-	const out: PlacedNode[] = [];
-	let i = 0;
+	let graph = $state<MemoryGraphResponse | null>(null);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
 
-	for (const tier of TIER_ORDER) {
-		const nodes = byTier[tier];
-		nodes.sort((a, b) => {
-			const sa = a.source ?? "";
-			const sb = b.source ?? "";
-			if (sa !== sb) return sa.localeCompare(sb);
-			return (a.lineIndex ?? 0) - (b.lineIndex ?? 0);
-		});
-		const span = TIER_SPAN[tier];
-		const radius = TIER_RAD[tier];
-		const baseY = TIER_Y[tier];
-		nodes.forEach((n, idx) => {
-			const t = nodes.length === 1 ? 0.5 : idx / (nodes.length - 1);
-			const angle = Math.PI / 2 + span / 2 - t * span;
-			// Jitter is seeded from the key so it remains stable across renders.
-			let s = 0;
-			for (let c = 0; c < n.key.length; c++) s = (s * 31 + n.key.charCodeAt(c)) >>> 0;
-			const jx = ((s % 1000) / 1000 - 0.5) * 6;
-			const jy = (((s >> 10) % 1000) / 1000 - 0.5) * 4;
-			const x = CX + radius * Math.cos(angle) + jx;
-			const y = baseY + radius * Math.sin(angle) - radius + jy;
-			const color =
-				n.source && threadColorMap.has(n.source)
-					? getLineCssVar(threadColorMap.get(n.source) ?? 0)
-					: "var(--ink-2)";
-			out.push({
-				...n,
-				id: `n${i++}`,
-				x,
-				y,
-				radius: TIER_RADIUS[tier],
-				lineColor: color,
-			});
-		});
-	}
-	return out;
-});
+	let tierFilter = $state<Tier | null>(null);
+	let selectedNodeId = $state<string | null>(null);
 
-const placedById = $derived(new Map(placed.map((p) => [p.id, p] as const)));
-const placedByKey = $derived(new Map(placed.map((p) => [p.key, p] as const)));
+	let zoom = $state(1);
+	let pan = $state({ x: 0, y: 0 });
+	let svgEl = $state<SVGSVGElement | null>(null);
+	let dragState = $state<{ startX: number; startY: number; panX: number; panY: number } | null>(
+		null,
+	);
 
-const selectedNode = $derived(selectedNodeId ? (placedById.get(selectedNodeId) ?? null) : null);
+	// Thread id -> color index lookup (for source coloring).
+	const threadColorMap = $derived(new Map(threads.map((t) => [t.id, t.color] as const)));
 
-// Render the selected memory's value as markdown, mirroring how prose is
-// rendered everywhere else in the UI (MessageBubble / ReasoningBlock).
-let renderedValue = $state("");
-$effect(() => {
-	const value = selectedNode?.value;
-	if (!value) {
-		renderedValue = "";
-		return;
-	}
-	renderMarkdown(value)
-		.then((html) => {
-			renderedValue = html;
-		})
-		.catch((err: unknown) => {
-			console.error("[markdown] renderMarkdown failed:", err);
-			renderedValue = "";
-		});
-});
-
-const neighbors = $derived.by(() => {
-	if (!selectedNode || !graph) return [] as Array<PlacedNode & { _relation: string }>;
-	const seen = new Map<string, PlacedNode & { _relation: string }>();
-	for (const e of graph.edges) {
-		let other: PlacedNode | undefined;
-		if (e.sourceKey === selectedNode.key) other = placedByKey.get(e.targetKey);
-		else if (e.targetKey === selectedNode.key) other = placedByKey.get(e.sourceKey);
-		if (other && !seen.has(other.id)) {
-			seen.set(other.id, { ...other, _relation: e.relation });
+	async function load(): Promise<void> {
+		try {
+			loading = true;
+			error = null;
+			graph = await client.getMemoryGraph();
+		} catch (e) {
+			error = e instanceof Error ? e.message : "Failed to load memory graph";
+			graph = null;
+		} finally {
+			loading = false;
 		}
 	}
-	return [...seen.values()].slice(0, 8);
-});
 
-// View computed from pan + zoom
-const view = $derived.by(() => {
-	const w = VB_W / zoom;
-	const h = VB_H / zoom;
-	const maxX = VB_W - w;
-	const maxY = VB_H - h;
-	const x = zoom === 1 ? 0 : Math.max(0, Math.min(pan.x, maxX));
-	const y = zoom === 1 ? 0 : Math.max(0, Math.min(pan.y, maxY));
-	return { x, y, w, h };
-});
+	onMount(() => {
+		load();
+	});
 
-function resetView(): void {
-	zoom = 1;
-	pan = { x: 0, y: 0 };
-}
+	// Deterministic placement along each tier's arc. Nodes from the same source
+	// thread sort together, so same-color "bouquets" form along the arc.
+	const placed = $derived.by<PlacedNode[]>(() => {
+		if (!graph || graph.nodes.length === 0) return [];
 
-function focusOn(node: PlacedNode, z?: number): void {
-	const targetZoom = z ?? Math.max(zoom, 2);
-	const viewW = VB_W / targetZoom;
-	const viewH = VB_H / targetZoom;
-	zoom = targetZoom;
-	pan = { x: node.x - viewW / 2, y: node.y - viewH / 2 };
-}
+		const byTier: Record<Tier, MemoryGraphNode[]> = {
+			pinned: [],
+			summary: [],
+			default: [],
+			detail: [],
+		};
+		for (const n of graph.nodes) {
+			const t = (TIER_ORDER.includes(n.tier as Tier) ? n.tier : "default") as Tier;
+			byTier[t].push(n);
+		}
 
-function handleMouseDown(e: MouseEvent): void {
-	if (zoom <= 1) return;
-	dragState = {
-		startX: e.clientX,
-		startY: e.clientY,
-		panX: pan.x,
-		panY: pan.y,
-	};
-}
+		const out: PlacedNode[] = [];
+		let i = 0;
 
-function handleMouseMove(e: MouseEvent): void {
-	if (!dragState || !svgEl) return;
-	const rect = svgEl.getBoundingClientRect();
-	const dx = ((e.clientX - dragState.startX) * (VB_W / zoom)) / rect.width;
-	const dy = ((e.clientY - dragState.startY) * (VB_H / zoom)) / rect.height;
-	pan = { x: dragState.panX - dx, y: dragState.panY - dy };
-}
+		for (const tier of TIER_ORDER) {
+			const nodes = byTier[tier];
+			nodes.sort((a, b) => {
+				const sa = a.source ?? "";
+				const sb = b.source ?? "";
+				if (sa !== sb) return sa.localeCompare(sb);
+				return (a.lineIndex ?? 0) - (b.lineIndex ?? 0);
+			});
+			const span = TIER_SPAN[tier];
+			const radius = TIER_RAD[tier];
+			const baseY = TIER_Y[tier];
+			nodes.forEach((n, idx) => {
+				const t = nodes.length === 1 ? 0.5 : idx / (nodes.length - 1);
+				const angle = Math.PI / 2 + span / 2 - t * span;
+				// Jitter is seeded from the key so it remains stable across renders.
+				let s = 0;
+				for (let c = 0; c < n.key.length; c++) s = (s * 31 + n.key.charCodeAt(c)) >>> 0;
+				const jx = ((s % 1000) / 1000 - 0.5) * 6;
+				const jy = (((s >> 10) % 1000) / 1000 - 0.5) * 4;
+				const x = CX + radius * Math.cos(angle) + jx;
+				const y = baseY + radius * Math.sin(angle) - radius + jy;
+				const color =
+					n.source && threadColorMap.has(n.source)
+						? getLineCssVar(threadColorMap.get(n.source) ?? 0)
+						: "var(--ink-2)";
+				out.push({
+					...n,
+					id: `n${i++}`,
+					x,
+					y,
+					radius: TIER_RADIUS[tier],
+					lineColor: color,
+				});
+			});
+		}
+		return out;
+	});
 
-function handleMouseUp(): void {
-	dragState = null;
-}
+	const placedById = $derived(new Map(placed.map((p) => [p.id, p] as const)));
+	const placedByKey = $derived(new Map(placed.map((p) => [p.key, p] as const)));
 
-function handleWheel(e: WheelEvent): void {
-	e.preventDefault();
-	if (!svgEl) return;
-	const rect = svgEl.getBoundingClientRect();
-	const mx = (e.clientX - rect.left) / rect.width;
-	const my = (e.clientY - rect.top) / rect.height;
-	const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-	const newZoom = Math.max(1, Math.min(5, zoom * factor));
-	const w0 = VB_W / zoom;
-	const h0 = VB_H / zoom;
-	const w1 = VB_W / newZoom;
-	const h1 = VB_H / newZoom;
-	const cx = view.x + mx * w0;
-	const cy = view.y + my * h0;
-	pan = { x: cx - mx * w1, y: cy - my * h1 };
-	zoom = newZoom;
-}
+	const selectedNode = $derived(selectedNodeId ? (placedById.get(selectedNodeId) ?? null) : null);
 
-function zoomIn(): void {
-	const nz = Math.min(5, zoom * 1.3);
-	const cx = view.x + view.w / 2;
-	const cy = view.y + view.h / 2;
-	const w1 = VB_W / nz;
-	const h1 = VB_H / nz;
-	pan = { x: cx - w1 / 2, y: cy - h1 / 2 };
-	zoom = nz;
-}
+	// Render the selected memory's value as markdown, mirroring how prose is
+	// rendered everywhere else in the UI (MessageBubble / ReasoningBlock).
+	let renderedValue = $state("");
+	$effect(() => {
+		const value = selectedNode?.value;
+		if (!value) {
+			renderedValue = "";
+			return;
+		}
+		renderMarkdown(value)
+			.then((html) => {
+				renderedValue = html;
+			})
+			.catch((err: unknown) => {
+				console.error("[markdown] renderMarkdown failed:", err);
+				renderedValue = "";
+			});
+	});
 
-function zoomOut(): void {
-	const nz = Math.max(1, zoom / 1.3);
-	const cx = view.x + view.w / 2;
-	const cy = view.y + view.h / 2;
-	const w1 = VB_W / nz;
-	const h1 = VB_H / nz;
-	pan = { x: cx - w1 / 2, y: cy - h1 / 2 };
-	zoom = nz;
-}
+	const neighbors = $derived.by(() => {
+		if (!selectedNode || !graph) return [] as Array<PlacedNode & { _relation: string }>;
+		const seen = new Map<string, PlacedNode & { _relation: string }>();
+		for (const e of graph.edges) {
+			let other: PlacedNode | undefined;
+			if (e.sourceKey === selectedNode.key) other = placedByKey.get(e.targetKey);
+			else if (e.targetKey === selectedNode.key) other = placedByKey.get(e.sourceKey);
+			if (other && !seen.has(other.id)) {
+				seen.set(other.id, { ...other, _relation: e.relation });
+			}
+		}
+		return [...seen.values()].slice(0, 8);
+	});
 
-function nodeOpacity(n: PlacedNode): number {
-	if (tierFilter && n.tier !== tierFilter) return 0.1;
-	if (selectedThreadId && n.source !== selectedThreadId) return 0.18;
-	return 1;
-}
+	// View computed from pan + zoom
+	const view = $derived.by(() => {
+		const w = VB_W / zoom;
+		const h = VB_H / zoom;
+		const maxX = VB_W - w;
+		const maxY = VB_H - h;
+		const x = zoom === 1 ? 0 : Math.max(0, Math.min(pan.x, maxX));
+		const y = zoom === 1 ? 0 : Math.max(0, Math.min(pan.y, maxY));
+		return { x, y, w, h };
+	});
 
-function onNodeClick(n: PlacedNode, e: MouseEvent): void {
-	e.stopPropagation();
-	if (selectedNodeId === n.id) {
-		selectedNodeId = null;
-	} else {
-		selectedNodeId = n.id;
-		focusOn(n, Math.max(zoom, 1.8));
+	function resetView(): void {
+		zoom = 1;
+		pan = { x: 0, y: 0 };
 	}
-}
 
-function sqrtZ(): number {
-	return Math.sqrt(zoom);
-}
+	function focusOn(node: PlacedNode, z?: number): void {
+		const targetZoom = z ?? Math.max(zoom, 2);
+		const viewW = VB_W / targetZoom;
+		const viewH = VB_H / targetZoom;
+		zoom = targetZoom;
+		pan = { x: node.x - viewW / 2, y: node.y - viewH / 2 };
+	}
 
-function relTime(iso: string): string {
-	const d = new Date(iso).getTime();
-	const sec = Math.round((Date.now() - d) / 1000);
-	if (sec < 60) return `${sec}s ago`;
-	if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
-	if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
-	if (sec < 30 * 86400) return `${Math.round(sec / 86400)}d ago`;
-	return new Date(iso).toISOString().slice(0, 10);
-}
+	function handleMouseDown(e: MouseEvent): void {
+		if (zoom <= 1) return;
+		dragState = {
+			startX: e.clientX,
+			startY: e.clientY,
+			panX: pan.x,
+			panY: pan.y,
+		};
+	}
 
-function tierCount(t: Tier): number {
-	if (!graph) return 0;
-	return graph.nodes.filter((n) => n.tier === t).length;
-}
+	function handleMouseMove(e: MouseEvent): void {
+		if (!dragState || !svgEl) return;
+		const rect = svgEl.getBoundingClientRect();
+		const dx = ((e.clientX - dragState.startX) * (VB_W / zoom)) / rect.width;
+		const dy = ((e.clientY - dragState.startY) * (VB_H / zoom)) / rect.height;
+		pan = { x: dragState.panX - dx, y: dragState.panY - dy };
+	}
 
-const tierBands: Array<{ tier: Tier; y: number; label: string }> = [
-	{ tier: "pinned", y: VB_H * 0.16, label: TIER_LABEL.pinned },
-	{ tier: "summary", y: VB_H * 0.39, label: TIER_LABEL.summary },
-	{ tier: "default", y: VB_H * 0.62, label: TIER_LABEL.default },
-	{ tier: "detail", y: VB_H * 0.84, label: TIER_LABEL.detail },
-];
+	function handleMouseUp(): void {
+		dragState = null;
+	}
 
-const hoveredThreadColorCss = $derived(
-	hoveredThreadColor != null ? getLineCssVar(hoveredThreadColor) : null,
-);
-const hoveredCount = $derived(
-	selectedThreadId && graph ? graph.nodes.filter((n) => n.source === selectedThreadId).length : 0,
-);
+	function handleWheel(e: WheelEvent): void {
+		e.preventDefault();
+		if (!svgEl) return;
+		const rect = svgEl.getBoundingClientRect();
+		const mx = (e.clientX - rect.left) / rect.width;
+		const my = (e.clientY - rect.top) / rect.height;
+		const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+		const newZoom = Math.max(1, Math.min(5, zoom * factor));
+		const w0 = VB_W / zoom;
+		const h0 = VB_H / zoom;
+		const w1 = VB_W / newZoom;
+		const h1 = VB_H / newZoom;
+		const cx = view.x + mx * w0;
+		const cy = view.y + my * h0;
+		pan = { x: cx - mx * w1, y: cy - my * h1 };
+		zoom = newZoom;
+	}
+
+	function zoomIn(): void {
+		const nz = Math.min(5, zoom * 1.3);
+		const cx = view.x + view.w / 2;
+		const cy = view.y + view.h / 2;
+		const w1 = VB_W / nz;
+		const h1 = VB_H / nz;
+		pan = { x: cx - w1 / 2, y: cy - h1 / 2 };
+		zoom = nz;
+	}
+
+	function zoomOut(): void {
+		const nz = Math.max(1, zoom / 1.3);
+		const cx = view.x + view.w / 2;
+		const cy = view.y + view.h / 2;
+		const w1 = VB_W / nz;
+		const h1 = VB_H / nz;
+		pan = { x: cx - w1 / 2, y: cy - h1 / 2 };
+		zoom = nz;
+	}
+
+	function nodeOpacity(n: PlacedNode): number {
+		if (tierFilter && n.tier !== tierFilter) return 0.1;
+		if (selectedThreadId && n.source !== selectedThreadId) return 0.18;
+		return 1;
+	}
+
+	function onNodeClick(n: PlacedNode, e: MouseEvent): void {
+		e.stopPropagation();
+		if (selectedNodeId === n.id) {
+			selectedNodeId = null;
+		} else {
+			selectedNodeId = n.id;
+			focusOn(n, Math.max(zoom, 1.8));
+		}
+	}
+
+	function sqrtZ(): number {
+		return Math.sqrt(zoom);
+	}
+
+	function relTime(iso: string): string {
+		const d = new Date(iso).getTime();
+		const sec = Math.round((Date.now() - d) / 1000);
+		if (sec < 60) return `${sec}s ago`;
+		if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+		if (sec < 86400) return `${Math.round(sec / 3600)}h ago`;
+		if (sec < 30 * 86400) return `${Math.round(sec / 86400)}d ago`;
+		return new Date(iso).toISOString().slice(0, 10);
+	}
+
+	function tierCount(t: Tier): number {
+		if (!graph) return 0;
+		return graph.nodes.filter((n) => n.tier === t).length;
+	}
+
+	const tierBands: Array<{ tier: Tier; y: number; label: string }> = [
+		{ tier: "pinned", y: VB_H * 0.16, label: TIER_LABEL.pinned },
+		{ tier: "summary", y: VB_H * 0.39, label: TIER_LABEL.summary },
+		{ tier: "default", y: VB_H * 0.62, label: TIER_LABEL.default },
+		{ tier: "detail", y: VB_H * 0.84, label: TIER_LABEL.detail },
+	];
+
+	const hoveredThreadColorCss = $derived(
+		hoveredThreadColor != null ? getLineCssVar(hoveredThreadColor) : null,
+	);
+	const hoveredCount = $derived(
+		selectedThreadId && graph ? graph.nodes.filter((n) => n.source === selectedThreadId).length : 0,
+	);
 </script>
 
 <div class="memory-graph">
@@ -412,7 +414,12 @@ const hoveredCount = $derived(
 				>
 					<defs>
 						<pattern id="gridpat" width="40" height="40" patternUnits="userSpaceOnUse">
-							<path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(26,24,20,0.035)" stroke-width="1" />
+							<path
+								d="M 40 0 L 0 0 0 40"
+								fill="none"
+								stroke="rgba(26,24,20,0.035)"
+								stroke-width="1"
+							/>
 						</pattern>
 					</defs>
 					<rect x={view.x} y={view.y} width={view.w} height={view.h} fill="url(#gridpat)" />
@@ -481,7 +488,13 @@ const hoveredCount = $derived(
 						<g
 							style="opacity: {nodeOpacity(n)}; transition: opacity 0.18s ease; cursor: pointer;"
 							onclick={(e) => onNodeClick(n, e)}
-							onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectedNodeId = selectedNodeId === n.id ? null : n.id; if (selectedNodeId === n.id) focusOn(n); } }}
+							onkeydown={(e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									selectedNodeId = selectedNodeId === n.id ? null : n.id;
+									if (selectedNodeId === n.id) focusOn(n);
+								}
+							}}
 							role="button"
 							tabindex="-1"
 						>
@@ -498,10 +511,10 @@ const hoveredCount = $derived(
 							<circle
 								cx={n.x}
 								cy={n.y}
-								r={r}
+								{r}
 								fill={n.lineColor}
-								stroke={isSelected ? "var(--ink)" : stroke?.color ?? "var(--paper-2)"}
-								stroke-width={(isSelected ? 1.4 : stroke?.width ?? 0.5) / sqrtZ()}
+								stroke={isSelected ? "var(--ink)" : (stroke?.color ?? "var(--paper-2)")}
+								stroke-width={(isSelected ? 1.4 : (stroke?.width ?? 0.5)) / sqrtZ()}
 							/>
 							{#if n.tier === "summary"}
 								<circle cx={n.x} cy={n.y} r={Math.max(1, r * 0.35)} fill="var(--paper-2)" />
@@ -581,13 +594,17 @@ const hoveredCount = $derived(
 						{TIER_LABEL[selectedNode.tier as Tier]} TIER
 					</span>
 					<div class="spacer"></div>
-					<button class="detail-close" onclick={() => (selectedNodeId = null)} title="Close">✕</button>
+					<button class="detail-close" onclick={() => (selectedNodeId = null)} title="Close"
+						>✕</button
+					>
 				</div>
 
 				<div>
 					<div class="detail-key mono">{selectedNode.key}</div>
 					{#if renderedValue}
-						<div class="detail-value md-content" use:mermaid={renderedValue}>{@html renderedValue}</div>
+						<div class="detail-value md-content" use:mermaid={renderedValue}>
+							{@html renderedValue}
+						</div>
 					{:else}
 						<div class="detail-value">{selectedNode.value}</div>
 					{/if}
@@ -613,10 +630,7 @@ const hoveredCount = $derived(
 				</div>
 
 				{#if selectedNode.source}
-					<button
-						class="source-btn"
-						onclick={() => onNavigate?.(`/line/${selectedNode?.source}`)}
-					>
+					<button class="source-btn" onclick={() => onNavigate?.(`/line/${selectedNode?.source}`)}>
 						<div class="kicker">Source ↗</div>
 						<div class="source-title">{selectedNode.sourceThreadTitle ?? selectedNode.source}</div>
 						<div class="source-meta mono">
@@ -653,7 +667,10 @@ const hoveredCount = $derived(
 
 	<div class="footnote">
 		<span>Scroll to zoom · drag to pan · click a node to inspect.</span>
-		<span>Showing {placed.filter((n) => !tierFilter || n.tier === tierFilter).length} of {placed.length} nodes</span>
+		<span
+			>Showing {placed.filter((n) => !tierFilter || n.tier === tierFilter).length} of {placed.length}
+			nodes</span
+		>
 	</div>
 </div>
 

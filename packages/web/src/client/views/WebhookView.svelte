@@ -1,331 +1,328 @@
 <script lang="ts">
-import type { ClusterModelInfo, WebhookListEntry, WebhookUrlEntry } from "@bound/client";
-import { onMount } from "svelte";
-import Btn from "../components/Btn.svelte";
-import DataTable from "../components/DataTable.svelte";
-import Page from "../components/Page.svelte";
-import SecretModal from "../components/SecretModal.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import TaskCard from "../components/TaskCard.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import { client } from "../lib/bound";
+	import type { ClusterModelInfo, WebhookListEntry, WebhookUrlEntry } from "@bound/client";
+	import { onMount } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import DataTable from "../components/DataTable.svelte";
+	import Page from "../components/Page.svelte";
+	import SecretModal from "../components/SecretModal.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import TaskCard from "../components/TaskCard.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import { client } from "../lib/bound";
 
-let webhooks: WebhookListEntry[] = $state([]);
-let loading = $state(true);
-let view = $state<"list" | "create" | "detail">("list");
-let selectedWebhook = $state<WebhookListEntry | null>(null);
-let secretModal = $state<{ secret: string; name: string } | null>(null);
-let error = $state<string | null>(null);
+	let webhooks: WebhookListEntry[] = $state([]);
+	let loading = $state(true);
+	let view = $state<"list" | "create" | "detail">("list");
+	let selectedWebhook = $state<WebhookListEntry | null>(null);
+	let secretModal = $state<{ secret: string; name: string } | null>(null);
+	let error = $state<string | null>(null);
 
-// Cluster-wide webhook URL enumeration for the selected webhook (#36).
-// Fetched server-side because the URL is the SYNC port (default 3000), not
-// the web port — the browser's window.location.origin is the wrong place to
-// derive it from. Updates whenever selectedWebhook changes.
-let urlEntries: WebhookUrlEntry[] = $state([]);
-let urlsLoading = $state(false);
-let urlsError = $state<string | null>(null);
+	// Cluster-wide webhook URL enumeration for the selected webhook (#36).
+	// Fetched server-side because the URL is the SYNC port (default 3000), not
+	// the web port — the browser's window.location.origin is the wrong place to
+	// derive it from. Updates whenever selectedWebhook changes.
+	let urlEntries: WebhookUrlEntry[] = $state([]);
+	let urlsLoading = $state(false);
+	let urlsError = $state<string | null>(null);
 
-// Cluster model catalogue (for dropdowns). Empty = use cluster default.
-let availableModels: ClusterModelInfo[] = $state([]);
-let defaultModel = $state("");
+	// Cluster model catalogue (for dropdowns). Empty = use cluster default.
+	let availableModels: ClusterModelInfo[] = $state([]);
+	let defaultModel = $state("");
 
-// Create form state
-let createName = $state("");
-let createFormat = $state("github");
-let createDescription = $state("");
-let createPrompt = $state("");
-let createModel = $state(""); // "" = use cluster default
-let createNoHistory = $state(false);
-let createError = $state<string | null>(null);
+	// Create form state
+	let createName = $state("");
+	let createFormat = $state("github");
+	let createDescription = $state("");
+	let createPrompt = $state("");
+	let createModel = $state(""); // "" = use cluster default
+	let createNoHistory = $state(false);
+	let createError = $state<string | null>(null);
 
-// Edit form state
-let editDescription = $state("");
-let editFormat = $state("");
-let editPrompt = $state("");
-let editModel = $state(""); // "" = use cluster default
-let editNoHistory = $state(false);
-let editError = $state<string | null>(null);
+	// Edit form state
+	let editDescription = $state("");
+	let editFormat = $state("");
+	let editPrompt = $state("");
+	let editModel = $state(""); // "" = use cluster default
+	let editNoHistory = $state(false);
+	let editError = $state<string | null>(null);
 
-// Loading states
-let actionInProgress = $state<string | null>(null);
+	// Loading states
+	let actionInProgress = $state<string | null>(null);
 
-// Cluster-wide unauthenticated-webhook kill switch (#195). Default off: a
-// "none"-format webhook can be neither created nor delivered until an operator
-// flips this on here. Gated visibly so allowing unsigned inbound is a
-// deliberate choice, not a silent default.
-let allowUnauthenticated = $state(false);
-let switchBusy = $state(false);
-let switchError = $state<string | null>(null);
+	// Cluster-wide unauthenticated-webhook kill switch (#195). Default off: a
+	// "none"-format webhook can be neither created nor delivered until an operator
+	// flips this on here. Gated visibly so allowing unsigned inbound is a
+	// deliberate choice, not a silent default.
+	let allowUnauthenticated = $state(false);
+	let switchBusy = $state(false);
+	let switchError = $state<string | null>(null);
 
-const columns = [
-	{ key: "name", label: "Name", width: "2fr", mono: true },
-	{ key: "signature_format", label: "Format", width: "1fr" },
-	{ key: "description", label: "Description", width: "3fr" },
-	{ key: "created_at", label: "Created", width: "2fr" },
-];
+	const columns = [
+		{ key: "name", label: "Name", width: "2fr", mono: true },
+		{ key: "signature_format", label: "Format", width: "1fr" },
+		{ key: "description", label: "Description", width: "3fr" },
+		{ key: "created_at", label: "Created", width: "2fr" },
+	];
 
-onMount(() => {
-	loadWebhooks();
-	loadModels();
-	loadUnauthenticatedSwitch();
-});
+	onMount(() => {
+		loadWebhooks();
+		loadModels();
+		loadUnauthenticatedSwitch();
+	});
 
-async function loadWebhooks(): Promise<void> {
-	try {
-		loading = true;
-		error = null;
-		webhooks = await client.listWebhooks();
-	} catch (err: unknown) {
-		console.error("Failed to load webhooks:", err);
-		error = err instanceof Error ? err.message : "Failed to load webhooks. Please try again.";
-	} finally {
-		loading = false;
-	}
-}
-
-async function loadModels(): Promise<void> {
-	// Best-effort: dropdown still falls back to a free-text default if /models fails.
-	try {
-		const resp = await client.listModels();
-		availableModels = resp.models;
-		defaultModel = resp.default;
-	} catch (err: unknown) {
-		console.error("Failed to load models for webhook dropdown:", err);
-	}
-}
-
-async function loadUnauthenticatedSwitch(): Promise<void> {
-	try {
-		const resp = await client.getWebhookUnauthenticatedSwitch();
-		allowUnauthenticated = resp.allow_unauthenticated;
-	} catch (err: unknown) {
-		console.error("Failed to load unauthenticated-webhook switch:", err);
-	}
-}
-
-async function handleToggleUnauthenticated(next: boolean): Promise<void> {
-	switchBusy = true;
-	switchError = null;
-	try {
-		const resp = await client.setWebhookUnauthenticatedSwitch(next);
-		allowUnauthenticated = resp.allow_unauthenticated;
-		// A create/edit form may be sitting on the now-invalid "none" option;
-		// snap it back to a signed default so the operator can't submit a
-		// request the server will 403.
-		if (!allowUnauthenticated) {
-			if (createFormat === "none") createFormat = "github";
-			if (editFormat === "none") editFormat = "github";
+	async function loadWebhooks(): Promise<void> {
+		try {
+			loading = true;
+			error = null;
+			webhooks = await client.listWebhooks();
+		} catch (err: unknown) {
+			console.error("Failed to load webhooks:", err);
+			error = err instanceof Error ? err.message : "Failed to load webhooks. Please try again.";
+		} finally {
+			loading = false;
 		}
-	} catch (err: unknown) {
-		console.error("Failed to update unauthenticated-webhook switch:", err);
-		switchError = err instanceof Error ? err.message : "Failed to update switch.";
-	} finally {
-		switchBusy = false;
-	}
-}
-
-async function handleCreate(): Promise<void> {
-	if (!createName.trim()) {
-		createError = "Name is required";
-		return;
 	}
 
-	actionInProgress = "create";
-	createError = null;
+	async function loadModels(): Promise<void> {
+		// Best-effort: dropdown still falls back to a free-text default if /models fails.
+		try {
+			const resp = await client.listModels();
+			availableModels = resp.models;
+			defaultModel = resp.default;
+		} catch (err: unknown) {
+			console.error("Failed to load models for webhook dropdown:", err);
+		}
+	}
 
-	try {
-		const response = await client.createWebhook({
-			name: createName,
-			format: createFormat,
-			description: createDescription || undefined,
-			prompt: createPrompt || undefined,
-			model_hint: createModel || null,
-			no_history: createNoHistory,
-		});
+	async function loadUnauthenticatedSwitch(): Promise<void> {
+		try {
+			const resp = await client.getWebhookUnauthenticatedSwitch();
+			allowUnauthenticated = resp.allow_unauthenticated;
+		} catch (err: unknown) {
+			console.error("Failed to load unauthenticated-webhook switch:", err);
+		}
+	}
 
-		// Show secret modal
-		secretModal = {
-			secret: response.secret,
-			name: response.name,
-		};
+	async function handleToggleUnauthenticated(next: boolean): Promise<void> {
+		switchBusy = true;
+		switchError = null;
+		try {
+			const resp = await client.setWebhookUnauthenticatedSwitch(next);
+			allowUnauthenticated = resp.allow_unauthenticated;
+			// A create/edit form may be sitting on the now-invalid "none" option;
+			// snap it back to a signed default so the operator can't submit a
+			// request the server will 403.
+			if (!allowUnauthenticated) {
+				if (createFormat === "none") createFormat = "github";
+				if (editFormat === "none") editFormat = "github";
+			}
+		} catch (err: unknown) {
+			console.error("Failed to update unauthenticated-webhook switch:", err);
+			switchError = err instanceof Error ? err.message : "Failed to update switch.";
+		} finally {
+			switchBusy = false;
+		}
+	}
 
-		// Reset form
+	async function handleCreate(): Promise<void> {
+		if (!createName.trim()) {
+			createError = "Name is required";
+			return;
+		}
+
+		actionInProgress = "create";
+		createError = null;
+
+		try {
+			const response = await client.createWebhook({
+				name: createName,
+				format: createFormat,
+				description: createDescription || undefined,
+				prompt: createPrompt || undefined,
+				model_hint: createModel || null,
+				no_history: createNoHistory,
+			});
+
+			// Show secret modal
+			secretModal = {
+				secret: response.secret,
+				name: response.name,
+			};
+
+			// Reset form
+			createName = "";
+			createFormat = "github";
+			createDescription = "";
+			createPrompt = "";
+			createModel = "";
+			createNoHistory = false;
+
+			// Reload webhooks
+			await loadWebhooks();
+
+			// Return to list after a short delay
+			setTimeout(() => {
+				view = "list";
+			}, 500);
+		} catch (err: unknown) {
+			console.error("Failed to create webhook:", err);
+			createError =
+				err instanceof Error ? err.message : "Failed to create webhook. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	async function handleDelete(id: string): Promise<void> {
+		if (!confirm("Are you sure you want to delete this webhook? This action cannot be undone.")) {
+			return;
+		}
+
+		actionInProgress = `delete:${id}`;
+
+		try {
+			await client.deleteWebhook(id);
+			await loadWebhooks();
+			view = "list";
+			selectedWebhook = null;
+		} catch (err: unknown) {
+			console.error("Failed to delete webhook:", err);
+			error = err instanceof Error ? err.message : "Failed to delete webhook. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	async function handleUpdate(id: string): Promise<void> {
+		actionInProgress = `update:${id}`;
+		editError = null;
+
+		try {
+			await client.updateWebhook(id, {
+				description: editDescription || undefined,
+				format: editFormat,
+				prompt: editPrompt || undefined,
+				model_hint: editModel || null,
+				no_history: editNoHistory,
+			});
+
+			await loadWebhooks();
+
+			// Update selected webhook
+			const updated = webhooks.find((w) => w.id === id);
+			if (updated) {
+				selectedWebhook = updated;
+			}
+		} catch (err: unknown) {
+			console.error("Failed to update webhook:", err);
+			editError =
+				err instanceof Error ? err.message : "Failed to update webhook. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	async function handleRotateSecret(id: string): Promise<void> {
+		actionInProgress = `rotate:${id}`;
+
+		try {
+			const response = await client.rotateWebhookSecret(id);
+
+			// Show secret modal
+			const webhook = webhooks.find((w) => w.id === id);
+			if (webhook) {
+				secretModal = {
+					secret: response.secret,
+					name: webhook.name,
+				};
+			}
+		} catch (err: unknown) {
+			console.error("Failed to rotate webhook secret:", err);
+			editError = err instanceof Error ? err.message : "Failed to rotate secret. Please try again.";
+		} finally {
+			actionInProgress = null;
+		}
+	}
+
+	function handleSelectWebhook(webhook: WebhookListEntry): void {
+		selectedWebhook = webhook;
+		editDescription = webhook.description ?? "";
+		editFormat = webhook.signature_format;
+		editPrompt = webhook.prompt ?? "";
+		editModel = webhook.model_hint ?? "";
+		editNoHistory = webhook.no_history === true;
+		editError = null;
+		view = "detail";
+		loadWebhookUrls(webhook.id);
+	}
+
+	async function loadWebhookUrls(id: string): Promise<void> {
+		try {
+			urlsLoading = true;
+			urlsError = null;
+			urlEntries = [];
+			const resp = await client.listWebhookUrls(id);
+			urlEntries = resp.urls;
+		} catch (err: unknown) {
+			console.error("Failed to load webhook URLs:", err);
+			urlsError = err instanceof Error ? err.message : "Failed to load webhook URLs.";
+		} finally {
+			urlsLoading = false;
+		}
+	}
+
+	function urlSourceLabel(entry: WebhookUrlEntry): string {
+		switch (entry.source) {
+			case "hub":
+				return "Hub";
+			case "local":
+				return entry.host_name ? `Local (${entry.host_name})` : "Local";
+			case "cluster":
+				return entry.host_name ? `Cluster (${entry.host_name})` : "Cluster";
+		}
+	}
+
+	function handleBackToList(): void {
+		view = "list";
+		selectedWebhook = null;
+		editDescription = "";
+		editFormat = "";
+		editPrompt = "";
+		editModel = "";
+		editNoHistory = false;
+		editError = null;
+		urlEntries = [];
+		urlsLoading = false;
+		urlsError = null;
+	}
+
+	function handleCreateNew(): void {
+		view = "create";
 		createName = "";
 		createFormat = "github";
 		createDescription = "";
 		createPrompt = "";
 		createModel = "";
 		createNoHistory = false;
-
-		// Reload webhooks
-		await loadWebhooks();
-
-		// Return to list after a short delay
-		setTimeout(() => {
-			view = "list";
-		}, 500);
-	} catch (err: unknown) {
-		console.error("Failed to create webhook:", err);
-		createError =
-			err instanceof Error ? err.message : "Failed to create webhook. Please try again.";
-	} finally {
-		actionInProgress = null;
-	}
-}
-
-async function handleDelete(id: string): Promise<void> {
-	if (!confirm("Are you sure you want to delete this webhook? This action cannot be undone.")) {
-		return;
+		createError = null;
 	}
 
-	actionInProgress = `delete:${id}`;
-
-	try {
-		await client.deleteWebhook(id);
-		await loadWebhooks();
-		view = "list";
-		selectedWebhook = null;
-	} catch (err: unknown) {
-		console.error("Failed to delete webhook:", err);
-		error = err instanceof Error ? err.message : "Failed to delete webhook. Please try again.";
-	} finally {
-		actionInProgress = null;
-	}
-}
-
-async function handleUpdate(id: string): Promise<void> {
-	actionInProgress = `update:${id}`;
-	editError = null;
-
-	try {
-		await client.updateWebhook(id, {
-			description: editDescription || undefined,
-			format: editFormat,
-			prompt: editPrompt || undefined,
-			model_hint: editModel || null,
-			no_history: editNoHistory,
-		});
-
-		await loadWebhooks();
-
-		// Update selected webhook
-		const updated = webhooks.find((w) => w.id === id);
-		if (updated) {
-			selectedWebhook = updated;
+	function formatDate(iso: string): string {
+		try {
+			return new Date(iso).toLocaleDateString("en-US", {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+			});
+		} catch {
+			return iso;
 		}
-	} catch (err: unknown) {
-		console.error("Failed to update webhook:", err);
-		editError = err instanceof Error ? err.message : "Failed to update webhook. Please try again.";
-	} finally {
-		actionInProgress = null;
 	}
-}
-
-async function handleRotateSecret(id: string): Promise<void> {
-	actionInProgress = `rotate:${id}`;
-
-	try {
-		const response = await client.rotateWebhookSecret(id);
-
-		// Show secret modal
-		const webhook = webhooks.find((w) => w.id === id);
-		if (webhook) {
-			secretModal = {
-				secret: response.secret,
-				name: webhook.name,
-			};
-		}
-	} catch (err: unknown) {
-		console.error("Failed to rotate webhook secret:", err);
-		editError = err instanceof Error ? err.message : "Failed to rotate secret. Please try again.";
-	} finally {
-		actionInProgress = null;
-	}
-}
-
-function handleSelectWebhook(webhook: WebhookListEntry): void {
-	selectedWebhook = webhook;
-	editDescription = webhook.description ?? "";
-	editFormat = webhook.signature_format;
-	editPrompt = webhook.prompt ?? "";
-	editModel = webhook.model_hint ?? "";
-	editNoHistory = webhook.no_history === true;
-	editError = null;
-	view = "detail";
-	loadWebhookUrls(webhook.id);
-}
-
-async function loadWebhookUrls(id: string): Promise<void> {
-	try {
-		urlsLoading = true;
-		urlsError = null;
-		urlEntries = [];
-		const resp = await client.listWebhookUrls(id);
-		urlEntries = resp.urls;
-	} catch (err: unknown) {
-		console.error("Failed to load webhook URLs:", err);
-		urlsError = err instanceof Error ? err.message : "Failed to load webhook URLs.";
-	} finally {
-		urlsLoading = false;
-	}
-}
-
-function urlSourceLabel(entry: WebhookUrlEntry): string {
-	switch (entry.source) {
-		case "hub":
-			return "Hub";
-		case "local":
-			return entry.host_name ? `Local (${entry.host_name})` : "Local";
-		case "cluster":
-			return entry.host_name ? `Cluster (${entry.host_name})` : "Cluster";
-	}
-}
-
-function handleBackToList(): void {
-	view = "list";
-	selectedWebhook = null;
-	editDescription = "";
-	editFormat = "";
-	editPrompt = "";
-	editModel = "";
-	editNoHistory = false;
-	editError = null;
-	urlEntries = [];
-	urlsLoading = false;
-	urlsError = null;
-}
-
-function handleCreateNew(): void {
-	view = "create";
-	createName = "";
-	createFormat = "github";
-	createDescription = "";
-	createPrompt = "";
-	createModel = "";
-	createNoHistory = false;
-	createError = null;
-}
-
-function formatDate(iso: string): string {
-	try {
-		return new Date(iso).toLocaleDateString("en-US", {
-			month: "short",
-			day: "numeric",
-			year: "numeric",
-		});
-	} catch {
-		return iso;
-	}
-}
 </script>
 
 <Page>
 	{#snippet children()}
-		<SectionHeader
-			number={6}
-			subtitle="Automated messaging endpoints"
-			title="Webhooks"
-		>
+		<SectionHeader number={6} subtitle="Automated messaging endpoints" title="Webhooks">
 			{#snippet actions()}
 				<TicketTab color="var(--accent)">
 					{#snippet children()}{webhooks.length} active{/snippet}
@@ -349,7 +346,10 @@ function formatDate(iso: string): string {
 				<div class="list-header">
 					<h2 class="section-title">Webhooks · {webhooks.length}</h2>
 					<div class="spacer"></div>
-					<label class="unauth-toggle" title="When on, webhooks with signature format 'none' can be created and will receive deliveries. Off by default: unsigned inbound is blocked cluster-wide.">
+					<label
+						class="unauth-toggle"
+						title="When on, webhooks with signature format 'none' can be created and will receive deliveries. Off by default: unsigned inbound is blocked cluster-wide."
+					>
 						<input
 							type="checkbox"
 							checked={allowUnauthenticated}
@@ -358,11 +358,7 @@ function formatDate(iso: string): string {
 						/>
 						Allow unauthenticated webhooks
 					</label>
-					<Btn
-						variant="accent"
-						size="sm"
-						onclick={handleCreateNew}
-					>
+					<Btn variant="accent" size="sm" onclick={handleCreateNew}>
 						{#snippet children()}New Webhook{/snippet}
 					</Btn>
 				</div>
@@ -387,11 +383,7 @@ function formatDate(iso: string): string {
 			<div class="form-view">
 				<div class="form-header">
 					<h2 class="section-title">Create Webhook</h2>
-					<button
-						class="back-btn"
-						onclick={handleBackToList}
-						aria-label="Back to list"
-					>
+					<button class="back-btn" onclick={handleBackToList} aria-label="Back to list">
 						← Back
 					</button>
 				</div>
@@ -423,11 +415,7 @@ function formatDate(iso: string): string {
 
 					<div class="form-group">
 						<label for="format">Format</label>
-						<select
-							id="format"
-							bind:value={createFormat}
-							disabled={actionInProgress === "create"}
-						>
+						<select id="format" bind:value={createFormat} disabled={actionInProgress === "create"}>
 							<option value="github">GitHub</option>
 							<option value="generic">Generic JSON</option>
 							{#if allowUnauthenticated}
@@ -454,13 +442,10 @@ function formatDate(iso: string): string {
 							bind:value={createModel}
 							disabled={actionInProgress === "create"}
 						>
-							<option value=""
-								>Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
-							>
+							<option value="">Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option>
 							{#each availableModels as m (`${m.host}/${m.id}`)}
 								<option value={m.id}
-									>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
-									"offline?"
+									>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status === "offline?"
 										? " (offline?)"
 										: ""}</option
 								>
@@ -475,8 +460,7 @@ function formatDate(iso: string): string {
 							bind:value={createPrompt}
 							placeholder="Instructions for handling events from this webhook (optional)"
 							rows={4}
-							disabled={actionInProgress === "create"}
-						></textarea>
+							disabled={actionInProgress === "create"}></textarea>
 					</div>
 
 					<div class="form-group checkbox-group">
@@ -490,9 +474,9 @@ function formatDate(iso: string): string {
 							Disable history (no_history)
 						</label>
 						<p class="help-text">
-							When enabled, each delivery starts from a clean context window. Saves
-							tokens for stateless handlers and helps avoid the retrieve_task spin
-							pattern on repeated webhook fires.
+							When enabled, each delivery starts from a clean context window. Saves tokens for
+							stateless handlers and helps avoid the retrieve_task spin pattern on repeated webhook
+							fires.
 						</p>
 					</div>
 
@@ -521,11 +505,7 @@ function formatDate(iso: string): string {
 			<div class="detail-view">
 				<div class="detail-header">
 					<h2 class="section-title">{selectedWebhook.name}</h2>
-					<button
-						class="back-btn"
-						onclick={handleBackToList}
-						aria-label="Back to list"
-					>
+					<button class="back-btn" onclick={handleBackToList} aria-label="Back to list">
 						← Back
 					</button>
 				</div>
@@ -567,8 +547,9 @@ function formatDate(iso: string): string {
 								{/each}
 							</ul>
 							<p class="muted url-hint">
-								Webhook ingestion is on the sync server. Pick the URL whose host is reachable from the
-								service that will deliver events — public for external services, local for testing.
+								Webhook ingestion is on the sync server. Pick the URL whose host is reachable from
+								the service that will deliver events — public for external services, local for
+								testing.
 							</p>
 						{/if}
 					</div>
@@ -608,11 +589,7 @@ function formatDate(iso: string): string {
 
 						<div class="form-group">
 							<label for="edit-format">Format</label>
-							<select
-								id="edit-format"
-								bind:value={editFormat}
-								disabled={actionInProgress !== null}
-							>
+							<select id="edit-format" bind:value={editFormat} disabled={actionInProgress !== null}>
 								<option value="github">GitHub</option>
 								<option value="generic">Generic JSON</option>
 								{#if allowUnauthenticated || editFormat === "none"}
@@ -623,20 +600,11 @@ function formatDate(iso: string): string {
 
 						<div class="form-group">
 							<label for="edit-model">Model</label>
-							<select
-								id="edit-model"
-								bind:value={editModel}
-								disabled={actionInProgress !== null}
-							>
-								<option value=""
-									>Cluster default{defaultModel
-										? ` (${defaultModel})`
-										: ""}</option
-								>
+							<select id="edit-model" bind:value={editModel} disabled={actionInProgress !== null}>
+								<option value="">Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option>
 								{#each availableModels as m (`${m.host}/${m.id}`)}
 									<option value={m.id}
-										>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
-										"offline?"
+										>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status === "offline?"
 											? " (offline?)"
 											: ""}</option
 									>
@@ -651,8 +619,7 @@ function formatDate(iso: string): string {
 								bind:value={editPrompt}
 								placeholder="Instructions for handling events from this webhook (optional)"
 								rows={4}
-								disabled={actionInProgress !== null}
-							></textarea>
+								disabled={actionInProgress !== null}></textarea>
 						</div>
 
 						<div class="form-group checkbox-group">
@@ -671,15 +638,9 @@ function formatDate(iso: string): string {
 						</div>
 
 						<div class="form-actions">
-							<Btn
-								variant="accent"
-								type="submit"
-								disabled={actionInProgress !== null}
-							>
+							<Btn variant="accent" type="submit" disabled={actionInProgress !== null}>
 								{#snippet children()}
-									{actionInProgress?.startsWith("update:")
-										? "Saving…"
-										: "Save"}
+									{actionInProgress?.startsWith("update:") ? "Saving…" : "Save"}
 								{/snippet}
 							</Btn>
 							<Btn
@@ -705,13 +666,10 @@ function formatDate(iso: string): string {
 							variant="default"
 							size="sm"
 							disabled={actionInProgress?.startsWith("rotate:") ?? false}
-							onclick={() =>
-								handleRotateSecret(selectedWebhook!.id)}
+							onclick={() => handleRotateSecret(selectedWebhook!.id)}
 						>
 							{#snippet children()}
-								{actionInProgress?.startsWith("rotate:")
-									? "Rotating…"
-									: "Rotate Secret"}
+								{actionInProgress?.startsWith("rotate:") ? "Rotating…" : "Rotate Secret"}
 							{/snippet}
 						</Btn>
 
@@ -719,13 +677,10 @@ function formatDate(iso: string): string {
 							variant="ghost"
 							size="sm"
 							disabled={actionInProgress?.startsWith("delete:") ?? false}
-							onclick={() =>
-								handleDelete(selectedWebhook!.id)}
+							onclick={() => handleDelete(selectedWebhook!.id)}
 						>
 							{#snippet children()}
-								{actionInProgress?.startsWith("delete:")
-									? "Deleting…"
-									: "Delete"}
+								{actionInProgress?.startsWith("delete:") ? "Deleting…" : "Delete"}
 							{/snippet}
 						</Btn>
 					</div>

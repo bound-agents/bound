@@ -12,7 +12,7 @@
 // generated SVG goes straight into the DOM without a second pass through
 // DOMPurify.
 
-type MermaidApi = typeof import("mermaid")["default"];
+type MermaidApi = (typeof import("mermaid"))["default"];
 
 let mermaidPromise: Promise<MermaidApi> | null = null;
 let diagramCounter = 0;

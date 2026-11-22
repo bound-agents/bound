@@ -329,10 +329,7 @@ export function createWebSocketHandler(
 		}
 	}
 
-	const handleMessageCreated = (data: {
-		message: unknown;
-		thread_id: string;
-	}): void => {
+	const handleMessageCreated = (data: { message: unknown; thread_id: string }): void => {
 		let outboundMessage = data.message;
 		if (db && typeof data.message === "object" && data.message !== null) {
 			const message = data.message as Message;
@@ -372,10 +369,7 @@ export function createWebSocketHandler(
 		}
 	};
 
-	const handleTaskCompleted = (data: {
-		task_id: string;
-		result: string | null;
-	}): void => {
+	const handleTaskCompleted = (data: { task_id: string; result: string | null }): void => {
 		const message = JSON.stringify({
 			type: "task:updated",
 			data: {
@@ -410,10 +404,7 @@ export function createWebSocketHandler(
 		}
 	};
 
-	const handleAlertCreated = (data: {
-		message: unknown;
-		thread_id: string;
-	}): void => {
+	const handleAlertCreated = (data: { message: unknown; thread_id: string }): void => {
 		const message = JSON.stringify({
 			type: "alert",
 			data: data.message,

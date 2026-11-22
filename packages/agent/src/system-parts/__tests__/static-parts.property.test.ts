@@ -71,12 +71,10 @@ const cmdName = fc
 const cmdDesc = fc.string({ minLength: 0, maxLength: 40 }).filter((s) => !/[\n\r]/.test(s));
 
 const cmdRegistryArb = fc.uniqueArray(
-	fc.tuple(cmdName, cmdDesc).map(
-		([name, description]): CommandRegistryEntry => ({
-			name,
-			description,
-		}),
-	),
+	fc.tuple(cmdName, cmdDesc).map(([name, description]): CommandRegistryEntry => ({
+		name,
+		description,
+	})),
 	{ maxLength: 6, selector: (c) => c.name },
 );
 

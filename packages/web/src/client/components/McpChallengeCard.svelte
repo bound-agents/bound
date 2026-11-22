@@ -1,84 +1,84 @@
 <script lang="ts">
-import { LockKeyhole } from "lucide-svelte";
+	import { LockKeyhole } from "lucide-svelte";
 
-// The web-chat consent card for pending MCP OAuth challenges (R-MO27c).
-//
-// A pending challenge is an unmet authorization demand for an http MCP server.
-// This card enumerates the pending challenges (GET /api/mcp-challenges) and,
-// under a LOOPBACK web bind, offers a live "Authorize" affordance that claims
-// the challenge through the resolver bridge and opens the minted authorize URL
-// in a new tab. Under a NON-loopback bind (the documented hub setting) a
-// loopback redirect_uri is unreachable from a remote browser, so the card
-// carries NO authorize button and instead shows the CLI instruction
-// (`bound login --challenge <id>`).
+	// The web-chat consent card for pending MCP OAuth challenges (R-MO27c).
+	//
+	// A pending challenge is an unmet authorization demand for an http MCP server.
+	// This card enumerates the pending challenges (GET /api/mcp-challenges) and,
+	// under a LOOPBACK web bind, offers a live "Authorize" affordance that claims
+	// the challenge through the resolver bridge and opens the minted authorize URL
+	// in a new tab. Under a NON-loopback bind (the documented hub setting) a
+	// loopback redirect_uri is unreachable from a remote browser, so the card
+	// carries NO authorize button and instead shows the CLI instruction
+	// (`bound login --challenge <id>`).
 
-interface PendingChallenge {
-	challengeId: string;
-	serverName: string;
-	scopeDemand: string;
-	failureReason: string | null;
-}
-
-interface ChallengesResponse {
-	challenges: PendingChallenge[];
-	loopback: boolean;
-	canResolve: boolean;
-}
-
-let challenges = $state<PendingChallenge[]>([]);
-let loopback = $state(false);
-let canResolve = $state(false);
-let loaded = $state(false);
-let error = $state<string | null>(null);
-// Per-challenge inline error/status while a claim is in flight.
-let claimState = $state<Record<string, "claiming" | { error: string }>>({});
-
-async function load(): Promise<void> {
-	try {
-		const res = await fetch("/api/mcp-challenges");
-		if (!res.ok) {
-			const body = (await res.json().catch(() => ({}))) as { error?: string };
-			throw new Error(body.error ?? `request failed (${res.status})`);
-		}
-		const data = (await res.json()) as ChallengesResponse;
-		challenges = data.challenges;
-		loopback = data.loopback;
-		canResolve = data.canResolve;
-		error = null;
-	} catch (e) {
-		error = e instanceof Error ? e.message : String(e);
-	} finally {
-		loaded = true;
+	interface PendingChallenge {
+		challengeId: string;
+		serverName: string;
+		scopeDemand: string;
+		failureReason: string | null;
 	}
-}
 
-async function authorize(id: string): Promise<void> {
-	claimState = { ...claimState, [id]: "claiming" };
-	try {
-		const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(id)}/claim`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-		});
-		const body = (await res.json().catch(() => ({}))) as {
-			authorizeUrl?: string;
-			error?: string;
-		};
-		if (!res.ok || !body.authorizeUrl) {
-			throw new Error(body.error ?? `claim failed (${res.status})`);
-		}
-		// Open the minted authorize URL — its loopback redirect_uri names this
-		// same daemon's canonical callback, and the browser is on that machine.
-		window.open(body.authorizeUrl, "_blank", "noopener");
-		const { [id]: _dropped, ...rest } = claimState;
-		claimState = rest;
-	} catch (e) {
-		claimState = { ...claimState, [id]: { error: e instanceof Error ? e.message : String(e) } };
+	interface ChallengesResponse {
+		challenges: PendingChallenge[];
+		loopback: boolean;
+		canResolve: boolean;
 	}
-}
 
-$effect(() => {
-	void load();
-});
+	let challenges = $state<PendingChallenge[]>([]);
+	let loopback = $state(false);
+	let canResolve = $state(false);
+	let loaded = $state(false);
+	let error = $state<string | null>(null);
+	// Per-challenge inline error/status while a claim is in flight.
+	let claimState = $state<Record<string, "claiming" | { error: string }>>({});
+
+	async function load(): Promise<void> {
+		try {
+			const res = await fetch("/api/mcp-challenges");
+			if (!res.ok) {
+				const body = (await res.json().catch(() => ({}))) as { error?: string };
+				throw new Error(body.error ?? `request failed (${res.status})`);
+			}
+			const data = (await res.json()) as ChallengesResponse;
+			challenges = data.challenges;
+			loopback = data.loopback;
+			canResolve = data.canResolve;
+			error = null;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			loaded = true;
+		}
+	}
+
+	async function authorize(id: string): Promise<void> {
+		claimState = { ...claimState, [id]: "claiming" };
+		try {
+			const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(id)}/claim`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+			});
+			const body = (await res.json().catch(() => ({}))) as {
+				authorizeUrl?: string;
+				error?: string;
+			};
+			if (!res.ok || !body.authorizeUrl) {
+				throw new Error(body.error ?? `claim failed (${res.status})`);
+			}
+			// Open the minted authorize URL — its loopback redirect_uri names this
+			// same daemon's canonical callback, and the browser is on that machine.
+			window.open(body.authorizeUrl, "_blank", "noopener");
+			const { [id]: _dropped, ...rest } = claimState;
+			claimState = rest;
+		} catch (e) {
+			claimState = { ...claimState, [id]: { error: e instanceof Error ? e.message : String(e) } };
+		}
+	}
+
+	$effect(() => {
+		void load();
+	});
 </script>
 
 {#if loaded && challenges.length > 0}

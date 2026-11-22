@@ -1,86 +1,82 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
-import { client } from "../lib/bound";
+	import { onDestroy, onMount } from "svelte";
+	import { client } from "../lib/bound";
 
-let currentHash = $state(window.location.hash);
+	let currentHash = $state(window.location.hash);
 
-function isActive(hash: string): boolean {
-	const current = currentHash.slice(1) || "/";
-	if (hash === "#/") return current === "/" || current === "";
-	return current.startsWith(hash.slice(1));
-}
-
-const NAV = [
-	{ hash: "#/", route: "01", label: "System Map" },
-	{ hash: "#/timetable", route: "02", label: "Timetable" },
-	{ hash: "#/network", route: "03", label: "Network" },
-	{ hash: "#/advisories", route: "04", label: "Advisories" },
-	{ hash: "#/files", route: "05", label: "Files" },
-	{ hash: "#/connections", route: "06", label: "Connections" },
-	{ hash: "#/metrics", route: "07", label: "Metrics" },
-	{ hash: "#/persona", route: "08", label: "Persona" },
-];
-
-let advisoryCount = $state(0);
-let advisoryPollInterval: ReturnType<typeof setInterval> | null = null;
-
-async function loadAdvisoryCount(): Promise<void> {
-	try {
-		const data = await client.countAdvisories();
-		advisoryCount = data.count;
-	} catch {
-		// Ignore count fetch errors
-	}
-}
-
-function onHashChange(): void {
-	currentHash = window.location.hash;
-}
-
-// Local-time clock with the IANA TZ short name derived from Intl.
-let clock = $state("");
-let tz = $state("");
-let clockInterval: ReturnType<typeof setInterval> | null = null;
-
-function tick(): void {
-	const d = new Date();
-	const hh = String(d.getHours()).padStart(2, "0");
-	const mm = String(d.getMinutes()).padStart(2, "0");
-	const ss = String(d.getSeconds()).padStart(2, "0");
-	clock = `${hh}:${mm}:${ss}`;
-}
-
-onMount(() => {
-	try {
-		const name = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-		const short = name.split("/").pop()?.replace(/_/g, " ") ?? "";
-		tz = short || "Local";
-	} catch {
-		tz = "Local";
+	function isActive(hash: string): boolean {
+		const current = currentHash.slice(1) || "/";
+		if (hash === "#/") return current === "/" || current === "";
+		return current.startsWith(hash.slice(1));
 	}
 
-	tick();
-	clockInterval = setInterval(tick, 1000);
+	const NAV = [
+		{ hash: "#/", route: "01", label: "System Map" },
+		{ hash: "#/timetable", route: "02", label: "Timetable" },
+		{ hash: "#/network", route: "03", label: "Network" },
+		{ hash: "#/advisories", route: "04", label: "Advisories" },
+		{ hash: "#/files", route: "05", label: "Files" },
+		{ hash: "#/connections", route: "06", label: "Connections" },
+		{ hash: "#/metrics", route: "07", label: "Metrics" },
+		{ hash: "#/persona", route: "08", label: "Persona" },
+	];
 
-	window.addEventListener("hashchange", onHashChange);
-	loadAdvisoryCount();
-	advisoryPollInterval = setInterval(loadAdvisoryCount, 10000);
-});
+	let advisoryCount = $state(0);
+	let advisoryPollInterval: ReturnType<typeof setInterval> | null = null;
 
-onDestroy(() => {
-	window.removeEventListener("hashchange", onHashChange);
-	if (advisoryPollInterval !== null) clearInterval(advisoryPollInterval);
-	if (clockInterval !== null) clearInterval(clockInterval);
-});
+	async function loadAdvisoryCount(): Promise<void> {
+		try {
+			const data = await client.countAdvisories();
+			advisoryCount = data.count;
+		} catch {
+			// Ignore count fetch errors
+		}
+	}
+
+	function onHashChange(): void {
+		currentHash = window.location.hash;
+	}
+
+	// Local-time clock with the IANA TZ short name derived from Intl.
+	let clock = $state("");
+	let tz = $state("");
+	let clockInterval: ReturnType<typeof setInterval> | null = null;
+
+	function tick(): void {
+		const d = new Date();
+		const hh = String(d.getHours()).padStart(2, "0");
+		const mm = String(d.getMinutes()).padStart(2, "0");
+		const ss = String(d.getSeconds()).padStart(2, "0");
+		clock = `${hh}:${mm}:${ss}`;
+	}
+
+	onMount(() => {
+		try {
+			const name = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+			const short = name.split("/").pop()?.replace(/_/g, " ") ?? "";
+			tz = short || "Local";
+		} catch {
+			tz = "Local";
+		}
+
+		tick();
+		clockInterval = setInterval(tick, 1000);
+
+		window.addEventListener("hashchange", onHashChange);
+		loadAdvisoryCount();
+		advisoryPollInterval = setInterval(loadAdvisoryCount, 10000);
+	});
+
+	onDestroy(() => {
+		window.removeEventListener("hashchange", onHashChange);
+		if (advisoryPollInterval !== null) clearInterval(advisoryPollInterval);
+		if (clockInterval !== null) clearInterval(clockInterval);
+	});
 </script>
 
 <header class="top-bar">
 	<!-- Brandmark block — black ink against paper -->
-	<a
-		class="brand"
-		href="#/"
-		aria-label="Bound home"
-	>
+	<a class="brand" href="#/" aria-label="Bound home">
 		<svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
 			<circle cx="9" cy="9" r="7.5" fill="none" stroke="currentColor" stroke-width="1.5" />
 			<circle cx="9" cy="9" r="2.4" fill="currentColor" />
@@ -91,11 +87,7 @@ onDestroy(() => {
 	<nav class="nav-links">
 		{#each NAV as item}
 			{@const active = isActive(item.hash)}
-			<a
-				class="nav-btn"
-				href={item.hash}
-				class:active
-			>
+			<a class="nav-btn" href={item.hash} class:active>
 				<span class="route">{item.route}</span>
 				<span class="label">{item.label}</span>
 				{#if item.hash === "#/advisories" && advisoryCount > 0}

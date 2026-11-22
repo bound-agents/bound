@@ -1,66 +1,66 @@
 <script lang="ts">
-import { type Snippet, untrack } from "svelte";
+	import { type Snippet, untrack } from "svelte";
 
-/**
- * Instant hover/focus info popover. Replaces native `title=` tooltips, whose
- * ~1s show delay makes hover-to-explain UX feel broken.
- *
- * Positioning is FIXED, computed from the trigger's bounding rect on show, so
- * the bubble escapes any `overflow: auto` ancestor (the debug panel scrolls;
- * an absolutely-positioned bubble would clip against its top/edges). Shown
- * with no delay — the only timing is a CSS opacity fade.
- *
- * Accessibility: the trigger is a focusable `<button>` carrying `aria-label`;
- * keyboard focus shows the bubble the same as hover.
- */
-interface Props {
-	/** Plain-text screen-reader label / fallback body. */
-	label: string;
-	/** Preferred side; flips automatically if there isn't room. */
-	placement?: "top" | "bottom";
-	/** The hovered trigger content. */
-	trigger: Snippet;
-	/** Popover body. Falls back to `label` when omitted. */
-	children?: Snippet;
-	/** Extra class on the trigger button (e.g. to position it absolutely). */
-	triggerClass?: string;
-	/** Inline style on the trigger button (e.g. absolute left/color). */
-	triggerStyle?: string;
-}
+	/**
+	 * Instant hover/focus info popover. Replaces native `title=` tooltips, whose
+	 * ~1s show delay makes hover-to-explain UX feel broken.
+	 *
+	 * Positioning is FIXED, computed from the trigger's bounding rect on show, so
+	 * the bubble escapes any `overflow: auto` ancestor (the debug panel scrolls;
+	 * an absolutely-positioned bubble would clip against its top/edges). Shown
+	 * with no delay — the only timing is a CSS opacity fade.
+	 *
+	 * Accessibility: the trigger is a focusable `<button>` carrying `aria-label`;
+	 * keyboard focus shows the bubble the same as hover.
+	 */
+	interface Props {
+		/** Plain-text screen-reader label / fallback body. */
+		label: string;
+		/** Preferred side; flips automatically if there isn't room. */
+		placement?: "top" | "bottom";
+		/** The hovered trigger content. */
+		trigger: Snippet;
+		/** Popover body. Falls back to `label` when omitted. */
+		children?: Snippet;
+		/** Extra class on the trigger button (e.g. to position it absolutely). */
+		triggerClass?: string;
+		/** Inline style on the trigger button (e.g. absolute left/color). */
+		triggerStyle?: string;
+	}
 
-const {
-	label,
-	placement = "top",
-	trigger,
-	children,
-	triggerClass = "",
-	triggerStyle = "",
-}: Props = $props();
+	const {
+		label,
+		placement = "top",
+		trigger,
+		children,
+		triggerClass = "",
+		triggerStyle = "",
+	}: Props = $props();
 
-let visible = $state(false);
-let left = $state(0);
-let top = $state(0);
-let resolvedPlacement = $state<"top" | "bottom">(untrack(() => placement));
-let triggerEl: HTMLButtonElement | undefined;
+	let visible = $state(false);
+	let left = $state(0);
+	let top = $state(0);
+	let resolvedPlacement = $state<"top" | "bottom">(untrack(() => placement));
+	let triggerEl: HTMLButtonElement | undefined;
 
-const BUBBLE_MAX_WIDTH = 300;
-const GAP = 6;
+	const BUBBLE_MAX_WIDTH = 300;
+	const GAP = 6;
 
-function show(): void {
-	if (!triggerEl) return;
-	const r = triggerEl.getBoundingClientRect();
-	// Flip to bottom when there isn't room above (e.g. rows near the panel top).
-	const wantTop = placement === "top";
-	resolvedPlacement = wantTop && r.top < 160 ? "bottom" : placement;
-	// Clamp horizontally so a wide bubble never runs off the viewport edge.
-	left = Math.min(Math.max(8, r.left), window.innerWidth - BUBBLE_MAX_WIDTH - 8);
-	top = resolvedPlacement === "top" ? r.top - GAP : r.bottom + GAP;
-	visible = true;
-}
+	function show(): void {
+		if (!triggerEl) return;
+		const r = triggerEl.getBoundingClientRect();
+		// Flip to bottom when there isn't room above (e.g. rows near the panel top).
+		const wantTop = placement === "top";
+		resolvedPlacement = wantTop && r.top < 160 ? "bottom" : placement;
+		// Clamp horizontally so a wide bubble never runs off the viewport edge.
+		left = Math.min(Math.max(8, r.left), window.innerWidth - BUBBLE_MAX_WIDTH - 8);
+		top = resolvedPlacement === "top" ? r.top - GAP : r.bottom + GAP;
+		visible = true;
+	}
 
-function hide(): void {
-	visible = false;
-}
+	function hide(): void {
+		visible = false;
+	}
 </script>
 
 <button

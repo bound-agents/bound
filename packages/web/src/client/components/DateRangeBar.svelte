@@ -1,126 +1,126 @@
 <script lang="ts">
-import { onDestroy } from "svelte";
+	import { onDestroy } from "svelte";
 
-interface Props {
-	from: string;
-	to: string;
-	onRangeChange: (from: string, to: string) => void;
-	disabled?: boolean;
-}
-
-let { from, to, onRangeChange, disabled = false }: Props = $props();
-
-let activePreset = $state<"24h" | "7d" | "30d" | "all" | "custom">("24h");
-let customFrom = $state("");
-let customTo = $state("");
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let validationError = $state(false);
-// True while either datetime input has focus. Blocks the prop→input sync so
-// the parent's periodic range refresh (MetricsView bumps `to` every 30s)
-// can't clobber a custom range the user is mid-typing.
-let editing = $state(false);
-
-// Convert ISO timestamp to datetime-local format
-function isoToDatetimeLocal(iso: string): string {
-	if (!iso) return "";
-	const date = new Date(iso);
-	const year = date.getUTCFullYear();
-	const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-	const day = String(date.getUTCDate()).padStart(2, "0");
-	const hours = String(date.getUTCHours()).padStart(2, "0");
-	const minutes = String(date.getUTCMinutes()).padStart(2, "0");
-	return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
-
-// Convert datetime-local to ISO timestamp
-function datetimeLocalToIso(datetimeLocal: string): string {
-	if (!datetimeLocal) return "";
-	// datetime-local is in local time, convert to UTC
-	const date = new Date(datetimeLocal);
-	return date.toISOString();
-}
-
-function applyPreset(preset: "24h" | "7d" | "30d" | "all"): void {
-	const now = new Date();
-	let newFrom: string;
-	let newTo = now.toISOString();
-
-	switch (preset) {
-		case "24h":
-			newFrom = new Date(Date.now() - 24 * 3600_000).toISOString();
-			break;
-		case "7d":
-			newFrom = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
-			break;
-		case "30d":
-			newFrom = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
-			break;
-		case "all":
-			newFrom = "2020-01-01T00:00:00.000Z";
-			break;
+	interface Props {
+		from: string;
+		to: string;
+		onRangeChange: (from: string, to: string) => void;
+		disabled?: boolean;
 	}
 
-	activePreset = preset;
-	validationError = false;
-	onRangeChange(newFrom, newTo);
-}
+	let { from, to, onRangeChange, disabled = false }: Props = $props();
 
-function handleCustomInput(): void {
-	activePreset = "custom";
-	if (debounceTimer !== null) {
-		clearTimeout(debounceTimer);
+	let activePreset = $state<"24h" | "7d" | "30d" | "all" | "custom">("24h");
+	let customFrom = $state("");
+	let customTo = $state("");
+	let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	let validationError = $state(false);
+	// True while either datetime input has focus. Blocks the prop→input sync so
+	// the parent's periodic range refresh (MetricsView bumps `to` every 30s)
+	// can't clobber a custom range the user is mid-typing.
+	let editing = $state(false);
+
+	// Convert ISO timestamp to datetime-local format
+	function isoToDatetimeLocal(iso: string): string {
+		if (!iso) return "";
+		const date = new Date(iso);
+		const year = date.getUTCFullYear();
+		const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+		const day = String(date.getUTCDate()).padStart(2, "0");
+		const hours = String(date.getUTCHours()).padStart(2, "0");
+		const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+		return `${year}-${month}-${day}T${hours}:${minutes}`;
 	}
 
-	debounceTimer = setTimeout(() => {
-		validateAndApplyCustomRange();
-	}, 300);
-}
-
-function validateAndApplyCustomRange(): void {
-	const fromIso = datetimeLocalToIso(customFrom);
-	const toIso = datetimeLocalToIso(customTo);
-
-	if (!fromIso || !toIso) {
-		validationError = true;
-		return;
+	// Convert datetime-local to ISO timestamp
+	function datetimeLocalToIso(datetimeLocal: string): string {
+		if (!datetimeLocal) return "";
+		// datetime-local is in local time, convert to UTC
+		const date = new Date(datetimeLocal);
+		return date.toISOString();
 	}
 
-	const fromTime = new Date(fromIso).getTime();
-	const toTime = new Date(toIso).getTime();
+	function applyPreset(preset: "24h" | "7d" | "30d" | "all"): void {
+		const now = new Date();
+		let newFrom: string;
+		let newTo = now.toISOString();
 
-	// Validate: from < to
-	if (fromTime >= toTime) {
-		validationError = true;
-		return;
+		switch (preset) {
+			case "24h":
+				newFrom = new Date(Date.now() - 24 * 3600_000).toISOString();
+				break;
+			case "7d":
+				newFrom = new Date(Date.now() - 7 * 24 * 3600_000).toISOString();
+				break;
+			case "30d":
+				newFrom = new Date(Date.now() - 30 * 24 * 3600_000).toISOString();
+				break;
+			case "all":
+				newFrom = "2020-01-01T00:00:00.000Z";
+				break;
+		}
+
+		activePreset = preset;
+		validationError = false;
+		onRangeChange(newFrom, newTo);
 	}
 
-	// Clamp future end dates to now
-	const now = new Date();
-	let finalTo = toIso;
-	if (toTime > now.getTime()) {
-		finalTo = now.toISOString();
+	function handleCustomInput(): void {
+		activePreset = "custom";
+		if (debounceTimer !== null) {
+			clearTimeout(debounceTimer);
+		}
+
+		debounceTimer = setTimeout(() => {
+			validateAndApplyCustomRange();
+		}, 300);
 	}
 
-	validationError = false;
-	onRangeChange(fromIso, finalTo);
-}
+	function validateAndApplyCustomRange(): void {
+		const fromIso = datetimeLocalToIso(customFrom);
+		const toIso = datetimeLocalToIso(customTo);
 
-// Initialize custom inputs when component mounts or props change — but never
-// while the user is editing them (see `editing`).
-$effect(() => {
-	const f = isoToDatetimeLocal(from);
-	const t = isoToDatetimeLocal(to);
-	if (!editing) {
-		customFrom = f;
-		customTo = t;
+		if (!fromIso || !toIso) {
+			validationError = true;
+			return;
+		}
+
+		const fromTime = new Date(fromIso).getTime();
+		const toTime = new Date(toIso).getTime();
+
+		// Validate: from < to
+		if (fromTime >= toTime) {
+			validationError = true;
+			return;
+		}
+
+		// Clamp future end dates to now
+		const now = new Date();
+		let finalTo = toIso;
+		if (toTime > now.getTime()) {
+			finalTo = now.toISOString();
+		}
+
+		validationError = false;
+		onRangeChange(fromIso, finalTo);
 	}
-});
 
-onDestroy(() => {
-	// A pending debounce firing after unmount would call onRangeChange into a
-	// destroyed parent.
-	if (debounceTimer !== null) clearTimeout(debounceTimer);
-});
+	// Initialize custom inputs when component mounts or props change — but never
+	// while the user is editing them (see `editing`).
+	$effect(() => {
+		const f = isoToDatetimeLocal(from);
+		const t = isoToDatetimeLocal(to);
+		if (!editing) {
+			customFrom = f;
+			customTo = t;
+		}
+	});
+
+	onDestroy(() => {
+		// A pending debounce firing after unmount would call onRangeChange into a
+		// destroyed parent.
+		if (debounceTimer !== null) clearTimeout(debounceTimer);
+	});
 </script>
 
 <div class="date-range-bar" class:disabled>

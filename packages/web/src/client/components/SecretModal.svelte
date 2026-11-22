@@ -1,42 +1,42 @@
 <script lang="ts">
-import { onMount } from "svelte";
+	import { onMount } from "svelte";
 
-interface Props {
-	secret: string;
-	webhookName: string;
-	onClose: () => void;
-}
-
-const { secret, webhookName, onClose }: Props = $props();
-
-let modalRef: HTMLDivElement | undefined;
-let copied = $state(false);
-let previouslyFocused: HTMLElement | null = null;
-
-onMount(() => {
-	previouslyFocused = document.activeElement as HTMLElement;
-	modalRef?.focus();
-});
-
-async function copyToClipboard(): Promise<void> {
-	await navigator.clipboard.writeText(secret);
-	copied = true;
-	setTimeout(() => {
-		copied = false;
-	}, 2000);
-}
-
-function handleKeydown(e: KeyboardEvent): void {
-	if (e.key === "Escape") {
-		e.preventDefault();
-		previouslyFocused?.focus();
-		onClose();
+	interface Props {
+		secret: string;
+		webhookName: string;
+		onClose: () => void;
 	}
-}
 
-function handleBackdropClick(): void {
-	previouslyFocused?.focus();
-}
+	const { secret, webhookName, onClose }: Props = $props();
+
+	let modalRef: HTMLDivElement | undefined;
+	let copied = $state(false);
+	let previouslyFocused: HTMLElement | null = null;
+
+	onMount(() => {
+		previouslyFocused = document.activeElement as HTMLElement;
+		modalRef?.focus();
+	});
+
+	async function copyToClipboard(): Promise<void> {
+		await navigator.clipboard.writeText(secret);
+		copied = true;
+		setTimeout(() => {
+			copied = false;
+		}, 2000);
+	}
+
+	function handleKeydown(e: KeyboardEvent): void {
+		if (e.key === "Escape") {
+			e.preventDefault();
+			previouslyFocused?.focus();
+			onClose();
+		}
+	}
+
+	function handleBackdropClick(): void {
+		previouslyFocused?.focus();
+	}
 </script>
 
 <div class="modal-backdrop" onkeydown={handleKeydown} role="presentation">

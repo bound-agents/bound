@@ -1289,9 +1289,11 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 
 		// Recover: dispatch any threads that have pending entries (from crash recovery)
 		const pendingThreads = appContext.db
-			.prepare(`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'
+			.prepare(
+				`SELECT DISTINCT thread_id FROM dispatch_queue WHERE status = 'pending'
 				UNION SELECT DISTINCT json_extract(payload, '$.thread_id') AS thread_id FROM durable_work
-				WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending'`)
+				WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending'`,
+			)
 			.all("local") as Array<{ thread_id: string }>;
 		for (const { thread_id } of pendingThreads) {
 			appContext.logger.info(`[recovery] Re-dispatching pending messages for thread ${thread_id}`);

@@ -1,41 +1,41 @@
 <script lang="ts">
-import type { SvelteSet } from "svelte/reactivity";
-import type { FileTreeNode } from "../lib/file-tree";
-import TreeNode from "./TreeNode.svelte";
+	import type { SvelteSet } from "svelte/reactivity";
+	import type { FileTreeNode } from "../lib/file-tree";
+	import TreeNode from "./TreeNode.svelte";
 
-interface Props {
-	node: FileTreeNode;
-	expandedPaths: SvelteSet<string>;
-	toggleExpanded: (path: string) => void;
-	formatFileSize?: (bytes: number) => string;
-	getFileIcon?: unknown;
-	downloadFile?: (path: string) => void;
-	selectedPath: string;
-	onSelectDirectory: (path: string) => void;
-	level?: number;
-}
-
-const {
-	node,
-	expandedPaths,
-	toggleExpanded,
-	selectedPath,
-	onSelectDirectory,
-	level = 0,
-}: Props = $props();
-
-const isExpanded = $derived(expandedPaths.has(node.fullPath));
-const isDir = $derived(node.type === "dir");
-const childDirs = $derived(isDir ? node.children.filter((c) => c.type === "dir") : []);
-const hasSubfolders = $derived(childDirs.length > 0);
-const isSelected = $derived(selectedPath === node.fullPath);
-
-function handleClick(): void {
-	if (isDir) {
-		onSelectDirectory(node.fullPath);
-		if (hasSubfolders) toggleExpanded(node.fullPath);
+	interface Props {
+		node: FileTreeNode;
+		expandedPaths: SvelteSet<string>;
+		toggleExpanded: (path: string) => void;
+		formatFileSize?: (bytes: number) => string;
+		getFileIcon?: unknown;
+		downloadFile?: (path: string) => void;
+		selectedPath: string;
+		onSelectDirectory: (path: string) => void;
+		level?: number;
 	}
-}
+
+	const {
+		node,
+		expandedPaths,
+		toggleExpanded,
+		selectedPath,
+		onSelectDirectory,
+		level = 0,
+	}: Props = $props();
+
+	const isExpanded = $derived(expandedPaths.has(node.fullPath));
+	const isDir = $derived(node.type === "dir");
+	const childDirs = $derived(isDir ? node.children.filter((c) => c.type === "dir") : []);
+	const hasSubfolders = $derived(childDirs.length > 0);
+	const isSelected = $derived(selectedPath === node.fullPath);
+
+	function handleClick(): void {
+		if (isDir) {
+			onSelectDirectory(node.fullPath);
+			if (hasSubfolders) toggleExpanded(node.fullPath);
+		}
+	}
 </script>
 
 {#if isDir}

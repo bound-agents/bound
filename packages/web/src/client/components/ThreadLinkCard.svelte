@@ -1,42 +1,42 @@
 <script lang="ts">
-import { ArrowRight } from "lucide-svelte";
-import type { Snippet } from "svelte";
-import { lineRoute } from "../lib/route-utils";
-import { navigateTo } from "../lib/router";
+	import { ArrowRight } from "lucide-svelte";
+	import type { Snippet } from "svelte";
+	import { lineRoute } from "../lib/route-utils";
+	import { navigateTo } from "../lib/router";
 
-// Shared shell for inline reference cards in the chat stream: a left icon,
-// a caller-supplied body, and a right-side "Open line" action that appears
-// once the referenced thread exists. Extracted from the scheduled-task card
-// (#90) so aux-invocation cards (and future thread-linked cards) compose the
-// same chrome instead of re-implementing it.
-//
-// The body renders via the children snippet, so body styling stays scoped to
-// each composing component; this shell owns only the frame, the icon slot,
-// and the action column.
+	// Shared shell for inline reference cards in the chat stream: a left icon,
+	// a caller-supplied body, and a right-side "Open line" action that appears
+	// once the referenced thread exists. Extracted from the scheduled-task card
+	// (#90) so aux-invocation cards (and future thread-linked cards) compose the
+	// same chrome instead of re-implementing it.
+	//
+	// The body renders via the children snippet, so body styling stays scoped to
+	// each composing component; this shell owns only the frame, the icon slot,
+	// and the action column.
 
-interface Props {
-	lineColor?: string;
-	/** Link target. Null renders the pending note (when provided) instead of the action button. */
-	threadId?: string | null;
-	openLabel?: string;
-	/** Shown in the action column while threadId is null. Omit for no note (e.g. load errors). */
-	pendingLabel?: string | null;
-	icon: Snippet;
-	children: Snippet;
-}
+	interface Props {
+		lineColor?: string;
+		/** Link target. Null renders the pending note (when provided) instead of the action button. */
+		threadId?: string | null;
+		openLabel?: string;
+		/** Shown in the action column while threadId is null. Omit for no note (e.g. load errors). */
+		pendingLabel?: string | null;
+		icon: Snippet;
+		children: Snippet;
+	}
 
-const {
-	lineColor = "var(--rule-soft)",
-	threadId = null,
-	openLabel = "Open line",
-	pendingLabel = null,
-	icon,
-	children,
-}: Props = $props();
+	const {
+		lineColor = "var(--rule-soft)",
+		threadId = null,
+		openLabel = "Open line",
+		pendingLabel = null,
+		icon,
+		children,
+	}: Props = $props();
 
-function openThread(): void {
-	if (threadId) navigateTo(lineRoute(threadId));
-}
+	function openThread(): void {
+		if (threadId) navigateTo(lineRoute(threadId));
+	}
 </script>
 
 <div class="tl-card" style="--line-color: {lineColor}">
@@ -46,7 +46,8 @@ function openThread(): void {
 
 	{#if threadId}
 		<button type="button" class="tl-open" onclick={openThread}>
-			{openLabel} <ArrowRight size={12} />
+			{openLabel}
+			<ArrowRight size={12} />
 		</button>
 	{:else if pendingLabel}
 		<span class="tl-pending-note">{pendingLabel}</span>

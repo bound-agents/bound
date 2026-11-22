@@ -1,221 +1,221 @@
 <script lang="ts">
-import { LockKeyhole, ShieldAlert } from "lucide-svelte";
-import { onDestroy, onMount } from "svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
+	import { LockKeyhole, ShieldAlert } from "lucide-svelte";
+	import { onDestroy, onMount } from "svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
 
-interface McpServerInfo {
-	name?: string;
-	title?: string;
-	version?: string;
-	description?: string;
-	instructions?: string;
-}
+	interface McpServerInfo {
+		name?: string;
+		title?: string;
+		version?: string;
+		description?: string;
+		instructions?: string;
+	}
 
-interface McpTool {
-	name: string;
-	description?: string;
-	annotations: Record<string, boolean>;
-	uiResourceUri?: string;
-}
+	interface McpTool {
+		name: string;
+		description?: string;
+		annotations: Record<string, boolean>;
+		uiResourceUri?: string;
+	}
 
-interface McpPrompt {
-	name: string;
-	description?: string;
-}
+	interface McpPrompt {
+		name: string;
+		description?: string;
+	}
 
-interface McpResource {
-	uri: string;
-	name?: string;
-	description?: string;
-	mimeType?: string;
-}
+	interface McpResource {
+		uri: string;
+		name?: string;
+		description?: string;
+		mimeType?: string;
+	}
 
-interface McpServerHost {
-	site_id: string;
-	host_name: string;
-	online_at: string | null;
-	has_capability_data: boolean;
-}
+	interface McpServerHost {
+		site_id: string;
+		host_name: string;
+		online_at: string | null;
+		has_capability_data: boolean;
+	}
 
-interface McpDivergence {
-	field: string;
-	message: string;
-}
+	interface McpDivergence {
+		field: string;
+		message: string;
+	}
 
-interface McpServer {
-	name: string;
-	hosts: McpServerHost[];
-	serverInfo?: McpServerInfo;
-	tools: McpTool[];
-	prompts?: McpPrompt[];
-	resources?: McpResource[];
-	divergence: McpDivergence[];
-}
+	interface McpServer {
+		name: string;
+		hosts: McpServerHost[];
+		serverInfo?: McpServerInfo;
+		tools: McpTool[];
+		prompts?: McpPrompt[];
+		resources?: McpResource[];
+		divergence: McpDivergence[];
+	}
 
-let servers: McpServer[] = $state([]);
-let loading = $state(true);
-let expandedName = $state<string | null>(null);
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let servers: McpServer[] = $state([]);
+	let loading = $state(true);
+	let expandedName = $state<string | null>(null);
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-// Per-server MCP OAuth authorization state (MCP OAuth RFC §11, R-MO27c). A
-// pending challenge is an unmet demand the row surfaces as an Authorize
-// affordance (loopback: a live claim button; non-loopback: the CLI
-// instruction); a failed one shows the last failure reason.
-interface ServerChallenge {
-	challengeId: string;
-	serverName: string;
-	scopeDemand: string;
-	failureReason: string | null;
-	status: string;
-}
-let challengesByServer = $state<Record<string, ServerChallenge>>({});
-let challengeLoopback = $state(false);
-let challengeCanResolve = $state(false);
-let claimState = $state<Record<string, "claiming" | { error: string }>>({});
+	// Per-server MCP OAuth authorization state (MCP OAuth RFC §11, R-MO27c). A
+	// pending challenge is an unmet demand the row surfaces as an Authorize
+	// affordance (loopback: a live claim button; non-loopback: the CLI
+	// instruction); a failed one shows the last failure reason.
+	interface ServerChallenge {
+		challengeId: string;
+		serverName: string;
+		scopeDemand: string;
+		failureReason: string | null;
+		status: string;
+	}
+	let challengesByServer = $state<Record<string, ServerChallenge>>({});
+	let challengeLoopback = $state(false);
+	let challengeCanResolve = $state(false);
+	let claimState = $state<Record<string, "claiming" | { error: string }>>({});
 
-async function loadChallenges(): Promise<void> {
-	try {
-		const res = await fetch("/api/mcp-challenges/by-server");
-		if (res.ok) {
-			const body = (await res.json()) as {
-				servers: Record<string, ServerChallenge>;
-				loopback: boolean;
-				canResolve: boolean;
+	async function loadChallenges(): Promise<void> {
+		try {
+			const res = await fetch("/api/mcp-challenges/by-server");
+			if (res.ok) {
+				const body = (await res.json()) as {
+					servers: Record<string, ServerChallenge>;
+					loopback: boolean;
+					canResolve: boolean;
+				};
+				challengesByServer = body.servers;
+				challengeLoopback = body.loopback;
+				challengeCanResolve = body.canResolve;
+			}
+		} catch {
+			// Transient fetch failure — keep the last good snapshot.
+		}
+	}
+
+	async function authorize(challengeId: string): Promise<void> {
+		claimState = { ...claimState, [challengeId]: "claiming" };
+		try {
+			const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(challengeId)}/claim`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+			});
+			const body = (await res.json().catch(() => ({}))) as {
+				authorizeUrl?: string;
+				error?: string;
 			};
-			challengesByServer = body.servers;
-			challengeLoopback = body.loopback;
-			challengeCanResolve = body.canResolve;
+			if (!res.ok || !body.authorizeUrl) {
+				throw new Error(body.error ?? `claim failed (${res.status})`);
+			}
+			window.open(body.authorizeUrl, "_blank", "noopener");
+			const { [challengeId]: _dropped, ...rest } = claimState;
+			claimState = rest;
+		} catch (e) {
+			claimState = {
+				...claimState,
+				[challengeId]: { error: e instanceof Error ? e.message : String(e) },
+			};
 		}
-	} catch {
-		// Transient fetch failure — keep the last good snapshot.
 	}
-}
 
-async function authorize(challengeId: string): Promise<void> {
-	claimState = { ...claimState, [challengeId]: "claiming" };
-	try {
-		const res = await fetch(`/api/mcp-challenges/${encodeURIComponent(challengeId)}/claim`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-		});
-		const body = (await res.json().catch(() => ({}))) as {
-			authorizeUrl?: string;
-			error?: string;
-		};
-		if (!res.ok || !body.authorizeUrl) {
-			throw new Error(body.error ?? `claim failed (${res.status})`);
+	async function loadServers(): Promise<void> {
+		try {
+			const res = await fetch("/api/mcp/servers");
+			if (res.ok) {
+				const body = (await res.json()) as { servers: McpServer[] };
+				servers = body.servers;
+			}
+		} catch {
+			// Transient fetch failure — keep the last good snapshot.
 		}
-		window.open(body.authorizeUrl, "_blank", "noopener");
-		const { [challengeId]: _dropped, ...rest } = claimState;
-		claimState = rest;
-	} catch (e) {
-		claimState = {
-			...claimState,
-			[challengeId]: { error: e instanceof Error ? e.message : String(e) },
-		};
+		loading = false;
 	}
-}
 
-async function loadServers(): Promise<void> {
-	try {
-		const res = await fetch("/api/mcp/servers");
-		if (res.ok) {
-			const body = (await res.json()) as { servers: McpServer[] };
-			servers = body.servers;
-		}
-	} catch {
-		// Transient fetch failure — keep the last good snapshot.
-	}
-	loading = false;
-}
-
-onMount(() => {
-	loadServers();
-	loadChallenges();
-	pollInterval = setInterval(() => {
+	onMount(() => {
 		loadServers();
 		loadChallenges();
-	}, 30000);
-});
+		pollInterval = setInterval(() => {
+			loadServers();
+			loadChallenges();
+		}, 30000);
+	});
 
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+	});
 
-function toggleExpanded(name: string): void {
-	expandedName = expandedName === name ? null : name;
-}
-
-function formatLastSeen(onlineAt: string | null): string {
-	if (!onlineAt) return "never seen";
-	const date = new Date(onlineAt);
-	if (Number.isNaN(date.getTime())) return "never seen";
-	return `last seen ${date.toLocaleString()}`;
-}
-
-/**
- * Hosts that pre-date full capability capture only report tools that
- * declared annotation hints; hosts on current code report the complete
- * surface (serverInfo, tools, prompts, resources).
- */
-function hasCapabilityData(server: McpServer): boolean {
-	return (
-		server.serverInfo !== undefined ||
-		server.prompts !== undefined ||
-		server.resources !== undefined
-	);
-}
-
-function serverSummary(server: McpServer): string {
-	const parts: string[] = [];
-	const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
-	if (hasCapabilityData(server)) {
-		parts.push(plural(server.tools.length, "tool"));
-		if (server.prompts !== undefined) parts.push(plural(server.prompts.length, "prompt"));
-		if (server.resources !== undefined) parts.push(plural(server.resources.length, "resource"));
-	} else if (server.tools.length > 0) {
-		parts.push(`${plural(server.tools.length, "annotated tool")}`);
-	} else {
-		parts.push("no capability data");
+	function toggleExpanded(name: string): void {
+		expandedName = expandedName === name ? null : name;
 	}
-	parts.push(plural(server.hosts.length, "host"));
-	return parts.join(" · ");
-}
 
-/**
- * Render the MCP-spec annotation hints as readable chips. Both polarities
- * are informative (an explicit `idempotentHint: false` is a real signal),
- * so present hints always render; absent hints render nothing.
- */
-function annotationChips(annotations: Record<string, boolean>): Array<{
-	text: string;
-	tone: "safe" | "caution" | "neutral";
-}> {
-	const chips: Array<{ text: string; tone: "safe" | "caution" | "neutral" }> = [];
-	if (annotations.readOnlyHint !== undefined) {
-		chips.push(
-			annotations.readOnlyHint
-				? { text: "read-only", tone: "safe" }
-				: { text: "writes", tone: "caution" },
+	function formatLastSeen(onlineAt: string | null): string {
+		if (!onlineAt) return "never seen";
+		const date = new Date(onlineAt);
+		if (Number.isNaN(date.getTime())) return "never seen";
+		return `last seen ${date.toLocaleString()}`;
+	}
+
+	/**
+	 * Hosts that pre-date full capability capture only report tools that
+	 * declared annotation hints; hosts on current code report the complete
+	 * surface (serverInfo, tools, prompts, resources).
+	 */
+	function hasCapabilityData(server: McpServer): boolean {
+		return (
+			server.serverInfo !== undefined ||
+			server.prompts !== undefined ||
+			server.resources !== undefined
 		);
 	}
-	if (annotations.destructiveHint !== undefined) {
-		chips.push(
-			annotations.destructiveHint
-				? { text: "destructive", tone: "caution" }
-				: { text: "non-destructive", tone: "safe" },
-		);
+
+	function serverSummary(server: McpServer): string {
+		const parts: string[] = [];
+		const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? "" : "s"}`;
+		if (hasCapabilityData(server)) {
+			parts.push(plural(server.tools.length, "tool"));
+			if (server.prompts !== undefined) parts.push(plural(server.prompts.length, "prompt"));
+			if (server.resources !== undefined) parts.push(plural(server.resources.length, "resource"));
+		} else if (server.tools.length > 0) {
+			parts.push(`${plural(server.tools.length, "annotated tool")}`);
+		} else {
+			parts.push("no capability data");
+		}
+		parts.push(plural(server.hosts.length, "host"));
+		return parts.join(" · ");
 	}
-	if (annotations.idempotentHint !== undefined) {
-		chips.push(
-			annotations.idempotentHint
-				? { text: "idempotent", tone: "safe" }
-				: { text: "non-idempotent", tone: "neutral" },
-		);
+
+	/**
+	 * Render the MCP-spec annotation hints as readable chips. Both polarities
+	 * are informative (an explicit `idempotentHint: false` is a real signal),
+	 * so present hints always render; absent hints render nothing.
+	 */
+	function annotationChips(annotations: Record<string, boolean>): Array<{
+		text: string;
+		tone: "safe" | "caution" | "neutral";
+	}> {
+		const chips: Array<{ text: string; tone: "safe" | "caution" | "neutral" }> = [];
+		if (annotations.readOnlyHint !== undefined) {
+			chips.push(
+				annotations.readOnlyHint
+					? { text: "read-only", tone: "safe" }
+					: { text: "writes", tone: "caution" },
+			);
+		}
+		if (annotations.destructiveHint !== undefined) {
+			chips.push(
+				annotations.destructiveHint
+					? { text: "destructive", tone: "caution" }
+					: { text: "non-destructive", tone: "safe" },
+			);
+		}
+		if (annotations.idempotentHint !== undefined) {
+			chips.push(
+				annotations.idempotentHint
+					? { text: "idempotent", tone: "safe" }
+					: { text: "non-idempotent", tone: "neutral" },
+			);
+		}
+		return chips;
 	}
-	return chips;
-}
 </script>
 
 <Page>
@@ -242,7 +242,10 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 									<span class="server-version">{server.serverInfo.version}</span>
 								{/if}
 								{#if server.divergence.length > 0}
-									<span class="divergence-badge" title="Hosts disagree about this server's capabilities">
+									<span
+										class="divergence-badge"
+										title="Hosts disagree about this server's capabilities"
+									>
 										⚠ divergent
 									</span>
 								{/if}
@@ -251,7 +254,10 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 										<LockKeyhole size={12} aria-hidden="true" /> needs authorization
 									</span>
 								{:else if challengesByServer[server.name]?.status === "failed"}
-									<span class="auth-badge failed" title="The last OAuth authorization attempt failed">
+									<span
+										class="auth-badge failed"
+										title="The last OAuth authorization attempt failed"
+									>
 										<ShieldAlert size={12} aria-hidden="true" /> authorization failed
 									</span>
 								{/if}
@@ -269,7 +275,9 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 									<div class="auth-affordance" class:failed={ch.status === "failed"}>
 										<p class="auth-line">
 											{#if ch.status === "failed"}
-												The last authorization attempt failed{ch.failureReason ? `: ${ch.failureReason}` : "."}
+												The last authorization attempt failed{ch.failureReason
+													? `: ${ch.failureReason}`
+													: "."}
 											{:else if ch.scopeDemand}
 												This server needs authorization. Scopes: <code>{ch.scopeDemand}</code>
 											{:else}
@@ -315,9 +323,8 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 								</div>
 								{#if server.hosts.some((h) => !h.has_capability_data)}
 									<p class="detail-note">
-										Hosts marked “partial inventory” are running an older build that
-										only records annotation hints; they're excluded from divergence
-										comparison.
+										Hosts marked “partial inventory” are running an older build that only records
+										annotation hints; they're excluded from divergence comparison.
 									</p>
 								{/if}
 
@@ -363,9 +370,8 @@ function annotationChips(annotations: Record<string, boolean>): Array<{
 										<p class="detail-empty">This server exposes no tools.</p>
 									{:else}
 										<p class="detail-empty">
-											No capability data captured for this server — every host carrying
-											it may be running an older build that only records annotation
-											hints.
+											No capability data captured for this server — every host carrying it may be
+											running an older build that only records annotation hints.
 										</p>
 									{/if}
 								{:else}

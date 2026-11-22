@@ -47,13 +47,8 @@ export async function runInit(args: InitArgs): Promise<void> {
 	// non-empty api_key, so we write a placeholder. The bare `init` (no preset flag) lands on
 	// these defaults too, so the zero-flag path produces a config that actually starts.
 	let provider:
-		| "openai-compatible"
-		| "bedrock"
-		| "anthropic"
-		| "cerebras"
-		| "zai"
-		| "opencode-go"
-		| "umans" = "openai-compatible";
+		"openai-compatible" | "bedrock" | "anthropic" | "cerebras" | "zai" | "opencode-go" | "umans" =
+		"openai-compatible";
 	let baseUrl: string | undefined = "http://localhost:11434/v1";
 	let apiKey: string | undefined = "ollama";
 	let region: string | undefined;

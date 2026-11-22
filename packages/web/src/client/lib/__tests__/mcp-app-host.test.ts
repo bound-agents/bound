@@ -319,8 +319,7 @@ describe("connectToMcpServer", () => {
 			// The server sees the client's declared capabilities after the handshake;
 			// the UI extension is how a UI-capable client negotiates MCP Apps support.
 			const caps = server.server.getClientCapabilities() as
-				| { extensions?: Record<string, unknown> }
-				| undefined;
+				{ extensions?: Record<string, unknown> } | undefined;
 			expect(caps?.extensions?.[MCP_UI_EXTENSION_ID]).toBeDefined();
 		} finally {
 			await client.close();

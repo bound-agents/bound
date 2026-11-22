@@ -1,12 +1,5 @@
 export type MessageRole =
-	| "user"
-	| "assistant"
-	| "system"
-	| "developer"
-	| "alert"
-	| "tool_call"
-	| "tool_result"
-	| "purge";
+	"user" | "assistant" | "system" | "developer" | "alert" | "tool_call" | "tool_result" | "purge";
 
 export type TaskType = "cron" | "deferred" | "event" | "heartbeat" | "consolidation";
 
@@ -362,8 +355,7 @@ export interface ImportSkillOptions {
 }
 
 export type ImportSkillResult =
-	| { ok: true; skillId: string; name: string }
-	| { ok: false; error: string };
+	{ ok: true; skillId: string; name: string } | { ok: false; error: string };
 
 export interface MemoryEdge extends SoftDeletable {
 	id: string;

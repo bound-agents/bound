@@ -306,13 +306,7 @@ export interface CapabilityRequirements {
  * the bridge throws on it so the 5xx failover path runs instead.
  */
 export type LLMFinishReason =
-	| "stop"
-	| "length"
-	| "content-filter"
-	| "tool-calls"
-	| "error"
-	| "other"
-	| "unknown";
+	"stop" | "length" | "content-filter" | "tool-calls" | "error" | "other" | "unknown";
 
 export type StreamChunk =
 	| { type: "text"; content: string }

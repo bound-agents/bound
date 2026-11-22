@@ -189,9 +189,8 @@ describe("live Yard topology contracts", () => {
 	});
 
 	it("upgrades an early runtime-only live card to the persisted program skeleton without losing lifecycle state", async () => {
-		const { EMPTY_YARD_STATE, reconcileYardExecutions, reduceYardExecution } = await import(
-			"../yard-execution"
-		);
+		const { EMPTY_YARD_STATE, reconcileYardExecutions, reduceYardExecution } =
+			await import("../yard-execution");
 		const started = reduceYardExecution(EMPTY_YARD_STATE, {
 			thread_id: "thread",
 			trace_id: "trace-persisted",

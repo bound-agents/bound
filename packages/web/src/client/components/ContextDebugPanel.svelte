@@ -1,168 +1,168 @@
 <script lang="ts">
-import type { ContextDebugTurn, CrossThreadSource } from "@bound/client";
-import { onDestroy } from "svelte";
-import { type WebSocketMessage, client, wsEvents } from "../lib/bound";
-import { getLineColor, getLineName } from "../lib/metro-lines";
-import { navigateTo } from "../lib/router";
-import ContextBar from "./ContextBar.svelte";
-import ContextSectionList from "./ContextSectionList.svelte";
-import ContextSparkline from "./ContextSparkline.svelte";
-import InfoPopover from "./InfoPopover.svelte";
-import LineBadge from "./LineBadge.svelte";
+	import type { ContextDebugTurn, CrossThreadSource } from "@bound/client";
+	import { onDestroy } from "svelte";
+	import { type WebSocketMessage, client, wsEvents } from "../lib/bound";
+	import { getLineColor, getLineName } from "../lib/metro-lines";
+	import { navigateTo } from "../lib/router";
+	import ContextBar from "./ContextBar.svelte";
+	import ContextSectionList from "./ContextSectionList.svelte";
+	import ContextSparkline from "./ContextSparkline.svelte";
+	import InfoPopover from "./InfoPopover.svelte";
+	import LineBadge from "./LineBadge.svelte";
 
-/** Human-readable explanation for each cache-path reason code. */
-const CACHE_REASON_LABEL: Record<string, string> = {
-	"no-stored-state": "first turn on this thread, or the warm cache was evicted",
-	"cache-expired": "the prompt-cache TTL elapsed since the last turn",
-	"tool-change": "the available tool set changed, invalidating the cached prefix",
-	"orphaned-tool-call": "an unanswered tool call forced a structural rebuild",
-	"purge-message": "a purge instruction forced full history substitution",
-	"budget-exceeded": "the estimate exceeded the budget even after in-place compaction",
-	"no-history": "no-history task threads always cold-assemble",
-	"warm-eligible": "the warm path completed within budget — cached prefix reused",
-};
+	/** Human-readable explanation for each cache-path reason code. */
+	const CACHE_REASON_LABEL: Record<string, string> = {
+		"no-stored-state": "first turn on this thread, or the warm cache was evicted",
+		"cache-expired": "the prompt-cache TTL elapsed since the last turn",
+		"tool-change": "the available tool set changed, invalidating the cached prefix",
+		"orphaned-tool-call": "an unanswered tool call forced a structural rebuild",
+		"purge-message": "a purge instruction forced full history substitution",
+		"budget-exceeded": "the estimate exceeded the budget even after in-place compaction",
+		"no-history": "no-history task threads always cold-assemble",
+		"warm-eligible": "the warm path completed within budget — cached prefix reused",
+	};
 
-interface Props {
-	threadId: string;
-	wsEvents: typeof wsEvents;
-	onTurnChange?: (range: { from: string; to: string | null } | null) => void;
-}
-
-const { threadId, wsEvents: wsEventsStore, onTurnChange }: Props = $props();
-
-let turns = $state<ContextDebugTurn[]>([]);
-let selectedTurnIdx = $state(-1);
-let loading = $state(false);
-
-async function fetchData(): Promise<void> {
-	loading = true;
-	try {
-		const data = await client.getContextDebug(threadId);
-		turns = data;
-		if (turns.length > 0) {
-			selectedTurnIdx = turns.length - 1;
-		}
-	} catch (error) {
-		console.error("Failed to fetch context debug data:", error);
+	interface Props {
+		threadId: string;
+		wsEvents: typeof wsEvents;
+		onTurnChange?: (range: { from: string; to: string | null } | null) => void;
 	}
-	loading = false;
-}
 
-/**
- * Silently re-fetch turns on a live update (WS event). Does not show the
- * loading spinner and preserves the user's current turn selection: if they
- * were already on the latest turn, advance to the new latest; if they had
- * navigated to an older turn, leave selectedTurnIdx unchanged so it still
- * points at the same entry (turns are only appended, never removed).
- */
-async function refreshTurns(): Promise<void> {
-	try {
-		const wasLatest = isLatest;
-		const data = await client.getContextDebug(threadId);
-		turns = data;
-		if (wasLatest && turns.length > 0) {
-			selectedTurnIdx = turns.length - 1;
+	const { threadId, wsEvents: wsEventsStore, onTurnChange }: Props = $props();
+
+	let turns = $state<ContextDebugTurn[]>([]);
+	let selectedTurnIdx = $state(-1);
+	let loading = $state(false);
+
+	async function fetchData(): Promise<void> {
+		loading = true;
+		try {
+			const data = await client.getContextDebug(threadId);
+			turns = data;
+			if (turns.length > 0) {
+				selectedTurnIdx = turns.length - 1;
+			}
+		} catch (error) {
+			console.error("Failed to fetch context debug data:", error);
 		}
-	} catch (error) {
-		console.error("Failed to refresh context debug data:", error);
+		loading = false;
 	}
-}
 
-$effect(() => {
-	const _tid = threadId;
-	turns = [];
-	selectedTurnIdx = -1;
-	loading = false;
-	fetchData();
-});
+	/**
+	 * Silently re-fetch turns on a live update (WS event). Does not show the
+	 * loading spinner and preserves the user's current turn selection: if they
+	 * were already on the latest turn, advance to the new latest; if they had
+	 * navigated to an older turn, leave selectedTurnIdx unchanged so it still
+	 * points at the same entry (turns are only appended, never removed).
+	 */
+	async function refreshTurns(): Promise<void> {
+		try {
+			const wasLatest = isLatest;
+			const data = await client.getContextDebug(threadId);
+			turns = data;
+			if (wasLatest && turns.length > 0) {
+				selectedTurnIdx = turns.length - 1;
+			}
+		} catch (error) {
+			console.error("Failed to refresh context debug data:", error);
+		}
+	}
 
-let unsubscribeWs: (() => void) | null = null;
+	$effect(() => {
+		const _tid = threadId;
+		turns = [];
+		selectedTurnIdx = -1;
+		loading = false;
+		fetchData();
+	});
 
-$effect(() => {
-	unsubscribeWs = wsEventsStore.subscribe((events: WebSocketMessage[]) => {
-		if (events.length === 0) return;
-		const last = events[events.length - 1];
-		if (
-			last &&
-			last.type === "context:debug" &&
-			typeof last.data === "object" &&
-			last.data !== null
-		) {
-			// The server includes thread_id in the payload so we can filter to
-			// the current thread. The payload shape is { turn_id, debug, thread_id }
-			// — not a full ContextDebugTurn — so we use it only as a trigger to
-			// re-fetch the complete, properly-typed data from the REST endpoint.
-			const debugData = last.data as { turn_id: string; thread_id?: string };
-			if (debugData.thread_id === threadId) {
-				const exists = turns.some((t: ContextDebugTurn) => t.turn_id === debugData.turn_id);
-				if (!exists) {
-					refreshTurns();
+	let unsubscribeWs: (() => void) | null = null;
+
+	$effect(() => {
+		unsubscribeWs = wsEventsStore.subscribe((events: WebSocketMessage[]) => {
+			if (events.length === 0) return;
+			const last = events[events.length - 1];
+			if (
+				last &&
+				last.type === "context:debug" &&
+				typeof last.data === "object" &&
+				last.data !== null
+			) {
+				// The server includes thread_id in the payload so we can filter to
+				// the current thread. The payload shape is { turn_id, debug, thread_id }
+				// — not a full ContextDebugTurn — so we use it only as a trigger to
+				// re-fetch the complete, properly-typed data from the REST endpoint.
+				const debugData = last.data as { turn_id: string; thread_id?: string };
+				if (debugData.thread_id === threadId) {
+					const exists = turns.some((t: ContextDebugTurn) => t.turn_id === debugData.turn_id);
+					if (!exists) {
+						refreshTurns();
+					}
 				}
 			}
+		});
+	});
+
+	onDestroy(() => {
+		if (unsubscribeWs) {
+			unsubscribeWs();
 		}
 	});
-});
 
-onDestroy(() => {
-	if (unsubscribeWs) {
-		unsubscribeWs();
-	}
-});
+	const selectedTurn = $derived(
+		turns.length > 0 ? turns[selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1] : null,
+	);
 
-const selectedTurn = $derived(
-	turns.length > 0 ? turns[selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1] : null,
-);
+	const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
 
-const effectiveIdx = $derived(selectedTurnIdx >= 0 ? selectedTurnIdx : turns.length - 1);
+	const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.length - 1);
 
-const isLatest = $derived(selectedTurnIdx < 0 || selectedTurnIdx === turns.length - 1);
-
-function fmtHhmm(iso: string | undefined | null): string {
-	if (!iso) return "";
-	try {
-		const d = new Date(iso);
-		if (Number.isNaN(d.getTime())) return "";
-		return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-	} catch {
-		return "";
-	}
-}
-
-function midpointISO(a: string, b: string): string {
-	const ta = new Date(a).getTime();
-	const tb = new Date(b).getTime();
-	return new Date(ta + (tb - ta) / 2).toISOString();
-}
-
-function emitTurnRange(idx: number): void {
-	if (!onTurnChange || turns.length === 0) return;
-	if (idx < 0 || idx >= turns.length) {
-		onTurnChange(null);
-		return;
-	}
-	const from = idx > 0 ? midpointISO(turns[idx - 1].created_at, turns[idx].created_at) : "";
-	const to =
-		idx + 1 < turns.length ? midpointISO(turns[idx].created_at, turns[idx + 1].created_at) : null;
-	onTurnChange({ from, to });
-}
-
-function navigateTurn(direction: number): void {
-	if (direction < 0) {
-		if (selectedTurnIdx > 0) {
-			selectedTurnIdx--;
-			emitTurnRange(selectedTurnIdx);
-		}
-	} else {
-		if (selectedTurnIdx < turns.length - 1) {
-			selectedTurnIdx++;
-			emitTurnRange(selectedTurnIdx);
+	function fmtHhmm(iso: string | undefined | null): string {
+		if (!iso) return "";
+		try {
+			const d = new Date(iso);
+			if (Number.isNaN(d.getTime())) return "";
+			return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+		} catch {
+			return "";
 		}
 	}
-}
 
-function openCrossThread(src: CrossThreadSource): void {
-	navigateTo(`/line/${src.threadId}`);
-}
+	function midpointISO(a: string, b: string): string {
+		const ta = new Date(a).getTime();
+		const tb = new Date(b).getTime();
+		return new Date(ta + (tb - ta) / 2).toISOString();
+	}
+
+	function emitTurnRange(idx: number): void {
+		if (!onTurnChange || turns.length === 0) return;
+		if (idx < 0 || idx >= turns.length) {
+			onTurnChange(null);
+			return;
+		}
+		const from = idx > 0 ? midpointISO(turns[idx - 1].created_at, turns[idx].created_at) : "";
+		const to =
+			idx + 1 < turns.length ? midpointISO(turns[idx].created_at, turns[idx + 1].created_at) : null;
+		onTurnChange({ from, to });
+	}
+
+	function navigateTurn(direction: number): void {
+		if (direction < 0) {
+			if (selectedTurnIdx > 0) {
+				selectedTurnIdx--;
+				emitTurnRange(selectedTurnIdx);
+			}
+		} else {
+			if (selectedTurnIdx < turns.length - 1) {
+				selectedTurnIdx++;
+				emitTurnRange(selectedTurnIdx);
+			}
+		}
+	}
+
+	function openCrossThread(src: CrossThreadSource): void {
+		navigateTo(`/line/${src.threadId}`);
+	}
 </script>
 
 <div class="debug-panel">
@@ -189,13 +189,7 @@ function openCrossThread(src: CrossThreadSource): void {
 					</span>
 				{/if}
 			</span>
-			<button
-				onclick={() => navigateTurn(1)}
-				disabled={isLatest}
-				title="Next turn"
-			>
-				&gt;
-			</button>
+			<button onclick={() => navigateTurn(1)} disabled={isLatest} title="Next turn"> &gt; </button>
 			{#if isLatest}
 				<span class="latest-badge">Latest</span>
 			{/if}
@@ -207,7 +201,8 @@ function openCrossThread(src: CrossThreadSource): void {
 			{@const estimatedTokens = ctxDebug.totalEstimated}
 			{@const headlineTokens = actualTokens ?? estimatedTokens}
 			{@const headlineSource = actualTokens !== null ? "actual" : "estimate"}
-			{@const inflationRatio = actualTokens !== null && estimatedTokens > 0 ? actualTokens / estimatedTokens : null}
+			{@const inflationRatio =
+				actualTokens !== null && estimatedTokens > 0 ? actualTokens / estimatedTokens : null}
 			<div class="turn-summary">
 				<div class="summary-row summary-row-total">
 					<InfoPopover
@@ -218,7 +213,8 @@ function openCrossThread(src: CrossThreadSource): void {
 					>
 						{#snippet trigger()}<span
 								class="total-num mono tnum"
-								class:total-pressure={ctxDebug.budgetPressure}>{headlineTokens.toLocaleString()}</span
+								class:total-pressure={ctxDebug.budgetPressure}
+								>{headlineTokens.toLocaleString()}</span
 							>{/snippet}
 					</InfoPopover>
 					<span class="total-den">
@@ -359,7 +355,9 @@ function openCrossThread(src: CrossThreadSource): void {
 							placement="bottom"
 							label="Compressed to the action-log digest, not summarized. Still readable; no content lost."
 						>
-							{#snippet trigger()}<span class="telescope-explain">{folded.toLocaleString()} folded</span>{/snippet}
+							{#snippet trigger()}<span class="telescope-explain"
+									>{folded.toLocaleString()} folded</span
+								>{/snippet}
 						</InfoPopover>
 						<span class="telescope-sep">·</span>
 						<span class="telescope-dropped" class:telescope-dropped-hot={dropped > 0}>
@@ -370,8 +368,8 @@ function openCrossThread(src: CrossThreadSource): void {
 					</div>
 					{#if heavyDrop}
 						<div class="telescope-note">
-							A single turn's history exceeds the window: the oldest turns are shed to
-							the summary marker. This is expected on very long autonomous runs.
+							A single turn's history exceeds the window: the oldest turns are shed to the summary
+							marker. This is expected on very long autonomous runs.
 						</div>
 					{/if}
 				</div>
@@ -381,7 +379,8 @@ function openCrossThread(src: CrossThreadSource): void {
 					<div class="telescope-title">▤ Truncated history</div>
 					<div class="telescope-body">
 						{#if truncated > 0}
-							{truncated.toLocaleString()} earlier message{truncated === 1 ? "" : "s"} dropped to fit the window.
+							{truncated.toLocaleString()} earlier message{truncated === 1 ? "" : "s"} dropped to fit
+							the window.
 						{:else}
 							Context is near the budget gate.
 						{/if}
@@ -434,9 +433,7 @@ function openCrossThread(src: CrossThreadSource): void {
 				</div>
 			{/if}
 
-			<div class="section-kicker">
-				Context usage
-			</div>
+			<div class="section-kicker">Context usage</div>
 			<ContextSparkline
 				{turns}
 				selectedIdx={effectiveIdx}
@@ -471,7 +468,9 @@ function openCrossThread(src: CrossThreadSource): void {
 					<span class="kicker">Budget pressure</span>
 					<span
 						class="mono"
-						style="color: {selectedTurn.context_debug.budgetPressure ? 'var(--err)' : 'var(--ink-2)'}"
+						style="color: {selectedTurn.context_debug.budgetPressure
+							? 'var(--err)'
+							: 'var(--ink-2)'}"
 					>
 						{selectedTurn.context_debug.budgetPressure ? "YES" : "no"}
 					</span>
@@ -493,7 +492,9 @@ function openCrossThread(src: CrossThreadSource): void {
 						<span class="kicker">Truncated</span>
 						<span
 							class="mono tnum"
-							style="color: {selectedTurn.context_debug.truncated > 0 ? 'var(--warn)' : 'var(--ink-2)'}"
+							style="color: {selectedTurn.context_debug.truncated > 0
+								? 'var(--warn)'
+								: 'var(--ink-2)'}"
 						>
 							{selectedTurn.context_debug.truncated}
 						</span>

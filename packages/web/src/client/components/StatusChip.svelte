@@ -1,67 +1,71 @@
 <script lang="ts">
-type StatusType =
-	| "active"
-	| "running"
-	| "claimed"
-	| "pending"
-	| "idle"
-	| "failed"
-	| "cancelled"
-	| "completed"
-	| "delayed"
-	| "overdue"
-	| "proposed"
-	| "approved"
-	| "dismissed"
-	| "deferred"
-	| "applied"
-	| "healthy"
-	| "degraded"
-	| "unreachable"
-	| "online"
-	| "offline"
-	| "retired";
+	type StatusType =
+		| "active"
+		| "running"
+		| "claimed"
+		| "pending"
+		| "idle"
+		| "failed"
+		| "cancelled"
+		| "completed"
+		| "delayed"
+		| "overdue"
+		| "proposed"
+		| "approved"
+		| "dismissed"
+		| "deferred"
+		| "applied"
+		| "healthy"
+		| "degraded"
+		| "unreachable"
+		| "online"
+		| "offline"
+		| "retired";
 
-interface Props {
-	status: StatusType;
-	label?: string;
-	animate?: boolean;
-	size?: "sm" | "lg";
-}
+	interface Props {
+		status: StatusType;
+		label?: string;
+		animate?: boolean;
+		size?: "sm" | "lg";
+	}
 
-let { status, label, animate = true, size = "sm" }: Props = $props();
+	let { status, label, animate = true, size = "sm" }: Props = $props();
 
-const STATUS_MAP: Record<StatusType, { label: string; color: string; pulse: boolean }> = {
-	active: { label: "On duty", color: "var(--ok)", pulse: true },
-	running: { label: "Running", color: "var(--ok)", pulse: true },
-	claimed: { label: "Claimed", color: "var(--line-T)", pulse: true },
-	pending: { label: "Scheduled", color: "var(--ink-3)", pulse: false },
-	idle: { label: "Idle", color: "var(--idle)", pulse: false },
-	failed: { label: "Failed", color: "var(--err)", pulse: false },
-	cancelled: { label: "Cancelled", color: "var(--idle)", pulse: false },
-	completed: { label: "Completed", color: "var(--ink-3)", pulse: false },
-	delayed: { label: "Delayed", color: "var(--warn)", pulse: true },
-	overdue: { label: "Overdue", color: "var(--err)", pulse: true },
-	proposed: { label: "Proposed", color: "var(--warn)", pulse: true },
-	approved: { label: "Approved", color: "var(--ok)", pulse: false },
-	dismissed: { label: "Dismissed", color: "var(--idle)", pulse: false },
-	deferred: { label: "Deferred", color: "var(--line-T)", pulse: false },
-	applied: { label: "Applied", color: "var(--line-Z)", pulse: false },
-	healthy: { label: "Healthy", color: "var(--ok)", pulse: false },
-	degraded: { label: "Degraded", color: "var(--warn)", pulse: false },
-	unreachable: { label: "Unreachable", color: "var(--err)", pulse: false },
-	online: { label: "Online", color: "var(--ok)", pulse: true },
-	offline: { label: "Offline", color: "var(--err)", pulse: false },
-	retired: { label: "Retired", color: "var(--text-dim)", pulse: false },
-};
+	const STATUS_MAP: Record<StatusType, { label: string; color: string; pulse: boolean }> = {
+		active: { label: "On duty", color: "var(--ok)", pulse: true },
+		running: { label: "Running", color: "var(--ok)", pulse: true },
+		claimed: { label: "Claimed", color: "var(--line-T)", pulse: true },
+		pending: { label: "Scheduled", color: "var(--ink-3)", pulse: false },
+		idle: { label: "Idle", color: "var(--idle)", pulse: false },
+		failed: { label: "Failed", color: "var(--err)", pulse: false },
+		cancelled: { label: "Cancelled", color: "var(--idle)", pulse: false },
+		completed: { label: "Completed", color: "var(--ink-3)", pulse: false },
+		delayed: { label: "Delayed", color: "var(--warn)", pulse: true },
+		overdue: { label: "Overdue", color: "var(--err)", pulse: true },
+		proposed: { label: "Proposed", color: "var(--warn)", pulse: true },
+		approved: { label: "Approved", color: "var(--ok)", pulse: false },
+		dismissed: { label: "Dismissed", color: "var(--idle)", pulse: false },
+		deferred: { label: "Deferred", color: "var(--line-T)", pulse: false },
+		applied: { label: "Applied", color: "var(--line-Z)", pulse: false },
+		healthy: { label: "Healthy", color: "var(--ok)", pulse: false },
+		degraded: { label: "Degraded", color: "var(--warn)", pulse: false },
+		unreachable: { label: "Unreachable", color: "var(--err)", pulse: false },
+		online: { label: "Online", color: "var(--ok)", pulse: true },
+		offline: { label: "Offline", color: "var(--err)", pulse: false },
+		retired: { label: "Retired", color: "var(--text-dim)", pulse: false },
+	};
 
-const cfg = $derived(STATUS_MAP[status] ?? { label: status, color: "var(--idle)", pulse: false });
-const displayLabel = $derived(label ?? cfg.label);
-const shouldAnimate = $derived(animate && cfg.pulse);
-const dot = $derived(size === "lg" ? 8 : 7);
+	const cfg = $derived(STATUS_MAP[status] ?? { label: status, color: "var(--idle)", pulse: false });
+	const displayLabel = $derived(label ?? cfg.label);
+	const shouldAnimate = $derived(animate && cfg.pulse);
+	const dot = $derived(size === "lg" ? 8 : 7);
 </script>
 
-<span class="status-chip" class:animate={shouldAnimate} style="--dot-color: {cfg.color}; --dot-size: {dot}px">
+<span
+	class="status-chip"
+	class:animate={shouldAnimate}
+	style="--dot-color: {cfg.color}; --dot-size: {dot}px"
+>
 	<span class="dot"></span>
 	<span class="label">{displayLabel}</span>
 </span>
@@ -92,11 +96,18 @@ const dot = $derived(size === "lg" ? 8 : 7);
 	}
 
 	@keyframes chip-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.25; }
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.25;
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.status-chip.animate .dot { animation: none; }
+		.status-chip.animate .dot {
+			animation: none;
+		}
 	}
 </style>

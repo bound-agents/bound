@@ -910,10 +910,7 @@ describe("initServer — handleThread main dispatch (non-background turn)", () =
 		let seenThreadId = "";
 		let seenModelId = "";
 		// agentLoopFactory is called by runLocalAgentLoop as (config) => MainAgentLoop.
-		const agentLoopFactory = (config: {
-			threadId: string;
-			modelId: string;
-		}) => ({
+		const agentLoopFactory = (config: { threadId: string; modelId: string }) => ({
 			run: async () => {
 				loopRan = true;
 				seenThreadId = config.threadId;

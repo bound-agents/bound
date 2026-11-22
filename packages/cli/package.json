@@ -32,6 +32,6 @@
 		"just-bash": "^2.14.0"
 	},
 	"scripts": {
-		"typecheck": "tsc -p . --noEmit"
+		"typecheck": "bun check --no-script -p ."
 	}
 }

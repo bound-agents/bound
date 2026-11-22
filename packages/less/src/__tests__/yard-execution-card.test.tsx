@@ -338,9 +338,7 @@ describe("YardExecutionCard", () => {
 					parentId: "root",
 					node: { kind: "tool", name: "aux:test-matrix-scout" } as const,
 					phase: (i === 2 ? "failed" : i < 4 ? "completed" : "started") as
-						| "failed"
-						| "completed"
-						| "started",
+						"failed" | "completed" | "started",
 					seq: 2 + i,
 					startSeq: 2 + i,
 					...(i === 2 ? { summary: "aux failed: lint errors" } : {}),

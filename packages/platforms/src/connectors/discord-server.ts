@@ -736,10 +736,7 @@ function setupDiscordListeners(
 									source: {
 										type: "base64",
 										media_type: mediaType as
-											| "image/jpeg"
-											| "image/png"
-											| "image/gif"
-											| "image/webp",
+											"image/jpeg" | "image/png" | "image/gif" | "image/webp",
 										data: Buffer.from(bytes).toString("base64"),
 									},
 								});
@@ -902,10 +899,7 @@ function setupDiscordListeners(
 											source: {
 												type: "base64",
 												media_type: mediaType as
-													| "image/jpeg"
-													| "image/png"
-													| "image/gif"
-													| "image/webp",
+													"image/jpeg" | "image/png" | "image/gif" | "image/webp",
 												data: Buffer.from(bytes).toString("base64"),
 											},
 										});

@@ -18,9 +18,7 @@
 		]
 	},
 	"formatter": {
-		"enabled": true,
-		"indentStyle": "tab",
-		"lineWidth": 100
+		"enabled": false
 	},
 	"linter": {
 		"enabled": true,
@@ -33,12 +31,6 @@
 			"suspicious": {
 				"noExplicitAny": "warn"
 			}
-		}
-	},
-	"javascript": {
-		"formatter": {
-			"quoteStyle": "double",
-			"semicolons": "always"
 		}
 	},
 	"overrides": [

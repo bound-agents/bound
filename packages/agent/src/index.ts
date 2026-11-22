@@ -222,11 +222,7 @@ export {
 	canonicalResource,
 	unionAttemptScopes,
 } from "./mcp-auth/resolver";
-export {
-	writeHandoff,
-	handoffIdempotencyKey,
-	type HandoffOutcome,
-} from "./mcp-auth/handoff";
+export { writeHandoff, handoffIdempotencyKey, type HandoffOutcome } from "./mcp-auth/handoff";
 export {
 	consumeHandoff,
 	classifyAuthorizeError,

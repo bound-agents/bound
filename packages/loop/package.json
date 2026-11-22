@@ -16,6 +16,6 @@
 		"@opentelemetry/sdk-trace-base": "^1.30.0"
 	},
 	"scripts": {
-		"typecheck": "tsc -p . --noEmit"
+		"typecheck": "bun check --no-script -p ."
 	}
 }

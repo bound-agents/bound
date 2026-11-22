@@ -8,20 +8,16 @@ const mockClient = (): BoundClient => {
 	const instance = {
 		connect: mock(() => Promise.resolve()),
 		disconnect: mock(() => void 0),
-		getThread: mock(
-			async (_id: string): Promise<Thread> => ({
-				id: "test-thread",
-				title: "Test Thread",
-				created_at: new Date().toISOString(),
-			}),
-		),
-		createThread: mock(
-			async (): Promise<Thread> => ({
-				id: "new-thread",
-				title: "",
-				created_at: new Date().toISOString(),
-			}),
-		),
+		getThread: mock(async (_id: string): Promise<Thread> => ({
+			id: "test-thread",
+			title: "Test Thread",
+			created_at: new Date().toISOString(),
+		})),
+		createThread: mock(async (): Promise<Thread> => ({
+			id: "new-thread",
+			title: "",
+			created_at: new Date().toISOString(),
+		})),
 		listMessages: mock(async (_id: string): Promise<Message[]> => []),
 		subscribe: mock((_id: string) => void 0),
 		configureTools: mock((_tools, _opts) => void 0),

@@ -1,70 +1,70 @@
 <script lang="ts">
-import { rankDepartures } from "../lib/departure-sort";
-import LineBadge from "./LineBadge.svelte";
+	import { rankDepartures } from "../lib/departure-sort";
+	import LineBadge from "./LineBadge.svelte";
 
-interface EnhancedTask {
-	id: string;
-	type: string;
-	displayName: string;
-	status: string;
-	schedule: string | null;
-	hostName: string | null;
-	next_run_at: string | null;
-	last_run_at: string | null;
-}
-
-interface Props {
-	tasks: EnhancedTask[];
-}
-
-let { tasks }: Props = $props();
-
-// Task type to line index mapping (paper-signage palette)
-const TYPE_TO_LINE: Record<string, number> = {
-	cron: 0, // Ginza amber
-	heartbeat: 7, // Namboku teal
-	deferred: 3, // Tozai blue
-	event: 6, // Hanzomon violet
-};
-
-const STATUS_SYMBOL: Record<string, string> = {
-	running: "ON TIME",
-	claimed: "APPROACH",
-	pending: "SCHEDULED",
-	failed: "DELAYED",
-	completed: "ARRIVED",
-	cancelled: "CANCELLED",
-};
-
-const ranked = $derived(rankDepartures(tasks));
-
-function statusColor(s: string): string {
-	if (s === "failed") return "#FF6B5B";
-	if (s === "running" || s === "claimed") return "#8FE0A0";
-	return "#F5AA3B";
-}
-
-function countdown(iso: string | null): string {
-	if (!iso) return "—";
-	const diff = new Date(iso).getTime() - Date.now();
-	if (Math.abs(diff) < 5_000) return "T+00s";
-	if (diff > 0) {
-		const s = Math.floor(diff / 1000);
-		if (s < 60) return `T-${String(s).padStart(2, "0")}s`;
-		const m = Math.floor(s / 60);
-		if (m < 60) return `T-${String(m).padStart(2, "0")}m`;
-		return `T-${String(Math.floor(m / 60)).padStart(2, "0")}h`;
+	interface EnhancedTask {
+		id: string;
+		type: string;
+		displayName: string;
+		status: string;
+		schedule: string | null;
+		hostName: string | null;
+		next_run_at: string | null;
+		last_run_at: string | null;
 	}
-	const s = Math.floor(-diff / 1000);
-	if (s < 60) return `T+${String(s).padStart(2, "0")}s`;
-	const m = Math.floor(s / 60);
-	if (m < 60) return `T+${String(m).padStart(2, "0")}m`;
-	return `T+${String(Math.floor(m / 60)).padStart(2, "0")}h`;
-}
 
-function typeLetter(type: string): string {
-	return type[0]?.toUpperCase() ?? "T";
-}
+	interface Props {
+		tasks: EnhancedTask[];
+	}
+
+	let { tasks }: Props = $props();
+
+	// Task type to line index mapping (paper-signage palette)
+	const TYPE_TO_LINE: Record<string, number> = {
+		cron: 0, // Ginza amber
+		heartbeat: 7, // Namboku teal
+		deferred: 3, // Tozai blue
+		event: 6, // Hanzomon violet
+	};
+
+	const STATUS_SYMBOL: Record<string, string> = {
+		running: "ON TIME",
+		claimed: "APPROACH",
+		pending: "SCHEDULED",
+		failed: "DELAYED",
+		completed: "ARRIVED",
+		cancelled: "CANCELLED",
+	};
+
+	const ranked = $derived(rankDepartures(tasks));
+
+	function statusColor(s: string): string {
+		if (s === "failed") return "#FF6B5B";
+		if (s === "running" || s === "claimed") return "#8FE0A0";
+		return "#F5AA3B";
+	}
+
+	function countdown(iso: string | null): string {
+		if (!iso) return "—";
+		const diff = new Date(iso).getTime() - Date.now();
+		if (Math.abs(diff) < 5_000) return "T+00s";
+		if (diff > 0) {
+			const s = Math.floor(diff / 1000);
+			if (s < 60) return `T-${String(s).padStart(2, "0")}s`;
+			const m = Math.floor(s / 60);
+			if (m < 60) return `T-${String(m).padStart(2, "0")}m`;
+			return `T-${String(Math.floor(m / 60)).padStart(2, "0")}h`;
+		}
+		const s = Math.floor(-diff / 1000);
+		if (s < 60) return `T+${String(s).padStart(2, "0")}s`;
+		const m = Math.floor(s / 60);
+		if (m < 60) return `T+${String(m).padStart(2, "0")}m`;
+		return `T+${String(Math.floor(m / 60)).padStart(2, "0")}h`;
+	}
+
+	function typeLetter(type: string): string {
+		return type[0]?.toUpperCase() ?? "T";
+	}
 </script>
 
 <div class="board">
@@ -91,7 +91,11 @@ function typeLetter(type: string): string {
 		<div class="row" class:not-last={i < ranked.length - 1}>
 			<div class="depart mono">{countdown(t.next_run_at)}</div>
 			<div>
-				<LineBadge lineIndex={TYPE_TO_LINE[t.type] ?? 0} size="compact" label={typeLetter(t.type)} />
+				<LineBadge
+					lineIndex={TYPE_TO_LINE[t.type] ?? 0}
+					size="compact"
+					label={typeLetter(t.type)}
+				/>
 			</div>
 			<div class="destination">{t.displayName}</div>
 			<div class="schedule">{t.schedule ?? "—"}</div>
@@ -110,7 +114,8 @@ function typeLetter(type: string): string {
 		<div class="tape">
 			{#each Array(4) as _}
 				<span class="tape-segment">
-					· SERVICE ANNOUNCEMENT · TASKS LIVE · NEXT SHED WINDOW 03:00 JST · CROSS-HOST LATENCY NORMAL · BOUND SYSTEM
+					· SERVICE ANNOUNCEMENT · TASKS LIVE · NEXT SHED WINDOW 03:00 JST · CROSS-HOST LATENCY
+					NORMAL · BOUND SYSTEM
 				</span>
 			{/each}
 		</div>
@@ -174,8 +179,13 @@ function typeLetter(type: string): string {
 	}
 
 	@keyframes board-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.25; }
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.25;
+		}
 	}
 
 	/* Phone: the 6-column board is ~620px wide. Let it scroll horizontally
@@ -284,8 +294,12 @@ function typeLetter(type: string): string {
 	}
 
 	@keyframes tape-scroll {
-		from { transform: translateX(0); }
-		to { transform: translateX(-50%); }
+		from {
+			transform: translateX(0);
+		}
+		to {
+			transform: translateX(-50%);
+		}
 	}
 
 	@media (prefers-reduced-motion: reduce) {

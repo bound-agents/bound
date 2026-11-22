@@ -6,8 +6,7 @@ import type { Database } from "bun:sqlite";
  * not been soft-deleted.
  */
 export type TaskInfraBinding =
-	| { kind: "webhook"; label: string }
-	| { kind: "connector"; label: string };
+	{ kind: "webhook"; label: string } | { kind: "connector"; label: string };
 
 /**
  * Returns the live infrastructure binding that references the given task, or

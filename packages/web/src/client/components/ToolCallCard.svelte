@@ -1,149 +1,149 @@
 <script lang="ts">
-import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
-import { untrack } from "svelte";
-import { extractAuxInvokeRefs } from "../lib/aux-invoke-cards";
-import { renderMarkdown } from "../lib/markdown";
-import { mermaid } from "../lib/mermaid";
-import { extractScheduledTaskRefs } from "../lib/scheduled-task-cards";
-import { type ToolUseBlock, parseToolCallContent } from "../lib/tool-call-content";
-import AuxInvokeCard from "./AuxInvokeCard.svelte";
-import ReasoningBlock from "./ReasoningBlock.svelte";
-import TaskCard from "./TaskCard.svelte";
+	import { Check, ChevronDown, ChevronUp, Cog, Wrench } from "lucide-svelte";
+	import { untrack } from "svelte";
+	import { extractAuxInvokeRefs } from "../lib/aux-invoke-cards";
+	import { renderMarkdown } from "../lib/markdown";
+	import { mermaid } from "../lib/mermaid";
+	import { extractScheduledTaskRefs } from "../lib/scheduled-task-cards";
+	import { type ToolUseBlock, parseToolCallContent } from "../lib/tool-call-content";
+	import AuxInvokeCard from "./AuxInvokeCard.svelte";
+	import ReasoningBlock from "./ReasoningBlock.svelte";
+	import TaskCard from "./TaskCard.svelte";
 
-// Renders a run of consecutive tool_call messages as a single Agent turn.
-// Each message's `content` is a JSON-stringified ContentBlock[] (see
-// packages/llm/src/types.ts): typically [thinking?, text?, ...tool_use].
-// The persisted block order is the source of truth — we never scoop text
-// from adjacent assistant messages.
-//
-// Grouping rules (see MessageList for the message-level grouping):
-//   - The first message's reasoning + inline text render OUTSIDE the
-//     collapsible (they frame the run and are always visible).
-//   - A single "N tool calls" collapsible aggregates ALL tool_uses.
-//   - When expanded, the body interleaves per-source-message content:
-//     for the 2nd-and-later tool_call messages, their reasoning and
-//     inline text render inside the collapsible, right before their
-//     tool_use rows, so the thought that preceded each tool stays
-//     attached to the tool.
+	// Renders a run of consecutive tool_call messages as a single Agent turn.
+	// Each message's `content` is a JSON-stringified ContentBlock[] (see
+	// packages/llm/src/types.ts): typically [thinking?, text?, ...tool_use].
+	// The persisted block order is the source of truth — we never scoop text
+	// from adjacent assistant messages.
+	//
+	// Grouping rules (see MessageList for the message-level grouping):
+	//   - The first message's reasoning + inline text render OUTSIDE the
+	//     collapsible (they frame the run and are always visible).
+	//   - A single "N tool calls" collapsible aggregates ALL tool_uses.
+	//   - When expanded, the body interleaves per-source-message content:
+	//     for the 2nd-and-later tool_call messages, their reasoning and
+	//     inline text render inside the collapsible, right before their
+	//     tool_use rows, so the thought that preceded each tool stays
+	//     attached to the tool.
 
-interface ToolResultMsg {
-	content: string;
-	exit_code?: number | null;
-	tool_name?: string | null;
-	metadata?: string | Record<string, unknown> | null;
-}
-
-interface ToolMessage {
-	id?: string;
-	content: string;
-	model_id?: string | null;
-	created_at?: string;
-}
-
-interface Props {
-	messages: ToolMessage[];
-	resultsByToolUseId?: Record<string, ToolResultMsg>;
-	lineColor?: string;
-}
-
-const { messages, resultsByToolUseId = {}, lineColor = "var(--rule-soft)" }: Props = $props();
-
-const parsedMessages = $derived(messages.map((m) => parseToolCallContent(m.content)));
-const firstParsed = $derived(parsedMessages[0]);
-// Use the first non-null model_id in the group rather than messages[0].
-// When a turn starts with a system-injected synthetic tool_call (typically
-// retrieve_task), messages[0].model_id is null because the row was forged
-// by the scheduler, not produced by the agent. The model_id we want to
-// display in the AGENT header lives on the first real assistant-produced
-// tool_call message that follows.
-const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null);
-
-const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
-const totalCount = $derived(allToolUses.length);
-const scheduledTaskRefs = $derived(extractScheduledTaskRefs(allToolUses, resultsByToolUseId));
-const auxInvokeRefs = $derived(extractAuxInvokeRefs(allToolUses, resultsByToolUseId));
-
-const summaryNames = $derived.by(() => {
-	const names = allToolUses.map((t) => t.name);
-	const uniq: string[] = [];
-	for (const n of names) {
-		if (!uniq.includes(n)) uniq.push(n);
-		if (uniq.length > 3) break;
+	interface ToolResultMsg {
+		content: string;
+		exit_code?: number | null;
+		tool_name?: string | null;
+		metadata?: string | Record<string, unknown> | null;
 	}
-	return uniq;
-});
 
-// Render the first message's inline text via markdown up front. Each
-// subsequent message's inline text renders with a lazily-loaded render
-// cached by message index inside `innerRendered`.
-let renderedFirstText = $state("");
-
-$effect(() => {
-	const txt = firstParsed?.inlineText ?? "";
-	if (!txt) {
-		renderedFirstText = "";
-		return;
+	interface ToolMessage {
+		id?: string;
+		content: string;
+		model_id?: string | null;
+		created_at?: string;
 	}
-	renderMarkdown(txt)
-		.then((html) => {
-			renderedFirstText = html;
-		})
-		.catch((err: unknown) => {
-			console.error("[markdown] renderMarkdown failed:", err);
+
+	interface Props {
+		messages: ToolMessage[];
+		resultsByToolUseId?: Record<string, ToolResultMsg>;
+		lineColor?: string;
+	}
+
+	const { messages, resultsByToolUseId = {}, lineColor = "var(--rule-soft)" }: Props = $props();
+
+	const parsedMessages = $derived(messages.map((m) => parseToolCallContent(m.content)));
+	const firstParsed = $derived(parsedMessages[0]);
+	// Use the first non-null model_id in the group rather than messages[0].
+	// When a turn starts with a system-injected synthetic tool_call (typically
+	// retrieve_task), messages[0].model_id is null because the row was forged
+	// by the scheduler, not produced by the agent. The model_id we want to
+	// display in the AGENT header lives on the first real assistant-produced
+	// tool_call message that follows.
+	const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null);
+
+	const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
+	const totalCount = $derived(allToolUses.length);
+	const scheduledTaskRefs = $derived(extractScheduledTaskRefs(allToolUses, resultsByToolUseId));
+	const auxInvokeRefs = $derived(extractAuxInvokeRefs(allToolUses, resultsByToolUseId));
+
+	const summaryNames = $derived.by(() => {
+		const names = allToolUses.map((t) => t.name);
+		const uniq: string[] = [];
+		for (const n of names) {
+			if (!uniq.includes(n)) uniq.push(n);
+			if (uniq.length > 3) break;
+		}
+		return uniq;
+	});
+
+	// Render the first message's inline text via markdown up front. Each
+	// subsequent message's inline text renders with a lazily-loaded render
+	// cached by message index inside `innerRendered`.
+	let renderedFirstText = $state("");
+
+	$effect(() => {
+		const txt = firstParsed?.inlineText ?? "";
+		if (!txt) {
 			renderedFirstText = "";
-		});
-});
-
-let innerRendered = $state<Record<number, string>>({});
-
-$effect(() => {
-	// Only render inline text for 2nd-and-later messages; index 0 is
-	// handled by renderedFirstText above. Read innerRendered via
-	// untrack() so writing the freshly-rendered HTML back into it
-	// doesn't retrigger this effect — that used to produce an
-	// infinite update loop that tripped Svelte's scheduler and broke
-	// unrelated click handlers elsewhere on the page.
-	for (let i = 1; i < parsedMessages.length; i++) {
-		const txt = parsedMessages[i].inlineText;
-		if (!txt) continue;
-		const alreadyRendered = untrack(() => innerRendered[i]);
-		if (alreadyRendered) continue;
-		const idx = i;
+			return;
+		}
 		renderMarkdown(txt)
 			.then((html) => {
-				innerRendered = { ...innerRendered, [idx]: html };
+				renderedFirstText = html;
 			})
 			.catch((err: unknown) => {
 				console.error("[markdown] renderMarkdown failed:", err);
+				renderedFirstText = "";
 			});
+	});
+
+	let innerRendered = $state<Record<number, string>>({});
+
+	$effect(() => {
+		// Only render inline text for 2nd-and-later messages; index 0 is
+		// handled by renderedFirstText above. Read innerRendered via
+		// untrack() so writing the freshly-rendered HTML back into it
+		// doesn't retrigger this effect — that used to produce an
+		// infinite update loop that tripped Svelte's scheduler and broke
+		// unrelated click handlers elsewhere on the page.
+		for (let i = 1; i < parsedMessages.length; i++) {
+			const txt = parsedMessages[i].inlineText;
+			if (!txt) continue;
+			const alreadyRendered = untrack(() => innerRendered[i]);
+			if (alreadyRendered) continue;
+			const idx = i;
+			renderMarkdown(txt)
+				.then((html) => {
+					innerRendered = { ...innerRendered, [idx]: html };
+				})
+				.catch((err: unknown) => {
+					console.error("[markdown] renderMarkdown failed:", err);
+				});
+		}
+	});
+
+	let expanded = $state(false);
+	let expandedTools = $state(new Set<string>());
+
+	function toggleGroup(): void {
+		expanded = !expanded;
 	}
-});
 
-let expanded = $state(false);
-let expandedTools = $state(new Set<string>());
+	function toggleTool(id: string): void {
+		const next = new Set(expandedTools);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		expandedTools = next;
+	}
 
-function toggleGroup(): void {
-	expanded = !expanded;
-}
+	function formatInput(input: unknown): string {
+		if (input === null || input === undefined) return "";
+		if (typeof input === "string") return input;
+		return JSON.stringify(input, null, 2);
+	}
 
-function toggleTool(id: string): void {
-	const next = new Set(expandedTools);
-	if (next.has(id)) next.delete(id);
-	else next.add(id);
-	expandedTools = next;
-}
-
-function formatInput(input: unknown): string {
-	if (input === null || input === undefined) return "";
-	if (typeof input === "string") return input;
-	return JSON.stringify(input, null, 2);
-}
-
-function previewInput(input: unknown): string {
-	const str = formatInput(input).replace(/\s+/g, " ").trim();
-	if (str.length <= 80) return str;
-	return `${str.slice(0, 77)}…`;
-}
+	function previewInput(input: unknown): string {
+		const str = formatInput(input).replace(/\s+/g, " ").trim();
+		if (str.length <= 80) return str;
+		return `${str.slice(0, 77)}…`;
+	}
 </script>
 
 <div class="tool-call-card" style="--line-color: {lineColor}">
@@ -164,7 +164,9 @@ function previewInput(input: unknown): string {
 
 	{#if firstParsed?.inlineText}
 		{#if renderedFirstText}
-			<div class="inline-text md-content" use:mermaid={renderedFirstText}>{@html renderedFirstText}</div>
+			<div class="inline-text md-content" use:mermaid={renderedFirstText}>
+				{@html renderedFirstText}
+			</div>
 		{:else}
 			<div class="inline-text">{firstParsed.inlineText}</div>
 		{/if}
@@ -197,18 +199,14 @@ function previewInput(input: unknown): string {
 
 	{#if totalCount > 0}
 		<div class="tg">
-			<button
-				type="button"
-				class="tg-header"
-				onclick={toggleGroup}
-				aria-expanded={expanded}
-			>
+			<button type="button" class="tg-header" onclick={toggleGroup} aria-expanded={expanded}>
 				<span class="tg-chevron">
 					{#if expanded}<ChevronUp size={12} />{:else}<ChevronDown size={12} />{/if}
 				</span>
 				<span class="tg-count">{totalCount} tool call{totalCount === 1 ? "" : "s"}</span>
 				<span class="tg-summary">
-					{summaryNames.slice(0, 3).join(" · ")}{#if summaryNames.length === 3 && totalCount > 3} · +{totalCount - 3}{/if}
+					{summaryNames.slice(0, 3).join(" · ")}{#if summaryNames.length === 3 && totalCount > 3}
+						· +{totalCount - 3}{/if}
 				</span>
 			</button>
 
@@ -225,7 +223,9 @@ function previewInput(input: unknown): string {
 						{#if idx > 0 && p.inlineText}
 							{@const inner = innerRendered[idx]}
 							{#if inner}
-								<div class="inline-text md-content inner-inline" use:mermaid={inner}>{@html inner}</div>
+								<div class="inline-text md-content inner-inline" use:mermaid={inner}>
+									{@html inner}
+								</div>
 							{:else}
 								<div class="inline-text inner-inline">{p.inlineText}</div>
 							{/if}
@@ -235,11 +235,7 @@ function previewInput(input: unknown): string {
 							{@const isErr = result && result.exit_code != null && result.exit_code !== 0}
 							{@const isOpen = expandedTools.has(tu.id)}
 							<div class="tool-row" class:tool-row-expanded={isOpen}>
-								<button
-									type="button"
-									class="tool-row-header"
-									onclick={() => toggleTool(tu.id)}
-								>
+								<button type="button" class="tool-row-header" onclick={() => toggleTool(tu.id)}>
 									<span class="tr-icon"><Wrench size={12} /></span>
 									<span class="tr-name">{tu.name}</span>
 									{#if !isOpen}

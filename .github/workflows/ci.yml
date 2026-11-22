@@ -28,6 +28,9 @@ jobs:
       - name: Biome check
         run: bunx @biomejs/biome check --reporter=github .
 
+      - name: bun fmt
+        run: bun fmt --no-script --check .
+
       - name: Validate outbox invariants
         run: bun run scripts/validate-outbox-invariant.ts
 
@@ -49,7 +52,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: tsc (all packages)
+      - name: bun check (all packages)
         run: bun run typecheck
 
   coverage:

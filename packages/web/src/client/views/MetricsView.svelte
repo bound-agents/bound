@@ -1,133 +1,133 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
-import type { MetricsResponse } from "../../server/routes/metrics";
-import CacheHitTimeline from "../components/CacheHitTimeline.svelte";
-import CostTimeline from "../components/CostTimeline.svelte";
-import DataTable from "../components/DataTable.svelte";
-import DateRangeBar from "../components/DateRangeBar.svelte";
-import LatencyBarChart from "../components/LatencyBarChart.svelte";
-import MetroCard from "../components/MetroCard.svelte";
-import MiniMetricChart from "../components/MiniMetricChart.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import TokenBarChart from "../components/TokenBarChart.svelte";
-import { formatRelativeTime } from "../lib/format-time";
-import { MetricsStore } from "../lib/metrics-store";
+	import { onDestroy, onMount } from "svelte";
+	import type { MetricsResponse } from "../../server/routes/metrics";
+	import CacheHitTimeline from "../components/CacheHitTimeline.svelte";
+	import CostTimeline from "../components/CostTimeline.svelte";
+	import DataTable from "../components/DataTable.svelte";
+	import DateRangeBar from "../components/DateRangeBar.svelte";
+	import LatencyBarChart from "../components/LatencyBarChart.svelte";
+	import MetroCard from "../components/MetroCard.svelte";
+	import MiniMetricChart from "../components/MiniMetricChart.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import TokenBarChart from "../components/TokenBarChart.svelte";
+	import { formatRelativeTime } from "../lib/format-time";
+	import { MetricsStore } from "../lib/metrics-store";
 
-const store = new MetricsStore();
+	const store = new MetricsStore();
 
-let from = $state(new Date(Date.now() - 24 * 3600_000).toISOString());
-let to = $state(new Date().toISOString());
+	let from = $state(new Date(Date.now() - 24 * 3600_000).toISOString());
+	let to = $state(new Date().toISOString());
 
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-// Svelte $state bindings synced after each load()
-let data: MetricsResponse | null = $state(null);
-let initialLoading = $state(false);
-let refreshing = $state(false);
-let error: string | null = $state(null);
+	// Svelte $state bindings synced after each load()
+	let data: MetricsResponse | null = $state(null);
+	let initialLoading = $state(false);
+	let refreshing = $state(false);
+	let error: string | null = $state(null);
 
-function syncState(): void {
-	data = store.state.data;
-	initialLoading = store.state.initialLoading;
-	refreshing = store.state.refreshing;
-	error = store.state.error;
-}
+	function syncState(): void {
+		data = store.state.data;
+		initialLoading = store.state.initialLoading;
+		refreshing = store.state.refreshing;
+		error = store.state.error;
+	}
 
-// Computed properties — totals are now sourced directly from
-// `data.tokens.totals` (the metrics route aggregates all four token classes
-// server-side). The headline number sums the four token classes so cache
-// traffic is not hidden from the operator on cache-heavy workloads.
-const tokensIn = $derived(data?.tokens.totals.tokens_in ?? 0);
-const tokensOut = $derived(data?.tokens.totals.tokens_out ?? 0);
-const totalCacheRead = $derived(data?.tokens.totals.cache_read ?? 0);
-const totalCacheWrite = $derived(data?.tokens.totals.cache_write ?? 0);
-const totalTokens = $derived(tokensIn + tokensOut + totalCacheRead + totalCacheWrite);
+	// Computed properties — totals are now sourced directly from
+	// `data.tokens.totals` (the metrics route aggregates all four token classes
+	// server-side). The headline number sums the four token classes so cache
+	// traffic is not hidden from the operator on cache-heavy workloads.
+	const tokensIn = $derived(data?.tokens.totals.tokens_in ?? 0);
+	const tokensOut = $derived(data?.tokens.totals.tokens_out ?? 0);
+	const totalCacheRead = $derived(data?.tokens.totals.cache_read ?? 0);
+	const totalCacheWrite = $derived(data?.tokens.totals.cache_write ?? 0);
+	const totalTokens = $derived(tokensIn + tokensOut + totalCacheRead + totalCacheWrite);
 
-async function loadMetrics(): Promise<void> {
-	// store.load() synchronously sets refreshing/initialLoading before awaiting fetch.
-	// We start it, sync the in-flight flags, then await completion and sync the result.
-	const promise = store.load(from, to);
-	syncState();
-	await promise;
-	syncState();
-}
+	async function loadMetrics(): Promise<void> {
+		// store.load() synchronously sets refreshing/initialLoading before awaiting fetch.
+		// We start it, sync the in-flight flags, then await completion and sync the result.
+		const promise = store.load(from, to);
+		syncState();
+		await promise;
+		syncState();
+	}
 
-function handleRangeChange(newFrom: string, newTo: string): void {
-	from = newFrom;
-	to = newTo;
-	loadMetrics();
-}
+	function handleRangeChange(newFrom: string, newTo: string): void {
+		from = newFrom;
+		to = newTo;
+		loadMetrics();
+	}
 
-function dateRangeIncludesNow(): boolean {
-	const now = new Date();
-	const toTime = new Date(to).getTime();
-	// Consider "now" included if the range ends within 1 minute of now
-	return toTime > now.getTime() - 60000;
-}
+	function dateRangeIncludesNow(): boolean {
+		const now = new Date();
+		const toTime = new Date(to).getTime();
+		// Consider "now" included if the range ends within 1 minute of now
+		return toTime > now.getTime() - 60000;
+	}
 
-onMount(() => {
-	loadMetrics();
+	onMount(() => {
+		loadMetrics();
 
-	// Only poll when range includes "now"
-	pollInterval = setInterval(() => {
-		if (dateRangeIncludesNow()) {
-			// Refresh 'to' to current time before fetching
-			to = new Date().toISOString();
-			loadMetrics();
-		}
-	}, 30000);
-});
+		// Only poll when range includes "now"
+		pollInterval = setInterval(() => {
+			if (dateRangeIncludesNow()) {
+				// Refresh 'to' to current time before fetching
+				to = new Date().toISOString();
+				loadMetrics();
+			}
+		}, 30000);
+	});
 
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+	});
 
-// Column definitions for relay cycles table. Rows stay RAW (numbers,
-// booleans, ISO timestamps) so sortable columns sort on real values; the
-// per-column `format` projects them for display only.
-const relayCycleColumns = [
-	{ key: "peer_site_id", label: "Peer", width: "1fr", mono: true, sortable: true },
-	{ key: "direction", label: "Direction", width: "100px", sortable: true },
-	{ key: "kind", label: "Kind", width: "100px", sortable: true },
-	{
-		key: "latency_ms",
-		label: "Latency",
-		width: "100px",
-		mono: true,
-		sortable: true,
-		format: (v: unknown) => (v !== null && v !== undefined ? `${v}ms` : "—"),
-	},
-	{
-		key: "success",
-		label: "Status",
-		width: "80px",
-		sortable: true,
-		format: (v: unknown) => (v ? "OK" : "FAIL"),
-	},
-	{
-		key: "created_at",
-		label: "Time",
-		width: "140px",
-		sortable: true,
-		format: (v: unknown) => formatRelativeTime(String(v)),
-	},
-];
+	// Column definitions for relay cycles table. Rows stay RAW (numbers,
+	// booleans, ISO timestamps) so sortable columns sort on real values; the
+	// per-column `format` projects them for display only.
+	const relayCycleColumns = [
+		{ key: "peer_site_id", label: "Peer", width: "1fr", mono: true, sortable: true },
+		{ key: "direction", label: "Direction", width: "100px", sortable: true },
+		{ key: "kind", label: "Kind", width: "100px", sortable: true },
+		{
+			key: "latency_ms",
+			label: "Latency",
+			width: "100px",
+			mono: true,
+			sortable: true,
+			format: (v: unknown) => (v !== null && v !== undefined ? `${v}ms` : "—"),
+		},
+		{
+			key: "success",
+			label: "Status",
+			width: "80px",
+			sortable: true,
+			format: (v: unknown) => (v ? "OK" : "FAIL"),
+		},
+		{
+			key: "created_at",
+			label: "Time",
+			width: "140px",
+			sortable: true,
+			format: (v: unknown) => formatRelativeTime(String(v)),
+		},
+	];
 
-const relayCycleRows = $derived(
-	(data?.relay.recentCycles ?? []) as unknown as Record<string, unknown>[],
-);
+	const relayCycleRows = $derived(
+		(data?.relay.recentCycles ?? []) as unknown as Record<string, unknown>[],
+	);
 
-// Row accent function for relay cycles
-function relayRowAccent(row: Record<string, unknown>): string | null {
-	if (row.success === false) return "var(--err)";
-	if (row.expired === true) return "var(--warn)";
-	return null;
-}
+	// Row accent function for relay cycles
+	function relayRowAccent(row: Record<string, unknown>): string | null {
+		if (row.success === false) return "var(--err)";
+		if (row.expired === true) return "var(--warn)";
+		return null;
+	}
 
-// Format helpers for mini-chart axis/tooltip labels
-const formatPctAxis = (v: number): string => `${(v * 100).toFixed(0)}%`;
-const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
+	// Format helpers for mini-chart axis/tooltip labels
+	const formatPctAxis = (v: number): string => `${(v * 100).toFixed(0)}%`;
+	const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 </script>
 
 <Page>
@@ -187,7 +187,8 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 									</div>
 									<div class="token-row">
 										<span class="token-row-label token-row-cache-write">⟳ Cache write</span>
-										<span class="token-row-value mono tnum">{totalCacheWrite.toLocaleString()}</span>
+										<span class="token-row-value mono tnum">{totalCacheWrite.toLocaleString()}</span
+										>
 									</div>
 								</div>
 							{/snippet}
@@ -212,7 +213,11 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 					<CostTimeline data={data.tokens.costByModelTimeline} />
 				{/if}
 
-				<SectionHeader number={2} subtitle="Local-only — reflects this node's observations" title="Relay Performance" />
+				<SectionHeader
+					number={2}
+					subtitle="Local-only — reflects this node's observations"
+					title="Relay Performance"
+				/>
 
 				{#if data.relay.totals.total_cycles === 0}
 					<div class="state">
@@ -220,10 +225,18 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 					</div>
 				{:else}
 					<div class="metrics-cards">
-						<MetroCard accentColor={data.relay.totals.success_rate >= 0.95 ? "var(--ok)" : data.relay.totals.success_rate >= 0.8 ? "var(--warn)" : "var(--err)"}>
+						<MetroCard
+							accentColor={data.relay.totals.success_rate >= 0.95
+								? "var(--ok)"
+								: data.relay.totals.success_rate >= 0.8
+									? "var(--warn)"
+									: "var(--err)"}
+						>
 							{#snippet children()}
 								<span class="metric-label">Success Rate</span>
-								<span class="metric-value">{(data.relay.totals.success_rate * 100).toFixed(1)}%</span>
+								<span class="metric-value"
+									>{(data.relay.totals.success_rate * 100).toFixed(1)}%</span
+								>
 							{/snippet}
 						</MetroCard>
 
@@ -234,7 +247,9 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 							{/snippet}
 						</MetroCard>
 
-						<MetroCard accentColor={data.relay.totals.expired_count > 0 ? "var(--warn)" : "var(--ok)"}>
+						<MetroCard
+							accentColor={data.relay.totals.expired_count > 0 ? "var(--warn)" : "var(--ok)"}
+						>
 							{#snippet children()}
 								<span class="metric-label">Expired Count</span>
 								<span class="metric-value">{data.relay.totals.expired_count}</span>
@@ -248,7 +263,8 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 					     window so the table isn't mistaken for the full range. -->
 					<div class="relay-table-caption">
 						{#if data.relay.totals.total_cycles > relayCycleRows.length}
-							Latest {relayCycleRows.length} of {data.relay.totals.total_cycles.toLocaleString()} cycles in range
+							Latest {relayCycleRows.length} of {data.relay.totals.total_cycles.toLocaleString()} cycles
+							in range
 						{:else}
 							{relayCycleRows.length} cycle{relayCycleRows.length === 1 ? "" : "s"} in range
 						{/if}
@@ -263,7 +279,11 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 					</div>
 				{/if}
 
-				<SectionHeader number={3} subtitle="Context Pipeline Performance" title="Context Assembly" />
+				<SectionHeader
+					number={3}
+					subtitle="Context Pipeline Performance"
+					title="Context Assembly"
+				/>
 
 				{#if data.context.totals.total_turns_with_debug === 0}
 					<div class="state">
@@ -280,12 +300,18 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 						>
 							{#snippet children()}
 								<span class="metric-label">Cache Hit Rate</span>
-								<span class="metric-value">{(data.context.totals.last_cache_hit_rate * 100).toFixed(1)}%</span>
+								<span class="metric-value"
+									>{(data.context.totals.last_cache_hit_rate * 100).toFixed(1)}%</span
+								>
 								<span class="metric-unit">last turn</span>
 							{/snippet}
 						</MetroCard>
 
-						<MetroCard accentColor={data.context.totals.budget_pressure_count === 0 ? "var(--ok)" : "var(--warn)"}>
+						<MetroCard
+							accentColor={data.context.totals.budget_pressure_count === 0
+								? "var(--ok)"
+								: "var(--warn)"}
+						>
 							{#snippet children()}
 								<span class="metric-label">Budget Pressure</span>
 								<span class="metric-value">{data.context.totals.budget_pressure_count}</span>
@@ -296,7 +322,9 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 						<MetroCard accentColor="var(--line-3)">
 							{#snippet children()}
 								<span class="metric-label">Avg Truncation</span>
-								<span class="metric-value">{data.context.totals.avg_truncated_messages.toFixed(1)}</span>
+								<span class="metric-value"
+									>{data.context.totals.avg_truncated_messages.toFixed(1)}</span
+								>
 								<span class="metric-unit">msgs</span>
 							{/snippet}
 						</MetroCard>
@@ -304,7 +332,9 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 						<MetroCard accentColor={totalCacheRead > 0 ? "var(--ok)" : "var(--idle)"}>
 							{#snippet children()}
 								<span class="metric-label">Cache Tokens</span>
-								<span class="metric-value">{(totalCacheRead + totalCacheWrite).toLocaleString()}</span>
+								<span class="metric-value"
+									>{(totalCacheRead + totalCacheWrite).toLocaleString()}</span
+								>
 								<div class="token-breakdown">
 									<div class="token-row">
 										<span class="token-row-label token-row-cache-read">↑ Read</span>
@@ -312,7 +342,8 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 									</div>
 									<div class="token-row">
 										<span class="token-row-label token-row-cache-write">↓ Write</span>
-										<span class="token-row-value mono tnum">{totalCacheWrite.toLocaleString()}</span>
+										<span class="token-row-value mono tnum">{totalCacheWrite.toLocaleString()}</span
+										>
 									</div>
 								</div>
 							{/snippet}
@@ -392,7 +423,6 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 		font-weight: 600;
 		color: var(--ink);
 	}
-
 
 	.metric-unit {
 		display: block;
@@ -493,8 +523,13 @@ const formatPctTooltip = (v: number): string => `${(v * 100).toFixed(1)}%`;
 	}
 
 	@keyframes pulse {
-		0%, 100% { opacity: 0.4; }
-		50% { opacity: 1; }
+		0%,
+		100% {
+			opacity: 0.4;
+		}
+		50% {
+			opacity: 1;
+		}
 	}
 
 	.refresh-error {

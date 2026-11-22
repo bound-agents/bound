@@ -212,8 +212,7 @@ describe("toModelMessages — property tests", () => {
 				const survivingTool = combined.find((m) => m.role === "tool");
 				if (!survivingTool) return false;
 				const opts = survivingTool.providerOptions as
-					| Record<string, Record<string, unknown>>
-					| undefined;
+					Record<string, Record<string, unknown>> | undefined;
 				return opts?.anthropic?.cacheControl !== undefined;
 			}),
 			{ numRuns: 20 },
@@ -283,8 +282,7 @@ describe("toModelMessages — property tests", () => {
 		const survivingTool = combined.find((m) => m.role === "tool");
 		if (!survivingTool) throw new Error("no tool message survived combining");
 		const opts = survivingTool.providerOptions as
-			| Record<string, Record<string, unknown>>
-			| undefined;
+			Record<string, Record<string, unknown>> | undefined;
 		if (!opts?.anthropic?.cacheControl) {
 			throw new Error(
 				"cachePoint lost across AI SDK tool-message combination: " +

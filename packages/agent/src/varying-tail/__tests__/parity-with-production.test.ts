@@ -336,38 +336,30 @@ function renderProductionVaryingConcat(inputs: VolatileVaryingInputs): string {
 
 	// Live State.
 	const liveInput: LiveStateInput = {
-		crossThreadEntries: inputs.liveState.crossThreadEntries.map(
-			(e): CrossThreadDigestEntry => ({
-				threadId: e.threadId,
-				title: e.title,
-				messageCount: e.messageCount,
-				lastUpdatedAt: e.lastUpdatedAt,
-			}),
-		),
-		taskEntries: inputs.liveState.taskEntries.map(
-			(t): LiveStateTaskEntry => ({
-				taskId: t.taskId,
-				taskType: t.taskType,
-				runCount: t.runCount,
-				lastRunAt: t.lastRunAt,
-				status: t.status,
-			}),
-		),
-		fileEntries: inputs.liveState.fileEntries.map(
-			(f): LiveStateFileEntry => ({
-				path: f.path,
-				threadTitle: f.threadTitle,
-				host: f.host,
-				isLocal: f.isLocal,
-			}),
-		),
-		advisories: inputs.liveState.advisories.map(
-			(a): LiveStateAdvisory => ({
-				advisoryId: a.advisoryId,
-				title: a.title,
-				appliedAt: a.appliedAt,
-			}),
-		),
+		crossThreadEntries: inputs.liveState.crossThreadEntries.map((e): CrossThreadDigestEntry => ({
+			threadId: e.threadId,
+			title: e.title,
+			messageCount: e.messageCount,
+			lastUpdatedAt: e.lastUpdatedAt,
+		})),
+		taskEntries: inputs.liveState.taskEntries.map((t): LiveStateTaskEntry => ({
+			taskId: t.taskId,
+			taskType: t.taskType,
+			runCount: t.runCount,
+			lastRunAt: t.lastRunAt,
+			status: t.status,
+		})),
+		fileEntries: inputs.liveState.fileEntries.map((f): LiveStateFileEntry => ({
+			path: f.path,
+			threadTitle: f.threadTitle,
+			host: f.host,
+			isLocal: f.isLocal,
+		})),
+		advisories: inputs.liveState.advisories.map((a): LiveStateAdvisory => ({
+			advisoryId: a.advisoryId,
+			title: a.title,
+			appliedAt: a.appliedAt,
+		})),
 		synthesisBacklogCount: inputs.liveState.synthesisBacklogCount,
 		budgetPressure: inputs.budgetPressure,
 		nowMs: inputs.nowMs,

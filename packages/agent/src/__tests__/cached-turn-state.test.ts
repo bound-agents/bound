@@ -34,11 +34,9 @@ describe("computeToolFingerprint", () => {
 				{ minLength: 1, selector: (tool) => tool.name, maxLength: 8 },
 			)
 			.map((values) =>
-				values.map(
-					({ name, description, parameters }): ToolDefinition => ({
-						function: { name, description, parameters },
-					}),
-				),
+				values.map(({ name, description, parameters }): ToolDefinition => ({
+					function: { name, description, parameters },
+				})),
 			);
 
 		fc.assert(

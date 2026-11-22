@@ -1,131 +1,134 @@
 <script lang="ts">
-import { scaleLinear, scaleTime } from "d3-scale";
-import {
-	type BucketPoint,
-	formatBucketAxisLabel,
-	formatBucketTooltipLabel,
-	parseBucket,
-} from "../lib/chart-time";
-import { observeWidth } from "../lib/responsive-svg";
-import ChartTooltip from "./ChartTooltip.svelte";
+	import { scaleLinear, scaleTime } from "d3-scale";
+	import {
+		type BucketPoint,
+		formatBucketAxisLabel,
+		formatBucketTooltipLabel,
+		parseBucket,
+	} from "../lib/chart-time";
+	import { observeWidth } from "../lib/responsive-svg";
+	import ChartTooltip from "./ChartTooltip.svelte";
 
-interface Props {
-	data: Array<{
-		date: string;
-		cache_hit_rate: number;
-	}>;
-}
-
-let { data }: Props = $props();
-
-// Tooltip state
-let tooltipVisible = $state(false);
-let tooltipX = $state(0);
-let tooltipY = $state(0);
-let tooltipLines = $state<string[]>([]);
-let containerEl: HTMLDivElement | undefined = $state(undefined);
-
-// Track rendered width — keeps text at literal pixel sizes regardless of
-// container width (see responsive-svg.ts for rationale).
-let measuredWidth = $state(600);
-
-// Parse bucket strings (UTC-aware — see chart-time.ts) and sort by time
-const parsedData = $derived.by(() => {
-	return data
-		.map((d) => {
-			const bucket = parseBucket(d.date);
-			return { ...d, bucket, dateObj: bucket.dateObj };
-		})
-		.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
-});
-
-// Dimensions
-const width = $derived(Math.max(measuredWidth, 320));
-const height = 200;
-const padding = { top: 16, right: 16, bottom: 32, left: 48 };
-const innerWidth = $derived(width - padding.left - padding.right);
-const innerHeight = height - padding.top - padding.bottom;
-
-// Scales
-const xScale = $derived.by(() => {
-	const extent = [
-		parsedData[0]?.dateObj ?? new Date(),
-		parsedData[parsedData.length - 1]?.dateObj ?? new Date(),
-	];
-	return scaleTime().domain(extent).range([0, innerWidth]);
-});
-
-const yScale = $derived.by(() => {
-	return scaleLinear().domain([0, 1]).range([innerHeight, 0]);
-});
-
-// Format percentage
-const formatPercentage = (value: number): string => {
-	return `${(value * 100).toFixed(1)}%`;
-};
-
-// Format percentage for axis (no decimal)
-const formatPercentageAxis = (value: number): string => {
-	return `${(value * 100).toFixed(0)}%`;
-};
-
-const pathData = $derived.by(() => {
-	return parsedData
-		.map((d, i) => {
-			const x = padding.left + xScale(d.dateObj);
-			const y = padding.top + yScale(d.cache_hit_rate);
-			return `${i === 0 ? "M" : "L"}${x},${y}`;
-		})
-		.join(" ");
-});
-
-const areaData = $derived.by(() => {
-	if (parsedData.length === 0) return "";
-
-	let path = pathData;
-	const lastData = parsedData[parsedData.length - 1];
-	if (lastData) {
-		const lastX = padding.left + xScale(lastData.dateObj);
-		path += ` L${lastX},${padding.top + innerHeight}`;
+	interface Props {
+		data: Array<{
+			date: string;
+			cache_hit_rate: number;
+		}>;
 	}
-	const firstData = parsedData[0];
-	if (firstData) {
-		const firstX = padding.left + xScale(firstData.dateObj);
-		path += ` L${firstX},${padding.top + innerHeight} Z`;
+
+	let { data }: Props = $props();
+
+	// Tooltip state
+	let tooltipVisible = $state(false);
+	let tooltipX = $state(0);
+	let tooltipY = $state(0);
+	let tooltipLines = $state<string[]>([]);
+	let containerEl: HTMLDivElement | undefined = $state(undefined);
+
+	// Track rendered width — keeps text at literal pixel sizes regardless of
+	// container width (see responsive-svg.ts for rationale).
+	let measuredWidth = $state(600);
+
+	// Parse bucket strings (UTC-aware — see chart-time.ts) and sort by time
+	const parsedData = $derived.by(() => {
+		return data
+			.map((d) => {
+				const bucket = parseBucket(d.date);
+				return { ...d, bucket, dateObj: bucket.dateObj };
+			})
+			.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
+	});
+
+	// Dimensions
+	const width = $derived(Math.max(measuredWidth, 320));
+	const height = 200;
+	const padding = { top: 16, right: 16, bottom: 32, left: 48 };
+	const innerWidth = $derived(width - padding.left - padding.right);
+	const innerHeight = height - padding.top - padding.bottom;
+
+	// Scales
+	const xScale = $derived.by(() => {
+		const extent = [
+			parsedData[0]?.dateObj ?? new Date(),
+			parsedData[parsedData.length - 1]?.dateObj ?? new Date(),
+		];
+		return scaleTime().domain(extent).range([0, innerWidth]);
+	});
+
+	const yScale = $derived.by(() => {
+		return scaleLinear().domain([0, 1]).range([innerHeight, 0]);
+	});
+
+	// Format percentage
+	const formatPercentage = (value: number): string => {
+		return `${(value * 100).toFixed(1)}%`;
+	};
+
+	// Format percentage for axis (no decimal)
+	const formatPercentageAxis = (value: number): string => {
+		return `${(value * 100).toFixed(0)}%`;
+	};
+
+	const pathData = $derived.by(() => {
+		return parsedData
+			.map((d, i) => {
+				const x = padding.left + xScale(d.dateObj);
+				const y = padding.top + yScale(d.cache_hit_rate);
+				return `${i === 0 ? "M" : "L"}${x},${y}`;
+			})
+			.join(" ");
+	});
+
+	const areaData = $derived.by(() => {
+		if (parsedData.length === 0) return "";
+
+		let path = pathData;
+		const lastData = parsedData[parsedData.length - 1];
+		if (lastData) {
+			const lastX = padding.left + xScale(lastData.dateObj);
+			path += ` L${lastX},${padding.top + innerHeight}`;
+		}
+		const firstData = parsedData[0];
+		if (firstData) {
+			const firstX = padding.left + xScale(firstData.dateObj);
+			path += ` L${firstX},${padding.top + innerHeight} Z`;
+		}
+		return path;
+	});
+
+	const yTicks = [0, 0.25, 0.5, 0.75, 1];
+
+	const xTicks = $derived.by(() => {
+		if (parsedData.length <= 6) {
+			return parsedData;
+		}
+		const step = Math.ceil(parsedData.length / 6);
+		return parsedData.filter((_, i) => i % step === 0);
+	});
+
+	// A timeline of all-zero hit rates is still data — an operator whose caching
+	// just broke needs to SEE the flat 0% line, not a "No cache data" placeholder.
+	// Only an empty timeline is genuinely no data.
+	const hasData = $derived(parsedData.length > 0);
+
+	function showTooltip(
+		event: MouseEvent,
+		d: { bucket: BucketPoint; cache_hit_rate: number },
+	): void {
+		if (!containerEl) return;
+		const rect = containerEl.getBoundingClientRect();
+		tooltipX = event.clientX - rect.left;
+		tooltipY = event.clientY - rect.top;
+		tooltipLines = [
+			formatBucketTooltipLabel(d.bucket),
+			`Cache hit: ${formatPercentage(d.cache_hit_rate)}`,
+		];
+		tooltipVisible = true;
 	}
-	return path;
-});
 
-const yTicks = [0, 0.25, 0.5, 0.75, 1];
-
-const xTicks = $derived.by(() => {
-	if (parsedData.length <= 6) {
-		return parsedData;
+	function hideTooltip(): void {
+		tooltipVisible = false;
 	}
-	const step = Math.ceil(parsedData.length / 6);
-	return parsedData.filter((_, i) => i % step === 0);
-});
-
-// A timeline of all-zero hit rates is still data — an operator whose caching
-// just broke needs to SEE the flat 0% line, not a "No cache data" placeholder.
-// Only an empty timeline is genuinely no data.
-const hasData = $derived(parsedData.length > 0);
-
-function showTooltip(event: MouseEvent, d: { bucket: BucketPoint; cache_hit_rate: number }): void {
-	if (!containerEl) return;
-	const rect = containerEl.getBoundingClientRect();
-	tooltipX = event.clientX - rect.left;
-	tooltipY = event.clientY - rect.top;
-	tooltipLines = [
-		formatBucketTooltipLabel(d.bucket),
-		`Cache hit: ${formatPercentage(d.cache_hit_rate)}`,
-	];
-	tooltipVisible = true;
-}
-
-function hideTooltip(): void {
-	tooltipVisible = false;
-}
 </script>
 
 <div
@@ -219,8 +222,22 @@ function hideTooltip(): void {
 		{/if}
 
 		<!-- Axes -->
-		<line x1={padding.left} y1={padding.top} x2={padding.left} y2={height - padding.bottom} stroke="var(--ink)" stroke-width="1" />
-		<line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="var(--ink)" stroke-width="1" />
+		<line
+			x1={padding.left}
+			y1={padding.top}
+			x2={padding.left}
+			y2={height - padding.bottom}
+			stroke="var(--ink)"
+			stroke-width="1"
+		/>
+		<line
+			x1={padding.left}
+			y1={height - padding.bottom}
+			x2={width - padding.right}
+			y2={height - padding.bottom}
+			stroke="var(--ink)"
+			stroke-width="1"
+		/>
 	</svg>
 
 	<ChartTooltip visible={tooltipVisible} x={tooltipX} y={tooltipY} lines={tooltipLines} />

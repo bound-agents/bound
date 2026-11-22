@@ -52,10 +52,7 @@ export const MCP_APPS_HOST_CAPABILITIES = {
  * `@modelcontextprotocol/client` `Client` satisfies this; tests inject a fake.
  */
 export interface McpClientLike {
-	callTool(params: {
-		name: string;
-		arguments?: Record<string, unknown>;
-	}): Promise<CallToolResult>;
+	callTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<CallToolResult>;
 	getServerVersion?(): { name?: string; version?: string } | undefined;
 }
 

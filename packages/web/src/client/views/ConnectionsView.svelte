@@ -1,52 +1,52 @@
 <script lang="ts">
-import ConnectorBindingsView from "./ConnectorBindingsView.svelte";
-import McpServersView from "./McpServersView.svelte";
-import RssFeedsView from "./RssFeedsView.svelte";
-import SkillsView from "./SkillsView.svelte";
-import WebhookView from "./WebhookView.svelte";
+	import ConnectorBindingsView from "./ConnectorBindingsView.svelte";
+	import McpServersView from "./McpServersView.svelte";
+	import RssFeedsView from "./RssFeedsView.svelte";
+	import SkillsView from "./SkillsView.svelte";
+	import WebhookView from "./WebhookView.svelte";
 
-export type ConnectionsSection = "webhooks" | "rss" | "connectors" | "skills" | "mcp";
+	export type ConnectionsSection = "webhooks" | "rss" | "connectors" | "skills" | "mcp";
 
-interface Props {
-	section: ConnectionsSection;
-}
+	interface Props {
+		section: ConnectionsSection;
+	}
 
-let { section }: Props = $props();
+	let { section }: Props = $props();
 
-const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: string }[] = [
-	{
-		id: "webhooks",
-		label: "Webhooks",
-		desc: "Automated messaging endpoints",
-		hash: "#/connections/webhooks",
-	},
+	const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: string }[] = [
+		{
+			id: "webhooks",
+			label: "Webhooks",
+			desc: "Automated messaging endpoints",
+			hash: "#/connections/webhooks",
+		},
 
-	{
-		id: "rss",
-		label: "RSS feeds",
-		desc: "Polled feed subscriptions",
-		hash: "#/connections/rss",
-	},
+		{
+			id: "rss",
+			label: "RSS feeds",
+			desc: "Polled feed subscriptions",
+			hash: "#/connections/rss",
+		},
 
-	{
-		id: "connectors",
-		label: "Connector bindings",
-		desc: "Platform event subscriptions",
-		hash: "#/connections/connectors",
-	},
-	{
-		id: "skills",
-		label: "Skills",
-		desc: "Reusable instruction sets",
-		hash: "#/connections/skills",
-	},
-	{
-		id: "mcp",
-		label: "MCP Servers",
-		desc: "Cluster tool inventory",
-		hash: "#/connections/mcp",
-	},
-];
+		{
+			id: "connectors",
+			label: "Connector bindings",
+			desc: "Platform event subscriptions",
+			hash: "#/connections/connectors",
+		},
+		{
+			id: "skills",
+			label: "Skills",
+			desc: "Reusable instruction sets",
+			hash: "#/connections/skills",
+		},
+		{
+			id: "mcp",
+			label: "MCP Servers",
+			desc: "Cluster tool inventory",
+			hash: "#/connections/mcp",
+		},
+	];
 </script>
 
 <div class="connections">
@@ -55,12 +55,7 @@ const SECTIONS: { id: ConnectionsSection; label: string; desc: string; hash: str
 		<nav>
 			{#each SECTIONS as s}
 				{@const active = section === s.id}
-				<a
-					class="sub-link"
-					class:active
-					href={s.hash}
-					aria-current={active ? "page" : undefined}
-				>
+				<a class="sub-link" class:active href={s.hash} aria-current={active ? "page" : undefined}>
 					<span class="sub-label">{s.label}</span>
 					<span class="sub-desc">{s.desc}</span>
 				</a>

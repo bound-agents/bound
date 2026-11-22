@@ -1,166 +1,162 @@
 <script lang="ts">
-import type { ClusterModelInfo, ConnectorBindingEntry } from "@bound/client";
-import { onMount } from "svelte";
-import Btn from "../components/Btn.svelte";
-import DataTable from "../components/DataTable.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import TaskCard from "../components/TaskCard.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import { client } from "../lib/bound";
+	import type { ClusterModelInfo, ConnectorBindingEntry } from "@bound/client";
+	import { onMount } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import DataTable from "../components/DataTable.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import TaskCard from "../components/TaskCard.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import { client } from "../lib/bound";
 
-let bindings: ConnectorBindingEntry[] = $state([]);
-let loading = $state(true);
-let error = $state<string | null>(null);
-let view = $state<"list" | "detail">("list");
-let selectedBinding = $state<ConnectorBindingEntry | null>(null);
-let actionInProgress = $state<string | null>(null);
-let detailError = $state<string | null>(null);
+	let bindings: ConnectorBindingEntry[] = $state([]);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
+	let view = $state<"list" | "detail">("list");
+	let selectedBinding = $state<ConnectorBindingEntry | null>(null);
+	let actionInProgress = $state<string | null>(null);
+	let detailError = $state<string | null>(null);
 
-// Cluster model catalogue for the picker. Empty = fall back to cluster default.
-let availableModels: ClusterModelInfo[] = $state([]);
-let defaultModel = $state("");
-// "" means "use the cluster default" — sent as null on PATCH.
-let editModel = $state("");
+	// Cluster model catalogue for the picker. Empty = fall back to cluster default.
+	let availableModels: ClusterModelInfo[] = $state([]);
+	let defaultModel = $state("");
+	// "" means "use the cluster default" — sent as null on PATCH.
+	let editModel = $state("");
 
-const columns = [
-	{ key: "server_name", label: "Server", width: "1fr", mono: true },
-	{ key: "event_name", label: "Event", width: "1.5fr", mono: true },
-	{ key: "event_args_display", label: "Args", width: "2.2fr", mono: true },
-	{ key: "task_status", label: "Task", width: "0.8fr" },
-	{ key: "model_display", label: "Model", width: "1fr", mono: true },
-	{ key: "created_at", label: "Created", width: "1.2fr" },
-];
+	const columns = [
+		{ key: "server_name", label: "Server", width: "1fr", mono: true },
+		{ key: "event_name", label: "Event", width: "1.5fr", mono: true },
+		{ key: "event_args_display", label: "Args", width: "2.2fr", mono: true },
+		{ key: "task_status", label: "Task", width: "0.8fr" },
+		{ key: "model_display", label: "Model", width: "1fr", mono: true },
+		{ key: "created_at", label: "Created", width: "1.2fr" },
+	];
 
-onMount(() => {
-	loadBindings();
-	loadModels();
-});
+	onMount(() => {
+		loadBindings();
+		loadModels();
+	});
 
-async function loadModels(): Promise<void> {
-	// Best-effort: the picker still offers "cluster default" if /models fails.
-	try {
-		const resp = await client.listModels();
-		availableModels = resp.models;
-		defaultModel = resp.default;
-	} catch (err: unknown) {
-		console.error("Failed to load models for connector binding dropdown:", err);
-	}
-}
-
-async function loadBindings(): Promise<void> {
-	try {
-		loading = true;
-		error = null;
-		const response = await client.listConnectorBindings();
-		bindings = response.bindings;
-		if (selectedBinding) {
-			const updated = response.bindings.find((b) => b.id === selectedBinding?.id);
-			selectedBinding = updated ?? null;
-			if (updated) {
-				editModel = updated.model_hint ?? "";
-			} else {
-				view = "list";
-			}
+	async function loadModels(): Promise<void> {
+		// Best-effort: the picker still offers "cluster default" if /models fails.
+		try {
+			const resp = await client.listModels();
+			availableModels = resp.models;
+			defaultModel = resp.default;
+		} catch (err: unknown) {
+			console.error("Failed to load models for connector binding dropdown:", err);
 		}
-	} catch (err: unknown) {
-		console.error("Failed to load connector bindings:", err);
-		error = err instanceof Error ? err.message : "Failed to load connector bindings.";
-	} finally {
-		loading = false;
-	}
-}
-
-function handleSelectBinding(binding: ConnectorBindingEntry): void {
-	selectedBinding = binding;
-	editModel = binding.model_hint ?? "";
-	detailError = null;
-	view = "detail";
-}
-
-function handleBackToList(): void {
-	view = "list";
-	selectedBinding = null;
-	editModel = "";
-	detailError = null;
-}
-
-// "" → null clears the override back to the cluster default; the route treats
-// both the same, but sending null states the intent explicitly.
-async function handleUpdateModel(id: string): Promise<void> {
-	actionInProgress = `model:${id}`;
-	detailError = null;
-
-	try {
-		await client.updateConnectorBinding(id, { model_hint: editModel || null });
-		await loadBindings();
-	} catch (err: unknown) {
-		console.error("Failed to update connector binding model:", err);
-		detailError = err instanceof Error ? err.message : "Failed to update the binding's model.";
-	} finally {
-		actionInProgress = null;
-	}
-}
-
-async function handleDetach(id: string): Promise<void> {
-	if (!confirm("Detach this connector binding? The backing event task will be removed.")) {
-		return;
 	}
 
-	actionInProgress = `detach:${id}`;
-	detailError = null;
+	async function loadBindings(): Promise<void> {
+		try {
+			loading = true;
+			error = null;
+			const response = await client.listConnectorBindings();
+			bindings = response.bindings;
+			if (selectedBinding) {
+				const updated = response.bindings.find((b) => b.id === selectedBinding?.id);
+				selectedBinding = updated ?? null;
+				if (updated) {
+					editModel = updated.model_hint ?? "";
+				} else {
+					view = "list";
+				}
+			}
+		} catch (err: unknown) {
+			console.error("Failed to load connector bindings:", err);
+			error = err instanceof Error ? err.message : "Failed to load connector bindings.";
+		} finally {
+			loading = false;
+		}
+	}
 
-	try {
-		await client.detachConnectorBinding(id);
-		await loadBindings();
+	function handleSelectBinding(binding: ConnectorBindingEntry): void {
+		selectedBinding = binding;
+		editModel = binding.model_hint ?? "";
+		detailError = null;
+		view = "detail";
+	}
+
+	function handleBackToList(): void {
 		view = "list";
 		selectedBinding = null;
-	} catch (err: unknown) {
-		console.error("Failed to detach connector binding:", err);
-		detailError = err instanceof Error ? err.message : "Failed to detach connector binding.";
-	} finally {
-		actionInProgress = null;
+		editModel = "";
+		detailError = null;
 	}
-}
 
-function formatDate(iso: string): string {
-	try {
-		return new Date(iso).toLocaleDateString("en-US", {
-			month: "short",
-			day: "numeric",
-			year: "numeric",
-		});
-	} catch {
-		return iso;
-	}
-}
+	// "" → null clears the override back to the cluster default; the route treats
+	// both the same, but sending null states the intent explicitly.
+	async function handleUpdateModel(id: string): Promise<void> {
+		actionInProgress = `model:${id}`;
+		detailError = null;
 
-function formatDateTime(iso: string): string {
-	try {
-		return new Date(iso).toLocaleString();
-	} catch {
-		return iso;
+		try {
+			await client.updateConnectorBinding(id, { model_hint: editModel || null });
+			await loadBindings();
+		} catch (err: unknown) {
+			console.error("Failed to update connector binding model:", err);
+			detailError = err instanceof Error ? err.message : "Failed to update the binding's model.";
+		} finally {
+			actionInProgress = null;
+		}
 	}
-}
 
-function formatArgs(args: unknown): string {
-	if (args === null || args === undefined) return "{}";
-	if (typeof args === "string") return args;
-	try {
-		return JSON.stringify(args);
-	} catch {
-		return String(args);
+	async function handleDetach(id: string): Promise<void> {
+		if (!confirm("Detach this connector binding? The backing event task will be removed.")) {
+			return;
+		}
+
+		actionInProgress = `detach:${id}`;
+		detailError = null;
+
+		try {
+			await client.detachConnectorBinding(id);
+			await loadBindings();
+			view = "list";
+			selectedBinding = null;
+		} catch (err: unknown) {
+			console.error("Failed to detach connector binding:", err);
+			detailError = err instanceof Error ? err.message : "Failed to detach connector binding.";
+		} finally {
+			actionInProgress = null;
+		}
 	}
-}
+
+	function formatDate(iso: string): string {
+		try {
+			return new Date(iso).toLocaleDateString("en-US", {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+			});
+		} catch {
+			return iso;
+		}
+	}
+
+	function formatDateTime(iso: string): string {
+		try {
+			return new Date(iso).toLocaleString();
+		} catch {
+			return iso;
+		}
+	}
+
+	function formatArgs(args: unknown): string {
+		if (args === null || args === undefined) return "{}";
+		if (typeof args === "string") return args;
+		try {
+			return JSON.stringify(args);
+		} catch {
+			return String(args);
+		}
+	}
 </script>
 
 <Page>
 	{#snippet children()}
-		<SectionHeader
-			number={6}
-			subtitle="Platform event subscriptions"
-			title="Connector bindings"
-		>
+		<SectionHeader number={6} subtitle="Platform event subscriptions" title="Connector bindings">
 			{#snippet actions()}
 				<TicketTab color="var(--accent)">
 					{#snippet children()}{bindings.length} active{/snippet}
@@ -279,13 +275,11 @@ function formatArgs(args: unknown): string {
 									bind:value={editModel}
 									disabled={actionInProgress !== null}
 								>
-									<option value=""
-										>Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
+									<option value="">Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
 									>
 									{#each availableModels as m (`${m.host}/${m.id}`)}
 										<option value={m.id}
-											>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status ===
-											"offline?"
+											>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status === "offline?"
 												? " (offline?)"
 												: ""}</option
 										>
@@ -304,9 +298,7 @@ function formatArgs(args: unknown): string {
 								</Btn>
 							</div>
 						{:else}
-							<p class="muted">
-								No backing task, so no model can be set for this binding.
-							</p>
+							<p class="muted">No backing task, so no model can be set for this binding.</p>
 						{/if}
 					</div>
 

@@ -1,183 +1,183 @@
 <script lang="ts">
-import { onDestroy, onMount } from "svelte";
-import LineBadge from "../components/LineBadge.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import StatusChip from "../components/StatusChip.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import TopologyDiagram from "../components/TopologyDiagram.svelte";
-import { client } from "../lib/bound";
+	import { onDestroy, onMount } from "svelte";
+	import LineBadge from "../components/LineBadge.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import StatusChip from "../components/StatusChip.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import TopologyDiagram from "../components/TopologyDiagram.svelte";
+	import { client } from "../lib/bound";
 
-interface HostInfo {
-	site_id: string;
-	host_name: string;
-	version: string | null;
-	sync_url: string | null;
-	online_at: string | null;
-	models: string | null;
-	mcp_tools: string | null;
-	modified_at: string;
-}
-
-interface SyncStateInfo {
-	peer_site_id: string;
-	last_received: string;
-	last_sent: string;
-	last_sync_at: string | null;
-	sync_errors: number;
-}
-
-interface NetworkData {
-	hosts: HostInfo[];
-	hub: { siteId: string; hostName: string } | null;
-	syncState: SyncStateInfo[];
-	localSiteId: string;
-}
-
-const ONLINE_THRESHOLD_MS = 5 * 60 * 1000;
-
-let networkData: NetworkData | null = $state(null);
-let loading = $state(true);
-let error = $state<string | null>(null);
-
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-async function loadNetwork(): Promise<void> {
-	try {
-		networkData = (await client.getNetwork()) as unknown as NetworkData;
-		error = null;
-	} catch (err) {
-		console.error("Failed to load network status:", err);
-		error = "Network request failed";
+	interface HostInfo {
+		site_id: string;
+		host_name: string;
+		version: string | null;
+		sync_url: string | null;
+		online_at: string | null;
+		models: string | null;
+		mcp_tools: string | null;
+		modified_at: string;
 	}
-	loading = false;
-}
 
-onMount(() => {
-	loadNetwork();
-	pollInterval = setInterval(loadNetwork, 10000);
-});
-
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
-
-function isLocal(host: HostInfo): boolean {
-	return networkData?.localSiteId === host.site_id;
-}
-
-function isOnline(host: HostInfo): boolean {
-	if (isLocal(host)) return true;
-	const ts = host.modified_at ?? host.online_at;
-	if (!ts) return false;
-	return Date.now() - new Date(ts).getTime() < ONLINE_THRESHOLD_MS;
-}
-
-function relativeTime(iso: string | null): string {
-	if (!iso) return "never";
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60_000);
-	if (mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	return `${Math.floor(hours / 24)}d ago`;
-}
-
-function getSyncForPeer(peerSiteId: string): SyncStateInfo | null {
-	if (!networkData) return null;
-	return networkData.syncState.find((s) => s.peer_site_id === peerSiteId) ?? null;
-}
-
-function computeSyncHealth(
-	s: SyncStateInfo | null,
-	host?: HostInfo,
-): "healthy" | "degraded" | "unreachable" | "unknown" {
-	if (s?.last_sync_at) {
-		const lastSyncMs = Date.now() - new Date(s.last_sync_at).getTime();
-		const fiveMinutesMs = 5 * 60 * 1000;
-		const tenMinutesMs = 10 * 60 * 1000;
-		if (lastSyncMs > tenMinutesMs) return "unreachable";
-		if (s.sync_errors > 0) return "degraded";
-		if (lastSyncMs < fiveMinutesMs) return "healthy";
-		return "degraded";
+	interface SyncStateInfo {
+		peer_site_id: string;
+		last_received: string;
+		last_sent: string;
+		last_sync_at: string | null;
+		sync_errors: number;
 	}
-	if (host) {
+
+	interface NetworkData {
+		hosts: HostInfo[];
+		hub: { siteId: string; hostName: string } | null;
+		syncState: SyncStateInfo[];
+		localSiteId: string;
+	}
+
+	const ONLINE_THRESHOLD_MS = 5 * 60 * 1000;
+
+	let networkData: NetworkData | null = $state(null);
+	let loading = $state(true);
+	let error = $state<string | null>(null);
+
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+	async function loadNetwork(): Promise<void> {
+		try {
+			networkData = (await client.getNetwork()) as unknown as NetworkData;
+			error = null;
+		} catch (err) {
+			console.error("Failed to load network status:", err);
+			error = "Network request failed";
+		}
+		loading = false;
+	}
+
+	onMount(() => {
+		loadNetwork();
+		pollInterval = setInterval(loadNetwork, 10000);
+	});
+
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+	});
+
+	function isLocal(host: HostInfo): boolean {
+		return networkData?.localSiteId === host.site_id;
+	}
+
+	function isOnline(host: HostInfo): boolean {
+		if (isLocal(host)) return true;
 		const ts = host.modified_at ?? host.online_at;
-		if (ts) {
-			const age = Date.now() - new Date(ts).getTime();
-			if (age < ONLINE_THRESHOLD_MS) return "healthy";
-			if (age < 10 * 60 * 1000) return "degraded";
-			return "unreachable";
+		if (!ts) return false;
+		return Date.now() - new Date(ts).getTime() < ONLINE_THRESHOLD_MS;
+	}
+
+	function relativeTime(iso: string | null): string {
+		if (!iso) return "never";
+		const diff = Date.now() - new Date(iso).getTime();
+		const mins = Math.floor(diff / 60_000);
+		if (mins < 1) return "just now";
+		if (mins < 60) return `${mins}m ago`;
+		const hours = Math.floor(mins / 60);
+		if (hours < 24) return `${hours}h ago`;
+		return `${Math.floor(hours / 24)}d ago`;
+	}
+
+	function getSyncForPeer(peerSiteId: string): SyncStateInfo | null {
+		if (!networkData) return null;
+		return networkData.syncState.find((s) => s.peer_site_id === peerSiteId) ?? null;
+	}
+
+	function computeSyncHealth(
+		s: SyncStateInfo | null,
+		host?: HostInfo,
+	): "healthy" | "degraded" | "unreachable" | "unknown" {
+		if (s?.last_sync_at) {
+			const lastSyncMs = Date.now() - new Date(s.last_sync_at).getTime();
+			const fiveMinutesMs = 5 * 60 * 1000;
+			const tenMinutesMs = 10 * 60 * 1000;
+			if (lastSyncMs > tenMinutesMs) return "unreachable";
+			if (s.sync_errors > 0) return "degraded";
+			if (lastSyncMs < fiveMinutesMs) return "healthy";
+			return "degraded";
+		}
+		if (host) {
+			const ts = host.modified_at ?? host.online_at;
+			if (ts) {
+				const age = Date.now() - new Date(ts).getTime();
+				if (age < ONLINE_THRESHOLD_MS) return "healthy";
+				if (age < 10 * 60 * 1000) return "degraded";
+				return "unreachable";
+			}
+		}
+		return "unknown";
+	}
+
+	function parseModels(modelsStr: string | null): string[] {
+		if (!modelsStr) return [];
+		try {
+			const parsed = JSON.parse(modelsStr);
+			if (!Array.isArray(parsed)) return [];
+			return parsed.map((entry: unknown) =>
+				typeof entry === "string" ? entry : ((entry as { id?: string })?.id ?? "unknown"),
+			);
+		} catch {
+			return [];
 		}
 	}
-	return "unknown";
-}
 
-function parseModels(modelsStr: string | null): string[] {
-	if (!modelsStr) return [];
-	try {
-		const parsed = JSON.parse(modelsStr);
-		if (!Array.isArray(parsed)) return [];
-		return parsed.map((entry: unknown) =>
-			typeof entry === "string" ? entry : ((entry as { id?: string })?.id ?? "unknown"),
-		);
-	} catch {
-		return [];
-	}
-}
-
-function parseMcpTools(toolsStr: string | null): string[] {
-	if (!toolsStr) return [];
-	try {
-		const parsed = JSON.parse(toolsStr);
-		if (!Array.isArray(parsed)) return [];
-		return parsed as string[];
-	} catch {
-		return [];
-	}
-}
-
-const syncHealthMap = $derived.by(() => {
-	const map = new Map<string, "healthy" | "degraded" | "unreachable" | "unknown">();
-	if (!networkData) return map;
-	for (const host of networkData.hosts) {
-		if (isLocal(host)) {
-			map.set(host.site_id, "healthy");
-			continue;
+	function parseMcpTools(toolsStr: string | null): string[] {
+		if (!toolsStr) return [];
+		try {
+			const parsed = JSON.parse(toolsStr);
+			if (!Array.isArray(parsed)) return [];
+			return parsed as string[];
+		} catch {
+			return [];
 		}
-		const s = getSyncForPeer(host.site_id);
-		map.set(host.site_id, computeSyncHealth(s, host));
 	}
-	return map;
-});
 
-interface MeshRow {
-	id: string;
-	peer: string;
-	sent: string;
-	received: string;
-	lastSync: string;
-	errors: number;
-}
+	const syncHealthMap = $derived.by(() => {
+		const map = new Map<string, "healthy" | "degraded" | "unreachable" | "unknown">();
+		if (!networkData) return map;
+		for (const host of networkData.hosts) {
+			if (isLocal(host)) {
+				map.set(host.site_id, "healthy");
+				continue;
+			}
+			const s = getSyncForPeer(host.site_id);
+			map.set(host.site_id, computeSyncHealth(s, host));
+		}
+		return map;
+	});
 
-const syncMeshRows = $derived.by<MeshRow[]>(() => {
-	const nd = networkData;
-	if (!nd) return [];
-	return nd.syncState
-		.map((sync: SyncStateInfo): MeshRow => {
-			const hostEntry = nd.hosts.find((h) => h.site_id === sync.peer_site_id);
-			return {
-				id: sync.peer_site_id,
-				peer: hostEntry?.host_name ?? sync.peer_site_id.slice(0, 10),
-				sent: sync.last_sent,
-				received: sync.last_received,
-				lastSync: relativeTime(sync.last_sync_at),
-				errors: sync.sync_errors,
-			};
-		})
-		.sort((a: MeshRow, b: MeshRow) => a.peer.localeCompare(b.peer));
-});
+	interface MeshRow {
+		id: string;
+		peer: string;
+		sent: string;
+		received: string;
+		lastSync: string;
+		errors: number;
+	}
+
+	const syncMeshRows = $derived.by<MeshRow[]>(() => {
+		const nd = networkData;
+		if (!nd) return [];
+		return nd.syncState
+			.map((sync: SyncStateInfo): MeshRow => {
+				const hostEntry = nd.hosts.find((h) => h.site_id === sync.peer_site_id);
+				return {
+					id: sync.peer_site_id,
+					peer: hostEntry?.host_name ?? sync.peer_site_id.slice(0, 10),
+					sent: sync.last_sent,
+					received: sync.last_received,
+					lastSync: relativeTime(sync.last_sync_at),
+					errors: sync.sync_errors,
+				};
+			})
+			.sort((a: MeshRow, b: MeshRow) => a.peer.localeCompare(b.peer));
+	});
 </script>
 
 <Page>
@@ -214,16 +214,15 @@ const syncMeshRows = $derived.by<MeshRow[]>(() => {
 					{@const health = isLocal(host) ? "healthy" : computeSyncHealth(syncState, host)}
 					{@const models = parseModels(host.models)}
 					{@const mcpTools = parseMcpTools(host.mcp_tools)}
-					{@const stateColor =
-						!online
-							? "var(--err)"
-							: health === "healthy"
-								? "var(--ok)"
-								: health === "degraded"
-									? "var(--warn)"
-									: health === "unreachable"
-										? "var(--err)"
-										: "var(--ink-3)"}
+					{@const stateColor = !online
+						? "var(--err)"
+						: health === "healthy"
+							? "var(--ok)"
+							: health === "degraded"
+								? "var(--warn)"
+								: health === "unreachable"
+									? "var(--err)"
+									: "var(--ink-3)"}
 					<div class="host-card">
 						<div class="band" style="background: {stateColor}"></div>
 						<div class="card-body">
@@ -262,7 +261,9 @@ const syncMeshRows = $derived.by<MeshRow[]>(() => {
 									<span class="kicker">Errors (24h)</span>
 									<span
 										class="mono"
-										style="color: {syncState && syncState.sync_errors > 0 ? 'var(--err)' : 'var(--ink-2)'}"
+										style="color: {syncState && syncState.sync_errors > 0
+											? 'var(--err)'
+											: 'var(--ink-2)'}"
 									>
 										{syncState?.sync_errors ?? 0}
 									</span>

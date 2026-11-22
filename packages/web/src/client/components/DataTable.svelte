@@ -1,65 +1,65 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
-import { sortRows } from "../lib/data-table-utils";
+	import type { Snippet } from "svelte";
+	import { sortRows } from "../lib/data-table-utils";
 
-interface ColumnDef {
-	key: string;
-	label: string;
-	width?: string;
-	mono?: boolean;
-	sortable?: boolean;
-	/**
-	 * Display-only projection of the raw cell value. Sorting always runs on
-	 * the RAW row value — pre-formatting values into strings ("123ms",
-	 * "3m ago") before passing rows in makes sortable columns sort
-	 * lexicographically ("100ms" < "20ms" < "3ms"). Keep rows raw; format here.
-	 */
-	format?: (value: unknown, row: Record<string, unknown>) => string;
-}
-
-interface Props {
-	columns: ColumnDef[];
-	rows: Record<string, unknown>[];
-	sortable?: boolean;
-	expandable?: boolean;
-	expandedContent?: Snippet<[row: Record<string, unknown>]>;
-	onRowClick?: (row: Record<string, unknown>) => void;
-	rowAccent?: (row: Record<string, unknown>) => string | null;
-	children?: Snippet;
-}
-
-let {
-	columns,
-	rows,
-	sortable = false,
-	expandable = false,
-	expandedContent,
-	onRowClick,
-	rowAccent,
-}: Props = $props();
-
-let sortKey = $state<string | null>(null);
-let sortDir = $state<"asc" | "desc">("asc");
-let expandedRowId = $state<string | null>(null);
-
-const sortedRows = $derived(sortRows(rows, sortKey, sortDir));
-
-function handleColumnClick(colKey: string) {
-	if (!sortable) return;
-	if (sortKey === colKey) {
-		sortDir = sortDir === "asc" ? "desc" : "asc";
-	} else {
-		sortKey = colKey;
-		sortDir = "asc";
+	interface ColumnDef {
+		key: string;
+		label: string;
+		width?: string;
+		mono?: boolean;
+		sortable?: boolean;
+		/**
+		 * Display-only projection of the raw cell value. Sorting always runs on
+		 * the RAW row value — pre-formatting values into strings ("123ms",
+		 * "3m ago") before passing rows in makes sortable columns sort
+		 * lexicographically ("100ms" < "20ms" < "3ms"). Keep rows raw; format here.
+		 */
+		format?: (value: unknown, row: Record<string, unknown>) => string;
 	}
-}
 
-function toggleRowExpansion(row: Record<string, unknown>) {
-	const rowId = String(row.id ?? "");
-	expandedRowId = expandedRowId === rowId ? null : rowId;
-}
+	interface Props {
+		columns: ColumnDef[];
+		rows: Record<string, unknown>[];
+		sortable?: boolean;
+		expandable?: boolean;
+		expandedContent?: Snippet<[row: Record<string, unknown>]>;
+		onRowClick?: (row: Record<string, unknown>) => void;
+		rowAccent?: (row: Record<string, unknown>) => string | null;
+		children?: Snippet;
+	}
 
-const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" "));
+	let {
+		columns,
+		rows,
+		sortable = false,
+		expandable = false,
+		expandedContent,
+		onRowClick,
+		rowAccent,
+	}: Props = $props();
+
+	let sortKey = $state<string | null>(null);
+	let sortDir = $state<"asc" | "desc">("asc");
+	let expandedRowId = $state<string | null>(null);
+
+	const sortedRows = $derived(sortRows(rows, sortKey, sortDir));
+
+	function handleColumnClick(colKey: string) {
+		if (!sortable) return;
+		if (sortKey === colKey) {
+			sortDir = sortDir === "asc" ? "desc" : "asc";
+		} else {
+			sortKey = colKey;
+			sortDir = "asc";
+		}
+	}
+
+	function toggleRowExpansion(row: Record<string, unknown>) {
+		const rowId = String(row.id ?? "");
+		expandedRowId = expandedRowId === rowId ? null : rowId;
+	}
+
+	const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" "));
 </script>
 
 <div class="data-table-wrapper">
@@ -74,7 +74,12 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 					role={sortable ? "button" : undefined}
 					tabindex={sortable ? 0 : undefined}
 					onclick={() => handleColumnClick(col.key)}
-					onkeydown={(e) => { if (sortable && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); handleColumnClick(col.key); } }}
+					onkeydown={(e) => {
+						if (sortable && (e.key === "Enter" || e.key === " ")) {
+							e.preventDefault();
+							handleColumnClick(col.key);
+						}
+					}}
 				>
 					<span class="header-label">{col.label}</span>
 					{#if sortable && sortKey === col.key}
@@ -97,8 +102,8 @@ const gridTemplate = $derived(columns.map((col) => col.width || "1fr").join(" ")
 					style="grid-template-columns: {gridTemplate};
 					{accentColor ? `--row-accent: ${accentColor}` : ''}"
 					class:accented={!!accentColor}
-					role={(onRowClick || expandable) ? "button" : undefined}
-					tabindex={(onRowClick || expandable) ? 0 : undefined}
+					role={onRowClick || expandable ? "button" : undefined}
+					tabindex={onRowClick || expandable ? 0 : undefined}
 					onclick={() => {
 						onRowClick?.(row);
 						if (expandable) toggleRowExpansion(row);

@@ -343,10 +343,7 @@ export type WsFrame =
 	  };
 
 export type WsFrameError =
-	| "frame_too_short"
-	| "unknown_type"
-	| "decryption_failed"
-	| "invalid_payload";
+	"frame_too_short" | "unknown_type" | "decryption_failed" | "invalid_payload";
 
 /**
  * Encode a message into a WebSocket frame with XChaCha20-Poly1305 encryption.

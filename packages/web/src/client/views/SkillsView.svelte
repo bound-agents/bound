@@ -1,135 +1,141 @@
 <script lang="ts">
-import type { SkillResponse } from "@bound/shared";
-import { onDestroy, onMount } from "svelte";
-import Btn from "../components/Btn.svelte";
-import DataTable from "../components/DataTable.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import SkillCreateModal from "../components/SkillCreateModal.svelte";
-import SkillEditModal from "../components/SkillEditModal.svelte";
-import { client } from "../lib/bound";
-import { renderMarkdown } from "../lib/markdown";
-import { mermaid } from "../lib/mermaid";
-import { deleteControlsFor } from "./skills-view-logic";
+	import type { SkillResponse } from "@bound/shared";
+	import { onDestroy, onMount } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import DataTable from "../components/DataTable.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import SkillCreateModal from "../components/SkillCreateModal.svelte";
+	import SkillEditModal from "../components/SkillEditModal.svelte";
+	import { client } from "../lib/bound";
+	import { renderMarkdown } from "../lib/markdown";
+	import { mermaid } from "../lib/mermaid";
+	import { deleteControlsFor } from "./skills-view-logic";
 
-let skills: SkillResponse[] = $state([]);
-let loading = $state(true);
-let expandedId = $state<string | null>(null);
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-let showCreateModal = $state(false);
-let showEditModal = $state(false);
-let editingSkillId = $state<string | null>(null);
+	let skills: SkillResponse[] = $state([]);
+	let loading = $state(true);
+	let expandedId = $state<string | null>(null);
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let showCreateModal = $state(false);
+	let showEditModal = $state(false);
+	let editingSkillId = $state<string | null>(null);
 
-let skillDetail = $state<
-	Record<string, { content: string; files: { path: string; size: number }[] } | null>
->({});
-let renderedContent = $state<Record<string, string>>({});
-let contentLoading = $state<string | null>(null);
+	let skillDetail = $state<
+		Record<string, { content: string; files: { path: string; size: number }[] } | null>
+	>({});
+	let renderedContent = $state<Record<string, string>>({});
+	let contentLoading = $state<string | null>(null);
 
-let actionInProgress = $state<string | null>(null);
-let showDeleteConfirm = $state<Record<string, boolean>>({});
+	let actionInProgress = $state<string | null>(null);
+	let showDeleteConfirm = $state<Record<string, boolean>>({});
 
-const columns = [
-	{ key: "name", label: "Name", width: "200px", sortable: true },
-	{ key: "description", label: "Description", width: "1fr" },
-	{ key: "last_activated_at", label: "Last Activated", width: "180px", sortable: true },
-];
+	const columns = [
+		{ key: "name", label: "Name", width: "200px", sortable: true },
+		{ key: "description", label: "Description", width: "1fr" },
+		{ key: "last_activated_at", label: "Last Activated", width: "180px", sortable: true },
+	];
 
-async function loadSkills(): Promise<void> {
-	try {
-		skills = await client.listSkills();
-	} catch (error) {
-		console.error("Failed to load skills:", error);
+	async function loadSkills(): Promise<void> {
+		try {
+			skills = await client.listSkills();
+		} catch (error) {
+			console.error("Failed to load skills:", error);
+		}
+		loading = false;
 	}
-	loading = false;
-}
 
-async function loadSkillDetail(id: string): Promise<void> {
-	if (skillDetail[id]) return; // already loaded
-	contentLoading = id;
-	try {
-		const detail = await client.getSkill(id);
-		skillDetail = { ...skillDetail, [id]: { content: detail.content, files: detail.files } };
-		// Render markdown
-		const html = await renderMarkdown(detail.content);
-		renderedContent = { ...renderedContent, [id]: html };
-	} catch (error) {
-		console.error("Failed to load skill detail:", error);
+	async function loadSkillDetail(id: string): Promise<void> {
+		if (skillDetail[id]) return; // already loaded
+		contentLoading = id;
+		try {
+			const detail = await client.getSkill(id);
+			skillDetail = { ...skillDetail, [id]: { content: detail.content, files: detail.files } };
+			// Render markdown
+			const html = await renderMarkdown(detail.content);
+			renderedContent = { ...renderedContent, [id]: html };
+		} catch (error) {
+			console.error("Failed to load skill detail:", error);
+		}
+		contentLoading = null;
 	}
-	contentLoading = null;
-}
 
-async function deleteSkill(id: string): Promise<void> {
-	actionInProgress = `${id}:delete`;
-	try {
-		await client.deleteSkill(id);
-		showDeleteConfirm = { ...showDeleteConfirm, [id]: false };
-		if (expandedId === id) expandedId = null;
-		const newDetail = { ...skillDetail };
-		delete newDetail[id];
-		skillDetail = newDetail;
-		await loadSkills();
-	} catch (error) {
-		console.error("Failed to delete skill:", error);
+	async function deleteSkill(id: string): Promise<void> {
+		actionInProgress = `${id}:delete`;
+		try {
+			await client.deleteSkill(id);
+			showDeleteConfirm = { ...showDeleteConfirm, [id]: false };
+			if (expandedId === id) expandedId = null;
+			const newDetail = { ...skillDetail };
+			delete newDetail[id];
+			skillDetail = newDetail;
+			await loadSkills();
+		} catch (error) {
+			console.error("Failed to delete skill:", error);
+		}
+		actionInProgress = null;
 	}
-	actionInProgress = null;
-}
 
-async function openEditModal(id: string): Promise<void> {
-	// Ensure detail is loaded before opening the modal
-	if (!skillDetail[id]) {
-		await loadSkillDetail(id);
+	async function openEditModal(id: string): Promise<void> {
+		// Ensure detail is loaded before opening the modal
+		if (!skillDetail[id]) {
+			await loadSkillDetail(id);
+		}
+		editingSkillId = id;
+		showEditModal = true;
 	}
-	editingSkillId = id;
-	showEditModal = true;
-}
 
-function onEditSaved(): void {
-	const savedId = editingSkillId;
-	showEditModal = false;
-	editingSkillId = null;
-	if (savedId) {
-		// Clear cached detail so it reloads with fresh data
-		const newDetail = { ...skillDetail };
-		delete newDetail[savedId];
-		skillDetail = newDetail;
-		const newRendered = { ...renderedContent };
-		delete newRendered[savedId];
-		renderedContent = newRendered;
+	function onEditSaved(): void {
+		const savedId = editingSkillId;
+		showEditModal = false;
+		editingSkillId = null;
+		if (savedId) {
+			// Clear cached detail so it reloads with fresh data
+			const newDetail = { ...skillDetail };
+			delete newDetail[savedId];
+			skillDetail = newDetail;
+			const newRendered = { ...renderedContent };
+			delete newRendered[savedId];
+			renderedContent = newRendered;
+		}
+		loadSkills();
 	}
-	loadSkills();
-}
 
-function formatBytes(bytes: number): string {
-	if (bytes === 0) return "0 B";
-	const k = 1024;
-	const sizes = ["B", "KB", "MB", "GB"];
-	const i = Math.floor(Math.log(bytes) / Math.log(k));
-	return `${Math.round((bytes / k ** i) * 10) / 10} ${sizes[i]}`;
-}
-
-onMount(() => {
-	loadSkills();
-	pollInterval = setInterval(loadSkills, 5000);
-});
-
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
-
-// When a row is expanded, load its detail
-$effect.pre(() => {
-	if (expandedId && !skillDetail[expandedId]) {
-		loadSkillDetail(expandedId);
+	function formatBytes(bytes: number): string {
+		if (bytes === 0) return "0 B";
+		const k = 1024;
+		const sizes = ["B", "KB", "MB", "GB"];
+		const i = Math.floor(Math.log(bytes) / Math.log(k));
+		return `${Math.round((bytes / k ** i) * 10) / 10} ${sizes[i]}`;
 	}
-});
+
+	onMount(() => {
+		loadSkills();
+		pollInterval = setInterval(loadSkills, 5000);
+	});
+
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+	});
+
+	// When a row is expanded, load its detail
+	$effect.pre(() => {
+		if (expandedId && !skillDetail[expandedId]) {
+			loadSkillDetail(expandedId);
+		}
+	});
 </script>
 
 <Page>
 	{#snippet children()}
 		<SectionHeader number={6} title="Skills">
 			{#snippet actions()}
-				<Btn variant="primary" size="sm" onclick={() => { showCreateModal = true; }}>
+				<Btn
+					variant="primary"
+					size="sm"
+					onclick={() => {
+						showCreateModal = true;
+					}}
+				>
 					{#snippet children()}Create Skill{/snippet}
 				</Btn>
 			{/snippet}
@@ -167,8 +173,13 @@ $effect.pre(() => {
 
 {#if showCreateModal}
 	<SkillCreateModal
-		onClose={() => { showCreateModal = false; }}
-		onCreated={() => { showCreateModal = false; loadSkills(); }}
+		onClose={() => {
+			showCreateModal = false;
+		}}
+		onCreated={() => {
+			showCreateModal = false;
+			loadSkills();
+		}}
 	/>
 {/if}
 
@@ -179,7 +190,10 @@ $effect.pre(() => {
 		<SkillEditModal
 			skill={editSkill}
 			content={editDetail.content}
-			onClose={() => { showEditModal = false; editingSkillId = null; }}
+			onClose={() => {
+				showEditModal = false;
+				editingSkillId = null;
+			}}
 			onSaved={onEditSaved}
 		/>
 	{/if}
@@ -224,12 +238,7 @@ $effect.pre(() => {
 		{/if}
 
 		<div class="action-bar">
-			<Btn
-				size="sm"
-				onclick={() => openEditModal(skill.id as string)}
-			>
-				Edit
-			</Btn>
+			<Btn size="sm" onclick={() => openEditModal(skill.id as string)}>Edit</Btn>
 			{#if deleteControlsFor(skill, showDeleteConfirm[skill.id as string] ?? false).showDeleteBranch}
 				{#if deleteControlsFor(skill, showDeleteConfirm[skill.id as string] ?? false).controls === "confirm-cancel"}
 					<Btn

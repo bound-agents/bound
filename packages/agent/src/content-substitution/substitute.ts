@@ -44,8 +44,7 @@ export function substituteUnsupportedBlocks(params: SubstituteUnsupportedBlocksP
 
 		if (block.type === "document") {
 			const source = block.source as
-				| { type?: string; file_id?: string; data?: string; media_type?: string }
-				| undefined;
+				{ type?: string; file_id?: string; data?: string; media_type?: string } | undefined;
 
 			// base64 documents pass through as-is.
 			if (source?.type === "base64") {
@@ -87,8 +86,7 @@ export function substituteUnsupportedBlocks(params: SubstituteUnsupportedBlocksP
 		// Handle file_ref image sources that need DB lookup.
 		if (block.type === "image" && targetCapabilities.vision) {
 			const source = block.source as
-				| { type?: string; file_id?: string; data?: string; media_type?: string }
-				| undefined;
+				{ type?: string; file_id?: string; data?: string; media_type?: string } | undefined;
 			// Oversized inline base64 (legacy rows that predate the file_ref
 			// rewrite): same provider cap applies — degrade instead of shipping
 			// a payload the API is guaranteed to reject.
@@ -129,10 +127,7 @@ export function substituteUnsupportedBlocks(params: SubstituteUnsupportedBlocksP
 					};
 				}
 				const mediaType = (source.media_type ?? "image/jpeg") as
-					| "image/jpeg"
-					| "image/png"
-					| "image/gif"
-					| "image/webp";
+					"image/jpeg" | "image/png" | "image/gif" | "image/webp";
 				return {
 					type: "image" as const,
 					source: {

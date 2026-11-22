@@ -47,10 +47,7 @@ export {
 
 export { GitHubCopilotDriver } from "./drivers/github-copilot/driver";
 
-export {
-	CopilotTokenManager,
-	FileCopilotTokenStore,
-} from "./drivers/github-copilot/token-store";
+export { CopilotTokenManager, FileCopilotTokenStore } from "./drivers/github-copilot/token-store";
 
 export {
 	COPILOT_CLIENT_ID,

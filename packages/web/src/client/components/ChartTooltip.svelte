@@ -1,23 +1,20 @@
 <script lang="ts">
-interface Props {
-	visible: boolean;
-	x: number;
-	y: number;
-	lines: string[];
-}
+	interface Props {
+		visible: boolean;
+		x: number;
+		y: number;
+		lines: string[];
+	}
 
-let { visible, x, y, lines }: Props = $props();
+	let { visible, x, y, lines }: Props = $props();
 
-// Offset the tooltip slightly from cursor to avoid flicker
-const offsetX = 12;
-const offsetY = -8;
+	// Offset the tooltip slightly from cursor to avoid flicker
+	const offsetX = 12;
+	const offsetY = -8;
 </script>
 
 {#if visible && lines.length > 0}
-	<div
-		class="chart-tooltip"
-		style="left: {x + offsetX}px; top: {y + offsetY}px;"
-	>
+	<div class="chart-tooltip" style="left: {x + offsetX}px; top: {y + offsetY}px;">
 		{#each lines as line}
 			<span class="tooltip-line">{line}</span>
 		{/each}

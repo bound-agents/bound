@@ -60,8 +60,7 @@ describe("metrics-schema â AC4.6 cache token persistence", () => {
 		const row = db
 			.prepare("SELECT tokens_cache_write, tokens_cache_read FROM turns WHERE id = ?")
 			.get(turnId) as
-			| { tokens_cache_write: number | null; tokens_cache_read: number | null }
-			| undefined;
+			{ tokens_cache_write: number | null; tokens_cache_read: number | null } | undefined;
 
 		expect(row).toBeDefined();
 		expect(row?.tokens_cache_write).toBe(100);
@@ -83,8 +82,7 @@ describe("metrics-schema â AC4.6 cache token persistence", () => {
 		const row = db
 			.prepare("SELECT tokens_cache_write, tokens_cache_read FROM turns WHERE id = ?")
 			.get(turnId) as
-			| { tokens_cache_write: number | null; tokens_cache_read: number | null }
-			| undefined;
+			{ tokens_cache_write: number | null; tokens_cache_read: number | null } | undefined;
 
 		expect(row).toBeDefined();
 		expect(row?.tokens_cache_write).toBeNull();
@@ -106,8 +104,7 @@ describe("metrics-schema â AC4.6 cache token persistence", () => {
 		});
 
 		const row = db.prepare("SELECT cost_breakdown FROM turns WHERE id = ?").get(turnId) as
-			| { cost_breakdown: string | null }
-			| undefined;
+			{ cost_breakdown: string | null } | undefined;
 
 		expect(row).toBeDefined();
 		expect(JSON.parse(row?.cost_breakdown ?? "null")).toEqual({
@@ -131,8 +128,7 @@ describe("metrics-schema â AC4.6 cache token persistence", () => {
 		});
 
 		const row = db.prepare("SELECT cost_breakdown FROM turns WHERE id = ?").get(turnId) as
-			| { cost_breakdown: string | null }
-			| undefined;
+			{ cost_breakdown: string | null } | undefined;
 
 		expect(row).toBeDefined();
 		expect(row?.cost_breakdown).toBeNull();

@@ -213,8 +213,8 @@ describe("composeStableVolatileSubsection — parity with production renderers",
 function renderProductionStableConcat(inputs: StableVolatileInputs): string {
 	const wkInput = {
 		pinned: inputs.pinned.map((e): StageEntry => makeStageEntry(e.key, e.value, e.modifiedAt)),
-		summaries: inputs.summaries.map(
-			(e): StageEntry => makeStageEntry(e.key, e.value, e.modifiedAt),
+		summaries: inputs.summaries.map((e): StageEntry =>
+			makeStageEntry(e.key, e.value, e.modifiedAt),
 		),
 		staleChildrenBySummary: new Map(),
 		deltaKeys: new Set<string>(),

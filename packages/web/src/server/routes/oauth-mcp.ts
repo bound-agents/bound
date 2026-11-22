@@ -47,7 +47,10 @@ export interface OauthMcpResolverBridge {
 	 * the daemon-mediated entry point `bound login --challenge`/`--mcp` drives
 	 * (R-MO27e). Returns the authorize URL + challenge id, or an actionable error.
 	 */
-	claimForLogin(target: { challengeId?: string; serverName?: string }): Promise<
+	claimForLogin(target: {
+		challengeId?: string;
+		serverName?: string;
+	}): Promise<
 		{ ok: true; authorizeUrl: string; challengeId: string } | { ok: false; error: string }
 	>;
 }

@@ -19,10 +19,7 @@ interface TextContentBlock {
 }
 
 type Block =
-	| ThinkingContentBlock
-	| TextContentBlock
-	| ToolUseBlock
-	| { type: string; [k: string]: unknown };
+	ThinkingContentBlock | TextContentBlock | ToolUseBlock | { type: string; [k: string]: unknown };
 
 export interface ParsedToolCallContent {
 	thinkingText: string;

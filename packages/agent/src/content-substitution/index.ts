@@ -34,7 +34,4 @@
  *      block types pass through unchanged.
  */
 
-export {
-	substituteUnsupportedBlocks,
-	type SubstituteUnsupportedBlocksParams,
-} from "./substitute";
+export { substituteUnsupportedBlocks, type SubstituteUnsupportedBlocksParams } from "./substitute";

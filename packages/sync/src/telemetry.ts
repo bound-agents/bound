@@ -559,10 +559,7 @@ function extractRelayTraceContext(
 
 export type RelayTrigger = "push-write" | "receive" | "deliver" | "reconnect-drain";
 export type RelayPath =
-	| "spoke.outbox.push"
-	| "hub.relay.receive"
-	| "spoke.relay.deliver"
-	| "spoke.outbox.drain";
+	"spoke.outbox.push" | "hub.relay.receive" | "spoke.relay.deliver" | "spoke.outbox.drain";
 
 const MAX_RELAY_ENTRY_COUNT = 10_000;
 

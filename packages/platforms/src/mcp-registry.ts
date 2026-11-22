@@ -875,9 +875,7 @@ export class PlatformMcpRegistry {
 				// MCP SDK requires a real Zod v4 schema (with `_zod`) here;
 				// `{}` lands on the v3 fallback path and crashes safeParse.
 				// See e028985 for the relay-processor sibling fix.
-				z
-					.object({})
-					.passthrough(),
+				z.object({}).passthrough(),
 			);
 			mcpLifecycle.add(1, {
 				platform: platformMetricName(subscription.serverName),
@@ -1046,9 +1044,7 @@ export class PlatformMcpRegistry {
 					// MCP SDK requires a real Zod v4 schema (with `_zod`) here;
 					// `{}` lands on the v3 fallback path and crashes safeParse.
 					// See e028985 for the relay-processor sibling fix.
-					z
-						.object({})
-						.passthrough(),
+					z.object({}).passthrough(),
 				)) as { events: McpEvent[]; nextPollSeconds?: number };
 
 				if (result.events.length > 0) {

@@ -1,44 +1,44 @@
 <script lang="ts">
-import type { Snippet } from "svelte";
+	import type { Snippet } from "svelte";
 
-type Variant = "default" | "primary" | "accent" | "ghost" | "danger";
+	type Variant = "default" | "primary" | "accent" | "ghost" | "danger";
 
-interface Props {
-	children: Snippet;
-	onclick?: (e: MouseEvent) => void;
-	variant?: Variant;
-	disabled?: boolean;
-	title?: string;
-	size?: "sm" | "md";
-	type?: "button" | "submit";
-}
+	interface Props {
+		children: Snippet;
+		onclick?: (e: MouseEvent) => void;
+		variant?: Variant;
+		disabled?: boolean;
+		title?: string;
+		size?: "sm" | "md";
+		type?: "button" | "submit";
+	}
 
-let {
-	children,
-	onclick,
-	variant = "default",
-	disabled = false,
-	title,
-	size = "md",
-	type = "button",
-}: Props = $props();
+	let {
+		children,
+		onclick,
+		variant = "default",
+		disabled = false,
+		title,
+		size = "md",
+		type = "button",
+	}: Props = $props();
 
-const pad = $derived(size === "sm" ? "4px 10px" : "7px 14px");
-const fs = $derived(size === "sm" ? 12 : 13);
+	const pad = $derived(size === "sm" ? "4px 10px" : "7px 14px");
+	const fs = $derived(size === "sm" ? 12 : 13);
 
-const VARIANTS: Record<Variant, { bg: string; fg: string; border: string }> = {
-	default: { bg: "transparent", fg: "var(--ink)", border: "var(--ink)" },
-	primary: { bg: "var(--ink)", fg: "var(--paper)", border: "var(--ink)" },
-	accent: { bg: "var(--accent)", fg: "#fff", border: "var(--accent)" },
-	ghost: {
-		bg: "transparent",
-		fg: "var(--ink-2)",
-		border: "var(--rule-soft)",
-	},
-	danger: { bg: "transparent", fg: "var(--err)", border: "var(--err)" },
-};
+	const VARIANTS: Record<Variant, { bg: string; fg: string; border: string }> = {
+		default: { bg: "transparent", fg: "var(--ink)", border: "var(--ink)" },
+		primary: { bg: "var(--ink)", fg: "var(--paper)", border: "var(--ink)" },
+		accent: { bg: "var(--accent)", fg: "#fff", border: "var(--accent)" },
+		ghost: {
+			bg: "transparent",
+			fg: "var(--ink-2)",
+			border: "var(--rule-soft)",
+		},
+		danger: { bg: "transparent", fg: "var(--err)", border: "var(--err)" },
+	};
 
-const styles = $derived(VARIANTS[variant]);
+	const styles = $derived(VARIANTS[variant]);
 </script>
 
 <button

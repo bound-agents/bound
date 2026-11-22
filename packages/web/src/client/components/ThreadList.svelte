@@ -1,267 +1,267 @@
 <script lang="ts">
-import type { ThreadListEntry } from "@bound/client";
-import { Pencil } from "lucide-svelte";
-import { onMount, tick } from "svelte";
-import { formatRelativeTime, isToday } from "../lib/format-time";
-import { getLineColor, getLineName } from "../lib/metro-lines";
-import { lineRoute } from "../lib/route-utils";
-import LineBadge from "./LineBadge.svelte";
+	import type { ThreadListEntry } from "@bound/client";
+	import { Pencil } from "lucide-svelte";
+	import { onMount, tick } from "svelte";
+	import { formatRelativeTime, isToday } from "../lib/format-time";
+	import { getLineColor, getLineName } from "../lib/metro-lines";
+	import { lineRoute } from "../lib/route-utils";
+	import LineBadge from "./LineBadge.svelte";
 
-interface Props {
-	threads: ThreadListEntry[];
-	threadStatuses: Map<string, { active: boolean }>;
-	selectedThreadId?: string | null;
-	onSelectThread?: (threadId: string) => void;
-	onNavigateThread?: (threadId: string) => void;
-	onHoverThread?: (threadId: string | null) => void;
-	onRenameThread?: (threadId: string, title: string) => Promise<void>;
-	/**
-	 * Fired when the user scrolls within `LOAD_MORE_THRESHOLD_PX` of the
-	 * bottom of the list AND `hasMore` is true. The parent is responsible
-	 * for guarding double-fires by toggling `isLoadingMore` synchronously
-	 * before awaiting the fetch.
-	 */
-	onLoadMore?: () => void;
-	hasMore?: boolean;
-	isLoadingMore?: boolean;
-}
-
-let {
-	threads,
-	threadStatuses,
-	selectedThreadId,
-	onSelectThread,
-	onNavigateThread,
-	onHoverThread,
-	onRenameThread,
-	onLoadMore,
-	hasMore = false,
-	isLoadingMore = false,
-}: Props = $props();
-
-let editingThreadId = $state<string | null>(null);
-let editingTitle = $state("");
-let titleInput = $state<HTMLInputElement | undefined>();
-let committingThreadId = $state<string | null>(null);
-
-async function startEditing(event: MouseEvent, thread: ThreadListEntry): Promise<void> {
-	event.preventDefault();
-	event.stopPropagation();
-	editingThreadId = thread.id;
-	editingTitle = thread.title?.trim() || "Untitled";
-	await tick();
-	titleInput?.focus();
-	titleInput?.select();
-}
-
-function cancelEditing(event?: Event): void {
-	event?.preventDefault();
-	event?.stopPropagation();
-	editingThreadId = null;
-	editingTitle = "";
-}
-
-async function commitEditing(event: Event, thread: ThreadListEntry): Promise<void> {
-	event.preventDefault();
-	event.stopPropagation();
-	if (editingThreadId !== thread.id || committingThreadId === thread.id) return;
-	const title = editingTitle.trim();
-	if (!title || title.length > 256 || title === thread.title?.trim()) {
-		cancelEditing();
-		return;
-	}
-	committingThreadId = thread.id;
-	try {
-		await onRenameThread?.(thread.id, title);
-		cancelEditing();
-	} finally {
-		committingThreadId = null;
-	}
-}
-
-function onTitleKeydown(event: KeyboardEvent, thread: ThreadListEntry): void {
-	if (event.key === "Escape") {
-		cancelEditing(event);
-	} else if (event.key === "Enter") {
-		void commitEditing(event, thread);
-	}
-}
-
-function sanitizeTitle(title: string | null): string {
-	if (!title || title.trim() === "" || title === ".") return "Untitled";
-	const clean = title
-		.replace(/<tool_call>[\s\S]*/g, "")
-		.replace(/<\/?[^>]+>/g, "")
-		.replace(/#+\s+/g, " ")
-		.replace(/\*\*/g, "")
-		.replace(/\*([^*]*)\*/g, "$1")
-		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.replace(/`([^`]*)`/g, "$1")
-		.replace(/\s+/g, " ")
-		.trim();
-	return clean || "Untitled";
-}
-
-// Seeded 24h activity sparkline — deterministic per thread id, weighted by
-// messageCount and skewed toward the most recent hours so the sparkline feels
-// "alive" for active threads and quiet for older ones.
-function makeActivity(seed: string, messageCount: number): number[] {
-	let s = 0;
-	for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
-	const rand = () => {
-		s = (s * 9301 + 49297) >>> 0;
-		return (s % 233280) / 233280;
-	};
-	const peak = Math.max(2, Math.min(10, Math.ceil(messageCount / 6)));
-	const out: number[] = [];
-	for (let i = 0; i < 24; i++) {
-		const recencyWeight = 0.25 + (i / 23) * 0.75;
-		out.push(Math.round(rand() * peak * recencyWeight));
-	}
-	return out;
-}
-
-function getAttachedSessionHosts(thread: ThreadListEntry): string[] {
-	return Array.isArray(thread.attachedSessionHosts) ? thread.attachedSessionHosts : [];
-}
-
-function formatAttachedSessionLabel(hosts: string[]): string {
-	if (hosts.length === 0) return "";
-	if (hosts.length === 1) return hosts[0];
-	return `${hosts[0]} +${hosts.length - 1}`;
-}
-
-function attachedSessionTitle(hosts: string[]): string {
-	const plural = hosts.length === 1 ? "session" : "sessions";
-	return `Attached ${plural} on ${hosts.join(", ")}`;
-}
-
-// Virtualization: flatten group headers + thread cards into a single linear
-// list of `Item`s, then only render the slice currently visible inside the
-// scroll container. With ~325 threads this drops DOM node count from ~5000
-// to ~50ish at any time, so scrolling stays smooth.
-type Item =
-	| { kind: "header"; key: string; label: string; height: number }
-	| {
-			kind: "thread";
-			key: string;
-			thread: ThreadListEntry;
-			height: number;
-	  };
-
-// Estimated heights — these don't have to be exact, they just need to be
-// stable so the scrollbar doesn't jump as cards come in/out of the window.
-// `with-summary` cards are ~170px (sparkline + 2-line summary clamp + meta);
-// `no-summary` cards are ~134px. Picking a single 162px estimate for cards
-// minimizes drift in the common case (most threads have summaries).
-const HEADER_HEIGHT = 36;
-const CARD_HEIGHT = 162;
-const OVERSCAN = 6;
-// Prefetch the next page when within this many px of the bottom — about
-// 5 cards ahead, so the fetch starts before the user sees the bottom edge.
-const LOAD_MORE_THRESHOLD_PX = 800;
-
-const items = $derived.by<Item[]>(() => {
-	const sorted = [...threads].sort((a, b) => {
-		const aTime = new Date(a.last_message_at).getTime();
-		const bTime = new Date(b.last_message_at).getTime();
-		return bTime - aTime;
-	});
-
-	const today: ThreadListEntry[] = [];
-	const older: ThreadListEntry[] = [];
-	for (const t of sorted) {
-		(isToday(t.last_message_at) ? today : older).push(t);
+	interface Props {
+		threads: ThreadListEntry[];
+		threadStatuses: Map<string, { active: boolean }>;
+		selectedThreadId?: string | null;
+		onSelectThread?: (threadId: string) => void;
+		onNavigateThread?: (threadId: string) => void;
+		onHoverThread?: (threadId: string | null) => void;
+		onRenameThread?: (threadId: string, title: string) => Promise<void>;
+		/**
+		 * Fired when the user scrolls within `LOAD_MORE_THRESHOLD_PX` of the
+		 * bottom of the list AND `hasMore` is true. The parent is responsible
+		 * for guarding double-fires by toggling `isLoadingMore` synchronously
+		 * before awaiting the fetch.
+		 */
+		onLoadMore?: () => void;
+		hasMore?: boolean;
+		isLoadingMore?: boolean;
 	}
 
-	const out: Item[] = [];
-	if (today.length > 0) {
-		out.push({ kind: "header", key: "h:Today", label: "Today", height: HEADER_HEIGHT });
-		for (const t of today) {
-			out.push({ kind: "thread", key: `t:${t.id}`, thread: t, height: CARD_HEIGHT });
+	let {
+		threads,
+		threadStatuses,
+		selectedThreadId,
+		onSelectThread,
+		onNavigateThread,
+		onHoverThread,
+		onRenameThread,
+		onLoadMore,
+		hasMore = false,
+		isLoadingMore = false,
+	}: Props = $props();
+
+	let editingThreadId = $state<string | null>(null);
+	let editingTitle = $state("");
+	let titleInput = $state<HTMLInputElement | undefined>();
+	let committingThreadId = $state<string | null>(null);
+
+	async function startEditing(event: MouseEvent, thread: ThreadListEntry): Promise<void> {
+		event.preventDefault();
+		event.stopPropagation();
+		editingThreadId = thread.id;
+		editingTitle = thread.title?.trim() || "Untitled";
+		await tick();
+		titleInput?.focus();
+		titleInput?.select();
+	}
+
+	function cancelEditing(event?: Event): void {
+		event?.preventDefault();
+		event?.stopPropagation();
+		editingThreadId = null;
+		editingTitle = "";
+	}
+
+	async function commitEditing(event: Event, thread: ThreadListEntry): Promise<void> {
+		event.preventDefault();
+		event.stopPropagation();
+		if (editingThreadId !== thread.id || committingThreadId === thread.id) return;
+		const title = editingTitle.trim();
+		if (!title || title.length > 256 || title === thread.title?.trim()) {
+			cancelEditing();
+			return;
+		}
+		committingThreadId = thread.id;
+		try {
+			await onRenameThread?.(thread.id, title);
+			cancelEditing();
+		} finally {
+			committingThreadId = null;
 		}
 	}
-	if (older.length > 0) {
-		out.push({ kind: "header", key: "h:Earlier", label: "Earlier", height: HEADER_HEIGHT });
-		for (const t of older) {
-			out.push({ kind: "thread", key: `t:${t.id}`, thread: t, height: CARD_HEIGHT });
+
+	function onTitleKeydown(event: KeyboardEvent, thread: ThreadListEntry): void {
+		if (event.key === "Escape") {
+			cancelEditing(event);
+		} else if (event.key === "Enter") {
+			void commitEditing(event, thread);
 		}
 	}
-	return out;
-});
 
-// Cumulative top-offset table — offsets[i] is the y-offset of items[i],
-// offsets[items.length] is the total content height. Recomputed when
-// items change.
-const offsets = $derived.by<number[]>(() => {
-	const arr: number[] = new Array(items.length + 1);
-	let total = 0;
-	arr[0] = 0;
-	for (let i = 0; i < items.length; i++) {
-		total += items[i].height;
-		arr[i + 1] = total;
+	function sanitizeTitle(title: string | null): string {
+		if (!title || title.trim() === "" || title === ".") return "Untitled";
+		const clean = title
+			.replace(/<tool_call>[\s\S]*/g, "")
+			.replace(/<\/?[^>]+>/g, "")
+			.replace(/#+\s+/g, " ")
+			.replace(/\*\*/g, "")
+			.replace(/\*([^*]*)\*/g, "$1")
+			.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+			.replace(/`([^`]*)`/g, "$1")
+			.replace(/\s+/g, " ")
+			.trim();
+		return clean || "Untitled";
 	}
-	return arr;
-});
 
-const totalHeight = $derived(offsets[offsets.length - 1] ?? 0);
-
-let scrollEl = $state<HTMLDivElement | undefined>();
-let scrollTop = $state(0);
-let viewportHeight = $state(800);
-
-function onScroll(): void {
-	if (!scrollEl) return;
-	scrollTop = scrollEl.scrollTop;
-	// Fire `onLoadMore` when scrolling within LOAD_MORE_THRESHOLD_PX of the
-	// bottom. The parent flips `isLoadingMore` synchronously inside its
-	// handler, so subsequent scroll events bail until the fetch completes —
-	// no local debounce needed.
-	if (
-		hasMore &&
-		!isLoadingMore &&
-		onLoadMore &&
-		scrollTop + viewportHeight > totalHeight - LOAD_MORE_THRESHOLD_PX
-	) {
-		onLoadMore();
+	// Seeded 24h activity sparkline — deterministic per thread id, weighted by
+	// messageCount and skewed toward the most recent hours so the sparkline feels
+	// "alive" for active threads and quiet for older ones.
+	function makeActivity(seed: string, messageCount: number): number[] {
+		let s = 0;
+		for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
+		const rand = () => {
+			s = (s * 9301 + 49297) >>> 0;
+			return (s % 233280) / 233280;
+		};
+		const peak = Math.max(2, Math.min(10, Math.ceil(messageCount / 6)));
+		const out: number[] = [];
+		for (let i = 0; i < 24; i++) {
+			const recencyWeight = 0.25 + (i / 23) * 0.75;
+			out.push(Math.round(rand() * peak * recencyWeight));
+		}
+		return out;
 	}
-}
 
-// Binary search for the last index whose offset <= scroll. The visible
-// window starts at that index (minus overscan).
-function findStartIdx(scroll: number): number {
-	if (offsets.length <= 1) return 0;
-	let lo = 0;
-	let hi = items.length - 1;
-	while (lo < hi) {
-		const mid = (lo + hi + 1) >> 1;
-		if (offsets[mid] <= scroll) lo = mid;
-		else hi = mid - 1;
+	function getAttachedSessionHosts(thread: ThreadListEntry): string[] {
+		return Array.isArray(thread.attachedSessionHosts) ? thread.attachedSessionHosts : [];
 	}
-	return lo;
-}
 
-const visibleRange = $derived.by(() => {
-	if (items.length === 0) return { start: 0, end: 0 };
-	const startRaw = findStartIdx(scrollTop);
-	const start = Math.max(0, startRaw - OVERSCAN);
-	const endTarget = scrollTop + viewportHeight;
-	let end = startRaw;
-	while (end < items.length && offsets[end] < endTarget) end++;
-	end = Math.min(items.length, end + OVERSCAN);
-	return { start, end };
-});
+	function formatAttachedSessionLabel(hosts: string[]): string {
+		if (hosts.length === 0) return "";
+		if (hosts.length === 1) return hosts[0];
+		return `${hosts[0]} +${hosts.length - 1}`;
+	}
 
-onMount(() => {
-	if (!scrollEl) return;
-	viewportHeight = scrollEl.clientHeight;
-	scrollTop = scrollEl.scrollTop;
-	const ro = new ResizeObserver(() => {
-		if (scrollEl) viewportHeight = scrollEl.clientHeight;
+	function attachedSessionTitle(hosts: string[]): string {
+		const plural = hosts.length === 1 ? "session" : "sessions";
+		return `Attached ${plural} on ${hosts.join(", ")}`;
+	}
+
+	// Virtualization: flatten group headers + thread cards into a single linear
+	// list of `Item`s, then only render the slice currently visible inside the
+	// scroll container. With ~325 threads this drops DOM node count from ~5000
+	// to ~50ish at any time, so scrolling stays smooth.
+	type Item =
+		| { kind: "header"; key: string; label: string; height: number }
+		| {
+				kind: "thread";
+				key: string;
+				thread: ThreadListEntry;
+				height: number;
+		  };
+
+	// Estimated heights — these don't have to be exact, they just need to be
+	// stable so the scrollbar doesn't jump as cards come in/out of the window.
+	// `with-summary` cards are ~170px (sparkline + 2-line summary clamp + meta);
+	// `no-summary` cards are ~134px. Picking a single 162px estimate for cards
+	// minimizes drift in the common case (most threads have summaries).
+	const HEADER_HEIGHT = 36;
+	const CARD_HEIGHT = 162;
+	const OVERSCAN = 6;
+	// Prefetch the next page when within this many px of the bottom — about
+	// 5 cards ahead, so the fetch starts before the user sees the bottom edge.
+	const LOAD_MORE_THRESHOLD_PX = 800;
+
+	const items = $derived.by<Item[]>(() => {
+		const sorted = [...threads].sort((a, b) => {
+			const aTime = new Date(a.last_message_at).getTime();
+			const bTime = new Date(b.last_message_at).getTime();
+			return bTime - aTime;
+		});
+
+		const today: ThreadListEntry[] = [];
+		const older: ThreadListEntry[] = [];
+		for (const t of sorted) {
+			(isToday(t.last_message_at) ? today : older).push(t);
+		}
+
+		const out: Item[] = [];
+		if (today.length > 0) {
+			out.push({ kind: "header", key: "h:Today", label: "Today", height: HEADER_HEIGHT });
+			for (const t of today) {
+				out.push({ kind: "thread", key: `t:${t.id}`, thread: t, height: CARD_HEIGHT });
+			}
+		}
+		if (older.length > 0) {
+			out.push({ kind: "header", key: "h:Earlier", label: "Earlier", height: HEADER_HEIGHT });
+			for (const t of older) {
+				out.push({ kind: "thread", key: `t:${t.id}`, thread: t, height: CARD_HEIGHT });
+			}
+		}
+		return out;
 	});
-	ro.observe(scrollEl);
-	return () => ro.disconnect();
-});
+
+	// Cumulative top-offset table — offsets[i] is the y-offset of items[i],
+	// offsets[items.length] is the total content height. Recomputed when
+	// items change.
+	const offsets = $derived.by<number[]>(() => {
+		const arr: number[] = new Array(items.length + 1);
+		let total = 0;
+		arr[0] = 0;
+		for (let i = 0; i < items.length; i++) {
+			total += items[i].height;
+			arr[i + 1] = total;
+		}
+		return arr;
+	});
+
+	const totalHeight = $derived(offsets[offsets.length - 1] ?? 0);
+
+	let scrollEl = $state<HTMLDivElement | undefined>();
+	let scrollTop = $state(0);
+	let viewportHeight = $state(800);
+
+	function onScroll(): void {
+		if (!scrollEl) return;
+		scrollTop = scrollEl.scrollTop;
+		// Fire `onLoadMore` when scrolling within LOAD_MORE_THRESHOLD_PX of the
+		// bottom. The parent flips `isLoadingMore` synchronously inside its
+		// handler, so subsequent scroll events bail until the fetch completes —
+		// no local debounce needed.
+		if (
+			hasMore &&
+			!isLoadingMore &&
+			onLoadMore &&
+			scrollTop + viewportHeight > totalHeight - LOAD_MORE_THRESHOLD_PX
+		) {
+			onLoadMore();
+		}
+	}
+
+	// Binary search for the last index whose offset <= scroll. The visible
+	// window starts at that index (minus overscan).
+	function findStartIdx(scroll: number): number {
+		if (offsets.length <= 1) return 0;
+		let lo = 0;
+		let hi = items.length - 1;
+		while (lo < hi) {
+			const mid = (lo + hi + 1) >> 1;
+			if (offsets[mid] <= scroll) lo = mid;
+			else hi = mid - 1;
+		}
+		return lo;
+	}
+
+	const visibleRange = $derived.by(() => {
+		if (items.length === 0) return { start: 0, end: 0 };
+		const startRaw = findStartIdx(scrollTop);
+		const start = Math.max(0, startRaw - OVERSCAN);
+		const endTarget = scrollTop + viewportHeight;
+		let end = startRaw;
+		while (end < items.length && offsets[end] < endTarget) end++;
+		end = Math.min(items.length, end + OVERSCAN);
+		return { start, end };
+	});
+
+	onMount(() => {
+		if (!scrollEl) return;
+		viewportHeight = scrollEl.clientHeight;
+		scrollTop = scrollEl.scrollTop;
+		const ro = new ResizeObserver(() => {
+			if (scrollEl) viewportHeight = scrollEl.clientHeight;
+		});
+		ro.observe(scrollEl);
+		return () => ro.disconnect();
+	});
 </script>
 
 <div class="thread-list" bind:this={scrollEl} onscroll={onScroll}>
@@ -309,7 +309,9 @@ onMount(() => {
 								{#if attachedSessionHosts.length > 0}
 									<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
 										<span class="session-dot"></span>
-										<span class="session-host">{formatAttachedSessionLabel(attachedSessionHosts)}</span>
+										<span class="session-host"
+											>{formatAttachedSessionLabel(attachedSessionHosts)}</span
+										>
 									</span>
 								{/if}
 								<div class="spacer"></div>
@@ -561,8 +563,13 @@ onMount(() => {
 	}
 
 	@keyframes card-live-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.25; }
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.25;
+		}
 	}
 
 	.title {
@@ -662,6 +669,8 @@ onMount(() => {
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.live-dot { animation: none; }
+		.live-dot {
+			animation: none;
+		}
 	}
 </style>

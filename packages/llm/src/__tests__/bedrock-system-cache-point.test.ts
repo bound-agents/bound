@@ -136,8 +136,7 @@ describe("buildBedrockSystemMessage", () => {
 		expect(block?.role).toBe("system");
 		expect(block?.content).toBe("you are a helpful agent");
 		const opts = block?.providerOptions as
-			| { bedrock?: { cachePoint?: { type?: string } } }
-			| undefined;
+			{ bedrock?: { cachePoint?: { type?: string } } } | undefined;
 		expect(opts?.bedrock?.cachePoint?.type).toBe("default");
 	});
 
@@ -159,8 +158,7 @@ describe("buildBedrockSystemMessage", () => {
 			cacheTtl: "1h",
 		});
 		const opts = block?.providerOptions as
-			| { bedrock?: { cachePoint?: { ttl?: string } } }
-			| undefined;
+			{ bedrock?: { cachePoint?: { ttl?: string } } } | undefined;
 		expect(opts?.bedrock?.cachePoint?.ttl).toBe("1h");
 	});
 
@@ -170,8 +168,7 @@ describe("buildBedrockSystemMessage", () => {
 			cacheEnabled: true,
 		});
 		const opts = block?.providerOptions as
-			| { bedrock?: { cachePoint?: { ttl?: string } } }
-			| undefined;
+			{ bedrock?: { cachePoint?: { ttl?: string } } } | undefined;
 		expect(opts?.bedrock?.cachePoint?.ttl).toBeUndefined();
 	});
 });
@@ -259,8 +256,7 @@ describe("buildBedrockSystemMessage — property tests", () => {
 				if (!block) return false;
 				if (block.role !== "system") return false;
 				const opts = block.providerOptions as
-					| { bedrock?: { cachePoint?: { type?: string } } }
-					| undefined;
+					{ bedrock?: { cachePoint?: { type?: string } } } | undefined;
 				return opts?.bedrock?.cachePoint?.type === "default";
 			}),
 			{ numRuns: 100 },

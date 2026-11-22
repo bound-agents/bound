@@ -1,163 +1,163 @@
 <script lang="ts">
-import type { Advisory } from "@bound/shared";
-import { onDestroy, onMount, untrack } from "svelte";
-import Btn from "../components/Btn.svelte";
-import Page from "../components/Page.svelte";
-import SectionHeader from "../components/SectionHeader.svelte";
-import StatusChip from "../components/StatusChip.svelte";
-import TicketTab from "../components/TicketTab.svelte";
-import { client } from "../lib/bound";
-import { renderMarkdown } from "../lib/markdown";
-import { mermaid } from "../lib/mermaid";
-import { navigateTo } from "../lib/router";
+	import type { Advisory } from "@bound/shared";
+	import { onDestroy, onMount, untrack } from "svelte";
+	import Btn from "../components/Btn.svelte";
+	import Page from "../components/Page.svelte";
+	import SectionHeader from "../components/SectionHeader.svelte";
+	import StatusChip from "../components/StatusChip.svelte";
+	import TicketTab from "../components/TicketTab.svelte";
+	import { client } from "../lib/bound";
+	import { renderMarkdown } from "../lib/markdown";
+	import { mermaid } from "../lib/mermaid";
+	import { navigateTo } from "../lib/router";
 
-let advisories: Advisory[] = $state([]);
-let loading = $state(true);
-let expandedId = $state<string | null>(null);
-let resolvedExpanded = $state(false);
-let actionInProgress = $state<string | null>(null);
-let hostNameMap = $state<Map<string, string>>(new Map());
-let sort = $state<"modified-desc" | "modified-asc" | "posted-desc">("modified-desc");
+	let advisories: Advisory[] = $state([]);
+	let loading = $state(true);
+	let expandedId = $state<string | null>(null);
+	let resolvedExpanded = $state(false);
+	let actionInProgress = $state<string | null>(null);
+	let hostNameMap = $state<Map<string, string>>(new Map());
+	let sort = $state<"modified-desc" | "modified-asc" | "posted-desc">("modified-desc");
 
-let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
-type Severity = "warn" | "info";
+	type Severity = "warn" | "info";
 
-// Map Advisory.type → severity token. The prototype had "err" too, but the
-// production enum is just (info, warn), matching Service Advisory / Notice.
-function severityOf(a: Advisory): Severity {
-	const t = a.type as string;
-	if (t === "warn" || t === "warning" || t === "alert") return "warn";
-	return "info";
-}
-
-const SEV_LABEL: Record<Severity, { accent: string; label: string }> = {
-	warn: { accent: "var(--warn)", label: "Service Advisory" },
-	info: { accent: "var(--line-T)", label: "Notice" },
-};
-
-async function loadAdvisories(): Promise<void> {
-	try {
-		advisories = await client.listAdvisories();
-	} catch (error) {
-		console.error("Failed to load advisories:", error);
+	// Map Advisory.type → severity token. The prototype had "err" too, but the
+	// production enum is just (info, warn), matching Service Advisory / Notice.
+	function severityOf(a: Advisory): Severity {
+		const t = a.type as string;
+		if (t === "warn" || t === "warning" || t === "alert") return "warn";
+		return "info";
 	}
-	loading = false;
-}
 
-async function loadNetworkStatus(): Promise<void> {
-	try {
-		const data = await client.getNetwork();
-		if (Array.isArray(data.hosts)) {
-			const map = new Map<string, string>();
-			for (const host of data.hosts) {
-				const h = host as { site_id?: string; host_name?: string };
-				if (h.site_id && h.host_name) map.set(h.site_id, h.host_name);
+	const SEV_LABEL: Record<Severity, { accent: string; label: string }> = {
+		warn: { accent: "var(--warn)", label: "Service Advisory" },
+		info: { accent: "var(--line-T)", label: "Notice" },
+	};
+
+	async function loadAdvisories(): Promise<void> {
+		try {
+			advisories = await client.listAdvisories();
+		} catch (error) {
+			console.error("Failed to load advisories:", error);
+		}
+		loading = false;
+	}
+
+	async function loadNetworkStatus(): Promise<void> {
+		try {
+			const data = await client.getNetwork();
+			if (Array.isArray(data.hosts)) {
+				const map = new Map<string, string>();
+				for (const host of data.hosts) {
+					const h = host as { site_id?: string; host_name?: string };
+					if (h.site_id && h.host_name) map.set(h.site_id, h.host_name);
+				}
+				hostNameMap = map;
 			}
-			hostNameMap = map;
+		} catch (error) {
+			console.error("Failed to load network status:", error);
 		}
-	} catch (error) {
-		console.error("Failed to load network status:", error);
 	}
-}
 
-onMount(() => {
-	loadAdvisories();
-	loadNetworkStatus();
-	pollInterval = setInterval(loadAdvisories, 5000);
-});
+	onMount(() => {
+		loadAdvisories();
+		loadNetworkStatus();
+		pollInterval = setInterval(loadAdvisories, 5000);
+	});
 
-onDestroy(() => {
-	if (pollInterval !== null) clearInterval(pollInterval);
-});
+	onDestroy(() => {
+		if (pollInterval !== null) clearInterval(pollInterval);
+	});
 
-async function performAction(id: string, action: string): Promise<void> {
-	// #192: every state change carries a note recording why/what was done.
-	const note = window.prompt(`Add a note for "${action}" (required):`)?.trim();
-	if (!note) return;
-	actionInProgress = `${id}:${action}`;
-	try {
-		const actionMap: Record<string, (id: string, note: string) => Promise<unknown>> = {
-			approve: (id, note) => client.approveAdvisory(id, note),
-			dismiss: (id, note) => client.dismissAdvisory(id, note),
-			defer: (id, note) => client.deferAdvisory(id, note),
-			apply: (id, note) => client.applyAdvisory(id, note),
-		};
-		const fn = actionMap[action];
-		if (fn) {
-			await fn(id, note);
-			await loadAdvisories();
+	async function performAction(id: string, action: string): Promise<void> {
+		// #192: every state change carries a note recording why/what was done.
+		const note = window.prompt(`Add a note for "${action}" (required):`)?.trim();
+		if (!note) return;
+		actionInProgress = `${id}:${action}`;
+		try {
+			const actionMap: Record<string, (id: string, note: string) => Promise<unknown>> = {
+				approve: (id, note) => client.approveAdvisory(id, note),
+				dismiss: (id, note) => client.dismissAdvisory(id, note),
+				defer: (id, note) => client.deferAdvisory(id, note),
+				apply: (id, note) => client.applyAdvisory(id, note),
+			};
+			const fn = actionMap[action];
+			if (fn) {
+				await fn(id, note);
+				await loadAdvisories();
+			}
+		} catch (error) {
+			console.error(`Failed to ${action} advisory:`, error);
 		}
-	} catch (error) {
-		console.error(`Failed to ${action} advisory:`, error);
+		actionInProgress = null;
 	}
-	actionInProgress = null;
-}
 
-function toggleExpand(id: string): void {
-	expandedId = expandedId === id ? null : id;
-}
-
-function relativeTime(iso: string): string {
-	const diff = Date.now() - new Date(iso).getTime();
-	const mins = Math.floor(diff / 60_000);
-	if (mins < 1) return "just now";
-	if (mins < 60) return `${mins}m ago`;
-	const hours = Math.floor(mins / 60);
-	if (hours < 24) return `${hours}h ago`;
-	return `${Math.floor(hours / 24)}d ago`;
-}
-
-function hostLabel(a: Advisory): string {
-	if (!a.created_by) return "unknown";
-	return hostNameMap.get(a.created_by) ?? a.created_by.slice(0, 10);
-}
-
-function sortFn(a: Advisory, b: Advisory): number {
-	if (sort === "modified-desc") {
-		return new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime();
+	function toggleExpand(id: string): void {
+		expandedId = expandedId === id ? null : id;
 	}
-	if (sort === "modified-asc") {
-		return new Date(a.modified_at).getTime() - new Date(b.modified_at).getTime();
+
+	function relativeTime(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		const mins = Math.floor(diff / 60_000);
+		if (mins < 1) return "just now";
+		if (mins < 60) return `${mins}m ago`;
+		const hours = Math.floor(mins / 60);
+		if (hours < 24) return `${hours}h ago`;
+		return `${Math.floor(hours / 24)}d ago`;
 	}
-	return new Date(b.proposed_at).getTime() - new Date(a.proposed_at).getTime();
-}
 
-const unresolved = $derived(
-	advisories.filter((a) => ["proposed", "approved"].includes(a.status)).sort(sortFn),
-);
-
-const resolved = $derived(
-	advisories.filter((a) => !["proposed", "approved"].includes(a.status)).sort(sortFn),
-);
-
-// Markdown-rendered advisory details, keyed by `${id}::${detail-length}`.
-// Including the length (a cheap proxy for content identity) invalidates the
-// cache when a detail is edited, so a replaced advisory doesn't keep showing
-// the old HTML. Reads go through untrack() so the write-back in the .then()
-// handler doesn't retrigger the effect and create the kind of infinite
-// reactive loop that previously broke unrelated click handlers on the page.
-let renderedDetail = $state<Record<string, string>>({});
-
-function detailCacheKey(a: Advisory): string {
-	return `${a.id}::${a.detail?.length ?? 0}`;
-}
-
-$effect(() => {
-	for (const a of advisories) {
-		if (!a.detail) continue;
-		const key = detailCacheKey(a);
-		const cached = untrack(() => renderedDetail[key]);
-		if (cached) continue;
-		renderMarkdown(a.detail)
-			.then((html) => {
-				renderedDetail = { ...renderedDetail, [key]: html };
-			})
-			.catch((err: unknown) => {
-				console.error("[markdown] renderMarkdown failed:", err);
-			});
+	function hostLabel(a: Advisory): string {
+		if (!a.created_by) return "unknown";
+		return hostNameMap.get(a.created_by) ?? a.created_by.slice(0, 10);
 	}
-});
+
+	function sortFn(a: Advisory, b: Advisory): number {
+		if (sort === "modified-desc") {
+			return new Date(b.modified_at).getTime() - new Date(a.modified_at).getTime();
+		}
+		if (sort === "modified-asc") {
+			return new Date(a.modified_at).getTime() - new Date(b.modified_at).getTime();
+		}
+		return new Date(b.proposed_at).getTime() - new Date(a.proposed_at).getTime();
+	}
+
+	const unresolved = $derived(
+		advisories.filter((a) => ["proposed", "approved"].includes(a.status)).sort(sortFn),
+	);
+
+	const resolved = $derived(
+		advisories.filter((a) => !["proposed", "approved"].includes(a.status)).sort(sortFn),
+	);
+
+	// Markdown-rendered advisory details, keyed by `${id}::${detail-length}`.
+	// Including the length (a cheap proxy for content identity) invalidates the
+	// cache when a detail is edited, so a replaced advisory doesn't keep showing
+	// the old HTML. Reads go through untrack() so the write-back in the .then()
+	// handler doesn't retrigger the effect and create the kind of infinite
+	// reactive loop that previously broke unrelated click handlers on the page.
+	let renderedDetail = $state<Record<string, string>>({});
+
+	function detailCacheKey(a: Advisory): string {
+		return `${a.id}::${a.detail?.length ?? 0}`;
+	}
+
+	$effect(() => {
+		for (const a of advisories) {
+			if (!a.detail) continue;
+			const key = detailCacheKey(a);
+			const cached = untrack(() => renderedDetail[key]);
+			if (cached) continue;
+			renderMarkdown(a.detail)
+				.then((html) => {
+					renderedDetail = { ...renderedDetail, [key]: html };
+				})
+				.catch((err: unknown) => {
+					console.error("[markdown] renderMarkdown failed:", err);
+				});
+		}
+	});
 </script>
 
 <Page>
@@ -218,7 +218,9 @@ $effect(() => {
 										<div class="field-block">
 											<div class="kicker">Detail</div>
 											{#if renderedDetail[detailCacheKey(adv)]}
-												<div class="field-body md-content">{@html renderedDetail[detailCacheKey(adv)]}</div>
+												<div class="field-body md-content">
+													{@html renderedDetail[detailCacheKey(adv)]}
+												</div>
 											{:else}
 												<p class="field-body">{adv.detail}</p>
 											{/if}
@@ -308,10 +310,7 @@ $effect(() => {
 
 			{#if resolved.length > 0}
 				<div class="resolved-section">
-					<button
-						class="resolved-toggle"
-						onclick={() => (resolvedExpanded = !resolvedExpanded)}
-					>
+					<button class="resolved-toggle" onclick={() => (resolvedExpanded = !resolvedExpanded)}>
 						<span>Resolved · {resolved.length}</span>
 						<div class="spacer"></div>
 						<span class="resolved-caret mono">
@@ -347,7 +346,9 @@ $effect(() => {
 													<div class="field-block">
 														<div class="kicker">Detail</div>
 														{#if renderedDetail[detailCacheKey(adv)]}
-															<div class="field-body md-content">{@html renderedDetail[detailCacheKey(adv)]}</div>
+															<div class="field-body md-content">
+																{@html renderedDetail[detailCacheKey(adv)]}
+															</div>
 														{:else}
 															<p class="field-body">{adv.detail}</p>
 														{/if}

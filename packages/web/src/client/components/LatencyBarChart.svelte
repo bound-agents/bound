@@ -1,103 +1,103 @@
 <script lang="ts">
-import { scaleLinear } from "d3-scale";
-import { observeWidth } from "../lib/responsive-svg";
-import ChartTooltip from "./ChartTooltip.svelte";
+	import { scaleLinear } from "d3-scale";
+	import { observeWidth } from "../lib/responsive-svg";
+	import ChartTooltip from "./ChartTooltip.svelte";
 
-interface Props {
-	data: Array<{
-		peer_site_id: string;
-		avg_latency_ms: number;
-		p95_latency_ms: number;
-		success_count: number;
-		failure_count: number;
-	}>;
-}
+	interface Props {
+		data: Array<{
+			peer_site_id: string;
+			avg_latency_ms: number;
+			p95_latency_ms: number;
+			success_count: number;
+			failure_count: number;
+		}>;
+	}
 
-let { data }: Props = $props();
+	let { data }: Props = $props();
 
-// Tooltip state
-let tooltipVisible = $state(false);
-let tooltipX = $state(0);
-let tooltipY = $state(0);
-let tooltipLines = $state<string[]>([]);
-let containerEl: HTMLDivElement | undefined = $state(undefined);
+	// Tooltip state
+	let tooltipVisible = $state(false);
+	let tooltipX = $state(0);
+	let tooltipY = $state(0);
+	let tooltipLines = $state<string[]>([]);
+	let containerEl: HTMLDivElement | undefined = $state(undefined);
 
-// Track rendered width so SVG renders 1:1 with pixels (avoids text scaling).
-let measuredWidth = $state(700);
+	// Track rendered width so SVG renders 1:1 with pixels (avoids text scaling).
+	let measuredWidth = $state(700);
 
-// Sort data by avg latency descending
-const sortedData = $derived.by(() => {
-	return [...data].sort((a, b) => b.avg_latency_ms - a.avg_latency_ms);
-});
+	// Sort data by avg latency descending
+	const sortedData = $derived.by(() => {
+		return [...data].sort((a, b) => b.avg_latency_ms - a.avg_latency_ms);
+	});
 
-// Get the maximum p95 latency across all hosts for x scale domain
-const maxLatency = $derived.by(() => {
-	return Math.max(...sortedData.map((d) => d.p95_latency_ms), 1);
-});
+	// Get the maximum p95 latency across all hosts for x scale domain
+	const maxLatency = $derived.by(() => {
+		return Math.max(...sortedData.map((d) => d.p95_latency_ms), 1);
+	});
 
-// Latency-tier color (green / amber / red). The legend below shows these
-// tiers separately so viewers can decode bar color independently of the
-// avg/p95 distinction.
-const LATENCY_OK = "rgb(0, 200, 100)";
-const LATENCY_WARN = "rgb(255, 193, 7)";
-const LATENCY_BAD = "rgb(244, 67, 54)";
+	// Latency-tier color (green / amber / red). The legend below shows these
+	// tiers separately so viewers can decode bar color independently of the
+	// avg/p95 distinction.
+	const LATENCY_OK = "rgb(0, 200, 100)";
+	const LATENCY_WARN = "rgb(255, 193, 7)";
+	const LATENCY_BAD = "rgb(244, 67, 54)";
 
-const getColorForLatency = (latency: number, opacity = 1): string => {
-	if (latency < 500) return `rgba(0, 200, 100, ${opacity})`;
-	if (latency < 2000) return `rgba(255, 193, 7, ${opacity})`;
-	return `rgba(244, 67, 54, ${opacity})`;
-};
+	const getColorForLatency = (latency: number, opacity = 1): string => {
+		if (latency < 500) return `rgba(0, 200, 100, ${opacity})`;
+		if (latency < 2000) return `rgba(255, 193, 7, ${opacity})`;
+		return `rgba(244, 67, 54, ${opacity})`;
+	};
 
-// Calculate dimensions
-const rowHeight = 56;
-const padding = { top: 12, right: 16, bottom: 12, left: 180 };
-const contentWidth = $derived(Math.max(measuredWidth, 360));
-const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
+	// Calculate dimensions
+	const rowHeight = 56;
+	const padding = { top: 12, right: 16, bottom: 12, left: 180 };
+	const contentWidth = $derived(Math.max(measuredWidth, 360));
+	const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
 
-// X scale: linear from 0 to maxLatency with nice ticks
-const xScale = $derived.by(() => {
-	return scaleLinear()
-		.domain([0, maxLatency])
-		.range([0, contentWidth - padding.left - padding.right])
-		.nice();
-});
+	// X scale: linear from 0 to maxLatency with nice ticks
+	const xScale = $derived.by(() => {
+		return scaleLinear()
+			.domain([0, maxLatency])
+			.range([0, contentWidth - padding.left - padding.right])
+			.nice();
+	});
 
-const formatLatency = (ms: number): string => `${Math.round(ms)}ms`;
+	const formatLatency = (ms: number): string => `${Math.round(ms)}ms`;
 
-// Truncate site ID to last 8 chars for readability
-const truncateSiteId = (id: string): string => {
-	return id.length > 8 ? id.substring(id.length - 8) : id;
-};
+	// Truncate site ID to last 8 chars for readability
+	const truncateSiteId = (id: string): string => {
+		return id.length > 8 ? id.substring(id.length - 8) : id;
+	};
 
-function showTooltip(
-	event: MouseEvent,
-	d: {
-		peer_site_id: string;
-		avg_latency_ms: number;
-		p95_latency_ms: number;
-		success_count: number;
-		failure_count: number;
-	},
-	series: "avg" | "p95",
-): void {
-	if (!containerEl) return;
-	const rect = containerEl.getBoundingClientRect();
-	tooltipX = event.clientX - rect.left;
-	tooltipY = event.clientY - rect.top;
-	const total = d.success_count + d.failure_count;
-	tooltipLines = [
-		d.peer_site_id,
-		series === "avg"
-			? `Avg: ${formatLatency(d.avg_latency_ms)}`
-			: `P95: ${formatLatency(d.p95_latency_ms)}`,
-		`${d.success_count}/${total} successful`,
-	];
-	tooltipVisible = true;
-}
+	function showTooltip(
+		event: MouseEvent,
+		d: {
+			peer_site_id: string;
+			avg_latency_ms: number;
+			p95_latency_ms: number;
+			success_count: number;
+			failure_count: number;
+		},
+		series: "avg" | "p95",
+	): void {
+		if (!containerEl) return;
+		const rect = containerEl.getBoundingClientRect();
+		tooltipX = event.clientX - rect.left;
+		tooltipY = event.clientY - rect.top;
+		const total = d.success_count + d.failure_count;
+		tooltipLines = [
+			d.peer_site_id,
+			series === "avg"
+				? `Avg: ${formatLatency(d.avg_latency_ms)}`
+				: `P95: ${formatLatency(d.p95_latency_ms)}`,
+			`${d.success_count}/${total} successful`,
+		];
+		tooltipVisible = true;
+	}
 
-function hideTooltip(): void {
-	tooltipVisible = false;
-}
+	function hideTooltip(): void {
+		tooltipVisible = false;
+	}
 </script>
 
 <div

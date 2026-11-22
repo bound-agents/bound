@@ -82,11 +82,7 @@ export function markSyncWebSocketAttemptError(attempt: SyncWebSocketAttempt, err
 function finalize(
 	attempt: SyncWebSocketAttempt,
 	outcome:
-		| "rejected_authentication"
-		| "rejected_upgrade"
-		| "closed_cleanly"
-		| "closed_error"
-		| "error",
+		"rejected_authentication" | "rejected_upgrade" | "closed_cleanly" | "closed_error" | "error",
 	error: unknown,
 	now: number,
 ): void {

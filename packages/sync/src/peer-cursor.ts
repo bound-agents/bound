@@ -30,8 +30,7 @@ export function updatePeerCursor(
 		...updateKeys.map(
 			(key) =>
 				(updates[key as keyof typeof updates] ?? (key === "sync_errors" ? 0 : HLC_ZERO)) as
-					| number
-					| string,
+					number | string,
 		),
 		now,
 	];
