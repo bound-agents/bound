@@ -55,6 +55,19 @@ export const IDENTITY_MACH_LOOKUPS: readonly string[] = [
 	"com.apple.system.DirectoryService.membership",
 ];
 
+/**
+ * Mach services macOS name resolution goes through. `getaddrinfo(3)` asks
+ * mDNSResponder (`com.apple.dnssd.service`) and reads resolver configuration
+ * from configd; mxc 1.1.0's seatbelt profile allows neither, so with network
+ * "open" every hostname lookup still failed (`ssh: Could not resolve hostname`,
+ * curl exit 6) while connections by IP worked. Granted only when the network
+ * is open, since resolving names is part of reaching the network.
+ */
+export const DNS_MACH_LOOKUPS: readonly string[] = [
+	"com.apple.dnssd.service",
+	"com.apple.SystemConfiguration.DNSConfiguration",
+];
+
 export type SandboxNetwork = "open" | "blocked";
 export type SandboxOnUnavailable = "passthrough" | "error";
 

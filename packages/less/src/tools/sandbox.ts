@@ -26,7 +26,12 @@ import { Readable } from "node:stream";
 import type { ContainerRequest, MxcProcess } from "@microsoft/mxc-sdk/v1";
 import { ensureMxcRuntime } from "./mxc-runtime";
 import { createTreeKiller } from "./process-tree";
-import { IDENTITY_MACH_LOOKUPS, buildPolicy, nonInteractiveEnv } from "./sandbox-policy";
+import {
+	DNS_MACH_LOOKUPS,
+	IDENTITY_MACH_LOOKUPS,
+	buildPolicy,
+	nonInteractiveEnv,
+} from "./sandbox-policy";
 import type { ResolvedSandboxConfig, SandboxSpawnResult } from "./sandbox-policy";
 
 // Re-export the SDK-free surface so existing import sites (`./sandbox`) keep
@@ -223,7 +228,15 @@ export async function spawnSandboxed(
 		// (bubblewrap on Linux).
 		containment:
 			process.platform === "darwin"
-				? { type: "seatbelt", config: { extraMachLookups: [...IDENTITY_MACH_LOOKUPS] } }
+				? {
+						type: "seatbelt",
+						config: {
+							extraMachLookups: [
+								...IDENTITY_MACH_LOOKUPS,
+								...(cfg.network === "open" ? DNS_MACH_LOOKUPS : []),
+							],
+						},
+					}
 				: { type: "process" },
 	};
 	const proc = await spawn(request);

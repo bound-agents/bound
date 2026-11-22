@@ -138,6 +138,24 @@ describe.skipIf(!sandboxLive || nestedRunner)("spawnSandboxed (real enforcement)
 		expect(out).toContain("git-ok");
 	});
 
+	// Hostname resolution must work with network "open". mxc 1.1.0's seatbelt
+	// profile blocks the mDNSResponder Mach lookup, so getaddrinfo failed while
+	// connections by IP still worked; `git push` over SSH broke first.
+	it("resolves hostnames when the network is open", async () => {
+		const proc = await spawnSandboxed(
+			`python3 -c "import socket; socket.getaddrinfo('github.com', 443); print('dns-ok')"`,
+			process.cwd(),
+			enabled,
+		);
+		const [out, err, code] = await Promise.all([
+			proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+			proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
+			proc.exited,
+		]);
+		expect({ code, err: err.trim() }).toEqual({ code: 0, err: "" });
+		expect(out).toContain("dns-ok");
+	});
+
 	it("resolves the current user via getpwuid (whoami is not a bare uid)", async () => {
 		const proc = await spawnSandboxed("whoami", process.cwd(), enabled);
 		const [out, code] = await Promise.all([
