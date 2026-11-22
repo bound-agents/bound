@@ -94,26 +94,62 @@ function findSdkDir(): string {
 }
 
 /**
+ * Pick the koffi prebuild subdir for this host. Linux platform packages ship
+ * BOTH a glibc build (`linux_<arch>/`) and a musl build (`musl_<arch>/`) side by
+ * side; koffi's own loader chooses by reading the running interpreter, but we
+ * copy one file at build time, so the choice has to be explicit. Directory
+ * order from `readdirSync` is filesystem-dependent (ext4 listed `musl_x64`
+ * first on the release runner), so never take "the first one found".
+ */
+export function pickKoffiSubdir(
+	subdirs: readonly string[],
+	platform: NodeJS.Platform,
+	arch: string,
+	musl: boolean,
+): string | undefined {
+	const preferred = platform === "linux" && musl ? `musl_${arch}` : `${platform}_${arch}`;
+	if (subdirs.includes(preferred)) return preferred;
+	// Never fall back across libcs: a musl addon on a glibc host (or vice versa)
+	// fails at dlopen. Any other single candidate is fine (unusual layouts).
+	const others = subdirs.filter((s) => !s.startsWith("musl_") || musl);
+	return others.length === 1 ? others[0] : undefined;
+}
+
+/** True when the build host's libc is musl (Alpine and friends). */
+function hostIsMusl(): boolean {
+	if (process.platform !== "linux") return false;
+	for (const dir of ["/lib", "/usr/lib"]) {
+		try {
+			if (readdirSync(dir).some((n) => n.startsWith("ld-musl-"))) return true;
+		} catch {
+			// unreadable dir: keep looking
+		}
+	}
+	return false;
+}
+
+/**
  * Locate koffi's prebuilt native addon (`koffi.node`). koffi ships the binary in
  * a per-platform optional dependency (`@koromix/koffi-<platform>-<arch>`) whose
- * entry is `module.exports = require('./<triplet>/koffi.node')`. koffi is a
- * TRANSITIVE dependency of `@microsoft/mxc-sdk` (not hoisted to `packages/less`),
- * so resolve koffi from the SDK dir first, then the platform package from
- * koffi's own dir. Returns undefined when koffi (or its platform addon) isn't
- * installed for the host — the caller degrades to sandbox-unavailable.
+ * entry selects `./<triplet>/koffi.node` at runtime. koffi is a TRANSITIVE
+ * dependency of `@microsoft/mxc-sdk` (not hoisted to `packages/less`), so
+ * resolve koffi from the SDK dir first, then the platform package from koffi's
+ * own dir. Returns undefined when koffi (or its platform addon) isn't installed
+ * for the host — the caller degrades to sandbox-unavailable.
  */
 function findKoffiNode(sdkDir: string): string | undefined {
-	const platformPkg = `@koromix/koffi-${process.platform}-${sdkArch(process.arch)}`;
+	const arch = sdkArch(process.arch);
+	const platformPkg = `@koromix/koffi-${process.platform}-${arch}`;
 	try {
 		const koffiManifest = Bun.resolveSync("koffi/package.json", sdkDir);
 		const koffiDir = dirname(koffiManifest);
 		const manifest = Bun.resolveSync(`${platformPkg}/package.json`, koffiDir);
 		const pkgDir = dirname(manifest);
-		// The addon lives under a `<platform>_<arch>` subdir (e.g. darwin_arm64).
-		for (const sub of readdirSync(pkgDir)) {
-			const candidate = join(pkgDir, sub, "koffi.node");
-			if (existsSync(candidate)) return candidate;
-		}
+		const withAddon = readdirSync(pkgDir).filter((sub) =>
+			existsSync(join(pkgDir, sub, "koffi.node")),
+		);
+		const sub = pickKoffiSubdir(withAddon, process.platform, arch, hostIsMusl());
+		if (sub) return join(pkgDir, sub, "koffi.node");
 		// Fall back to a direct child if the layout is flat.
 		const flat = join(pkgDir, "koffi.node");
 		return existsSync(flat) ? flat : undefined;
@@ -213,4 +249,6 @@ function main(): void {
 	);
 }
 
-main();
+if (import.meta.main) {
+	main();
+}
