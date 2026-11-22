@@ -275,11 +275,14 @@ export function run(): void {
 		// packages) is unaffected — it never trips the global-file branch.
 		let lastExit = 0;
 		for (const dir of testableDirs) {
-			const proc = Bun.spawnSync(["bun", "test", toTestPathArg(dir), ...gateIgnoreArgs()], {
-				cwd: root,
-				stdout: "inherit",
-				stderr: "inherit",
-			});
+			const proc = Bun.spawnSync(
+				["bun", "--no-orphans", "test", toTestPathArg(dir), ...gateIgnoreArgs()],
+				{
+					cwd: root,
+					stdout: "inherit",
+					stderr: "inherit",
+				},
+			);
 			const exitCode = proc.exitCode ?? 1;
 			if (exitCode !== 0) {
 				console.error(`test-affected: ${dir} exited ${exitCode}`);
@@ -305,7 +308,14 @@ export function run(): void {
 	// "no test files are affected" exits 0, so a dir whose tests are all
 	// unreachable is not a failure.
 	const proc = Bun.spawnSync(
-		["bun", "test", ...testableDirs.map(toTestPathArg), ...gateIgnoreArgs(), "--changed"],
+		[
+			"bun",
+			"--no-orphans",
+			"test",
+			...testableDirs.map(toTestPathArg),
+			...gateIgnoreArgs(),
+			"--changed",
+		],
 		{
 			cwd: root,
 			stdout: "inherit",
