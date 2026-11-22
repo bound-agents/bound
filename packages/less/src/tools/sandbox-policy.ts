@@ -14,7 +14,14 @@
  * succeed, writes outside the writable set are denied, network is open.
  */
 import { spawnSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import {
+	accessSync,
+	constants as fsConstants,
+	lstatSync,
+	readdirSync,
+	realpathSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -236,7 +243,10 @@ export function buildPolicy(
 			// computeGitProtectedPaths for why. The in-process checkWritePath guard
 			// enforces the same carve-out for the TS file tools on every platform
 			// except Windows.
-			readonlyPaths: ["/", ...computeGitProtectedPaths(cwd, undefined, cfg.gitWorktreeMetadata)],
+			readonlyPaths: [
+				...readableRoots(platform),
+				...computeGitProtectedPaths(cwd, undefined, cfg.gitWorktreeMetadata),
+			],
 		},
 		// v1 directional network. All egress/ingress defaults are 'deny' when
 		// omitted, so "blocked" is the empty object (a full block). "open" must be
@@ -251,17 +261,56 @@ export function buildPolicy(
 }
 
 /**
- * Device nodes a shell needs to write even under write confinement. mxc 1.1.0
- * denies writes to `/dev/null` on both seatbelt and bubblewrap, which breaks
- * every `>/dev/null` redirect and `git status` ("could not open '/dev/null' for
- * reading and writing"). On macOS `/dev/fd` also backs `/dev/stdout` and
- * `/dev/stderr`; on Linux it is a symlink into `/proc`, so it is not granted.
- * These grant no persistent storage.
+ * Device nodes a shell needs to write even under write confinement. mxc 1.1.0's
+ * seatbelt profile denies writes to `/dev/null`, which breaks every `>/dev/null`
+ * redirect and `git status` ("could not open '/dev/null' for reading and
+ * writing"); `/dev/fd` backs `/dev/stdout` and `/dev/stderr`. These grant no
+ * persistent storage. Bubblewrap's private `/dev` is already writable as long
+ * as no readonly bind covers it (see {@link readableRoots}), so Linux needs none.
  */
 export function writableDevices(platform: NodeJS.Platform): string[] {
-	if (platform === "darwin") return ["/dev/null", "/dev/zero", "/dev/fd"];
-	if (platform === "linux") return ["/dev/null", "/dev/zero"];
-	return [];
+	return platform === "darwin" ? ["/dev/null", "/dev/zero", "/dev/fd"] : [];
+}
+
+/**
+ * Top-level directories a readonly bind can cover: real (non-symlink) entries
+ * the caller can traverse. Symlinks such as Ubuntu's `/bin -> usr/bin` resolve
+ * into a directory already in the list, and unreadable ones such as
+ * `/lost+found` grant nothing.
+ */
+function listBindableRootEntries(): string[] {
+	return readdirSync("/").filter((name) => {
+		const path = `/${name}`;
+		try {
+			if (!lstatSync(path).isDirectory()) return false;
+			accessSync(path, fsConstants.R_OK | fsConstants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	});
+}
+
+/** Kernel pseudo-filesystems bubblewrap sets up itself (step 4 of its launch). */
+const BWRAP_OWNED_ROOTS = new Set(["dev", "proc", "sys"]);
+
+/**
+ * The read-everywhere grant. Seatbelt takes "/" directly. Bubblewrap turns a
+ * readonly path into a bind mount inside a user namespace, where the kernel
+ * forces `nodev`; binding "/" lays a nodev copy of the host `/dev` over the
+ * private `/dev` bwrap builds, so opening `/dev/null` fails with EACCES. On
+ * Linux the grant is every top-level entry except `/dev`, `/proc` and `/sys`,
+ * which bwrap supplies itself.
+ */
+export function readableRoots(
+	platform: NodeJS.Platform,
+	listRoot: () => string[] = listBindableRootEntries,
+): string[] {
+	if (platform !== "linux") return ["/"];
+	return listRoot()
+		.filter((name) => !BWRAP_OWNED_ROOTS.has(name))
+		.sort()
+		.map((name) => `/${name}`);
 }
 
 /**

@@ -21,6 +21,7 @@ import {
 	decideSandboxSpawn,
 	formatWriteDenied,
 	nonInteractiveEnv,
+	readableRoots,
 	resolveSandboxConfig,
 } from "../tools/sandbox-policy";
 /**
@@ -102,7 +103,7 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 	};
 
 	it("grants the whole tree read-only so reads are unrestricted", () => {
-		const policy = buildPolicy(process.cwd(), enabled);
+		const policy = buildPolicy(process.cwd(), enabled, "darwin");
 		// The whole tree is granted read-only so reads stay unrestricted. The set
 		// may also carry the `.git` exec-surface carve-out when cwd is a real repo
 		// (see the ".git exec-surface protection" block) — assert membership of the
@@ -145,12 +146,17 @@ describe("buildPolicy (deny-writes-only contract)", () => {
 		}
 	});
 
-	it("grants writable device nodes on macOS and Linux", () => {
+	it("grants writable device nodes on macOS only", () => {
 		const mac = buildPolicy(process.cwd(), enabled, "darwin").filesystem.readwritePaths;
 		expect(mac).toEqual(expect.arrayContaining(["/dev/null", "/dev/zero", "/dev/fd"]));
 		const linux = buildPolicy(process.cwd(), enabled, "linux").filesystem.readwritePaths;
-		expect(linux).toEqual(expect.arrayContaining(["/dev/null", "/dev/zero"]));
-		expect(linux).not.toContain("/dev/fd");
+		expect(linux).not.toContain("/dev/null");
+	});
+
+	it("grants read on / directly except under bubblewrap, which keeps its own /dev /proc /sys", () => {
+		expect(readableRoots("darwin")).toEqual(["/"]);
+		const linux = readableRoots("linux", () => ["usr", "dev", "home", "proc", "sys", "etc"]);
+		expect(linux).toEqual(["/etc", "/home", "/usr"]);
 	});
 
 	it("denies both ingress fields on Linux, which bubblewrap requires", () => {
