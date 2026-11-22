@@ -339,3 +339,24 @@ describe("ChatView resize and yard static-item rendering", () => {
 		});
 	});
 });
+
+describe("ChatView /sandbox notice", () => {
+	it("shows the /sandbox confirmation once and clears it on the next submit", async () => {
+		const { stdin, lastFrame } = render(React.createElement(ChatView, makeProps()));
+		await tick();
+		await typeAndSubmit(stdin, "/sandbox off");
+		expect((lastFrame() ?? "").replace(/\s+/g, " ")).toContain("/sandbox: OFF for this thread");
+		await typeAndSubmit(stdin, "/help");
+		expect((lastFrame() ?? "").replace(/\s+/g, " ")).not.toContain("/sandbox: OFF for this thread");
+	});
+
+	it("replaces rather than stacks repeated /sandbox notices", async () => {
+		const { stdin, lastFrame } = render(React.createElement(ChatView, makeProps()));
+		await tick();
+		await typeAndSubmit(stdin, "/sandbox off");
+		await typeAndSubmit(stdin, "/sandbox on");
+		const out = (lastFrame() ?? "").replace(/\s+/g, " ");
+		expect(out).toContain("back to the configured default");
+		expect(out).not.toContain("/sandbox: OFF for this thread");
+	});
+});

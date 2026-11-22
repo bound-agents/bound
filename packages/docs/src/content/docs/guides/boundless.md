@@ -64,7 +64,7 @@ The sandbox default comes from the `sandbox` key in `~/.bound/less/config.json`.
 - `/sandbox allow <path>` — keep the sandbox on and grant one more writable path for this thread. Repeat to add several. The path must exist; a missing path is rejected.
 - `/sandbox on` — clear the override and return to the configured default.
 
-The override applies only to the current thread and only in memory: `/attach` to another thread uses that thread's override (none by default), `/clear` starts a new thread with none, and restarting `boundless` resets every override. A status-line indicator marks a thread whose sandbox is off or loosened, and each change prints a one-line notice in the transcript.
+The override applies only to the current thread and only in memory: `/attach` to another thread uses that thread's override (none by default), `/clear` starts a new thread with none, and restarting `boundless` resets every override. A status-line indicator marks a thread whose sandbox is off or loosened for as long as the override lasts. Each change also prints a short confirmation that clears on your next message, on a thread switch, or after a few seconds.
 
 The override is reachable only from `/sandbox` typed in the client. The agent cannot change its own confinement.
 

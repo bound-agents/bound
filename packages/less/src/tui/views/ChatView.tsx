@@ -65,6 +65,9 @@ import {
  * agree; a command in one and not the others is either undiscoverable or a
  * lie. takesArgs controls whether Tab-completion appends a trailing space.
  */
+/** How long a `/sandbox` confirmation stays on screen before clearing itself. */
+export const SANDBOX_NOTICE_MS = 8_000;
+
 export const CHAT_SLASH_COMPLETIONS = [
 	{ value: "/help", description: "Show available commands" },
 	{ value: "/model", description: "Switch model (picker without a name)", takesArgs: true },
@@ -537,11 +540,21 @@ export function ChatView({
 	const [sandboxOverride, setSandboxOverride] = useState<SandboxOverride | undefined>(() =>
 		sandboxOverrides.get(threadId),
 	);
-	// Ephemeral, client-only `/sandbox` confirmations rendered in the dynamic area
+	// Ephemeral, client-only `/sandbox` confirmation rendered in the dynamic area
 	// (not persisted — invariant #19 forbids `role: "system"` in the messages
-	// table, and these are session chrome, not turns). Newest last, capped so a
-	// long session doesn't accumulate notices.
-	const [sandboxNotices, setSandboxNotices] = useState<string[]>([]);
+	// table, and these are session chrome, not turns). Transient: it clears on the
+	// next submit, on a thread switch, or after SANDBOX_NOTICE_MS. The persistent
+	// reminder of an active override is the status-bar ⚠ line, not this notice.
+	const [sandboxNotice, setSandboxNotice] = useState<string | null>(null);
+	useEffect(() => {
+		if (sandboxNotice === null) return;
+		const timer = setTimeout(() => setSandboxNotice(null), SANDBOX_NOTICE_MS);
+		return () => clearTimeout(timer);
+	}, [sandboxNotice]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: threadId is the trigger — a switch drops the prior thread's notice
+	useEffect(() => {
+		setSandboxNotice(null);
+	}, [threadId]);
 	// Staged image attachment (Ctrl+V). Bytes, hash, and half-block preview
 	// are all prepared at paste time — the preview parks in the session cache
 	// under the content hash stamped into the block's description, so the
@@ -700,8 +713,7 @@ export function ChatView({
 	 * ACP method: the store's mutators live only here.
 	 */
 	const pushSandboxNotice = useCallback((line: string) => {
-		// Keep the last few; these are session chrome, not persisted turns.
-		setSandboxNotices((prev) => [...prev, line].slice(-5));
+		setSandboxNotice(line);
 	}, []);
 
 	const handleSandboxCommand = useCallback(
@@ -782,6 +794,7 @@ export function ChatView({
 
 		setCommandError(null);
 		setShowHelp(false);
+		setSandboxNotice(null);
 
 		if (input.startsWith("/")) {
 			const parts = input.slice(1).split(" ");
@@ -1039,21 +1052,12 @@ export function ChatView({
 						</Box>
 					)}
 
-					{/* Ephemeral `/sandbox` confirmations. Rendered in the dynamic area
-					    (not <Static>, not the messages table) following the system-notice
-					    pattern: a yellow stripe + concise one-liner so a sandbox change
-					    reads as a transcript event. Client-only, reset on restart. */}
-					{sandboxNotices.length > 0 && (
-						<Box flexDirection="column" marginBottom={1}>
-							{sandboxNotices.map((notice, i) => (
-								<Text
-									// biome-ignore lint/suspicious/noArrayIndexKey: notices are append-only and immutable once pushed
-									key={i}
-									color={tokens.systemStripe}
-								>
-									{notice}
-								</Text>
-							))}
+					{/* Transient `/sandbox` confirmation (dynamic area, not <Static>, not
+					    the messages table). Clears on the next submit, a thread switch,
+					    or after SANDBOX_NOTICE_MS. */}
+					{sandboxNotice && (
+						<Box marginBottom={1}>
+							<Text color={tokens.systemStripe}>{sandboxNotice}</Text>
 						</Box>
 					)}
 
