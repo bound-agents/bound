@@ -76,6 +76,7 @@ export const CHAT_SLASH_COMPLETIONS = [
 		description: "Show or override this thread's filesystem sandbox",
 		takesArgs: true,
 	},
+	{ value: "/clear", description: "Start a new thread" },
 ];
 
 /**
@@ -1164,7 +1165,7 @@ export function ChatView({
 						actions={[
 							{ keys: "/model", label: "switch model" },
 							{ keys: "/attach", label: "switch thread" },
-							{ keys: "/sandbox", label: "sandbox override" },
+							{ keys: "/mcp", label: "MCP config" },
 							{ keys: "Esc", label: "clear input" },
 							{ keys: "Ctrl-C", label: "exit" },
 						]}
