@@ -1497,7 +1497,7 @@ describe("RelayProcessor - executeInference", () => {
 			model: "us.amazon.nova-pro-v1:0",
 			maxOutputTokens: 8192,
 		});
-		const mockRouter = new ModelRouter(backends, "nova-pro", undefined, undefined, backendConfigs);
+		const mockRouter = new ModelRouter(backends, "nova-pro", undefined, backendConfigs);
 
 		const processor = new RelayProcessor(
 			db,

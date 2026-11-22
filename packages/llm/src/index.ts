@@ -74,15 +74,14 @@ export {
 	type UmansModelMeta,
 	type UmansUsage,
 } from "./umans-metadata";
-
 export {
 	createModelRouter,
 	ModelRouter,
-	PooledBackend,
+	makeRouteId,
 	type BackendInfo,
-	type PoolEntry,
+	type RouteEntry,
+	type RouteId,
 } from "./model-router";
-
 export {
 	markAwsCredentialCacheStale,
 	consumeAwsCredentialCacheBust,
@@ -99,3 +98,9 @@ export {
 export { installAiSdkWarningHook, uninstallAiSdkWarningHook } from "./ai-sdk-warning-hook";
 
 export { createLoggingFetch } from "./fetch-logger";
+
+export {
+	LLMRefusalError,
+	classifyGeminiInteractions400,
+	type ModelDeclinedOutcome,
+} from "./model-declined";

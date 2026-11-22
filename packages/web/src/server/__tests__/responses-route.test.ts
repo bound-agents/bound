@@ -88,7 +88,7 @@ class StubBackend implements LLMBackend {
  */
 function routerWith(modelId: string, backend: LLMBackend): ModelRouter {
 	const router = new ModelRouter(new Map(), modelId);
-	router.addDynamicBackend(modelId, backend, CAPS, 1);
+	router.addDynamicBackend(modelId, backend, CAPS);
 	return router;
 }
 
@@ -283,7 +283,7 @@ describe("POST /v1/responses — non-streaming", () => {
 		);
 		// Cap the backend at 100 output tokens so a larger request is clamped.
 		const router = new ModelRouter(new Map(), "m");
-		router.addDynamicBackend("m", backend, CAPS, 1, 100);
+		router.addDynamicBackend("m", backend, CAPS, 100);
 		const app = createResponsesRoutes(db, router, bus, SITE_ID);
 		const res = await app.request("/", {
 			method: "POST",

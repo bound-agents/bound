@@ -54,8 +54,8 @@ export interface EligibleHost {
 	};
 	/** Per-response output-token ceiling from the matching HostModelEntry. */
 	maxOutputTokens?: number;
-	/** Tier preference (lower = preferred). Present for verified hosts only. */
-	tier?: number;
+	/** Advertised RouteId (`${siteId}:${provider}:${backendId}`), when present. */
+	routeId?: string;
 	/** Bound-side reasoning transport advertised by the serving host. */
 	thinkingMode?: "tool";
 	/**
@@ -206,7 +206,7 @@ export function findEligibleHostsByModel(
 				typeof entry === "object" &&
 				typeof (entry as HostModelEntry).id === "string"
 			) {
-				// New object format: HostModelEntry with id, tier, capabilities
+				// New object format: HostModelEntry with id, route metadata, capabilities
 				const hostEntry = entry as HostModelEntry;
 				if (hostEntry.id !== modelId) continue;
 
@@ -218,7 +218,7 @@ export function findEligibleHostsByModel(
 					modified_at: row.modified_at,
 					capabilities: hostEntry.capabilities,
 					maxOutputTokens: hostEntry.max_output_tokens,
-					tier: hostEntry.tier,
+					routeId: hostEntry.route_id,
 					thinkingMode: hostEntry.thinking_mode,
 					unverified: false,
 				};
@@ -260,22 +260,17 @@ export function findEligibleHostsByModel(
 		return { ok: false, error: `Model "${modelId}" not available on any remote host` };
 	}
 
-	// Sort: by tier (ascending, lower is better), then by freshness (descending)
+	// Sort deterministically without consulting heartbeat freshness (R-RT8):
+	// verified before unverified, then stable RouteId lexical order (falling back
+	// to site_id when a legacy advertisement carries no route_id). Heartbeat
+	// timestamps gate liveness (staleness filtering upstream) only; they never
+	// break ties between live routes. `tier` is gone (R-RT3).
 	eligible.sort((a, b) => {
-		// Verified before unverified
 		if (!a.unverified && b.unverified) return -1;
 		if (a.unverified && !b.unverified) return 1;
-		// By tier (lower tier = preferred)
-		const tierA = a.tier ?? 99;
-		const tierB = b.tier ?? 99;
-		if (tierA !== tierB) return tierA - tierB;
-		// By freshness (most recent first), modified_at preferred over online_at
-		const aTs = a.modified_at ?? a.online_at;
-		const bTs = b.modified_at ?? b.online_at;
-		if (!aTs && !bTs) return 0;
-		if (!aTs) return 1;
-		if (!bTs) return -1;
-		return new Date(bTs).getTime() - new Date(aTs).getTime();
+		const aKey = a.routeId ?? a.site_id;
+		const bKey = b.routeId ?? b.site_id;
+		return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
 	});
 
 	return { ok: true, hosts: eligible };
@@ -332,7 +327,6 @@ export function findAnyRemoteModel(
 			if (!modelId) continue;
 
 			const hostEntry = entry && typeof entry === "object" ? (entry as HostModelEntry) : undefined;
-			const tier = hostEntry?.tier ?? 99;
 			const capabilities = hostEntry?.capabilities;
 
 			candidates.push({
@@ -341,7 +335,7 @@ export function findAnyRemoteModel(
 				sync_url: row.sync_url,
 				online_at: row.online_at,
 				modified_at: row.modified_at,
-				tier,
+				routeId: hostEntry?.route_id,
 				capabilities,
 				maxOutputTokens: hostEntry?.max_output_tokens,
 				thinkingMode: hostEntry?.thinking_mode,
@@ -354,17 +348,13 @@ export function findAnyRemoteModel(
 		return { ok: false, error: "No remote inference backends available in cluster" };
 	}
 
-	// Sort: lower tier first, then most recently active
+	// Sort deterministically without heartbeat freshness (R-RT8): stable RouteId
+	// lexical order, falling back to site_id when no route_id is advertised.
+	// `tier` is gone (R-RT3).
 	candidates.sort((a, b) => {
-		const tierA = a.tier ?? 99;
-		const tierB = b.tier ?? 99;
-		if (tierA !== tierB) return tierA - tierB;
-		const aTs = a.modified_at ?? a.online_at;
-		const bTs = b.modified_at ?? b.online_at;
-		if (!aTs && !bTs) return 0;
-		if (!aTs) return 1;
-		if (!bTs) return -1;
-		return new Date(bTs).getTime() - new Date(aTs).getTime();
+		const aKey = a.routeId ?? a.site_id;
+		const bKey = b.routeId ?? b.site_id;
+		return aKey < bKey ? -1 : aKey > bKey ? 1 : 0;
 	});
 
 	const best = candidates[0];
@@ -377,7 +367,7 @@ export function findAnyRemoteModel(
 				sync_url: best.sync_url,
 				online_at: best.online_at,
 				modified_at: best.modified_at,
-				tier: best.tier,
+				routeId: best.routeId,
 				capabilities: best.capabilities,
 				maxOutputTokens: best.maxOutputTokens,
 				thinkingMode: best.thinkingMode,

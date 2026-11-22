@@ -40,8 +40,6 @@ export {
 export {
 	MAX_MODEL_RECONNECT_WAIT_MS,
 	resolveModel,
-	resolveModelTier,
-	resolveSameTierFallback,
 	waitForModelResolution,
 } from "./model-resolution";
 export { createModelCommandSpec } from "./platform-command-handlers";

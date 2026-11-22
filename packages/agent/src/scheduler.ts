@@ -920,9 +920,6 @@ interface SchedulerConfig {
 	) => { ok: true } | { ok: false; error: string; permanent?: boolean };
 	/** Live node default used after task and thread model hints. */
 	modelDefaultResolver?: () => string;
-	/** Optional tier resolver for cost-equivalent fallback. Returns the tier (1-5)
-	 *  for a model ID, or null if the model is not in the local router. */
-	modelTierResolver?: (modelId: string) => number | null;
 	/**
 	 * Optional callback to generate a thread title after a task's agent loop completes.
 	 * Called with the thread ID; fire-and-forget (errors are logged, not propagated).
@@ -2315,17 +2312,12 @@ export class Scheduler {
 					this.config.modelDefaultResolver?.() ?? "default",
 					task.id,
 				);
-				const modelTier = this.config.modelTierResolver
-					? (this.config.modelTierResolver(modelId) ?? undefined)
-					: undefined;
-
 				const loopConfig: AgentLoopConfig = {
 					threadId,
 					taskId: task.id,
 					taskType: task.type,
 					userId: "system",
 					modelId,
-					modelTier,
 					noHistory: task.no_history === 1,
 					systemPromptAddition: task.system_prompt_addition ?? undefined,
 					// Progress-driven heartbeat. The setInterval-driven heartbeat at

@@ -10,7 +10,6 @@ import { CopilotTokenManager, FileCopilotTokenStore } from "./drivers/github-cop
 import { OpenAICompatibleDriver } from "./drivers/openai-compatible";
 import { OpenCodeGoDriver } from "./drivers/opencode-go";
 import { UmansDriver, createUmansAccount } from "./drivers/umans";
-import { LLMRefusalError } from "./model-declined";
 import type {
 	BackendCapabilities,
 	BackendConfig,
@@ -18,148 +17,59 @@ import type {
 	LLMBackend,
 	ModelBackendsConfig,
 } from "./types";
-import type { ChatParams, StreamChunk } from "./types";
+import type { ChatParams } from "./types";
 import { LLMError } from "./types";
 export interface BackendInfo {
 	id: string;
 	capabilities: BackendCapabilities;
 }
 
-export interface PoolEntry {
-	backend: LLMBackend;
-	tier: number;
-	pricePerMInput: number;
+/**
+ * A concrete serving endpoint identity (`2026-11-21-model-routing.md` §3.1,
+ * R-RT1): `RouteId = ${siteId}:${provider}:${backendId}`. This is the routing,
+ * health, pinning, and per-turn provenance identity. It is DISTINCT from
+ * `reasoning_origin` (`${siteId}:${provider}[:${detail}]`), the provider
+ * mint-provenance stamp carried on encrypted reasoning blocks (44206fda),
+ * where `detail` disambiguates provider deployments (e.g. Bedrock Mantle
+ * `region:mode`) rather than `backendId`. The two are never conflated.
+ */
+export type RouteId = `${string}:${string}:${string}`;
+
+/** Build a {@link RouteId} from its three components. */
+export function makeRouteId(siteId: string, provider: string, backendId: string): RouteId {
+	return `${siteId}:${provider}:${backendId}`;
 }
 
-// Exponential backoff constants for pooled backend cooldowns
-const BACKOFF_BASE_MS = 30_000; // 30s initial cooldown
-const BACKOFF_MAX_MS = 4 * 3600_000; // 4h cap — prevents runaway backoff from degraded networks
-const BACKOFF_MULTIPLIER = 2;
-const BACKOFF_RESET_MS = 10 * 60_000; // 10min of success resets consecutive failure count
+/**
+ * A local route entry in the flat {@link ModelRouter} registry. Each carries
+ * its {@link RouteId} (addressing/ranking/health/stickiness) and, separately,
+ * its provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`, for
+ * encrypted-reasoning keep/drop compatibility at the driver boundary). The two
+ * properties are never conflated (R-RT1).
+ */
+export interface RouteEntry {
+	routeId: RouteId;
+	reasoningOrigin: string;
+	backend: LLMBackend;
+	capabilities: BackendCapabilities;
+}
 
 /** Copilot token managers keyed by token-store path; every backend over one file shares one. */
 const copilotTokenManagers = new Map<string, CopilotTokenManager>();
-
-/**
- * Wraps multiple backends under the same logical ID.
- * Sorted by tier (ascending, best first), then by input price (ascending, cheapest first).
- * On rate-limit (429), payment required (402), or server errors (5xx), marks the sub-backend with exponential backoff
- * and falls through to the next. Cooldown caps at BACKOFF_MAX_MS.
- * Consecutive failure count resets after BACKOFF_RESET_MS of successful use.
- */
-export class PooledBackend implements LLMBackend {
-	private entries: PoolEntry[];
-	private rateLimited: Map<number, number>; // index → expiry timestamp (ms)
-	private consecutiveFailures: Map<number, number>; // index → failure count
-	private lastSuccess: Map<number, number>; // index → last success timestamp (ms)
-	private mergedCaps: BackendCapabilities;
-
-	constructor(entries: PoolEntry[]) {
-		if (entries.length === 0) throw new Error("PooledBackend requires at least one backend");
-		this.entries = [...entries].sort(
-			(a, b) => a.tier - b.tier || a.pricePerMInput - b.pricePerMInput,
-		);
-		this.rateLimited = new Map();
-		this.consecutiveFailures = new Map();
-		this.lastSuccess = new Map();
-		this.mergedCaps = this.mergeCaps();
-	}
-
-	private mergeCaps(): BackendCapabilities {
-		const caps = this.entries.map((e) => e.backend.capabilities());
-		return {
-			streaming: caps.some((c) => c.streaming),
-			tool_use: caps.some((c) => c.tool_use),
-			system_prompt: caps.some((c) => c.system_prompt),
-			prompt_caching: caps.some((c) => c.prompt_caching),
-			vision: caps.some((c) => c.vision),
-			extended_thinking: caps.some((c) => c.extended_thinking),
-			max_context: caps.some((c) => c.max_context !== undefined)
-				? Math.max(...caps.map((c) => c.max_context ?? Number.NEGATIVE_INFINITY))
-				: undefined,
-		};
-	}
-
-	private computeBackoff(idx: number): number {
-		const failures = this.consecutiveFailures.get(idx) ?? 0;
-		return Math.min(BACKOFF_BASE_MS * BACKOFF_MULTIPLIER ** failures, BACKOFF_MAX_MS);
-	}
-
-	private getAvailable(): PoolEntry[] {
-		const now = Date.now();
-		for (const [idx, expiry] of this.rateLimited) {
-			if (now >= expiry) this.rateLimited.delete(idx);
-		}
-		return this.entries.filter((_, i) => !this.rateLimited.has(i));
-	}
-
-	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
-		const available = this.getAvailable();
-		// If all rate-limited, try all anyway (they may have recovered)
-		const candidates = available.length > 0 ? available : this.entries;
-		let lastError: unknown;
-
-		for (const entry of candidates) {
-			const idx = this.entries.indexOf(entry);
-			try {
-				yield* entry.backend.chat(params);
-				// Success — reset consecutive failures if enough time has passed,
-				// or record the success timestamp for future resets
-				const lastOk = this.lastSuccess.get(idx) ?? 0;
-				const now = Date.now();
-				if (now - lastOk >= BACKOFF_RESET_MS) {
-					this.consecutiveFailures.delete(idx);
-				}
-				this.lastSuccess.set(idx, now);
-				return;
-			} catch (error) {
-				lastError = error;
-				// A classified model refusal is NOT a route failure: the request
-				// reached the model and a safety/policy classifier declined it.
-				// Backing off this entry and retrying the same model on the next
-				// pool entry can never get past the refusal, so surface it
-				// immediately without marking the route unhealthy (R-RT15).
-				if (error instanceof LLMRefusalError) {
-					throw error;
-				}
-				if (error instanceof LLMError && error.statusCode !== undefined) {
-					const isRateLimit = error.statusCode === 429;
-					const isPaymentRequired = error.statusCode === 402;
-					const isServerError = error.statusCode >= 500;
-					const isBadRequest = error.statusCode === 400;
-					if (isRateLimit || isPaymentRequired || isServerError || isBadRequest) {
-						const failures = (this.consecutiveFailures.get(idx) ?? 0) + 1;
-						this.consecutiveFailures.set(idx, failures);
-						// Use provider's Retry-After if available, otherwise exponential backoff
-						const cooldown = error.retryAfterMs || this.computeBackoff(idx);
-						this.rateLimited.set(idx, Date.now() + cooldown);
-						continue;
-					}
-				}
-				// Network errors (TLS failures, DNS, etc.) should also fall through to
-				// the next pool entry rather than killing the entire request
-				if (!(error instanceof LLMError) && candidates.indexOf(entry) < candidates.length - 1) {
-					continue;
-				}
-				throw error; // Other client errors (4xx except 400/402/429) propagate immediately
-			}
-		}
-
-		throw lastError;
-	}
-
-	capabilities(): BackendCapabilities {
-		return this.mergedCaps;
-	}
-}
 
 export class ModelRouter {
 	private backends: Map<string, LLMBackend>;
 	private defaultId: string;
 	private effectiveCaps: Map<string, BackendCapabilities>;
-	private rateLimits: Map<string, number>; // backendId → expiry timestamp (ms)
-	private tiers: Map<string, number>; // backendId → tier number
+	private rateLimits: Map<string, number>; // backendId → cooldown expiry timestamp (ms)
 	private backendConfigs: Map<string, BackendConfig>; // backendId → raw config
+	/**
+	 * Per-backendId route identity: the `RouteId` (`${siteId}:${provider}:${backendId}`)
+	 * and the provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`). Kept
+	 * distinct (R-RT1): `RouteId` governs addressing/ranking/health/stickiness while
+	 * `reasoningOrigin` governs encrypted-reasoning keep/drop at the driver boundary.
+	 */
+	private routeIdentities: Map<string, { routeId: RouteId; reasoningOrigin: string }>;
 	private clock: () => number;
 	/**
 	 * Generic readiness gate (parallel to rateLimits): ids of backends whose
@@ -175,10 +85,10 @@ export class ModelRouter {
 		backends: Map<string, LLMBackend>,
 		defaultId: string,
 		effectiveCaps?: Map<string, BackendCapabilities>,
-		tiers?: Map<string, number>,
 		backendConfigs?: Map<string, BackendConfig>,
 		notReady?: Set<string>,
 		clock: () => number = Date.now,
+		routeIdentities?: Map<string, { routeId: RouteId; reasoningOrigin: string }>,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -186,9 +96,9 @@ export class ModelRouter {
 			effectiveCaps ??
 			new Map(Array.from(backends.entries()).map(([id, b]) => [id, b.capabilities()]));
 		this.rateLimits = new Map();
-		this.tiers = tiers ?? new Map();
 		this.backendConfigs = backendConfigs ?? new Map();
 		this.clock = clock;
+		this.routeIdentities = routeIdentities ?? new Map();
 		this.notReady =
 			notReady ??
 			new Set(
@@ -225,7 +135,7 @@ export class ModelRouter {
 		this.backends = next.backends;
 		this.defaultId = next.defaultId;
 		this.effectiveCaps = next.effectiveCaps;
-		this.tiers = next.tiers;
+		this.routeIdentities = next.routeIdentities;
 		this.backendConfigs = next.backendConfigs;
 		this.rateLimits = new Map();
 		// Re-seed not-ready from the freshly-constructed readiness backends.
@@ -371,19 +281,19 @@ export class ModelRouter {
 	/**
 	 * Add (or replace) a concrete model backend at runtime — e.g. when a
 	 * dynamic provider's lineup fetch resolves and materializes one backend per
-	 * model id. Sets the backend, its effective caps, and its tier; clears any
+	 * model id. Sets the backend, its effective caps, and (optionally) its route
 	 * not-ready flag for the id.
 	 */
 	addDynamicBackend(
 		id: string,
 		backend: LLMBackend,
 		caps: BackendCapabilities,
-		tier?: number,
 		maxOutputTokens?: number,
+		routeIdentity?: { routeId: RouteId; reasoningOrigin: string },
 	): void {
 		this.backends.set(id, backend);
 		this.effectiveCaps.set(id, caps);
-		if (typeof tier === "number") this.tiers.set(id, tier);
+		if (routeIdentity) this.routeIdentities.set(id, routeIdentity);
 		// Record the per-model output budget so getMaxOutputTokens resolves it.
 		// Dynamic backends (e.g. umans models fetched at warmup) have no static
 		// config row in backendConfigs; without this the loop sends no max_tokens
@@ -404,7 +314,7 @@ export class ModelRouter {
 	removeBackend(id: string): void {
 		this.backends.delete(id);
 		this.effectiveCaps.delete(id);
-		this.tiers.delete(id);
+		this.routeIdentities.delete(id);
 		this.notReady.delete(id);
 		this.rateLimits.delete(id);
 	}
@@ -458,11 +368,6 @@ export class ModelRouter {
 			}
 		}
 		return earliest;
-	}
-
-	/** Returns the tier for a backend ID, or null if not registered. */
-	getBackendTier(id: string): number | null {
-		return this.tiers.get(id) ?? null;
 	}
 
 	/**
@@ -586,11 +491,22 @@ export class ModelRouter {
 	}
 
 	/**
-	 * Returns all backends matching the given tier that are not rate-limited and
-	 * satisfy the given capability requirements.
+	 * Returns the `RouteId` (`${siteId}:${provider}:${backendId}`) for a
+	 * registered backend, or null if the backend has no recorded route identity
+	 * (e.g. a dynamic backend registered without a site id). R-RT1.
 	 */
-	listEligibleByTier(tier: number, requirements?: CapabilityRequirements): BackendInfo[] {
-		return this.listEligible(requirements).filter((b) => this.tiers.get(b.id) === tier);
+	getRouteId(backendId: string): RouteId | null {
+		return this.routeIdentities.get(backendId)?.routeId ?? null;
+	}
+
+	/**
+	 * Returns the provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`)
+	 * recorded for a backend, or null if none. DISTINCT from {@link getRouteId}:
+	 * this is the encrypted-reasoning mint-provenance stamp (44206fda), never the
+	 * routing identity (R-RT1).
+	 */
+	getReasoningOrigin(backendId: string): string | null {
+		return this.routeIdentities.get(backendId)?.reasoningOrigin ?? null;
 	}
 }
 
@@ -831,8 +747,8 @@ interface RouterState {
 	backends: Map<string, LLMBackend>;
 	defaultId: string;
 	effectiveCaps: Map<string, BackendCapabilities>;
-	tiers: Map<string, number>;
 	backendConfigs: Map<string, BackendConfig>;
+	routeIdentities: Map<string, { routeId: RouteId; reasoningOrigin: string }>;
 }
 
 function buildRouterState(
@@ -841,8 +757,14 @@ function buildRouterState(
 	fetchByBackendId?: Map<string, typeof globalThis.fetch>,
 	siteId?: string,
 ): RouterState {
-	// Group backend configs by ID to support pooling (multiple providers for the same logical model)
-	const groups = new Map<string, { entries: PoolEntry[]; caps: BackendCapabilities[] }>();
+	// ModelRouter is a flat local route registry (R-RT1): one route per backend
+	// id, no same-id pooling. Same-model pooling across providers/hosts is
+	// subsumed by unified candidate ranking in resolveModel (§5.1), and per-entry
+	// backoff by the per-RouteId cooldown (markRateLimited / #285 route health).
+	const backends = new Map<string, LLMBackend>();
+	const effectiveCaps = new Map<string, BackendCapabilities>();
+	const backendConfigs = new Map<string, BackendConfig>();
+	const routeIdentities = new Map<string, { routeId: RouteId; reasoningOrigin: string }>();
 
 	for (const backendConfig of config.backends) {
 		const fetchOverride = fetchByBackendId?.get(backendConfig.id);
@@ -852,53 +774,28 @@ function buildRouterState(
 			(backendConfig.capabilities as Partial<BackendCapabilities> | undefined) ?? {};
 		const effectiveCap = { ...baseline, ...capOverride };
 
-		const entry: PoolEntry = {
-			backend,
-			tier: (backendConfig.tier as number | undefined) ?? 3,
-			pricePerMInput: (backendConfig.pricePerMInput as number | undefined) ?? 0,
-		};
-
-		const existing = groups.get(backendConfig.id);
-		if (existing) {
-			existing.entries.push(entry);
-			existing.caps.push(effectiveCap);
-		} else {
-			groups.set(backendConfig.id, { entries: [entry], caps: [effectiveCap] });
-		}
-	}
-
-	// Build final maps — pool backends with shared IDs
-	const backends = new Map<string, LLMBackend>();
-	const effectiveCaps = new Map<string, BackendCapabilities>();
-	const tiers = new Map<string, number>();
-	const backendConfigs = new Map<string, BackendConfig>();
-
-	for (const [id, group] of groups) {
-		// Use the best (lowest) tier among pooled entries
-		const bestTier = Math.min(...group.entries.map((e) => e.tier));
-		tiers.set(id, bestTier);
-		// Store the first backend config for thinking config extraction
-		if (!backendConfigs.has(id)) {
-			const firstConfig = config.backends.find((b) => b.id === id);
-			if (firstConfig) backendConfigs.set(id, firstConfig);
-		}
-
-		if (group.entries.length === 1) {
-			backends.set(id, group.entries[0].backend);
-			effectiveCaps.set(id, group.caps[0]);
-		} else {
-			// Multiple backends share this ID — wrap in a PooledBackend
-			const pooled = new PooledBackend(group.entries);
-			backends.set(id, pooled);
-			// Merge effective caps: best of all sub-backends
-			effectiveCaps.set(id, pooled.capabilities());
+		// A later duplicate id overwrites the earlier one (last-wins). Pooling of
+		// multiple providers under one id is gone; an operator who wants two
+		// providers for one logical model gives them distinct backend ids and the
+		// catalog's logical_model grouping (slice 6) pools them for ranking.
+		backends.set(backendConfig.id, backend);
+		effectiveCaps.set(backendConfig.id, effectiveCap);
+		backendConfigs.set(backendConfig.id, backendConfig);
+		if (siteId !== undefined) {
+			const provider = backendConfig.provider;
+			routeIdentities.set(backendConfig.id, {
+				routeId: makeRouteId(siteId, provider, backendConfig.id),
+				// `reasoningOrigin` detail (region:mode) is driver-owned and stamped
+				// at mint time; the router records only the provider-level stem here.
+				reasoningOrigin: `${siteId}:${provider}`,
+			});
 		}
 	}
 
 	// Hub-only mode: empty backends array is valid (inference proxied to spokes).
 	// In this case the default is "" and no local backends are available.
 	if (config.backends.length === 0) {
-		return { backends, defaultId: "", effectiveCaps, tiers, backendConfigs };
+		return { backends, defaultId: "", effectiveCaps, backendConfigs, routeIdentities };
 	}
 
 	// Verify default backend exists
@@ -907,7 +804,7 @@ function buildRouterState(
 		throw new LLMError(`Default backend "${config.default}" not found in backends`, "router");
 	}
 
-	return { backends, defaultId: config.default, effectiveCaps, tiers, backendConfigs };
+	return { backends, defaultId: config.default, effectiveCaps, backendConfigs, routeIdentities };
 }
 
 export interface CreateModelRouterOptions {
@@ -952,9 +849,9 @@ export function createModelRouter(
 		state.backends,
 		state.defaultId,
 		state.effectiveCaps,
-		state.tiers,
 		state.backendConfigs,
 		undefined,
 		options?.clock,
+		state.routeIdentities,
 	);
 }

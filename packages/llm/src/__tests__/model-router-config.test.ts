@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { PooledBackend, createModelRouter } from "../model-router";
-import type { ChatParams, LLMBackend, ModelBackendsConfig, StreamChunk } from "../types";
-import { LLMError } from "../types";
+import { createModelRouter } from "../model-router";
+import type { ModelBackendsConfig } from "../types";
 
 // createBackendFromConfig is the dominant uncovered block in model-router.ts:
 // the per-provider driver-construction switch. Each case is reachable by
@@ -163,97 +162,33 @@ describe("createBackendFromConfig — driver construction per provider", () => {
 	});
 });
 
-describe("buildRouterState — pooling backends under a shared id", () => {
-	it("pools two backends under one id, merging tier to the best (lowest)", () => {
-		// Two configs with the SAME id are pooled into a PooledBackend; the merged
-		// backend takes the lowest tier.
+describe("buildRouterState — flat registry (R-RT1, slice 2)", () => {
+	it("keeps the last entry when two configs share an id (no pooling)", () => {
+		// PooledBackend is gone: two entries sharing an id no longer merge into a
+		// pool. The flat registry is last-wins, so the operator surface lists one
+		// route per id and the later entry's capabilities win.
 		const router = createModelRouter({
 			backends: [
 				{
-					id: "pooled",
+					id: "dup",
 					provider: "openai-compatible",
 					apiKey: "k",
 					model: "m",
 					baseUrl: "http://localhost:1",
-					tier: 3,
+					contextWindow: 4096,
 				},
 				{
-					id: "pooled",
+					id: "dup",
 					provider: "cerebras",
 					apiKey: "k",
 					model: "m",
-					tier: 1,
+					contextWindow: 8192,
 				},
 			],
-			default: "pooled",
+			default: "dup",
 		});
-		const backend = router.getBackend("pooled");
-		expect(backend).toBeInstanceOf(PooledBackend);
-		// listEligibleByTier keys off the merged (best) tier.
-		expect(router.listEligibleByTier(1).some((b) => b.id === "pooled")).toBe(true);
-		expect(router.listEligibleByTier(3).some((b) => b.id === "pooled")).toBe(false);
-	});
-});
-
-describe("PooledBackend — network-error fall-through and exhaustion", () => {
-	const caps = {
-		streaming: true,
-		tool_use: true,
-		system_prompt: true,
-		prompt_caching: false,
-		vision: false,
-		extended_thinking: false,
-		max_context: 4096,
-	};
-	const params: ChatParams = { messages: [{ role: "user", content: "hi" }] };
-
-	it("falls through to the next backend on a non-LLMError network failure", async () => {
-		let secondCalled = false;
-		const first: LLMBackend = {
-			// biome-ignore lint/correctness/useYield: throws before yielding
-			async *chat(): AsyncIterable<StreamChunk> {
-				throw new TypeError("fetch failed: ECONNREFUSED");
-			},
-			capabilities: () => caps,
-		};
-		const second: LLMBackend = {
-			async *chat(): AsyncIterable<StreamChunk> {
-				secondCalled = true;
-				yield { type: "delta", text: "ok" };
-			},
-			capabilities: () => caps,
-		};
-		const pool = new PooledBackend([
-			{ backend: first, tier: 1, pricePerMInput: 0 },
-			{ backend: second, tier: 2, pricePerMInput: 0 },
-		]);
-		const chunks: StreamChunk[] = [];
-		for await (const c of pool.chat(params)) chunks.push(c);
-		expect(secondCalled).toBe(true);
-		expect(chunks.length).toBeGreaterThan(0);
-	});
-
-	it("throws the last error when every pooled backend fails", async () => {
-		const makeFailing = (code: number): LLMBackend => ({
-			// biome-ignore lint/correctness/useYield: throws before yielding
-			async *chat(): AsyncIterable<StreamChunk> {
-				throw new LLMError(`HTTP ${code}`, "p", code);
-			},
-			capabilities: () => caps,
-		});
-		const pool = new PooledBackend([
-			{ backend: makeFailing(429), tier: 1, pricePerMInput: 0 },
-			{ backend: makeFailing(500), tier: 2, pricePerMInput: 0 },
-		]);
-		let caught: unknown = null;
-		try {
-			for await (const _c of pool.chat(params)) {
-				// no success
-			}
-		} catch (e) {
-			caught = e;
-		}
-		expect(caught).toBeInstanceOf(LLMError);
+		expect(router.listBackends().filter((b) => b.id === "dup")).toHaveLength(1);
+		expect(router.getEffectiveCapabilities("dup")?.max_context).toBe(8192);
 	});
 });
 

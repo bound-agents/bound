@@ -222,9 +222,20 @@ export interface Host extends SoftDeletable {
  */
 export interface HostModelEntry {
 	id: string;
-	tier?: number;
+	/**
+	 * Route identity (`${siteId}:${provider}:${backendId}`, R-RT1/R-RT2). Absent
+	 * on legacy advertisements and on dynamic backends registered without a site
+	 * id; readers tolerate its absence.
+	 */
+	route_id?: string;
+	/** Canonical logical model ID this route serves, or absent/unassigned. */
+	logical_model?: string;
+	/** Raw upstream / auto-registered provider model id. */
+	provider_model_id?: string;
 	/** Per-response output-token ceiling advertised by the serving backend. */
 	max_output_tokens?: number;
+	/** Prompt-cache TTL hint this route applies ("5m" / "1h"). */
+	cache_ttl?: string;
 	/** Bound-side reasoning transport selected by this host's backend config. */
 	thinking_mode?: "tool";
 	capabilities?: {

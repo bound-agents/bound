@@ -101,7 +101,6 @@ import {
 	MAX_MODEL_RECONNECT_WAIT_MS,
 	type ModelResolution,
 	resolveModel,
-	resolveSameTierFallback,
 	resolveTargetCapabilities,
 	waitForModelResolution,
 } from "./model-resolution";
@@ -543,37 +542,14 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		}
 
 		if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
-			if (this.config.modelTier !== undefined) {
-				const tierFallback = resolveSameTierFallback(
-					this.config.modelId,
-					this.modelRouter,
-					this.ctx.db,
-					this.ctx.siteId,
-					this.config.modelTier,
-					this.requirements,
-				);
-				if (tierFallback) {
-					const fallbackModelId = tierFallback.kind !== "error" ? tierFallback.modelId : undefined;
-					this.emitAlert(
-						`Model "${this.config.modelId}" unavailable. Using same-tier (${this.config.modelTier}) alternative "${fallbackModelId}".`,
-					);
-					this.ctx.eventBus.emit("model:fallback", {
-						requested_model: this.config.modelId,
-						fallback_model: fallbackModelId ?? "unknown",
-						tier: this.config.modelTier,
-						thread_id: this.config.threadId,
-						task_id: this.config.taskId,
-						reason: this.lastModelResolution.error,
-					});
-					this.lastModelResolution = tierFallback;
-				}
-			}
-			if (this.lastModelResolution.kind === "error") {
-				return {
-					kind: "error",
-					error: `Failed to resolve requested model "${this.config.modelId}": ${this.lastModelResolution.error}`,
-				};
-			}
+			// No same-tier (or any-model) substitution: under the routing redesign
+			// (R-RT7, R-RT8) a model whose routes are all down returns
+			// transient-unavailable and is NOT substituted onto a different model.
+			// Cross-model fallback happens only on a model refusal (slice 5).
+			return {
+				kind: "error",
+				error: `Failed to resolve requested model "${this.config.modelId}": ${this.lastModelResolution.error}`,
+			};
 		}
 
 		this.ctx.logger.info("[agent-loop] Model resolved", {
@@ -870,10 +846,13 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
-	 * Bound rate-limit fallback policy. The base loop already handled transient
-	 * transport retries and detected the rate-limit/quota condition; here we mark
-	 * the backend rate-limited and try a same-tier (then any-capable) fallback
-	 * via the model router. Return a retry decision when a fallback is found, or
+	 * Bound route-failure failover policy. The base loop already handled
+	 * transient transport retries and detected the rate-limit/quota condition;
+	 * here we cool the failed route down (per-RouteId cooldown; #285 route health)
+	 * and fail over to the NEXT ranked route for the SAME logical model — local
+	 * or remote (R-RT7/R-RT8, §7.1). There is no cross-model same-tier
+	 * substitution: switching to a different model happens only on a model
+	 * refusal (slice 5). Return a retry decision when another route is found, or
 	 * null to fall through to terminal handling.
 	 */
 	protected override onRateLimitError(
@@ -887,27 +866,13 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			return null;
 		}
 		this.modelRouter.markRateLimited(backendId, getLlmRetryAfterMs(error) || 60_000);
-		const failedTier = this.modelRouter.getBackendTier(backendId);
-		const sameTierFallback =
-			failedTier !== null
-				? resolveSameTierFallback(
-						backendId,
-						this.modelRouter,
-						this.ctx.db,
-						this.ctx.siteId,
-						failedTier,
-						this.requirements,
-					)
-				: null;
-		if (sameTierFallback && sameTierFallback.kind !== "error") {
-			this.lastModelResolution = sameTierFallback;
-			frame.resolution = sameTierFallback;
-			this.transportRetries = 0;
-			return { action: "retry" };
-		}
-		if ((statusCode === 429 || statusCode === 529) && this.requirements) {
+		// Re-resolve the SAME logical model: the unified candidate pool (§5.1) now
+		// excludes the cooled route and returns the next ranked route for this
+		// model (another local route or a remote host). Cross-route failover strips
+		// route-bound state at the boundary via the driver's reasoning_origin check.
+		if (statusCode === 429 || statusCode === 529) {
 			const newResolution = resolveModel(
-				undefined,
+				this.config.modelId,
 				this.modelRouter,
 				this.ctx.db,
 				this.ctx.siteId,

@@ -6,7 +6,7 @@
 import { extractSummaryAndMemories } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { updateRow } from "@bound/core";
-import { createModelRouter } from "@bound/llm";
+import { createModelRouter, makeRouteId } from "@bound/llm";
 import type {
 	BackendConfig,
 	ModelBackendsConfig,
@@ -107,7 +107,6 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 			region: b.region,
 			profile: b.profile,
 			capabilities: b.capabilities,
-			tier: b.tier,
 			pricePerMInput: b.price_per_m_input,
 			thinking: b.thinking,
 			effort: b.effort,
@@ -139,16 +138,22 @@ export function advertiseLocalModels(
 ): void {
 	const modelEntries: HostModelEntry[] = modelRouter.listBackends().map((b) => {
 		const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
-		return {
+		// R-RT2: advertise route identity + metadata; `tier` is gone (R-RT3).
+		// `logical_model` is the backend id for now (dynamic grouping = slice 6).
+		const entry: HostModelEntry = {
 			id: b.id,
-			tier: rawBackend?.tier,
+			route_id: modelRouter.getRouteId(b.id) ?? undefined,
+			logical_model: b.id,
+			provider_model_id: rawBackend?.model,
 			max_output_tokens: modelRouter.getMaxOutputTokens(b.id),
+			cache_ttl: modelRouter.getCacheTtl(b.id),
 			thinking_mode:
 				typeof rawBackend?.thinking === "object" && rawBackend.thinking?.type === "tool"
 					? "tool"
 					: undefined,
 			capabilities: b.capabilities,
 		};
+		return entry;
 	});
 
 	const existingHost = appContext.db
@@ -234,8 +239,11 @@ export function wireBackendReadiness(
 						descriptor.id,
 						backend,
 						descriptor.capabilities,
-						descriptor.tier,
 						descriptor.maxOutputTokens,
+						{
+							routeId: makeRouteId(appContext.siteId, providerId, descriptor.id),
+							reasoningOrigin: `${appContext.siteId}:${providerId}`,
+						},
 					);
 					modelRouter.clearNotReady(descriptor.id);
 				}
@@ -289,7 +297,6 @@ function buildSharedRow(
 		base_url: placeholder?.base_url,
 		api_key: placeholder?.api_key,
 		context_window: descriptor.capabilities.max_context,
-		tier: descriptor.tier,
 		price_per_m_input: descriptor.pricing?.inputPerM ?? 0,
 		price_per_m_output: descriptor.pricing?.outputPerM ?? 0,
 		price_per_m_cache_write: descriptor.pricing?.cacheWritePerM,

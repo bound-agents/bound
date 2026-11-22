@@ -8,7 +8,6 @@ import {
 	Scheduler,
 	generateThreadTitle,
 	resolveModel,
-	resolveModelTier,
 	seedConsolidation,
 	seedHeartbeat,
 } from "@bound/agent";
@@ -54,7 +53,6 @@ export interface SchedulerResult {
 			modelId: string,
 		) => { ok: true } | { ok: false; error: string; permanent?: boolean };
 		modelDefaultResolver?: () => string;
-		modelTierResolver?: (modelId: string) => number | null;
 		generateTitle?: (threadId: string) => Promise<void>;
 		platformToolResolver?: (threadId: string) => PlatformRegisteredTool[];
 		platformInstructionsResolver?: (threadId: string) => string | undefined;
@@ -183,10 +181,6 @@ export function initScheduler(
 					}
 				: undefined,
 			modelDefaultResolver: modelRouter ? () => modelRouter.getDefaultId() : undefined,
-			modelTierResolver: modelRouter
-				? (modelId: string) =>
-						resolveModelTier(modelId, modelRouter, appContext.db, appContext.siteId)
-				: undefined,
 			generateTitle:
 				modelRouter && modelRouter.listBackends().length > 0
 					? async (threadId: string) => {
@@ -216,7 +210,6 @@ export function initScheduler(
 			{
 				modelValidator: resolvers.modelValidator,
 				modelDefaultResolver: resolvers.modelDefaultResolver,
-				modelTierResolver: resolvers.modelTierResolver,
 				generateTitle: resolvers.generateTitle,
 				platformToolResolver: resolvers.platformToolResolver,
 				platformInstructionsResolver: resolvers.platformInstructionsResolver,

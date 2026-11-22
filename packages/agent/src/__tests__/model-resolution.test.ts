@@ -5,13 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
-import {
-	type ModelResolution,
-	resolveModel,
-	resolveModelTier,
-	resolveSameTierFallback,
-	resolveTargetCapabilities,
-} from "../model-resolution";
+import { type ModelResolution, resolveModel, resolveTargetCapabilities } from "../model-resolution";
 
 // Test database setup
 let db: Database;
@@ -143,6 +137,115 @@ describe("Model Resolution", () => {
 			}
 		});
 
+		it("completes on the remote route when the local route for the same model is rate-limited (R-RT7, Done-when #1)", () => {
+			// A local subscription route and a remote API route serve the SAME logical
+			// model "gpt-5.6-sol". The local route no longer wins just by existing: once
+			// it is rate-limited, resolution falls through to the remote route for the
+			// same model rather than stranding the turn or substituting a different one.
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"remote-api",
+					"Remote API Host",
+					JSON.stringify([
+						{
+							id: "gpt-5.6-sol",
+							route_id: "remote-api:bedrock-mantle:gpt-5.6-sol",
+							logical_model: "gpt-5.6-sol",
+							capabilities: { max_context: 200000 },
+						},
+					]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const localBackend = {
+				id: "gpt-5.6-sol",
+				chat: async function* () {
+					yield { type: "text", text: "local" } as const;
+				},
+				capabilities: () => ({
+					streaming: true,
+					tool_use: true,
+					system_prompt: true,
+					prompt_caching: false,
+					vision: false,
+					extended_thinking: false,
+					max_context: 200000,
+				}),
+			};
+			const backends = new Map([["gpt-5.6-sol", localBackend]]);
+			const modelRouter = new ModelRouter(backends, "gpt-5.6-sol");
+
+			// While the local route is healthy it wins (local-first ranking).
+			const healthy = resolveModel("gpt-5.6-sol", modelRouter, db, "local-site");
+			expect(healthy.kind).toBe("local");
+
+			// Rate-limit the local route; resolution must complete on the remote route
+			// serving the same model.
+			modelRouter.markRateLimited("gpt-5.6-sol", 60_000);
+			const resolution = resolveModel("gpt-5.6-sol", modelRouter, db, "local-site");
+			expect(resolution.kind).toBe("remote");
+			if (resolution.kind === "remote") {
+				expect(resolution.modelId).toBe("gpt-5.6-sol");
+				expect(resolution.hosts[0].site_id).toBe("remote-api");
+			}
+		});
+
+		it("routes to a remote host whose advertisement has no tier (older-peer compat, Done-when #4)", () => {
+			// An older peer's advertisement (or a legacy entry) carries no `tier` and
+			// no `route_id`. The reader must tolerate the missing tier and keep routing
+			// to that host; ranking no longer consults tier at all.
+			const now = new Date().toISOString();
+			db.run(
+				`INSERT INTO hosts (
+					site_id, host_name, models, deleted, online_at, modified_at
+				) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					"legacy-peer",
+					"Legacy Peer",
+					// No tier, no route_id — the pre-slice-2 object shape.
+					JSON.stringify([{ id: "claude-haiku", capabilities: { max_context: 200000 } }]),
+					0,
+					now,
+					now,
+				],
+			);
+
+			const backends = new Map([
+				[
+					"claude-opus",
+					{
+						id: "claude-opus",
+						chat: async function* () {
+							yield { type: "text", text: "local" } as const;
+						},
+						capabilities: () => ({
+							streaming: true,
+							tool_use: true,
+							system_prompt: true,
+							prompt_caching: false,
+							vision: false,
+							extended_thinking: false,
+							max_context: 200000,
+						}),
+					},
+				],
+			]);
+			const modelRouter = new ModelRouter(backends, "claude-opus");
+
+			const resolution = resolveModel("claude-haiku", modelRouter, db, "local-site");
+			expect(resolution.kind).toBe("remote");
+			if (resolution.kind === "remote") {
+				expect(resolution.hosts[0].site_id).toBe("legacy-peer");
+				expect(resolution.modelId).toBe("claude-haiku");
+			}
+		});
 		it("returns error for unknown model (AC2.4)", () => {
 			const mockBackend = {
 				id: "claude-3-opus",
@@ -308,7 +411,11 @@ describe("Model Resolution", () => {
 			}
 		});
 
-		it("sorts remote hosts by freshness when returning remote resolution (AC2.2)", () => {
+		it("sorts remote hosts by stable RouteId, never heartbeat freshness (R-RT8, AC2.2)", () => {
+			// Ranking is deterministic and independent of heartbeat timestamps: the
+			// fresher host must NOT win on freshness. With advertised route_ids, the
+			// lexically-smaller route_id ranks first regardless of which host synced
+			// more recently.
 			const now = new Date();
 			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString();
 			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString();
@@ -318,12 +425,18 @@ describe("Model Resolution", () => {
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
-					"older-host",
-					"Older Host",
-					JSON.stringify([{ id: "claude-haiku", capabilities: { max_context: 200000 } }]),
+					"zzz-host",
+					"Fresher Host",
+					JSON.stringify([
+						{
+							id: "claude-haiku",
+							route_id: "zzz-host:bedrock:claude-haiku",
+							capabilities: { max_context: 200000 },
+						},
+					]),
 					0,
-					olderTime,
-					olderTime,
+					recentTime,
+					recentTime,
 				],
 			);
 
@@ -332,12 +445,18 @@ describe("Model Resolution", () => {
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
-					"recent-host",
-					"Recent Host",
-					JSON.stringify([{ id: "claude-haiku", capabilities: { max_context: 200000 } }]),
+					"aaa-host",
+					"Staler Host",
+					JSON.stringify([
+						{
+							id: "claude-haiku",
+							route_id: "aaa-host:bedrock:claude-haiku",
+							capabilities: { max_context: 200000 },
+						},
+					]),
 					0,
-					recentTime,
-					recentTime,
+					olderTime,
+					olderTime,
 				],
 			);
 
@@ -361,8 +480,9 @@ describe("Model Resolution", () => {
 
 			expect(resolution.kind).toBe("remote");
 			if (resolution.kind === "remote") {
-				expect(resolution.hosts[0].site_id).toBe("recent-host");
-				expect(resolution.hosts[1].site_id).toBe("older-host");
+				// aaa-host:... sorts before zzz-host:... even though zzz-host is fresher.
+				expect(resolution.hosts[0].site_id).toBe("aaa-host");
+				expect(resolution.hosts[1].site_id).toBe("zzz-host");
 			}
 		});
 	});
@@ -891,7 +1011,13 @@ describe("Model Resolution", () => {
 		});
 
 		// AC5.3 — primary backend is rate-limited, alternative exists with matching capability
-		it("falls back to alternative when primary backend is rate-limited (AC5.3)", () => {
+		it("does NOT re-route a rate-limited, capability-mismatched model to a different model (R-RT7/R-RT8, AC5.3)", () => {
+			// Under the routing redesign, resolution never substitutes a different
+			// logical model to satisfy a capability or a rate limit: a route failure
+			// only fails over to other routes for the SAME model, and cross-model
+			// switching is a refusal-only path (slice 5). A rate-limited primary that
+			// lacks the requested capability, with no same-model route elsewhere, is a
+			// transient error — not a silent jump onto an unrelated vision-capable model.
 			const primaryBackend = {
 				id: "primary",
 				chat: async function* () {
@@ -903,6 +1029,7 @@ describe("Model Resolution", () => {
 					system_prompt: true,
 					prompt_caching: false,
 					vision: false,
+					extended_thinking: false,
 					max_context: 200000,
 				}),
 			};
@@ -918,6 +1045,7 @@ describe("Model Resolution", () => {
 					system_prompt: true,
 					prompt_caching: false,
 					vision: true,
+					extended_thinking: false,
 					max_context: 200000,
 				}),
 			};
@@ -928,18 +1056,16 @@ describe("Model Resolution", () => {
 			]);
 			const modelRouter = new ModelRouter(backends, "primary");
 
-			// Mark the primary backend as rate-limited
+			// Mark the primary backend as rate-limited and request vision (which
+			// primary lacks). There is no same-model route elsewhere.
 			modelRouter.markRateLimited("primary", 60_000);
-
-			// Request vision capability; primary lacks vision and is rate-limited
-			// listEligible() should exclude primary (rate-limited) and return only alternative
 			const resolution = resolveModel("primary", modelRouter, db, "site-1", { vision: true });
 
-			// Should fall back to alternative backend
-			expect(resolution.kind).toBe("local");
-			const localRes = resolution as Extract<ModelResolution, { kind: "local" }>;
-			expect(localRes.modelId).toBe("alternative");
-			expect(localRes.reResolved).toBe(true);
+			// No substitution onto the unrelated vision-capable model.
+			expect(resolution.kind).toBe("error");
+			if (resolution.kind === "error") {
+				expect(resolution.reason).toBe("transient-unavailable");
+			}
 		});
 	});
 });
@@ -956,7 +1082,7 @@ describe("findAnyRemoteModel", () => {
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			["spoke-1", "spoke", JSON.stringify([{ id: "claude", tier: 2 }]), now, now],
+			["spoke-1", "spoke", JSON.stringify([{ id: "claude" }]), now, now],
 		);
 
 		const result = findAnyRemoteModel(db, "local-site");
@@ -968,25 +1094,39 @@ describe("findAnyRemoteModel", () => {
 		}
 	});
 
-	it("prefers lower-tier models across multiple spokes", () => {
+	it("ranks remote models by stable RouteId, not tier (R-RT8)", () => {
+		// tier is gone; across spokes the lexically-smaller route_id wins, with no
+		// tier preference. aaa-spoke:... sorts before zzz-spoke:...
 		const now = new Date().toISOString();
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			["spoke-high", "high-tier", JSON.stringify([{ id: "llama3", tier: 5 }]), now, now],
+			[
+				"zzz-spoke",
+				"z",
+				JSON.stringify([{ id: "llama3", route_id: "zzz-spoke:openai-compatible:llama3" }]),
+				now,
+				now,
+			],
 		);
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			["spoke-low", "low-tier", JSON.stringify([{ id: "claude", tier: 2 }]), now, now],
+			[
+				"aaa-spoke",
+				"a",
+				JSON.stringify([{ id: "claude", route_id: "aaa-spoke:bedrock:claude" }]),
+				now,
+				now,
+			],
 		);
 
 		const result = findAnyRemoteModel(db, "local-site");
 
 		expect(result.ok).toBe(true);
 		if (result.ok) {
-			expect(result.modelId).toBe("claude"); // lower tier wins
-			expect(result.hosts[0].site_id).toBe("spoke-low");
+			expect(result.modelId).toBe("claude"); // aaa-spoke route_id sorts first
+			expect(result.hosts[0].site_id).toBe("aaa-spoke");
 		}
 	});
 
@@ -1052,307 +1192,14 @@ describe("resolveModel — hub-only mode (empty default)", () => {
 			expect(resolution.error).toMatch(/no remote inference backends/i);
 		}
 	});
-
-	describe("resolveSameTierFallback", () => {
-		const makeMockBackend = (caps?: Partial<{ vision: boolean; tool_use: boolean }>) => ({
-			chat: async function* () {
-				yield { type: "text" as const, text: "test" };
-			},
-			capabilities: () => ({
-				streaming: true,
-				tool_use: caps?.tool_use ?? true,
-				system_prompt: true,
-				prompt_caching: false,
-				vision: caps?.vision ?? false,
-				max_context: 200000,
-			}),
-		});
-
-		it("returns a same-tier alternative when requested model is unavailable", () => {
-			const backendA = makeMockBackend();
-			const backendB = makeMockBackend();
-
-			const backends = new Map([
-				["glm", backendA],
-				["phi3", backendB],
-			]);
-			const tiers = new Map([
-				["glm", 1],
-				["phi3", 1],
-			]);
-			const router = new ModelRouter(backends, "glm", undefined, tiers);
-
-			// "deepseek" doesn't exist, but we tell the fallback it was tier 1
-			const result = resolveSameTierFallback("deepseek", router, db, "local-site", 1);
-
-			expect(result).not.toBeNull();
-			if (result) {
-				expect(result.kind).toBe("local");
-				if (result.kind === "local") {
-					// Should pick one of the tier-1 backends
-					expect(["glm", "phi3"]).toContain(result.modelId);
-				}
-			}
-		});
-
-		it("returns null when no same-tier alternative exists", () => {
-			const backendA = makeMockBackend();
-
-			const backends = new Map([["opus", backendA]]);
-			const tiers = new Map([["opus", 5]]);
-			const router = new ModelRouter(backends, "opus", undefined, tiers);
-
-			// Looking for tier 1 alternatives, but only tier 5 exists
-			const result = resolveSameTierFallback("glm", router, db, "local-site", 1);
-
-			expect(result).toBeNull();
-		});
-
-		it("excludes the originally-requested model from fallback candidates", () => {
-			const backendA = makeMockBackend();
-
-			const backends = new Map([["glm", backendA]]);
-			const tiers = new Map([["glm", 1]]);
-			const router = new ModelRouter(backends, "glm", undefined, tiers);
-
-			// "glm" itself is the only tier-1 backend, but it's the one that failed
-			const result = resolveSameTierFallback("glm", router, db, "local-site", 1);
-
-			expect(result).toBeNull();
-		});
-
-		it("respects capability requirements when finding fallback", () => {
-			const visionBackend = makeMockBackend({ vision: true });
-			const noVisionBackend = makeMockBackend({ vision: false });
-
-			const backends = new Map([
-				["llava", visionBackend],
-				["phi3", noVisionBackend],
-			]);
-			const tiers = new Map([
-				["llava", 1],
-				["phi3", 1],
-			]);
-			const router = new ModelRouter(backends, "phi3", undefined, tiers);
-
-			// Requesting vision, only llava has it
-			const result = resolveSameTierFallback("deepseek", router, db, "local-site", 1, {
-				vision: true,
-			});
-
-			expect(result).not.toBeNull();
-			if (result && result.kind === "local") {
-				expect(result.modelId).toBe("llava");
-			}
-		});
-	});
-
-	it("normalizes literal 'default' model hint to the actual default backend", () => {
-		const mockBackend = {
-			id: "opus",
-			chat: async function* () {
-				yield { type: "text" as const, text: "test" };
-			},
-			capabilities: () => ({
-				streaming: true,
-				tools: true,
-				vision: false,
-				max_context: 200000,
-			}),
-		};
-
-		const backends = new Map([["opus", mockBackend]]);
-		const modelRouter = new ModelRouter(backends, "opus");
-
-		// Passing "default" should resolve to the default backend ("opus"), not fail
-		const resolution = resolveModel("default", modelRouter, db, "local-site");
-
-		expect(resolution.kind).toBe("local");
-		if (resolution.kind === "local") {
-			expect(resolution.modelId).toBe("opus");
-		}
-	});
 });
 
-describe("resolveModelTier", () => {
-	it("returns local tier when model is in the local router", () => {
-		const backend = {
-			chat: async function* () {
-				yield { type: "text" as const, text: "test" };
-			},
-			capabilities: () => ({
-				streaming: true,
-				tool_use: true,
-				system_prompt: true,
-				prompt_caching: false,
-				vision: false,
-				max_context: 4096,
-			}),
-		};
-
-		const backends = new Map([["glm-4.7", backend]]);
-		const tiers = new Map([["glm-4.7", 2]]);
-		const router = new ModelRouter(backends, "glm-4.7", undefined, tiers);
-
-		const tier = resolveModelTier("glm-4.7", router, db, "local-site");
-		expect(tier).toBe(2);
-	});
-
-	it("returns remote tier from hosts table when model not in local router", () => {
-		const now = new Date().toISOString();
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-			 VALUES (?, ?, ?, 0, ?, ?)`,
-			[
-				"remote-spoke",
-				"Remote Spoke",
-				JSON.stringify([{ id: "glm-4.7", tier: 2, capabilities: {} }]),
-				now,
-				now,
-			],
-		);
-
-		// Empty router — hub-only node
-		const router = new ModelRouter(new Map(), "");
-
-		const tier = resolveModelTier("glm-4.7", router, db, "hub-site");
-		expect(tier).toBe(2);
-	});
-
-	it("returns null when model not found anywhere", () => {
-		const router = new ModelRouter(new Map(), "");
-		const tier = resolveModelTier("nonexistent", router, db, "local-site");
-		expect(tier).toBeNull();
-	});
-
-	it("returns lowest tier when multiple remote hosts advertise same model at different tiers", () => {
-		const now = new Date().toISOString();
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-			 VALUES (?, ?, ?, 0, ?, ?)`,
-			[
-				"spoke-a",
-				"Spoke A",
-				JSON.stringify([{ id: "glm-4.7", tier: 3, capabilities: {} }]),
-				now,
-				now,
-			],
-		);
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-			 VALUES (?, ?, ?, 0, ?, ?)`,
-			[
-				"spoke-b",
-				"Spoke B",
-				JSON.stringify([{ id: "glm-4.7", tier: 2, capabilities: {} }]),
-				now,
-				now,
-			],
-		);
-
-		const router = new ModelRouter(new Map(), "");
-		const tier = resolveModelTier("glm-4.7", router, db, "hub-site");
-		expect(tier).toBe(2);
-	});
-});
-
-describe("resolveSameTierFallback — remote hosts", () => {
-	it("finds a remote same-tier alternative when no local backends exist", () => {
-		const now = new Date().toISOString();
-		// Remote host has sonnet at tier 2
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-			 VALUES (?, ?, ?, 0, ?, ?)`,
-			[
-				"spoke-with-sonnet",
-				"Sonnet Spoke",
-				JSON.stringify([
-					{ id: "sonnet", tier: 2, capabilities: { tool_use: true, max_context: 200000 } },
-				]),
-				now,
-				now,
-			],
-		);
-
-		// Empty local router (hub-only)
-		const router = new ModelRouter(new Map(), "");
-
-		// glm-4.7 at tier 2 failed, looking for same-tier alternative
-		const result = resolveSameTierFallback("glm-4.7", router, db, "hub-site", 2);
-
-		expect(result).not.toBeNull();
-		if (result) {
-			expect(result.kind).toBe("remote");
-			if (result.kind === "remote") {
-				expect(result.modelId).toBe("sonnet");
-				expect(result.hosts[0].site_id).toBe("spoke-with-sonnet");
-			}
-		}
-	});
-
-	it("excludes the failed model from remote candidates", () => {
-		const now = new Date().toISOString();
-		// Remote host only has glm-4.7 (the model that failed)
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-			 VALUES (?, ?, ?, 0, ?, ?)`,
-			[
-				"spoke-glm-only",
-				"GLM Spoke",
-				JSON.stringify([{ id: "glm-4.7", tier: 2, capabilities: {} }]),
-				now,
-				now,
-			],
-		);
-
-		const router = new ModelRouter(new Map(), "");
-
-		const result = resolveSameTierFallback("glm-4.7", router, db, "hub-site", 2);
-		expect(result).toBeNull();
-	});
-
-	it("prefers local backends over remote hosts", () => {
-		const now = new Date().toISOString();
-		// Remote host has sonnet at tier 2
-		db.run(
-			`INSERT INTO hosts (site_id, host_name, models, deleted, online_at, modified_at)
-			 VALUES (?, ?, ?, 0, ?, ?)`,
-			[
-				"spoke-remote",
-				"Remote Spoke",
-				JSON.stringify([{ id: "sonnet", tier: 2, capabilities: {} }]),
-				now,
-				now,
-			],
-		);
-
-		// Local router also has a tier-2 backend
-		const localBackend = {
-			chat: async function* () {
-				yield { type: "text" as const, text: "test" };
-			},
-			capabilities: () => ({
-				streaming: true,
-				tool_use: true,
-				system_prompt: true,
-				prompt_caching: false,
-				vision: false,
-				max_context: 200000,
-			}),
-		};
-		const backends = new Map([["local-sonnet", localBackend]]);
-		const tiers = new Map([["local-sonnet", 2]]);
-		const router = new ModelRouter(backends, "local-sonnet", undefined, tiers);
-
-		const result = resolveSameTierFallback("glm-4.7", router, db, "local-site", 2);
-
-		expect(result).not.toBeNull();
-		if (result) {
-			// Should prefer local
-			expect(result.kind).toBe("local");
-		}
-	});
-});
+// `resolveSameTierFallback` and `resolveModelTier` were removed in the
+// 2026-11-21-model-routing slice 2 (R-RT3). Under the spec a route failure only
+// fails over to other routes for the same logical model; switching to a
+// different model happens only on a refusal (slice 5). A model whose routes are
+// all down returns `transient-unavailable` and is not substituted, so the
+// same-tier substitution tests that lived here no longer describe real behavior.
 
 // AC.3 — readiness gate. A not-ready (self-configuring) backend must NOT
 // resolve `kind:"local"` even when it is the default and even with no
@@ -1418,7 +1265,7 @@ describe("resolveModel readiness gate (AC.3)", () => {
 		};
 		const backends = new Map([["umans", readinessBackend(false)]]);
 		const router = new ModelRouter(backends, "umans");
-		router.addDynamicBackend("umans-coder", concrete, concrete.capabilities(), 5);
+		router.addDynamicBackend("umans-coder", concrete, concrete.capabilities());
 		router.redirectDefault("umans", "umans-coder");
 		router.removeBackend("umans");
 

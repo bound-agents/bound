@@ -13,7 +13,7 @@
  *     'claimed'); an `unknown-model` hint fails PERMANENTLY (resolveModel
  *     reason === "unknown-model" → permanent: true) so the host declines the
  *     claim and the row stays 'pending'.
- *   - modelDefaultResolver (168), modelTierResolver (170-171), generateTitle
+ *   - modelDefaultResolver (168), generateTitle
  *     (175-185): these fire inside `runTask` when the scheduler executes a
  *     claimed task. We drive one real deferred task to completion through a
  *     mock agent-loop factory (no live LLM for the loop itself) and assert the
@@ -28,7 +28,7 @@
  *     by making `registerConnectorEventDelivery` throw via a poisoned eventBus.
  *
  * Built on a real AppContext + in-process DB and the real ModelRouter /
- * resolveModel / resolveModelTier / generateThreadTitle helpers — no stub that
+ * resolveModel / generateThreadTitle helpers — no stub that
  * echoes its input.
  */
 
@@ -104,13 +104,8 @@ describe("initScheduler — modelRouter-gated resolver closures", () => {
 		await runInit({ ollama: true, name: "sched-resolver-operator", configDir });
 		appContext = await createAppContext(configDir, ":memory:");
 		backend = new MockBackend("A concise generated title");
-		// A real router with one tier-2 backend and MODEL_ID as the default.
-		router = new ModelRouter(
-			new Map<string, LLMBackend>([[MODEL_ID, backend]]),
-			MODEL_ID,
-			undefined,
-			new Map<string, number>([[MODEL_ID, 2]]),
-		);
+		// A real router with one backend and MODEL_ID as the default.
+		router = new ModelRouter(new Map<string, LLMBackend>([[MODEL_ID, backend]]), MODEL_ID);
 	});
 
 	afterEach(async () => {
@@ -215,15 +210,11 @@ describe("initScheduler — modelRouter-gated resolver closures", () => {
 		expect(row?.status).toBe("pending");
 	});
 
-	it("exposes default/tier resolvers that reflect the live router (168, 170-171)", () => {
+	it("exposes the default resolver that reflects the live router (168)", () => {
 		const { resolvers } = boot();
 		expect(resolvers).not.toBeNull();
 		// modelDefaultResolver returns the router's live default id.
 		expect(resolvers?.modelDefaultResolver?.()).toBe(MODEL_ID);
-		// modelTierResolver reads the real tier from the router (seeded tier 2).
-		expect(resolvers?.modelTierResolver?.(MODEL_ID)).toBe(2);
-		// An unknown model has no local tier and no remote host advertises one → null.
-		expect(resolvers?.modelTierResolver?.("no-such-model-anywhere")).toBeNull();
 	});
 
 	it("generateTitle writes a real title via generateThreadTitle (173-185)", async () => {

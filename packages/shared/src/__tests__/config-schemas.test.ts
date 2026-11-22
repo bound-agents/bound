@@ -68,7 +68,6 @@ describe("Config schemas", () => {
 						model: "llama3",
 						base_url: "http://localhost:11434/v1",
 						context_window: 4096,
-						tier: 1,
 					},
 				],
 				default: "local-compat",
@@ -87,7 +86,6 @@ describe("Config schemas", () => {
 							model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
 							region: "us-east-1",
 							context_window: 200_000,
-							tier: 1,
 							cache_ttl,
 						},
 					],
@@ -120,7 +118,6 @@ describe("Config schemas", () => {
 						model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
 						region: "us-east-1",
 						context_window: 200_000,
-						tier: 1,
 						system_prompt_suffix: "Use the backend-specific policy.",
 					},
 				],
@@ -157,7 +154,6 @@ describe("Config schemas", () => {
 						model: "llama2",
 						base_url: "http://localhost:11434/v1",
 						context_window: 4096,
-						tier: 1,
 					},
 				],
 				default: "nonexistent-backend",
@@ -175,7 +171,6 @@ describe("Config schemas", () => {
 						model: "llama2",
 						base_url: "http://localhost:11434",
 						context_window: 4096,
-						tier: 1,
 					},
 				],
 				default: "ollama-local",
@@ -192,7 +187,6 @@ describe("Config schemas", () => {
 						provider: "openai-compatible",
 						model: "gpt-4",
 						context_window: 8192,
-						tier: 3,
 					},
 				],
 				default: "openai-compat",
@@ -210,7 +204,6 @@ describe("Config schemas", () => {
 						model: "glm-5.1",
 						api_key: "test-key",
 						context_window: 128000,
-						tier: 3,
 					},
 				],
 				default: "opencode-go",
@@ -227,7 +220,6 @@ describe("Config schemas", () => {
 						provider: "opencode-go",
 						model: "glm-5.1",
 						context_window: 128000,
-						tier: 3,
 					},
 				],
 				default: "opencode-go",
@@ -246,7 +238,6 @@ describe("Config schemas", () => {
 						model: "openai.gpt-5.5",
 						region: "us-east-1",
 						context_window: 272000,
-						tier: 1,
 					},
 				],
 				default: "mantle-gpt",
@@ -265,7 +256,6 @@ describe("Config schemas", () => {
 						model: "anthropic.claude-sonnet-5",
 						region: "us-east-1",
 						context_window: 200000,
-						tier: 1,
 					},
 				],
 				default: "mantle-sonnet",
@@ -283,7 +273,6 @@ describe("Config schemas", () => {
 						model: "openai.gpt-5.5",
 						region: "us-east-1",
 						context_window: 272000,
-						tier: 1,
 					},
 				],
 				default: "mantle-gpt",
@@ -315,7 +304,7 @@ describe("Config schemas", () => {
 			}
 		});
 
-		it("rejects a umans row that sets model/tier/context_window (AC.2)", () => {
+		it("rejects a umans row that sets model/context_window (AC.2)", () => {
 			const config = {
 				backends: [
 					{
@@ -323,7 +312,6 @@ describe("Config schemas", () => {
 						provider: "umans",
 						api_key: "sk-test",
 						model: "umans-coder",
-						tier: 3,
 						context_window: 200000,
 					},
 				],
@@ -342,7 +330,7 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
-		it("still rejects a NON-umans row that omits model/context_window/tier (AC.2)", () => {
+		it("still rejects a NON-umans row that omits model/context_window (AC.2)", () => {
 			const config = {
 				backends: [{ id: "x", provider: "cerebras", api_key: "k", base_url: "https://x/v1" }],
 				default: "x",
@@ -359,27 +347,9 @@ describe("Config schemas", () => {
 						provider: "anthropic",
 						model: "claude-3",
 						context_window: -1,
-						tier: 3,
 					},
 				],
 				default: "bad-backend",
-			};
-			const result = modelBackendsSchema.safeParse(config);
-			expect(result.success).toBe(false);
-		});
-
-		it("rejects tier outside 1-5 range", () => {
-			const config = {
-				backends: [
-					{
-						id: "bad-tier",
-						provider: "anthropic",
-						model: "claude-3",
-						context_window: 200000,
-						tier: 6,
-					},
-				],
-				default: "bad-tier",
 			};
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(false);
@@ -394,7 +364,6 @@ describe("Config schemas", () => {
 						model: "claude-3-opus",
 						api_key: "key-1",
 						context_window: 200000,
-						tier: 5,
 					},
 					{
 						id: "my-backend",
@@ -402,7 +371,6 @@ describe("Config schemas", () => {
 						model: "claude-3-sonnet",
 						api_key: "key-2",
 						context_window: 200000,
-						tier: 3,
 					},
 				],
 				default: "my-backend",
@@ -429,7 +397,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "enabled" },
 						},
 					],
@@ -451,7 +418,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "enabled", budget_tokens: 12000 },
 						},
 					],
@@ -475,7 +441,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: true,
 						},
 					],
@@ -496,7 +461,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 						},
 					],
 					default: "opus",
@@ -516,7 +480,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "enabled", budget_tokens: -1 },
 						},
 					],
@@ -541,7 +504,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "adaptive" },
 						},
 					],
@@ -562,7 +524,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "adaptive", display: "summarized" },
 						},
 					],
@@ -586,7 +547,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "adaptive", display: "verbose" },
 						},
 					],
@@ -605,7 +565,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "tool" },
 						},
 					],
@@ -626,7 +585,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "tool", budget_tokens: 12000 },
 						},
 					],
@@ -645,7 +603,6 @@ describe("Config schemas", () => {
 							model: "anthropic.claude-fable-5",
 							region: "us-east-1",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "tool" },
 						},
 					],
@@ -663,7 +620,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "auto" },
 						},
 					],
@@ -695,7 +651,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							thinking: { type: "adaptive" },
 							effort: "ultra",
 						},
@@ -717,7 +672,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							effort: "",
 						},
 					],
@@ -736,7 +690,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 							effort: "medium",
 						},
 					],
@@ -764,7 +717,6 @@ describe("Config schemas", () => {
 							model: "us.amazon.nova-pro-v1:0",
 							region: "us-west-2",
 							context_window: 300000,
-							tier: 2,
 							max_output_tokens: 8192,
 						},
 					],
@@ -785,7 +737,6 @@ describe("Config schemas", () => {
 							model: "global.anthropic.claude-opus-4-7",
 							region: "us-west-2",
 							context_window: 200000,
-							tier: 1,
 						},
 					],
 					default: "opus",
@@ -806,7 +757,6 @@ describe("Config schemas", () => {
 								model: "us.amazon.nova-pro-v1:0",
 								region: "us-west-2",
 								context_window: 300000,
-								tier: 2,
 								max_output_tokens: bad,
 							},
 						],
@@ -826,7 +776,6 @@ describe("Config schemas", () => {
 							model: "us.amazon.nova-pro-v1:0",
 							region: "us-west-2",
 							context_window: 300000,
-							tier: 2,
 							max_output_tokens: 8192.5,
 						},
 					],
@@ -1201,7 +1150,6 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 					model: "llama2",
 					base_url: "http://localhost:11434",
 					context_window: 4096,
-					tier: 1,
 				},
 			],
 			default: "ollama-local",
@@ -1260,7 +1208,6 @@ describe("Config schemas — unknown-key rejection (strict mode guardrail)", () 
 					model: "llama2",
 					base_url: "http://localhost:11434",
 					context_window: 4096,
-					tier: 1,
 					[sentinelKey]: sentinelValue,
 				},
 			],

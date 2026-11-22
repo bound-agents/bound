@@ -162,13 +162,18 @@ const modelBackendSchema = z
 			"chatgpt-oauth",
 			"github-copilot",
 		]),
-		// `model`, `context_window`, and `tier` are REQUIRED for every provider
-		// EXCEPT `umans`, which is config-light + self-configuring: a umans
-		// entry is a NAMESPACE that fetches its full model lineup (ids, context
-		// windows, pricing, tiers) at runtime, so it carries only
-		// provider + id + api_key + default. The object-level refinements below
-		// enforce "required unless umans" and "reject authoritative fields on
-		// umans". See the model-router umans case + UmansDriver readiness.
+		// `model` and `context_window` are REQUIRED for every provider EXCEPT
+		// `umans`, which is config-light + self-configuring: a umans entry is a
+		// NAMESPACE that fetches its full model lineup (ids, context windows,
+		// pricing) at runtime, so it carries only provider + id + api_key +
+		// default. The object-level refinements below enforce "required unless
+		// umans" and "reject authoritative fields on umans". See the model-router
+		// umans case + UmansDriver readiness. `tier` was removed in the
+		// 2026-11-21-model-routing slice 2 (R-RT3): within-model priority is now
+		// the synced model_routing_rules.route_order and cross-model selection is
+		// cluster roles + fallback lists. A config still declaring `tier` is
+		// stripped with one warning by the loader (transition shim, removed in
+		// slice 9); it is not a schema field.
 		model: z.string().min(1).optional(),
 		provider_mode: z.enum(["anthropic", "openai_responses"]).optional(),
 		base_url: z.string().url().optional(),
@@ -178,7 +183,6 @@ const modelBackendSchema = z
 		region: z.string().optional(),
 		profile: z.string().optional(),
 		context_window: z.number().int().positive().optional(),
-		tier: z.number().int().min(1).max(5).optional(),
 		price_per_m_input: z.number().min(0).default(0),
 		price_per_m_output: z.number().min(0).default(0),
 		price_per_m_cache_write: z.number().min(0).optional(),
@@ -328,28 +332,28 @@ export const modelBackendsSchema = z
 	)
 	.refine(
 		(data) => {
-			// `model`, `context_window`, and `tier` are required for every
-			// provider EXCEPT umans (which fetches its lineup at runtime).
+			// `model` and `context_window` are required for every provider EXCEPT
+			// umans (which fetches its lineup at runtime). `tier` was removed
+			// (R-RT3, slice 2).
 			return data.backends.every((b) => {
 				if (b.provider === "umans") return true;
-				return b.model !== undefined && b.context_window !== undefined && b.tier !== undefined;
+				return b.model !== undefined && b.context_window !== undefined;
 			});
 		},
 		{
 			message:
-				"model, context_window, and tier are required for all providers except umans (which is self-configuring)",
+				"model and context_window are required for all providers except umans (which is self-configuring)",
 		},
 	)
 	.refine(
 		(data) => {
 			// umans rows are authoritatively fetched/derived: reject operator-set
-			// model / tier / context_window / capabilities / pricing. (price_per_m_*
+			// model / context_window / capabilities / pricing. (price_per_m_*
 			// have a default of 0, so we only reject non-zero / explicitly-set
 			// values — a defaulted 0 is indistinguishable and harmless.)
 			return data.backends.every((b) => {
 				if (b.provider !== "umans") return true;
 				if (b.model !== undefined) return false;
-				if (b.tier !== undefined) return false;
 				if (b.context_window !== undefined) return false;
 				if (b.capabilities !== undefined) return false;
 				if (b.price_per_m_input !== 0) return false;
@@ -362,7 +366,7 @@ export const modelBackendsSchema = z
 		},
 		{
 			message:
-				"umans backends must not set model, tier, context_window, capabilities, or pricing — these are fetched/derived at runtime",
+				"umans backends must not set model, context_window, capabilities, or pricing — these are fetched/derived at runtime",
 		},
 	);
 

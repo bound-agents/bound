@@ -287,31 +287,49 @@ describe("Relay Router", () => {
 			}
 		});
 
-		it("sorts hosts by freshness descending (most recent first) (AC2.2)", () => {
+		it("orders live hosts by stable RouteId, not heartbeat freshness (R-RT8)", () => {
+			// Freshness gates liveness only; it never breaks ties between live routes.
+			// The lexically-smaller route_id wins regardless of which host is newer.
 			const now = new Date();
 			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
 			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString(); // 3 min ago
 
+			// "recent-host" is fresher but advertises a lexically-larger route_id.
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["older-host", "Older Host", JSON.stringify(["claude-opus"]), 0, olderTime, olderTime],
+				[
+					"recent-host",
+					"Recent Host",
+					JSON.stringify([{ id: "claude-opus", route_id: "recent-host:bedrock:claude-opus" }]),
+					0,
+					recentTime,
+					recentTime,
+				],
 			);
 
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
-				["recent-host", "Recent Host", JSON.stringify(["claude-opus"]), 0, recentTime, recentTime],
+				[
+					"older-host",
+					"Older Host",
+					JSON.stringify([{ id: "claude-opus", route_id: "older-host:bedrock:claude-opus" }]),
+					0,
+					olderTime,
+					olderTime,
+				],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-opus", "local-site");
 			expect(result.ok).toBe(true);
 			if (result.ok) {
 				expect(result.hosts.length).toBe(2);
-				expect(result.hosts[0].site_id).toBe("recent-host");
-				expect(result.hosts[1].site_id).toBe("older-host");
+				// older-host:... < recent-host:... lexically, even though recent-host is fresher.
+				expect(result.hosts[0].site_id).toBe("older-host");
+				expect(result.hosts[1].site_id).toBe("recent-host");
 			}
 		});
 
@@ -546,7 +564,7 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
+							route_id: "verified-host:bedrock:claude-3",
 							capabilities: {
 								vision: true,
 								tool_use: true,
@@ -567,7 +585,7 @@ describe("Relay Router", () => {
 				expect(result.hosts[0].unverified).toBe(false);
 				expect(result.hosts[0].capabilities?.vision).toBe(true);
 				expect(result.hosts[0].capabilities?.tool_use).toBe(true);
-				expect(result.hosts[0].tier).toBe(1);
+				expect(result.hosts[0].routeId).toBe("verified-host:bedrock:claude-3");
 			}
 		});
 
@@ -696,80 +714,78 @@ describe("Relay Router", () => {
 			if (r2.ok) expect(r2.hosts[0].unverified).toBe(false);
 		});
 
-		it("sorts verified hosts by tier (lower first) then by online_at", () => {
+		it("orders verified hosts by stable RouteId, not tier or freshness (R-RT8)", () => {
 			const now = new Date();
 			const recentTime = new Date(now.getTime() - 1 * 60 * 1000).toISOString(); // 1 min ago
 			const olderTime = new Date(now.getTime() - 3 * 60 * 1000).toISOString(); // 3 min ago
 
-			// Tier 3, recent
+			// "charlie" host is fresher but sorts last by RouteId. tier is gone;
+			// freshness gates liveness only. The three live routes come back in
+			// lexical route_id order: alpha, bravo, charlie.
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
-					"tier3-recent",
-					"Tier 3 Recent",
+					"charlie",
+					"Charlie",
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 3,
+							route_id: "charlie:bedrock:claude-3",
 							capabilities: { vision: true, tool_use: true },
 						},
 					]),
 					0,
 					recentTime,
-					new Date().toISOString(),
+					recentTime,
 				],
 			);
 
-			// Tier 1, older
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
-					"tier1-older",
-					"Tier 1 Older",
+					"alpha",
+					"Alpha",
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
+							route_id: "alpha:bedrock:claude-3",
 							capabilities: { vision: true, tool_use: true },
 						},
 					]),
 					0,
 					olderTime,
-					new Date().toISOString(),
+					olderTime,
 				],
 			);
 
-			// Tier 1, recent (should be second: same tier as tier1-older but more recent)
 			db.run(
 				`INSERT INTO hosts (
 					site_id, host_name, models, deleted, online_at, modified_at
 				) VALUES (?, ?, ?, ?, ?, ?)`,
 				[
-					"tier1-recent",
-					"Tier 1 Recent",
+					"bravo",
+					"Bravo",
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
+							route_id: "bravo:bedrock:claude-3",
 							capabilities: { vision: true, tool_use: true },
 						},
 					]),
 					0,
 					recentTime,
-					new Date().toISOString(),
+					recentTime,
 				],
 			);
 
 			const result = findEligibleHostsByModel(db, "claude-3", "local-site");
 			expect(result.ok).toBe(true);
 			if (result.ok) {
-				expect(result.hosts[0].tier).toBe(1);
-				expect(result.hosts[1].tier).toBe(1);
-				expect(result.hosts[2].tier).toBe(3);
+				expect(result.hosts.map((h) => h.site_id)).toEqual(["alpha", "bravo", "charlie"]);
 			}
 		});
 

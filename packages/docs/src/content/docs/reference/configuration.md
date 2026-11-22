@@ -106,11 +106,10 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `provider_mode` | enum `anthropic`\|`openai_responses` | — | Required for `bedrock-mantle`. Selects the Mantle protocol surface: Anthropic Messages (`/anthropic/v1/messages`) or OpenAI Responses (`/openai/v1/responses`). |
 | `base_url` | url | absent | Required for `ollama` and `openai-compatible`. Optional override for `bedrock-mantle` (default is derived from `region` and `provider_mode`) and `umans` (default `https://api.code.umans.ai`). |
 | `api_key` | string | absent | Required for `cerebras`, `anthropic`, `zai`, `opencode-go`, `umans`. Unused by `bedrock-mantle` (auth is AWS SigV4), `chatgpt-oauth`, and `github-copilot` (subscription OAuth tokens are used instead). |
-| `token_store_path` | string | `config/chatgpt-auth.json` (`chatgpt-oauth`), `config/copilot-auth.json` (`github-copilot`) | Absolute path to the persisted OAuth token bundle. For `chatgpt-oauth`, create it with `bound login --chatgpt`; for `github-copilot`, with `bound login --copilot`. Both still require `model`, `context_window`, and `tier`. |
+| `token_store_path` | string | `config/chatgpt-auth.json` (`chatgpt-oauth`), `config/copilot-auth.json` (`github-copilot`) | Absolute path to the persisted OAuth token bundle. For `chatgpt-oauth`, create it with `bound login --chatgpt`; for `github-copilot`, with `bound login --copilot`. Both still require `model` and `context_window`. |
 | `region` | string | absent | AWS region (Bedrock, and required for `bedrock-mantle` — the Mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
 | `context_window` | int > 0 | — | Token budget bound for context assembly. Omitted for `umans` (fetched per-model). |
-| `tier` | int 1–5 | — | Capability/cost tier; used by tier-based model hints. Omitted and rejected for `umans`. |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
 | `price_per_m_cache_write` | number ≥ 0 | absent | USD per million cache-write tokens (the 5m-TTL rate; also the fallback rate for 1h-TTL writes). |
@@ -168,7 +167,6 @@ export default {
       model: "example-model",
       base_url: "https://api.example.com/v1",
       context_window: 128000,
-      tier: 3,
       price(turn) {
         return (turn.usage.inputTokens * 2 + turn.usage.outputTokens * 8) / 1_000_000;
       },
@@ -206,7 +204,7 @@ export default {
 };
 ```
 
-Do not set `model`, `tier`, `context_window`, `capabilities`, or nondefault pricing fields
+Do not set `model`, `context_window`, `capabilities`, or nondefault pricing fields
 on a `umans` entry; they are rejected. Other generic optional backend fields may be
 accepted by the schema. Set up with `bound init --umans` (reads `UMANS_API_KEY`).
 
@@ -226,14 +224,12 @@ export default {
       provider: "github-copilot",
       model: "claude-sonnet-4.5",
       context_window: 200000,
-      tier: 1,
     },
     {
       id: "copilot-auto",
       provider: "github-copilot",
       model: "auto",
       context_window: 128000,
-      tier: 2,
     },
   ],
   default: "copilot-claude",

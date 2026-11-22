@@ -23,8 +23,15 @@ The decision has three broad questions:
    route; a named model narrows the eligible inventory.
 2. **Which backends are eligible?** Eligibility depends on the advertised model, provider
    capabilities, and current backend configuration.
-3. **Where can the request run?** Bound prefers an eligible backend on the loop host, then can
-   consider an advertised backend on another host or a configured fallback route.
+3. **Where can the request run?** Bound gathers every eligible route for the model
+   across the loop host and the live remote hosts into one candidate pool — a local
+   backend does not shadow a remote one. It then ranks them deterministically:
+   local routes before remote routes, and ties broken by a stable route identity
+   (`${site}:${provider}:${backend}`). Heartbeat freshness decides only whether a
+   host is live, never the order between live routes. When a route fails with a
+   rate limit, server error, or transport fault, the turn fails over to the next
+   ranked route for the same model, on any host; it is not substituted for a
+   different model.
 
 When the selected backend is remote, the loop host relays its assembled context to the
 inference host and streams the response back. The inference host serves the request; it does

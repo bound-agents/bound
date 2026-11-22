@@ -287,7 +287,14 @@ export const hostModelsSchema = z.union([
 	z.array(
 		z.object({
 			id: z.string().min(1),
-			tier: z.number().int().optional(),
+			// R-RT2 route advertisement fields; `tier` was removed (R-RT3). Older
+			// peers simply ignore the unknown keys (this union member is non-strict).
+			route_id: z.string().optional(),
+			logical_model: z.string().optional(),
+			provider_model_id: z.string().optional(),
+			max_output_tokens: z.number().int().optional(),
+			cache_ttl: z.string().optional(),
+			thinking_mode: z.literal("tool").optional(),
 			capabilities: z
 				.object({
 					streaming: z.boolean().optional(),

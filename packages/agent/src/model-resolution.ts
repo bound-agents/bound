@@ -7,7 +7,7 @@ import type {
 	ModelRouter,
 } from "@bound/llm";
 
-import { listAllHostModels, listRemoteHostModels, listRemoteHostsWithModels } from "@bound/core";
+import { listAllHostModels } from "@bound/core";
 import type { HostModelEntry } from "@bound/shared";
 
 import { type EligibleHost, findAnyRemoteModel, findEligibleHostsByModel } from "./relay-router";
@@ -121,45 +121,6 @@ function getUnmetCapabilities(
 }
 
 /**
- * Resolves the tier for a model by checking the local router first, then the hosts table.
- * Returns null if the model is not found anywhere.
- */
-export function resolveModelTier(
-	modelId: string,
-	modelRouter: ModelRouter,
-	db: Database,
-	localSiteId: string,
-): number | null {
-	// Check local router first
-	const localTier = modelRouter.getBackendTier(modelId);
-	if (localTier !== null) return localTier;
-
-	// Fall back to hosts table (remote models)
-	const rows = listRemoteHostModels(db, localSiteId);
-
-	let bestTier: number | null = null;
-	for (const row of rows) {
-		if (!row.models) continue;
-		let rawModels: unknown;
-		try {
-			rawModels = JSON.parse(row.models);
-		} catch {
-			continue;
-		}
-		if (!Array.isArray(rawModels)) continue;
-		for (const entry of rawModels) {
-			if (entry && typeof entry === "object" && (entry as HostModelEntry).id === modelId) {
-				const tier = (entry as HostModelEntry).tier;
-				if (tier !== undefined && (bestTier === null || tier < bestTier)) {
-					bestTier = tier;
-				}
-			}
-		}
-	}
-	return bestTier;
-}
-
-/**
  * Builds a `kind: "local"` resolution, or `null` when the backend advertises
  * no context window. A ready local backend always has one — config requires
  * `context_window` for non-umans backends, umans fetches it at warmup, and the
@@ -187,115 +148,6 @@ function buildLocalResolution(
 		maxOutputTokens: modelRouter.getMaxOutputTokens(modelId),
 		systemPromptSuffix: modelRouter.getSystemPromptSuffix(modelId),
 		cacheTtl: modelRouter.getCacheTtl(modelId),
-		max_context,
-	};
-}
-
-/**
- * Attempts to find a same-tier fallback when the originally-requested model
- * is unavailable. Checks local backends first, then remote hosts.
- * Returns a ModelResolution if a cost-equivalent alternative exists,
- * or null if none found.
- *
- * Excludes the originally-requested model from candidates.
- */
-export function resolveSameTierFallback(
-	failedModelId: string,
-	modelRouter: ModelRouter,
-	db: Database,
-	localSiteId: string,
-	tier: number,
-	requirements?: CapabilityRequirements,
-): ModelResolution | null {
-	// Try local backends first
-	const localCandidates = modelRouter.listEligibleByTier(tier, requirements);
-	const localAlt = localCandidates.find((b) => b.id !== failedModelId);
-	if (localAlt) {
-		const backend = modelRouter.tryGetBackend(localAlt.id);
-		if (backend) {
-			const localResolution = buildLocalResolution(modelRouter, backend, localAlt.id, true);
-			// A fallback candidate that advertises no context window is not viable;
-			// fall through to remote rather than dispatch on a guessed default.
-			if (localResolution) return localResolution;
-		}
-	}
-
-	// Fall back to remote hosts with a same-tier, different model
-	const rows = listRemoteHostsWithModels(db, localSiteId);
-
-	const STALE_THRESHOLD_MS = 5 * 60 * 1000;
-	const remoteHosts: Array<EligibleHost & { modelId: string }> = [];
-
-	for (const row of rows) {
-		if (!row.models) continue;
-		const ts = row.modified_at ?? row.online_at;
-		if (!ts || Date.now() - new Date(ts).getTime() > STALE_THRESHOLD_MS) continue;
-
-		let rawModels: unknown;
-		try {
-			rawModels = JSON.parse(row.models);
-		} catch {
-			continue;
-		}
-		if (!Array.isArray(rawModels)) continue;
-
-		for (const entry of rawModels) {
-			if (!entry || typeof entry !== "object") continue;
-			const hostEntry = entry as HostModelEntry;
-			if (!hostEntry.id || hostEntry.id === failedModelId) continue;
-			if (hostEntry.tier !== tier) continue;
-
-			// Apply capability requirements if provided
-			if (requirements && hostEntry.capabilities) {
-				const caps = hostEntry.capabilities;
-				if (requirements.vision && !caps.vision) continue;
-				if (requirements.tool_use && !caps.tool_use) continue;
-				if (requirements.system_prompt && !caps.system_prompt) continue;
-				if (requirements.prompt_caching && !caps.prompt_caching) continue;
-			}
-
-			// A same-tier fallback host that advertises no context window is not
-			// viable — the loop couldn't budget against it. Skip it rather than
-			// carry it to a guessed default.
-			if (hostEntry.capabilities?.max_context === undefined) continue;
-
-			remoteHosts.push({
-				site_id: row.site_id,
-				host_name: row.host_name,
-				sync_url: row.sync_url,
-				online_at: row.online_at,
-				modified_at: row.modified_at,
-				tier: hostEntry.tier,
-				maxOutputTokens: hostEntry.max_output_tokens,
-				capabilities: hostEntry.capabilities,
-				modelId: hostEntry.id,
-			});
-		}
-	}
-
-	if (remoteHosts.length === 0) return null;
-
-	// Sort by freshness (most recent first), modified_at preferred over online_at
-	remoteHosts.sort((a, b) => {
-		const aTs = a.modified_at ?? a.online_at;
-		const bTs = b.modified_at ?? b.online_at;
-		if (!aTs && !bTs) return 0;
-		if (!aTs) return 1;
-		if (!bTs) return -1;
-		return new Date(bTs).getTime() - new Date(aTs).getTime();
-	});
-
-	const best = remoteHosts[0];
-	const max_context = best.capabilities?.max_context;
-	// Defensive: the collection loop skips hosts without a window, so this is
-	// non-null here. The guard keeps the type honest without a non-null assertion.
-	if (max_context === undefined) return null;
-	return {
-		kind: "remote",
-		hosts: remoteHosts.map(({ modelId: _, ...host }) => host),
-		modelId: best.modelId,
-		reResolved: true,
-		maxOutputTokens: best.maxOutputTokens,
 		max_context,
 	};
 }
@@ -394,7 +246,11 @@ export function resolveModel(
 	// Phase 1: Identify — check local backends first
 	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
 
-	if (localBackend) {
+	// A local route no longer wins just by existing (R-RT7): when this backend
+	// id is within its per-RouteId cooldown (rate-limited / backoff), skip the
+	// local short-circuit so resolution falls through to a remote route serving
+	// the SAME logical model. Failover never crosses to a different model.
+	if (localBackend && !modelRouter.isRateLimited(effectiveModelId)) {
 		// Phase 2: Qualify (local)
 		if (requirements) {
 			const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);

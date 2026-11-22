@@ -1,15 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { LLMRefusalError, classifyGeminiInteractions400 } from "../model-declined";
-import { ModelRouter, PooledBackend, createModelRouter } from "../model-router";
+import { ModelRouter, createModelRouter } from "../model-router";
 import type {
 	BackendCapabilities,
 	BackendReadiness,
-	ChatParams,
 	LLMBackend,
 	ModelBackendsConfig,
 	ModelDescriptor,
 	ModelRegistrar,
-	StreamChunk,
 } from "../types";
 import { LLMError } from "../types";
 
@@ -76,7 +73,6 @@ describe("ModelRouter — system prompt suffix", () => {
 		const router = new ModelRouter(
 			backends,
 			configured.id,
-			undefined,
 			undefined,
 			new Map([
 				[
@@ -147,7 +143,6 @@ describe("ModelRouter — getCacheTtl capability defaulting", () => {
 			new Map([[backend.id, backend]]),
 			backend.id,
 			new Map([[backend.id, backend.capabilities()]]),
-			undefined,
 			new Map([[backend.id, config.backends[0]]]),
 		);
 		expect(router.getCacheTtl("cached")).toBe("30m");
@@ -845,8 +840,8 @@ describe("Phase 5: getEarliestCapableRecovery", () => {
 	});
 });
 
-describe("ModelRouter tier awareness", () => {
-	it("getBackendTier returns the tier for a registered backend", () => {
+describe("ModelRouter flat registry (R-RT1, slice 2)", () => {
+	it("registers one backend per id as a flat route (no tier, no pooling)", () => {
 		const router = createModelRouter({
 			backends: [
 				{
@@ -856,8 +851,6 @@ describe("ModelRouter tier awareness", () => {
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
-					tier: 1,
-					pricePerMInput: 0,
 				},
 				{
 					id: "expensive",
@@ -866,327 +859,50 @@ describe("ModelRouter tier awareness", () => {
 					model: "llama3",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
-					tier: 5,
-					pricePerMInput: 15,
 				},
 			],
 			default: "cheap",
 		});
 
-		expect(router.getBackendTier("cheap")).toBe(1);
-		expect(router.getBackendTier("expensive")).toBe(5);
+		expect(
+			router
+				.listBackends()
+				.map((b) => b.id)
+				.sort(),
+		).toEqual(["cheap", "expensive"]);
+		// tier is gone from the router surface.
+		expect((router as unknown as Record<string, unknown>).getBackendTier).toBeUndefined();
+		expect((router as unknown as Record<string, unknown>).listEligibleByTier).toBeUndefined();
 	});
 
-	it("getBackendTier returns null for unknown backend", () => {
+	it("a later config entry with a duplicate id replaces the earlier one (last-wins)", () => {
+		// PooledBackend is gone: two entries sharing an id no longer merge into a
+		// pool. The flat registry keeps the last one so a reload-style duplicate
+		// doesn't throw; the operator surface still lists one route per id.
 		const router = createModelRouter({
 			backends: [
 				{
-					id: "test",
+					id: "dup",
 					provider: "openai-compatible",
 					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
+					model: "first",
+					baseUrl: "http://localhost:1",
 					contextWindow: 4096,
-					tier: 1,
+				},
+				{
+					id: "dup",
+					provider: "openai-compatible",
+					apiKey: "test",
+					model: "second",
+					baseUrl: "http://localhost:2",
+					contextWindow: 8192,
 				},
 			],
-			default: "test",
+			default: "dup",
 		});
 
-		expect(router.getBackendTier("nonexistent")).toBeNull();
-	});
-
-	it("listEligibleByTier returns only backends matching the requested tier", () => {
-		const router = createModelRouter({
-			backends: [
-				{
-					id: "cheap-a",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-				},
-				{
-					id: "cheap-b",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "phi3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-				},
-				{
-					id: "expensive",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 5,
-				},
-			],
-			default: "cheap-a",
-		});
-
-		const tier1 = router.listEligibleByTier(1);
-		expect(tier1.map((b) => b.id)).toEqual(["cheap-a", "cheap-b"]);
-
-		const tier5 = router.listEligibleByTier(5);
-		expect(tier5.map((b) => b.id)).toEqual(["expensive"]);
-
-		const tier3 = router.listEligibleByTier(3);
-		expect(tier3).toHaveLength(0);
-	});
-
-	it("listEligibleByTier respects capability requirements", () => {
-		const router = createModelRouter({
-			backends: [
-				{
-					id: "vision-cheap",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llava",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-					capabilities: { vision: true },
-				},
-				{
-					id: "no-vision-cheap",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-					capabilities: { vision: false },
-				},
-			],
-			default: "no-vision-cheap",
-		});
-
-		const eligible = router.listEligibleByTier(1, { vision: true });
-		expect(eligible.map((b) => b.id)).toEqual(["vision-cheap"]);
-	});
-
-	it("listEligibleByTier excludes rate-limited backends", () => {
-		const router = createModelRouter({
-			backends: [
-				{
-					id: "a",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "llama3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-				},
-				{
-					id: "b",
-					provider: "openai-compatible",
-					apiKey: "test",
-					model: "phi3",
-					baseUrl: "http://localhost:11434",
-					contextWindow: 4096,
-					tier: 1,
-				},
-			],
-			default: "a",
-		});
-
-		router.markRateLimited("a", 60_000);
-		const eligible = router.listEligibleByTier(1);
-		expect(eligible.map((b) => b.id)).toEqual(["b"]);
-	});
-});
-
-describe("PooledBackend", () => {
-	const defaultCaps: BackendCapabilities = {
-		streaming: true,
-		tool_use: true,
-		system_prompt: true,
-		prompt_caching: false,
-		vision: false,
-		extended_thinking: false,
-		max_context: 4096,
-	};
-
-	function createSuccessBackend(_id: string): LLMBackend & { chatCalled: boolean } {
-		const backend = {
-			chatCalled: false,
-			async *chat(): AsyncIterable<StreamChunk> {
-				backend.chatCalled = true;
-				yield {
-					type: "delta" as const,
-					text: "ok",
-				};
-			},
-			capabilities: () => defaultCaps,
-		};
-		return backend;
-	}
-
-	function createFailingBackend(
-		_id: string,
-		statusCode: number,
-	): LLMBackend & { chatCalled: boolean } {
-		const backend = {
-			chatCalled: false,
-			// biome-ignore lint/correctness/useYield: throwing before yield is intentional
-			async *chat(): AsyncIterable<StreamChunk> {
-				backend.chatCalled = true;
-				throw new LLMError(`HTTP ${statusCode}`, "test-provider", statusCode);
-			},
-			capabilities: () => defaultCaps,
-		};
-		return backend;
-	}
-
-	const mockParams: ChatParams = {
-		messages: [{ role: "user", content: "test" }],
-	};
-
-	it("falls through to next backend on 429 rate limit", async () => {
-		const backend1 = createFailingBackend("b1", 429);
-		const backend2 = createSuccessBackend("b2");
-		const pool = new PooledBackend([
-			{ backend: backend1, tier: 1, pricePerMInput: 0 },
-			{ backend: backend2, tier: 2, pricePerMInput: 0 },
-		]);
-
-		const chunks: StreamChunk[] = [];
-		for await (const chunk of pool.chat(mockParams)) {
-			chunks.push(chunk);
-		}
-
-		expect(backend1.chatCalled).toBe(true);
-		expect(backend2.chatCalled).toBe(true);
-		expect(chunks.length).toBeGreaterThan(0);
-	});
-
-	it("falls through to next backend on 500 server error", async () => {
-		const backend1 = createFailingBackend("b1", 500);
-		const backend2 = createSuccessBackend("b2");
-		const pool = new PooledBackend([
-			{ backend: backend1, tier: 1, pricePerMInput: 0 },
-			{ backend: backend2, tier: 2, pricePerMInput: 0 },
-		]);
-
-		const chunks: StreamChunk[] = [];
-		for await (const chunk of pool.chat(mockParams)) {
-			chunks.push(chunk);
-		}
-
-		expect(backend1.chatCalled).toBe(true);
-		expect(backend2.chatCalled).toBe(true);
-	});
-
-	it("falls through to next backend on 400 bad request (provider format mismatch)", async () => {
-		const backend1 = createFailingBackend("b1", 400);
-		const backend2 = createSuccessBackend("b2");
-		const pool = new PooledBackend([
-			{ backend: backend1, tier: 1, pricePerMInput: 0 },
-			{ backend: backend2, tier: 2, pricePerMInput: 0 },
-		]);
-
-		const chunks: StreamChunk[] = [];
-		for await (const chunk of pool.chat(mockParams)) {
-			chunks.push(chunk);
-		}
-
-		expect(backend1.chatCalled).toBe(true);
-		expect(backend2.chatCalled).toBe(true);
-		expect(chunks.length).toBeGreaterThan(0);
-	});
-
-	function createRefusingBackend(_id: string): LLMBackend & { chatCalled: boolean } {
-		const backend = {
-			chatCalled: false,
-			// biome-ignore lint/correctness/useYield: throwing before yield is intentional
-			async *chat(): AsyncIterable<StreamChunk> {
-				backend.chatCalled = true;
-				const outcome = classifyGeminiInteractions400("safety");
-				if (!outcome) throw new Error("expected a classified refusal");
-				throw new LLMRefusalError(
-					"Gemini Interactions API safety block",
-					"test-provider",
-					outcome,
-					400,
-				);
-			},
-			capabilities: () => defaultCaps,
-		};
-		return backend;
-	}
-
-	it("propagates a classified refusal (safety-coded 400) immediately without pool failover", async () => {
-		// A refusal is not a route failure: a Gemini Interactions API 400 whose
-		// code is a recognized safety block must surface as an LLMRefusalError
-		// rather than backing off the entry and retrying the same model on the
-		// next pool entry (R-RT15).
-		const backend1 = createRefusingBackend("b1");
-		const backend2 = createSuccessBackend("b2");
-		const pool = new PooledBackend([
-			{ backend: backend1, tier: 1, pricePerMInput: 0 },
-			{ backend: backend2, tier: 2, pricePerMInput: 0 },
-		]);
-
-		let caught: LLMRefusalError | null = null;
-		try {
-			for await (const _chunk of pool.chat(mockParams)) {
-				// should not reach here
-			}
-		} catch (error) {
-			caught = error as LLMRefusalError;
-		}
-
-		expect(caught).toBeInstanceOf(LLMRefusalError);
-		expect(caught?.outcome.kind).toBe("model-declined");
-		expect(caught?.statusCode).toBe(400);
-		expect(backend1.chatCalled).toBe(true);
-		expect(backend2.chatCalled).toBe(false); // No same-model failover on a refusal
-	});
-
-	it("propagates 403 client error immediately without fallback", async () => {
-		const backend1 = createFailingBackend("b1", 403);
-		const backend2 = createSuccessBackend("b2");
-		const pool = new PooledBackend([
-			{ backend: backend1, tier: 1, pricePerMInput: 0 },
-			{ backend: backend2, tier: 2, pricePerMInput: 0 },
-		]);
-
-		let caught: LLMError | null = null;
-		try {
-			for await (const _chunk of pool.chat(mockParams)) {
-				// should not reach here
-			}
-		} catch (error) {
-			caught = error as LLMError;
-		}
-
-		expect(caught).not.toBeNull();
-		expect(caught?.statusCode).toBe(403);
-		expect(backend2.chatCalled).toBe(false); // No fallback
-	});
-
-	it("falls through to next backend on 402 Payment Required", async () => {
-		const backend1 = createFailingBackend("b1", 402);
-		const backend2 = createSuccessBackend("b2");
-		const pool = new PooledBackend([
-			{ backend: backend1, tier: 1, pricePerMInput: 0 },
-			{ backend: backend2, tier: 2, pricePerMInput: 0 },
-		]);
-
-		const chunks: StreamChunk[] = [];
-		for await (const chunk of pool.chat(mockParams)) {
-			chunks.push(chunk);
-		}
-
-		expect(backend1.chatCalled).toBe(true);
-		expect(backend2.chatCalled).toBe(true);
-		expect(chunks.length).toBeGreaterThan(0);
+		expect(router.listBackends().filter((b) => b.id === "dup")).toHaveLength(1);
+		expect(router.getEffectiveCapabilities("dup")?.max_context).toBe(8192);
 	});
 });
 
@@ -1436,10 +1152,9 @@ describe("ModelRouter.reload — in-place config swap", () => {
 		expect(heldRef.listBackends().map((b) => b.id)).toEqual(["swapped"]);
 	});
 
-	it("refreshes effective capabilities and tiers after reload", () => {
+	it("refreshes effective capabilities after reload", () => {
 		const router = createModelRouter(initialConfig);
 		expect(router.getEffectiveCapabilities("old-backend")).not.toBeNull();
-		expect(router.getBackendTier("old-backend")).toBe(3);
 
 		router.reload({
 			backends: [
@@ -1450,7 +1165,6 @@ describe("ModelRouter.reload — in-place config swap", () => {
 					model: "llava",
 					baseUrl: "http://localhost:11434",
 					contextWindow: 4096,
-					tier: 1,
 					capabilities: { vision: true },
 				},
 			],
@@ -1460,7 +1174,6 @@ describe("ModelRouter.reload — in-place config swap", () => {
 		expect(router.getEffectiveCapabilities("old-backend")).toBeNull();
 		const caps = router.getEffectiveCapabilities("vision-capable");
 		expect(caps?.vision).toBe(true);
-		expect(router.getBackendTier("vision-capable")).toBe(1);
 	});
 
 	it("refreshes thinking/effort config after reload", () => {
@@ -1635,18 +1348,18 @@ class StubReadinessBackend implements LLMBackend {
 }
 
 describe("ModelRouter generic readiness (AC.20)", () => {
-	function descriptor(id: string, tier: number): ModelDescriptor {
+	function descriptor(id: string): ModelDescriptor {
 		return {
 			id,
 			capabilities: { ...READY_CAPS },
-			tier,
+			tier: 3,
 			pricing: { inputPerM: 1, outputPerM: 2 },
 			maxOutputTokens: 8192,
 		};
 	}
 
 	it("excludes a not-ready readiness backend from listEligible/listBackends and isNotReady", () => {
-		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a")], true);
 		const backends = new Map<string, LLMBackend>([["ns", stub]]);
 		const router = new ModelRouter(backends, "ns");
 
@@ -1657,7 +1370,7 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 	});
 
 	it("expands via the registrar path: adds backends, clears not-ready, removes placeholder, redirects default", () => {
-		const models = [descriptor("m-a", 5), descriptor("m-b", 3)];
+		const models = [descriptor("m-a"), descriptor("m-b")];
 		const stub = new StubReadinessBackend("ns", models, true);
 		const backends = new Map<string, LLMBackend>([["ns", stub]]);
 		const router = new ModelRouter(backends, "ns");
@@ -1667,7 +1380,7 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		const registrar: ModelRegistrar = {
 			register(_providerId, entries) {
 				for (const { descriptor: d, backend } of entries) {
-					router.addDynamicBackend(d.id, backend, d.capabilities, d.tier);
+					router.addDynamicBackend(d.id, backend, d.capabilities);
 				}
 				router.redirectDefault("ns", entries[0].descriptor.id);
 				router.removeBackend("ns");
@@ -1685,8 +1398,7 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		).toEqual(["m-a", "m-b"]);
 		expect(router.tryGetBackend("ns")).toBeNull();
 		expect(router.getDefaultId()).toBe("m-a");
-		expect(router.getBackendTier("m-a")).toBe(5);
-		expect(router.getBackendTier("m-b")).toBe(3);
+		expect(router.getRouteId("m-a")).toBeNull();
 	});
 
 	it("resolves getMaxOutputTokens for a dynamically-registered backend (per-model output budget)", () => {
@@ -1695,14 +1407,14 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		// (e.g. umans) models. The loop then sent no max_tokens and the provider
 		// applied a low default (~4096), truncating heavy reasoners mid-thinking.
 		// The descriptor's maxOutputTokens must reach backendConfigs.
-		const models = [descriptor("m-a", 5)]; // descriptor() sets maxOutputTokens: 8192
+		const models = [descriptor("m-a")]; // descriptor() sets maxOutputTokens: 8192
 		const stub = new StubReadinessBackend("ns", models, true);
 		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
 
 		const registrar: ModelRegistrar = {
 			register(_providerId, entries) {
 				for (const { descriptor: d, backend } of entries) {
-					router.addDynamicBackend(d.id, backend, d.capabilities, d.tier, d.maxOutputTokens);
+					router.addDynamicBackend(d.id, backend, d.capabilities, d.maxOutputTokens);
 				}
 				router.redirectDefault("ns", entries[0].descriptor.id);
 				router.removeBackend("ns");
@@ -1717,14 +1429,14 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 	it("leaves getMaxOutputTokens undefined when a dynamic backend reports no budget", () => {
 		// A dynamic backend without a per-model output limit stays undefined —
 		// the caller (clampMaxOutputTokens) then omits max_tokens, unchanged.
-		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 5)], true);
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a")], true);
 		const router = new ModelRouter(new Map<string, LLMBackend>([["ns", stub]]), "ns");
-		router.addDynamicBackend("m-x", stub, { ...READY_CAPS }, 3, undefined);
+		router.addDynamicBackend("m-x", stub, { ...READY_CAPS }, undefined);
 		expect(router.getMaxOutputTokens("m-x")).toBeUndefined();
 	});
 
 	it("disposes superseded readiness backends on reload (AC.5)", () => {
-		const stub = new StubReadinessBackend("ns", [descriptor("m-a", 3)], true);
+		const stub = new StubReadinessBackend("ns", [descriptor("m-a")], true);
 		let disposed = false;
 		// Wrap dispose to observe it.
 		const origDispose = stub.readiness.dispose;
@@ -1754,7 +1466,7 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		// A late fire() from the disposed stub must NOT register into the router.
 		const registrar: ModelRegistrar = {
 			register() {
-				router.addDynamicBackend("m-a", new MockBackend("m-a"), READY_CAPS, 3);
+				router.addDynamicBackend("m-a", new MockBackend("m-a"), READY_CAPS);
 			},
 		};
 		stub.readiness.start(registrar);

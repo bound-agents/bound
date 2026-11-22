@@ -155,6 +155,15 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		expect(advertised.find((m) => m.id === "umans-flash")?.max_output_tokens).toBe(4096);
 		expect(advIds).not.toContain("umans");
 
+		// (R-RT2/R-RT3, slice 2) advertised entries carry route identity + metadata
+		// and NO tier. Done-when #3: hosts.models carries no tier.
+		for (const entry of advertised as Array<Record<string, unknown>>) {
+			expect("tier" in entry).toBe(false);
+			expect(typeof entry.route_id).toBe("string");
+			expect((entry.route_id as string).endsWith(`:umans:${entry.id as string}`)).toBe(true);
+			expect(entry.logical_model).toBe(entry.id);
+		}
+
 		// Default redirected off the placeholder to a concrete id.
 		expect(["umans-coder", "umans-flash"]).toContain(router.getDefaultId());
 		expect(shared.default).not.toBe("umans");

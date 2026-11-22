@@ -295,8 +295,14 @@ describe("MainAgentLoop.relayDeferredClientTool (remote session host)", () => {
 	});
 });
 
-describe("MainAgentLoop.onRateLimitError (same-tier fallback)", () => {
-	it("falls back to a same-tier model when the hinted model is absent and an alternative exists", async () => {
+describe("MainAgentLoop.onRateLimitError (no cross-model substitution)", () => {
+	it("does NOT substitute a different model when the hinted model is absent (R-RT7/R-RT8)", async () => {
+		// Under the routing redesign a route failure only fails over to other
+		// routes for the SAME logical model; a model whose routes are all down
+		// returns transient-unavailable and is not substituted onto a different
+		// model (that is a refusal-only path, slice 5). The router has only "phi3";
+		// a request for the absent "glm" must surface an error, never silently run
+		// on phi3.
 		const db = makeDb();
 		const bus = new TypedEventEmitter();
 		const threadId = randomUUID();
@@ -309,46 +315,22 @@ describe("MainAgentLoop.onRateLimitError (same-tier fallback)", () => {
 		};
 
 		const backend = new MockBackend();
-		backend.push(async function* () {
-			yield { type: "text" as const, content: "Completed on the fallback model." };
-			yield {
-				type: "done" as const,
-				usage: {
-					input_tokens: 10,
-					output_tokens: 5,
-					cache_write_tokens: null,
-					cache_read_tokens: null,
-					estimated: false,
-				},
-			};
-		});
-
-		// Router has only tier-1 "phi3"; we request tier-1 "glm" (absent) so the
-		// same-tier fallback resolves to phi3.
 		const backends = new Map<string, LLMBackend>([["phi3", backend]]);
-		const tiers = new Map([["phi3", 1]]);
-		const router = new ModelRouter(backends, "phi3", undefined, tiers);
+		const router = new ModelRouter(backends, "phi3");
 
 		const loop = new MainAgentLoop(
 			makeCtx(db, bus),
 			{ exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
 			router,
-			{ threadId, userId: "user-1", modelId: "glm", modelTier: 1 },
+			{ threadId, userId: "user-1", modelId: "glm" },
 		);
 
 		const result = await loop.run();
 
-		expect(result.error).toBeUndefined();
-		expect(result.messagesCreated).toBeGreaterThan(0);
-
-		const alerts = db
-			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'alert'")
-			.all(threadId) as Array<{ content: string }>;
-		expect(alerts.length).toBeGreaterThan(0);
-		expect(alerts[0].content).toContain("glm");
-		expect(alerts[0].content).toContain("phi3");
-
+		// The absent model surfaces an error; no phi3 substitution, no fallback event.
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("glm");
 		const fallback = emitted.find((e) => e.event === "model:fallback");
-		expect(fallback).toBeDefined();
+		expect(fallback).toBeUndefined();
 	});
 });

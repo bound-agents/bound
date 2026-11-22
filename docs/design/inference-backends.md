@@ -340,7 +340,7 @@ a 429 so the router backs off rather than queuing behind a server-side pause.
 
 #### createModelRouter
 
-`createModelRouter(config)` instantiates all configured backends and returns a `ModelRouter`. When multiple entries share the same `id`, they are wrapped in a `PooledBackend` that fails over between sub-backends on rate-limit (429), payment-required (402), and server-error (5xx) responses, using exponential backoff per sub-entry. As a special case, an empty `backends` array produces a hub-only router with no local backends (inference is proxied to spokes); otherwise, `createModelRouter` throws `LLMError` if the default backend ID is not present in the backends list.
+`createModelRouter(config)` instantiates all configured backends and returns a `ModelRouter` — a flat registry of local routes, one per backend `id`. Each route carries a `RouteId` (`${siteId}:${provider}:${backendId}`) for addressing, ranking, and health, and, separately, a provider `reasoningOrigin` stamp for encrypted-reasoning keep/drop (the two are never conflated). A classified route failure (429, 5xx, transport) cools that `RouteId` down with a temporary per-route cooldown; a model refusal never does. Same-model pooling across providers and hosts is no longer a `PooledBackend` wrapper — it is subsumed by unified candidate ranking in `resolveModel` (local routes before remote, ties broken by lexical `RouteId`, heartbeat freshness gating liveness only). As a special case, an empty `backends` array produces a hub-only router with no local backends (inference is proxied to spokes); otherwise, `createModelRouter` throws `LLMError` if the default backend ID is not present in the backends list.
 
 ```typescript
 import { createModelRouter } from "@bound/llm";

@@ -179,7 +179,6 @@ describe("config schema integration", () => {
 					model: "llama3",
 					base_url: "http://localhost:11434/v1",
 					context_window: 8192,
-					tier: 3,
 					connect_timeout_ms: "PT2S",
 				},
 			],

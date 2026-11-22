@@ -125,7 +125,6 @@ export interface AgentLoopConfig {
 	taskType?: string;
 	userId: string;
 	modelId?: string;
-	modelTier?: number;
 	abortSignal?: AbortSignal;
 	onActivity?: () => void;
 	onStreamChunk?: (chunk: WsStreamChunk) => void;

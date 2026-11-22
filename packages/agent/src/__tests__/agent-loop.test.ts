@@ -7,9 +7,8 @@ import { join } from "node:path";
 import { applyMetricsSchema, applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { BackendConfig, ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
-import { ModelRouter } from "@bound/llm";
+import { LLMRefusalError, type ModelDeclinedOutcome, ModelRouter } from "@bound/llm";
 import type { EventMap } from "@bound/shared";
-import { assert } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { z } from "zod";
 import {
@@ -812,6 +811,46 @@ describe("MainAgentLoop", () => {
 
 		expect(alerts.length).toBe(1);
 		expect(alerts[0].content).toContain("API rate limit exceeded");
+	});
+
+	it("does not cool the route down or fail over on a model refusal (R-RT15, Done-when #5)", async () => {
+		// A classified refusal means the request reached the model and a safety
+		// classifier declined it — NOT a route failure. The route must not be marked
+		// rate-limited (no per-RouteId cooldown) and the turn must not fail over to
+		// another route for the same model. The refusal surfaces as the turn error.
+		const refusal: ModelDeclinedOutcome = {
+			kind: "model-declined",
+			vendor: "google",
+			category: "safety",
+			raw_reason: "safety",
+			substitutable: true,
+		};
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(() => {
+			async function* refuse(): AsyncGenerator<StreamChunk> {
+				yield { type: "text" as const, content: "" };
+				throw new LLMRefusalError(
+					"Gemini Interactions API safety block",
+					"test-provider",
+					refusal,
+					400,
+				);
+			}
+			return refuse();
+		});
+
+		const router = createMockRouter(mockBackend);
+		const agentLoop = new MainAgentLoop(makeCtx(), createMockSandbox(), router, {
+			threadId,
+			userId: "test-user",
+		});
+
+		const result = await agentLoop.run();
+
+		// The turn ends in error (the refusal surfaces); no silent success.
+		expect(result.error).toBeDefined();
+		// The route was NOT cooled down: a refusal is not a route failure.
+		expect(router.isRateLimited("claude-opus")).toBe(false);
 	});
 
 	it("should handle multiple tool calls in sequence", async () => {
@@ -1696,91 +1735,76 @@ describe("MainAgentLoop", () => {
 		expect(alerts[0].content).toContain("Failed to resolve");
 	});
 
-	it("falls back to a same-tier model when model-hint fails and alternative exists", async () => {
+	it("does not substitute a different model when the requested model has no route (R-RT3, slice 2)", async () => {
+		// Same-tier substitution is gone. Under the slice-2 spec a route failure
+		// fails over only to other routes for the SAME logical model; switching to a
+		// different model happens only on a refusal (slice 5). A model-hint that
+		// resolves to nothing is surfaced as an error, never silently swapped for a
+		// cost-equivalent sibling.
 		const mockBackend = new MockLLMBackend();
-		mockBackend.setTextResponse("Completed on fallback model.");
+		mockBackend.setTextResponse("Should not be called.");
 
 		const mockBash = createMockSandbox();
 		const emittedEvents: Array<{ event: string; payload: unknown }> = [];
 		const ctx = makeCtx();
-		// Spy on eventBus.emit
 		ctx.eventBus.emit = <K extends keyof EventMap>(event: K, payload: EventMap[K]): boolean => {
 			emittedEvents.push({ event, payload });
 			return true;
 		};
 
-		// Router with two tier-1 backends: "glm" and "phi3"
-		// We'll request "glm" but it won't be in the router — only "phi3" is
+		// Only "phi3" is registered; the request names "glm", which exists nowhere.
 		const backends = new Map<string, LLMBackend>([["phi3", mockBackend]]);
-		const tiers = new Map([["phi3", 1]]);
-		const router = new ModelRouter(backends, "phi3", undefined, tiers);
+		const router = new ModelRouter(backends, "phi3");
 
 		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
 			threadId,
 			userId: "test-user",
 			modelId: "glm",
-			modelTier: 1, // Caller knows the tier of the requested model
 		});
 
 		const result = await agentLoop.run();
 
-		// Should succeed via same-tier fallback
-		expect(result.error).toBeUndefined();
-		expect(result.messagesCreated).toBeGreaterThan(0);
-
-		// Alert should describe the tier-equivalent fallback
-		const alerts = db
-			.query(
-				"SELECT content FROM messages WHERE thread_id = ? AND role = 'alert' ORDER BY created_at ASC",
-			)
-			.all(threadId) as Array<{ content: string }>;
-
-		expect(alerts.length).toBeGreaterThan(0);
-		expect(alerts[0].content).toContain("glm");
-		expect(alerts[0].content).toContain("phi3");
-		expect(alerts[0].content).toContain("tier");
-
-		// model:fallback event should have been emitted
-		const fallbackEvent = emittedEvents.find((e) => e.event === "model:fallback");
-		assert(fallbackEvent);
-		const payload = fallbackEvent.payload as Record<string, unknown>;
-		expect(payload.requested_model).toBe("glm");
-		expect(payload.fallback_model).toBe("phi3");
-		expect(payload.tier).toBe(1);
+		// The requested model is surfaced as an error; no sibling is substituted.
+		expect(result.error).toBeDefined();
+		expect(result.error).toContain("glm");
+		expect(result.messagesCreated).toBe(0);
+		expect(mockBackend.getCallCount()).toBe(0);
+		expect(emittedEvents.some((e) => e.event === "model:fallback")).toBe(false);
 	});
 
-	it("fails when model-hint fails and no same-tier alternative exists", async () => {
+	it("fails when the requested model has no route and does not substitute (R-RT3)", async () => {
 		const mockBackend = new MockLLMBackend();
 		mockBackend.setTextResponse("Should not be called.");
 
 		const mockBash = createMockSandbox();
 		const ctx = makeCtx();
 
-		// Router with only a tier-5 backend; we request a tier-1 model
+		// Only "opus" is registered; the request names "glm", which exists nowhere.
+		// There is no tier equivalence to fall back on anymore.
 		const backends = new Map<string, LLMBackend>([["opus", mockBackend]]);
-		const tiers = new Map([["opus", 5]]);
-		const router = new ModelRouter(backends, "opus", undefined, tiers);
+		const router = new ModelRouter(backends, "opus");
 
 		const agentLoop = new MainAgentLoop(ctx, mockBash, router, {
 			threadId,
 			userId: "test-user",
 			modelId: "glm",
-			modelTier: 1,
 		});
 
 		const result = await agentLoop.run();
 
-		// Should fail — no same-tier alternative
+		// Should fail — the requested model is unknown and is not substituted.
 		expect(result.error).toBeDefined();
 		expect(result.error).toContain("glm");
 		expect(result.messagesCreated).toBe(0);
 	});
 
-	it("falls over to a same-tier model when the resolved model errors at inference with a quota cap (402)", async () => {
-		// The heartbeat shape: empty model-hint resolves to the host default, which
-		// then errors at the inference boundary with a hard quota cap (not 429/529,
-		// not transient). Pre-fix this lands in none of the fallback paths and the
-		// task hard-fails. Post-fix it should fail over to a same-tier sibling.
+	it("does not cross-model substitute when the resolved model errors at inference with a quota cap (402) (R-RT3)", async () => {
+		// Same-tier/cross-model substitution is gone (slice 2). An inference-time
+		// route failure (402 quota cap) fails over only to other routes for the
+		// SAME logical model; it never silently switches to a different model. With
+		// a single route for the resolved default, the turn surfaces the error
+		// rather than quietly completing on an unrelated sibling. Cross-model
+		// recovery arrives with refusal fallback in slice 5.
 		const { LLMError } = await import("@bound/llm");
 		const capped = {
 			// biome-ignore lint/correctness/useYield: throws before first yield
@@ -1799,34 +1823,29 @@ describe("MainAgentLoop", () => {
 			},
 		} as unknown as LLMBackend;
 
-		const healthy = new MockLLMBackend();
-		healthy.setTextResponse("Completed on the same-tier sibling.");
+		const sibling = new MockLLMBackend();
+		sibling.setTextResponse("Should not be reached by substitution.");
 
-		// Two tier-1 backends. Default is the capped one — exactly the empty-hint
-		// case where resolveModel(undefined) picks the host default.
+		// "deepseek" is the default and only route for its logical model; "kimi" is
+		// a DIFFERENT logical model and must not be substituted in.
 		const backends = new Map<string, LLMBackend>([
 			["deepseek", capped],
-			["kimi", healthy],
+			["kimi", sibling],
 		]);
-		const tiers = new Map([
-			["deepseek", 1],
-			["kimi", 1],
-		]);
-		const router = new ModelRouter(backends, "deepseek", undefined, tiers);
+		const router = new ModelRouter(backends, "deepseek");
 
 		const ctx = makeCtx();
 		const agentLoop = new MainAgentLoop(ctx, createMockSandbox(), router, {
 			threadId,
 			userId: "test-user",
-			// No modelId / modelTier — empty hint, resolves to default "deepseek".
+			// No modelId — empty hint resolves to the default "deepseek".
 		});
 
 		const result = await agentLoop.run();
 
-		// Should succeed via same-tier failover to "kimi".
-		expect(result.error).toBeUndefined();
-		expect(result.messagesCreated).toBeGreaterThan(0);
-		expect(healthy.getCallCount()).toBeGreaterThan(0);
+		// The 402 surfaces; "kimi" is a different model and is never substituted.
+		expect(result.error).toBeDefined();
+		expect(sibling.getCallCount()).toBe(0);
 	});
 
 	describe("capturePreSnapshot hook", () => {
@@ -2202,7 +2221,6 @@ describe("MainAgentLoop", () => {
 		const router = new ModelRouter(
 			new Map([[backendId, backend]]),
 			backendId,
-			undefined,
 			undefined,
 			new Map([
 				[
