@@ -159,7 +159,7 @@ export async function startNode(
 		});
 
 	// Phase 4: Model router and inference setup
-	const { modelRouter } = await initInference(appContext, commandContext);
+	const { modelRouter, modelsDevRefresh } = await initInference(appContext, commandContext);
 
 	// Phase 5: Relay processor, KeyManager
 	const { relayProcessor, relayProcessorHandle, keyManager, hubSiteId, keyring } = await initRelay(
@@ -373,6 +373,11 @@ Press Ctrl+C to stop.
 		// which under the serial Windows CI lane cascades into later start tests.
 		try {
 			unregisterSighup();
+			// Await the detached models.dev background refresh (slice 6, R-MC6) before
+			// closing the DB it re-advertises off of. Its continuation guards against a
+			// closed handle, but awaiting it here keeps teardown orderly and avoids a
+			// post-close no-op warning. Never rejects.
+			await modelsDevRefresh;
 			heartbeatHandle?.stop();
 			schedulerHandle?.stop();
 			pruningHandle?.stop();

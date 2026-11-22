@@ -14,6 +14,7 @@ import {
 	resolveCatalog,
 	supportsModelDiscovery,
 } from "@bound/llm";
+import type { RefreshStatus } from "@bound/llm";
 import type {
 	BackendConfig,
 	CatalogBackendInput,
@@ -33,10 +34,47 @@ import { SpanStatusCode, context, trace } from "@opentelemetry/api";
 
 type SharedBackendRow = SharedModelBackendsConfig["backends"][number];
 
+/**
+ * True when a `bun:sqlite` handle is already closed. Guards the DETACHED
+ * `models.dev` refresh continuation (R-MC6): the node can tear down and close
+ * its DB before an in-flight background refresh resolves, and touching a closed
+ * handle throws `RangeError: Cannot use a closed database`. Probes the
+ * `inTransaction` getter — it reads only connection state (throws
+ * `Database has closed` when closed) and issues no SQL, so this stays out of the
+ * read-centralization gate while needing no liveness flag on `AppContext`.
+ */
+function isDbClosed(db: AppContext["db"]): boolean {
+	try {
+		void db.inTransaction;
+		return false;
+	} catch {
+		return true;
+	}
+}
+
 export interface InferenceResult {
 	modelRouter: ReturnType<typeof createModelRouter> | null;
 	routerConfig: ModelBackendsConfig;
 	backendModelMap: Map<string, string>;
+	/**
+	 * The detached `models.dev` background-refresh promise, when a cache was
+	 * built. `initInference` does NOT await it (an unreachable registry must not
+	 * block startup, R-MC6), so the node lifecycle owns it: `startNode`'s `stop()`
+	 * awaits it at teardown and tests await it for determinism. Resolves to the
+	 * refresh status; never rejects. Absent when no cache was built (models.dev
+	 * disabled or no router).
+	 */
+	modelsDevRefresh?: Promise<RefreshStatus>;
+}
+
+/** Optional seams for `initInference` — injected only by tests. */
+export interface InitInferenceOptions {
+	/**
+	 * Injectable fetch for the `models.dev` cache (R-MC5/R-MC6). Defaults to
+	 * `globalThis.fetch`. Tests inject a controllable fetch so the background
+	 * refresh resolves deterministically without touching the live registry.
+	 */
+	modelsDevFetch?: typeof globalThis.fetch;
 }
 
 /** Run the bounded, post-restart summary backlog under one startup lifecycle. */
@@ -462,6 +500,7 @@ export async function resolveLocalCatalog(
 export async function initInference(
 	appContext: AppContext,
 	commandContext: Record<string, unknown> | null,
+	options?: InitInferenceOptions,
 ): Promise<InferenceResult> {
 	// 11. LLM setup — use ModelRouter to support all configured backends
 	appContext.logger.info("Initializing LLM...");
@@ -483,6 +522,7 @@ export async function initInference(
 	// cost beyond one `isLevelEnabled` check per request.
 	const aiSdkFetchLogger = createLogger("@bound/llm", "ai-sdk-fetch");
 
+	let modelsDevRefresh: Promise<RefreshStatus> | undefined;
 	let modelRouter: ReturnType<typeof createModelRouter> | null = null;
 	try {
 		modelRouter = createModelRouter(routerConfig, {
@@ -522,10 +562,21 @@ export async function initInference(
 						...(modelsDevCfg?.refresh_interval_ms !== undefined && {
 							refreshIntervalMs: modelsDevCfg.refresh_interval_ms,
 						}),
+						...(options?.modelsDevFetch && { fetchImpl: options.modelsDevFetch }),
 					});
 		if (modelsDevCache) {
 			await modelsDevCache.load();
-			void modelsDevCache.refresh().then(async (status) => {
+			// The refresh is DETACHED (R-MC6: an unreachable registry must not block
+			// startup). Its continuation re-advertises off the node-owned DB, so it
+			// MUST NOT run after the node tears down and closes that DB — a stray write
+			// to a closed `bun:sqlite` handle throws `RangeError: Cannot use a closed
+			// database`, which as an unhandled rejection from a detached promise crashes
+			// whatever is running at that moment (under the test runner, an unrelated
+			// test). The node lifecycle owns this promise: it is returned on
+			// `InferenceResult.modelsDevRefresh` so `startNode`'s `stop()` awaits it, and
+			// the continuation re-checks DB liveness before touching it.
+			modelsDevRefresh = modelsDevCache.refresh().then(async (status) => {
+				if (isDbClosed(appContext.db)) return status;
 				appContext.logger.info(`[llm] models.dev cache refresh: ${status}`);
 				// First-boot trap (R-MC4): a fresh host with no cache resolves against
 				// an empty snapshot, so a backend that depends on models.dev for its
@@ -533,7 +584,7 @@ export async function initInference(
 				// re-resolve the catalog, flip any newly-ready backends on
 				// (`gateUnreadyBackends` clears their not-ready flag), and re-advertise
 				// so peers learn them — all without a restart.
-				if (status !== "updated") return;
+				if (status !== "updated") return status;
 				const refreshedCatalog = await resolveLocalCatalog(
 					modelRouter,
 					rawBackends,
@@ -541,8 +592,12 @@ export async function initInference(
 					aliases,
 					appContext.logger,
 				);
+				// The async re-resolution above can straddle teardown; re-check before
+				// the DB-touching gate + advertise.
+				if (isDbClosed(appContext.db)) return status;
 				gateUnreadyBackends(modelRouter, refreshedCatalog, appContext.logger);
 				advertiseLocalModels(appContext, modelRouter, rawBackends, refreshedCatalog);
+				return status;
 			});
 		}
 
@@ -599,5 +654,5 @@ export async function initInference(
 		}
 	}
 
-	return { modelRouter, routerConfig, backendModelMap };
+	return { modelRouter, routerConfig, backendModelMap, modelsDevRefresh };
 }
