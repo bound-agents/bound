@@ -88,7 +88,7 @@ Recording `field_sources` makes every resolved value inspectable in the UI and C
 
 ### 3.2 Completeness gate
 
-Consistent with `2026-11-21-model-routing.md` (R-MR2), a backend is only eligible for routing once its resolved `capabilities.max_context` is known from at least one of the three sources. A model absent from provider metadata and `models.dev` with no local `context_window` override stays unready and surfaces a clear configuration gap rather than dispatching turns on a guessed window.
+Consistent with `2026-11-21-model-routing.md` (R-RT2), a backend is only eligible for routing once its resolved `capabilities.max_context` is known from at least one of the three sources. A model absent from provider metadata and `models.dev` with no local `context_window` override stays unready and surfaces a clear configuration gap rather than dispatching turns on a guessed window.
 
 ---
 
@@ -125,7 +125,7 @@ Each driver declares its static protocol capabilities:
 | `bedrock` / `bedrock-mantle` | `false` | `false` | `true` |
 | `openai-compatible` / `chatgpt-oauth` / `github-copilot` / `opencode-go` / `umans` | `false` | `false` | `false` |
 
-Routing (`2026-11-21-model-routing.md`, `R-MR17`–`R-MR18`) reads `DriverFallbackSupport` to decide whether a model in `auto` fallback mode delegates to the provider's server-side default or walks Bound's cluster default fallback list.
+Routing (`2026-11-21-model-routing.md`, `R-RT17`–`R-RT18`) reads `DriverFallbackSupport` to decide whether a model in `auto` fallback mode delegates to the provider's server-side default or walks Bound's cluster default fallback list.
 
 ---
 
@@ -155,7 +155,7 @@ Because Bound maintains no hardcoded model-ID table, grouping equivalent models 
 
 For each discovered or configured backend, Bound determines its `logical_model` in order:
 
-1. **Cluster-synced alias override** — an explicit operator mapping for `provider_key = ${provider}:${provider_model_id}` in the synced `model_aliases` table (`2026-11-21-model-routing.md`, `R-MR6`), including an explicit `null` to keep a backend ungrouped. `model_aliases` is cluster-global and last-writer-wins per `provider_key`; an operator who wants a host-local grouping uses local config `logical_model` instead.
+1. **Cluster-synced alias override** — an explicit operator mapping for `provider_key = ${provider}:${provider_model_id}` in the synced `model_aliases` table (`2026-11-21-model-routing.md`, `R-RT6`), including an explicit `null` to keep a backend ungrouped. `model_aliases` is cluster-global and last-writer-wins per `provider_key`; an operator who wants a host-local grouping uses local config `logical_model` instead.
 2. **Local config `logical_model`** — an explicit logical model ID declared on the backend entry (or the static `id` for manually named backends).
 3. **Structural normalization** — one deterministic pattern rule set (shared with `models.dev` lookup in §5.2) applied to `(provider, provider_model_id)`:
    - strip region/routing prefixes (`us.`, `eu.`, `ap.`, `global.`);
@@ -177,7 +177,7 @@ Structural normalization is considered **confident** if and only if both conditi
 
 ## 7. Cluster Fallback Defaults and Model Roles
 
-Removing `tier` and hardcoded model lists leaves two cluster-wide concepts that operators configure directly over their own logical models in synced storage (`2026-11-21-model-routing.md`, `R-MR6`):
+Removing `tier` and hardcoded model lists leaves two cluster-wide concepts that operators configure directly over their own logical models in synced storage (`2026-11-21-model-routing.md`, `R-RT6`):
 
 ### 7.1 Cluster default fallback list and per-model overrides
 
@@ -199,7 +199,7 @@ Resolution for a logical model `M` on refusal:
 3. **`mode: "auto"` (default)**:
    - If the active route's driver declares `server_side_auto: true`, delegate to the provider's server-side default fallback (`fallbacks: "default"`).
    - Otherwise, walk the provider's `allowed_fallback_models` (when `publishes_allowed_targets: true` and mapped to available logical models), followed by `routing.default_fallback_models` filtered by the turn's `CapabilityRequirements`.
-   - When the active route's driver declares `supports_fallback_credit: true` and a `fallback_credit_token` is present, same-endpoint co-located targets from the resolved list are attempted inside the driver first (`2026-11-21-model-routing.md`, `R-MR18`), stepping down cleanly if the provider rejects the target as credit-ineligible.
+   - When the active route's driver declares `supports_fallback_credit: true` and a `fallback_credit_token` is present, same-endpoint co-located targets from the resolved list are attempted inside the driver first (`2026-11-21-model-routing.md`, `R-RT18`), stepping down cleanly if the provider rejects the target as credit-ineligible.
 
 ### 7.2 Named cluster roles
 
@@ -217,7 +217,7 @@ type ClusterModelRoles = {
 
 ### 7.3 Provider and model removal
 
-When a provider is removed from a host or a logical model is no longer advertised anywhere in the cluster (`2026-11-21-model-routing.md`, `R-MR22`–`R-MR24`):
+When a provider is removed from a host or a logical model is no longer advertised anywhere in the cluster (`2026-11-21-model-routing.md`, `R-RT22`–`R-RT24`):
 
 - **Synced `model_aliases`:** entries for removed providers or `provider_model_id`s are left dormant rather than cascade-deleted so temporary provider outages or config reverts do not discard operator mappings. Settings › Models marks unreferenced mappings as stale and allows manual pruning.
 - **Fallback lists (`routing.default_fallback_models` and `model_routing_rules.fallback_policy`):** missing logical models are skipped at runtime when walking the fallback chain and flagged as stale in Settings › Models for operator cleanup.
