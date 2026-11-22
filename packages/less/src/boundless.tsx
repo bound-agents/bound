@@ -26,6 +26,7 @@ import { performAttach } from "./session/attach";
 import { configureLessTelemetryFromOpenTelemetry } from "./telemetry";
 import { buildToolSet } from "./tools/registry";
 import { resolveSandboxConfig } from "./tools/sandbox";
+import { SandboxOverrideStore } from "./tools/sandbox-override";
 import { type ResolvedShell, resolveShell } from "./tools/shell";
 import { App } from "./tui/App";
 import { TerminalTitleController, formatThreadTitleForTerminal } from "./tui/util/terminal-title";
@@ -222,6 +223,12 @@ async function main(): Promise<void> {
 		// config disables it). Threaded into the bash tool alongside the shell.
 		const sandbox = resolveSandboxConfig(config.sandbox);
 
+		// Per-thread sandbox override store (the `/sandbox` TUI command). Session-
+		// scoped, in-process, operator-only — see sandbox-override.ts. Created once
+		// per boundless session and shared by the tool-call hook (read-only resolver)
+		// and the ChatView `/sandbox` dispatch (mutator).
+		const sandboxOverrides = new SandboxOverrideStore();
+
 		// Step 3: Connect BoundClient with timeout
 		const client = new BoundClient(config.url);
 		try {
@@ -328,6 +335,7 @@ async function main(): Promise<void> {
 				contextFiles={config.contextFiles}
 				shell={shell}
 				sandbox={sandbox}
+				sandboxOverrides={sandboxOverrides}
 			/>,
 			{ exitOnCtrlC: false },
 		);

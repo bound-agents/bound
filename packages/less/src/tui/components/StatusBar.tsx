@@ -14,6 +14,13 @@ export interface StatusBarProps {
 	cwd: string;
 	/** Live session HUD (context gauge + spend). Absent → those segments hide. */
 	hud?: SessionHudState;
+	/**
+	 * One-line description of this thread's `/sandbox` override when it is off or
+	 * loosened, or `null` at the configured default. Rendered as a persistent,
+	 * loud indicator so a forgotten override stands out (see useSessionHud
+	 * patterns / describeSandboxOverride).
+	 */
+	sandboxOverride?: string | null;
 }
 
 /** Color for the context gauge: calm → caution → pressure. */
@@ -63,6 +70,7 @@ export function StatusBar({
 	mcpServerCount,
 	cwd,
 	hud,
+	sandboxOverride,
 }: StatusBarProps): React.ReactElement {
 	// ConnectionState's three values ("connecting" | "connected" | "disconnected")
 	// are all valid BadgeStatus values, so the prop passes through directly.
@@ -89,6 +97,16 @@ export function StatusBar({
 			    width (the full thread ID is copyable BY DESIGN and must not
 			    wrap). One truncate-end Text = at most one physical row, so the
 			    dynamic region's height stays predictable. */}
+			{/* Sandbox override indicator — its own loud line, shown ONLY when the
+			    thread is off/loosened so a forgotten override stands out. Warning
+			    color, always visible independent of the measurement HUD above. */}
+			{sandboxOverride && (
+				<Box>
+					<Text color={tokens.alertStripe} wrap="truncate-end">
+						⚠ {sandboxOverride}
+					</Text>
+				</Box>
+			)}
 			{(showCtx || showCost || showBg) && (
 				<Box>
 					<Text wrap="truncate-end">

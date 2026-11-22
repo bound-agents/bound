@@ -55,6 +55,21 @@ For details about host-tool trust boundaries and shell write confinement, read
 [Security boundaries](/bound/concepts/security-boundaries/) and
 [Sandbox and filesystems](/bound/concepts/sandbox/).
 
+## Override the sandbox for one thread
+
+The sandbox default comes from the `sandbox` key in `~/.bound/less/config.json`. Use the `/sandbox` command to change it for the current thread when a task needs looser confinement — for example, working on the sandbox code itself.
+
+- `/sandbox` — report the thread's effective mode and writable paths.
+- `/sandbox off` — run this thread's commands unsandboxed. This removes write confinement entirely, including the read-only protection on `.git/config` and `.git/hooks`.
+- `/sandbox allow <path>` — keep the sandbox on and grant one more writable path for this thread. Repeat to add several. The path must exist; a missing path is rejected.
+- `/sandbox on` — clear the override and return to the configured default.
+
+The override applies only to the current thread and only in memory: `/attach` to another thread uses that thread's override (none by default), `/clear` starts a new thread with none, and restarting `boundless` resets every override. A status-line indicator marks a thread whose sandbox is off or loosened, and each change prints a one-line notice in the transcript.
+
+The override is reachable only from `/sandbox` typed in the client. The agent cannot change its own confinement.
+
+On a host where the sandbox cannot run, `/sandbox` reports the passthrough state and `/sandbox allow` explains that an extra writable path has no effect until the sandbox can confine commands.
+
 ## Add attachments
 
 Attach several files to one message before sending it. Paste an image into the composer to stage it as an attachment. On macOS, `boundless` reads images through `pngpaste` or `osascript`; on Linux it uses `wl-paste` or `xclip`; on Windows it uses PowerShell. Install a reader appropriate to your platform when pasting an image.

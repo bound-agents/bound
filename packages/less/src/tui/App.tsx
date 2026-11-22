@@ -3,12 +3,14 @@ import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box } from "ink";
 import type React from "react";
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
 import { transitionThread } from "../session/transition";
+import { checkSandboxAvailable } from "../tools/sandbox";
 import type { ResolvedSandboxConfig } from "../tools/sandbox";
+import { SandboxOverrideStore } from "../tools/sandbox-override";
 import type { ResolvedShell } from "../tools/shell";
 import type { ToolHandler } from "../tools/types";
 import { useCancelHandler } from "./hooks/useCancelHandler";
@@ -21,15 +23,12 @@ import { ChatView } from "./views/ChatView";
 import { InspectorView } from "./views/InspectorView";
 import { McpView } from "./views/McpView";
 import { PickerView } from "./views/PickerView";
-
 const NULL_TERMINAL_TITLE = new TerminalTitleController(
 	{ isTTY: false, write: () => undefined },
 	{ TERM: "dumb" },
 );
-
 export type AppView = "chat" | "mcp" | "picker" | "inspector";
 export type PickerMode = "thread" | "model";
-
 export interface AppState {
 	view: AppView;
 	pickerMode?: PickerMode;
@@ -39,7 +38,6 @@ export interface AppState {
 	bannerMessage: string | null;
 	bannerType: "error" | "info" | null;
 }
-
 type AppAction =
 	| { type: "SET_VIEW"; view: AppView; pickerMode?: PickerMode }
 	| { type: "SET_THREAD"; threadId: string }
@@ -95,6 +93,12 @@ export interface AppProps {
 	shell: ResolvedShell;
 	/** Resolved filesystem sandbox policy for the bash-family tool. */
 	sandbox: ResolvedSandboxConfig;
+	/**
+	 * Per-thread sandbox override store (the `/sandbox` TUI command). Session-
+	 * scoped, operator-only. The tool-call hook reads it through a thread-pinned
+	 * read-only resolver; the `/sandbox` dispatch in ChatView mutates it.
+	 */
+	sandboxOverrides?: SandboxOverrideStore;
 }
 
 /**
@@ -121,7 +125,13 @@ export function App({
 	contextFiles,
 	shell,
 	sandbox,
+	sandboxOverrides: providedSandboxOverrides,
 }: AppProps): React.ReactElement {
+	// Callers that don't wire the store (tests, embedded renders) get a private
+	// session-scoped one, so `/sandbox` still works and the tool path still reads
+	// through a resolver.
+	const [fallbackSandboxOverrides] = useState(() => new SandboxOverrideStore());
+	const sandboxOverrides = providedSandboxOverrides ?? fallbackSandboxOverrides;
 	const [state, dispatch] = useReducer(appReducer, {
 		view: "chat",
 		threadId: initialThreadId,
@@ -146,6 +156,11 @@ export function App({
 		cwd,
 		shell,
 		sandbox,
+		// Thread-pinned, read-only resolver: the ONLY sandbox control the tool path
+		// sees. It reads the live `/sandbox` override for THIS thread at command
+		// time and cannot mutate it (see sandbox-override.ts). Rebuilt when the
+		// viewed thread changes so /attach and /clear see the right thread's state.
+		useMemo(() => sandboxOverrides.resolverFor(state.threadId), [sandboxOverrides, state.threadId]),
 	);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 	const connectionState = useConnectionState(client);
@@ -192,6 +207,25 @@ export function App({
 			client.off("thread:status", handler);
 		};
 	}, [client, state.threadId]);
+
+	// One-time sandbox availability probe, so `/sandbox` can report a passthrough
+	// host (mxc/lowbox can't contain here) and explain that `/sandbox allow` has no
+	// effect there. The underlying check is memoized per process in the sandbox
+	// module; `null` means still settling.
+	const [sandboxAvailable, setSandboxAvailable] = useState<boolean | null>(null);
+	useEffect(() => {
+		let cancelled = false;
+		void checkSandboxAvailable()
+			.then((r) => {
+				if (!cancelled) setSandboxAvailable(r.supported);
+			})
+			.catch(() => {
+				if (!cancelled) setSandboxAvailable(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -431,6 +465,9 @@ export function App({
 				onBannerDismiss={handleDismissBanner}
 				onSendMessage={handleSendMessage}
 				active={state.view === "chat"}
+				sandbox={sandbox}
+				sandboxOverrides={sandboxOverrides}
+				sandboxAvailable={sandboxAvailable}
 			/>
 			{state.view === "mcp" && (
 				<McpView

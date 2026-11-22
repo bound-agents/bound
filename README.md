@@ -46,7 +46,7 @@ boundless --url http://localhost:3001    # non-default server
 boundless --attach <thread-id>           # resume an existing thread
 ```
 
-Shell commands run in a write-confinement sandbox (seatbelt on macOS, bubblewrap on Linux, and Bound’s one-shot AppContainer lowbox on Windows): the whole filesystem is readable but writes are confined to the working directory and temporary directories. `.git/config` and `.git/hooks` stay read-only while the rest of `.git` remains operational. Windows lowbox startup creates an unprivileged per-command AppContainer profile; hosts that forbid unprivileged profile creation must either restore that capability or explicitly opt into `sandbox.onUnavailable: "passthrough"`. `boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio for ACP-compatible editors.
+Shell commands run in a write-confinement sandbox (seatbelt on macOS, bubblewrap on Linux, and Bound’s one-shot AppContainer lowbox on Windows): the whole filesystem is readable but writes are confined to the working directory and temporary directories. `.git/config` and `.git/hooks` stay read-only while the rest of `.git` remains operational. Per-thread `/sandbox` overrides let an operator loosen or disable confinement for one boundless thread from the TUI; see the Boundless guide. Windows lowbox startup creates an unprivileged per-command AppContainer profile; hosts that forbid unprivileged profile creation must either restore that capability or explicitly opt into `sandbox.onUnavailable: "passthrough"`. `boundless --acp` runs as an [Agent Client Protocol](https://agentclientprotocol.com) agent over stdio for ACP-compatible editors.
 
 ## Config files
 

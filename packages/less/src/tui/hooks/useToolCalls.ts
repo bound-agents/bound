@@ -2,6 +2,7 @@ import type { BoundClient, ToolCallRequest, ToolCallResult, ToolCancelEvent } fr
 import { useEffect, useState } from "react";
 import { bashToolWithStreaming } from "../../tools/bash";
 import type { ResolvedSandboxConfig } from "../../tools/sandbox";
+import type { SandboxResolver } from "../../tools/sandbox-override";
 import type { ResolvedShell } from "../../tools/shell";
 import type { ToolHandler } from "../../tools/types";
 
@@ -45,6 +46,16 @@ export function useToolCalls(
 	cwd: string,
 	shell: ResolvedShell,
 	sandbox: ResolvedSandboxConfig,
+	/**
+	 * Optional per-thread sandbox resolver (the `/sandbox` override). Read at
+	 * COMMAND time — not closed over as a fixed config — so an operator's
+	 * `/sandbox off|allow` takes effect on the next command without reconnecting
+	 * or rebuilding the tool set. Absent → the configured `sandbox` is used
+	 * verbatim (the production path when no override machinery is wired, e.g.
+	 * ACP mode). This is the ONLY sandbox control the tool path can see, and it
+	 * is read-only: a function base→effective with no mutation surface.
+	 */
+	sandboxResolver?: SandboxResolver,
 ): UseToolCallsResult {
 	const [inFlightTools, setInFlightTools] = useState<Map<string, InFlightTool>>(new Map());
 
@@ -91,7 +102,12 @@ export function useToolCalls(
 					};
 				}
 
-				// For the shell tool, use streaming with stdout callback
+				// For the shell tool, use streaming with stdout callback. The sandbox
+				// config is resolved HERE, per command, through the per-thread override
+				// resolver (the `/sandbox` command), so an operator's loosen/disable
+				// takes effect on the very next command. No resolver → the configured
+				// `sandbox` verbatim.
+				const effectiveSandbox = sandboxResolver ? sandboxResolver(sandbox) : sandbox;
 				const result =
 					toolName === shell.toolName
 						? await bashToolWithStreaming(
@@ -113,7 +129,7 @@ export function useToolCalls(
 								},
 								hostname,
 								shell,
-								sandbox,
+								effectiveSandbox,
 							)
 						: await handler(args, controller.signal, cwd);
 
@@ -198,7 +214,7 @@ export function useToolCalls(
 			client.off("aux:started", handleAuxStarted);
 			client.off("aux:completed", handleAuxCompleted);
 		};
-	}, [client, handlers, hostname, cwd, shell, sandbox]);
+	}, [client, handlers, hostname, cwd, shell, sandbox, sandboxResolver]);
 
 	const abortAll = () => {
 		setInFlightTools((prev) => {

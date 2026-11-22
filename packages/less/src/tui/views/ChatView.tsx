@@ -5,6 +5,17 @@ import { Box, Static, Text, useStdout } from "ink";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+	type SandboxOverride,
+	SandboxOverrideStore,
+	applySandboxOverride,
+	describeSandboxOverride,
+} from "../../tools/sandbox-override";
+import {
+	DISABLED_SANDBOX,
+	type ResolvedSandboxConfig,
+	computeWritableRoots,
+} from "../../tools/sandbox-policy";
+import {
 	ActionBar,
 	Banner,
 	MessageBlock,
@@ -60,7 +71,11 @@ export const CHAT_SLASH_COMPLETIONS = [
 	{ value: "/attach", description: "Switch to a different thread" },
 	{ value: "/mcp", description: "MCP server configuration" },
 	{ value: "/inspect", description: "Browse the transcript at full fidelity" },
-	{ value: "/clear", description: "Start a new thread" },
+	{
+		value: "/sandbox",
+		description: "Show or override this thread's filesystem sandbox",
+		takesArgs: true,
+	},
 ];
 
 /**
@@ -382,6 +397,32 @@ function yardSpinnerLabel(tree: YardTreeSnapshot): string {
 	return `Yard · ${done}/${leaves.length} effects`;
 }
 
+/**
+ * One-line-plus status readout for `/sandbox` (no args): the thread's effective
+ * mode, the writable roots, and — when relevant — that the host is passthrough
+ * (sandbox enabled in config but can't contain here) or disabled in config.
+ * Written to read as a transcript notice, not a config dump.
+ */
+export function describeSandboxStatus(
+	effective: ResolvedSandboxConfig,
+	override: SandboxOverride | undefined,
+	base: ResolvedSandboxConfig,
+	cwd: string,
+	available: boolean | null,
+): string {
+	const overrideLabel = describeSandboxOverride(override) ?? "configured default";
+	if (!effective.enabled) {
+		return `/sandbox: OFF (${overrideLabel}) — commands run UNSANDBOXED; the whole filesystem is writable and .git protection is removed.`;
+	}
+	const passthrough = base.enabled && available === false;
+	if (passthrough) {
+		return `/sandbox: enabled in config but UNAVAILABLE on this host (passthrough: onUnavailable="${base.onUnavailable}"). Commands either run unsandboxed or are refused per that setting; /sandbox allow has no effect until the sandbox can contain here.`;
+	}
+	const roots = computeWritableRoots(cwd, effective);
+	const rootList = roots.map((r) => `  - ${r}`).join("\n");
+	return `/sandbox: ON (${overrideLabel}) — writes confined to:\n${rootList}`;
+}
+
 export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
@@ -428,6 +469,25 @@ export interface ChatViewProps {
 	 * Defaults to true.
 	 */
 	active?: boolean;
+	/**
+	 * Base resolved filesystem sandbox config (from `config.sandbox`), before any
+	 * per-thread `/sandbox` override. The status readout and the effective-config
+	 * computation start from this.
+	 */
+	sandbox?: ResolvedSandboxConfig;
+	/**
+	 * Per-thread sandbox override store (the `/sandbox` command). Operator-only,
+	 * session-scoped. `/sandbox` dispatch mutates it; the HUD reads it. The tool
+	 * path never receives this object — only a read-only resolver (see App).
+	 */
+	sandboxOverrides?: SandboxOverrideStore;
+	/**
+	 * Whether the mxc/lowbox sandbox can actually contain on this host. Resolved
+	 * once by the session and passed in so `/sandbox` can report a passthrough
+	 * host and explain that `/sandbox allow` has no effect there. `null` while the
+	 * one-time probe is still settling.
+	 */
+	sandboxAvailable?: boolean | null;
 }
 
 /**
@@ -461,9 +521,26 @@ export function ChatView({
 	onBannerDismiss,
 	onSendMessage,
 	active = true,
+	sandbox = DISABLED_SANDBOX,
+	sandboxOverrides: providedSandboxOverrides,
+	sandboxAvailable = null,
 }: ChatViewProps): React.ReactElement {
+	// Renders that don't wire the store (tests, embedded views) get a private one.
+	const [fallbackSandboxOverrides] = useState(() => new SandboxOverrideStore());
+	const sandboxOverrides = providedSandboxOverrides ?? fallbackSandboxOverrides;
 	const [commandError, setCommandError] = useState<string | null>(null);
 	const [showHelp, setShowHelp] = useState(false);
+	// The current thread's live `/sandbox` override, mirrored into React state so
+	// a change repaints the HUD indicator and the status readout. The store is the
+	// source of truth (it also drives the tool path); this is a render shadow of it.
+	const [sandboxOverride, setSandboxOverride] = useState<SandboxOverride | undefined>(() =>
+		sandboxOverrides.get(threadId),
+	);
+	// Ephemeral, client-only `/sandbox` confirmations rendered in the dynamic area
+	// (not persisted — invariant #19 forbids `role: "system"` in the messages
+	// table, and these are session chrome, not turns). Newest last, capped so a
+	// long session doesn't accumulate notices.
+	const [sandboxNotices, setSandboxNotices] = useState<string[]>([]);
 	// Staged image attachment (Ctrl+V). Bytes, hash, and half-block preview
 	// are all prepared at paste time — the preview parks in the session cache
 	// under the content hash stamped into the block's description, so the
@@ -610,6 +687,90 @@ export function ChatView({
 		(bannerMessage != null && bannerType != null) || commandError != null;
 
 	/**
+	 * `/sandbox` dispatch (operator-only; reachable only from this TUI input).
+	 *
+	 * - no args → report the thread's effective mode and writable roots.
+	 * - `off` → run this thread's commands unsandboxed.
+	 * - `on` → clear any override, back to the configured default.
+	 * - `allow <path>` → add an extra writable path for this thread (repeatable).
+	 *
+	 * Each mutation mirrors the store into `sandboxOverride` (HUD repaint) and
+	 * appends a one-line transcript notice. Never touches a tool, tool param, or
+	 * ACP method: the store's mutators live only here.
+	 */
+	const pushSandboxNotice = useCallback((line: string) => {
+		// Keep the last few; these are session chrome, not persisted turns.
+		setSandboxNotices((prev) => [...prev, line].slice(-5));
+	}, []);
+
+	const handleSandboxCommand = useCallback(
+		(rawArgs: string) => {
+			const base = sandbox;
+			const passthrough = base.enabled && sandboxAvailable === false;
+			const [sub, ...rest] = rawArgs.length > 0 ? rawArgs.split(/\s+/) : [""];
+			const pathArg = rest.join(" ").trim();
+
+			// No args: status readout of the thread's effective config.
+			if (sub === "") {
+				const current = sandboxOverrides.get(threadId);
+				const effective = applySandboxOverride(base, current);
+				pushSandboxNotice(describeSandboxStatus(effective, current, base, cwd, sandboxAvailable));
+				return;
+			}
+
+			if (sub === "off") {
+				sandboxOverrides.set(threadId, { mode: "off" });
+				setSandboxOverride({ mode: "off" });
+				pushSandboxNotice(
+					"/sandbox: OFF for this thread — commands now run UNSANDBOXED (no write confinement, .git protection removed). Takes effect on the next command.",
+				);
+				return;
+			}
+
+			if (sub === "on") {
+				sandboxOverrides.clear(threadId);
+				setSandboxOverride(undefined);
+				pushSandboxNotice(
+					"/sandbox: back to the configured default for this thread (override cleared).",
+				);
+				return;
+			}
+
+			if (sub === "allow") {
+				if (pathArg.length === 0) {
+					setCommandError("/sandbox allow needs a path: /sandbox allow <path>");
+					return;
+				}
+				const result = sandboxOverrides.addWritablePath(threadId, pathArg, cwd);
+				if (!result.ok) {
+					setCommandError(`/sandbox allow: ${result.error}`);
+					return;
+				}
+				setSandboxOverride(sandboxOverrides.get(threadId));
+				if (passthrough) {
+					pushSandboxNotice(
+						`/sandbox: recorded writable path ${result.value}, but the sandbox is UNAVAILABLE on this host (passthrough) — it has no effect until the sandbox can contain here.`,
+					);
+				} else if (!base.enabled) {
+					pushSandboxNotice(
+						`/sandbox: recorded writable path ${result.value}, but the sandbox is DISABLED in config — it has no effect until the sandbox is enabled.`,
+					);
+				} else {
+					pushSandboxNotice(
+						`/sandbox: loosened — ${result.value} is now writable on this thread. Takes effect on the next command.`,
+					);
+				}
+				return;
+			}
+
+			setCommandError(
+				`/sandbox: unknown argument "${sub}". Use: (no args) | off | on | allow <path>`,
+			);
+		},
+		[sandbox, sandboxAvailable, sandboxOverrides, threadId, cwd, pushSandboxNotice],
+	);
+
+	/**
 	 * Parse and handle slash commands.
 	 */
 	const handleSubmit = async (input: string) => {
@@ -657,6 +818,11 @@ export function ChatView({
 
 			if (command === "clear") {
 				onClear();
+				return;
+			}
+
+			if (command === "sandbox") {
+				handleSandboxCommand(args.trim());
 				return;
 			}
 
@@ -851,6 +1017,10 @@ export function ChatView({
 								["/attach", "Switch to a different thread"],
 								["/mcp", "MCP server configuration"],
 								["/inspect", "Browse the transcript at full fidelity"],
+								[
+									"/sandbox [off|on|allow <path>]",
+									"Show or override this thread's filesystem sandbox",
+								],
 								["/clear", "Start a new thread"],
 							].map(([cmd, desc]) => (
 								<Box key={cmd}>
@@ -865,6 +1035,24 @@ export function ChatView({
 					{commandError && (
 						<Box marginBottom={1}>
 							<Banner type="error" message={commandError} onDismiss={() => setCommandError(null)} />
+						</Box>
+					)}
+
+					{/* Ephemeral `/sandbox` confirmations. Rendered in the dynamic area
+					    (not <Static>, not the messages table) following the system-notice
+					    pattern: a yellow stripe + concise one-liner so a sandbox change
+					    reads as a transcript event. Client-only, reset on restart. */}
+					{sandboxNotices.length > 0 && (
+						<Box flexDirection="column" marginBottom={1}>
+							{sandboxNotices.map((notice, i) => (
+								<Text
+									// biome-ignore lint/suspicious/noArrayIndexKey: notices are append-only and immutable once pushed
+									key={i}
+									color={tokens.systemStripe}
+								>
+									{notice}
+								</Text>
+							))}
 						</Box>
 					)}
 
@@ -970,12 +1158,13 @@ export function ChatView({
 						mcpServerCount={mcpServerCount}
 						cwd={cwd}
 						hud={hud}
+						sandboxOverride={describeSandboxOverride(sandboxOverride)}
 					/>
 					<ActionBar
 						actions={[
 							{ keys: "/model", label: "switch model" },
 							{ keys: "/attach", label: "switch thread" },
-							{ keys: "/mcp", label: "MCP config" },
+							{ keys: "/sandbox", label: "sandbox override" },
 							{ keys: "Esc", label: "clear input" },
 							{ keys: "Ctrl-C", label: "exit" },
 						]}
