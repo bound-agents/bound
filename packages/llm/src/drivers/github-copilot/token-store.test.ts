@@ -172,4 +172,49 @@ describe("CopilotTokenManager", () => {
 		expect(await mgr.getAccessToken()).toBe("ghu_new");
 		expect(postCount).toBe(1);
 	});
+
+	it("forceRefresh rotates and persists the bundle regardless of expiry, returning true", async () => {
+		// #285 R-RT13: a live 401 means the Copilot API rejected the current token
+		// even though our expiry-clock thinks it is still valid, so forceRefresh must
+		// POST unconditionally rather than short-circuit on a non-expired bundle.
+		let postCount = 0;
+		const saved: CopilotTokens[] = [];
+		const deps: AuthCoreDeps = {
+			fetch: (async () => {
+				postCount++;
+				return new Response(
+					JSON.stringify({ access_token: "ghu_new", refresh_token: "ghr_new", expires_in: 28800 }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}) as typeof fetch,
+			now: () => 0, // far before expiry — getAccessToken would NOT refresh here
+		};
+		const mgr = new CopilotTokenManager(tokens({ accessTokenExpiresAt: 10_000_000 }), deps, {
+			save: (t) => {
+				saved.push(t);
+			},
+		});
+		expect(await mgr.forceRefresh()).toBe(true);
+		expect(postCount).toBe(1);
+		expect(saved).toHaveLength(1);
+		expect(saved[0].refreshToken).toBe("ghr_new");
+		expect(await mgr.getAccessToken()).toBe("ghu_new");
+	});
+
+	it("forceRefresh returns false when the refresh fails (dead refresh token)", async () => {
+		const deps: AuthCoreDeps = {
+			fetch: (async () =>
+				new Response(JSON.stringify({ error: "bad_refresh_token" }), {
+					status: 400,
+					headers: { "content-type": "application/json" },
+				})) as typeof fetch,
+			now: () => 0,
+		};
+		const mgr = new CopilotTokenManager(tokens({ accessTokenExpiresAt: 10_000_000 }), deps, {
+			save: () => {
+				throw new Error("must not persist on a failed refresh");
+			},
+		});
+		expect(await mgr.forceRefresh()).toBe(false);
+	});
 });

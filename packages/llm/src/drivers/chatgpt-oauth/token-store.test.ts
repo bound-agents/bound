@@ -123,4 +123,43 @@ describe("TokenManager", () => {
 		expect(second).toEqual(first);
 		expect((await store.load())?.refreshToken).toBe("refresh-new");
 	});
+
+	it("forceRefresh rotates and persists the bundle regardless of expiry, returning true", async () => {
+		// #285 R-RT13: a live 401 means the provider rejected the current token even
+		// though our local clock thinks it is still valid, so forceRefresh must POST
+		// unconditionally rather than short-circuit on a non-expired cached token.
+		const store = new FileTokenStore(tempPath());
+		let calls = 0;
+		const manager = new TokenManager(
+			tokens({ accessTokenExpiresAt: 10_000_000 }), // far from expiry
+			{
+				fetch: (async () => {
+					calls++;
+					return new Response(JSON.stringify(refreshResponse()), { status: 200 });
+				}) as typeof fetch,
+				now: () => 0, // well before expiry — getAccessToken would NOT refresh here
+			},
+			store,
+		);
+		expect(await manager.forceRefresh()).toBe(true);
+		expect(calls).toBe(1);
+		expect((await store.load())?.refreshToken).toBe("refresh-new");
+		// The rotated access token is now the one a subsequent read returns.
+		expect((await manager.getAccessToken()).accessToken).toBe(refreshResponse().access_token);
+	});
+
+	it("forceRefresh returns false when the refresh POST fails (dead refresh token)", async () => {
+		const store = new FileTokenStore(tempPath());
+		const manager = new TokenManager(
+			tokens({ accessTokenExpiresAt: 10_000_000 }),
+			{
+				fetch: (async () => new Response("invalid_grant", { status: 400 })) as typeof fetch,
+				now: () => 0,
+			},
+			store,
+		);
+		expect(await manager.forceRefresh()).toBe(false);
+		// The stale bundle is retained; nothing was persisted.
+		expect(await store.load()).toBeNull();
+	});
 });

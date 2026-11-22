@@ -331,3 +331,36 @@ describe("ChatGptOAuthDriver encrypted-reasoning provenance (cross-provider)", (
 		expect(out.some((c) => c.type === "text" && c.content?.includes("answer"))).toBe(true);
 	});
 });
+
+describe("ChatGptOAuthDriver.refreshAuth (#285, R-RT13)", () => {
+	it("delegates to the token manager's forceRefresh and returns its result", async () => {
+		let calls = 0;
+		const stub = {
+			getAccessToken: async () => ({ accessToken: "access-token", accountId: "acct_123" }),
+			forceRefresh: async () => {
+				calls++;
+				return true;
+			},
+		} as unknown as TokenManager;
+		const driver = new ChatGptOAuthDriver({
+			tokenManager: stub,
+			model: "gpt-6-astra",
+			contextWindow: 700_000,
+		});
+		expect(await driver.refreshAuth()).toBe(true);
+		expect(calls).toBe(1);
+	});
+
+	it("propagates a failed refresh (false) so the loop backs off and advises re-login", async () => {
+		const stub = {
+			getAccessToken: async () => ({ accessToken: "access-token", accountId: "acct_123" }),
+			forceRefresh: async () => false,
+		} as unknown as TokenManager;
+		const driver = new ChatGptOAuthDriver({
+			tokenManager: stub,
+			model: "gpt-6-astra",
+			contextWindow: 700_000,
+		});
+		expect(await driver.refreshAuth()).toBe(false);
+	});
+});

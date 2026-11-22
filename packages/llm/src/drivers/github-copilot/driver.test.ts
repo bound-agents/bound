@@ -1334,3 +1334,38 @@ describe("GitHubCopilotDriver encrypted-reasoning provenance (cross-provider, re
 		expect(chunks.some((c) => (c as { type?: string }).type === "text")).toBe(true);
 	});
 });
+
+describe("GitHubCopilotDriver.refreshAuth (#285, R-RT13)", () => {
+	it("delegates to the token manager's forceRefresh and returns its result", async () => {
+		let calls = 0;
+		const stub = {
+			getAccessToken: async () => "ghu_abc",
+			forceRefresh: async () => {
+				calls++;
+				return true;
+			},
+		} as unknown as CopilotTokenManager;
+		const driver = new GitHubCopilotDriver({
+			tokenManager: stub,
+			model: "claude-sonnet-4.5",
+			contextWindow: 200000,
+			account,
+		});
+		expect(await driver.refreshAuth()).toBe(true);
+		expect(calls).toBe(1);
+	});
+
+	it("propagates a failed refresh (false) so the loop backs off and advises re-login", async () => {
+		const stub = {
+			getAccessToken: async () => "ghu_abc",
+			forceRefresh: async () => false,
+		} as unknown as CopilotTokenManager;
+		const driver = new GitHubCopilotDriver({
+			tokenManager: stub,
+			model: "claude-sonnet-4.5",
+			contextWindow: 200000,
+			account,
+		});
+		expect(await driver.refreshAuth()).toBe(false);
+	});
+});
