@@ -15,6 +15,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { BunPlugin } from "bun";
 import { justBashWorkerRewritePlugin } from "./just-bash-worker-rewrite-plugin";
+import { patchMxcBwrapProbePlugin } from "./mxc-bwrap-probe-plugin";
 
 export function buildLowboxHelperCommand(bunExecutable = process.execPath): {
 	command: string;
@@ -228,7 +229,11 @@ async function compileBinary(
 		plugins.push(stubNodePtyPlugin());
 	}
 	if (options.patchKoffiLoader) {
+		// Both patches serve the mxc sandbox in a compiled binary: koffi has to find
+		// its addon, and the Linux bwrap probe has to run without the SDK's
+		// on-disk worker scripts.
 		plugins.push(patchKoffiLoaderPlugin());
+		plugins.push(patchMxcBwrapProbePlugin());
 	}
 	if (options.stubReactDevtools) {
 		plugins.push(stubReactDevtoolsPlugin());

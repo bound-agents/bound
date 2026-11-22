@@ -24,6 +24,7 @@
  */
 import { Readable } from "node:stream";
 import type { ContainerRequest, MxcProcess } from "@microsoft/mxc-sdk/v1";
+import { installBwrapVersionRunner } from "./bwrap-version";
 import { ensureMxcRuntime } from "./mxc-runtime";
 import { createTreeKiller } from "./process-tree";
 import {
@@ -49,6 +50,9 @@ let sdkPromise: Promise<MxcSdk> | undefined;
  * of the import graph until a command is actually sandboxed.
  */
 function loadMxcSdk(): Promise<MxcSdk> {
+	// The compiled binary's patched SDK runs `bwrap --version` through this hook
+	// (see bwrap-version.ts); an unpatched source run ignores it.
+	installBwrapVersionRunner();
 	if (!sdkPromise) sdkPromise = import("@microsoft/mxc-sdk/v1");
 	return sdkPromise;
 }
