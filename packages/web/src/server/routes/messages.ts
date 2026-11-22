@@ -4,6 +4,7 @@ import {
 	getSiteId,
 	listLiveMessagesByThreadNewestFirst,
 	listMessagesByThread,
+	listTurnsByThread,
 } from "@bound/core";
 
 import type { Database } from "bun:sqlite";
@@ -117,6 +118,46 @@ export function createMessagesRoutes(db: Database, _eventBus: TypedEventEmitter)
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json({ error: "Failed to redact thread", details: message }, 500);
+		}
+	});
+
+	// GET /:threadId/provenance — per-turn routing provenance for the message
+	// footers (2026-11-21-model-routing.md §9.1). Each turn names the served model
+	// and route; a multi-attempt turn carries its per-attempt breakdown (parsed out
+	// of the turn's cost_breakdown JSON) so the expanded footer can list every
+	// attempt, including discarded refusals and failed route trials.
+	app.get("/:threadId/provenance", (c) => {
+		try {
+			const { threadId } = c.req.param();
+			const thread = findLiveThreadById(db, threadId);
+			if (!thread) {
+				return c.json({ error: "Thread not found" }, 404);
+			}
+			const turns = listTurnsByThread(db, threadId).map((t) => {
+				let attempts: unknown = null;
+				if (t.cost_breakdown) {
+					try {
+						const parsed = JSON.parse(t.cost_breakdown) as { attempts?: unknown };
+						if (Array.isArray(parsed.attempts)) attempts = parsed.attempts;
+					} catch {
+						// Malformed cost_breakdown — omit attempts, keep the turn row.
+					}
+				}
+				return {
+					id: t.id,
+					created_at: t.created_at,
+					model_id: t.model_id,
+					route_id: t.route_id,
+					substituted_from: t.substituted_from,
+					status: t.status,
+					cost_usd: t.cost_usd,
+					attempts,
+				};
+			});
+			return c.json({ turns });
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			return c.json({ error: "Failed to read provenance", details: message }, 500);
 		}
 	});
 

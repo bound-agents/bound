@@ -1,0 +1,364 @@
+import { Database } from "bun:sqlite";
+import { beforeEach, describe, expect, it } from "bun:test";
+import { applySchema, insertRow } from "@bound/core";
+import type { BackendCapabilities } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
+import { createRoutingRoutes } from "../routes/routing";
+
+// Exercises the Settings › Models server surface (2026-11-21-model-routing.md
+// §9.3, 2026-11-21-model-catalog.md §9). The route assembles synced routing
+// preferences (model_routing_rules / route_drains / model_aliases) against the
+// per-host route supply advertised in hosts.models, folding in the local
+// router's in-memory health snapshot, and mutates preferences through the
+// change-log outbox (invariant #1). Health is NOT synced — it is read from the
+// local ModelRouter only, so remote routes report health "unknown".
+
+let db: Database;
+let siteId: string;
+
+const CAPS: BackendCapabilities = {
+	streaming: true,
+	tool_use: true,
+	system_prompt: true,
+	prompt_caching: false,
+	vision: false,
+	extended_thinking: false,
+	max_context: 200000,
+};
+
+/** Seed a non-deleted host row advertising the given model entries. */
+function seedHost(site: string, name: string, entries: unknown[]): void {
+	const now = new Date().toISOString();
+	db.prepare(
+		"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, ?, 0, 1)",
+	).run(site, name, JSON.stringify(entries), now, now);
+}
+
+beforeEach(() => {
+	db = new Database(":memory:");
+	applySchema(db);
+	// A fixed, lexically-stable siteId so route-ordering assertions are deterministic.
+	siteId = "site-aaaa";
+	db.prepare("INSERT INTO host_meta (key, value) VALUES (?, ?)").run("site_id", siteId);
+});
+
+describe("GET /models — Settings › Models assembly", () => {
+	it("groups advertised routes under their logical model with supply fields", async () => {
+		seedHost(siteId, "hub", [
+			{ id: "gpt-5.6-sol", route_id: `${siteId}:codex:sol`, logical_model: "gpt-5.6-sol" },
+		]);
+		seedHost("site-msi", "MSI", [
+			{ id: "gpt-5.6-sol", route_id: "site-msi:codex:sol", logical_model: "gpt-5.6-sol" },
+		]);
+		const app = createRoutingRoutes(db, siteId, null);
+
+		const res = await app.fetch(new Request("http://localhost/models"));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			models: Array<{
+				logical_model: string;
+				routes: Array<{ route_id: string; host_name: string; drained: boolean; health: string }>;
+			}>;
+		};
+		const sol = body.models.find((m) => m.logical_model === "gpt-5.6-sol");
+		expect(sol).toBeDefined();
+		expect(sol?.routes.map((r) => r.route_id).sort()).toEqual([
+			`${siteId}:codex:sol`,
+			"site-msi:codex:sol",
+		]);
+		// No local router handle supplied → every route's health is "unknown".
+		expect(sol?.routes.every((r) => r.health === "unknown")).toBe(true);
+	});
+
+	it("orders routes by the model's synced route_order, stale entries last", async () => {
+		seedHost(siteId, "hub", [
+			{ id: "opus", route_id: `${siteId}:anthropic:opus`, logical_model: "opus" },
+		]);
+		insertRow(
+			db,
+			"model_routing_rules",
+			{
+				logical_model: "opus",
+				// A dead RouteId first, then the live one: the live route sorts by its
+				// declared position, the dead one surfaces as a stale entry.
+				route_order: JSON.stringify(["dead:anthropic:opus", `${siteId}:anthropic:opus`]),
+				fallback_policy: null,
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			siteId,
+		);
+		const app = createRoutingRoutes(db, siteId, null);
+
+		const res = await app.fetch(new Request("http://localhost/models"));
+		const body = (await res.json()) as {
+			models: Array<{
+				logical_model: string;
+				route_order: string[];
+				routes: Array<{ route_id: string }>;
+				stale_routes: Array<{ route_id: string }>;
+			}>;
+		};
+		const opus = body.models.find((m) => m.logical_model === "opus");
+		expect(opus?.route_order).toEqual(["dead:anthropic:opus", `${siteId}:anthropic:opus`]);
+		expect(opus?.routes.map((r) => r.route_id)).toEqual([`${siteId}:anthropic:opus`]);
+		expect(opus?.stale_routes.map((r) => r.route_id)).toEqual(["dead:anthropic:opus"]);
+	});
+
+	it("marks a drained route and reports the fallback policy", async () => {
+		seedHost(siteId, "hub", [
+			{ id: "haiku", route_id: `${siteId}:anthropic:haiku`, logical_model: "haiku" },
+		]);
+		insertRow(
+			db,
+			"route_drains",
+			{
+				route_id: `${siteId}:anthropic:haiku`,
+				drained_at: "2026-01-01T00:00:00.000Z",
+				reason: "manual",
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			siteId,
+		);
+		insertRow(
+			db,
+			"model_routing_rules",
+			{
+				logical_model: "haiku",
+				route_order: null,
+				fallback_policy: JSON.stringify({ mode: "never" }),
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			siteId,
+		);
+		const app = createRoutingRoutes(db, siteId, null);
+
+		const res = await app.fetch(new Request("http://localhost/models"));
+		const body = (await res.json()) as {
+			models: Array<{
+				logical_model: string;
+				fallback_policy: { mode: string };
+				routes: Array<{ route_id: string; drained: boolean }>;
+			}>;
+		};
+		const haiku = body.models.find((m) => m.logical_model === "haiku");
+		expect(haiku?.routes[0].drained).toBe(true);
+		expect(haiku?.fallback_policy).toEqual({ mode: "never" });
+	});
+
+	it("reports local route health from the router snapshot", async () => {
+		seedHost(siteId, "hub", [
+			{ id: "opus", route_id: `${siteId}:anthropic:opus`, logical_model: "opus" },
+		]);
+		const router = new ModelRouter(new Map(), "opus");
+		// Register a dynamic backend so the router can map backendId→RouteId.
+		router.addDynamicBackend("opus", { capabilities: () => CAPS } as never, CAPS, undefined, {
+			routeId: `${siteId}:anthropic:opus`,
+			reasoningOrigin: `${siteId}:anthropic`,
+		});
+		const app = createRoutingRoutes(db, siteId, router);
+
+		const res = await app.fetch(new Request("http://localhost/models"));
+		const body = (await res.json()) as {
+			models: Array<{ logical_model: string; routes: Array<{ route_id: string; health: string }> }>;
+		};
+		const opus = body.models.find((m) => m.logical_model === "opus");
+		expect(opus?.routes[0].health).toBe("healthy");
+	});
+});
+
+describe("PUT /models/:logical/route-order", () => {
+	it("writes route_order through the outbox and round-trips", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/models/opus/route-order", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ route_order: ["a:x:1", "b:y:2"] }),
+			}),
+		);
+		expect(res.status).toBe(200);
+		const row = db
+			.prepare(
+				"SELECT route_order FROM model_routing_rules WHERE logical_model = ? AND deleted = 0",
+			)
+			.get("opus") as { route_order: string } | null;
+		expect(JSON.parse(row?.route_order ?? "null")).toEqual(["a:x:1", "b:y:2"]);
+		// The write must carry a change_log entry (synced; invariant #1).
+		const cl = db
+			.prepare("SELECT COUNT(*) as n FROM change_log WHERE table_name = 'model_routing_rules'")
+			.get() as { n: number };
+		expect(cl.n).toBeGreaterThan(0);
+	});
+
+	it("rejects a non-array payload with 400", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/models/opus/route-order", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ route_order: "nope" }),
+			}),
+		);
+		expect(res.status).toBe(400);
+	});
+});
+
+describe("POST/DELETE /routes/:routeId/drain", () => {
+	it("drains then un-drains a route", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const routeId = `${siteId}:anthropic:opus`;
+		const enc = encodeURIComponent(routeId);
+
+		const drain = await app.fetch(
+			new Request(`http://localhost/routes/${enc}/drain`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ reason: "incident" }),
+			}),
+		);
+		expect(drain.status).toBe(200);
+		let row = db
+			.prepare("SELECT reason FROM route_drains WHERE route_id = ? AND deleted = 0")
+			.get(routeId) as { reason: string } | null;
+		expect(row?.reason).toBe("incident");
+
+		const undrain = await app.fetch(
+			new Request(`http://localhost/routes/${enc}/drain`, { method: "DELETE" }),
+		);
+		expect(undrain.status).toBe(200);
+		row = db
+			.prepare("SELECT reason FROM route_drains WHERE route_id = ? AND deleted = 0")
+			.get(routeId) as { reason: string } | null;
+		expect(row).toBeNull();
+	});
+});
+
+describe("PUT /models/:logical/fallback-policy", () => {
+	it("stores a custom fallback list", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/models/opus/fallback-policy", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ mode: "custom", models: ["haiku", "glm-5"] }),
+			}),
+		);
+		expect(res.status).toBe(200);
+		const row = db
+			.prepare(
+				"SELECT fallback_policy FROM model_routing_rules WHERE logical_model = ? AND deleted = 0",
+			)
+			.get("opus") as { fallback_policy: string } | null;
+		expect(JSON.parse(row?.fallback_policy ?? "null")).toEqual({
+			mode: "custom",
+			models: ["haiku", "glm-5"],
+		});
+	});
+
+	it("rejects an unknown mode with 400", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/models/opus/fallback-policy", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ mode: "bogus" }),
+			}),
+		);
+		expect(res.status).toBe(400);
+	});
+});
+
+describe("PUT /cluster-defaults", () => {
+	it("stores the default fallback list and model roles as cluster_config", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/cluster-defaults", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					default_fallback_models: ["opus", "haiku"],
+					roles: { default: "opus", heavy: "opus", fast: "haiku" },
+				}),
+			}),
+		);
+		expect(res.status).toBe(200);
+		const fb = db
+			.prepare("SELECT value FROM cluster_config WHERE key = 'routing.default_fallback_models'")
+			.get() as { value: string } | null;
+		expect(JSON.parse(fb?.value ?? "null")).toEqual(["opus", "haiku"]);
+		const roles = db
+			.prepare("SELECT value FROM cluster_config WHERE key = 'routing.model_roles'")
+			.get() as { value: string } | null;
+		expect(JSON.parse(roles?.value ?? "null")).toEqual({
+			default: "opus",
+			heavy: "opus",
+			fast: "haiku",
+		});
+	});
+
+	it("reads back the stored fallback list and roles through GET", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		await app.fetch(
+			new Request("http://localhost/cluster-defaults", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					default_fallback_models: ["opus", "haiku"],
+					roles: { default: "opus" },
+				}),
+			}),
+		);
+		const res = await app.fetch(new Request("http://localhost/cluster-defaults"));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			default_fallback_models: string[];
+			roles: Record<string, string>;
+		};
+		expect(body.default_fallback_models).toEqual(["opus", "haiku"]);
+		expect(body.roles).toEqual({ default: "opus" });
+	});
+
+	it("returns an empty list and empty roles when nothing is stored", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(new Request("http://localhost/cluster-defaults"));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			default_fallback_models: string[];
+			roles: Record<string, string>;
+		};
+		expect(body.default_fallback_models).toEqual([]);
+		expect(body.roles).toEqual({});
+	});
+});
+
+describe("PUT/DELETE /aliases/:providerKey", () => {
+	it("assigns and clears an alias", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const enc = encodeURIComponent("codex:gpt-5.6-sol-2026");
+
+		const assign = await app.fetch(
+			new Request(`http://localhost/aliases/${enc}`, {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ logical_model: "gpt-5.6-sol" }),
+			}),
+		);
+		expect(assign.status).toBe(200);
+		let row = db
+			.prepare("SELECT logical_model FROM model_aliases WHERE provider_key = ? AND deleted = 0")
+			.get("codex:gpt-5.6-sol-2026") as { logical_model: string | null } | null;
+		expect(row?.logical_model).toBe("gpt-5.6-sol");
+
+		const clear = await app.fetch(
+			new Request(`http://localhost/aliases/${enc}`, { method: "DELETE" }),
+		);
+		expect(clear.status).toBe(200);
+		row = db
+			.prepare("SELECT logical_model FROM model_aliases WHERE provider_key = ? AND deleted = 0")
+			.get("codex:gpt-5.6-sol-2026") as { logical_model: string | null } | null;
+		expect(row).toBeNull();
+	});
+});

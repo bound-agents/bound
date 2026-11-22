@@ -10,6 +10,7 @@
 	import MetricsView from "./views/MetricsView.svelte";
 	import NetworkStatus from "./views/NetworkStatus.svelte";
 	import PersonaView from "./views/PersonaView.svelte";
+	import SettingsModelsView from "./views/SettingsModelsView.svelte";
 	import SystemMap from "./views/SystemMap.svelte";
 	import Timetable from "./views/Timetable.svelte";
 
@@ -96,6 +97,8 @@
 				<MetricsView />
 			{:else if route === "/persona"}
 				<PersonaView />
+			{:else if route === "/settings/models"}
+				<SettingsModelsView />
 			{:else}
 				<SystemMap />
 			{/if}

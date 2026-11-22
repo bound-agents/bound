@@ -19,6 +19,7 @@ import type {
 	ApiErrorBody,
 	BoundClientEvents,
 	CancelResult,
+	ClusterDefaultsResponse,
 	ConnectionState,
 	ConnectorBindingEntry,
 	ConnectorBindingsResponse,
@@ -26,6 +27,7 @@ import type {
 	CreateRssFeedOptions,
 	CreateThreadOptions,
 	CreateWebhookOptions,
+	FallbackPolicyInfo,
 	FileListEntry,
 	HostStatus,
 	MemoryGraphResponse,
@@ -34,11 +36,13 @@ import type {
 	NetworkStatus,
 	RedactMessageResult,
 	RedactThreadResult,
+	RoutingModelsResponse,
 	RssFeedListEntry,
 	SendMessageOptions,
 	TaskListEntry,
 	ThreadDetail,
 	ThreadListEntry,
+	ThreadProvenanceResponse,
 	ThreadStatus,
 	ToolCallRequest,
 	ToolCallResult,
@@ -925,6 +929,78 @@ export class BoundClient {
 
 	async listModels(): Promise<ModelsResponse> {
 		return this.fetchJson("/api/status/models");
+	}
+
+	// ---- Model routing (Settings › Models) ----
+
+	async getRoutingModels(): Promise<RoutingModelsResponse> {
+		return this.fetchJson("/api/routing/models");
+	}
+
+	async getClusterDefaults(): Promise<ClusterDefaultsResponse> {
+		return this.fetchJson("/api/routing/cluster-defaults");
+	}
+
+	async setRouteOrder(logicalModel: string, routeOrder: string[]): Promise<{ ok: true }> {
+		return this.fetchJson(`/api/routing/models/${encodeURIComponent(logicalModel)}/route-order`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ route_order: routeOrder }),
+		});
+	}
+
+	async setFallbackPolicy(logicalModel: string, policy: FallbackPolicyInfo): Promise<{ ok: true }> {
+		return this.fetchJson(
+			`/api/routing/models/${encodeURIComponent(logicalModel)}/fallback-policy`,
+			{
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(policy),
+			},
+		);
+	}
+
+	async drainRoute(routeId: string, reason?: string): Promise<{ ok: true }> {
+		return this.fetchJson(`/api/routing/routes/${encodeURIComponent(routeId)}/drain`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ reason: reason ?? null }),
+		});
+	}
+
+	async undrainRoute(routeId: string): Promise<{ ok: true }> {
+		return this.fetchJson(`/api/routing/routes/${encodeURIComponent(routeId)}/drain`, {
+			method: "DELETE",
+		});
+	}
+
+	async setModelAlias(providerKey: string, logicalModel: string | null): Promise<{ ok: true }> {
+		return this.fetchJson(`/api/routing/aliases/${encodeURIComponent(providerKey)}`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ logical_model: logicalModel }),
+		});
+	}
+
+	async clearModelAlias(providerKey: string): Promise<{ ok: true }> {
+		return this.fetchJson(`/api/routing/aliases/${encodeURIComponent(providerKey)}`, {
+			method: "DELETE",
+		});
+	}
+
+	async setClusterDefaults(payload: {
+		default_fallback_models?: string[];
+		roles?: { default?: string; heavy?: string; fast?: string };
+	}): Promise<{ ok: true }> {
+		return this.fetchJson("/api/routing/cluster-defaults", {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+	}
+
+	async getThreadProvenance(threadId: string): Promise<ThreadProvenanceResponse> {
+		return this.fetchJson(`/api/threads/${encodeURIComponent(threadId)}/provenance`);
 	}
 
 	async cancelThread(threadId: string): Promise<CancelResult> {

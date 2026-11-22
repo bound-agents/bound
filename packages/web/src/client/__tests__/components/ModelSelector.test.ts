@@ -13,6 +13,11 @@ afterEach(() => {
 async function mount(models: Model[], defaultModel: string, props: Record<string, unknown> = {}) {
 	dom = installDom();
 	dom.route("GET", "/api/status/models", () => ({ models, default: defaultModel }));
+	// Routing health is a separate best-effort fetch; default to empty so the
+	// existing cases exercise the graceful-degrade path (every dot grey).
+	if (!dom.requests.some((r) => r.path === "/api/routing/models")) {
+		dom.route("GET", "/api/routing/models", () => ({ models: [] }));
+	}
 	const ModelSelector = (await import("../../components/ModelSelector.svelte")).default;
 	const { modelStore } = await import("../../lib/modelStore");
 	const mounted = await dom.mount(ModelSelector, props);

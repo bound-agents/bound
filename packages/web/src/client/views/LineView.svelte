@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ThreadDetail } from "@bound/client";
+	import type { ThreadDetail, TurnProvenanceInfo } from "@bound/client";
 	import type { YardExecutionEvent } from "@bound/shared";
 	import { ChevronLeft, Paperclip } from "lucide-svelte";
 	import { onDestroy, onMount } from "svelte";
@@ -10,6 +10,7 @@
 	import MessageList from "../components/MessageList.svelte";
 	import ModelSelector from "../components/ModelSelector.svelte";
 	import StatusChip from "../components/StatusChip.svelte";
+	import ThreadModelChip from "../components/ThreadModelChip.svelte";
 	import { reduceActiveAuxRuns } from "../lib/aux-invoke-cards";
 	import { client, connectWebSocket, subscribeToThread, wsEvents } from "../lib/bound";
 	import { formatRelativeTime } from "../lib/format-time";
@@ -80,6 +81,20 @@
 	const onYardExecution = (event: YardExecutionEvent): void => {
 		if (event.thread_id === threadId) yardState = reduceYardExecution(yardState, event);
 	};
+
+	// Per-turn routing provenance (2026-11-21-model-routing.md §9.1), fetched on
+	// mount and refreshed each poll. Drives the per-message footer and the thread
+	// header chip's off-preferred / pinned styling, plus the two §9.2 notices.
+	let turnProvenance = $state<TurnProvenanceInfo[]>([]);
+
+	async function loadProvenance(): Promise<void> {
+		try {
+			const data = await client.getThreadProvenance(threadId);
+			turnProvenance = data.turns;
+		} catch (error) {
+			console.error("Failed to load thread provenance:", error);
+		}
+	}
 
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -256,6 +271,7 @@
 			messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
 			yardState = reconcileYardExecutions(yardState, messages);
 			scanForAppPanels();
+			void loadProvenance();
 			connectWebSocket();
 			subscribeToThread(threadId);
 		} catch (error) {
@@ -265,6 +281,7 @@
 		pollInterval = setInterval(() => {
 			void pollMessages();
 			void pollStatus();
+			void loadProvenance();
 		}, 5000);
 		client.on("thread:status", handleThreadStatus);
 		client.on("stream:chunk", handleStreamChunk);
@@ -415,6 +432,98 @@
 		return modelStore.getModel() || "—";
 	});
 
+	// Thread header chip + off-preferred / pin styling (§9.1). The latest turn's
+	// route_id tells us the serving host/provider; when it differs from the
+	// model's preferred route the chip shows a `· via host / provider` suffix.
+	// `route_id` is `${siteId}:${provider}:${backendId}`; the chip renders
+	// `provider` + host. We only surface the suffix when a substitution or a
+	// non-default route is in play — approximated here by a turn carrying a
+	// `substituted_from` (ran off its preferred model/route).
+	const latestTurn = $derived.by((): TurnProvenanceInfo | null => {
+		if (turnProvenance.length === 0) return null;
+		return turnProvenance.reduce((a, b) => (a.created_at >= b.created_at ? a : b));
+	});
+
+	function routeParts(routeId: string | null): { host: string | null; provider: string | null } {
+		if (!routeId) return { host: null, provider: null };
+		const parts = routeId.split(":");
+		if (parts.length < 3) return { host: null, provider: null };
+		return { host: parts[0], provider: parts[1] };
+	}
+
+	// Off-preferred when the latest turn substituted its model/route. The chip
+	// suffix names the serving route; a hard pin would set `pinned` (not yet
+	// surfaced through the provenance payload, so false until a pin signal exists).
+	const chipVia = $derived.by((): { host: string | null; provider: string | null } => {
+		const t = latestTurn;
+		if (!t || !t.substituted_from) return { host: null, provider: null };
+		return routeParts(t.route_id);
+	});
+
+	// Model-substitution notice (§9.2): surfaced when the latest turn ran a
+	// different model than requested. `substituted_from` is the original.
+	const modelSubstitution = $derived.by(
+		(): {
+			original: string;
+			substitute: string | null;
+			category: string | null;
+			explanation: string | null;
+		} | null => {
+			const t = latestTurn;
+			if (!t || !t.substituted_from) return null;
+			const refusal = t.attempts?.find((a) => a.outcome === "refusal");
+			return {
+				original: t.substituted_from,
+				substitute: t.model_id,
+				category: refusal?.refusal_category ?? null,
+				explanation: null,
+			};
+		},
+	);
+
+	// Route-failover notice (§9.2): a single thread-level notice once one route
+	// has failed repeatedly across the recent turn window. Count route-error
+	// attempts per route over the last turns; surface the worst offender when it
+	// crosses the threshold and a healthier route is now serving.
+	const FAILOVER_WINDOW = 5;
+	const FAILOVER_THRESHOLD = 3;
+	const routeFailover = $derived.by(
+		(): {
+			failedRoute: string;
+			failedCount: number;
+			windowSize: number;
+			servingRoute: string;
+		} | null => {
+			const recent = turnProvenance.slice(-FAILOVER_WINDOW);
+			if (recent.length === 0) return null;
+			const failures = new Map<string, number>();
+			for (const t of recent) {
+				for (const a of t.attempts ?? []) {
+					if (a.outcome === "route-error" && a.route_id) {
+						failures.set(a.route_id, (failures.get(a.route_id) ?? 0) + 1);
+					}
+				}
+			}
+			let worst: { route: string; count: number } | null = null;
+			for (const [route, count] of failures) {
+				if (!worst || count > worst.count) worst = { route, count };
+			}
+			if (!worst || worst.count < FAILOVER_THRESHOLD) return null;
+			const serving = latestTurn?.route_id;
+			if (!serving || serving === worst.route) return null;
+			const label = (routeId: string): string => {
+				const p = routeParts(routeId);
+				return p.host && p.provider ? `${p.host} / ${p.provider}` : routeId;
+			};
+			return {
+				failedRoute: label(worst.route),
+				failedCount: worst.count,
+				windowSize: recent.length,
+				servingRoute: label(serving),
+			};
+		},
+	);
+
 	// User-message turn stops for the mini-timeline in the Context pane. Each
 	// user message is a "stop" on the line; the last is the current turn.
 	const userTurns = $derived(messages.filter((m) => m.role === "user"));
@@ -457,6 +566,11 @@
 			</div>
 			{#if thread}
 				<StatusChip status={agentActive ? "active" : "idle"} />
+				<ThreadModelChip
+					model={activeModel}
+					viaHost={chipVia.host}
+					viaProvider={chipVia.provider}
+				/>
 				{@const attachedSessionHosts = getAttachedSessionHosts()}
 				{#if attachedSessionHosts.length > 0}
 					<span class="session-badge" title={attachedSessionTitle(attachedSessionHosts)}>
@@ -494,6 +608,9 @@
 				isAgentActive={agentActive}
 				appInstances={threadAppInstances}
 				{yardTrees}
+				{turnProvenance}
+				{routeFailover}
+				{modelSubstitution}
 			/>
 
 			<!-- Input bar -->

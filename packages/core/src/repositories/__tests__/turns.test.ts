@@ -16,6 +16,7 @@ import {
 	listModelUsageInRange,
 	listStablePrefixDriftTurnsSince,
 	listTurnInflationRatiosByThread,
+	listTurnsByThread,
 	sumTurnCostByThread,
 	sumTurnCostForDate,
 } from "../turns";
@@ -42,6 +43,9 @@ function makeTurn(overrides: Partial<Turn> & { id: string }): Turn {
 		relay_target: overrides.relay_target ?? null,
 		relay_latency_ms: overrides.relay_latency_ms ?? null,
 		context_debug: overrides.context_debug ?? null,
+		cost_breakdown: overrides.cost_breakdown ?? null,
+		route_id: overrides.route_id ?? null,
+		substituted_from: overrides.substituted_from ?? null,
 		host_origin: overrides.host_origin ?? null,
 		modified_at: overrides.modified_at ?? null,
 	};
@@ -811,5 +815,53 @@ describe("sumTurnCostByThread", () => {
 	it("returns total null when every turn's cost_usd is null", () => {
 		seed({ id: "t1", thread_id: "thread-1", cost_usd: null });
 		expect(sumTurnCostByThread(db, "thread-1")).toEqual({ total: null });
+	});
+});
+
+describe("listTurnsByThread", () => {
+	it("returns non-deleted turns for the thread oldest-first with provenance columns", () => {
+		seed({
+			id: "t2",
+			thread_id: "th1",
+			created_at: "2026-01-02T00:00:00.000Z",
+			model_id: "gpt-5.6-sol",
+			route_id: "siteB:codex:sol",
+			substituted_from: "opus-4.8",
+			cost_usd: 0.5,
+			cost_breakdown: JSON.stringify({ input: 0.4, output: 0.1, cacheRead: 0, cacheWrite: 0 }),
+		});
+		seed({
+			id: "t1",
+			thread_id: "th1",
+			created_at: "2026-01-01T00:00:00.000Z",
+			model_id: "opus-4.8",
+			route_id: "siteA:anthropic:opus",
+		});
+		// Another thread's turn must not leak in.
+		seed({ id: "t3", thread_id: "th2", created_at: "2026-01-03T00:00:00.000Z" });
+
+		const got = listTurnsByThread(db, "th1");
+		expect(got.map((t) => t.id)).toEqual(["t1", "t2"]);
+		expect(got[1]).toEqual({
+			id: "t2",
+			created_at: "2026-01-02T00:00:00.000Z",
+			model_id: "gpt-5.6-sol",
+			route_id: "siteB:codex:sol",
+			substituted_from: "opus-4.8",
+			status: null,
+			cost_usd: 0.5,
+			cost_breakdown: JSON.stringify({ input: 0.4, output: 0.1, cacheRead: 0, cacheWrite: 0 }),
+		});
+	});
+
+	it("excludes soft-deleted turns", () => {
+		seed({ id: "t1", thread_id: "th1", created_at: "2026-01-01T00:00:00.000Z" });
+		seed({ id: "t2", thread_id: "th1", created_at: "2026-01-02T00:00:00.000Z" });
+		softDelete(db, "turns", "t2", SITE);
+		expect(listTurnsByThread(db, "th1").map((t) => t.id)).toEqual(["t1"]);
+	});
+
+	it("returns an empty array for a thread with no turns", () => {
+		expect(listTurnsByThread(db, "missing")).toEqual([]);
 	});
 });

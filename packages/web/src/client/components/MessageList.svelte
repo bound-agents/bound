@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { TurnProvenanceInfo } from "@bound/client";
 	import { onMount, tick } from "svelte";
 	import type { McpAppInstance } from "../lib/mcp-app-store";
 	import {
@@ -11,7 +12,11 @@
 	import McpAppPanel from "./McpAppPanel.svelte";
 	import McpChallengeCard from "./McpChallengeCard.svelte";
 	import MessageBubble from "./MessageBubble.svelte";
+	import MessageProvenanceFooter from "./MessageProvenanceFooter.svelte";
+	import ModelSubstitutionNotice from "./ModelSubstitutionNotice.svelte";
 	import ReasoningBlock from "./ReasoningBlock.svelte";
+	import RouteFailoverNotice from "./RouteFailoverNotice.svelte";
+	import ThreadModelChip from "./ThreadModelChip.svelte";
 	import ToolCallCard from "./ToolCallCard.svelte";
 	import YardExecutionPanel from "./YardExecutionPanel.svelte";
 
@@ -51,6 +56,25 @@
 		isAgentActive?: boolean;
 		appInstances?: McpAppInstance[];
 		yardTrees?: YardTreeSnapshot[];
+		/** Per-turn provenance (2026-11-21-model-routing.md §9.1), oldest-first. Each
+		 * assistant message mounts a footer for the turn that answered it. */
+		turnProvenance?: TurnProvenanceInfo[];
+		/** Thread-level route-failover notice (§9.2), or null when not failing over. */
+		routeFailover?: {
+			failedRoute: string;
+			failedCount: number;
+			windowSize: number;
+			servingRoute: string;
+		} | null;
+		/** Thread-level model-substitution notice (§9.2), or null when none active. */
+		modelSubstitution?: {
+			original: string;
+			substitute: string | null;
+			category: string | null;
+			explanation: string | null;
+		} | null;
+		/** Clears an active substitution pin; wired to the notice's retry action. */
+		onRetrySubstitution?: () => void;
 	}
 
 	const {
@@ -66,6 +90,10 @@
 		isAgentActive = false,
 		appInstances = [],
 		yardTrees = [],
+		turnProvenance = [],
+		routeFailover = null,
+		modelSubstitution = null,
+		onRetrySubstitution = undefined,
 	}: Props = $props();
 
 	// --- Auto-scroll logic ---
@@ -276,6 +304,39 @@
 		},
 	);
 
+	// Match each assistant message to the turn that answered it (§9.1). A turn's
+	// `created_at` lands at or just before its answering assistant message; attach
+	// the latest turn whose timestamp is ≤ the message and still after any earlier
+	// assistant message, so each turn footers exactly one assistant row. Messages
+	// without a created_at or with no eligible turn carry no footer.
+	const provenanceByMessageId = $derived.by((): Map<string, TurnProvenanceInfo> => {
+		const out = new Map<string, TurnProvenanceInfo>();
+		if (turnProvenance.length === 0) return out;
+		// Turns oldest-first (the server returns them that way); assistant messages in
+		// timeline order. Walk both: assign each turn to the first later assistant
+		// message not yet claimed.
+		const turnsAsc = [...turnProvenance].sort((a, b) =>
+			a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0,
+		);
+		const assistants = messages.filter((m) => m.role === "assistant" && m.id && m.created_at);
+		let mi = 0;
+		for (const t of turnsAsc) {
+			while (mi < assistants.length && (assistants[mi].created_at ?? "") < t.created_at) mi++;
+			if (mi >= assistants.length) break;
+			const msg = assistants[mi];
+			if (msg.id) out.set(msg.id, t);
+			mi++;
+		}
+		return out;
+	});
+
+	function provenanceForItem(item: DisplayItem): TurnProvenanceInfo | null {
+		if (item.kind !== "message") return null;
+		if (item.msg.role !== "assistant") return null;
+		const id = item.msg.id;
+		return id ? (provenanceByMessageId.get(id) ?? null) : null;
+	}
+
 	function isItemInRange(item: DisplayItem): boolean {
 		if (!turnRange) return true;
 		if (item.kind === "toolGroup") {
@@ -380,6 +441,12 @@
 								exitCode={item.msg.exit_code}
 								{threadColor}
 							/>
+							{@const prov = provenanceForItem(item)}
+							{#if prov}
+								<div class="provenance-row">
+									<MessageProvenanceFooter turn={prov} />
+								</div>
+							{/if}
 						{/if}
 					</div>
 				</div>
@@ -424,6 +491,27 @@
 		{#each anchoredInstances.trailing as instance (instance.callId)}
 			{@render panelRow(instance)}
 		{/each}
+		{#if routeFailover || modelSubstitution}
+			<div class="thread-notices">
+				{#if routeFailover}
+					<RouteFailoverNotice
+						failedRoute={routeFailover.failedRoute}
+						failedCount={routeFailover.failedCount}
+						windowSize={routeFailover.windowSize}
+						servingRoute={routeFailover.servingRoute}
+					/>
+				{/if}
+				{#if modelSubstitution}
+					<ModelSubstitutionNotice
+						original={modelSubstitution.original}
+						substitute={modelSubstitution.substitute}
+						category={modelSubstitution.category}
+						explanation={modelSubstitution.explanation}
+						onRetry={onRetrySubstitution}
+					/>
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>
 

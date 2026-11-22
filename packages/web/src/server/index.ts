@@ -230,6 +230,7 @@ export async function createWebApp(
 	app.route("/api/metrics", routes.metrics);
 	app.route("/api/sandbox", routes.sandbox);
 	app.route("/api/persona", routes.persona);
+	app.route("/api/routing", routes.routing);
 	app.route("/v1/responses", routes.responses);
 
 	// MCP OAuth challenge resolution (MCP OAuth RFC §8/§11, R-MO17/R-MO27/R-MO27e).

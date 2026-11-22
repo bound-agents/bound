@@ -573,4 +573,65 @@ describe("LineView — live WS events and polling", () => {
 		// Message count incremented to 1 (the live assistant message appended).
 		expect(target.querySelector(".fields")?.textContent).toContain("1");
 	});
+
+	// --- Thread model chip + per-turn provenance wiring (§9.1) ---
+
+	it("mounts the thread model chip in the header with the active model", async () => {
+		const { target } = await mountView({
+			thread: thread(),
+			messages: [
+				{
+					id: "a1",
+					role: "assistant",
+					content: "hi",
+					model_id: "gpt-5.6-sol",
+					created_at: "2026-11-19T01:00:05.000Z",
+				},
+			],
+		});
+		const chip = target.querySelector(".chip");
+		expect(chip).not.toBeNull();
+		expect(chip?.querySelector(".name")?.textContent).toBe("gpt-5.6-sol");
+	});
+
+	it("fetches provenance and mounts a footer under the matching assistant message", async () => {
+		const threadId = "thread-abc-1234567890";
+		dom = installDom();
+		dom.route("GET", new RegExp(`/api/threads/${threadId}$`), () => thread());
+		dom.route("GET", new RegExp(`/api/threads/${threadId}/messages`), () => [
+			{
+				id: "a1",
+				role: "assistant",
+				content: "answer",
+				model_id: "gpt-5.6-sol",
+				created_at: "2026-11-19T01:00:05.000Z",
+			},
+		]);
+		dom.route("GET", new RegExp(`/api/threads/${threadId}/status`), () => status());
+		dom.route("GET", "/api/status/models", () => ({ models: [], default: "" }));
+		// The provenance endpoint the view calls on mount (client.getThreadProvenance).
+		dom.route("GET", new RegExp(`/api/threads/${threadId}/provenance`), () => ({
+			turns: [
+				{
+					id: "turn-1",
+					created_at: "2026-11-19T01:00:00.000Z",
+					model_id: "gpt-5.6-sol",
+					route_id: "site-hub:codex:sol",
+					substituted_from: null,
+					status: "ok",
+					cost_usd: 0.5,
+					attempts: null,
+				},
+			],
+		}));
+		const Component = (await import("../../views/LineView.svelte")).default;
+		const { target } = await dom.mount(Component, { threadId });
+		await openSockets(dom);
+		await dom.settle();
+		// The provenance data path reached a live surface: a footer mounted under the
+		// assistant message that the turn answered.
+		const footer = target.querySelector('[data-message-id="a1"] .provenance');
+		expect(footer).not.toBeNull();
+		expect(footer?.querySelector(".model")?.textContent).toBe("gpt-5.6-sol");
+	});
 });

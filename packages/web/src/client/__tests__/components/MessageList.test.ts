@@ -467,6 +467,127 @@ describe("MessageList", () => {
 		PANEL_TIMEOUT,
 	);
 
+	// --- Per-turn provenance footer + thread-level notices (§9.1, §9.2) ---
+	// These wire the built-but-previously-unmounted components into the live
+	// transcript: MessageProvenanceFooter under each assistant message (matched to
+	// its turn), and RouteFailoverNotice / ModelSubstitutionNotice as thread-level
+	// rows in the timeline.
+
+	function turn(over: Record<string, unknown> = {}) {
+		return {
+			id: "turn-1",
+			created_at: "2026-01-01T09:31:00.000Z",
+			model_id: "gpt-5.6-sol",
+			route_id: "site-hub:codex:sol",
+			substituted_from: null,
+			status: "ok",
+			cost_usd: 0.5,
+			attempts: null,
+			...over,
+		};
+	}
+
+	it("mounts a provenance footer under the assistant message for its turn", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [
+				msg({ id: "u1", role: "user", content: "q", created_at: "2026-01-01T09:30:00.000Z" }),
+				msg({
+					id: "a1",
+					role: "assistant",
+					content: "answer",
+					model_id: "gpt-5.6-sol",
+					created_at: "2026-01-01T09:31:05.000Z",
+				}),
+			],
+			turnProvenance: [turn()],
+		});
+		await dom.settle();
+		// The footer mounted inside the assistant row, naming the serving model/route.
+		const assistantRow = target.querySelector('[data-message-id="a1"]');
+		const footer = assistantRow?.querySelector(".provenance");
+		expect(footer).not.toBeNull();
+		expect(footer?.querySelector(".model")?.textContent).toBe("gpt-5.6-sol");
+		expect(footer?.querySelector(".route")?.textContent).toContain("codex / sol");
+	});
+
+	it("renders no footer on an assistant message with no matching turn", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [
+				msg({
+					id: "a1",
+					role: "assistant",
+					content: "answer",
+					created_at: "2026-01-01T09:31:05.000Z",
+				}),
+			],
+			turnProvenance: [],
+		});
+		await dom.settle();
+		expect(target.querySelector(".provenance")).toBeNull();
+	});
+
+	it("does not render a footer under a user message", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [
+				msg({ id: "u1", role: "user", content: "q", created_at: "2026-01-01T09:30:00.000Z" }),
+			],
+			// A turn whose timestamp precedes the user message must not attach to it.
+			turnProvenance: [turn({ created_at: "2026-01-01T09:29:00.000Z" })],
+		});
+		await dom.settle();
+		const userRow = target.querySelector('[data-message-id="u1"]');
+		expect(userRow?.querySelector(".provenance")).toBeNull();
+	});
+
+	it("mounts the route-failover notice at the thread level when provided", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [msg({ id: "a1", role: "assistant", content: "answer" })],
+			routeFailover: {
+				failedRoute: "MSI / Codex",
+				failedCount: 4,
+				windowSize: 5,
+				servingRoute: "hub / Bedrock",
+			},
+		});
+		await dom.settle();
+		const notice = target.querySelector(".failover-notice");
+		expect(notice).not.toBeNull();
+		expect(notice?.textContent).toContain("MSI / Codex failed 4 of the last 5 turns");
+		expect(notice?.textContent).toContain("hub / Bedrock");
+	});
+
+	it("mounts the model-substitution notice at the thread level when provided", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [msg({ id: "a1", role: "assistant", content: "answer" })],
+			modelSubstitution: {
+				original: "opus-4.8",
+				substitute: "gpt-5.6-sol",
+				category: "content_filter",
+				explanation: null,
+			},
+		});
+		await dom.settle();
+		const notice = target.querySelector(".subst-notice");
+		expect(notice).not.toBeNull();
+		expect(notice?.textContent).toContain("opus-4.8");
+		expect(notice?.textContent).toContain("gpt-5.6-sol");
+	});
+
+	it("renders neither notice when neither prop is supplied", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [msg({ id: "a1", role: "assistant", content: "answer" })],
+		});
+		await dom.settle();
+		expect(target.querySelector(".failover-notice")).toBeNull();
+		expect(target.querySelector(".subst-notice")).toBeNull();
+	});
+
 	it(
 		"renders an unanchored MCP app instance as a trailing panel row",
 		async () => {

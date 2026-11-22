@@ -36,6 +36,37 @@ export function findLatestOkTurnRouteByThread(
 	} | null;
 }
 
+/** A turn row projected to the columns the per-turn provenance footer needs. */
+export interface TurnProvenanceRow {
+	id: string;
+	created_at: string;
+	model_id: string;
+	route_id: string | null;
+	substituted_from: string | null;
+	status: string | null;
+	cost_usd: number | null;
+	/** JSON `TurnCostBreakdownWithAttempts`; the `attempts` array drives the expanded footer. */
+	cost_breakdown: string | null;
+}
+
+/**
+ * Every non-deleted turn for a thread, oldest-first, projecting the provenance
+ * columns the web UI's per-turn footer reads (2026-11-21-model-routing.md §9.1).
+ * The `cost_breakdown` JSON carries an optional per-attempt `attempts` array
+ * (§7.4) that the expanded footer renders; a single-attempt turn omits it.
+ */
+export function listTurnsByThread(db: Database, threadId: string): TurnProvenanceRow[] {
+	return db
+		.query(
+			`SELECT id, created_at, model_id, route_id, substituted_from, status, cost_usd, cost_breakdown
+			 FROM turns
+			 WHERE thread_id = ?
+			   AND deleted = 0
+			 ORDER BY created_at ASC, rowid ASC`,
+		)
+		.all(threadId) as TurnProvenanceRow[];
+}
+
 /**
  * Latest turn for a thread, projecting only the cache-state columns needed by
  * the cache predictor. Used by cache-prediction.ts.

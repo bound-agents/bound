@@ -15,6 +15,7 @@ import { type BackendPricing, createMetricsRoutes } from "./metrics.js";
 import { type OauthMcpResolverBridge, createOauthMcpRoutes } from "./oauth-mcp";
 import { createPersonaRoutes } from "./persona";
 import { createResponsesRoutes } from "./responses";
+import { createRoutingRoutes } from "./routing";
 import { createRssFeedsRoutes } from "./rss";
 import { createSandboxRoutes } from "./sandbox";
 import { createSkillsRoutes } from "./skills";
@@ -189,5 +190,6 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			undefined,
 			topologyRole,
 		),
+		routing: createRoutingRoutes(db, siteId, modelRouter ?? null),
 	};
 }

@@ -4,8 +4,9 @@ description: Look up the purpose, contents, and related documentation for each B
 ---
 
 The Bound web UI runs on the web server, which defaults to
-`http://localhost:3001`. Its top navigation has eight views: **System Map**, **Timetable**,
-**Network**, **Advisories**, **Files**, **Connections**, **Metrics**, and **Persona**.
+`http://localhost:3001`. Its top navigation has nine views: **System Map**, **Timetable**,
+**Network**, **Advisories**, **Files**, **Connections**, **Metrics**, **Persona**, and
+**Models**.
 **Line** is the separate conversation view that opens on entering an individual thread.
 
 ## Line
@@ -146,3 +147,26 @@ used by later turns and synchronize to other hosts according to the cluster stat
 **Related documentation:** [Configuration reference](/bound/reference/configuration/) covers
 configuration lookup, and [State, consistency, and multi-host
 operation](/bound/concepts/sync/) explains cluster-wide state visibility.
+
+## Models
+
+**Purpose:** Manage cluster-wide model routing preferences and inspect per-host route supply.
+
+**Contains:** One row per logical model, each showing a three-state health dot: green when a
+preferred route is healthy, amber when the model is serving only through a fallback route, and
+grey when no route is eligible or this host cannot observe the route's health. Expanding a model
+shows its route list across the cluster, where each row names the serving host and provider, its
+health with a retry countdown during backoff, up and down controls that set the model's route
+order, and a drain toggle that excludes a route until un-drained. A route named in the route
+order but advertised by no host shows as stale with a Remove action. Each model also carries a
+fallback policy: Automatic, a custom substitute list, or Never substitute. A cluster defaults
+section shows the default fallback list and the named model roles.
+
+Route health is per-host and is read from the local router. A route served only by a remote host
+reports its health as unknown on this page, because this host does not observe that route's
+outcomes. Route order, drains, fallback policies, and alias mappings are cluster-synced, so an
+edit on any host applies everywhere.
+
+**Related documentation:** [Inference and model routing](/bound/concepts/inference/) explains
+route ranking, health recovery, drains, stickiness, and refusal fallback. [State, consistency,
+and multi-host operation](/bound/concepts/sync/) explains cluster-wide state visibility.

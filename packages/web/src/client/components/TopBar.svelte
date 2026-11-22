@@ -19,6 +19,7 @@
 		{ hash: "#/connections", route: "06", label: "Connections" },
 		{ hash: "#/metrics", route: "07", label: "Metrics" },
 		{ hash: "#/persona", route: "08", label: "Persona" },
+		{ hash: "#/settings/models", route: "09", label: "Models" },
 	];
 
 	let advisoryCount = $state(0);

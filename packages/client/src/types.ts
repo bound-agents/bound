@@ -120,6 +120,76 @@ export interface ModelsResponse {
 	default: string;
 }
 
+// ---- Model routing (Settings › Models) ----
+
+/** One advertised route for a logical model, with supply + drain + health. */
+export interface RouteSupplyInfo {
+	route_id: string;
+	site_id: string;
+	host_name: string;
+	provider: string | null;
+	drained: boolean;
+	/** `healthy` | `backoff` | `half_open` from the local router, else `unknown` (remote routes). */
+	health: "healthy" | "backoff" | "half_open" | "unknown";
+	/** Epoch-ms of the next half-open trial when `health === "backoff"`, else null. */
+	next_trial_at: number | null;
+}
+
+/** A dormant `route_order` entry whose RouteId is advertised nowhere. */
+export interface StaleRouteInfo {
+	route_id: string;
+}
+
+/** Per-model refusal-fallback policy (mirrors ModelFallbackPolicy in @bound/shared). */
+export type FallbackPolicyInfo =
+	{ mode: "auto" } | { mode: "never" } | { mode: "custom"; models: string[] };
+
+/** The per-model block the Settings › Models page renders. */
+export interface ModelRoutingInfo {
+	logical_model: string;
+	route_order: string[] | null;
+	fallback_policy: FallbackPolicyInfo;
+	routes: RouteSupplyInfo[];
+	stale_routes: StaleRouteInfo[];
+}
+
+export interface RoutingModelsResponse {
+	models: ModelRoutingInfo[];
+}
+
+/** The cluster-default fallback list, model roles, and alias overrides. */
+export interface ClusterDefaultsResponse {
+	default_fallback_models: string[];
+	roles: { default?: string; heavy?: string; fast?: string };
+	aliases: Array<{ provider_key: string; logical_model: string | null }>;
+}
+
+/** One recorded inference attempt within a turn (per-turn provenance footer). */
+export interface TurnAttemptInfo {
+	model_id: string;
+	route_id: string | null;
+	outcome: "ok" | "route-error" | "refusal";
+	refusal_category: string | null;
+	credit_redeemed: boolean;
+	cost_usd: number;
+}
+
+/** A turn's provenance for the per-message footer. */
+export interface TurnProvenanceInfo {
+	id: string;
+	created_at: string;
+	model_id: string;
+	route_id: string | null;
+	substituted_from: string | null;
+	status: string | null;
+	cost_usd: number | null;
+	/** Every attempt executed this turn, when the turn ran more than one; else null. */
+	attempts: TurnAttemptInfo[] | null;
+}
+
+export interface ThreadProvenanceResponse {
+	turns: TurnProvenanceInfo[];
+}
 export interface CancelResult {
 	cancelled: true;
 	thread_id: string;
