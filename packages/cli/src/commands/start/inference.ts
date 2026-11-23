@@ -606,7 +606,12 @@ export async function initInference(
 			modelsDevCfg?.enabled === false
 				? null
 				: new ModelsDevCache({
-						cachePath: join(dirname(appContext.db.filename), "models-dev-cache.json"),
+						// An in-memory DB has no data directory; dirname(":memory:") is the cwd,
+						// so keep the snapshot in memory rather than writing it there.
+						cachePath:
+							appContext.db.filename === ":memory:" || appContext.db.filename === ""
+								? null
+								: join(dirname(appContext.db.filename), "models-dev-cache.json"),
 						...(modelsDevCfg?.url && { url: modelsDevCfg.url }),
 						...(modelsDevCfg?.refresh_interval_ms !== undefined && {
 							refreshIntervalMs: modelsDevCfg.refresh_interval_ms,

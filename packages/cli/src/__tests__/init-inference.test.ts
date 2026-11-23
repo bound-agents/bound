@@ -462,3 +462,36 @@ describe("resolved catalog metadata on the local routing path (requirement 1 + 7
 		expect(router?.getMaxOutputTokens("gpt")).toBe(32000);
 	});
 });
+
+describe("initInference with an in-memory DB", () => {
+	it("does not write a models.dev cache into the cwd", async () => {
+		const { existsSync } = await import("node:fs");
+		const stray = join(process.cwd(), "models-dev-cache.json");
+		const before = existsSync(stray);
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const payload = JSON.stringify({
+			anthropic: { models: { "claude-x": { limit: { context: 1000, output: 100 } } } },
+		});
+		const ctx = {
+			db,
+			siteId: "mem-site",
+			hostName: "mem-host",
+			logger: makeLogger([]),
+			config: { modelBackends: backends() },
+			optionalConfig: {},
+			eventBus: new TypedEventEmitter(),
+		} as unknown as AppContext;
+		const result = await initInference(
+			ctx,
+			{},
+			{
+				modelsDevFetch: (async () =>
+					new Response(payload, { status: 200 })) as unknown as typeof fetch,
+			},
+		);
+		await result.modelsDevCache?.refresh(Date.now());
+		expect(existsSync(stray)).toBe(before);
+		db.close();
+	});
+});

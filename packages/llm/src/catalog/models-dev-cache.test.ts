@@ -320,3 +320,16 @@ describe("ModelsDevCache — disable flag + refresh cadence", () => {
 		}
 	});
 });
+
+describe("ModelsDevCache — in-memory only (cachePath null)", () => {
+	it("refreshes into the index without touching disk", async () => {
+		const cache = new ModelsDevCache({
+			cachePath: null,
+			fetchImpl: (async () =>
+				new Response(JSON.stringify(SAMPLE_PAYLOAD), { status: 200 })) as unknown as typeof fetch,
+		});
+		await cache.load();
+		expect(await cache.refresh(1)).toBe("updated");
+		expect(cache.getIndex().size).toBeGreaterThan(0);
+	});
+});

@@ -191,8 +191,8 @@ export function lookupModelsDevScoped(
 }
 
 export interface ModelsDevCacheOptions {
-	/** Absolute path to the on-disk cache file. */
-	cachePath: string;
+	/** Absolute path to the on-disk cache file; null keeps the snapshot in memory only. */
+	cachePath: string | null;
 	/** Registry URL (default `https://models.dev/api.json`). */
 	url?: string;
 	/** When false, no network fetch happens (air-gapped); default true. */
@@ -209,7 +209,7 @@ export interface ModelsDevCacheOptions {
  * `RefreshStatus` so the daemon start path never blocks on the registry.
  */
 export class ModelsDevCache {
-	private readonly cachePath: string;
+	private readonly cachePath: string | null;
 	private readonly url: string;
 	private readonly enabled: boolean;
 	private readonly refreshIntervalMs: number;
@@ -248,7 +248,7 @@ export class ModelsDevCache {
 	 * throws: a missing or corrupt cache leaves the index empty (R-MC6).
 	 */
 	async load(): Promise<void> {
-		if (!existsSync(this.cachePath)) return;
+		if (this.cachePath === null || !existsSync(this.cachePath)) return;
 		try {
 			const parsed = JSON.parse(readFileSync(this.cachePath, "utf8")) as CacheFile;
 			this.etag = typeof parsed.etag === "string" ? parsed.etag : null;
@@ -291,6 +291,7 @@ export class ModelsDevCache {
 
 	/** Write the snapshot + ETag to disk. Swallows IO errors (local-only cache). */
 	private persist(payload: unknown): void {
+		if (this.cachePath === null) return;
 		try {
 			mkdirSync(dirname(this.cachePath), { recursive: true });
 			const file: CacheFile = {
