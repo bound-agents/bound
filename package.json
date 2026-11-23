@@ -10,11 +10,11 @@
 		"test:e2e": "bunx playwright test e2e/",
 		"lint": "bunx @biomejs/biome check . && bun fmt --no-script --check .",
 		"lint:fix": "bunx @biomejs/biome check --write . && bun fmt --no-script .",
-		"check": "bun lint && bun typecheck && bun run scripts/validate-outbox-invariant.ts && bun run scripts/validate-no-fk-on-synced-tables.ts && bun run scripts/validate-events-after-commit.ts && bun run scripts/validate-read-centralization.ts && bun run scripts/validate-just-bash-patch.ts && bun run scripts/validate-no-files-relay-offload.ts",
+		"check": "bun lint && bun typecheck && bun run scripts/validate-outbox-invariant.ts && bun run scripts/validate-no-fk-on-synced-tables.ts && bun run scripts/validate-events-after-commit.ts && bun run scripts/validate-read-centralization.ts && bun run scripts/validate-just-bash-patch.ts && bun run scripts/validate-no-files-relay-offload.ts && bun run scripts/validate-kotlin-not-link-built.ts",
 		"typecheck": "bun scripts/typecheck-all.ts",
 		"build": "bun run scripts/build.ts",
 		"prepare": "git config core.hooksPath .githooks",
-		"postinstall": "bun run scripts/build-sandbox-runtime.ts && bun run scripts/build-mxc-runtime.ts && bun run scripts/build-lowbox-helper.ts --optional"
+		"postinstall": "bun run scripts/build-sandbox-runtime.ts && bun run scripts/build-mxc-runtime.ts && bun run scripts/build-lowbox-helper.ts --optional && bun run scripts/build-tree-sitter-kotlin.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.0",
@@ -28,6 +28,13 @@
 	"dependencies": {
 		"just-bash": "^2.14.4"
 	},
+	"trustedDependencies": [
+		"esbuild",
+		"node-pty",
+		"sharp",
+		"tree-sitter",
+		"tree-sitter-cli"
+	],
 	"patchedDependencies": {
 		"@microsoft/mxc-sdk@1.1.0": "patches/@microsoft%2Fmxc-sdk@1.1.0.patch",
 		"just-bash@2.14.4": "patches/just-bash@2.14.4.patch",
