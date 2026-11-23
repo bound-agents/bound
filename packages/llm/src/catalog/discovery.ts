@@ -28,6 +28,8 @@ import type { ResolvedCapabilities, ResolvedPricing } from "./resolve-metadata";
  */
 export interface DiscoveredModel {
 	providerModelId: string;
+	/** Provider-published user-facing display name, when the inventory endpoint exposes one. */
+	displayName?: string;
 	capabilities?: ResolvedCapabilities;
 	maxOutputTokens?: number;
 	pricing?: ResolvedPricing;

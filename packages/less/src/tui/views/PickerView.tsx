@@ -71,7 +71,9 @@ export function PickerView({
 					setItems(
 						sortClusterModelsById(response.models).map((m) => ({
 							id: m.id,
-							label: m.id,
+							// Show the user-facing display name (spec §2.1), never the internal id.
+							// Older servers omit display_name; fall back to the model id.
+							label: m.display_name ?? m.id,
 						})),
 					);
 				}

@@ -246,6 +246,12 @@ export interface HostModelEntry {
 	route_id?: string;
 	/** Canonical logical model ID this route serves, or absent/unassigned. */
 	logical_model?: string;
+	/**
+	 * User-facing display name for this route (spec §2.1). Provider-published >
+	 * `models.dev` name > provider model id. Advertised so a reader never shows
+	 * the internal `logical_model` grouping key as a model name.
+	 */
+	display_name?: string;
 	/** Raw upstream / auto-registered provider model id. */
 	provider_model_id?: string;
 	/** Per-response output-token ceiling advertised by the serving backend. */

@@ -59,6 +59,8 @@
 		/** Per-turn provenance (2026-11-21-model-routing.md §9.1), oldest-first. Each
 		 * assistant message mounts a footer for the turn that answered it. */
 		turnProvenance?: TurnProvenanceInfo[];
+		/** Logical model id → user-facing display name (spec §2.1); the footer shows this, never the id. */
+		modelDisplay?: (modelId: string | null) => string;
 		/** Thread-level route-failover notice (§9.2), or null when not failing over. */
 		routeFailover?: {
 			failedRoute: string;
@@ -91,6 +93,7 @@
 		appInstances = [],
 		yardTrees = [],
 		turnProvenance = [],
+		modelDisplay = (modelId: string | null) => modelId ?? "\u2014",
 		routeFailover = null,
 		modelSubstitution = null,
 		onRetrySubstitution = undefined,
@@ -444,7 +447,7 @@
 							{@const prov = provenanceForItem(item)}
 							{#if prov}
 								<div class="provenance-row">
-									<MessageProvenanceFooter turn={prov} />
+									<MessageProvenanceFooter turn={prov} {modelDisplay} />
 								</div>
 							{/if}
 						{/if}

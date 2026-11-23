@@ -6,7 +6,11 @@
 	// attempt with its cost, including discarded refusals and failed route trials
 	// — the detail the router keeps internal elsewhere but surfaces here on demand.
 
-	const { turn } = $props<{ turn: TurnProvenanceInfo }>();
+	const { turn, modelDisplay = (id: string | null) => id ?? "\u2014" } = $props<{
+		turn: TurnProvenanceInfo;
+		/** Logical model id → user-facing display name (spec §2.1); never shows the internal id. */
+		modelDisplay?: (modelId: string | null) => string;
+	}>();
 
 	let expanded = $state(false);
 
@@ -44,12 +48,12 @@
 		}}
 		aria-expanded={hasAttempts ? expanded : undefined}
 	>
-		<span class="model">{turn.model_id}</span>
+		<span class="model">{modelDisplay(turn.model_id)}</span>
 		<span class="sep">via</span>
 		<span class="route">{routeLabel(turn.route_id)}</span>
 		{#if turn.substituted_from}
 			<span class="subst" title="Substituted from {turn.substituted_from}">
-				(was {turn.substituted_from})
+				(was {modelDisplay(turn.substituted_from)})
 			</span>
 		{/if}
 		{#if hasAttempts}
@@ -61,7 +65,7 @@
 		<ol class="attempts">
 			{#each turn.attempts as attempt}
 				<li class="attempt" class:refused={attempt.outcome === "refusal"}>
-					<span class="a-model">{attempt.model_id}</span>
+					<span class="a-model">{modelDisplay(attempt.model_id)}</span>
 					<span class="a-route">{routeLabel(attempt.route_id)}</span>
 					<span class="a-outcome">{outcomeLabel(attempt.outcome)}</span>
 					{#if attempt.refusal_category}

@@ -45,6 +45,8 @@ export interface CopilotPricing {
 /** The subset of a catalog entry we read. */
 export interface CopilotModelEntry {
 	id: string;
+	/** Provider-published display name (`name` in the catalog entry), when present. */
+	name?: string;
 	supportedEndpoints?: string[];
 	maxPromptTokens?: number;
 	maxOutputTokens?: number;
@@ -73,6 +75,7 @@ interface RawPriceRow {
 /** Raw JSON shape of one `{api}/models` entry. */
 interface RawModelEntry {
 	id?: string;
+	name?: string;
 	supported_endpoints?: string[];
 	capabilities?: {
 		type?: string;
@@ -173,6 +176,7 @@ function parseEntry(raw: RawModelEntry): CopilotModelEntry | null {
 	}
 	return {
 		id: raw.id,
+		...(raw.name !== undefined && { name: raw.name }),
 		supportedEndpoints: raw.supported_endpoints,
 		maxPromptTokens: raw.capabilities?.limits?.max_prompt_tokens,
 		maxOutputTokens: raw.capabilities?.limits?.max_output_tokens,

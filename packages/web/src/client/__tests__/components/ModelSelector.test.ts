@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { installDom } from "../harness/dom";
 
-type Model = { id: string; host: string; via?: string; status?: string };
+type Model = { id: string; display_name?: string; host: string; via?: string; status?: string };
 
 let dom: ReturnType<typeof installDom> | null = null;
 
@@ -12,9 +12,12 @@ afterEach(() => {
 
 async function mount(models: Model[], defaultModel: string, props: Record<string, unknown> = {}) {
 	dom = installDom();
-	dom.route("GET", "/api/status/models", () => ({ models, default: defaultModel }));
+	// Default display_name to the id so existing cases need no fixture changes.
+	const withNames = models.map((m) => ({ display_name: m.id, ...m }));
+	dom.route("GET", "/api/status/models", () => ({ models: withNames, default: defaultModel }));
 	// Routing health is a separate best-effort fetch; default to empty so the
-	// existing cases exercise the graceful-degrade path (every dot grey).
+	// existing cases exercise the graceful-degrade path (every dot grey). An empty
+	// routing list also means displayName() falls back to the id.
 	if (!dom.requests.some((r) => r.path === "/api/routing/models")) {
 		dom.route("GET", "/api/routing/models", () => ({ models: [] }));
 	}

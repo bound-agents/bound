@@ -77,6 +77,39 @@ describe("resolveModelMetadata", () => {
 			expect(r.metadata.allowed_fallback_models).toEqual(["claude-sonnet-4", "claude-haiku-4"]);
 			expect(r.metadata.field_sources.allowed_fallback_models).toBe("provider");
 		});
+
+		it("resolves display_name provider > models.dev > provider_model_id fallback", () => {
+			// Provider-published display name wins.
+			const a = resolveModelMetadata({
+				providerModelId: "claude-opus-4",
+				config: {},
+				provider: { display_name: "Claude Opus 4", capabilities: { max_context: 200 } },
+				modelsDev: { display_name: "models.dev Opus" },
+			});
+			expect(a.metadata.display_name).toBe("Claude Opus 4");
+			expect(a.metadata.field_sources.display_name).toBe("provider");
+
+			// models.dev name fills when the provider has none.
+			const b = resolveModelMetadata({
+				providerModelId: "gpt-6.1-sol",
+				config: {},
+				provider: { capabilities: { max_context: 200 } },
+				modelsDev: { display_name: "GPT 6.1 Sol" },
+			});
+			expect(b.metadata.display_name).toBe("GPT 6.1 Sol");
+			expect(b.metadata.field_sources.display_name).toBe("models_dev");
+
+			// Neither layer supplies one → the provider model id verbatim (dots intact),
+			// tagged driver_default so the UI never shows an invented string.
+			const c = resolveModelMetadata({
+				providerModelId: "openai.gpt-6.1-sol",
+				config: {},
+				provider: { capabilities: { max_context: 200 } },
+				modelsDev: {},
+			});
+			expect(c.metadata.display_name).toBe("openai.gpt-6.1-sol");
+			expect(c.metadata.field_sources.display_name).toBe("driver_default");
+		});
 	});
 
 	describe("completeness gate (R-MC4)", () => {

@@ -74,6 +74,7 @@ function providerLayer(input: CatalogBackendInput): MetadataLayer {
 	const row = input.discovery.find((m) => m.providerModelId === input.providerModelId);
 	if (!row) return {};
 	const layer: MetadataLayer = {};
+	if (row.displayName !== undefined) layer.display_name = row.displayName;
 	if (row.capabilities) layer.capabilities = row.capabilities;
 	if (row.maxOutputTokens !== undefined) layer.max_output_tokens = row.maxOutputTokens;
 	if (row.pricing) layer.pricing = row.pricing;

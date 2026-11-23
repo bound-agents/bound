@@ -55,6 +55,8 @@ export function parseAnthropicModelsList(body: unknown): DiscoveredModel[] {
 		const id = stringId(row);
 		if (!id) continue;
 		const model: DiscoveredModel = { providerModelId: id, vendor: "anthropic" };
+		const displayName = stringField(row, "display_name");
+		if (displayName) model.displayName = displayName;
 		if (isRecord(row) && Array.isArray(row.allowed_fallback_models)) {
 			const targets = row.allowed_fallback_models.filter((t): t is string => typeof t === "string");
 			if (targets.length > 0) model.allowedFallbackModels = targets;
@@ -81,9 +83,11 @@ export function parseOpenAIModelsList(body: unknown): DiscoveredModel[] {
 
 /**
  * Parse a Bedrock `ListFoundationModels` body — `{ modelSummaries: [{ modelId,
- * providerName?, inputModalities?, ... }] }`. Captures the vendor from
- * `providerName` and surfaces an `IMAGE` input modality as a vision capability;
- * everything else (context window, pricing) fills from `models.dev` + config.
+ * providerName?, inputModalities?, converse?, ... }] }`. Captures the vendor from
+ * `providerName`, surfaces an `IMAGE` input modality as a vision capability, and
+ * reads `converse.maxTokensMaximum` as the provider-published output limit when
+ * present; everything else (context window, pricing) fills from `models.dev` +
+ * config. A null/absent `maxTokensMaximum` is left unset (no invented value).
  * Total: a malformed row is skipped and a missing array yields `[]`.
  */
 export function parseBedrockFoundationModels(body: unknown): DiscoveredModel[] {
@@ -98,6 +102,12 @@ export function parseBedrockFoundationModels(body: unknown): DiscoveredModel[] {
 			if (row.inputModalities.some((m) => typeof m === "string" && m.toUpperCase() === "IMAGE")) {
 				model.capabilities = { vision: true };
 			}
+		}
+		if (isRecord(row) && isRecord(row.converse)) {
+			// Bedrock Converse publishes the model's maximum output tokens here
+			// (`maxTokensMaximum`); `maxTokensDefault` can be null and is not a cap.
+			const max = row.converse.maxTokensMaximum;
+			if (typeof max === "number" && Number.isFinite(max)) model.maxOutputTokens = max;
 		}
 		out.push(model);
 	}

@@ -56,6 +56,8 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "../bridge";
+import type { DiscoveredModel, SupportsModelDiscovery } from "../catalog/discovery";
+import { parseOpenAIModelsList } from "../catalog/discovery-fetch";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
@@ -192,7 +194,7 @@ export function buildMantleOpenAIOptions(
 	};
 }
 
-export class BedrockMantleDriver implements LLMBackend {
+export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 	private openaiProvider?: ReturnType<typeof createOpenAI>;
 	private anthropicProvider?: ReturnType<typeof createAnthropic>;
 	private model: string;
@@ -209,6 +211,11 @@ export class BedrockMantleDriver implements LLMBackend {
 	 * deployments whose encrypted blobs don't cross-decrypt.
 	 */
 	private readonly reasoningOrigin?: string;
+	// Discovery (slice 6, R-MC3): region + the SigV4-signing fetch, so
+	// `discoverModels()` can enumerate this host's entitled Mantle lineup via the
+	// region-root `/v1/models` endpoint without reaching into the AI SDK provider.
+	private readonly discoveryRegion: string;
+	private readonly discoveryFetch: typeof fetch;
 
 	constructor(config: {
 		region: string;
@@ -241,6 +248,7 @@ export class BedrockMantleDriver implements LLMBackend {
 		this.contextWindow = config.contextWindow;
 		this.providerMode = config.providerMode;
 		this.logger = config.logger;
+		this.discoveryRegion = config.region;
 		this.reasoningOrigin = buildReasoningOrigin({
 			siteId: config.siteId,
 			provider: PROVIDER_NAME,
@@ -264,6 +272,9 @@ export class BedrockMantleDriver implements LLMBackend {
 			region: config.region,
 			baseFetch,
 		});
+		// The signing fetch is also the discovery transport: `discoverModels()`
+		// hits the region-root `/v1/models` endpoint with the same SigV4 credentials.
+		this.discoveryFetch = signedFetch;
 
 		if (config.providerMode === "anthropic") {
 			this.anthropicProvider = createAnthropic({
@@ -540,6 +551,33 @@ export class BedrockMantleDriver implements LLMBackend {
 			extended_thinking: this.providerMode === "anthropic",
 			max_context: this.contextWindow,
 		};
+	}
+
+	/**
+	 * Live provider discovery (slice 6, R-MC3, catalog §4.1): enumerate this
+	 * host's entitled Mantle lineup via the region-root `/v1/models` endpoint
+	 * (`https://bedrock-mantle.<region>.api.aws/v1/models`), signed with the same
+	 * SigV4 credentials as the data plane. The `/openai/v1` and `/anthropic/v1`
+	 * prefixes serve protocol surfaces, not the catalog; only the root path lists
+	 * models. The listing carries bare entitlement rows (`{id, object, owned_by,
+	 * status, data_retention}`) with no limits, pricing, or display name, so
+	 * `parseOpenAIModelsList` (same `{data:[{id}]}` envelope) suffices and the
+	 * lower layers (foundation-models output limit for bedrock, `models.dev`)
+	 * fill the rest. Per-region entitlement means a model the region does not
+	 * serve is never advertised by this host. Rejects on a non-OK response or
+	 * transport failure so the caller degrades to config + `models.dev` (R-MC6);
+	 * a reachable-but-empty account returns `[]`.
+	 */
+	async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+		const url = `https://bedrock-mantle.${this.discoveryRegion}.api.aws/v1/models`;
+		const res = await this.discoveryFetch(url, {
+			headers: { accept: "application/json" },
+			...(signal && { signal }),
+		});
+		if (!res.ok) {
+			throw new Error(`${PROVIDER_NAME} model discovery failed: HTTP ${res.status}`);
+		}
+		return parseOpenAIModelsList(await res.json());
 	}
 
 	fallbackSupport(): DriverFallbackSupport {

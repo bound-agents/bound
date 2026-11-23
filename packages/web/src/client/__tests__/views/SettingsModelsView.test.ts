@@ -19,11 +19,13 @@ const MODELS: RoutingModelsResponse = {
 	models: [
 		{
 			logical_model: "gpt-5.6-sol",
+			display_name: "GPT-5.6 Sol",
 			route_order: ["site-hub:codex:sol", "site-msi:codex:sol"],
 			fallback_policy: { mode: "auto" },
 			routes: [
 				{
 					route_id: "site-hub:codex:sol",
+					display_name: "GPT-5.6 Sol",
 					site_id: "site-hub",
 					host_name: "hub",
 					provider: "codex",
@@ -33,6 +35,7 @@ const MODELS: RoutingModelsResponse = {
 				},
 				{
 					route_id: "site-msi:codex:sol",
+					display_name: "GPT-5.6 Sol",
 					site_id: "site-msi",
 					host_name: "MSI",
 					provider: "codex",
@@ -41,7 +44,7 @@ const MODELS: RoutingModelsResponse = {
 					next_trial_at: null,
 				},
 			],
-			stale_routes: [{ route_id: "dead:codex:sol" }],
+			stale_routes: [{ route_id: "dead:codex:sol", host_name: "old-host", provider: "codex" }],
 		},
 	],
 };
@@ -93,7 +96,8 @@ describe("SettingsModelsView", () => {
 		head.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
 		await dom?.settle();
 		const stale = target.querySelector(".route-row.stale");
-		expect(stale?.textContent).toContain("dead:codex:sol");
+		expect(stale?.textContent).toContain("old-host / codex");
+		expect(stale?.textContent).not.toContain("dead:codex:sol");
 		expect(stale?.textContent).toContain("stale");
 		const remove = [...target.querySelectorAll("button")].find((b) =>
 			b.textContent?.includes("Remove"),

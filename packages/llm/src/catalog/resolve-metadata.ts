@@ -46,6 +46,12 @@ export interface ModelMetadata {
 	provider_model_id: string;
 	logical_model: string | null;
 	vendor: string | null;
+	/**
+	 * User-facing model name (spec §2.1, "internal identifiers stay internal").
+	 * Provider-published display name > `models.dev` name > the provider model id
+	 * verbatim (version dots intact). Never a grouping key or RouteId.
+	 */
+	display_name: string;
 	capabilities: ResolvedCapabilities;
 	max_output_tokens?: number;
 	pricing?: ResolvedPricing;
@@ -62,6 +68,8 @@ export interface ModelMetadata {
 export interface MetadataLayer {
 	logical_model?: string | null;
 	vendor?: string | null;
+	/** Provider-published or registry display name for this layer, when it supplies one. */
+	display_name?: string;
 	capabilities?: ResolvedCapabilities;
 	max_output_tokens?: number;
 	pricing?: ResolvedPricing;
@@ -184,10 +192,25 @@ export function resolveModelMetadata(args: ResolveMetadataArgs): ResolveMetadata
 		}
 	}
 
+	// display_name: user-facing name (spec §2.1). Provider-published > models.dev
+	// name > the provider model id verbatim (version dots intact). The final
+	// fallback is tagged `driver_default` so the UI never shows an invented
+	// string and provenance stays honest about where the name came from.
+	let display_name = args.providerModelId;
+	field_sources.display_name = "driver_default";
+	for (const [layer, source] of layers) {
+		if (layer.display_name !== undefined && layer.display_name.length > 0) {
+			display_name = layer.display_name;
+			field_sources.display_name = source;
+			break;
+		}
+	}
+
 	const metadata: ModelMetadata = {
 		provider_model_id: args.providerModelId,
 		logical_model,
 		vendor,
+		display_name,
 		capabilities,
 		max_output_tokens,
 		pricing: Object.keys(pricing).length > 0 ? pricing : undefined,

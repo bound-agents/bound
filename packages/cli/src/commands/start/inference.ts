@@ -213,6 +213,9 @@ export function advertiseLocalModels(
 			id: b.id,
 			route_id: modelRouter.getRouteId(b.id) ?? undefined,
 			logical_model: resolved ? (resolved.logicalModel ?? undefined) : b.id,
+			// User-facing display name resolved by the catalog (spec §2.1); absent
+			// pre-resolution so a reader never shows the grouping key as a name.
+			display_name: resolved?.metadata.display_name,
 			provider_model_id: rawBackend?.model,
 			max_output_tokens: modelRouter.getMaxOutputTokens(b.id),
 			cache_ttl: modelRouter.getCacheTtl(b.id),

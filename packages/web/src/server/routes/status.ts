@@ -10,6 +10,7 @@ import {
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
+	listHostSiteIdNameAndModels,
 	listHostsOrderedByName,
 	listRemoteHostModelLiveness,
 	listSyncState,
@@ -32,6 +33,8 @@ export interface ModelInfo {
 
 export interface ClusterModelInfo {
 	id: string;
+	/** User-facing display name (spec §2.1), from the serving host's hosts.models advertisement; falls back to the id. */
+	display_name: string;
 	provider: string;
 	host: string;
 	via: "local" | "relay";
@@ -127,8 +130,32 @@ export function createStatusRoutes(
 		// discovery endpoint) or a static snapshot — resolve per request.
 		const resolved = typeof modelsConfig === "function" ? modelsConfig() : modelsConfig;
 
+		// Logical model id → user-facing display name (spec §2.1), harvested from
+		// every host's hosts.models advertisement. The `ClusterModelInfo.id` the
+		// picker shows is the logical model id, so this maps it to the resolved name
+		// (never the internal grouping key). First advertised name per id wins; the
+		// id itself is the fallback when no host advertised a name.
+		const displayNameByModelId = new Map<string, string>();
+		for (const host of listHostSiteIdNameAndModels(db)) {
+			if (host.models === null) continue;
+			const parsed = parseJsonSafe(hostModelsSchema, host.models, "host.models");
+			if (!parsed.ok) continue;
+			for (const raw of parsed.value) {
+				if (typeof raw === "string") continue;
+				if (!raw.display_name) continue;
+				// Key by both the logical model and the backend id: local models are
+				// listed by backend id, remote ones by logical model.
+				for (const key of new Set([raw.logical_model ?? raw.id, raw.id])) {
+					if (!displayNameByModelId.has(key)) displayNameByModelId.set(key, raw.display_name);
+				}
+			}
+		}
+		const displayNameFor = (modelId: string): string =>
+			displayNameByModelId.get(modelId) ?? modelId;
+
 		const localModels: ClusterModelInfo[] = (resolved?.models ?? []).map((m) => ({
 			id: m.id,
+			display_name: displayNameFor(m.id),
 			provider: m.provider,
 			host: hostName,
 			via: "local" as const,
@@ -165,6 +192,7 @@ export function createStatusRoutes(
 			for (const modelId of modelIds) {
 				remoteModels.push({
 					id: modelId,
+					display_name: displayNameFor(modelId),
 					provider: "remote",
 					host: host.host_name,
 					via: "relay" as const,

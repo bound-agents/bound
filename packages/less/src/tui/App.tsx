@@ -227,6 +227,30 @@ export function App({
 		};
 	}, []);
 
+	// Logical model id → display name (spec §2.1), fetched once so the status line
+	// shows the user-facing name the picker displays, never the internal id. The
+	// id itself is the fallback until the fetch lands (or when it has no entry).
+	const [modelDisplayNames, setModelDisplayNames] = useState<ReadonlyMap<string, string>>(
+		() => new Map(),
+	);
+	useEffect(() => {
+		if (!client) return;
+		let cancelled = false;
+		client
+			.listModels()
+			.then((res) => {
+				if (cancelled) return;
+				setModelDisplayNames(new Map(res.models.map((m) => [m.id, m.display_name ?? m.id])));
+			})
+			.catch(() => {
+				// Best-effort: an older server / failed fetch leaves the id showing.
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [client]);
+	const modelDisplay = state.model ? (modelDisplayNames.get(state.model) ?? state.model) : null;
+
 	useEffect(() => {
 		let cancelled = false;
 		let lastTitle = state.threadId === initialThreadId ? initialThreadTitle : null;
@@ -410,7 +434,6 @@ export function App({
 		shell,
 		sandbox,
 	]);
-
 	const handleSendMessage = async (message: string | ContentBlock[]) => {
 		if (client) {
 			// Optimistically render the user's message immediately. The real
@@ -445,7 +468,7 @@ export function App({
 				key={state.threadId}
 				client={client}
 				threadId={state.threadId}
-				model={state.model}
+				model={modelDisplay}
 				connectionState={connectionState}
 				cwd={cwd}
 				commitHash={commitHash}

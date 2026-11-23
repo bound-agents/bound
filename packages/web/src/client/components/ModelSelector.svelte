@@ -68,6 +68,13 @@
 		routing.find((m) => m.logical_model === selectedLogical)?.routes ?? [],
 	);
 
+	// The user-facing display name for a logical model (spec §2.1): the routing
+	// catalog's resolved name, never the internal grouping key. Falls back to the
+	// id only when the routing API has no entry (older server / unresolved).
+	function displayName(modelId: string): string {
+		return routing.find((m) => m.logical_model === modelId)?.display_name ?? modelId;
+	}
+
 	// Handle the case where modelHint arrives after models have loaded.
 	// Common path: LineView's onMount fetches the thread (which has model_hint)
 	// asynchronously, so ModelSelector may already be mounted with no hint yet.
@@ -101,7 +108,7 @@
 				class:relay={model.via === "relay"}
 				class:stale={model.status === "offline?"}
 			>
-				{model.id}
+				{displayName(model.id)}
 				{#if model.via === "relay"}
 					({model.host}{model.status === "offline?" ? " · offline?" : " · via relay"})
 				{/if}

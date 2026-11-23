@@ -310,6 +310,7 @@ function copilotEntryToDiscoveredModel(entry: CopilotModelEntry): DiscoveredMode
 	}
 	const model: DiscoveredModel = {
 		providerModelId: entry.id,
+		...(entry.name !== undefined && entry.name.length > 0 && { displayName: entry.name }),
 		...(Object.keys(capabilities).length > 0 && { capabilities }),
 		...(entry.maxOutputTokens !== undefined && { maxOutputTokens: entry.maxOutputTokens }),
 	};

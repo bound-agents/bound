@@ -195,6 +195,66 @@ describe("BedrockMantleDriver", () => {
 			{ role: "user", content: [{ type: "text", text: "hello" }] },
 		]);
 	});
+
+	it("discovers the region's entitled lineup from /v1/models at the root (not /openai or /anthropic)", async () => {
+		let seen: Request | undefined;
+		const captureFetch: typeof fetch = async (input, init) => {
+			seen = new Request(input as RequestInfo, init);
+			return new Response(
+				JSON.stringify({
+					data: [
+						{
+							id: "openai.gpt-6.1-sol",
+							object: "model",
+							owned_by: "openai",
+							created: 1,
+							status: "ACTIVE",
+							data_retention: { allowed_modes: ["disabled"], mode: "disabled", source: "account" },
+						},
+						{ id: "anthropic.claude-opus-5-5", object: "model", owned_by: "anthropic" },
+					],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			);
+		};
+
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-6.1-sol",
+			contextWindow: 400_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+		});
+
+		const models = await driver.discoverModels();
+
+		// Root /v1/models, SigV4-signed; the /openai and /anthropic prefixes both 404.
+		expect(seen?.url).toBe("https://bedrock-mantle.us-east-1.api.aws/v1/models");
+		expect(seen?.headers.get("authorization")).toContain("AWS4-HMAC-SHA256");
+		// Entitlement is provider-layer: only ids the region serves are returned.
+		expect(models.map((m) => m.providerModelId)).toEqual([
+			"openai.gpt-6.1-sol",
+			"anthropic.claude-opus-5-5",
+		]);
+		// The listing carries no limits/pricing/display name, and data_retention is
+		// not plumbed (no consumer) — bare ids only, limits come from models.dev.
+		expect(models[0]?.maxOutputTokens).toBeUndefined();
+		expect(models[0]?.pricing).toBeUndefined();
+	});
+
+	it("rejects on a non-OK discovery response so the caller degrades to config + models.dev", async () => {
+		const failFetch: typeof fetch = async () => new Response("forbidden", { status: 403 });
+		const driver = new BedrockMantleDriver({
+			region: "us-east-2",
+			model: "openai.gpt-6-sol",
+			contextWindow: 400_000,
+			providerMode: "openai_responses",
+			fetch: failFetch,
+			credentials: fakeCredentials,
+		});
+		await expect(driver.discoverModels()).rejects.toThrow(/403/);
+	});
 });
 
 describe("buildMantleOpenAIOptions", () => {

@@ -50,6 +50,12 @@ interface RouteSupply {
 	site_id: string;
 	host_name: string;
 	provider: string | null;
+	/** This route's user-facing display name (spec §2.1), or null when unadvertised. */
+	display_name: string | null;
+	/** The raw provider model id, used as the tie-breaker for the per-model display name. */
+	provider_model_id: string | null;
+	/** Which metadata source the display name came from, for the per-model consistency rule. */
+	display_name_source: DisplayNameSource;
 	drained: boolean;
 	/** `healthy` | `backoff` | `half_open` from the local router, else `unknown` (remote). */
 	health: "healthy" | "backoff" | "half_open" | "unknown";
@@ -57,18 +63,68 @@ interface RouteSupply {
 	next_trial_at: number | null;
 }
 
-/** A dormant `route_order` entry whose RouteId is advertised nowhere. */
+/**
+ * The precedence tier a route's advertised display name came from. A route that
+ * advertises a `display_name` distinct from its own `provider_model_id` was named
+ * by a real source (provider or models.dev); one equal to its id fell through to
+ * the id fallback. This drives the per-model display-name consistency rule.
+ */
+type DisplayNameSource = "named" | "id-fallback" | "none";
+
+/**
+ * A dormant `route_order` entry whose RouteId is advertised nowhere. The UI
+ * labels it by host name and provider parsed from the RouteId, never by the
+ * RouteId itself; `route_id` is kept only as the removal key.
+ */
 interface StaleRoute {
 	route_id: string;
+	/** Host name for the RouteId's site, or null when no hosts row knows it. */
+	host_name: string | null;
+	provider: string | null;
 }
 
 /** The per-model block the Settings page renders. */
 interface ModelSettings {
 	logical_model: string;
+	/**
+	 * The one user-facing name for this logical model (spec §2.1). Chosen across
+	 * routes by {@link resolveModelDisplayName} so the UI never shows the internal
+	 * grouping key; falls back to the logical model id only when no route names it.
+	 */
+	display_name: string;
 	route_order: string[] | null;
 	fallback_policy: ModelFallbackPolicy;
 	routes: RouteSupply[];
 	stale_routes: StaleRoute[];
+}
+
+/**
+ * Choose the single display name for a logical model whose routes may disagree.
+ * RULE: prefer a route named by a real source (`named`) over one that fell back
+ * to its provider model id (`id-fallback`); within the same tier, break ties by
+ * the lexically-least `provider_model_id` so the choice is deterministic and
+ * host-independent (never keyed on RouteId or site id, which are internal). When
+ * no route advertises a name, fall back to the logical model id itself.
+ */
+function resolveModelDisplayName(logical: string, routes: RouteSupply[]): string {
+	const rank = (s: DisplayNameSource): number => (s === "named" ? 0 : s === "id-fallback" ? 1 : 2);
+	let best: RouteSupply | null = null;
+	for (const r of routes) {
+		if (r.display_name === null) continue;
+		if (best === null) {
+			best = r;
+			continue;
+		}
+		const cmp = rank(r.display_name_source) - rank(best.display_name_source);
+		if (cmp < 0) {
+			best = r;
+		} else if (cmp === 0) {
+			const ra = r.provider_model_id ?? r.route_id;
+			const rb = best.provider_model_id ?? best.route_id;
+			if (ra < rb) best = r;
+		}
+	}
+	return best?.display_name ?? logical;
 }
 
 function parseFallbackPolicy(raw: string | null): ModelFallbackPolicy {
@@ -126,12 +182,22 @@ function collectSupply(db: Database): Map<string, RouteSupply[]> {
 			const logical = entry.logical_model ?? entry.id;
 			const routeId = entry.route_id ?? `${host.site_id}:unknown:${entry.id}`;
 			const provider = routeId.split(":")[1] ?? null;
+			const providerModelId = entry.provider_model_id ?? null;
+			// A display name equal to the raw provider model id means the catalog fell
+			// through to the id fallback (no provider/registry name); treat that as a
+			// weaker source than a real name so a sibling route's real name wins.
+			const displayName = entry.display_name ?? null;
+			const displayNameSource: DisplayNameSource =
+				displayName === null ? "none" : displayName === providerModelId ? "id-fallback" : "named";
 			const list = byModel.get(logical) ?? [];
 			list.push({
 				route_id: routeId,
 				site_id: host.site_id,
 				host_name: host.host_name,
 				provider,
+				display_name: displayName,
+				provider_model_id: providerModelId,
+				display_name_source: displayNameSource,
 				drained: false,
 				health: "unknown",
 				next_trial_at: null,
@@ -181,9 +247,17 @@ export function createRoutingRoutes(
 			const rules = new Map(listModelRoutingRules(db).map((r) => [r.logical_model, r]));
 			const report = analyzeModelReferences(db);
 			const staleByModel = new Map<string, StaleRoute[]>();
+			const hostNameBySite = new Map(
+				listHostSiteIdNameAndModels(db).map((h) => [h.site_id, h.host_name]),
+			);
 			for (const s of report.staleRouteOrderEntries) {
 				const list = staleByModel.get(s.logicalModel) ?? [];
-				list.push({ route_id: s.routeId });
+				const [siteId, provider] = s.routeId.split(":");
+				list.push({
+					route_id: s.routeId,
+					host_name: (siteId && hostNameBySite.get(siteId)) || null,
+					provider: provider || null,
+				});
 				staleByModel.set(s.logicalModel, list);
 			}
 
@@ -219,6 +293,7 @@ export function createRoutingRoutes(
 				});
 				out.push({
 					logical_model: logical,
+					display_name: resolveModelDisplayName(logical, routes),
 					route_order: routeOrder,
 					fallback_policy: parseFallbackPolicy(rule?.fallback_policy ?? null),
 					routes,

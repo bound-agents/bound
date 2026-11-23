@@ -186,9 +186,30 @@ describe("PickerView model order", () => {
 			listThreads: vi.fn(),
 			listModels: vi.fn().mockResolvedValue({
 				models: [
-					{ id: "claude-opus", host: "local", provider: "x", via: "local", status: "local" },
-					{ id: "gpt-5.6", host: "local", provider: "x", via: "local", status: "local" },
-					{ id: "fable", host: "local", provider: "x", via: "local", status: "local" },
+					{
+						id: "claude-opus",
+						display_name: "claude-opus",
+						host: "local",
+						provider: "x",
+						via: "local",
+						status: "local",
+					},
+					{
+						id: "gpt-5.6",
+						display_name: "gpt-5.6",
+						host: "local",
+						provider: "x",
+						via: "local",
+						status: "local",
+					},
+					{
+						id: "fable",
+						display_name: "fable",
+						host: "local",
+						provider: "x",
+						via: "local",
+						status: "local",
+					},
 				],
 				default: "claude-opus",
 			}),

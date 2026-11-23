@@ -304,6 +304,7 @@ export const hostModelsSchema = z.union([
 			// peers simply ignore the unknown keys (this union member is non-strict).
 			route_id: z.string().optional(),
 			logical_model: z.string().optional(),
+			display_name: z.string().optional(),
 			provider_model_id: z.string().optional(),
 			max_output_tokens: z.number().int().optional(),
 			cache_ttl: z.string().optional(),

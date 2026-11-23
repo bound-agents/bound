@@ -96,6 +96,31 @@ describe("parseBedrockFoundationModels", () => {
 		expect(out[1]?.capabilities?.vision).toBeUndefined();
 	});
 
+	it("reads converse.maxTokensMaximum as the provider output limit; null/absent leaves it unset", () => {
+		const body = {
+			modelSummaries: [
+				{
+					modelId: "openai.gpt-6-sol",
+					providerName: "OpenAI",
+					inputModalities: ["TEXT", "IMAGE"],
+					converse: { maxTokensMaximum: 131072, maxTokensDefault: null },
+				},
+				// maxTokensMaximum null → left for the lower layers (no invented value).
+				{
+					modelId: "anthropic.claude-opus-4-20250101-v1:0",
+					providerName: "Anthropic",
+					converse: { maxTokensMaximum: null },
+				},
+				// No converse block at all → unset.
+				{ modelId: "meta.llama4-70b-v1:0", providerName: "Meta" },
+			],
+		};
+		const out = parseBedrockFoundationModels(body);
+		expect(out[0]?.maxOutputTokens).toBe(131072);
+		expect(out[1]?.maxOutputTokens).toBeUndefined();
+		expect(out[2]?.maxOutputTokens).toBeUndefined();
+	});
+
 	it("skips malformed rows and tolerates a missing modelSummaries array", () => {
 		expect(parseBedrockFoundationModels({ modelSummaries: [{ no_id: true }, 42, null] })).toEqual(
 			[],

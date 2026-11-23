@@ -109,6 +109,11 @@ export interface NetworkStatus {
 
 export interface ClusterModelInfo {
 	id: string;
+	/**
+	 * User-facing display name (spec §2.1); the UI shows this, never the internal
+	 * id. Optional because servers older than this field omit it.
+	 */
+	display_name?: string;
 	provider: string;
 	host: string;
 	via: "local" | "relay";
@@ -128,6 +133,8 @@ export interface RouteSupplyInfo {
 	site_id: string;
 	host_name: string;
 	provider: string | null;
+	/** This route's user-facing display name (spec §2.1), or null when unadvertised. */
+	display_name: string | null;
 	drained: boolean;
 	/** `healthy` | `backoff` | `half_open` from the local router, else `unknown` (remote routes). */
 	health: "healthy" | "backoff" | "half_open" | "unknown";
@@ -137,7 +144,10 @@ export interface RouteSupplyInfo {
 
 /** A dormant `route_order` entry whose RouteId is advertised nowhere. */
 export interface StaleRouteInfo {
+	/** Removal key only; never rendered. */
 	route_id: string;
+	host_name: string | null;
+	provider: string | null;
 }
 
 /** Per-model refusal-fallback policy (mirrors ModelFallbackPolicy in @bound/shared). */
@@ -147,6 +157,8 @@ export type FallbackPolicyInfo =
 /** The per-model block the Settings › Models page renders. */
 export interface ModelRoutingInfo {
 	logical_model: string;
+	/** The one user-facing name for this logical model (spec §2.1); never the grouping key. */
+	display_name: string;
 	route_order: string[] | null;
 	fallback_policy: FallbackPolicyInfo;
 	routes: RouteSupplyInfo[];

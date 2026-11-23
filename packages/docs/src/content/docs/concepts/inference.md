@@ -62,6 +62,14 @@ guessed window. A reported output limit that is as large as the whole context
 window is treated as unknown (it would leave no room for the prompt); an explicit
 `max_output_tokens` override is always honoured.
 
+The same precedence resolves each model's **display name** — the name shown in the
+model picker, the Settings › Models page, the thread chip, and the per-turn
+provenance footer. A provider-published display name wins, then the `models.dev`
+name, then the raw provider model id with its version dots intact. The internal
+grouping key (`logical_model`), route ids, and site ids are never shown as a
+model name. When a logical model's routes resolve different names, the one from
+the strongest source wins, ties broken by the provider model id.
+
 ## Provider-specific request handling
 
 ### Prompt caching

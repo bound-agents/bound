@@ -97,6 +97,7 @@ export function mockBoundClient(): MockBoundClient {
 		models: [
 			{
 				id: "model-default",
+				display_name: "Model Default",
 				provider: "anthropic",
 				host: "local",
 				via: "local",
@@ -104,6 +105,7 @@ export function mockBoundClient(): MockBoundClient {
 			},
 			{
 				id: "model-alt",
+				display_name: "Model Alt",
 				provider: "openai",
 				host: "relay",
 				via: "relay",

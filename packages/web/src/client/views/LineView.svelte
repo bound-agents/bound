@@ -86,6 +86,15 @@
 	// mount and refreshed each poll. Drives the per-message footer and the thread
 	// header chip's off-preferred / pinned styling, plus the two §9.2 notices.
 	let turnProvenance = $state<TurnProvenanceInfo[]>([]);
+	// Logical model id → user-facing display name (spec §2.1), from the routing
+	// catalog. The provenance footer and header chip show this, never the internal
+	// grouping key. Falls back to the id itself when the catalog has no entry.
+	let modelDisplayNames = $state<Map<string, string>>(new Map());
+
+	function modelDisplay(modelId: string | null): string {
+		if (!modelId) return "\u2014";
+		return modelDisplayNames.get(modelId) ?? modelId;
+	}
 
 	async function loadProvenance(): Promise<void> {
 		try {
@@ -93,6 +102,15 @@
 			turnProvenance = data.turns;
 		} catch (error) {
 			console.error("Failed to load thread provenance:", error);
+		}
+	}
+
+	async function loadModelDisplayNames(): Promise<void> {
+		try {
+			const data = await client.getRoutingModels();
+			modelDisplayNames = new Map(data.models.map((m) => [m.logical_model, m.display_name]));
+		} catch {
+			// Best-effort: an older server leaves the footer/chip showing the id.
 		}
 	}
 
@@ -272,6 +290,7 @@
 			yardState = reconcileYardExecutions(yardState, messages);
 			scanForAppPanels();
 			void loadProvenance();
+			void loadModelDisplayNames();
 			connectWebSocket();
 			subscribeToThread(threadId);
 		} catch (error) {
@@ -282,6 +301,7 @@
 			void pollMessages();
 			void pollStatus();
 			void loadProvenance();
+			void loadModelDisplayNames();
 		}, 5000);
 		client.on("thread:status", handleThreadStatus);
 		client.on("stream:chunk", handleStreamChunk);
@@ -609,6 +629,7 @@
 				appInstances={threadAppInstances}
 				{yardTrees}
 				{turnProvenance}
+				{modelDisplay}
 				{routeFailover}
 				{modelSubstitution}
 			/>

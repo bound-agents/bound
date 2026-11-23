@@ -99,6 +99,9 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 
 	if (Object.keys(capabilities).length > 0) layer.capabilities = capabilities;
 	if (Object.keys(pricing).length > 0) layer.pricing = pricing;
+	// `name` is the registry's user-facing display name (catalog §2.1 display-name
+	// precedence: provider > models.dev name > provider model id).
+	if (typeof entry.name === "string" && entry.name.length > 0) layer.display_name = entry.name;
 
 	// A row with zero usable fields contributes nothing — drop it.
 	return Object.keys(layer).length > 0 ? layer : undefined;

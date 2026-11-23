@@ -203,6 +203,24 @@ describe("resolveCatalog", () => {
 		expect(r?.metadata.field_sources.max_context).toBe("models_dev");
 	});
 
+	it("folds a provider-published display name into the middle layer (spec §2.1)", () => {
+		const result = resolveCatalog({
+			backends: [
+				{
+					backendId: "opus",
+					provider: "anthropic",
+					providerModelId: "claude-opus-4-20250101",
+					config: { capabilities: { max_context: 200000 } },
+					discovery: [{ providerModelId: "claude-opus-4-20250101", displayName: "Claude Opus 4" }],
+				},
+			],
+			modelsDev: new Map(),
+			aliases: new Map(),
+		});
+		const r = result.get("opus");
+		expect(r?.metadata.display_name).toBe("Claude Opus 4");
+		expect(r?.metadata.field_sources.display_name).toBe("provider");
+	});
 	it("ignores discovery rows that do not match the backend's providerModelId", () => {
 		// A backend's discovery list is the whole provider lineup; only the row
 		// whose id matches this backend contributes to its provider layer.

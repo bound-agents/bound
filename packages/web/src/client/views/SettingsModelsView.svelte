@@ -155,7 +155,7 @@
 				<div class="model-row">
 					<button type="button" class="model-head" onclick={() => toggle(m.logical_model)}>
 						<ModelHealthDot state={modelHealth(m)} />
-						<span class="logical">{m.logical_model}</span>
+						<span class="logical">{m.display_name}</span>
 						<span class="count">{m.routes.length} route{m.routes.length === 1 ? "" : "s"}</span>
 						<span class="caret" aria-hidden="true">{expanded.has(m.logical_model) ? "▾" : "▸"}</span
 						>
@@ -195,7 +195,7 @@
 
 							{#each m.stale_routes as s (s.route_id)}
 								<div class="route-row stale">
-									<span class="r-route">{s.route_id}</span>
+									<span class="r-route">{s.host_name ?? "Unknown host"} / {s.provider ?? "?"}</span>
 									<span class="r-stale-tag">stale</span>
 									<Btn
 										size="sm"

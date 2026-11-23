@@ -152,7 +152,10 @@ operation](/bound/concepts/sync/) explains cluster-wide state visibility.
 
 **Purpose:** Manage cluster-wide model routing preferences and inspect per-host route supply.
 
-**Contains:** One row per logical model, each showing a three-state health dot: green when a
+**Contains:** One row per logical model, labelled by its display name — a provider-published name
+where one exists, then the `models.dev` name, then the raw provider model id; the internal grouping
+key is never shown as a model name. When a model's routes disagree on a name, the one from the
+strongest source wins. Each row shows a three-state health dot: green when a
 preferred route is healthy, amber when the model is serving only through a fallback route, and
 grey when no route is eligible or this host cannot observe the route's health. Expanding a model
 shows its route list across the cluster, where each row names the serving host and provider, its
