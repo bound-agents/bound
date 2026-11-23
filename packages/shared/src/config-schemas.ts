@@ -189,8 +189,14 @@ const modelBackendSchema = z
 		// backend's logical model is resolved by structural normalization (§6.1 step 3)
 		// or stays unassigned.
 		logical_model: z.string().optional(),
-		price_per_m_input: z.number().min(0).default(0),
-		price_per_m_output: z.number().min(0).default(0),
+		// Per-M prices are OPTIONAL overrides, not schema defaults. An absent field
+		// means "no operator override — fall through to provider/models.dev pricing"
+		// (2026-11-21-model-catalog.md §3); a `.default(0)` would make a deliberate
+		// operator-pinned 0 (free local model) indistinguishable from "unset", so the
+		// catalog precedence could never tell an override from a gap. See
+		// hasExplicitOperatorPricing / resolveTurnCost.
+		price_per_m_input: z.number().min(0).optional(),
+		price_per_m_output: z.number().min(0).optional(),
 		price_per_m_cache_write: z.number().min(0).optional(),
 		// Per-M price for the 1h-TTL cache-write subset. Falls back to
 		// price_per_m_cache_write when unset; the remaining (5m) cache writes always
@@ -382,8 +388,8 @@ export const modelBackendsSchema = z
 				if (b.model !== undefined) return false;
 				if (b.context_window !== undefined) return false;
 				if (b.capabilities !== undefined) return false;
-				if (b.price_per_m_input !== 0) return false;
-				if (b.price_per_m_output !== 0) return false;
+				if (b.price_per_m_input !== undefined) return false;
+				if (b.price_per_m_output !== undefined) return false;
 				if (b.price_per_m_cache_write !== undefined) return false;
 				if (b.price_per_m_cache_write_1h !== undefined) return false;
 				if (b.price_per_m_cache_read !== undefined) return false;

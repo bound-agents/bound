@@ -88,6 +88,19 @@ type ModelMetadata = {
     cache_read_per_m?: number;
     cache_write_5m_per_m?: number;
     cache_write_1h_per_m?: number;
+    // Context-based price tiers, ascending by `threshold` (the context size a
+    // request must exceed for the tier rate to apply). The base rates above
+    // apply at or below the lowest threshold. `threshold` is the registry's
+    // `cost.tiers[].tier.size`; the legacy `cost.context_over_200k` duplicate of
+    // the single context tier is not represented separately.
+    tiers?: {
+      threshold: number;
+      input_per_m?: number;
+      output_per_m?: number;
+      cache_read_per_m?: number;
+      cache_write_5m_per_m?: number;
+      cache_write_1h_per_m?: number;
+    }[];
   };
   allowed_fallback_models?: string[]; // provider-published, when supported
   field_sources: Record<string, "config" | "provider" | "models_dev" | "driver_default">;
@@ -95,6 +108,8 @@ type ModelMetadata = {
 ```
 
 Recording `field_sources` makes every resolved value inspectable in the UI and CLI without guessing where a context window or price came from.
+
+Resolved `pricing` carries any context-based tiers the source publishes. Cost calculation selects the tier whose `threshold` the turn's request size (input + cache-read + cache-write tokens) strictly exceeds; the base rates apply at or below the lowest threshold. Local config `price` / `price_per_m_*` are operator overrides over this resolved pricing: a `price(turn)` callback is authoritative, an explicitly-set `price_per_m_*` (including a deliberate `0`) overrides the corresponding resolved field, and an unset field falls through to the provider- or `models.dev`-published rate. A model no layer can price records its turn cost as unknown rather than a misleading `0`.
 
 ### 3.2 Completeness gate
 

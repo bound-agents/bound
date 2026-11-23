@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { modelsDevNamespaceFor, normalizeModelKey } from "./normalize";
-import type { MetadataLayer } from "./resolve-metadata";
+import type { MetadataLayer, PricingTier } from "./resolve-metadata";
 
 const DEFAULT_URL = "https://models.dev/api.json";
 const DEFAULT_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h (R-MC5)
@@ -38,6 +38,37 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function asFiniteNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Parse a `models.dev` `cost.tiers[]` array into ascending-by-threshold
+ * {@link PricingTier}s (requirement 2). Each tier carries its own four per-M
+ * prices and a `tier: {type: "context", size: N}`; `size` becomes `threshold`.
+ * Defensive: a non-array, a non-context tier type, or a tier with no finite size
+ * is dropped rather than throwing, so one malformed tier never poisons the row.
+ */
+function parseContextTiers(raw: unknown): PricingTier[] {
+	if (!Array.isArray(raw)) return [];
+	const tiers: PricingTier[] = [];
+	for (const t of raw) {
+		if (!isRecord(t)) continue;
+		const tierMeta = isRecord(t.tier) ? t.tier : undefined;
+		if (tierMeta?.type !== "context") continue;
+		const threshold = asFiniteNumber(tierMeta.size);
+		if (threshold === undefined) continue;
+		const tier: PricingTier = { threshold };
+		const input = asFiniteNumber(t.input);
+		if (input !== undefined) tier.input_per_m = input;
+		const output = asFiniteNumber(t.output);
+		if (output !== undefined) tier.output_per_m = output;
+		const cacheRead = asFiniteNumber(t.cache_read);
+		if (cacheRead !== undefined) tier.cache_read_per_m = cacheRead;
+		const cacheWrite = asFiniteNumber(t.cache_write);
+		if (cacheWrite !== undefined) tier.cache_write_5m_per_m = cacheWrite;
+		tiers.push(tier);
+	}
+	tiers.sort((a, b) => a.threshold - b.threshold);
+	return tiers;
 }
 
 /**
@@ -97,6 +128,16 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 	const cacheWrite = asFiniteNumber(cost?.cache_write);
 	if (cacheWrite !== undefined) pricing.cache_write_5m_per_m = cacheWrite;
 
+	// Context-based tiers (requirement 2). `cost.tiers[]` carries the
+	// long-context rate(s); each tier has its own four prices and
+	// `tier: {type: "context", size: N}`. A sibling `cost.context_over_200k` is
+	// IGNORED: across every amazon-bedrock entry in the live snapshot that carries
+	// both, `tiers[0]` is byte-identical to `context_over_200k` (0 of 785
+	// mismatches) and `context_over_200k` never appears without `tiers`, so it is a
+	// legacy duplicate of the single context tier, not an independent signal.
+	const tiers = parseContextTiers(cost?.tiers);
+	if (tiers.length > 0) pricing.tiers = tiers;
+
 	if (Object.keys(capabilities).length > 0) layer.capabilities = capabilities;
 	if (Object.keys(pricing).length > 0) layer.pricing = pricing;
 	// `name` is the registry's user-facing display name (catalog §2.1 display-name
@@ -114,6 +155,20 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
  */
 function scopedKey(namespace: string, canonicalKey: string): string {
 	return `${namespace}\u0000${canonicalKey}`;
+}
+
+/**
+ * Compose the EXACT index key: `${namespace}\u0000exact\u0000${rawModelId}`. Keyed
+ * by the namespace and the RAW provider model id verbatim (never normalized), so
+ * two ids that share a canonical key but denote different priced profiles stay
+ * distinct — e.g. Bedrock CRIS `global.anthropic.claude-haiku-5-5` (list price)
+ * vs in-region `anthropic.claude-haiku-5-5` (list + 10%), which
+ * `normalizeModelKey` collapses by stripping the region prefix (requirement 1).
+ * The `exact` discriminator segment keeps this key space disjoint from both the
+ * bare canonical keys and the scoped-canonical keys in the same map.
+ */
+function exactKey(namespace: string, rawModelId: string): string {
+	return `${namespace}\u0000exact\u0000${rawModelId}`;
 }
 
 /**
@@ -146,6 +201,17 @@ export function indexModelsDevSnapshot(raw: unknown): Map<string, MetadataLayer>
 			// dedup'd, so collisions here are vanishingly rare).
 			const sk = scopedKey(providerNamespace, key);
 			if (!index.has(sk)) index.set(sk, layer);
+			// And index under the EXACT raw model id (requirement 1) so two ids that
+			// share a canonical key but denote differently-priced profiles stay
+			// distinct. `normalizeModelKey` strips the region prefix, collapsing a
+			// Bedrock CRIS `global.<vendor>.<model>` (list price) and its in-region
+			// `<vendor>.<model>` sibling (list + 10%) onto one scoped/canonical key;
+			// the raw-id index keeps each priced row addressable so a backend prices
+			// the id it actually calls. models.dev keys models uniquely within a
+			// namespace, so a collision here cannot happen (but keep first-writer for
+			// symmetry with the other two maps).
+			const ek = exactKey(providerNamespace, modelId);
+			if (!index.has(ek)) index.set(ek, layer);
 		}
 	}
 	return index;
@@ -167,17 +233,23 @@ export function lookupModelsDev(
 }
 
 /**
- * Provider-scoped lookup (requirement 3, catalog §5.2). Prefers the entry under
- * the backend's OWN `models.dev` provider namespace before the cross-provider
- * canonical index. The canonical index is first-writer-wins across all 324
- * providers, so a model id that collides across providers (e.g. `grok-4.7` on
- * both xAI and github-copilot) otherwise resolves to another provider's limits.
- * Scoping by `${modelsDevNamespace}:${canonicalKey}` picks the backend's own
- * provider's entry; when the provider has no mapped namespace, or the model is
- * absent from it, it falls back to the cross-provider canonical index.
+ * Provider-scoped lookup (requirements 1 + 3, catalog §5.2). Resolves in three
+ * steps, most specific first:
+ *   1. EXACT `(namespace, raw model id)` (requirement 1): the row for the exact
+ *      provider model id the backend calls. Distinguishes differently-priced
+ *      profiles that share a canonical key — a Bedrock CRIS `global.` profile
+ *      (list price) vs its in-region sibling (list + 10%), which
+ *      `normalizeModelKey` collapses by stripping the region prefix.
+ *   2. SCOPED canonical (requirement 3): the backend's OWN `models.dev` provider
+ *      namespace, before the cross-provider index. The canonical index is
+ *      first-writer-wins across all 324 providers, so a model id that collides
+ *      across providers (e.g. `grok-4.7` on both xAI and github-copilot)
+ *      otherwise resolves to another provider's row.
+ *   3. CROSS-PROVIDER canonical: the bare canonical index, when the provider has
+ *      no mapped namespace or the model is absent from steps 1 and 2.
  *
- * The canonical grouping key is unchanged — scoping affects ONLY which
- * `models.dev` metadata row fills gaps, never logical-model pooling.
+ * The canonical grouping key is unchanged — scoping and exact indexing affect
+ * ONLY which `models.dev` metadata row fills gaps, never logical-model pooling.
  */
 export function lookupModelsDevScoped(
 	index: ReadonlyMap<string, MetadataLayer>,
@@ -186,10 +258,15 @@ export function lookupModelsDevScoped(
 ): MetadataLayer | undefined {
 	const namespace = modelsDevNamespaceFor(provider);
 	if (namespace !== undefined) {
+		// 1. Exact raw-id row (keeps regional/global/in-region profiles distinct).
+		const exact = index.get(exactKey(namespace, providerModelId.trim()));
+		if (exact !== undefined) return exact;
+		// 2. Scoped canonical (own-provider entry over a cross-provider collision).
 		const { key } = normalizeModelKey(provider, providerModelId);
 		const scoped = index.get(scopedKey(namespace, key));
 		if (scoped !== undefined) return scoped;
 	}
+	// 3. Cross-provider canonical fallback.
 	return lookupModelsDev(index, provider, providerModelId);
 }
 

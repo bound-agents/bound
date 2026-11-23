@@ -8,6 +8,7 @@ import {
 	listRecentLiveMessageContentByThread,
 } from "@bound/core";
 import type { CapabilityRequirements, ContentBlock, LLMMessage, StreamChunk } from "@bound/llm";
+import type { FieldSource, PricingTier, ResolvedPricing } from "@bound/llm";
 // isTransientLLMError now lives in @bound/loop (error-classification.ts) so the
 // base loop and any extension agent share one definition. Re-exported here for
 // existing callers and tests that import it from this module.
@@ -207,6 +208,10 @@ interface UsageTokens {
 
 interface BackendPricing {
 	id: string;
+	// Per-M overrides. PRESENCE (not `> 0`) is the "operator set this" signal:
+	// the schema keeps these optional so a deliberate 0 (free local model) is
+	// distinguishable from an unset gap. An absent field falls through to
+	// catalog (provider/models.dev) pricing (2026-11-21-model-catalog.md §3).
 	price_per_m_input?: number;
 	price_per_m_output?: number;
 	price_per_m_cache_read?: number;
@@ -222,6 +227,130 @@ export interface TurnCostBreakdown {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+}
+
+/**
+ * Which layer priced a turn (requirement 4, carried in `cost_breakdown`).
+ *   - `config_callback`: a `price(turn)` callback (plain number, no split)
+ *   - `config`: an explicitly-set `price_per_m_*` override
+ *   - `provider`: provider-published catalog pricing
+ *   - `models_dev`: `models.dev` registry pricing
+ *   - `provider_reported`: a realized cost stamped on the done chunk
+ *   - `unknown`: no layer supplied any price
+ */
+export type PricingSource =
+	"config_callback" | "config" | "provider" | "models_dev" | "provider_reported" | "unknown";
+
+/** Resolved per-component per-M prices plus which layer supplied them. */
+interface EffectivePricesPerM {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cacheWrite1h: number;
+	/** `config` when any component came from an explicit config override, else the catalog source. */
+	source: "config" | "provider" | "models_dev";
+}
+
+/** The request size that selects a context tier: input + cache-read + cache-write tokens. */
+function tierRequestSize(usage: UsageTokens): number {
+	return usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+}
+
+/**
+ * Pick the context-tier prices that apply to a request (requirement 2). Tiers are
+ * ascending by `threshold`; a tier applies when the request size STRICTLY EXCEEDS
+ * its threshold. The highest such tier wins. Below/at the lowest threshold the
+ * base prices apply (returns `undefined`). Confirmed against the models.dev
+ * payload: `tier.size` is the context boundary, and Bedrock bills the long-context
+ * tier above it (e.g. 272000 for GPT-5.6 / 6.x).
+ */
+function selectContextTier(
+	tiers: PricingTier[] | undefined,
+	requestSize: number,
+): PricingTier | undefined {
+	if (!tiers || tiers.length === 0) return undefined;
+	let chosen: PricingTier | undefined;
+	for (const tier of tiers) {
+		if (requestSize > tier.threshold) chosen = tier;
+	}
+	return chosen;
+}
+
+/**
+ * Resolve the effective per-M prices for a turn by merging operator config over
+ * catalog pricing PER FIELD (2026-11-21-model-catalog.md §3 precedence):
+ * explicit config override > catalog (provider/models.dev). A field set in config
+ * (present, including a deliberate 0) overrides the catalog; an unset config field
+ * falls through to the catalog's tier-selected value. Returns `null` when no layer
+ * supplies any price (cost is then unknown, not $0 — requirement 3).
+ */
+function resolveEffectivePrices(
+	cfg: BackendPricing | undefined,
+	catalog: ResolvedPricing | undefined,
+	catalogSource: FieldSource | undefined,
+	usage: UsageTokens,
+): EffectivePricesPerM | null {
+	// Catalog layer, tier-selected by request size.
+	const tier = selectContextTier(catalog?.tiers, tierRequestSize(usage));
+	const catInput = tier?.input_per_m ?? catalog?.input_per_m;
+	const catOutput = tier?.output_per_m ?? catalog?.output_per_m;
+	const catCacheRead = tier?.cache_read_per_m ?? catalog?.cache_read_per_m;
+	const catCacheWrite5m = tier?.cache_write_5m_per_m ?? catalog?.cache_write_5m_per_m;
+	const catCacheWrite1h =
+		tier?.cache_write_1h_per_m ?? catalog?.cache_write_1h_per_m ?? catCacheWrite5m;
+
+	// Config layer: PRESENCE is the override signal (a 0 overrides the catalog).
+	const cfgInput = cfg?.price_per_m_input;
+	const cfgOutput = cfg?.price_per_m_output;
+	const cfgCacheRead = cfg?.price_per_m_cache_read;
+	const cfgCacheWrite = cfg?.price_per_m_cache_write;
+	const cfgCacheWrite1h = cfg?.price_per_m_cache_write_1h;
+
+	const anyConfig =
+		cfgInput !== undefined ||
+		cfgOutput !== undefined ||
+		cfgCacheRead !== undefined ||
+		cfgCacheWrite !== undefined ||
+		cfgCacheWrite1h !== undefined;
+	const anyCatalog =
+		catInput !== undefined ||
+		catOutput !== undefined ||
+		catCacheRead !== undefined ||
+		catCacheWrite5m !== undefined ||
+		catCacheWrite1h !== undefined;
+	if (!anyConfig && !anyCatalog) return null;
+
+	const input = cfgInput ?? catInput ?? 0;
+	const output = cfgOutput ?? catOutput ?? 0;
+	const cacheRead = cfgCacheRead ?? catCacheRead ?? 0;
+	const cacheWrite = cfgCacheWrite ?? catCacheWrite5m ?? 0;
+	const cacheWrite1h = cfgCacheWrite1h ?? cfgCacheWrite ?? catCacheWrite1h ?? cacheWrite;
+
+	// Source is `config` when any component was an operator override; otherwise it
+	// is the catalog's reported source (provider or models.dev).
+	const source: EffectivePricesPerM["source"] = anyConfig
+		? "config"
+		: catalogSource === "provider"
+			? "provider"
+			: "models_dev";
+	return { input, output, cacheRead, cacheWrite, cacheWrite1h, source };
+}
+
+/** Compute the four-component split from already-resolved per-M prices. */
+function breakdownFromPrices(usage: UsageTokens, prices: EffectivePricesPerM): TurnCostBreakdown {
+	// 1h subset is only known when explicitly reported; null/absent → 0, which
+	// makes the whole cache-write total bill at the 5m rate (today's behavior).
+	const cacheWrite1hTokens = usage.cacheWrite1hTokens ?? 0;
+	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
+	const oneHTokens = Math.min(cacheWrite1hTokens, totalCacheWrite);
+	const fiveMTokens = totalCacheWrite - oneHTokens;
+	return {
+		input: (usage.inputTokens * prices.input) / 1_000_000,
+		output: (usage.outputTokens * prices.output) / 1_000_000,
+		cacheRead: ((usage.cacheReadTokens ?? 0) * prices.cacheRead) / 1_000_000,
+		cacheWrite: (fiveMTokens * prices.cacheWrite + oneHTokens * prices.cacheWrite1h) / 1_000_000,
+	};
 }
 
 /**
@@ -249,11 +378,11 @@ export function calculateTurnCostBreakdown(
 		cacheWrite1h: cfg.price_per_m_cache_write_1h ?? cfg.price_per_m_cache_write ?? 0,
 	};
 	const hasStatic =
-		pricesPerM.input > 0 ||
-		pricesPerM.output > 0 ||
-		pricesPerM.cacheRead > 0 ||
-		pricesPerM.cacheWrite > 0 ||
-		pricesPerM.cacheWrite1h > 0;
+		cfg.price_per_m_input !== undefined ||
+		cfg.price_per_m_output !== undefined ||
+		cfg.price_per_m_cache_read !== undefined ||
+		cfg.price_per_m_cache_write !== undefined ||
+		cfg.price_per_m_cache_write_1h !== undefined;
 	if (!hasStatic) return null;
 
 	// A winning price(turn) callback resolves the cost as a single number with no
@@ -278,22 +407,10 @@ export function calculateTurnCostBreakdown(
 		// is exactly what calculateTurnCost falls back to for the cost number.
 	}
 
-	// 1h subset is only known when explicitly reported; null/absent → 0, which
-	// makes the whole cache-write total bill at the 5m rate (today's behavior).
-	const cacheWrite1hTokens = usage.cacheWrite1hTokens ?? 0;
-	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
-	// Split the cache-write total: the 1h subset at the 1h rate, the remainder
-	// at the 5m rate. Clamp the 1h subset to the total so a bogus over-count
-	// can't drive the remainder negative.
-	const oneHTokens = Math.min(cacheWrite1hTokens, totalCacheWrite);
-	const fiveMTokens = totalCacheWrite - oneHTokens;
-	return {
-		input: (usage.inputTokens * pricesPerM.input) / 1_000_000,
-		output: (usage.outputTokens * pricesPerM.output) / 1_000_000,
-		cacheRead: ((usage.cacheReadTokens ?? 0) * pricesPerM.cacheRead) / 1_000_000,
-		cacheWrite:
-			(fiveMTokens * pricesPerM.cacheWrite + oneHTokens * pricesPerM.cacheWrite1h) / 1_000_000,
-	};
+	return breakdownFromPrices(usage, {
+		...pricesPerM,
+		source: "config",
+	});
 }
 
 /** Compute cost in USD for a turn's token usage against backend pricing. */
@@ -342,21 +459,23 @@ export function calculateTurnCost(
 
 /**
  * True when the operator has declared explicit pricing for this model: either a
- * compiled price(turn) callback is active, or the backend carries any nonzero
- * static `price_per_m_*` field. A model absent from the backends list, or one
- * whose every price field is unset/0 with no callback, counts as NOT explicitly
- * priced — its cost then falls through to a provider-reported value.
+ * compiled price(turn) callback is active, or the backend carries ANY `price_per_m_*`
+ * field set in config (presence is the signal, including a deliberate 0 — the schema
+ * keeps these optional, so a set-to-0 override is distinguishable from an unset gap).
+ * A model absent from the backends list, or one whose every price field is unset with
+ * no callback, counts as NOT explicitly priced — its cost then falls through to catalog
+ * (provider/models.dev) pricing or a provider-reported value.
  */
 export function hasExplicitOperatorPricing(modelId: string, backends: BackendPricing[]): boolean {
 	if (hasDynamicPrice(modelId)) return true;
 	const cfg = backends.find((b) => b.id === modelId);
 	if (!cfg) return false;
 	return (
-		(cfg.price_per_m_input ?? 0) > 0 ||
-		(cfg.price_per_m_output ?? 0) > 0 ||
-		(cfg.price_per_m_cache_read ?? 0) > 0 ||
-		(cfg.price_per_m_cache_write ?? 0) > 0 ||
-		(cfg.price_per_m_cache_write_1h ?? 0) > 0
+		cfg.price_per_m_input !== undefined ||
+		cfg.price_per_m_output !== undefined ||
+		cfg.price_per_m_cache_read !== undefined ||
+		cfg.price_per_m_cache_write !== undefined ||
+		cfg.price_per_m_cache_write_1h !== undefined
 	);
 }
 
@@ -372,43 +491,140 @@ export interface ResolveTurnCostInput {
 	 * Carried through only when the provider cost actually wins the precedence.
 	 */
 	providerBreakdown?: TurnCostBreakdown | null;
-}
-
-/** The resolved cost plus its component split (null when no split is available). */
-export interface ResolvedTurnCost {
-	cost: number;
-	breakdown: TurnCostBreakdown | null;
+	/**
+	 * The serving host's catalog-resolved pricing for this model (provider API or
+	 * `models.dev`, tier-aware). Consulted when the backend carries no explicit
+	 * config override and the provider stamped no realized cost. Absent/undefined
+	 * means the catalog knows no price for this model.
+	 */
+	catalogPricing?: ResolvedPricing;
+	/**
+	 * Which catalog layer supplied `catalogPricing` (`provider` or `models_dev`),
+	 * recorded as the turn's pricing source when catalog pricing wins.
+	 */
+	catalogPricingSource?: FieldSource;
 }
 
 /**
- * Resolve a turn's USD cost under one precedence rule, shared by the local
- * agent loop and the relay-processor so neither blindly overwrites the other:
+ * The resolved cost plus its component split and the layer that priced it.
+ * `cost` is `null` when no layer supplied any price (requirement 3: unknown, not
+ * $0) and `source` is then `"unknown"`. `breakdown` is null when no component
+ * split is available (plain-number callback, provider cost with no breakdown, or
+ * unknown).
+ */
+export interface ResolvedTurnCost {
+	cost: number | null;
+	breakdown: TurnCostBreakdown | null;
+	source: PricingSource;
+}
+
+/**
+ * Resolve a turn's USD cost under one precedence rule, shared by the local agent
+ * loop and the relay-processor so neither blindly overwrites the other
+ * (2026-11-21-model-catalog.md §3, requirements 1–4):
  *
- *   explicit operator pricing  >  provider-reported cost  >  0
+ *   price(turn) callback  >  explicit config price_per_m_*  >  provider-reported
+ *   realized cost  >  catalog pricing (provider / models.dev, tier-aware)  >  unknown
  *
- * "Explicit operator pricing" means a price(turn) callback OR any nonzero static
- * `price_per_m_*` on the backend — in that case `calculateTurnCost` is
- * authoritative. Otherwise a provider-reported `done.cost_usd` wins (Copilot
- * catalog pricing, or a hub-relayed cost). Absent both, the cost is 0.
+ * An explicit config price (present, including a deliberate 0) is an operator
+ * override and wins over catalog pricing. A field the operator did NOT set falls
+ * through to the catalog's tier-selected value. When nothing supplies a price the
+ * cost is recorded as unknown (`null`), never a misleading $0.
  *
- * The returned `breakdown` is the four-component split when one is available:
- *   - static operator pricing → `calculateTurnCostBreakdown` (sums to cost);
+ * `source` records which layer priced the turn (`cost_breakdown` provenance). The
+ * returned `breakdown` is the four-component split when one is available:
+ *   - config / catalog per-M pricing → `breakdownFromPrices` (sums to cost);
  *   - a price(turn) callback that resolved as a plain number → null (no split);
  *   - provider-reported cost → the passed `providerBreakdown` (or null);
- *   - the 0 fallback → null.
+ *   - unknown → null.
  */
 export function resolveTurnCost(input: ResolveTurnCostInput): ResolvedTurnCost {
-	if (hasExplicitOperatorPricing(input.modelId, input.backends)) {
+	const cfg = input.backends.find((b) => b.id === input.modelId);
+
+	// 1. A price(turn) callback wins outright — it is the operator's authoritative
+	//    pricing and yields a single number with no component split.
+	if (hasDynamicPrice(input.modelId)) {
 		const cost = calculateTurnCost(input.modelId, input.usage, input.backends);
-		// A static-priced model yields a component split; a price(turn) callback
-		// that returned a plain number does not (breakdown is null).
+		// If the callback actually produced a value, there is no breakdown. A
+		// callback that errored falls back to the static split inside calculateTurnCost,
+		// in which case calculateTurnCostBreakdown returns the matching split.
 		const breakdown = calculateTurnCostBreakdown(input.modelId, input.usage, input.backends);
-		return { cost, breakdown };
+		return { cost, breakdown, source: breakdown ? "config" : "config_callback" };
 	}
+
+	// 2. Explicit config price_per_m_* overrides the catalog (presence is the
+	//    signal; a deliberate 0 counts). 3. Else catalog pricing, tier-aware.
+	const hasConfigOverride =
+		cfg !== undefined &&
+		(cfg.price_per_m_input !== undefined ||
+			cfg.price_per_m_output !== undefined ||
+			cfg.price_per_m_cache_read !== undefined ||
+			cfg.price_per_m_cache_write !== undefined ||
+			cfg.price_per_m_cache_write_1h !== undefined);
+
+	if (hasConfigOverride) {
+		const prices = resolveEffectivePrices(
+			cfg,
+			input.catalogPricing,
+			input.catalogPricingSource,
+			input.usage,
+		);
+		// A config override guarantees a non-null result.
+		if (prices) {
+			const breakdown = breakdownFromPrices(input.usage, prices);
+			const cost = breakdown.input + breakdown.output + breakdown.cacheRead + breakdown.cacheWrite;
+			return { cost, breakdown, source: "config" };
+		}
+	}
+
+	// 3. A provider-reported realized cost from the done chunk outranks a catalog
+	//    estimate — it is what was actually billed on the serving host.
 	if (input.providerCostUsd !== null && input.providerCostUsd !== undefined) {
-		return { cost: input.providerCostUsd, breakdown: input.providerBreakdown ?? null };
+		return {
+			cost: input.providerCostUsd,
+			breakdown: input.providerBreakdown ?? null,
+			source: "provider_reported",
+		};
 	}
-	return { cost: 0, breakdown: null };
+
+	// 4. Catalog pricing (provider / models.dev, tier-selected).
+	const prices = resolveEffectivePrices(
+		cfg,
+		input.catalogPricing,
+		input.catalogPricingSource,
+		input.usage,
+	);
+	if (prices) {
+		const breakdown = breakdownFromPrices(input.usage, prices);
+		const cost = breakdown.input + breakdown.output + breakdown.cacheRead + breakdown.cacheWrite;
+		return { cost, breakdown, source: prices.source };
+	}
+
+	// 5. No layer supplied any price: cost is unknown (requirement 3), not $0.
+	return { cost: null, breakdown: null, source: "unknown" };
+}
+
+/**
+ * Fold a turn's pricing `source` into its recorded `cost_breakdown` for
+ * persistence (requirement 3, catalog §3). The four numeric components are left
+ * untouched (the metrics route's `json_extract('$.input')` … paths are
+ * unchanged) and `source` rides as an extra key older readers ignore.
+ *
+ * When there is a numeric split, `source` is attached to it. When there is NO
+ * split but the source is known — a plain-number `price(turn)` callback, or a
+ * provider-reported cost with no breakdown — a SOURCE-ONLY object `{ source }`
+ * is returned instead of null, so provenance survives. The metrics route reads a
+ * source-only object as legacy (no `$.input` component) and keeps splitting its
+ * `cost_usd` by token counts, so the aggregation stays correct. An `unknown`
+ * source with no split stays null (there is nothing to persist).
+ */
+export function attachPricingSource(
+	breakdown: TurnCostBreakdown | null,
+	source: PricingSource,
+): (TurnCostBreakdown & { source: PricingSource }) | { source: PricingSource } | null {
+	if (breakdown) return { ...breakdown, source };
+	if (source === "unknown") return null;
+	return { source };
 }
 
 /**

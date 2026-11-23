@@ -411,6 +411,16 @@ export type StreamChunk =
 				cacheWrite: number;
 			};
 			/**
+			 * Which pricing layer priced this turn (the `PricingSource` union,
+			 * serialized as a string), stamped by the relay hub so the requester
+			 * records it into `turns.cost_breakdown.source` for provenance
+			 * (requirement 3, catalog §3). Independent of `cost_breakdown` so the
+			 * source survives even when the cost has no component split (a
+			 * plain-number `price(turn)` callback). Optional on the wire — an older
+			 * peer that never sets it, and one that receives it, both stay valid.
+			 */
+			pricing_source?: string;
+			/**
 			 * Terminal finish reason mapped from the provider stopReason by the
 			 * AI SDK. `"content-filter"` means the model's safety system stopped
 			 * generation (Bedrock `content_filtered`, Anthropic refusal): the

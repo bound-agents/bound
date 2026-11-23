@@ -86,6 +86,8 @@ export interface ParsedResponse {
 		cacheRead: number;
 		cacheWrite: number;
 	} | null;
+	/** Which pricing layer priced this turn, stamped by the hub (requirement 3). */
+	pricingSourceFromHub: string | null;
 }
 
 export interface StreamParserLogger {
@@ -148,6 +150,7 @@ export function parseResponseChunks(
 	let usageEstimated = false;
 	let costUsdFromHub: number | null = null;
 	let costBreakdownFromHub: ParsedResponse["costBreakdownFromHub"] = null;
+	let pricingSourceFromHub: string | null = null;
 	let finishReason: LLMFinishReason | null = null;
 	let declined: ModelDeclinedOutcome | null = null;
 	const attempts: ParsedAttempt[] = [];
@@ -208,6 +211,7 @@ export function parseResponseChunks(
 				usageEstimated = chunk.usage.estimated;
 				costUsdFromHub = chunk.cost_usd ?? null;
 				costBreakdownFromHub = chunk.cost_breakdown ?? null;
+				pricingSourceFromHub = chunk.pricing_source ?? null;
 				finishReason = chunk.finish_reason ?? null;
 				declined = chunk.declined ?? null;
 				attempts.push({
@@ -260,6 +264,7 @@ export function parseResponseChunks(
 		},
 		costUsdFromHub,
 		costBreakdownFromHub,
+		pricingSourceFromHub,
 	};
 }
 

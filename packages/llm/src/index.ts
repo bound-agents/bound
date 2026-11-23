@@ -126,6 +126,7 @@ export {
 	type FieldSource,
 	type ModelMetadata,
 	type MetadataLayer,
+	type PricingTier,
 	type ResolvedCapabilities,
 	type ResolvedPricing,
 	type ResolveMetadataArgs,

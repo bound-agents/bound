@@ -85,6 +85,7 @@ import {
 
 import { createAdvisory } from "./advisories";
 import {
+	attachPricingSource,
 	buildCommandOutput,
 	clampMaxOutputTokens,
 	createFileRefResolver,
@@ -1226,39 +1227,50 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// LOCAL turn resolveTurnCost lets explicit operator pricing win over a
 			// provider-stamped cost, and returns the matching breakdown (null when
 			// the model is priced only by a plain-number price(turn) callback).
-			let cost_usd: number;
+			let cost_usd: number | null;
 			let cost_breakdown: {
-				input: number;
-				output: number;
-				cacheRead: number;
-				cacheWrite: number;
+				input?: number;
+				output?: number;
+				cacheRead?: number;
+				cacheWrite?: number;
+				// Which pricing layer priced the turn (requirement 3). Persisted inside
+				// cost_breakdown so provenance survives even when there is no numeric
+				// split (a plain-number price(turn) callback → source-only object).
+				source?: string;
 			} | null;
 			if (this.lastModelResolution?.kind === "remote") {
 				if (metrics.response.costUsdFromHub !== null) {
 					// Hub already applied the precedence and stamped the cost; record it
-					// and its relayed breakdown verbatim.
+					// and its relayed breakdown (which already carries the hub's source)
+					// verbatim.
 					cost_usd = metrics.response.costUsdFromHub;
 					cost_breakdown = metrics.response.costBreakdownFromHub;
 				} else {
+					const catalogPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
 					const resolved = resolveTurnCost({
 						modelId: resolvedModelId,
 						usage: metrics.response.usage,
 						backends,
 						providerCostUsd: undefined,
+						catalogPricing: catalogPricing?.pricing,
+						catalogPricingSource: catalogPricing?.source,
 					});
 					cost_usd = resolved.cost;
-					cost_breakdown = resolved.breakdown;
+					cost_breakdown = attachPricingSource(resolved.breakdown, resolved.source);
 				}
 			} else {
+				const catalogPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
 				const resolved = resolveTurnCost({
 					modelId: resolvedModelId,
 					usage: metrics.response.usage,
 					backends,
 					providerCostUsd: metrics.response.costUsdFromHub,
 					providerBreakdown: metrics.response.costBreakdownFromHub,
+					catalogPricing: catalogPricing?.pricing,
+					catalogPricingSource: catalogPricing?.source,
 				});
 				cost_usd = resolved.cost;
-				cost_breakdown = resolved.breakdown;
+				cost_breakdown = attachPricingSource(resolved.breakdown, resolved.source);
 			}
 
 			// Per-attempt provenance (slice 5, R-RT21, §7.4). A driver-level inline
@@ -1278,6 +1290,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			const substitutedFrom: string | null = null;
 			if (parsedAttempts.length > 1) {
 				const attemptRecords: AttemptRecord[] = parsedAttempts.map((a) => {
+					const attemptCatalogPricing = this.modelRouter.getResolvedPricing(resolvedModelId);
 					const attemptCost = resolveTurnCost({
 						modelId: resolvedModelId,
 						usage: {
@@ -1290,6 +1303,11 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 						backends,
 						providerCostUsd: a.costUsdFromHub ?? undefined,
 						providerBreakdown: a.costBreakdownFromHub ?? undefined,
+						// Price the attempt from the same catalog layer the served turn uses,
+						// so an attempt whose model carries no explicit config override is
+						// still priced instead of coalescing to a misleading $0 (requirement 2).
+						catalogPricing: attemptCatalogPricing?.pricing,
+						catalogPricingSource: attemptCatalogPricing?.source,
 					});
 					return {
 						model_id: resolvedModelId,
@@ -1303,6 +1321,8 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 							cache_read: a.usage.cacheReadTokens ?? 0,
 							cache_write: a.usage.cacheWriteTokens ?? 0,
 						},
+						// Unknown (null) stays null, not $0: an unpriced attempt renders as an
+						// em dash in the provenance footer rather than a free turn.
 						cost_usd: attemptCost.cost,
 					};
 				});

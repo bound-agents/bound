@@ -1782,14 +1782,12 @@ describe("RelayProcessor - executeInference", () => {
 		}
 	});
 
-	it("stamps cost_usd = 0 when hub has no backend pricing for the model", async () => {
-		// Defensive: when the hub's appCtx is missing or the model isn't in
-		// its backends list, calculateTurnCost returns 0 and we still stamp.
-		// This keeps the wire format consistent and lets the spoke fall back
-		// to its own local calc on the spoke side (cost_usd=0 from the hub
-		// is preserved by the ?? operator only when undefined; explicit 0
-		// overrides). This test pins the wire-format guarantee — the
-		// happy-path fallback to local calc is covered by agent-loop tests.
+	it("stamps no cost_usd on the done chunk when the hub can price the model from no layer (unknown, not $0)", async () => {
+		// Requirement 3: when neither the hub's config nor its catalog can price the
+		// model, the cost is UNKNOWN, not a misleading $0. On the wire the done
+		// chunk carries no cost_usd (undefined), so the recording host stores null.
+		// This test pins the wire-format guarantee; the happy-path fallback to local
+		// calc is covered by agent-loop tests.
 		const mockBackend = new MockBackend();
 		mockBackend.setTextResponse("ok");
 
@@ -1870,7 +1868,7 @@ describe("RelayProcessor - executeInference", () => {
 		};
 		const doneChunk = endPayload.chunks.find((c) => c.type === "done");
 		if (doneChunk?.type === "done") {
-			expect(doneChunk.cost_usd).toBe(0);
+			expect(doneChunk.cost_usd).toBeUndefined();
 		}
 	});
 

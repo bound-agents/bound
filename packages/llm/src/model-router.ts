@@ -1,4 +1,5 @@
 import type { Logger } from "@bound/shared";
+import type { ResolvedPricing } from "./catalog/resolve-metadata";
 import { AnthropicDriver } from "./drivers/anthropic";
 import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
@@ -37,6 +38,7 @@ export interface ResolvedCatalogEntry {
 	metadata: {
 		capabilities: { max_context?: number };
 		max_output_tokens?: number;
+		pricing?: ResolvedPricing;
 		field_sources: Record<string, string>;
 	};
 }
@@ -102,6 +104,18 @@ export class ModelRouter {
 	private routeHealth: RouteHealth;
 	private backendConfigs: Map<string, BackendConfig>; // backendId → raw config
 	/**
+	 * Catalog-resolved pricing per backendId (provider API or `models.dev`,
+	 * tier-aware), with the winning pricing `field_sources` source. Written by
+	 * `applyResolvedCatalog`; read by cost calculation at turn-record time on the
+	 * local and relay paths so the serving host prices the turn from the catalog
+	 * when the operator set no explicit `price_per_m_*` override. Narrowly a
+	 * pricing holder — ranking/health never read it.
+	 */
+	private resolvedPricing: Map<
+		string,
+		{ pricing: ResolvedPricing; source: "provider" | "models_dev" }
+	>;
+	/**
 	 * Per-backendId route identity: the `RouteId` (`${siteId}:${provider}:${backendId}`)
 	 * and the provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`). Kept
 	 * distinct (R-RT1): `RouteId` governs addressing/ranking/health/stickiness while
@@ -135,6 +149,7 @@ export class ModelRouter {
 			new Map(Array.from(backends.entries()).map(([id, b]) => [id, b.capabilities()]));
 		this.routeHealth = new RouteHealth(clock);
 		this.backendConfigs = backendConfigs ?? new Map();
+		this.resolvedPricing = new Map();
 		this.clock = clock;
 		this.routeIdentities = routeIdentities ?? new Map();
 		this.notReady =
@@ -543,7 +558,41 @@ export class ModelRouter {
 					maxOutputTokens: resolvedMaxOutput,
 				} as BackendConfig);
 			}
+
+			// Store the catalog-resolved pricing (tier-aware) for cost calculation at
+			// turn-record time. The pricing block already merged provider over
+			// models.dev per field; the winning source for the pricing block is taken
+			// from `field_sources` (any pricing component's source — they share one
+			// precedence pass). A config-sourced price is NOT stored here: the cost
+			// layer reads operator overrides from the shared-config rows directly, and
+			// this map carries only the catalog (provider/models.dev) fallback.
+			const pricing = resolved.metadata.pricing;
+			if (pricing) {
+				const sources = resolved.metadata.field_sources;
+				const pricingSource =
+					sources["pricing.input_per_m"] ??
+					sources["pricing.output_per_m"] ??
+					sources["pricing.cache_read_per_m"] ??
+					sources["pricing.cache_write_5m_per_m"] ??
+					sources["pricing.cache_write_1h_per_m"];
+				if (pricingSource === "provider" || pricingSource === "models_dev") {
+					this.resolvedPricing.set(backendId, { pricing, source: pricingSource });
+				}
+			}
 		}
+	}
+
+	/**
+	 * The catalog-resolved pricing for a backend (provider API or `models.dev`,
+	 * tier-aware) plus which layer supplied it, or `undefined` when the catalog
+	 * knows no price. Read by cost calculation (`resolveTurnCost`) on the local and
+	 * relay paths so the serving host prices a turn from the catalog when the
+	 * operator set no explicit `price_per_m_*` override.
+	 */
+	getResolvedPricing(
+		backendId: string,
+	): { pricing: ResolvedPricing; source: "provider" | "models_dev" } | undefined {
+		return this.resolvedPricing.get(backendId);
 	}
 
 	/**

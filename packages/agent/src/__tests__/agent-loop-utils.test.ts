@@ -437,15 +437,18 @@ describe("resolveTurnCost precedence", () => {
 		expect(result.breakdown).toBeNull();
 	});
 
-	it("returns 0 and a null breakdown when neither operator pricing nor a provider cost is present", () => {
+	it("records cost as unknown (null) when neither operator pricing nor any other source is present", () => {
+		// Requirement 3: a backend with no price from any layer records cost as
+		// unknown (null), NOT a misleading $0.
 		const result = resolveTurnCost({
 			modelId: "zero-priced",
 			usage: { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
 			backends: [{ id: "zero-priced" }],
 			providerCostUsd: undefined,
 		});
-		expect(result.cost).toBe(0);
+		expect(result.cost).toBeNull();
 		expect(result.breakdown).toBeNull();
+		expect(result.source).toBe("unknown");
 	});
 
 	it("prefers a price(turn) callback over both static pricing and the provider cost", () => {
@@ -466,6 +469,209 @@ describe("resolveTurnCost precedence", () => {
 		expect(result.cost).toBeCloseTo(0.7, 8);
 		// A plain-number callback yields no component split.
 		expect(result.breakdown).toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveTurnCost — catalog-resolved pricing + context tiers (catalog slice)
+// ---------------------------------------------------------------------------
+describe("resolveTurnCost catalog pricing", () => {
+	beforeAll(async () => {
+		// A price(turn) callback that must still beat everything, incl. catalog.
+		await compileDynamicPricing([
+			{
+				id: "callback-model",
+				priceFunction: "function price(t) { return 0.123; }",
+			},
+		]);
+	});
+
+	const usage = {
+		inputTokens: 1_000_000,
+		outputTokens: 0,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+	};
+
+	it("prices from catalog pricing when the backend carries no explicit config price", () => {
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage,
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { input_per_m: 3 },
+			catalogPricingSource: "models_dev",
+		});
+		// 1M * 3 / 1e6 = 3, from the catalog.
+		expect(result.cost).toBeCloseTo(3, 10);
+		expect(result.source).toBe("models_dev");
+		expect(result.breakdown?.input).toBeCloseTo(3, 10);
+	});
+
+	it("an explicit config price overrides catalog (models.dev) pricing", () => {
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage,
+			// Operator pins input to 5; catalog says 3. Operator wins.
+			backends: [{ id: "cat", price_per_m_input: 5 }],
+			providerCostUsd: undefined,
+			catalogPricing: { input_per_m: 3 },
+			catalogPricingSource: "models_dev",
+		});
+		expect(result.cost).toBeCloseTo(5, 10);
+		expect(result.source).toBe("config");
+	});
+
+	it("an explicit config price of 0 overrides a nonzero catalog price", () => {
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage,
+			backends: [{ id: "cat", price_per_m_input: 0, price_per_m_output: 0 }],
+			providerCostUsd: undefined,
+			catalogPricing: { input_per_m: 3 },
+			catalogPricingSource: "models_dev",
+		});
+		// Operator pinned 0 beats the catalog's 3.
+		expect(result.cost).toBe(0);
+		expect(result.source).toBe("config");
+	});
+
+	it("a price(turn) callback still wins over catalog pricing", () => {
+		const result = resolveTurnCost({
+			modelId: "callback-model",
+			usage,
+			backends: [{ id: "callback-model" }],
+			providerCostUsd: undefined,
+			catalogPricing: { input_per_m: 3 },
+			catalogPricingSource: "models_dev",
+		});
+		expect(result.cost).toBeCloseTo(0.123, 8);
+		expect(result.source).toBe("config_callback");
+	});
+
+	it("provider-published catalog pricing outranks models.dev for the same field", () => {
+		// The catalog layer already merged provider over models.dev per field; the
+		// cost layer just honors whatever source the catalog reports.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage,
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { input_per_m: 2 },
+			catalogPricingSource: "provider",
+		});
+		expect(result.cost).toBeCloseTo(2, 10);
+		expect(result.source).toBe("provider");
+	});
+
+	it("records cost as unknown (null) when no layer supplies a price", () => {
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage,
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: undefined,
+			catalogPricingSource: undefined,
+		});
+		expect(result.cost).toBeNull();
+		expect(result.source).toBe("unknown");
+		expect(result.breakdown).toBeNull();
+	});
+
+	it("a provider-reported done-chunk cost outranks catalog pricing (pre-stamped) ", () => {
+		// When the provider driver already stamped a cost on the done chunk, that
+		// realized cost wins over a catalog estimate — it reflects what was billed.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage,
+			backends: [{ id: "cat" }],
+			providerCostUsd: 0.5,
+			catalogPricing: { input_per_m: 3 },
+			catalogPricingSource: "models_dev",
+		});
+		expect(result.cost).toBe(0.5);
+		expect(result.source).toBe("provider_reported");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveTurnCost — context-tier selection (requirement 2)
+// ---------------------------------------------------------------------------
+describe("resolveTurnCost context-tier selection", () => {
+	// A models.dev-style catalog entry: base rate + one context tier at 272000.
+	const catalogPricing = {
+		input_per_m: 1,
+		output_per_m: 4,
+		cache_read_per_m: 0.1,
+		cache_write_5m_per_m: 1.25,
+		tiers: [
+			{
+				threshold: 272000,
+				input_per_m: 2,
+				output_per_m: 8,
+				cache_read_per_m: 0.2,
+				cache_write_5m_per_m: 2.5,
+			},
+		],
+	};
+
+	function priceAt(requestInput: number, requestCacheRead: number, requestCacheWrite: number) {
+		return resolveTurnCost({
+			modelId: "tiered",
+			usage: {
+				inputTokens: requestInput,
+				outputTokens: 100_000,
+				cacheReadTokens: requestCacheRead,
+				cacheWriteTokens: requestCacheWrite,
+			},
+			backends: [{ id: "tiered" }],
+			providerCostUsd: undefined,
+			catalogPricing,
+			catalogPricingSource: "models_dev",
+		});
+	}
+
+	it("uses the base rate below the threshold", () => {
+		// request size = input + cache_read + cache_write = 100000 < 272000 → base.
+		const result = priceAt(100_000, 0, 0);
+		// input 100000*1 + output 100000*4 = 0.1 + 0.4 = 0.5
+		expect(result.cost).toBeCloseTo(0.5, 8);
+	});
+
+	it("uses the base rate exactly at the threshold (must strictly exceed)", () => {
+		// request size = 272000, not > 272000 → base rate still applies.
+		const result = priceAt(272_000, 0, 0);
+		// input 272000*1 + output 100000*4 = 0.272 + 0.4 = 0.672
+		expect(result.cost).toBeCloseTo(0.672, 8);
+	});
+
+	it("uses the tier rate above the threshold", () => {
+		// request size = 272001 > 272000 → tier rate.
+		const result = priceAt(272_001, 0, 0);
+		// input 272001*2 + output 100000*8 = 0.544002 + 0.8 = 1.344002
+		expect(result.cost).toBeCloseTo(1.344002, 6);
+	});
+
+	it("measures request size as input + cache_read + cache_write tokens", () => {
+		// 200000 input + 60000 cache_read + 20000 cache_write = 280000 > 272000 → tier.
+		const result = priceAt(200_000, 60_000, 20_000);
+		// tier rates: input 200000*2 + output 100000*8 + cacheRead 60000*0.2 +
+		//   cacheWrite 20000*2.5 = 0.4 + 0.8 + 0.012 + 0.05 = 1.262
+		expect(result.cost).toBeCloseTo(1.262, 6);
+	});
+
+	it("an explicit config price overrides tiered catalog pricing entirely", () => {
+		const result = resolveTurnCost({
+			modelId: "tiered",
+			usage: { inputTokens: 500_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+			backends: [{ id: "tiered", price_per_m_input: 10 }],
+			providerCostUsd: undefined,
+			catalogPricing,
+			catalogPricingSource: "models_dev",
+		});
+		// Config flat 10/M wins, no tier: 500000*10/1e6 = 5.
+		expect(result.cost).toBeCloseTo(5, 8);
+		expect(result.source).toBe("config");
 	});
 });
 

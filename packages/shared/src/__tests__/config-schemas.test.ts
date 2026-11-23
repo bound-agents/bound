@@ -76,6 +76,57 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("leaves price_per_m_input/output unset when the operator omits them (distinguishable from an explicit 0)", () => {
+			// The catalog precedence (2026-11-21-model-catalog.md §3) treats an
+			// EXPLICITLY-SET config price as an operator override that beats
+			// models.dev, while an UNSET field falls through to provider/models.dev
+			// pricing. A schema `.default(0)` collapses those two cases, so the price
+			// fields stay optional and absent when the operator omits them.
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "nopricing",
+						provider: "bedrock",
+						model: "anthropic.claude-sonnet-4-5-20250929-v1:0",
+						region: "us-east-1",
+						context_window: 200_000,
+					},
+				],
+				default: "nopricing",
+			});
+			expect(result.success).toBe(true);
+			if (result.success) {
+				const b = result.data.backends[0];
+				expect(b.price_per_m_input).toBeUndefined();
+				expect(b.price_per_m_output).toBeUndefined();
+			}
+		});
+
+		it("preserves an explicit price_per_m_input/output of 0 as a set override", () => {
+			// An operator who deliberately pins a price to 0 (free local model) must be
+			// able to override a nonzero models.dev price. The parsed value is present.
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "free",
+						provider: "openai-compatible",
+						model: "llama3",
+						base_url: "http://localhost:11434/v1",
+						context_window: 4096,
+						price_per_m_input: 0,
+						price_per_m_output: 0,
+					},
+				],
+				default: "free",
+			});
+			expect(result.success).toBe(true);
+			if (result.success) {
+				const b = result.data.backends[0];
+				expect(b.price_per_m_input).toBe(0);
+				expect(b.price_per_m_output).toBe(0);
+			}
+		});
+
 		it("accepts arbitrary valid cache durations and rejects garbage", () => {
 			for (const cache_ttl of ["5m", "1h", "30m", "PT30M"]) {
 				const result = modelBackendsSchema.safeParse({

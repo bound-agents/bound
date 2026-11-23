@@ -2145,6 +2145,10 @@ export class RelayProcessor {
 				let outChunk: StreamChunk = chunk;
 				if (chunk.type === "done") {
 					const backends = this.appCtx?.config.modelBackends.backends ?? [];
+					// The hub serves this turn; price it from its own catalog-resolved
+					// pricing when the operator set no explicit override. The requesting
+					// spoke is often hub-only and holds no pricing config of its own.
+					const catalogPricing = this.modelRouter?.getResolvedPricing(payload.model);
 					const resolved = resolveTurnCost({
 						modelId: payload.model,
 						usage: {
@@ -2159,10 +2163,23 @@ export class RelayProcessor {
 						// A Copilot-driver done chunk already carries its catalog breakdown;
 						// carry it through when the provider cost wins the precedence.
 						providerBreakdown: chunk.cost_breakdown ?? null,
+						catalogPricing: catalogPricing?.pricing,
+						catalogPricingSource: catalogPricing?.source,
 					});
+					// Stamp the pricing source on the done chunk so the requester records it
+					// into turns.cost_breakdown.source (requirement 3). The source rides as a
+					// separate top-level field, independent of cost_breakdown, so it survives
+					// even when the cost has no component split (a plain-number price(turn)
+					// callback). An unknown source leaves pricing_source absent.
+					const stampedSource = resolved.source !== "unknown" ? resolved.source : undefined;
 					outChunk = resolved.breakdown
-						? { ...chunk, cost_usd: resolved.cost, cost_breakdown: resolved.breakdown }
-						: { ...chunk, cost_usd: resolved.cost };
+						? {
+								...chunk,
+								cost_usd: resolved.cost ?? undefined,
+								cost_breakdown: resolved.breakdown,
+								pricing_source: stampedSource,
+							}
+						: { ...chunk, cost_usd: resolved.cost ?? undefined, pricing_source: stampedSource };
 				}
 
 				chunkBuffer.push(outChunk);

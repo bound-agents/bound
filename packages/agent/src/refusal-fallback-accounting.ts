@@ -37,16 +37,20 @@ export interface AttemptRecord {
 	credit_redeemed: boolean;
 	/** Model-scoped token counts for this attempt. */
 	tokens: AttemptTokens;
-	/** This attempt's USD cost. */
-	cost_usd: number;
+	/** This attempt's USD cost. `null` when no pricing layer could price it (unknown, not $0). */
+	cost_usd: number | null;
 }
 
 /**
  * The turn's `cost_breakdown`, extended with an optional per-attempt array
  * (R-RT21). The four top-level components remain the SERVED model's cost split
- * so the metrics route's `json_extract` paths are unchanged.
+ * so the metrics route's `json_extract` paths are unchanged. An optional
+ * `source` records which pricing layer priced the turn (requirement 3); it rides
+ * alongside the components as an extra key older readers ignore.
  */
 export interface TurnCostBreakdownWithAttempts extends TurnCostBreakdown {
+	/** Which pricing layer priced the served turn (requirement 3), when known. */
+	source?: string;
 	/**
 	 * Present only when a turn executed more than one attempt (refusal +
 	 * fallback, or a route trial + failover). Absent for a single clean attempt.
@@ -58,9 +62,10 @@ export interface BuildTurnCostBreakdownArgs {
 	/**
 	 * The served model's four-component cost split, or null when no split is
 	 * available (e.g. a plain-number `price(turn)` callback). Null collapses the
-	 * top-level components to zero while still recording attempts.
+	 * top-level components to zero while still recording attempts. May carry an
+	 * optional `source` (requirement 3), preserved onto the built breakdown.
 	 */
-	served: TurnCostBreakdown | null;
+	served: (TurnCostBreakdown & { source?: string }) | { source?: string } | null;
 	/** Every attempt executed this turn, in execution order. */
 	attempts: AttemptRecord[];
 }
@@ -75,13 +80,22 @@ export interface BuildTurnCostBreakdownArgs {
 export function buildTurnCostBreakdownWithAttempts(
 	args: BuildTurnCostBreakdownArgs,
 ): TurnCostBreakdownWithAttempts {
-	const served = args.served ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	const served: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+		source?: string;
+	} = args.served ?? {};
 	const breakdown: TurnCostBreakdownWithAttempts = {
-		input: served.input,
-		output: served.output,
-		cacheRead: served.cacheRead,
-		cacheWrite: served.cacheWrite,
+		input: served.input ?? 0,
+		output: served.output ?? 0,
+		cacheRead: served.cacheRead ?? 0,
+		cacheWrite: served.cacheWrite ?? 0,
 	};
+	// Carry the served split's pricing source onto the built breakdown so a
+	// multi-attempt turn records which layer priced it (requirement 3).
+	if (served.source !== undefined) breakdown.source = served.source;
 	// Only attach the per-attempt detail when there was genuinely more than one
 	// attempt. A single attempt means no refusal/failover happened this turn.
 	if (args.attempts.length > 1) {

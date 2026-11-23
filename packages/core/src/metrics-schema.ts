@@ -22,7 +22,8 @@ export interface TurnRecord {
 	tokens_out: number;
 	tokens_cache_write: number | null;
 	tokens_cache_read: number | null;
-	cost_usd?: number;
+	/** USD cost for this turn. `null` when no pricing layer could price it (unknown, not $0). */
+	cost_usd?: number | null;
 	created_at: string;
 	/**
 	 * Inference outcome. Default "ok". Set to "error" when the provider
@@ -36,9 +37,23 @@ export interface TurnRecord {
 	 * (`{ input, output, cacheRead, cacheWrite }`). Recorded at the moment the
 	 * turn's cost is decided so the metrics route sums authoritative recorded
 	 * parts instead of re-deriving a skewed token-proportional split. Absent
-	 * (`null`) for legacy rows and plain-number `price(turn)` callbacks.
+	 * (`null`) for legacy rows.
+	 *
+	 * An optional `source` records which pricing layer priced the turn (the
+	 * `PricingSource` union). It rides alongside the four numeric components as an
+	 * extra key the metrics `json_extract` paths never read, so older readers stay
+	 * tolerant. A turn with a known source but NO numeric split (a plain-number
+	 * `price(turn)` callback) records a SOURCE-ONLY object `{ source }` — not
+	 * `null` — so provenance survives; the metrics route treats a breakdown with no
+	 * `$.input` component as legacy (token-proportional split of `cost_usd`).
 	 */
-	cost_breakdown?: { input: number; output: number; cacheRead: number; cacheWrite: number } | null;
+	cost_breakdown?: {
+		input?: number;
+		output?: number;
+		cacheRead?: number;
+		cacheWrite?: number;
+		source?: string;
+	} | null;
 	/**
 	 * The `RouteId` (`${siteId}:${provider}:${backendId}`) that served this turn.
 	 * Null for legacy rows and turns recorded before route identity existed.
@@ -239,7 +254,11 @@ export function recordTurn(db: Database, turn: TurnRecord, siteId?: string): str
 		tokens_out: turn.tokens_out,
 		tokens_cache_write: turn.tokens_cache_write ?? null,
 		tokens_cache_read: turn.tokens_cache_read ?? null,
-		cost_usd: turn.cost_usd ?? 0,
+		// `null` means no pricing layer could price this turn (unknown, not $0); the
+		// `turns.cost_usd` column is nullable REAL, so unknown stays distinguishable
+		// from a real $0 in cost queries. The daily_summary rollup below cannot carry
+		// unknown, so it coalesces to 0 there.
+		cost_usd: turn.cost_usd ?? null,
 		created_at: turn.created_at,
 		modified_at: turn.created_at,
 		status,

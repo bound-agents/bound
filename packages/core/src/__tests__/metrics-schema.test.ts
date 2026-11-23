@@ -134,6 +134,65 @@ describe("metrics-schema â AC4.6 cache token persistence", () => {
 		expect(row?.cost_breakdown).toBeNull();
 	});
 
+	it("persists the pricing source alongside the four numeric components (requirement 3)", () => {
+		applyMetricsSchema(db);
+
+		const turnId = recordTurn(db, {
+			model_id: "test-model",
+			tokens_in: 100,
+			tokens_out: 50,
+			tokens_cache_write: 10,
+			tokens_cache_read: 20,
+			cost_usd: 0.0123,
+			cost_breakdown: {
+				input: 0.001,
+				output: 0.009,
+				cacheRead: 0.0001,
+				cacheWrite: 0.0022,
+				source: "models_dev",
+			},
+			created_at: "2026-11-21T12:00:00Z",
+		});
+
+		const row = db.prepare("SELECT cost_breakdown FROM turns WHERE id = ?").get(turnId) as
+			{ cost_breakdown: string | null } | undefined;
+
+		// The four numeric json_extract paths the metrics route reads are unchanged;
+		// `source` rides as an extra tolerated key.
+		const parsed = JSON.parse(row?.cost_breakdown ?? "null");
+		expect(parsed.input).toBe(0.001);
+		expect(parsed.output).toBe(0.009);
+		expect(parsed.cacheRead).toBe(0.0001);
+		expect(parsed.cacheWrite).toBe(0.0022);
+		expect(parsed.source).toBe("models_dev");
+	});
+
+	it("persists a source-only breakdown for a turn with a known source but no numeric split (requirement 3)", () => {
+		applyMetricsSchema(db);
+
+		// A price(turn) callback resolves cost as a single number with no component
+		// split. The source is still known (config_callback) and must survive, so the
+		// recorded breakdown is a source-only object rather than NULL.
+		const turnId = recordTurn(db, {
+			model_id: "callback-model",
+			tokens_in: 100,
+			tokens_out: 50,
+			tokens_cache_write: null,
+			tokens_cache_read: null,
+			cost_usd: 0.04,
+			cost_breakdown: { source: "config_callback" },
+			created_at: "2026-11-21T12:00:00Z",
+		});
+
+		const row = db.prepare("SELECT cost_breakdown FROM turns WHERE id = ?").get(turnId) as
+			{ cost_breakdown: string | null } | undefined;
+
+		const parsed = JSON.parse(row?.cost_breakdown ?? "null");
+		expect(parsed.source).toBe("config_callback");
+		// No numeric components — the four json_extract paths return NULL, not 0.
+		expect(parsed.input).toBeUndefined();
+	});
+
 	it("should handle idempotent ALTER TABLE for cache columns", () => {
 		// Apply schema twice to verify idempotent behavior
 		applyMetricsSchema(db);

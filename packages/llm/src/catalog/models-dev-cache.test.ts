@@ -127,6 +127,109 @@ describe("indexModelsDevSnapshot / lookupModelsDev", () => {
 		expect(layer?.capabilities?.max_context).toBe(200000);
 		expect(layer?.max_output_tokens).toBe(32000);
 	});
+
+	it("parses cost.tiers into context-tiered pricing (requirement 2)", () => {
+		// Real amazon-bedrock shape: a base `cost` plus a `tiers` array, each tier
+		// carrying its own four prices and `tier: {type: "context", size: N}`.
+		const index = indexModelsDevSnapshot({
+			"amazon-bedrock": {
+				models: {
+					"global.anthropic.claude-haiku-5-5": {
+						limit: { context: 200000, output: 32000 },
+						cost: {
+							input: 0.1,
+							output: 0.5,
+							cache_read: 0.01,
+							cache_write: 0.125,
+							tiers: [
+								{
+									input: 0.5,
+									output: 2.5,
+									cache_read: 0.05,
+									cache_write: 0.625,
+									tier: { type: "context", size: 100000 },
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "amazon-bedrock", "global.anthropic.claude-haiku-5-5");
+		// Base prices stay the top-level per-M fields.
+		expect(layer?.pricing?.input_per_m).toBe(0.1);
+		expect(layer?.pricing?.output_per_m).toBe(0.5);
+		expect(layer?.pricing?.cache_read_per_m).toBe(0.01);
+		expect(layer?.pricing?.cache_write_5m_per_m).toBe(0.125);
+		// The context tier is parsed with its threshold and its own four prices.
+		expect(layer?.pricing?.tiers).toEqual([
+			{
+				threshold: 100000,
+				input_per_m: 0.5,
+				output_per_m: 2.5,
+				cache_read_per_m: 0.05,
+				cache_write_5m_per_m: 0.625,
+			},
+		]);
+	});
+
+	it("ignores context_over_200k, which the data proves is a duplicate of the single context tier (requirement 2)", () => {
+		// Across every amazon-bedrock entry in the snapshot that carries both, the
+		// first `tiers` entry is byte-identical to `context_over_200k` (0 of 785
+		// mismatches) and `context_over_200k` never appears without `tiers`. `tiers`
+		// is the general, authoritative representation; `context_over_200k` is a
+		// legacy duplicate of the single context tier and is dropped.
+		const index = indexModelsDevSnapshot({
+			"amazon-bedrock": {
+				models: {
+					"global.openai.gpt-6-luna": {
+						limit: { context: 400000, output: 128000 },
+						cost: {
+							input: 0.1,
+							output: 0.375,
+							tiers: [
+								{
+									input: 0.2,
+									output: 0.75,
+									cache_read: 0.02,
+									cache_write: 0.25,
+									tier: { type: "context", size: 272000 },
+								},
+							],
+							context_over_200k: { input: 0.2, output: 0.75, cache_read: 0.02, cache_write: 0.25 },
+						},
+					},
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "amazon-bedrock", "global.openai.gpt-6-luna");
+		// Exactly one tier (from `tiers`), size 272000 — not a second tier from
+		// context_over_200k.
+		expect(layer?.pricing?.tiers).toHaveLength(1);
+		expect(layer?.pricing?.tiers?.[0].threshold).toBe(272000);
+	});
+
+	it("sorts parsed context tiers ascending by threshold", () => {
+		const index = indexModelsDevSnapshot({
+			anthropic: {
+				models: {
+					"multi-tier": {
+						limit: { context: 1000000 },
+						cost: {
+							input: 1,
+							output: 2,
+							tiers: [
+								{ input: 4, output: 8, tier: { type: "context", size: 500000 } },
+								{ input: 2, output: 4, tier: { type: "context", size: 200000 } },
+							],
+						},
+					},
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "anthropic", "multi-tier");
+		expect(layer?.pricing?.tiers?.map((t) => t.threshold)).toEqual([200000, 500000]);
+	});
 });
 
 describe("lookupModelsDevScoped — provider-scoped lookup (requirement 3)", () => {
@@ -182,6 +285,85 @@ describe("lookupModelsDevScoped — provider-scoped lookup (requirement 3)", () 
 	it("returns undefined when neither scoped nor canonical lookup matches", () => {
 		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
 		expect(lookupModelsDevScoped(index, "github-copilot", "nonexistent-model")).toBeUndefined();
+	});
+});
+
+describe("lookupModelsDevScoped — exact (namespace, raw model id) resolution (requirement 1)", () => {
+	// Bedrock prices CRIS inference profiles differently: a `global.` profile is
+	// billed at list price, while an in-region (bare vendor-prefixed) profile is
+	// billed list + 10%. normalizeModelKey strips the region prefix, so
+	// `global.anthropic.claude-haiku-5-5` and `anthropic.claude-haiku-5-5`
+	// collapse onto ONE canonical key and first-writer-wins would hand a backend
+	// whichever price happened to index first. The exact index keyed by the raw
+	// model id keeps each profile's own row so a backend prices the id it calls.
+	const BEDROCK_CRIS_PAYLOAD = {
+		"amazon-bedrock": {
+			models: {
+				// In-region (bare) profile, billed list + 10%. Indexed FIRST, so it wins
+				// the canonical slot; a region-stripping lookup would resolve global to it.
+				"anthropic.claude-haiku-5-5": {
+					limit: { context: 200000, output: 32000 },
+					cost: { input: 0.11, output: 0.55, cache_read: 0.011, cache_write: 0.1375 },
+				},
+				// Global profile, billed list price. Shares the canonical key with the
+				// in-region row above; only the exact index distinguishes it.
+				"global.anthropic.claude-haiku-5-5": {
+					limit: { context: 200000, output: 32000 },
+					cost: { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
+				},
+				// A third vendor/family, with only a global and a us-region profile, to
+				// prove exact resolution is not special-cased to one model id.
+				"global.openai.fable-5-2": {
+					limit: { context: 400000, output: 128000 },
+					cost: { input: 1, output: 4 },
+				},
+				"us.openai.fable-5-2": {
+					limit: { context: 400000, output: 128000 },
+					cost: { input: 1.1, output: 4.4 },
+				},
+			},
+		},
+	};
+
+	it("resolves global vs in-region haiku to their OWN price rows, not a collapsed one", () => {
+		const index = indexModelsDevSnapshot(BEDROCK_CRIS_PAYLOAD);
+		const global = lookupModelsDevScoped(index, "bedrock", "global.anthropic.claude-haiku-5-5");
+		const inRegion = lookupModelsDevScoped(index, "bedrock", "anthropic.claude-haiku-5-5");
+		// Global profile keeps list price; in-region keeps list + 10%.
+		expect(global?.pricing?.input_per_m).toBe(0.1);
+		expect(global?.pricing?.output_per_m).toBe(0.5);
+		expect(inRegion?.pricing?.input_per_m).toBe(0.11);
+		expect(inRegion?.pricing?.output_per_m).toBe(0.55);
+	});
+
+	it("resolves global vs us-region fable-5-2 to their own rows", () => {
+		const index = indexModelsDevSnapshot(BEDROCK_CRIS_PAYLOAD);
+		const global = lookupModelsDevScoped(index, "bedrock", "global.openai.fable-5-2");
+		const us = lookupModelsDevScoped(index, "bedrock", "us.openai.fable-5-2");
+		expect(global?.pricing?.input_per_m).toBe(1);
+		expect(us?.pricing?.input_per_m).toBe(1.1);
+	});
+
+	it("falls back to the scoped canonical entry when the exact raw id has no row", () => {
+		const index = indexModelsDevSnapshot(BEDROCK_CRIS_PAYLOAD);
+		// `eu.` profile is absent from the payload, so no exact row exists; the
+		// region-stripped canonical key still resolves (to the first-writer entry).
+		const eu = lookupModelsDevScoped(index, "bedrock", "eu.anthropic.claude-haiku-5-5");
+		expect(eu?.pricing?.input_per_m).toBe(0.11);
+	});
+
+	it("still resolves a cross-provider collision via the scoped canonical index when no exact row exists", () => {
+		// github-copilot grok-4.7 (no region/vendor prefix): the exact raw-id index
+		// has it, but this asserts the scoped-canonical fallback stays intact for a
+		// backend whose id normalizes cleanly. Reuses the collision fixture shape.
+		const index = indexModelsDevSnapshot({
+			xai: { models: { "grok-4.7": { limit: { context: 500000, output: 500000 } } } },
+			"github-copilot": {
+				models: { "grok-4.7": { limit: { context: 500000, input: 372000, output: 128000 } } },
+			},
+		});
+		const scoped = lookupModelsDevScoped(index, "github-copilot", "grok-4.7");
+		expect(scoped?.max_output_tokens).toBe(128000);
 	});
 });
 

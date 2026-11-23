@@ -28,12 +28,34 @@ export interface ResolvedCapabilities {
 	max_context?: number;
 }
 
+/**
+ * A context-based pricing tier (requirement 2, catalog §3). `models.dev` carries
+ * these as `cost.tiers[]`, each with its own four per-M prices and a
+ * `tier: {type: "context", size: N}`. `threshold` is that `size`: the tier
+ * applies to a turn whose request size (input + cache_read + cache_write tokens)
+ * STRICTLY EXCEEDS it. Tiers are sorted ascending by threshold.
+ */
+export interface PricingTier {
+	threshold: number;
+	input_per_m?: number;
+	output_per_m?: number;
+	cache_read_per_m?: number;
+	cache_write_5m_per_m?: number;
+	cache_write_1h_per_m?: number;
+}
+
 export interface ResolvedPricing {
 	input_per_m?: number;
 	output_per_m?: number;
 	cache_read_per_m?: number;
 	cache_write_5m_per_m?: number;
 	cache_write_1h_per_m?: number;
+	/**
+	 * Context-based price tiers above the base rate, ascending by `threshold`.
+	 * Absent when the entry has no context tiers. The base `*_per_m` fields apply
+	 * at or below the lowest threshold.
+	 */
+	tiers?: PricingTier[];
 }
 
 /**

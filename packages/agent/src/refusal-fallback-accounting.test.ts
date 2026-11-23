@@ -89,6 +89,21 @@ describe("buildTurnCostBreakdownWithAttempts", () => {
 		expect(breakdown.input).toBe(0);
 		expect(breakdown.attempts).toHaveLength(2);
 	});
+
+	it("carries a null per-attempt cost through unchanged (unknown, not $0)", () => {
+		// An attempt whose model has no pricing layer records cost_usd: null, not 0,
+		// so the provenance footer can render — instead of a misleading free turn.
+		const unpricedRefusal: AttemptRecord = {
+			...refusedPrimary,
+			cost_usd: null,
+		};
+		const breakdown = buildTurnCostBreakdownWithAttempts({
+			served: { input: 0.012, output: 0.004, cacheRead: 0, cacheWrite: 0.006 },
+			attempts: [unpricedRefusal, fallbackServed],
+		});
+		expect(breakdown.attempts?.[0]?.cost_usd).toBeNull();
+		expect(breakdown.attempts?.[1]?.cost_usd).toBe(0.02);
+	});
 });
 
 describe("summarizeServedAttempt", () => {
