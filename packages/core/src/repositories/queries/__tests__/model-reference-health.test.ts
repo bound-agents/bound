@@ -277,6 +277,53 @@ describe("analyzeModelReferences", () => {
 		}
 	});
 
+	it("treats a hint naming an advertised backend id as live when its logical model differs", () => {
+		// Live hosts advertise `{ id: "opus-4.8", logical_model: "claude-opus-4-8" }`;
+		// resolution accepts the id, so the checker must too.
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: SITE_A,
+				host_name: "host-a",
+				version: "test",
+				sync_url: null,
+				mcp_servers: null,
+				mcp_tools: null,
+				models: JSON.stringify([
+					{
+						id: "opus-4.8",
+						logical_model: "claude-opus-4-8",
+						route_id: "site-a:bedrock-mantle:opus-4.8",
+					},
+				]),
+				online_at: "2026-01-01T00:00:00.000Z",
+				platforms: null,
+				mcp_tool_annotations: null,
+				commit_hash: null,
+				mcp_capabilities: null,
+				work_spool_capable: 0,
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			SITE_A,
+		);
+		insertAgent(db, "by-id", "opus-4.8");
+		insertAgent(db, "by-logical", "claude-opus-4-8");
+		insertTask(db, "task-by-id", "pending", "opus-4.8");
+		const report = analyzeModelReferences(db);
+		expect(report.danglingAgents).toEqual([]);
+		expect(report.danglingTasks).toEqual([]);
+	});
+
+	it("skips retired agents even when their model is gone", () => {
+		advertiseHost(db, SITE_A, [{ route_id: "site-a:bedrock:opus", logical_model: "opus" }]);
+		insertAgent(db, "retired-scout", "gpt-gone", { retiredAt: "2026-08-17T06:30:23.043Z" });
+		insertAgent(db, "live-scout", "gpt-gone");
+		const report = analyzeModelReferences(db);
+		expect(report.danglingAgents).toEqual([{ agentName: "live-scout", logicalModel: "gpt-gone" }]);
+	});
+
 	it("keeps a model transient (not decommissioned) while a stale host still advertises it", () => {
 		// SITE_A offline but NOT evicted (deleted = 0) still advertises sonnet.
 		advertiseHost(db, SITE_A, [{ route_id: "site-a:bedrock:sonnet", logical_model: "sonnet" }]);
@@ -352,7 +399,12 @@ describe("analyzeModelReferences", () => {
 });
 
 /** Insert an aux-agent row with a model_hint; returns the generated id. */
-function insertAgent(db: Database, name: string, modelHint: string): string {
+function insertAgent(
+	db: Database,
+	name: string,
+	modelHint: string,
+	opts: { retiredAt?: string } = {},
+): string {
 	const id = `agent-${name}`;
 	insertRow(
 		db,
@@ -363,7 +415,7 @@ function insertAgent(db: Database, name: string, modelHint: string): string {
 			persona: "test persona",
 			tools: null,
 			model_hint: modelHint,
-			retired_at: null,
+			retired_at: opts.retiredAt ?? null,
 			created_by_thread: null,
 			created_at: "2026-01-01T00:00:00.000Z",
 			deleted: 0,

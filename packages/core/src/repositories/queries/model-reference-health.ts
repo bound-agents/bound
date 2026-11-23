@@ -125,7 +125,12 @@ function liveAdvertisedSets(db: Database): { models: Set<string>; routes: Set<st
 	const routes = new Set<string>();
 	for (const row of rows) {
 		for (const entry of parseHostModels(row.models)) {
+			// A hint may name either the logical model or the advertised backend id
+			// (e.g. `opus-4.8` advertised with logical_model `claude-opus-4-8`).
+			// Resolution (`isModelRegisteredInCluster`) accepts the id, so liveness
+			// must too, or every id-form hint reads as dangling.
 			models.add(entryLogicalModel(entry));
+			if (typeof entry.id === "string" && entry.id.length > 0) models.add(entry.id);
 			if (entry.route_id) routes.add(entry.route_id);
 		}
 	}
@@ -247,7 +252,9 @@ export function analyzeModelReferences(db: Database): ModelReferenceReport {
 	// never dangling by itself — the dangling role, if any, is reported above.
 	const danglingAgents: DanglingAgent[] = [];
 	const agentRows = db
-		.query("SELECT name, model_hint FROM agents WHERE deleted = 0 AND model_hint IS NOT NULL")
+		.query(
+			"SELECT name, model_hint FROM agents WHERE deleted = 0 AND retired_at IS NULL AND model_hint IS NOT NULL",
+		)
 		.all() as Array<{ name: string; model_hint: string | null }>;
 	for (const agent of agentRows) {
 		if (!agent.model_hint) continue;
