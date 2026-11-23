@@ -110,7 +110,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `token_store_path` | string | `config/chatgpt-auth.json` (`chatgpt-oauth`), `config/copilot-auth.json` (`github-copilot`) | Absolute path to the persisted OAuth token bundle. For `chatgpt-oauth`, create it with `bound login --chatgpt`; for `github-copilot`, with `bound login --copilot`. Both still require `model` and `context_window`. |
 | `region` | string | absent | AWS region (Bedrock, and required for `bedrock-mantle` — the Mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
-| `context_window` | int > 0 | — | Token budget bound for context assembly. Omitted for `umans` (fetched per-model). |
+| `context_window` | int > 0 | — | Optional override of the model's context-window budget. Normally resolved automatically — from the provider's discovery API, then `models.dev` — so you only set it to cap the window below what those sources report, or for a model neither source knows. Omitted for `umans` (fetched per-model). A backend whose window resolves from no source stays unready (see below). |
 | `logical_model` | string | absent | Operator-declared logical model this backend joins. Takes precedence over structural normalization but is overridden by a synced `model_aliases` entry. Absent → the logical model is resolved by normalization, or left unassigned when confidence is low. |
 | `price_per_m_input` | number ≥ 0 | `0` | USD per million non-cached input tokens. |
 | `price_per_m_output` | number ≥ 0 | `0` | USD per million output tokens. |
@@ -121,7 +121,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
 | `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |
-| `max_output_tokens` | int > 0 | absent | Per-backend output-token cap, applied as the lower of this value and the default limit. |
+| `max_output_tokens` | int > 0 | absent | Optional override of the per-backend output-token cap, applied as the lower of this value and the default limit. Normally resolved automatically from the provider's discovery API, then `models.dev`; set it to cap output below what those sources report, or for a model neither source knows. A resolved (non-override) value that is ≥ the resolved context window is ignored as implausible (it would leave no room for the prompt); an explicit override here is always respected. |
 | `system_prompt_suffix` | string | absent | Text appended to the system prompt only when this backend serves the turn. |
 | `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. Unsupported `1h` hints fall back to `5m`. |
 | `cache_warming` | cache-warming block | absent | Per-backend cache warming (see below). Absent disables warming for this backend. |

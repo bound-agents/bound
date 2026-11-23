@@ -65,6 +65,14 @@ export interface InferenceResult {
 	 * disabled or no router).
 	 */
 	modelsDevRefresh?: Promise<RefreshStatus>;
+	/**
+	 * The local-only `models.dev` cache built for this router, when enabled. The
+	 * SIGHUP config-reload path (`index.ts`) needs it to re-resolve the catalog
+	 * after `reload()` rebuilds the router from scratch (which drops applied
+	 * metadata), so it is surfaced here rather than re-constructed. Absent when
+	 * `models.dev` is disabled or no router was built.
+	 */
+	modelsDevCache?: ModelsDevCache | null;
 }
 
 /** Optional seams for `initInference` — injected only by tests. */
@@ -454,21 +462,28 @@ export async function resolveLocalCatalog(
 	// degrades to an empty lineup for that backend (R-MC6); it never rejects out
 	// of here.
 	const inputs: CatalogBackendInput[] = [];
-	for (const b of modelRouter.listBackends()) {
-		// Skip not-ready namespace placeholders (dynamic providers like umans):
-		// their concrete models are resolved on readiness expansion.
-		if (modelRouter.isNotReady(b.id)) continue;
-		const rawBackend = rawBackends.backends.find((rb) => rb.id === b.id);
+	for (const backendId of modelRouter.listAllBackendIds()) {
+		// Skip not-ready namespace placeholders of DYNAMIC (readiness-bearing)
+		// providers like umans: their concrete per-model backends resolve on
+		// readiness expansion, not from the static config rows. A static backend
+		// gated not-ready purely by the R-MC4 window gate (NO `readiness`) is NOT
+		// skipped — `listAllBackendIds` deliberately includes it so a first-boot-
+		// unready static backend can recover a window from a later models.dev
+		// refresh; skipping it (or using the not-ready-filtered `listBackends`)
+		// would strand it unready forever.
+		const candidate = modelRouter.tryGetBackend(backendId);
+		if (modelRouter.isNotReady(backendId) && candidate?.readiness) continue;
+		const rawBackend = rawBackends.backends.find((rb) => rb.id === backendId);
 		if (!rawBackend) continue;
 
-		const backend = modelRouter.tryGetBackend(b.id);
+		const backend = modelRouter.tryGetBackend(backendId);
 		let discovery: DiscoveredModel[] = [];
 		if (backend && supportsModelDiscovery(backend)) {
 			try {
 				discovery = await backend.discoverModels();
 			} catch (error) {
 				logger?.warn("[llm] Provider discovery failed; falling back to config + models.dev", {
-					backend: b.id,
+					backend: backendId,
 					error: formatError(error as Error),
 				});
 			}
@@ -486,7 +501,7 @@ export async function resolveLocalCatalog(
 		}
 
 		inputs.push({
-			backendId: b.id,
+			backendId,
 			provider: rawBackend.provider,
 			providerModelId: rawBackend.model ?? "",
 			config,
@@ -495,6 +510,39 @@ export async function resolveLocalCatalog(
 	}
 
 	return resolveCatalog({ backends: inputs, modelsDev, aliases });
+}
+
+/**
+ * Resolve the catalog, gate R-MC4 unready backends, apply resolved metadata to
+ * the local routing path (requirement 1), and re-advertise — the shared
+ * sequence used at startup, in the `models.dev` refresh continuation, and on
+ * SIGHUP config reload. Extracted so all three paths apply the resolved
+ * `max_context` / `max_output_tokens` identically rather than drifting.
+ *
+ * Ordering is load-bearing: the readiness gate runs first (so only ready
+ * backends are touched), then `applyResolvedCatalog` writes the resolved
+ * metadata onto the router, then advertisement publishes the applied values to
+ * peers. Returns the resolved catalog so a caller that needs it (advertisement
+ * already consumed it internally) can inspect readiness.
+ */
+export async function resolveGateApplyAdvertise(
+	appContext: AppContext,
+	modelRouter: ReturnType<typeof createModelRouter>,
+	rawBackends: SharedModelBackendsConfig,
+	cache: ModelsDevCache | null,
+	aliases: ReadonlyMap<string, string | null>,
+): Promise<Map<string, ResolvedBackend>> {
+	const catalog = await resolveLocalCatalog(
+		modelRouter,
+		rawBackends,
+		cache,
+		aliases,
+		appContext.logger,
+	);
+	gateUnreadyBackends(modelRouter, catalog, appContext.logger);
+	modelRouter.applyResolvedCatalog(catalog, appContext.logger);
+	advertiseLocalModels(appContext, modelRouter, rawBackends, catalog);
+	return catalog;
 }
 
 export async function initInference(
@@ -523,6 +571,7 @@ export async function initInference(
 	const aiSdkFetchLogger = createLogger("@bound/llm", "ai-sdk-fetch");
 
 	let modelsDevRefresh: Promise<RefreshStatus> | undefined;
+	let modelsDevCache: ModelsDevCache | null = null;
 	let modelRouter: ReturnType<typeof createModelRouter> | null = null;
 	try {
 		modelRouter = createModelRouter(routerConfig, {
@@ -553,7 +602,7 @@ export async function initInference(
 		// discovery alone (R-MC6). The cache lives beside the node's data, never in
 		// a synced table.
 		const modelsDevCfg = rawBackends.models_dev;
-		const modelsDevCache =
+		modelsDevCache =
 			modelsDevCfg?.enabled === false
 				? null
 				: new ModelsDevCache({
@@ -596,32 +645,22 @@ export async function initInference(
 				// the DB-touching gate + advertise.
 				if (isDbClosed(appContext.db)) return status;
 				gateUnreadyBackends(modelRouter, refreshedCatalog, appContext.logger);
+				// Re-apply resolved metadata to the local routing path so a backend whose
+				// window/output budget now resolves from the refreshed models.dev snapshot
+				// starts using the real values without a restart (requirement 1).
+				modelRouter.applyResolvedCatalog(refreshedCatalog, appContext.logger);
 				advertiseLocalModels(appContext, modelRouter, rawBackends, refreshedCatalog);
 				return status;
 			});
 		}
 
-		// Resolve the catalog (three-layer metadata + logical grouping) and
-		// advertise with resolved `logical_model` + `max_context`. Discovery runs
-		// per backend using each host's own credentials (R-MC3); a failed fetch
-		// degrades to config + models.dev without blocking (R-MC6).
+		// Resolve the catalog, gate R-MC4 unready backends, apply resolved metadata
+		// to the local routing path, and advertise — the shared sequence reused by
+		// the models.dev refresh continuation and the SIGHUP reload path.
 		const aliases = new Map<string, string | null>(
 			listModelAliases(appContext.db).map((a) => [a.provider_key, a.logical_model]),
 		);
-		const catalog = await resolveLocalCatalog(
-			modelRouter,
-			rawBackends,
-			modelsDevCache,
-			aliases,
-			appContext.logger,
-		);
-
-		// R-MC4 readiness gate: mark every backend the catalog could not resolve a
-		// max_context for as not-ready, so it is neither advertised nor routable
-		// and its configuration gap is logged once. Must run BEFORE advertisement.
-		gateUnreadyBackends(modelRouter, catalog, appContext.logger);
-
-		advertiseLocalModels(appContext, modelRouter, rawBackends, catalog);
+		await resolveGateApplyAdvertise(appContext, modelRouter, rawBackends, modelsDevCache, aliases);
 		// Kick off any self-configuring backends' background lineup fetch. Does
 		// NOT block startup — readiness backends stay not-ready (excluded from
 		// selection) until their fetch lands. Generic; umans is the first user.
@@ -654,5 +693,5 @@ export async function initInference(
 		}
 	}
 
-	return { modelRouter, routerConfig, backendModelMap, modelsDevRefresh };
+	return { modelRouter, routerConfig, backendModelMap, modelsDevRefresh, modelsDevCache };
 }

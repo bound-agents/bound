@@ -26,6 +26,22 @@ export interface BackendInfo {
 }
 
 /**
+ * Narrow structural view of a resolved catalog entry for `applyResolvedCatalog`
+ * (slice 6 follow-up). Declared locally so the router — which must not depend on
+ * the catalog orchestrator — reads only the fields that drive routing budget.
+ * The production `ResolvedBackend` from `catalog/resolve-catalog.ts` is
+ * structurally assignable to this.
+ */
+export interface ResolvedCatalogEntry {
+	ready: boolean;
+	metadata: {
+		capabilities: { max_context?: number };
+		max_output_tokens?: number;
+		field_sources: Record<string, string>;
+	};
+}
+
+/**
  * A concrete serving endpoint identity (`2026-11-21-model-routing.md` §3.1,
  * R-RT1): `RouteId = ${siteId}:${provider}:${backendId}`. This is the routing,
  * health, pinning, and per-turn provenance identity. It is DISTINCT from
@@ -193,6 +209,43 @@ export class ModelRouter {
 	 * placeholder/namespace id, and so capability resolution never sees the
 	 * conservative placeholder caps.
 	 */
+	listBackends(): BackendInfo[] {
+		return Array.from(this.backends.keys())
+			.filter((id) => !this.isNotReady(id))
+			.map((id) => {
+				const effectiveCap = this.effectiveCaps.get(id);
+				const backend = this.backends.get(id);
+				return {
+					id,
+					capabilities: effectiveCap ??
+						backend?.capabilities() ?? {
+							streaming: true,
+							tool_use: true,
+							system_prompt: true,
+							prompt_caching: false,
+							vision: false,
+							extended_thinking: false,
+							max_context: UNRESOLVED_CONTEXT_WINDOW,
+						},
+				};
+			});
+	}
+
+	/**
+	 * All registered backend ids, INCLUDING not-ready ones (R-MC4-gated static
+	 * backends and readiness-bearing namespace placeholders alike). Catalog
+	 * resolution (`resolveLocalCatalog`) iterates this so a backend gated
+	 * not-ready at first boot (no window resolved yet) is still re-examined on a
+	 * later `models.dev` refresh and can flip ready — `listBackends` excludes
+	 * not-ready ids and would strand it. The caller skips readiness-bearing
+	 * placeholders itself.
+	 */
+	listAllBackendIds(): string[] {
+		return Array.from(this.backends.keys());
+	}
+
+	/**
+	 * ORIGINAL listBackends doc retained below; the method is defined above.
 	listBackends(): BackendInfo[] {
 		return Array.from(this.backends.keys())
 			.filter((id) => !this.isNotReady(id))
@@ -417,6 +470,80 @@ export class ModelRouter {
 	 */
 	markNotReady(id: string): void {
 		if (this.backends.has(id)) this.notReady.add(id);
+	}
+
+	/**
+	 * Apply resolved catalog metadata (slice 6 follow-up, R-MC2/R-MC4,
+	 * `2026-11-21-model-catalog.md` §3) to the LOCAL routing path. The pure
+	 * `resolveCatalog` has already merged config > provider > `models.dev`
+	 * per field; this is the production consumer that writes the resolved
+	 * `max_context` onto each ready backend's effective capabilities and the
+	 * resolved `max_output_tokens` onto its backend config, so that local turns
+	 * (model-resolution's local branch → agent-loop `contextWindow` / truncation
+	 * target / `max_tokens`) use the resolved values rather than only the
+	 * constructor `contextWindow` from static config.
+	 *
+	 * Narrow by design: it touches ONLY `max_context` and `max_output_tokens`,
+	 * the two fields that drive routing budget. It does not overwrite
+	 * capability flags (those already merge config over driver baseline at
+	 * construction) or pricing (owned by the shared-config pricing rows).
+	 *
+	 * Idempotent and reversible-safe: re-running after a `models.dev` refresh
+	 * re-applies the latest resolution. Only READY backends present in the
+	 * router are touched — an unready backend (R-MC4 gate) and an id unknown to
+	 * the router are both skipped.
+	 *
+	 * Output-limit sanity (requirement 5): a `max_output_tokens` that did NOT
+	 * come from local config and is `>= max_context` would drive the truncation
+	 * target `computeBaseTruncationTarget = max_context - max_output` to zero or
+	 * negative, so it is treated as unknown (left unset / cleared) and logged
+	 * once per backend. A config-sourced value is always respected — the
+	 * operator's explicit cap is authoritative.
+	 */
+	applyResolvedCatalog(
+		catalog: ReadonlyMap<string, ResolvedCatalogEntry>,
+		logger?: { warn: (msg: string, meta?: Record<string, unknown>) => void },
+	): void {
+		for (const [backendId, resolved] of catalog) {
+			if (!resolved.ready) continue;
+			if (!this.backends.has(backendId)) continue;
+
+			const resolvedMaxContext = resolved.metadata.capabilities.max_context;
+			if (typeof resolvedMaxContext === "number") {
+				const caps = this.effectiveCaps.get(backendId);
+				if (caps) {
+					this.effectiveCaps.set(backendId, { ...caps, max_context: resolvedMaxContext });
+				}
+			}
+
+			const resolvedMaxOutput = resolved.metadata.max_output_tokens;
+			const outputSource = resolved.metadata.field_sources.max_output_tokens;
+			if (typeof resolvedMaxOutput === "number") {
+				// A config value is authoritative even if it equals/exceeds the window.
+				if (outputSource !== "config") {
+					const window = resolvedMaxContext ?? this.effectiveCaps.get(backendId)?.max_context;
+					if (typeof window === "number" && resolvedMaxOutput >= window) {
+						// Discard the bogus provider/models.dev value and log once; the
+						// loop then sends no explicit max_tokens and the provider default
+						// keeps a sane truncation target.
+						const existing = this.backendConfigs.get(backendId);
+						if (existing?.maxOutputTokens !== undefined) {
+							this.backendConfigs.set(backendId, { ...existing, maxOutputTokens: undefined });
+						}
+						logger?.warn(
+							"[llm] Ignoring non-config max_output_tokens >= max_context (requirement 5)",
+							{ backend: backendId, maxOutputTokens: resolvedMaxOutput, maxContext: window },
+						);
+						continue;
+					}
+				}
+				const existing = this.backendConfigs.get(backendId);
+				this.backendConfigs.set(backendId, {
+					...(existing ?? { id: backendId, provider: "", model: backendId }),
+					maxOutputTokens: resolvedMaxOutput,
+				} as BackendConfig);
+			}
+		}
 	}
 
 	/**

@@ -7,7 +7,7 @@ export type { StartArgs } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { HandleMessageTracker } from "@bound/agent";
-import { ThreadExecutor, startHostHeartbeat } from "@bound/core";
+import { ThreadExecutor, listModelAliases, startHostHeartbeat } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { markAwsCredentialCacheStale } from "@bound/llm";
 import { registerSighupHandler } from "../../sighup.js";
@@ -15,8 +15,8 @@ import { createAgentLoopFactory } from "./agent-factory.js";
 import { initBootstrap } from "./bootstrap.js";
 import type { StartArgs } from "./bootstrap.js";
 import {
-	advertiseLocalModels,
 	initInference,
+	resolveGateApplyAdvertise,
 	toRouterConfig,
 	wireBackendReadiness,
 } from "./inference.js";
@@ -159,7 +159,10 @@ export async function startNode(
 		});
 
 	// Phase 4: Model router and inference setup
-	const { modelRouter, modelsDevRefresh } = await initInference(appContext, commandContext);
+	const { modelRouter, modelsDevRefresh, modelsDevCache } = await initInference(
+		appContext,
+		commandContext,
+	);
 
 	// Phase 5: Relay processor, KeyManager
 	const { relayProcessor, relayProcessorHandle, keyManager, hubSiteId, keyring } = await initRelay(
@@ -284,8 +287,22 @@ export async function startNode(
 			// callbacks. Schema rows no longer contain those functions, so compiling
 			// oldConfig here would clear the live registry rather than restore it.
 			modelRouter.reload(toRouterConfig(newConfig));
-			advertiseLocalModels(appContext, modelRouter, newConfig);
 			appContext.config.modelBackends = newConfig;
+			// Re-resolve the catalog and re-apply resolved metadata to the local
+			// routing path: `reload()` rebuilt the router from static config, dropping
+			// the applied max_context / max_output_tokens, so a plain advertise would
+			// ship the sentinel-0 windows again. `resolveGateApplyAdvertise` runs the
+			// R-MC4 gate, applies resolved metadata (requirement 1), and advertises.
+			const aliases = new Map<string, string | null>(
+				listModelAliases(appContext.db).map((a) => [a.provider_key, a.logical_model]),
+			);
+			await resolveGateApplyAdvertise(
+				appContext,
+				modelRouter,
+				newConfig,
+				modelsDevCache ?? null,
+				aliases,
+			);
 			wireBackendReadiness(appContext, modelRouter);
 			appContext.logger.info("[sighup] Model router reloaded", {
 				backends: modelRouter.listBackends().map((b) => b.id),

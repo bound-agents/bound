@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AppContext } from "@bound/core";
 import { applySchema, createDatabase } from "@bound/core";
 import type { ModelBackendsConfig as SharedModelBackendsConfig } from "@bound/shared";
@@ -256,5 +260,205 @@ describe("models.dev background refresh lifecycle (R-MC6)", () => {
 		});
 		expect(rejection).toBeUndefined();
 		expect(status).toBe("updated");
+	});
+});
+
+// Requirement 7: resolved catalog metadata (max_context + max_output_tokens)
+// reaches the LOCAL routing path via getEffectiveCapabilities / getMaxOutputTokens,
+// not just advertisement. These drive the REAL initInference path with an
+// injected models.dev fetch, await the detached refresh, and read the router.
+describe("resolved catalog metadata on the local routing path (requirement 1 + 7)", () => {
+	let cDb: ReturnType<typeof createDatabase>;
+	let cDbDir: string;
+	const C_SITE = "catalog-site";
+	const cLogs: LogEntry[] = [];
+
+	beforeEach(() => {
+		// A unique file-backed DB per test so each run gets its OWN models.dev cache
+		// directory (ModelsDevCache derives its path from dirname(db.filename)); a
+		// shared `:memory:` DB resolves the cache to the cwd and races sibling tests.
+		cDbDir = join(tmpdir(), `catalog-inf-${randomBytes(6).toString("hex")}`);
+		mkdirSync(cDbDir, { recursive: true });
+		cDb = createDatabase(join(cDbDir, "bound.db"));
+		applySchema(cDb);
+		cLogs.length = 0;
+		cDb.run("INSERT INTO hosts (site_id, host_name, modified_at, deleted) VALUES (?, ?, ?, 0)", [
+			C_SITE,
+			"catalog-host",
+			new Date().toISOString(),
+		]);
+	});
+
+	afterEach(() => {
+		cDb.close();
+		rmSync(cDbDir, { recursive: true, force: true });
+	});
+
+	function cAppContext(cfg: SharedModelBackendsConfig): AppContext {
+		return {
+			db: cDb,
+			siteId: C_SITE,
+			hostName: "catalog-host",
+			logger: makeLogger(cLogs),
+			config: { modelBackends: cfg },
+			optionalConfig: {},
+			eventBus: new TypedEventEmitter(),
+		} as unknown as AppContext;
+	}
+
+	/** A models.dev fetch returning the given api.json payload once released. */
+	function payloadFetch(payload: unknown): { fetch: typeof globalThis.fetch; release: () => void } {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const fetchImpl = (async () => {
+			await gate;
+			return new Response(JSON.stringify(payload), {
+				status: 200,
+				headers: { etag: '"v1"', "content-type": "application/json" },
+			});
+		}) as unknown as typeof globalThis.fetch;
+		return { fetch: fetchImpl, release };
+	}
+
+	/** openai-compatible backend fronting a recognized vendor family (gpt-*). */
+	function gptBackend(overrides: Record<string, unknown> = {}): SharedModelBackendsConfig {
+		return {
+			backends: [
+				{
+					id: "gpt",
+					provider: "openai-compatible",
+					model: "gpt-6",
+					base_url: "http://localhost:9/v1",
+					api_key: "x",
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+					...overrides,
+				},
+			],
+			default: "gpt",
+		} as SharedModelBackendsConfig;
+	}
+
+	it("fills max_context + max_output_tokens from models.dev when config omits them", async () => {
+		// No context_window, no max_output_tokens in config — both come from models.dev.
+		const ctx = cAppContext(gptBackend());
+		const { fetch: modelsDevFetch, release } = payloadFetch({
+			openai: { models: { "gpt-6": { limit: { context: 400000, output: 32000 } } } },
+		});
+		const result = await initInference(ctx, {}, { modelsDevFetch });
+		release();
+		expect(await result.modelsDevRefresh).toBe("updated");
+
+		const router = result.modelRouter;
+		expect(router).not.toBeNull();
+		expect(router?.getEffectiveCapabilities("gpt")?.max_context).toBe(400000);
+		expect(router?.getMaxOutputTokens("gpt")).toBe(32000);
+	});
+
+	it("keeps config-explicit values byte-identical (config overrides models.dev)", async () => {
+		// Config sets both; models.dev reports different numbers — config wins.
+		const ctx = cAppContext(gptBackend({ context_window: 272000, max_output_tokens: 16000 }));
+		const { fetch: modelsDevFetch, release } = payloadFetch({
+			openai: { models: { "gpt-6": { limit: { context: 400000, output: 99999 } } } },
+		});
+		const result = await initInference(ctx, {}, { modelsDevFetch });
+		release();
+		await result.modelsDevRefresh;
+
+		const router = result.modelRouter;
+		expect(router?.getEffectiveCapabilities("gpt")?.max_context).toBe(272000);
+		expect(router?.getMaxOutputTokens("gpt")).toBe(16000);
+	});
+
+	it("honours models.dev limit.input: max_context = min(context, input + output)", async () => {
+		const ctx = cAppContext(gptBackend());
+		const { fetch: modelsDevFetch, release } = payloadFetch({
+			openai: {
+				models: { "gpt-6": { limit: { context: 1050000, input: 922000, output: 128000 } } },
+			},
+		});
+		const result = await initInference(ctx, {}, { modelsDevFetch });
+		release();
+		await result.modelsDevRefresh;
+
+		// input 922000 + output 128000 = 1050000 == context → 1050000; truncation
+		// target (max_context - max_output) == 922000 == the real prompt budget.
+		expect(result.modelRouter?.getEffectiveCapabilities("gpt")?.max_context).toBe(1050000);
+		expect(result.modelRouter?.getMaxOutputTokens("gpt")).toBe(128000);
+	});
+
+	it("drops a models.dev max_output_tokens that is >= max_context (output>=context, req 5)", async () => {
+		const ctx = cAppContext(gptBackend());
+		const { fetch: modelsDevFetch, release } = payloadFetch({
+			// context == output (no limit.input) → output would zero the truncation target.
+			openai: { models: { "gpt-6": { limit: { context: 1048576, output: 1048576 } } } },
+		});
+		const result = await initInference(ctx, {}, { modelsDevFetch });
+		release();
+		await result.modelsDevRefresh;
+
+		expect(result.modelRouter?.getEffectiveCapabilities("gpt")?.max_context).toBe(1048576);
+		// Dropped → the loop sends no explicit max_tokens, truncation target stays sane.
+		expect(result.modelRouter?.getMaxOutputTokens("gpt")).toBeUndefined();
+	});
+
+	it("prefers the backend's own provider namespace over a cross-provider collision (req 3)", async () => {
+		// A bedrock backend (maps to the amazon-bedrock models.dev namespace) whose
+		// canonical model id collides with another provider's entry.
+		const ctx = cAppContext({
+			backends: [
+				{
+					id: "grok",
+					provider: "bedrock",
+					model: "us.xai.grok-4.7",
+					region: "us-east-1",
+					price_per_m_input: 0,
+					price_per_m_output: 0,
+				},
+			],
+			default: "grok",
+		} as SharedModelBackendsConfig);
+		const { fetch: modelsDevFetch, release } = payloadFetch({
+			// xai wins the cross-provider canonical slot (first writer): out 500000.
+			xai: { models: { "grok-4.7": { limit: { context: 500000, output: 500000 } } } },
+			// amazon-bedrock's own entry carries a distinct input/output budget.
+			"amazon-bedrock": {
+				models: {
+					"us.xai.grok-4.7": { limit: { context: 500000, input: 372000, output: 128000 } },
+				},
+			},
+		});
+		const result = await initInference(ctx, {}, { modelsDevFetch });
+		release();
+		await result.modelsDevRefresh;
+
+		// Provider-scoped lookup → amazon-bedrock's limits, not xai's.
+		// max_context = min(500000, 372000 + 128000) = 500000; max_output 128000
+		// (< max_context, so the output>=context rule does not drop it). A
+		// cross-provider (unscoped) hit would have applied xai's output 500000,
+		// which being == max_context the req-5 rule would then DROP → undefined.
+		expect(result.modelRouter?.getEffectiveCapabilities("grok")?.max_context).toBe(500000);
+		expect(result.modelRouter?.getMaxOutputTokens("grok")).toBe(128000);
+	});
+
+	it("re-applies on a models.dev refresh: a first-boot-unready backend flips ready + windowed", async () => {
+		// First boot with an EMPTY cache: the backend has no window anywhere, so the
+		// R-MC4 gate marks it not-ready. The refresh lands a window and re-applies.
+		const ctx = cAppContext(gptBackend());
+		const { fetch: modelsDevFetch, release } = payloadFetch({
+			openai: { models: { "gpt-6": { limit: { context: 400000, output: 32000 } } } },
+		});
+		const result = await initInference(ctx, {}, { modelsDevFetch });
+		const router = result.modelRouter;
+
+		release();
+		expect(await result.modelsDevRefresh).toBe("updated");
+
+		// After the refresh: ready again, window + output applied from models.dev.
+		expect(router?.listBackends().some((b) => b.id === "gpt")).toBe(true);
+		expect(router?.getEffectiveCapabilities("gpt")?.max_context).toBe(400000);
+		expect(router?.getMaxOutputTokens("gpt")).toBe(32000);
 	});
 });

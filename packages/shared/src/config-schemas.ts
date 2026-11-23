@@ -356,17 +356,19 @@ export const modelBackendsSchema = z
 	)
 	.refine(
 		(data) => {
-			// `model` and `context_window` are required for every provider EXCEPT
-			// umans (which fetches its lineup at runtime). `tier` was removed
-			// (R-RT3, slice 2).
+			// `model` is required for every provider EXCEPT umans (which fetches its
+			// lineup at runtime). `context_window` is OPTIONAL for all providers
+			// (requirement 2): the dynamic catalog resolves the window from provider
+			// discovery or models.dev, and the R-MC4 readiness gate keeps a backend
+			// whose window is unresolved across all layers unready rather than failing
+			// validation. `tier` was removed (R-RT3, slice 2).
 			return data.backends.every((b) => {
 				if (b.provider === "umans") return true;
-				return b.model !== undefined && b.context_window !== undefined;
+				return b.model !== undefined;
 			});
 		},
 		{
-			message:
-				"model and context_window are required for all providers except umans (which is self-configuring)",
+			message: "model is required for all providers except umans (which is self-configuring)",
 		},
 	)
 	.refine(

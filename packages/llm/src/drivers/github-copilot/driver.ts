@@ -36,6 +36,7 @@ import {
 	toModelMessages,
 	toToolSet,
 } from "../../bridge";
+import type { DiscoveredModel } from "../../catalog/discovery";
 import type { DriverFallbackSupport } from "../../fallback-policy";
 import type {
 	BackendCapabilities,
@@ -286,6 +287,33 @@ async function* injectReasoningOpaque(
 		}
 		yield chunk;
 	}
+}
+
+/**
+ * Map one Copilot catalog entry to a {@link DiscoveredModel} (requirement 6).
+ * `max_context` follows requirement 4: the prompt budget is `maxPromptTokens`,
+ * so the effective window is `min(maxContextWindowTokens, maxPromptTokens +
+ * maxOutputTokens)`. When the entry lacks `maxContextWindowTokens` the window is
+ * left unset (lower layers fill it); when it lacks `maxPromptTokens` the raw
+ * `maxContextWindowTokens` is used as-is.
+ */
+function copilotEntryToDiscoveredModel(entry: CopilotModelEntry): DiscoveredModel {
+	const capabilities: NonNullable<DiscoveredModel["capabilities"]> = {};
+	if (entry.supportsToolCalls !== undefined) capabilities.tool_use = entry.supportsToolCalls;
+	if (entry.supportsVision !== undefined) capabilities.vision = entry.supportsVision;
+	const ctxWindow = entry.maxContextWindowTokens;
+	if (ctxWindow !== undefined) {
+		capabilities.max_context =
+			entry.maxPromptTokens !== undefined
+				? Math.min(ctxWindow, entry.maxPromptTokens + (entry.maxOutputTokens ?? 0))
+				: ctxWindow;
+	}
+	const model: DiscoveredModel = {
+		providerModelId: entry.id,
+		...(Object.keys(capabilities).length > 0 && { capabilities }),
+		...(entry.maxOutputTokens !== undefined && { maxOutputTokens: entry.maxOutputTokens }),
+	};
+	return model;
 }
 
 export class GitHubCopilotDriver implements LLMBackend {
@@ -802,5 +830,33 @@ export class GitHubCopilotDriver implements LLMBackend {
 			publishes_allowed_targets: false,
 			supports_fallback_credit: false,
 		};
+	}
+
+	/**
+	 * Live provider discovery (requirement 6, R-MC3, catalog §4.1): query the
+	 * Copilot `/models` catalog with this host's own token and map each entry to a
+	 * {@link DiscoveredModel}. This is the self-configuring lineup for the
+	 * account's entitlements (Free vs. Enterprise), so a models.dev entry absent
+	 * from this host's Copilot catalog is never advertised here.
+	 *
+	 * `max_context` follows requirement 4: the real prompt budget is
+	 * `max_prompt_tokens`, so `max_context = min(max_context_window_tokens,
+	 * max_prompt_tokens + max_output_tokens)` keeps the routing truncation target
+	 * (`max_context - max_output`) on the real prompt room. An entry missing
+	 * `max_context_window_tokens` contributes none (the lower layers fill it).
+	 *
+	 * Discovery failure degrades to config + models.dev (R-MC6): the catalog's
+	 * `load()` swallows fetch errors into an empty map, so this resolves to `[]`
+	 * rather than throwing — a reachable-but-empty lineup and an unreachable
+	 * endpoint are indistinguishable here, both non-blocking.
+	 */
+	async discoverModels(): Promise<DiscoveredModel[]> {
+		const { catalog } = await this.endpoint();
+		const entries = await catalog.load();
+		const out: DiscoveredModel[] = [];
+		for (const entry of entries.values()) {
+			out.push(copilotEntryToDiscoveredModel(entry));
+		}
+		return out;
 	}
 }

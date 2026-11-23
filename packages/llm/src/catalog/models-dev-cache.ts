@@ -16,7 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { normalizeModelKey } from "./normalize";
+import { modelsDevNamespaceFor, normalizeModelKey } from "./normalize";
 import type { MetadataLayer } from "./resolve-metadata";
 
 const DEFAULT_URL = "https://models.dev/api.json";
@@ -58,8 +58,21 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 
 	const limit = isRecord(entry.limit) ? entry.limit : undefined;
 	const maxContext = asFiniteNumber(limit?.context);
-	if (maxContext !== undefined) capabilities.max_context = maxContext;
+	const maxInput = asFiniteNumber(limit?.input);
 	const maxOutput = asFiniteNumber(limit?.output);
+	// Honour `limit.input` (requirement 4, catalog §3.1). When the registry reports
+	// a separate input (prompt) budget, the real prompt room is `input`, not
+	// `context` (which also counts output). Resolve `max_context` so the routing
+	// truncation target `computeBaseTruncationTarget = max_context - max_output`
+	// lands on the real prompt budget: `max_context = min(context, input + output)`.
+	// When `limit.input` is absent, `max_context` stays `limit.context` unchanged.
+	if (maxContext !== undefined) {
+		if (maxInput !== undefined && maxOutput !== undefined) {
+			capabilities.max_context = Math.min(maxContext, maxInput + maxOutput);
+		} else {
+			capabilities.max_context = maxContext;
+		}
+	}
 	if (maxOutput !== undefined) layer.max_output_tokens = maxOutput;
 
 	const modalitiesInput =
@@ -92,6 +105,15 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 }
 
 /**
+ * Compose the provider-scoped index key: `${modelsDevNamespace}\u0000${canonicalKey}`.
+ * The NUL separator cannot appear in a namespace or canonical key, so a scoped
+ * key never collides with a bare cross-provider canonical key in the same map.
+ */
+function scopedKey(namespace: string, canonicalKey: string): string {
+	return `${namespace}\u0000${canonicalKey}`;
+}
+
+/**
  * Index a raw `models.dev` api.json payload into a `Map<canonicalKey,
  * MetadataLayer>`. The payload is an object keyed by provider namespace, each
  * with a `.models` map keyed by provider model id. Keys are canonicalized with
@@ -114,6 +136,13 @@ export function indexModelsDevSnapshot(raw: unknown): Map<string, MetadataLayer>
 			// First writer wins per canonical key: the registry is upstream-dedup'd
 			// per provider; a cross-provider canonical collision keeps the first.
 			if (!index.has(key)) index.set(key, layer);
+			// Also index under the provider-scoped key so `lookupModelsDevScoped`
+			// (requirement 3) can prefer this provider's own entry over whichever
+			// provider happened to win the cross-provider canonical slot. First
+			// writer wins within a namespace too (models.dev is per-provider
+			// dedup'd, so collisions here are vanishingly rare).
+			const sk = scopedKey(providerNamespace, key);
+			if (!index.has(sk)) index.set(sk, layer);
 		}
 	}
 	return index;
@@ -132,6 +161,33 @@ export function lookupModelsDev(
 ): MetadataLayer | undefined {
 	const { key } = normalizeModelKey(provider, providerModelId);
 	return index.get(key);
+}
+
+/**
+ * Provider-scoped lookup (requirement 3, catalog §5.2). Prefers the entry under
+ * the backend's OWN `models.dev` provider namespace before the cross-provider
+ * canonical index. The canonical index is first-writer-wins across all 324
+ * providers, so a model id that collides across providers (e.g. `grok-4.7` on
+ * both xAI and github-copilot) otherwise resolves to another provider's limits.
+ * Scoping by `${modelsDevNamespace}:${canonicalKey}` picks the backend's own
+ * provider's entry; when the provider has no mapped namespace, or the model is
+ * absent from it, it falls back to the cross-provider canonical index.
+ *
+ * The canonical grouping key is unchanged — scoping affects ONLY which
+ * `models.dev` metadata row fills gaps, never logical-model pooling.
+ */
+export function lookupModelsDevScoped(
+	index: ReadonlyMap<string, MetadataLayer>,
+	provider: string,
+	providerModelId: string,
+): MetadataLayer | undefined {
+	const namespace = modelsDevNamespaceFor(provider);
+	if (namespace !== undefined) {
+		const { key } = normalizeModelKey(provider, providerModelId);
+		const scoped = index.get(scopedKey(namespace, key));
+		if (scoped !== undefined) return scoped;
+	}
+	return lookupModelsDev(index, provider, providerModelId);
 }
 
 export interface ModelsDevCacheOptions {

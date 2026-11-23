@@ -1369,3 +1369,86 @@ describe("GitHubCopilotDriver.refreshAuth (#285, R-RT13)", () => {
 		expect(await driver.refreshAuth()).toBe(false);
 	});
 });
+
+describe("GitHubCopilotDriver discoverModels (requirement 6)", () => {
+	it("maps catalog limits to DiscoveredModel with max_context = min(ctx, prompt + output)", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "grok-4.7",
+			contextWindow: 500000,
+			account,
+			fetch: makeFetch({
+				catalog: [
+					{
+						id: "grok-4.7",
+						supported_endpoints: ["/responses"],
+						capabilities: {
+							limits: {
+								max_prompt_tokens: 372000,
+								max_output_tokens: 128000,
+								max_context_window_tokens: 500000,
+							},
+							supports: { tool_calls: true, vision: true },
+						},
+					},
+				],
+				requests,
+			}),
+		});
+		const models = await driver.discoverModels();
+		const grok = models.find((m) => m.providerModelId === "grok-4.7");
+		expect(grok).toBeDefined();
+		// prompt 372000 + output 128000 = 500000 <= ctx 500000 → 500000.
+		expect(grok?.capabilities?.max_context).toBe(500000);
+		expect(grok?.maxOutputTokens).toBe(128000);
+		expect(grok?.capabilities?.tool_use).toBe(true);
+		expect(grok?.capabilities?.vision).toBe(true);
+	});
+
+	it("caps max_context at max_context_window_tokens when prompt + output exceeds it", async () => {
+		const requests: Request[] = [];
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "big",
+			contextWindow: 200000,
+			account,
+			fetch: makeFetch({
+				catalog: [
+					{
+						id: "big",
+						supported_endpoints: ["/chat/completions"],
+						capabilities: {
+							limits: {
+								max_prompt_tokens: 190000,
+								max_output_tokens: 64000,
+								max_context_window_tokens: 200000,
+							},
+						},
+					},
+				],
+				requests,
+			}),
+		});
+		const models = await driver.discoverModels();
+		// 190000 + 64000 = 254000 > 200000 → capped at 200000.
+		expect(models.find((m) => m.providerModelId === "big")?.capabilities?.max_context).toBe(200000);
+	});
+
+	it("degrades to an empty lineup when the catalog fetch fails (R-MC6, never throws)", async () => {
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "grok-4.7",
+			contextWindow: 500000,
+			account,
+			// A fetch that 500s on /models; CopilotCatalog.load() swallows to an empty map.
+			fetch: (async (input: RequestInfo | URL) => {
+				const url = new URL(new Request(input).url);
+				if (url.pathname.endsWith("/models")) return new Response("boom", { status: 500 });
+				return new Response("not found", { status: 404 });
+			}) as typeof fetch,
+		});
+		const models = await driver.discoverModels();
+		expect(models).toEqual([]);
+	});
+});

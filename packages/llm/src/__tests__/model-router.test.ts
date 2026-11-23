@@ -62,6 +62,153 @@ class CachingMockBackend implements LLMBackend {
 	}
 }
 
+import type { ResolvedBackend } from "../catalog/resolve-catalog";
+import type { ModelMetadata } from "../catalog/resolve-metadata";
+
+/** Build a minimal ResolvedBackend for applyResolvedCatalog tests. */
+function resolvedBackend(opts: {
+	maxContext?: number;
+	maxOutputTokens?: number;
+	maxOutputSource?: "config" | "provider" | "models_dev";
+	ready?: boolean;
+}): ResolvedBackend {
+	const field_sources: ModelMetadata["field_sources"] = {};
+	if (opts.maxContext !== undefined) field_sources.max_context = "models_dev";
+	if (opts.maxOutputTokens !== undefined) {
+		field_sources.max_output_tokens = opts.maxOutputSource ?? "models_dev";
+	}
+	const metadata: ModelMetadata = {
+		provider_model_id: "m",
+		logical_model: null,
+		vendor: null,
+		capabilities: opts.maxContext !== undefined ? { max_context: opts.maxContext } : {},
+		...(opts.maxOutputTokens !== undefined && { max_output_tokens: opts.maxOutputTokens }),
+		field_sources,
+	};
+	return {
+		metadata,
+		ready: opts.ready ?? opts.maxContext !== undefined,
+		configGap: "",
+		logicalModel: null,
+		groupingSource: "none",
+	};
+}
+
+describe("ModelRouter — applyResolvedCatalog (requirement 1 + 5)", () => {
+	it("applies resolved max_context and max_output_tokens to a backend with none in config", () => {
+		// A backend built from config WITHOUT context_window gets the sentinel 0
+		// window; the catalog resolved both values from models.dev.
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "grok",
+					provider: "openai-compatible",
+					apiKey: "k",
+					model: "grok-4.7",
+					baseUrl: "http://localhost",
+					// no contextWindow, no maxOutputTokens
+				},
+			],
+			default: "grok",
+		});
+		expect(router.getEffectiveCapabilities("grok")?.max_context).toBe(0);
+		expect(router.getMaxOutputTokens("grok")).toBeUndefined();
+
+		router.applyResolvedCatalog(
+			new Map([["grok", resolvedBackend({ maxContext: 500000, maxOutputTokens: 128000 })]]),
+		);
+
+		expect(router.getEffectiveCapabilities("grok")?.max_context).toBe(500000);
+		expect(router.getMaxOutputTokens("grok")).toBe(128000);
+	});
+
+	it("leaves a config-provided max_output_tokens untouched when catalog omits it", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "nova",
+					provider: "bedrock",
+					model: "nova-pro",
+					region: "us-east-1",
+					contextWindow: 300000,
+					maxOutputTokens: 8192,
+				},
+			],
+			default: "nova",
+		});
+		// Catalog resolves only max_context; config max_output_tokens stays.
+		router.applyResolvedCatalog(new Map([["nova", resolvedBackend({ maxContext: 300000 })]]));
+		expect(router.getEffectiveCapabilities("nova")?.max_context).toBe(300000);
+		expect(router.getMaxOutputTokens("nova")).toBe(8192);
+	});
+
+	it("drops a non-config max_output_tokens that is >= max_context (output>=context sanity, req 5)", () => {
+		// amazon-bedrock us.moonshotai.kimi-k3.1: context 1048576, output 1048576.
+		// output == context would make computeBaseTruncationTarget 0; the
+		// non-config value must be treated as unknown.
+		const router = createModelRouter({
+			backends: [{ id: "kimi", provider: "bedrock", model: "kimi", region: "us-east-1" }],
+			default: "kimi",
+		});
+		router.applyResolvedCatalog(
+			new Map([["kimi", resolvedBackend({ maxContext: 1048576, maxOutputTokens: 1048576 })]]),
+		);
+		expect(router.getEffectiveCapabilities("kimi")?.max_context).toBe(1048576);
+		// Dropped → no max_output_tokens, so the loop sends the provider default and
+		// the truncation target stays sane.
+		expect(router.getMaxOutputTokens("kimi")).toBeUndefined();
+	});
+
+	it("respects a config max_output_tokens even when it is >= max_context (req 5)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "kimi",
+					provider: "bedrock",
+					model: "kimi",
+					region: "us-east-1",
+					contextWindow: 1048576,
+					maxOutputTokens: 1048576,
+				},
+			],
+			default: "kimi",
+		});
+		// A config-sourced value is always honoured, even if it equals max_context.
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"kimi",
+					resolvedBackend({
+						maxContext: 1048576,
+						maxOutputTokens: 1048576,
+						maxOutputSource: "config",
+					}),
+				],
+			]),
+		);
+		expect(router.getMaxOutputTokens("kimi")).toBe(1048576);
+	});
+
+	it("skips unready backends and backends absent from the router", () => {
+		const router = createModelRouter({
+			backends: [
+				{ id: "a", provider: "bedrock", model: "a", region: "us-east-1", contextWindow: 200000 },
+			],
+			default: "a",
+		});
+		router.applyResolvedCatalog(
+			new Map([
+				// unready → skipped
+				["a", resolvedBackend({ ready: false })],
+				// unknown id → skipped, no throw
+				["ghost", resolvedBackend({ maxContext: 999 })],
+			]),
+		);
+		// 'a' keeps its config window; nothing from the unready entry applied.
+		expect(router.getEffectiveCapabilities("a")?.max_context).toBe(200000);
+	});
+});
+
 describe("ModelRouter — system prompt suffix", () => {
 	it("returns the configured suffix only for its backend", () => {
 		const configured = new MockBackend("configured");

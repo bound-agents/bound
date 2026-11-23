@@ -399,6 +399,35 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
+		it("accepts a NON-umans row that omits context_window (optional, catalog resolves it)", () => {
+			// Requirement 2: context_window is optional for all providers now; the
+			// catalog resolves the window from provider discovery / models.dev, and
+			// the R-MC4 readiness gate keeps a backend with no window anywhere unready
+			// at runtime. `model` is still required for non-umans.
+			const config = {
+				backends: [
+					{
+						id: "grok",
+						provider: "github-copilot",
+						model: "grok-4.7",
+						token_store_path: "/tmp/copilot.json",
+					},
+				],
+				default: "grok",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("still rejects a NON-umans row that omits model (model stays required)", () => {
+			const config = {
+				backends: [{ id: "x", provider: "bedrock", region: "us-east-1", context_window: 200000 }],
+				default: "x",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
 		it("rejects negative context_window", () => {
 			const config = {
 				backends: [

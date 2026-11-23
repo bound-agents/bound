@@ -10,7 +10,12 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelsDevCache, indexModelsDevSnapshot, lookupModelsDev } from "./models-dev-cache";
+import {
+	ModelsDevCache,
+	indexModelsDevSnapshot,
+	lookupModelsDev,
+	lookupModelsDevScoped,
+} from "./models-dev-cache";
 
 function tmpCachePath(): { dir: string; path: string; cleanup: () => void } {
 	const dir = mkdtempSync(join(tmpdir(), "models-dev-"));
@@ -85,6 +90,98 @@ describe("indexModelsDevSnapshot / lookupModelsDev", () => {
 		expect(indexModelsDevSnapshot(null).size).toBe(0);
 		expect(indexModelsDevSnapshot("nope").size).toBe(0);
 		expect(indexModelsDevSnapshot({ anthropic: 42 }).size).toBe(0);
+	});
+
+	it("honours limit.input: max_context = min(context, input + output) (requirement 4)", () => {
+		// github-copilot grok-4.7 real shape: {context: 500000, input: 372000, output: 128000}.
+		// The real prompt budget is input, so max_context must land at input+output=500000
+		// (<= context here) so the truncation target (max_context - max_output) == input.
+		const index = indexModelsDevSnapshot({
+			"github-copilot": {
+				models: {
+					"grok-4.7": { limit: { context: 500000, input: 372000, output: 128000 } },
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "github-copilot", "grok-4.7");
+		expect(layer?.capabilities?.max_context).toBe(500000);
+		expect(layer?.max_output_tokens).toBe(128000);
+	});
+
+	it("caps max_context at limit.context when input + output exceeds it (requirement 4)", () => {
+		const index = indexModelsDevSnapshot({
+			anthropic: {
+				models: {
+					"claude-x": { limit: { context: 200000, input: 190000, output: 64000 } },
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "anthropic", "claude-x");
+		// input+output = 254000 > context 200000 → capped at 200000.
+		expect(layer?.capabilities?.max_context).toBe(200000);
+	});
+
+	it("leaves max_context at limit.context when limit.input is absent (unchanged behavior)", () => {
+		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
+		const layer = lookupModelsDev(index, "anthropic", "claude-opus-4");
+		expect(layer?.capabilities?.max_context).toBe(200000);
+		expect(layer?.max_output_tokens).toBe(32000);
+	});
+});
+
+describe("lookupModelsDevScoped — provider-scoped lookup (requirement 3)", () => {
+	// A canonical key that collides across providers: a non-copilot provider
+	// writes grok-4.7 first (cross-provider index is first-writer-wins), so an
+	// unscoped lookup for a github-copilot backend returns the WRONG provider's
+	// limits. The provider-scoped lookup must return github-copilot's own entry.
+	const COLLISION_PAYLOAD = {
+		xai: {
+			models: {
+				"grok-4.7": { limit: { context: 500000, output: 500000 } },
+			},
+		},
+		"github-copilot": {
+			models: {
+				"grok-4.7": { limit: { context: 500000, input: 372000, output: 128000 } },
+			},
+		},
+	};
+
+	it("prefers the backend's own provider namespace over a cross-provider collision", () => {
+		const index = indexModelsDevSnapshot(COLLISION_PAYLOAD);
+		// Cross-provider index resolved to xai (first writer): ctx 500000, out 500000.
+		expect(lookupModelsDev(index, "github-copilot", "grok-4.7")?.max_output_tokens).toBe(500000);
+		// Provider-scoped lookup returns github-copilot's own entry.
+		const scoped = lookupModelsDevScoped(index, "github-copilot", "grok-4.7");
+		expect(scoped?.capabilities?.max_context).toBe(500000);
+		expect(scoped?.max_output_tokens).toBe(128000);
+	});
+
+	it("maps bedrock and bedrock-mantle to amazon-bedrock for scoped lookup", () => {
+		const index = indexModelsDevSnapshot({
+			"amazon-bedrock": {
+				models: {
+					"us.anthropic.claude-opus-4-v1:0": { limit: { context: 200000, output: 64000 } },
+				},
+			},
+		});
+		const a = lookupModelsDevScoped(index, "bedrock", "us.anthropic.claude-opus-4-v1:0");
+		expect(a?.capabilities?.max_context).toBe(200000);
+		const b = lookupModelsDevScoped(index, "bedrock-mantle", "us.anthropic.claude-opus-4-v1:0");
+		expect(b?.capabilities?.max_context).toBe(200000);
+	});
+
+	it("falls back to the cross-provider canonical index when no namespace is mapped", () => {
+		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
+		// openai-compatible has no models.dev namespace mapping, so scoped falls
+		// through to the canonical cross-provider entry.
+		const layer = lookupModelsDevScoped(index, "openai-compatible", "claude-opus-4");
+		expect(layer?.capabilities?.max_context).toBe(200000);
+	});
+
+	it("returns undefined when neither scoped nor canonical lookup matches", () => {
+		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
+		expect(lookupModelsDevScoped(index, "github-copilot", "nonexistent-model")).toBeUndefined();
 	});
 });
 

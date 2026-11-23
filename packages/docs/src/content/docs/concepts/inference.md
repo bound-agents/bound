@@ -50,6 +50,18 @@ in authentication, model discovery, request controls, and prompt-cache support. 
 [configuration reference](/bound/reference/configuration/#model_backendsjs--model_backendsjson) for the
 current providers, credentials, and backend fields.
 
+A backend's metadata — context window, output limit, capabilities, and pricing —
+resolves in a fixed precedence: explicit values in `model_backends` config win,
+then the provider's own discovery API (where the account's live model lineup and
+limits come from), then the `models.dev` fallback registry. `context_window` and
+`max_output_tokens` are therefore optional overrides: you set them only to cap a
+value below what the provider or `models.dev` reports, or for a model neither
+source knows. A backend whose context window resolves from none of the three
+sources stays unready — not advertised, not routable — rather than running on a
+guessed window. A reported output limit that is as large as the whole context
+window is treated as unknown (it would leave no room for the prompt); an explicit
+`max_output_tokens` override is always honoured.
+
 ## Provider-specific request handling
 
 ### Prompt caching

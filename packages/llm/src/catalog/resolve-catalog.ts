@@ -22,7 +22,7 @@
  */
 
 import type { DiscoveredModel } from "./discovery";
-import { normalizeModelKey } from "./normalize";
+import { lookupModelsDevScoped } from "./models-dev-cache";
 import { resolveLogicalModel } from "./resolve-grouping";
 import type { GroupingSource } from "./resolve-grouping";
 import { type MetadataLayer, type ModelMetadata, resolveModelMetadata } from "./resolve-metadata";
@@ -116,11 +116,13 @@ export function resolveCatalog(args: ResolveCatalogArgs): Map<string, ResolvedBa
 	// Pass 2: resolve metadata + grouping for every backend.
 	const result = new Map<string, ResolvedBackend>();
 	for (const b of args.backends) {
+		// Provider-scoped models.dev lookup (requirement 3): prefer the entry under
+		// this backend's OWN provider namespace before the cross-provider canonical
+		// index, so a model id that collides across providers resolves to its own
+		// provider's limits. Falls back to the canonical index when the provider has
+		// no mapped namespace or the model is absent from it.
 		const modelsDev = b.providerModelId
-			? (() => {
-					const { key } = normalizeModelKey(b.provider, b.providerModelId);
-					return args.modelsDev.get(key) ?? {};
-				})()
+			? (lookupModelsDevScoped(args.modelsDev, b.provider, b.providerModelId) ?? {})
 			: {};
 
 		const { metadata, ready, configGap } = resolveModelMetadata({
