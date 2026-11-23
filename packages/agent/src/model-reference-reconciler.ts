@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { analyzeModelReferences, listActiveAdvisories, softDelete } from "@bound/core";
+import { analyzeModelReferences, listAdvisoriesByType, softDelete } from "@bound/core";
 import { createAdvisory } from "./advisories";
 
 /**
@@ -73,21 +73,31 @@ export function reconcileModelReferenceAdvisories(db: Database, siteId: string):
 		expectedTitles.add(taskTitle(taskId, logicalModel));
 	}
 
-	// Existing open (non-applied/dismissed, non-deleted) dangling advisories,
-	// indexed by title so we can both dedup raises and find auto-resolvable rows.
-	const openByTitle = new Map<string, string>(); // title -> advisory id
-	for (const advisory of listActiveAdvisories(db)) {
-		if (advisory.type === DANGLING_TYPE) openByTitle.set(advisory.title, advisory.id);
+	// Every non-deleted dangling advisory of this type, across all statuses
+	// (including the terminal applied/dismissed an operator set). Two indexes:
+	//  - `knownTitles` dedups raises against ANY existing row for a title, so a
+	//    reference an operator already dismissed does NOT re-raise a fresh
+	//    `proposed` row every pass (churn defect A).
+	//  - `ownById` holds only rows THIS site created, so auto-resolve never
+	//    soft-deletes another host's row — two hosts with divergent `hosts`
+	//    replicas would otherwise ping-pong soft-delete + re-raise (defect B).
+	const knownTitles = new Set<string>();
+	const ownByTitle = new Map<string, string>(); // title -> own advisory id
+	for (const advisory of listAdvisoriesByType(db, DANGLING_TYPE)) {
+		knownTitles.add(advisory.title);
+		if (advisory.created_by === siteId) ownByTitle.set(advisory.title, advisory.id);
 	}
 
 	let raised = 0;
 	let resolved = 0;
 
-	// Auto-resolve: an open dangling advisory whose reference is no longer
-	// dangling (the model came back, or the role/agent was reassigned/removed).
-	// Soft-delete rather than dismiss so the row leaves the active surface and
-	// a future recurrence raises a fresh advisory with its own provenance.
-	for (const [title, id] of openByTitle) {
+	// Auto-resolve: one of THIS site's dangling advisories whose reference is no
+	// longer dangling (the model came back, or the role/agent/task was
+	// reassigned/removed). Soft-delete rather than dismiss so the row leaves the
+	// surface and a future recurrence raises a fresh advisory with its own
+	// provenance; even an operator-dismissed row resolves here once the model
+	// returns. Another site's rows are left untouched (defect B).
+	for (const [title, id] of ownByTitle) {
 		if (!expectedTitles.has(title)) {
 			softDelete(db, "advisories", id, siteId);
 			resolved++;
@@ -97,7 +107,7 @@ export function reconcileModelReferenceAdvisories(db: Database, siteId: string):
 	// Raise: a currently-dangling reference with no open advisory yet.
 	for (const { role, logicalModel } of report.danglingRoles) {
 		const title = roleTitle(role, logicalModel);
-		if (openByTitle.has(title)) continue;
+		if (knownTitles.has(title)) continue;
 		createAdvisory(
 			db,
 			{
@@ -115,7 +125,7 @@ export function reconcileModelReferenceAdvisories(db: Database, siteId: string):
 	}
 	for (const { agentName, logicalModel } of report.danglingAgents) {
 		const title = agentTitle(agentName, logicalModel);
-		if (openByTitle.has(title)) continue;
+		if (knownTitles.has(title)) continue;
 		createAdvisory(
 			db,
 			{
@@ -133,7 +143,7 @@ export function reconcileModelReferenceAdvisories(db: Database, siteId: string):
 	}
 	for (const { taskId, logicalModel } of report.danglingTasks) {
 		const title = taskTitle(taskId, logicalModel);
-		if (openByTitle.has(title)) continue;
+		if (knownTitles.has(title)) continue;
 		createAdvisory(
 			db,
 			{

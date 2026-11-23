@@ -6,12 +6,25 @@ import {
 	insertRow,
 	listActiveAdvisories,
 	softDelete,
+	updateRow,
 } from "@bound/core";
 import { ROUTING_MODEL_ROLES_KEY } from "@bound/shared";
+import { createAdvisory } from "../advisories";
 import { reconcileModelReferenceAdvisories } from "../model-reference-reconciler";
 
 const SITE_A = "site-aaaaaa";
 const SITE_B = "site-bbbbbb";
+
+/** Every non-deleted-aware `model_reference_dangling` row (incl. terminal and deleted). */
+function allDanglingRows(
+	db: Database,
+): Array<{ id: string; status: string; created_by: string | null; deleted: number }> {
+	return db
+		.query(
+			"SELECT id, status, created_by, deleted FROM advisories WHERE type = 'model_reference_dangling' AND deleted = 0",
+		)
+		.all() as Array<{ id: string; status: string; created_by: string | null; deleted: number }>;
+}
 
 function freshDb(): Database {
 	const db = new Database(":memory:");
@@ -75,6 +88,48 @@ function insertAgent(db: Database, name: string, modelHint: string): void {
 			retired_at: null,
 			created_by_thread: null,
 			created_at: "2026-01-01T00:00:00.000Z",
+			deleted: 0,
+			modified_at: "2026-01-01T00:00:00.000Z",
+		},
+		SITE_A,
+	);
+}
+
+function insertTask(db: Database, id: string, modelHint: string, status = "pending"): void {
+	insertRow(
+		db,
+		"tasks",
+		{
+			id,
+			type: "heartbeat",
+			status,
+			trigger_spec: "{}",
+			payload: null,
+			created_at: "2026-01-01T00:00:00.000Z",
+			created_by: SITE_A,
+			thread_id: null,
+			claimed_by: null,
+			claimed_at: null,
+			lease_id: null,
+			next_run_at: null,
+			last_run_at: null,
+			run_count: 0,
+			max_runs: null,
+			requires: null,
+			model_hint: modelHint,
+			no_history: null,
+			inject_mode: null,
+			depends_on: null,
+			require_success: null,
+			alert_threshold: null,
+			consecutive_failures: 0,
+			event_depth: null,
+			no_quiescence: null,
+			heartbeat_at: null,
+			result: null,
+			error: null,
+			origin_thread_id: null,
+			system_prompt_addition: null,
 			deleted: 0,
 			modified_at: "2026-01-01T00:00:00.000Z",
 		},
@@ -164,21 +219,107 @@ describe("reconcileModelReferenceAdvisories", () => {
 		expect(reconcileModelReferenceAdvisories(db, SITE_A).resolved).toBe(1);
 	});
 
-	it("does not touch an operator-dismissed advisory on re-reconcile", () => {
+	it("raises a dangling advisory for a scheduled task naming a decommissioned model", () => {
+		advertiseHost(db, SITE_A, ["opus"]);
+		setRoles(db, { default: "opus" });
+		insertTask(db, "hb-1", "sonnet-gone");
+
+		const result = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(result.raised).toBe(1);
+		const active = listActiveAdvisories(db).filter((a) => a.type === "model_reference_dangling");
+		expect(active).toHaveLength(1);
+		expect(active[0].title).toContain("hb-1");
+		expect(active[0].title).toContain("sonnet-gone");
+	});
+
+	it("auto-resolves a task advisory when the task's model is re-advertised", () => {
+		advertiseHost(db, SITE_A, ["opus"]);
+		setRoles(db, { default: "opus" });
+		insertTask(db, "hb-1", "sonnet-gone");
+		expect(reconcileModelReferenceAdvisories(db, SITE_A).raised).toBe(1);
+
+		advertiseHost(db, SITE_B, ["sonnet-gone"]);
+		const result = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(result.resolved).toBe(1);
+		expect(
+			listActiveAdvisories(db).filter((a) => a.type === "model_reference_dangling"),
+		).toHaveLength(0);
+	});
+
+	// Churn defect A (req 4): an operator-acted (dismissed/applied) advisory for a
+	// reference that is STILL dangling must NOT be re-raised every pass. Dedup has to
+	// count terminal rows, not just the active (non-terminal) set.
+	it("does not re-raise a dismissed advisory while the reference is still dangling", () => {
 		advertiseHost(db, SITE_A, ["opus"]);
 		setRoles(db, { default: "opus", heavy: "sonnet-gone" });
 		expect(reconcileModelReferenceAdvisories(db, SITE_A).raised).toBe(1);
 
-		// Operator dismisses it; a later reconcile with the model still gone must
-		// not re-raise (dedup also counts dismissed rows by title) nor resurrect.
-		const active = listActiveAdvisories(db).find((a) => a.type === "model_reference_dangling");
-		if (!active) throw new Error("expected an advisory");
-		softDelete(db, "advisories", active.id, SITE_A);
+		// Operator dismisses it (terminal). The model is still gone.
+		const raised = listActiveAdvisories(db).find((a) => a.type === "model_reference_dangling");
+		if (!raised) throw new Error("expected an advisory");
+		updateRow(db, "advisories", raised.id, { status: "dismissed" }, SITE_A);
 
+		// A later reconcile must neither re-raise a fresh proposed row nor touch the
+		// dismissed one: the operator has spoken, the reference is unchanged.
 		const result = reconcileModelReferenceAdvisories(db, SITE_A);
-		// The soft-deleted row is gone from active; the model is still dangling, so
-		// a fresh advisory is raised (a dismissed-then-still-broken case). The key
-		// guarantee is the reconciler never throws and never double-counts a live row.
+		expect(result.raised).toBe(0);
 		expect(result.resolved).toBe(0);
+		const rows = allDanglingRows(db);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].status).toBe("dismissed");
+	});
+
+	// Churn defect A, resolve path: once the model returns, even a dismissed/applied
+	// advisory this site raised should auto-resolve (soft-delete) so a future
+	// recurrence gets a fresh row.
+	it("auto-resolves a dismissed advisory when the reference comes back", () => {
+		advertiseHost(db, SITE_A, ["opus"]);
+		setRoles(db, { default: "opus", heavy: "sonnet-gone" });
+		expect(reconcileModelReferenceAdvisories(db, SITE_A).raised).toBe(1);
+		const raised = listActiveAdvisories(db).find((a) => a.type === "model_reference_dangling");
+		if (!raised) throw new Error("expected an advisory");
+		updateRow(db, "advisories", raised.id, { status: "dismissed" }, SITE_A);
+
+		advertiseHost(db, SITE_B, ["sonnet-gone"]);
+		const result = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(result.resolved).toBe(1);
+		expect(allDanglingRows(db)).toHaveLength(0);
+	});
+
+	// Churn defect B (req 4): two sites with divergent `hosts` replicas must not
+	// soft-delete and re-raise each other's advisories in a sync ping-pong. A host
+	// only auto-resolves advisories IT created.
+	it("does not auto-resolve another site's advisory (no cross-site ping-pong)", () => {
+		// SITE_A sees the model as dangling and raises. SITE_B's row for the same
+		// dangling ref is simulated: a proposed advisory created_by SITE_B.
+		advertiseHost(db, SITE_A, ["opus"]);
+		setRoles(db, { default: "opus", heavy: "sonnet-gone" });
+		expect(reconcileModelReferenceAdvisories(db, SITE_A).raised).toBe(1);
+
+		// A second host (SITE_B) independently raised its own row for the same title.
+		const titleRow = listActiveAdvisories(db).find((a) => a.type === "model_reference_dangling");
+		if (!titleRow) throw new Error("expected an advisory");
+		createAdvisory(
+			db,
+			{
+				type: "model_reference_dangling",
+				status: "proposed",
+				title: titleRow.title,
+				detail: "raised by site B",
+				action: null,
+				impact: null,
+				evidence: null,
+			},
+			SITE_B,
+		);
+
+		// SITE_A reconciles again. The reference is STILL dangling, so nothing
+		// resolves — and critically SITE_A must not soft-delete SITE_B's row.
+		const result = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(result.resolved).toBe(0);
+		expect(result.raised).toBe(0);
+		const rows = allDanglingRows(db);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => r.deleted === 0)).toBe(true);
 	});
 });

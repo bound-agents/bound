@@ -13,6 +13,7 @@ import {
 	listActiveAdvisories,
 	listActiveAdvisorySummaries,
 	listAdvisoriesByStatus,
+	listAdvisoriesByType,
 	listAdvisoriesResolvedAfter,
 	listAdvisoryIdsByStatusResolvedBefore,
 	listAdvisorySummariesByStatus,
@@ -488,6 +489,50 @@ describe("advisories repository finders", () => {
 			expect(ids.has("applied")).toBe(false);
 			expect(ids.has("dismissed")).toBe(false);
 			expect(ids.has("del")).toBe(false);
+		});
+	});
+
+	describe("listAdvisoriesByType (type filter, all non-terminal and terminal, deleted=0)", () => {
+		it("returns every non-deleted row of the type regardless of status, incl. applied/dismissed", () => {
+			seed(db, {
+				id: "prop",
+				type: "model_reference_dangling",
+				status: "proposed",
+				created_by: "alice",
+			});
+			seed(db, {
+				id: "appl",
+				type: "model_reference_dangling",
+				status: "applied",
+				created_by: "alice",
+			});
+			seed(db, {
+				id: "dism",
+				type: "model_reference_dangling",
+				status: "dismissed",
+				created_by: "bob",
+			});
+			seed(db, { id: "other", type: "general", status: "proposed", created_by: "alice" });
+			seed(db, {
+				id: "del",
+				type: "model_reference_dangling",
+				status: "proposed",
+				created_by: "alice",
+			});
+			softDelete(db, "advisories", "del", SITE);
+
+			const rows = listAdvisoriesByType(db, "model_reference_dangling");
+			const ids = new Set(rows.map((r) => r.id));
+			expect(ids).toEqual(new Set(["prop", "appl", "dism"]));
+			// created_by and status survive so the reconciler can scope auto-resolve.
+			const byId = new Map(rows.map((r) => [r.id, r]));
+			expect(byId.get("appl")?.status).toBe("applied");
+			expect(byId.get("dism")?.created_by).toBe("bob");
+		});
+
+		it("returns [] for a type with no rows", () => {
+			seed(db, { id: "g1", type: "general", status: "proposed" });
+			expect(listAdvisoriesByType(db, "model_reference_dangling")).toEqual([]);
 		});
 	});
 });

@@ -46,6 +46,21 @@ export function listActiveAdvisories(db: Database): Advisory[] {
 		.all() as Advisory[];
 }
 
+/**
+ * Every non-deleted advisory of a given type, regardless of status (includes the
+ * terminal `applied`/`dismissed` states that {@link listActiveAdvisories}
+ * excludes), newest-proposed first. The reconciler uses this to dedup raises
+ * against operator-acted rows — a reference an operator already dismissed must
+ * not re-raise a fresh `proposed` row every pass — and, together with
+ * `created_by`, to scope auto-resolve to this host's own rows so two hosts with
+ * divergent `hosts` replicas don't soft-delete and re-raise each other's rows.
+ */
+export function listAdvisoriesByType(db: Database, type: string): Advisory[] {
+	return db
+		.query("SELECT * FROM advisories WHERE deleted = 0 AND type = ? ORDER BY proposed_at DESC")
+		.all(type) as Advisory[];
+}
+
 /** Resolved advisories created by a site within a recency cutoff (approved/applied/dismissed). */
 export function listResolvedAdvisoriesByCreator(
 	db: Database,
