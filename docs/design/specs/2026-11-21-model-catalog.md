@@ -23,9 +23,19 @@ This RFC defines a dynamic, zero-hardcoded-model-list catalog built from **live 
 
 ---
 
-## 2. Scope and Non-Goals
+## 2. Goals, Scope, and Non-Goals
 
-### 2.1 In scope
+### 2.1 Goals
+
+These goals bind every requirement in this RFC and its companion. Where an existing configuration value or code path was chosen for a reason that conflicts with them, the conflict is raised with the operator as a decision; it is not resolved silently in either direction.
+
+- **Minimal configuration.** An operator configures only what no provider API or registry can supply: credentials, endpoints, and deliberate overrides. Any value a provider API or `models.dev` publishes is derived, not copied into config.
+- **No hardcoded model lists.** Behavior never branches on model ID strings. Capabilities, limits, prices, and fallback eligibility come from provider APIs, `models.dev`, or driver-level declarations.
+- **No invented constants.** Every threshold, limit, and policy traces to a provider, the registry, or measured history. A value with no such source is a design question, not a default.
+- **Maintained sources over hand-maintained copies.** When local config and an upstream source disagree on a published fact, the upstream source is authoritative unless the operator sets an explicit override.
+- **Internal identifiers stay internal.** Grouping keys, `RouteId`s, and other identifiers that exist for matching or addressing are never presented to users as model names.
+
+### 2.2 In scope
 
 This RFC defines:
 
@@ -36,7 +46,7 @@ This RFC defines:
 - cluster-level fallback defaults and named model roles replacing `tier`; and
 - the operator surfaces for inspecting resolved metadata and resolving unassigned models.
 
-### 2.2 Non-goals
+### 2.3 Non-goals
 
 - This RFC does **not** hardcode a static list of model IDs, capabilities, prices, or fallback pairs in the Bound binary.
 - This RFC does **not** define route ranking, thread stickiness, health/backoff, or refusal retry mechanics; those live in `2026-11-21-model-routing.md`.

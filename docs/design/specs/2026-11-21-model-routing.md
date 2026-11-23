@@ -21,9 +21,19 @@ This RFC separates logical model identity from concrete routes, replaces `tier` 
 
 ---
 
-## 2. Scope and Non-Goals
+## 2. Goals, Scope, and Non-Goals
 
-### 2.1 In scope
+### 2.1 Goals
+
+These goals bind every requirement in this RFC and its companion. Where an existing configuration value or code path was chosen for a reason that conflicts with them, the conflict is raised with the operator as a decision; it is not resolved silently in either direction.
+
+- **Minimal configuration.** An operator configures only what no provider API or registry can supply: credentials, endpoints, and deliberate overrides. Any value a provider API or `models.dev` publishes is derived, not copied into config.
+- **No hardcoded model lists.** Behavior never branches on model ID strings. Capabilities, limits, prices, and fallback eligibility come from provider APIs, `models.dev`, or driver-level declarations.
+- **No invented constants.** Every threshold, limit, and policy traces to a provider, the registry, or measured history. A value with no such source is a design question, not a default.
+- **Maintained sources over hand-maintained copies.** When local config and an upstream source disagree on a published fact, the upstream source is authoritative unless the operator sets an explicit override.
+- **Internal identifiers stay internal.** Grouping keys, `RouteId`s, and other identifiers that exist for matching or addressing are never presented to users as model names.
+
+### 2.2 In scope
 
 This RFC defines:
 
@@ -34,7 +44,7 @@ This RFC defines:
 - the classification split between **route failures** and **model refusals**, including driver-level refusal fallback, provider fallback-credit redemption, and per-attempt cost accounting; and
 - the operator web UI model for model selection, provenance, notifications, and routing preferences.
 
-### 2.2 Non-goals
+### 2.3 Non-goals
 
 - This RFC does **not** move the agent loop. The loop always runs on the trigger host and relays only inference and tool calls (`2026-06-29-unified-delegation.md`, R-UD1).
 - This RFC does **not** alter `durable_work` transport semantics (`2026-08-31-durable-work-consolidation.md`) or add direct spoke-to-spoke transport.
