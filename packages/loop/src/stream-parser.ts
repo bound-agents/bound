@@ -21,6 +21,10 @@ export interface ParsedAttempt {
 		outputTokens: number;
 		cacheWriteTokens: number | null;
 		cacheWrite1hTokens: number | null;
+		/** Per-lifetime write split keyed by the provider's own TTL vocabulary; absent when unreported. */
+		cacheWriteSplit?: Array<{ ttl: string; tokens: number }>;
+		/** The route protocol's default cache lifetime (5m Messages/Converse, 30m Responses); absent when the driver didn't stamp it. */
+		cacheWriteDefaultLifetime?: string;
 		cacheReadTokens: number | null;
 		usageEstimated: boolean;
 	};
@@ -71,6 +75,10 @@ export interface ParsedResponse {
 		cacheWriteTokens: number | null;
 		/** 1h-TTL subset of cacheWriteTokens; null when the split is unknown. */
 		cacheWrite1hTokens: number | null;
+		/** Per-lifetime write split keyed by the provider's own TTL vocabulary; absent when unreported. */
+		cacheWriteSplit?: Array<{ ttl: string; tokens: number }>;
+		/** The route protocol's default cache lifetime (5m Messages/Converse, 30m Responses); absent when the driver didn't stamp it. */
+		cacheWriteDefaultLifetime?: string;
 		cacheReadTokens: number | null;
 		usageEstimated: boolean;
 	};
@@ -146,6 +154,8 @@ export function parseResponseChunks(
 	let outputTokens = 0;
 	let cacheWriteTokens: number | null = null;
 	let cacheWrite1hTokens: number | null = null;
+	let cacheWriteSplit: Array<{ ttl: string; tokens: number }> | undefined;
+	let cacheWriteDefaultLifetime: string | undefined;
 	let cacheReadTokens: number | null = null;
 	let usageEstimated = false;
 	let costUsdFromHub: number | null = null;
@@ -207,6 +217,8 @@ export function parseResponseChunks(
 				outputTokens = chunk.usage.output_tokens;
 				cacheWriteTokens = chunk.usage.cache_write_tokens;
 				cacheWrite1hTokens = chunk.usage.cache_write_1h_tokens ?? null;
+				cacheWriteSplit = chunk.usage.cache_write_split;
+				cacheWriteDefaultLifetime = chunk.usage.cache_write_default_lifetime;
 				cacheReadTokens = chunk.usage.cache_read_tokens;
 				usageEstimated = chunk.usage.estimated;
 				costUsdFromHub = chunk.cost_usd ?? null;
@@ -222,6 +234,12 @@ export function parseResponseChunks(
 						outputTokens: chunk.usage.output_tokens,
 						cacheWriteTokens: chunk.usage.cache_write_tokens,
 						cacheWrite1hTokens: chunk.usage.cache_write_1h_tokens ?? null,
+						...(chunk.usage.cache_write_split !== undefined && {
+							cacheWriteSplit: chunk.usage.cache_write_split,
+						}),
+						...(chunk.usage.cache_write_default_lifetime !== undefined && {
+							cacheWriteDefaultLifetime: chunk.usage.cache_write_default_lifetime,
+						}),
 						cacheReadTokens: chunk.usage.cache_read_tokens,
 						usageEstimated: chunk.usage.estimated,
 					},
@@ -259,6 +277,8 @@ export function parseResponseChunks(
 			outputTokens,
 			cacheWriteTokens,
 			cacheWrite1hTokens,
+			...(cacheWriteSplit !== undefined && { cacheWriteSplit }),
+			...(cacheWriteDefaultLifetime !== undefined && { cacheWriteDefaultLifetime }),
 			cacheReadTokens,
 			usageEstimated,
 		},

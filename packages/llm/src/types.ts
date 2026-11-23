@@ -384,6 +384,24 @@ export type StreamChunk =
 				 * never sets it, and an older peer that receives it, both stay valid.
 				 */
 				cache_write_1h_tokens?: number | null;
+				/**
+				 * Per-lifetime cache-write split, keyed by the provider's own TTL
+				 * vocabulary (`[{ ttl: "5m", tokens }, { ttl: "1h", tokens }, …]`).
+				 * Absent when no provider reported one — never a guess. Optional on the
+				 * wire: an older peer that never sets it, and an older peer that receives
+				 * it, both stay valid.
+				 */
+				cache_write_split?: Array<{ ttl: string; tokens: number }>;
+				/**
+				 * The TTL the route's wire protocol treats as its DEFAULT cache lifetime,
+				 * stamped by the executing driver from the protocol it speaks (5m for
+				 * Anthropic Messages/Converse, 30m for OpenAI Responses). Lets the cost
+				 * layer price a split entry at this lifetime as a MATCHED rate, not an
+				 * estimate. Absent when the driver didn't stamp it — never a guess; it names
+				 * the protocol, not a measured value. Optional on the wire: older peers in
+				 * both directions stay valid.
+				 */
+				cache_write_default_lifetime?: string;
 				cache_read_tokens: number | null;
 				estimated: boolean;
 			};

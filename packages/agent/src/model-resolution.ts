@@ -8,6 +8,7 @@ import type {
 } from "@bound/llm";
 
 import {
+	computeEffectiveCacheWindowMs,
 	findClusterConfigValueByKey,
 	findLatestOkTurnRouteByThread,
 	listAllHostModels,
@@ -709,7 +710,15 @@ function resolveStickyForThread(
 		},
 		requestedModel: effectiveModelId,
 		eligibleRouteIds: eligible,
-		cacheTtlMsByRoute: (routeId) => ttlMsByRoute.get(routeId) ?? null,
+		// Effective cache window (R-MC16): prefer the window measured from this
+		// route's turn history on the serving host; fall back to the lifetime the
+		// route last requested (its configured/advertised cache_ttl) when no history
+		// exists. The measured window is read only for the local route — remote
+		// routes carry no local history to measure from and keep their TTL fallback.
+		cacheWindowMsByRoute: (routeId) =>
+			computeEffectiveCacheWindowMs(db, routeId, { nowIso: new Date(nowMs).toISOString() }) ??
+			ttlMsByRoute.get(routeId) ??
+			null,
 		nowMs,
 	});
 	if (decision.kind !== "sticky") return null;

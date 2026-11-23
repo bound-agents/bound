@@ -204,6 +204,22 @@ interface UsageTokens {
 	 * reports null.
 	 */
 	cacheWrite1hTokens?: number | null;
+	/**
+	 * Per-lifetime cache-write split keyed by the provider's own TTL vocabulary.
+	 * Absent/empty when no provider reported one. Used by R-MC15 per-lifetime
+	 * pricing; the total stays on `cacheWriteTokens`.
+	 */
+	cacheWriteSplit?: Array<{ ttl: string; tokens: number }>;
+	/**
+	 * The TTL the route's wire protocol treats as its DEFAULT cache lifetime,
+	 * stamped by the driver from the protocol it speaks (5m for Anthropic
+	 * Messages/Converse, 30m for OpenAI Responses). A split entry at this lifetime
+	 * is priced by the `cacheWrite` (default-lifetime) rate as a lifetime-MATCHED
+	 * price, not a fallback. Absent means "treat any non-1h lifetime as the
+	 * default" — the conservative legacy behavior for drivers that don't stamp it.
+	 * Never a guess — it names the protocol, not a measured value.
+	 */
+	cacheWriteDefaultLifetime?: string;
 }
 
 interface BackendPricing {
@@ -239,7 +255,13 @@ export interface TurnCostBreakdown {
  *   - `unknown`: no layer supplied any price
  */
 export type PricingSource =
-	"config_callback" | "config" | "provider" | "models_dev" | "provider_reported" | "unknown";
+	| "config_callback"
+	| "config"
+	| "provider"
+	| "models_dev"
+	| "provider_reported"
+	| "estimate"
+	| "unknown";
 
 /** Resolved per-component per-M prices plus which layer supplied them. */
 interface EffectivePricesPerM {
@@ -248,6 +270,19 @@ interface EffectivePricesPerM {
 	cacheRead: number;
 	cacheWrite: number;
 	cacheWrite1h: number;
+	/**
+	 * Per-lifetime cache-write prices beyond the default and 1h rates, keyed by
+	 * the provider's TTL vocabulary. Present only when config overrides supply a
+	 * named lifetime the base/1h fields don't cover; empty/absent otherwise.
+	 */
+	lifetimePricesPerM?: Record<string, number>;
+	/**
+	 * The TTL lifetime the `cacheWrite` rate prices (the protocol default: `5m`
+	 * for Anthropic Messages/Converse, `30m` for Responses). A split entry at this
+	 * lifetime is lifetime-matched (not an estimate). Absent means "treat any
+	 * non-1h lifetime as the default" — the conservative legacy behavior.
+	 */
+	defaultLifetime?: string;
 	/** `config` when any component came from an explicit config override, else the catalog source. */
 	source: "config" | "provider" | "models_dev";
 }
@@ -334,22 +369,104 @@ function resolveEffectivePrices(
 		: catalogSource === "provider"
 			? "provider"
 			: "models_dev";
-	return { input, output, cacheRead, cacheWrite, cacheWrite1h, source };
+	// The `cacheWrite` rate prices the protocol's default cache lifetime. The
+	// catalog field that feeds it (`cache_write_5m_per_m`) is the Anthropic
+	// Messages / Converse default (5m); a Responses route's default (30m) is
+	// carried in the same structural field by the catalog resolver, so "5m" here
+	// names the default-lifetime SLOT, not a literal 5-minute guarantee on every
+	// protocol. A split entry at this lifetime is lifetime-matched, not estimated.
+	// map stays empty today (both protocols' default lifetime is priced by
+	// `cacheWrite`). It is the extension point for a future named-lifetime config
+	// override without changing the split-pricing call sites.
+	return { input, output, cacheRead, cacheWrite, cacheWrite1h, lifetimePricesPerM: {}, source };
+}
+
+/**
+ * Per-lifetime cache-write pricing (R-MC15). Prices the reported write split
+ * from a map of ttl -> per-M price, and reports whether the turn is an
+ * `estimate`: true when any write tokens were priced at a fallback rate rather
+ * than a lifetime-matched one — unsplit tokens, or split tokens whose lifetime
+ * carries no published price. The caller records `estimate` as the pricing
+ * source in that case.
+ *
+ * The per-lifetime map is built from the resolved prices: the catalog/config
+ * `cache_write_5m_per_m` is the DEFAULT-lifetime rate (the protocol's default:
+ * 5m for Anthropic Messages/Converse, 30m for Responses — the registry's
+ * `cache_write` describes whichever one the route's protocol uses), and
+ * `cache_write_1h_per_m` prices the 1h lifetime. A lifetime with no explicit
+ * price falls back to the default-lifetime rate and flags the estimate.
+ */
+function priceCacheWrites(
+	usage: UsageTokens,
+	prices: EffectivePricesPerM,
+): { cost: number; estimated: boolean } {
+	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
+	if (totalCacheWrite <= 0) return { cost: 0, estimated: false };
+
+	// Per-lifetime prices known to this route. `cacheWrite` is the default
+	// lifetime's rate; `cacheWrite1h` the 1h rate. Both always resolved (default
+	// to the 5m/base rate upstream), so the only "unpriced lifetime" is one that
+	// is neither the default nor 1h.
+	const split = usage.cacheWriteSplit;
+	if (split && split.length > 0) {
+		let cost = 0;
+		let estimated = false;
+		let accountedFor = 0;
+		// The route's protocol default lifetime, stamped by the driver onto the
+		// done-chunk usage (5m for Anthropic Messages/Converse, 30m for OpenAI
+		// Responses). A split entry at this lifetime is priced by `cacheWrite` as a
+		// lifetime-MATCHED rate, not a fallback. The usage signal wins over the
+		// price-layer default; absent on both, fall back to 5m (legacy behavior).
+		const defaultLifetime = usage.cacheWriteDefaultLifetime ?? prices.defaultLifetime ?? "5m";
+		for (const entry of split) {
+			accountedFor += entry.tokens;
+			if (entry.ttl === "1h") {
+				cost += (entry.tokens * prices.cacheWrite1h) / 1_000_000;
+			} else if (entry.ttl === defaultLifetime) {
+				// The protocol's default lifetime is priced by `cacheWrite` — a matched
+				// price, not a fallback, so it does not flag the estimate.
+				cost += (entry.tokens * prices.cacheWrite) / 1_000_000;
+			} else if (prices.lifetimePricesPerM?.[entry.ttl] !== undefined) {
+				cost += (entry.tokens * (prices.lifetimePricesPerM[entry.ttl] as number)) / 1_000_000;
+			} else {
+				// Lifetime with no matched price — bill at the default rate, estimate.
+				cost += (entry.tokens * prices.cacheWrite) / 1_000_000;
+				estimated = true;
+			}
+		}
+		// Any write tokens not covered by the split bill at the default rate (estimate).
+		const remainder = totalCacheWrite - accountedFor;
+		if (remainder > 0) {
+			cost += (remainder * prices.cacheWrite) / 1_000_000;
+			estimated = true;
+		}
+		return { cost, estimated };
+	}
+
+	// No reported split. When the driver stamped the route's protocol default
+	// lifetime, the whole cache-write total is attributed to that one lifetime,
+	// which the `cacheWrite` rate prices as a lifetime-MATCHED figure (R-MC15 step
+	// 2) — not an estimate. This is what keeps a correctly-reported Responses write
+	// (whose endpoint reports a total but no per-lifetime breakdown) off the
+	// `estimate` path. The 1h subset, when the driver separately reported it, still
+	// prices at the 1h rate. Without a stamped default the whole total bills at the
+	// default rate as an estimate of the real per-lifetime cost (legacy behavior).
+	const oneHTokens = Math.min(usage.cacheWrite1hTokens ?? 0, totalCacheWrite);
+	const defaultTokens = totalCacheWrite - oneHTokens;
+	const cost = (defaultTokens * prices.cacheWrite + oneHTokens * prices.cacheWrite1h) / 1_000_000;
+	// A stamped default lifetime is a protocol-matched price for the default-rate
+	// tokens; only the absence of a stamped lifetime leaves the attribution a guess.
+	const estimated = usage.cacheWriteDefaultLifetime === undefined;
+	return { cost, estimated };
 }
 
 /** Compute the four-component split from already-resolved per-M prices. */
 function breakdownFromPrices(usage: UsageTokens, prices: EffectivePricesPerM): TurnCostBreakdown {
-	// 1h subset is only known when explicitly reported; null/absent → 0, which
-	// makes the whole cache-write total bill at the 5m rate (today's behavior).
-	const cacheWrite1hTokens = usage.cacheWrite1hTokens ?? 0;
-	const totalCacheWrite = usage.cacheWriteTokens ?? 0;
-	const oneHTokens = Math.min(cacheWrite1hTokens, totalCacheWrite);
-	const fiveMTokens = totalCacheWrite - oneHTokens;
 	return {
 		input: (usage.inputTokens * prices.input) / 1_000_000,
 		output: (usage.outputTokens * prices.output) / 1_000_000,
 		cacheRead: ((usage.cacheReadTokens ?? 0) * prices.cacheRead) / 1_000_000,
-		cacheWrite: (fiveMTokens * prices.cacheWrite + oneHTokens * prices.cacheWrite1h) / 1_000_000,
+		cacheWrite: priceCacheWrites(usage, prices).cost,
 	};
 }
 
@@ -597,7 +714,14 @@ export function resolveTurnCost(input: ResolveTurnCostInput): ResolvedTurnCost {
 	if (prices) {
 		const breakdown = breakdownFromPrices(input.usage, prices);
 		const cost = breakdown.input + breakdown.output + breakdown.cacheRead + breakdown.cacheWrite;
-		return { cost, breakdown, source: prices.source };
+		// R-MC15: when any cache-write tokens priced at a fallback rate (unsplit, or a
+		// split lifetime with no published price), the turn's cost is an `estimate` of
+		// the real per-lifetime charge rather than a lifetime-matched figure. Only the
+		// catalog path can estimate; a config override is authoritative, and a
+		// provider-reported charge already returned above.
+		const { estimated } = priceCacheWrites(input.usage, prices);
+		const source = estimated ? "estimate" : prices.source;
+		return { cost, breakdown, source };
 	}
 
 	// 5. No layer supplied any price: cost is unknown (requirement 3), not $0.

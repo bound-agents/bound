@@ -95,6 +95,64 @@ export function findLatestTurnCacheStateByThread(
 }
 
 /**
+ * Measure a route's effective prompt-cache window from history
+ * (2026-11-21-model-catalog.md R-MC16, consumed by thread stickiness §5.3).
+ *
+ * The window is the LONGEST gap between two consecutive turns on the same
+ * `route_id` WITHIN one thread where the later turn reported `tokens_cache_read
+ * > 0` — i.e. the longest inter-turn delay after which the route's prompt cache
+ * was observed still warm. A cache prefix is thread-scoped, so gaps are measured
+ * per `(route_id, thread_id)`, never across threads. Returns the gap in
+ * milliseconds, or `null` when the route has no two-consecutive-turns-with-a-
+ * following-read history (the caller then falls back to the last requested
+ * lifetime).
+ *
+ * Lookback bound: only turns created within the last 24h (`nowIso - 24h`) are
+ * considered. 24h is not an invented constant — it is the longest cache
+ * retention Bound ever requests (`promptCacheRetention: "24h"`, bedrock-mantle.ts).
+ * A warm gap older than that cannot describe a currently-live cache window, so
+ * bounding the scan there keeps the query cheap without discarding any
+ * measurement that could still matter.
+ */
+export function computeEffectiveCacheWindowMs(
+	db: Database,
+	routeId: string,
+	opts: { nowIso: string },
+): number | null {
+	const LOOKBACK_MS = 24 * 60 * 60 * 1000;
+	const sinceIso = new Date(new Date(opts.nowIso).getTime() - LOOKBACK_MS).toISOString();
+	const rows = db
+		.query(
+			`SELECT thread_id, created_at, tokens_cache_read
+			 FROM turns
+			 WHERE route_id = ?
+			   AND deleted = 0
+			   AND created_at >= ?
+			 ORDER BY thread_id ASC, created_at ASC, rowid ASC`,
+		)
+		.all(routeId, sinceIso) as Array<{
+		thread_id: string | null;
+		created_at: string;
+		tokens_cache_read: number | null;
+	}>;
+
+	let longest: number | null = null;
+	for (let i = 1; i < rows.length; i++) {
+		const prev = rows[i - 1];
+		const cur = rows[i];
+		// Consecutive within the same thread only — a cache prefix never spans
+		// threads, so a read on a different thread says nothing about this gap.
+		if (cur.thread_id !== prev.thread_id) continue;
+		// The later turn must have actually read from cache for the gap to count as
+		// a confirmed-warm window.
+		if ((cur.tokens_cache_read ?? 0) <= 0) continue;
+		const gap = new Date(cur.created_at).getTime() - new Date(prev.created_at).getTime();
+		if (gap >= 0 && (longest === null || gap > longest)) longest = gap;
+	}
+	return longest;
+}
+
+/**
  * `created_at` of the most recent turn for a thread. Used by cache-warm-poke.ts
  * to decide whether a warm prefix is still extendable.
  */

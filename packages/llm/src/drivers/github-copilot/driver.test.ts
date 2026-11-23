@@ -809,6 +809,26 @@ describe("GitHubCopilotDriver reasoning effort (Responses route)", () => {
 		const reasoning = body.reasoning as { effort?: string } | undefined;
 		expect(reasoning?.effort).toBe("none");
 	});
+
+	it("sends prompt_cache_options.ttl=30m on the Responses route when caching is requested (R-MC14, obj2)", async () => {
+		// §3.3 Request: the Responses route sends the protocol's OWN cache-lifetime
+		// field. The caller signals caching via cache_ttl; the Responses protocol's
+		// single lifetime is 30m, so that is what rides on prompt_cache_options.ttl.
+		const body = await responsesBody(
+			{ model: "gpt-5.6", cache_ttl: "1h", messages: [{ role: "user", content: "hi" }] },
+			gpt56Catalog,
+		);
+		const cacheOpts = body.prompt_cache_options as { ttl?: string } | undefined;
+		expect(cacheOpts?.ttl).toBe("30m");
+	});
+
+	it("omits prompt_cache_options when no caching is requested (Responses route)", async () => {
+		const body = await responsesBody(
+			{ model: "gpt-5.6", messages: [{ role: "user", content: "hi" }] },
+			gpt56Catalog,
+		);
+		expect(body.prompt_cache_options).toBeUndefined();
+	});
 });
 
 describe("GitHubCopilotDriver reasoning effort (Chat route)", () => {

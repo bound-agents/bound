@@ -35,6 +35,11 @@ import {
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { resolveAwsCredentials } from "./aws-credential-cache";
+import {
+	type CacheFieldDecision,
+	CacheFieldRecoveryState,
+	withCacheFieldRecovery,
+} from "./cache-field-recovery";
 import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
 import {
 	creditTokenOf,
@@ -184,6 +189,10 @@ export class BedrockDriver implements LLMBackend {
 	// redeemable here; `planCreditRedemption` compares the credit's minting
 	// endpoint to this. Empty string when the host didn't configure a site id.
 	private readonly reasoningOrigin: string;
+	// Per-route prompt-cache field recovery (R-MC14): remembers when a route
+	// rejected the Bedrock Converse `cachePoint` field, so later requests skip the
+	// doomed field. In-memory, keyed by route; a fresh process re-learns.
+	private readonly cacheRecovery = new CacheFieldRecoveryState();
 	// Discovery (slice 6, R-MC3): region + profile needed to sign a SigV4 control-
 	// plane request to the Bedrock models-list endpoints. Stored so `discoverModels()`
 	// can enumerate this host's own entitled lineup without reaching into the AI SDK.
@@ -314,43 +323,60 @@ export class BedrockDriver implements LLMBackend {
 		// else on Bedrock-Converse can carry the looser `[a-zA-Z0-9_.:-]{1,64}`
 		// shape — notably Kimi's native `functions.<name>:<index>` fallback ids.
 		const isAnthropicModel = modelId.includes("anthropic");
-		const bridgeMessages = toModelMessages(params.messages, {
-			cacheProvider: "bedrock",
-			cacheTtl: quantizeCacheTtl(params.cache_ttl),
-			resolveFileRef: params.resolveFileRef,
-			// Anthropic-on-Bedrock replays its signed reasoning blocks via the
-			// "bedrock" policy. Non-Anthropic Converse models can't carry a
-			// reasoning signature, but `null` here means "replay signature-less
-			// reasoning as bare text", which re-accumulates a reasoning-heavy
-			// model's prior chain-of-thought every turn — the same context bloat
-			// that degraded the OpenCode Go models. Use "openai" so signature-less
-			// reasoning is dropped on replay (kept only if it carries replayable
-			// encrypted content), matching every other non-signature leg.
-			reasoningProviderOptions: isAnthropicModel ? "bedrock" : "openai",
-			targetEnvelope: isAnthropicModel ? ANTHROPIC_ENVELOPE : BEDROCK_PERMISSIVE_ENVELOPE,
-		});
-		// Inject the system prompt as a `role: "system"` ModelMessage at index 0
-		// rather than via streamText's top-level `system: string` parameter.
-		// The latter does not carry providerOptions through the AI SDK's
-		// normalization, so a Bedrock `cachePoint` would never reach the wire
-		// and the byte-stable system prefix (R-VC25) would have no cache anchor.
-		// See `buildBedrockSystemMessage` for the full rationale.
-		const systemMessage = buildBedrockSystemMessage({
-			system: params.system,
-			// Independent decision per `shouldEnableSystemCachePoint` — the
-			// system anchor is no longer gated on message-level marker
-			// presence. See thread `a191e01f-…` regression: empty bridge
-			// markers used to disable the system anchor, killing all
-			// caching for the entire turn.
-			cacheEnabled: shouldEnableSystemCachePoint({
-				cacheTtl: quantizeCacheTtl(params.cache_ttl),
-				bridgeMessages,
-			}),
-			cacheTtl: quantizeCacheTtl(params.cache_ttl),
-		});
-		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
 		const tools = toToolSet(params.tools);
 		const reasoningConfig = buildReasoningConfig(params, modelId);
+
+		// Build the messages + system anchor for ONE attempt, applying any
+		// cache-field recovery decision for this route: `drop` sends no cachePoint
+		// (caching disabled this turn), `use-value` resends with the provider-listed
+		// ttl. `undefined` sends the configured cache_ttl. The recoverable field is
+		// the Bedrock Converse `cachePoint` (its optional `ttl`).
+		const buildMessages = (decision: CacheFieldDecision | undefined): ModelMessage[] => {
+			const effectiveTtl: "5m" | "1h" | undefined =
+				decision?.kind === "drop"
+					? undefined
+					: decision?.kind === "use-value" && (decision.value === "5m" || decision.value === "1h")
+						? decision.value
+						: quantizeCacheTtl(params.cache_ttl);
+			const cachingDropped = decision?.kind === "drop";
+			const bridgeMessages = toModelMessages(params.messages, {
+				cacheProvider: cachingDropped ? null : "bedrock",
+				cacheTtl: effectiveTtl,
+				resolveFileRef: params.resolveFileRef,
+				// Anthropic-on-Bedrock replays its signed reasoning blocks via the
+				// "bedrock" policy. Non-Anthropic Converse models can't carry a
+				// reasoning signature, but `null` here means "replay signature-less
+				// reasoning as bare text", which re-accumulates a reasoning-heavy
+				// model's prior chain-of-thought every turn — the same context bloat
+				// that degraded the OpenCode Go models. Use "openai" so signature-less
+				// reasoning is dropped on replay (kept only if it carries replayable
+				// encrypted content), matching every other non-signature leg.
+				reasoningProviderOptions: isAnthropicModel ? "bedrock" : "openai",
+				targetEnvelope: isAnthropicModel ? ANTHROPIC_ENVELOPE : BEDROCK_PERMISSIVE_ENVELOPE,
+			});
+			// Inject the system prompt as a `role: "system"` ModelMessage at index 0
+			// rather than via streamText's top-level `system: string` parameter.
+			// The latter does not carry providerOptions through the AI SDK's
+			// normalization, so a Bedrock `cachePoint` would never reach the wire
+			// and the byte-stable system prefix (R-VC25) would have no cache anchor.
+			// See `buildBedrockSystemMessage` for the full rationale.
+			const systemMessage = buildBedrockSystemMessage({
+				system: params.system,
+				// Independent decision per `shouldEnableSystemCachePoint` — the
+				// system anchor is no longer gated on message-level marker
+				// presence. See thread `a191e01f-…` regression: empty bridge
+				// markers used to disable the system anchor, killing all
+				// caching for the entire turn.
+				cacheEnabled:
+					!cachingDropped &&
+					shouldEnableSystemCachePoint({
+						cacheTtl: effectiveTtl,
+						bridgeMessages,
+					}),
+				cacheTtl: effectiveTtl,
+			});
+			return systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
+		};
 
 		// Build one Bedrock streaming attempt for `effectiveModel`. `credit`, when
 		// set, carries the fallback-credit redemption state for an inline credited
@@ -360,8 +386,10 @@ export class BedrockDriver implements LLMBackend {
 		// stripThinking:false). The step kind decides whether the token is present.
 		const buildStream = (
 			effectiveModel: string,
+			cacheDecision: CacheFieldDecision | undefined,
 			credit?: { step: CreditStep; token: string },
 		): AsyncIterable<StreamChunk> => {
+			const messages = buildMessages(cacheDecision);
 			const betaFlags = credit ? ["fallback-credit-2026-07-01"] : undefined;
 			return runProviderStream({
 				modelId: effectiveModel,
@@ -392,26 +420,48 @@ export class BedrockDriver implements LLMBackend {
 							} as Record<string, unknown> as never,
 						},
 					}).fullStream,
-				map: { usageProvider: "bedrock", estimateInputFromMessages: params.messages },
+				map: {
+					usageProvider: "bedrock",
+					estimateInputFromMessages: params.messages,
+					// Bedrock Converse's default cache lifetime is 5m; stamp it so the cost
+					// layer prices a reported 5m split entry as a matched rate.
+					cacheWriteDefaultLifetime: "5m",
+				},
 			});
 		};
 
+		// Prompt-cache request recovery (R-MC14) wraps the credit-redemption executor:
+		// on a Bedrock Converse `cachePoint` rejection, record the per-route decision
+		// and reissue ONCE with the field dropped (or resent with a listed ttl). The
+		// rejection is handled here, inside the driver, before the stream reaches
+		// route-health — it is never a route failure and never a refusal.
+		//
 		// Wrap the primary attempt with the inline credit-redemption executor
 		// (R-RT18, §7.3). On a co-located credit-bearing refusal it walks the planned
 		// step-down, replaying the refused prompt against the fallback target; a
 		// non-co-located / token-less refusal flows through for the loop-host router.
-		yield* redeemFallbackCredit(buildStream(modelId), {
-			driver: this.fallbackSupport(),
-			executingEndpoint: this.reasoningOrigin,
-			resolveTarget: () => resolveFallbackTargetFromParams(params, this.reasoningOrigin),
-			serverToolsRan: serverToolsRanInChunks,
-			runStep: (step, target, refusedChunks) => {
-				const token = creditTokenOf(refusedChunks);
-				return buildStream(
-					target.targetModel,
-					step.includeToken ? { step, token } : { step, token: "" },
-				);
-			},
+		yield* withCacheFieldRecovery({
+			routeId: modelId,
+			state: this.cacheRecovery,
+			fields: ["cachepoint"],
+			// Bedrock Converse `cachePoint.ttl` accepts only "5m"/"1h"; a listed value
+			// outside that set is unusable, so the field is dropped.
+			validValuesFor: () => ["5m", "1h"],
+			run: (cacheDecision) =>
+				redeemFallbackCredit(buildStream(modelId, cacheDecision), {
+					driver: this.fallbackSupport(),
+					executingEndpoint: this.reasoningOrigin,
+					resolveTarget: () => resolveFallbackTargetFromParams(params, this.reasoningOrigin),
+					serverToolsRan: serverToolsRanInChunks,
+					runStep: (step, target, refusedChunks) => {
+						const token = creditTokenOf(refusedChunks);
+						return buildStream(
+							target.targetModel,
+							cacheDecision,
+							step.includeToken ? { step, token } : { step, token: "" },
+						);
+					},
+				}),
 		});
 	}
 

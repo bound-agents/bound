@@ -56,6 +56,11 @@ import {
 } from "./shared";
 
 import { quantizeCacheTtl } from "./bedrock";
+import {
+	type CacheFieldDecision,
+	CacheFieldRecoveryState,
+	withCacheFieldRecovery,
+} from "./cache-field-recovery";
 const PROVIDER_NAME = "umans";
 /** Pro-safe default until the lineup fetch sets the real account limit. */
 const DEFAULT_CONCURRENCY = 3;
@@ -414,6 +419,10 @@ export class UmansDriver implements LLMBackend {
 	/** Present ONLY on the lineup/namespace instance. */
 	readonly readiness?: BackendReadiness;
 	private readonly isNamespace: boolean;
+	// Per-route prompt-cache field recovery (R-MC14): remembers when a route
+	// rejected the Anthropic Messages `cache_control` field, so later requests skip
+	// the doomed field. In-memory, keyed by route; a fresh process re-learns.
+	private readonly cacheRecovery = new CacheFieldRecoveryState();
 
 	constructor(opts: UmansDriverOptions & { namespaceId?: string }) {
 		this.account = opts.account;
@@ -484,14 +493,28 @@ export class UmansDriver implements LLMBackend {
 		}
 
 		const tools = toToolSet(params.tools);
-		const messages = toModelMessages(params.messages, {
-			cacheProvider: "anthropic",
-			resolveFileRef: params.resolveFileRef,
-			targetEnvelope: ANTHROPIC_ENVELOPE,
-			cacheTtl: quantizeCacheTtl(params.cache_ttl),
-			reasoningProviderOptions: "anthropic",
-			midConversationSystem: true,
-		});
+		// Build the messages for ONE attempt, applying any cache-field recovery
+		// decision for this route: `drop` sends no cache_control (caching disabled
+		// this turn), `use-value` resends with the provider-listed ttl. `undefined`
+		// sends the configured cache_ttl. umans speaks the Anthropic Messages route,
+		// so the recoverable field is `cache_control`.
+		const buildMessages = (decision: CacheFieldDecision | undefined) => {
+			const quantized = quantizeCacheTtl(params.cache_ttl);
+			const effectiveTtl: "5m" | "1h" | undefined =
+				decision?.kind === "drop"
+					? undefined
+					: decision?.kind === "use-value" && (decision.value === "5m" || decision.value === "1h")
+						? decision.value
+						: quantized;
+			return toModelMessages(params.messages, {
+				cacheProvider: decision?.kind === "drop" ? null : "anthropic",
+				resolveFileRef: params.resolveFileRef,
+				targetEnvelope: ANTHROPIC_ENVELOPE,
+				cacheTtl: effectiveTtl,
+				reasoningProviderOptions: "anthropic",
+				midConversationSystem: true,
+			});
+		};
 		// Resolve the reasoning_effort to inject as a top-level body field via a
 		// per-call provider whose fetch wrapper adds it (umans extension on the
 		// Anthropic route). Per-call effort > model default_level > nothing.
@@ -539,13 +562,15 @@ export class UmansDriver implements LLMBackend {
 				params.max_tokens && this.maxCompletionTokens
 					? Math.min(params.max_tokens, this.maxCompletionTokens - 1)
 					: params.max_tokens;
-			const runAttempt = (): AsyncIterable<StreamChunk> =>
+			const runAttempt = (
+				cacheDecision: CacheFieldDecision | undefined,
+			): AsyncIterable<StreamChunk> =>
 				mapProviderStream({
 					providerName: PROVIDER_NAME,
 					stream: () =>
 						streamText({
 							model: provider.messages(modelId),
-							messages,
+							messages: buildMessages(cacheDecision),
 							allowSystemInMessages: true,
 							...(params.system && { system: params.system }),
 							...(tools && { tools }),
@@ -565,19 +590,39 @@ export class UmansDriver implements LLMBackend {
 								} as Record<string, unknown> as never,
 							},
 						}).fullStream,
-					map: { estimateInputFromMessages: params.messages, usageProvider: "anthropic" },
+					map: {
+						estimateInputFromMessages: params.messages,
+						usageProvider: "anthropic",
+						// umans speaks the Anthropic Messages route (5m default cache lifetime);
+						// stamp it so the cost layer prices a reported 5m split as a matched rate.
+						cacheWriteDefaultLifetime: "5m",
+					},
 				});
 
-			yield* withEmptyRetry(runAttempt, {
-				maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-				isAborted: () => params.signal?.aborted ?? false,
-				providerName: PROVIDER_NAME,
-				modelId,
-				onRetry: (attempt) =>
-					this.logger?.warn?.(
-						`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
-						{ model: modelId },
-					),
+			// Prompt-cache request recovery (R-MC14) wraps the empty-completion retry:
+			// on an Anthropic Messages `cache_control` rejection, record the per-route
+			// decision and reissue ONCE with the field dropped (or resent with a listed
+			// ttl). The rejection is handled here, inside the driver — never a route
+			// failure and never a refusal.
+			yield* withCacheFieldRecovery({
+				routeId: modelId,
+				state: this.cacheRecovery,
+				fields: ["cache_control"],
+				// Anthropic Messages `cache_control.ttl` accepts only "5m"/"1h"; a listed
+				// value outside that set is unusable, so the field is dropped.
+				validValuesFor: () => ["5m", "1h"],
+				run: (cacheDecision) =>
+					withEmptyRetry(() => runAttempt(cacheDecision), {
+						maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+						isAborted: () => params.signal?.aborted ?? false,
+						providerName: PROVIDER_NAME,
+						modelId,
+						onRetry: (attempt) =>
+							this.logger?.warn?.(
+								`[${PROVIDER_NAME}] empty completion (output_tokens=0), retrying (attempt ${attempt}/${EMPTY_COMPLETION_MAX_RETRIES})`,
+								{ model: modelId },
+							),
+					}),
 			});
 		} finally {
 			params.signal?.removeEventListener("abort", onAbort);

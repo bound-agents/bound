@@ -6,6 +6,7 @@ import { insertRow, softDelete } from "../../index";
 import {
 	aggregateContextDebugHealthInRange,
 	aggregateUsageTotalsInRange,
+	computeEffectiveCacheWindowMs,
 	findLatestCacheHitRateInRange,
 	findLatestTurnCacheStateByThread,
 	findLatestTurnCreatedAtByThread,
@@ -863,5 +864,182 @@ describe("listTurnsByThread", () => {
 
 	it("returns an empty array for a thread with no turns", () => {
 		expect(listTurnsByThread(db, "missing")).toEqual([]);
+	});
+});
+
+describe("computeEffectiveCacheWindowMs", () => {
+	const ROUTE = "siteA:bedrock:haiku";
+
+	it("returns null when the route has no turns", () => {
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			null,
+		);
+	});
+
+	it("returns null when the route never produced a cache read", () => {
+		// Two consecutive turns on the route, but the later one read nothing from
+		// cache — so no measured gap is a confirmed warm window.
+		seed({
+			id: "t1",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "t2",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:20:00.000Z",
+			tokens_cache_read: 0,
+		});
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			null,
+		);
+	});
+
+	it("measures the gap before a turn that reported a cache read", () => {
+		// First turn writes the cache; 20 minutes later the second turn reads it.
+		// The effective window is at least that 20-minute gap.
+		seed({
+			id: "t1",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "t2",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:20:00.000Z",
+			tokens_cache_read: 1200,
+		});
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			20 * 60 * 1000,
+		);
+	});
+
+	it("returns the LONGEST cache-read-followed gap across the route", () => {
+		// 10m gap (read), then a 45m gap (read). The longest confirmed-warm gap wins.
+		seed({
+			id: "t1",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "t2",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:10:00.000Z",
+			tokens_cache_read: 500,
+		});
+		seed({
+			id: "t3",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:55:00.000Z",
+			tokens_cache_read: 800,
+		});
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			45 * 60 * 1000,
+		);
+	});
+
+	it("only measures gaps between consecutive turns WITHIN one thread", () => {
+		// A read on thread th2 must not be attributed to a th1 turn's write: the gap
+		// is per-thread, since a cache prefix is thread-scoped.
+		seed({
+			id: "a1",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "b1",
+			thread_id: "th2",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:05:00.000Z",
+			tokens_cache_read: 0,
+		});
+		// th1's second turn reads cache 30m after th1's first.
+		seed({
+			id: "a2",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:30:00.000Z",
+			tokens_cache_read: 700,
+		});
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			30 * 60 * 1000,
+		);
+	});
+
+	it("ignores turns from other routes", () => {
+		seed({
+			id: "t1",
+			thread_id: "th1",
+			route_id: "siteA:bedrock:other",
+			created_at: "2026-01-01T10:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "t2",
+			thread_id: "th1",
+			route_id: "siteA:bedrock:other",
+			created_at: "2026-01-01T10:40:00.000Z",
+			tokens_cache_read: 900,
+		});
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			null,
+		);
+	});
+
+	it("bounds the lookback to the recent window (24h, anchored to the longest retention Bound requests)", () => {
+		// A warm gap 30h ago is older than the 24h lookback bound and is excluded:
+		// Bound never requests a retention longer than 24h, so a gap older than that
+		// cannot describe a currently-live cache window.
+		seed({
+			id: "old1",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T06:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "old2",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T07:00:00.000Z",
+			tokens_cache_read: 1000,
+		});
+		// now is 2026-01-02T13:00:00Z → the gap above ended >24h ago.
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-02T13:00:00.000Z" })).toBe(
+			null,
+		);
+	});
+
+	it("excludes soft-deleted turns from the gap measurement", () => {
+		seed({
+			id: "t1",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:00:00.000Z",
+			tokens_cache_read: 0,
+		});
+		seed({
+			id: "t2",
+			thread_id: "th1",
+			route_id: ROUTE,
+			created_at: "2026-01-01T10:20:00.000Z",
+			tokens_cache_read: 1200,
+		});
+		softDelete(db, "turns", "t2", SITE);
+		expect(computeEffectiveCacheWindowMs(db, ROUTE, { nowIso: "2026-01-01T12:00:00.000Z" })).toBe(
+			null,
+		);
 	});
 });

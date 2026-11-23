@@ -125,6 +125,25 @@ describe("parseResponseChunks — usage is last-done-wins (T2)", () => {
 			}),
 		);
 	});
+
+	it("carries cache_write_default_lifetime and cache_write_split from the done chunk (obj3/obj4)", () => {
+		const parsed = parseResponseChunks([
+			{
+				type: "done",
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_write_tokens: 1000,
+					cache_read_tokens: null,
+					cache_write_default_lifetime: "30m",
+					estimated: false,
+				},
+			} as StreamChunk,
+		]);
+		// The route's protocol default lifetime survives into the parsed usage so the
+		// cost layer can price the unsplit write at a lifetime-matched rate.
+		expect(parsed.usage.cacheWriteDefaultLifetime).toBe("30m");
+	});
 });
 
 // Splits an args string into a sequence of partial_json fragments that

@@ -81,6 +81,32 @@ provider processes again. Cache warming can refresh an active thread's provider 
 expiry, trading an additional request for a greater chance of reuse. See the [configuration
 reference](/bound/reference/configuration/) for cache support and settings.
 
+Bound does not assume a single cache model across providers. An aggregating provider inherits
+each upstream model's cache behavior per wire protocol, so caching follows three steps per
+request.
+
+- **Request.** When a route's protocol has a cache-lifetime field, Bound sends the configured
+  `cache_ttl` in it: Anthropic Messages `cache_control.ttl`, Bedrock Converse `cachePoint.ttl`,
+  and OpenAI Responses `prompt_cache_options.ttl`. A protocol without such a field gets none.
+  If a provider rejects a request because of a cache field, Bound retries once — with the
+  provider's listed value when the error names one and it fits the field, otherwise without the
+  field — and remembers that outcome for the route. The rejection does not mark the route
+  unhealthy and does not count as a refusal.
+- **Observe.** Bound reads back cache-read and cache-write token counts, and, when the provider
+  reports one, a per-lifetime write split (how many write tokens went to each lifetime, such as
+  5m or 1h).
+- **Price.** Bound prices a turn's cache writes from a provider-reported charge when one is
+  present; otherwise from published per-lifetime write prices times the reported split;
+  otherwise from a published write price times the unsplit or unpriced write tokens, recorded
+  with the pricing source `estimate`; otherwise as unknown. An `estimate` source means the
+  provider did not report the lifetime breakdown, so Bound priced the writes at the default
+  lifetime's rate.
+
+Thread stickiness uses a route's effective cache window: the longest gap between consecutive
+turns on the route after which a later turn still read from cache, measured from turn history.
+A route with no such history falls back to the lifetime it last requested. See [thread
+stickiness](#thread-stickiness).
+
 ### Reasoning controls
 
 Some providers expose controls such as an effort level, adaptive reasoning, or a fixed

@@ -2157,6 +2157,9 @@ export class RelayProcessor {
 							cacheReadTokens: chunk.usage.cache_read_tokens,
 							cacheWriteTokens: chunk.usage.cache_write_tokens,
 							cacheWrite1hTokens: chunk.usage.cache_write_1h_tokens ?? null,
+							...(chunk.usage.cache_write_split !== undefined && {
+								cacheWriteSplit: chunk.usage.cache_write_split,
+							}),
 						},
 						backends,
 						providerCostUsd: chunk.cost_usd,

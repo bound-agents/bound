@@ -53,6 +53,11 @@ import {
 	shouldEnableAnthropicSystemCacheControl,
 } from "../anthropic";
 import {
+	type CacheFieldDecision,
+	CacheFieldRecoveryState,
+	withCacheFieldRecovery,
+} from "../cache-field-recovery";
+import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	bindAsyncIterable,
 	buildReasoningOrigin,
@@ -336,6 +341,11 @@ export class GitHubCopilotDriver implements LLMBackend {
 	 * turn. Encrypted reasoning does not cross providers.
 	 */
 	private readonly reasoningOrigin?: string;
+	// Per-route prompt-cache field recovery (R-MC14): remembers when a route
+	// rejected its cache-lifetime field (Messages `cache_control`, Responses
+	// `prompt_cache_options.ttl`), so later requests skip the doomed field.
+	// In-memory, keyed by route; a fresh process re-learns.
+	private readonly cacheRecovery = new CacheFieldRecoveryState();
 	/** Per-turn request context the fetch wrapper snapshots on each send. */
 	private requestContext: CopilotRequestContext = { initiator: "user", hasImages: false };
 	/**
@@ -484,7 +494,10 @@ export class GitHubCopilotDriver implements LLMBackend {
 		// stream via the `stream` thunk, resetting the buffer below.
 		const collectedReasoningOpaque: ReasoningOpaqueCapture = { reasoningOpaque: "", scan: null };
 
-		const runAttempt = (stripEncryptedReasoning: boolean): AsyncIterable<StreamChunk> => {
+		const runAttempt = (
+			stripEncryptedReasoning: boolean,
+			cacheDecision: CacheFieldDecision | undefined,
+		): AsyncIterable<StreamChunk> => {
 			const mapped = mapProviderStream({
 				providerName: PROVIDER_NAME,
 				modelId,
@@ -501,6 +514,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 						entry,
 						stripEncryptedReasoning,
 						collectedReasoningOpaque,
+						cacheDecision,
 					);
 				},
 				// The messages route goes to @ai-sdk/anthropic, which surfaces the
@@ -517,6 +531,12 @@ export class GitHubCopilotDriver implements LLMBackend {
 					// provider/host drops the un-replayable blob instead of 400-ing.
 					...(route === "responses" &&
 						this.reasoningOrigin && { reasoningOrigin: this.reasoningOrigin }),
+					// The route's wire protocol default cache lifetime, stamped so the cost
+					// layer prices a reported split entry at this lifetime as a matched rate
+					// (5m for the Anthropic Messages route, 30m for OpenAI Responses). Chat
+					// has no cache-lifetime protocol field, so none is stamped there.
+					...(route === "messages" && { cacheWriteDefaultLifetime: "5m" as const }),
+					...(route === "responses" && { cacheWriteDefaultLifetime: "30m" as const }),
 				},
 			});
 			// The chat route can carry reasoning in a non-standard delta field the SDK
@@ -539,21 +559,45 @@ export class GitHubCopilotDriver implements LLMBackend {
 			// or chatgpt-oauth deployment of this same model id on another host). Non-
 			// Responses routes never mint or replay such blobs, so the wrapper is a no-op
 			// there (the rejection classifier won't match a non-encrypted-reasoning error).
+			//
+			// withCacheFieldRecovery (R-MC14) wraps the whole retry stack: a cache-field
+			// rejection on this route's cache-lifetime field (Messages `cache_control`,
+			// Responses `prompt_cache_options.ttl`) records the per-route decision and
+			// reissues ONCE with the field dropped/corrected — never a route failure.
 			yield* this.stampCost(
-				withEncryptedReasoningRetry({
-					build: (stripEncryptedReasoning) => stripEncryptedReasoning,
-					run: (stripEncryptedReasoning) =>
-						withEmptyRetry(() => runAttempt(stripEncryptedReasoning), {
-							maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
-							isAborted: () => params.signal?.aborted ?? false,
-							providerName: PROVIDER_NAME,
-							modelId,
+				withCacheFieldRecovery({
+					routeId: modelId,
+					state: this.cacheRecovery,
+					// The cache-lifetime field depends on the route: Messages sends
+					// `cache_control`, Responses sends `prompt_cache_options.ttl`. Chat
+					// sends none, so its field list is empty and recovery never fires.
+					fields:
+						route === "messages"
+							? ["cache_control"]
+							: route === "responses"
+								? ["prompt_cache_options.ttl"]
+								: [],
+					// Messages `cache_control.ttl` accepts "5m"/"1h"; Responses
+					// `prompt_cache_options.ttl` accepts only "30m" (the protocol's single
+					// lifetime). A listed value outside the route's set is dropped.
+					validValuesFor: (field) =>
+						field === "prompt_cache_options.ttl" ? ["30m"] : ["5m", "1h"],
+					run: (cacheDecision) =>
+						withEncryptedReasoningRetry({
+							build: (stripEncryptedReasoning) => stripEncryptedReasoning,
+							run: (stripEncryptedReasoning) =>
+								withEmptyRetry(() => runAttempt(stripEncryptedReasoning, cacheDecision), {
+									maxRetries: EMPTY_COMPLETION_MAX_RETRIES,
+									isAborted: () => params.signal?.aborted ?? false,
+									providerName: PROVIDER_NAME,
+									modelId,
+								}),
+							onStrip: () =>
+								this.logger?.warn?.(
+									`[${PROVIDER_NAME}] encrypted-reasoning rejected (cross-provider replay); retrying once with encrypted reasoning stripped`,
+									{ model: modelId },
+								),
 						}),
-					onStrip: () =>
-						this.logger?.warn?.(
-							`[${PROVIDER_NAME}] encrypted-reasoning rejected (cross-provider replay); retrying once with encrypted reasoning stripped`,
-							{ model: modelId },
-						),
 				}),
 				entry,
 				routedThroughAuto,
@@ -617,11 +661,39 @@ export class GitHubCopilotDriver implements LLMBackend {
 		entry: CopilotModelEntry | null,
 		stripEncryptedReasoning: boolean,
 		collectedReasoningOpaque: ReasoningOpaqueCapture,
+		cacheDecision: CacheFieldDecision | undefined,
 	): AsyncIterable<unknown> {
-		if (route === "messages") return this.streamMessages(modelId, apiEndpoint, params);
+		if (route === "messages")
+			return this.streamMessages(modelId, apiEndpoint, params, cacheDecision);
 		if (route === "responses")
-			return this.streamResponses(modelId, apiEndpoint, params, entry, stripEncryptedReasoning);
+			return this.streamResponses(
+				modelId,
+				apiEndpoint,
+				params,
+				entry,
+				stripEncryptedReasoning,
+				cacheDecision,
+			);
 		return this.streamChat(modelId, apiEndpoint, params, entry, collectedReasoningOpaque);
+	}
+
+	/**
+	 * The `prompt_cache_options.ttl` value to send on the Responses route, or
+	 * undefined to omit the field. The OpenAI Responses protocol's single cache
+	 * lifetime is "30m" (the SDK's typed union admits only that value); Bound sends
+	 * it when the caller signalled caching intent (`params.cache_ttl` set) and no
+	 * prior rejection on this route dropped the field. A recovery `drop` omits it;
+	 * a `use-value` resends the provider-listed value when it is "30m". Branches on
+	 * the recovery decision and caching intent, never on a model ID (R-MC1).
+	 */
+	private responsesCacheTtl(
+		params: ChatParams,
+		cacheDecision: CacheFieldDecision | undefined,
+	): "30m" | undefined {
+		if (cacheDecision?.kind === "drop") return undefined;
+		if (cacheDecision?.kind === "use-value")
+			return cacheDecision.value === "30m" ? "30m" : undefined;
+		return params.cache_ttl !== undefined ? "30m" : undefined;
 	}
 
 	/** Anthropic Messages route via @ai-sdk/anthropic, baseURL `${api}/v1`. */
@@ -629,6 +701,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 		modelId: string,
 		apiEndpoint: string,
 		params: ChatParams,
+		cacheDecision: CacheFieldDecision | undefined,
 	): AsyncIterable<unknown> {
 		const provider = createAnthropic({
 			apiKey: "copilot", // placeholder — the fetch wrapper strips x-api-key and sets the Bearer
@@ -636,22 +709,34 @@ export class GitHubCopilotDriver implements LLMBackend {
 			fetch: this.copilotFetch(),
 			headers: { "anthropic-version": "2023-06-01" },
 		});
-		const cacheTtl = params.cache_ttl === "1h" ? "1h" : "5m";
+		// Apply any cache-field recovery decision for this route (R-MC14): `drop`
+		// disables cache_control this turn, `use-value` resends the provider-listed
+		// ttl. `undefined` sends the configured cache_ttl. The field is cache_control.
+		const cachingDropped = cacheDecision?.kind === "drop";
+		const requestedTtl: "5m" | "1h" =
+			cacheDecision?.kind === "use-value" &&
+			(cacheDecision.value === "5m" || cacheDecision.value === "1h")
+				? cacheDecision.value
+				: params.cache_ttl === "1h"
+					? "1h"
+					: "5m";
 		const bridgeMessages = toModelMessages(params.messages, {
-			cacheProvider: "anthropic",
-			cacheTtl,
+			cacheProvider: cachingDropped ? null : "anthropic",
+			cacheTtl: requestedTtl,
 			resolveFileRef: params.resolveFileRef,
 			reasoningProviderOptions: "anthropic",
 			targetEnvelope: ANTHROPIC_ENVELOPE,
 		});
 		const systemMessage = buildAnthropicSystemMessage({
 			system: params.system,
-			cacheEnabled: shouldEnableAnthropicSystemCacheControl({
-				cacheTtl:
-					params.cache_ttl === "1h" || params.cache_ttl === "5m" ? params.cache_ttl : undefined,
-				bridgeMessages,
-			}),
-			cacheTtl,
+			cacheEnabled:
+				!cachingDropped &&
+				shouldEnableAnthropicSystemCacheControl({
+					cacheTtl:
+						params.cache_ttl === "1h" || params.cache_ttl === "5m" ? params.cache_ttl : undefined,
+					bridgeMessages,
+				}),
+			cacheTtl: requestedTtl,
 		});
 		const messages: ModelMessage[] = systemMessage
 			? [systemMessage, ...bridgeMessages]
@@ -682,6 +767,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 		params: ChatParams,
 		entry: CopilotModelEntry | null,
 		stripEncryptedReasoning: boolean,
+		cacheDecision: CacheFieldDecision | undefined,
 	): AsyncIterable<unknown> {
 		const provider = createOpenAI({
 			name: PROVIDER_NAME,
@@ -711,6 +797,16 @@ export class GitHubCopilotDriver implements LLMBackend {
 		// gpt-6.x / grok / mai-code turn would otherwise drop the reasoning fields.
 		const openaiOptions: OpenAIResponsesProviderOptions = {
 			...(params.threadId && { promptCacheKey: params.threadId }),
+			// R-MC14 Request: when caching is intended, send the OpenAI Responses
+			// protocol's OWN cache-lifetime field, `prompt_cache_options.ttl`. The
+			// SDK's typed union accepts only "30m" — the Responses protocol's single
+			// lifetime — so that is the value sent (not the Anthropic 5m/1h cache_ttl,
+			// which names a different protocol's lifetimes). A prior rejection recorded
+			// for this route drops the field (`drop`) or resends a provider-listed
+			// value; recovery, not a per-provider special case, handles the rejection.
+			...(this.responsesCacheTtl(params, cacheDecision) && {
+				promptCacheOptions: { ttl: this.responsesCacheTtl(params, cacheDecision) as "30m" },
+			}),
 			...(effort && {
 				forceReasoning: true,
 				reasoningEffort: effort,

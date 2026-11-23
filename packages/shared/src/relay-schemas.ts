@@ -284,6 +284,14 @@ export const streamEndPayloadSchema = z.object({
 		output_tokens: z.number(),
 		cache_write_tokens: z.number().nullable().optional(),
 		cache_write_1h_tokens: z.number().nullable().optional(),
+		// Per-lifetime cache-write split keyed by the provider's own TTL vocabulary.
+		// Optional on the wire: older peers never set it and tolerate receiving it.
+		cache_write_split: z.array(z.object({ ttl: z.string(), tokens: z.number() })).optional(),
+		// The route protocol's default cache lifetime (5m Messages/Converse, 30m
+		// Responses), stamped by the executing driver so the requester prices a split
+		// entry at this lifetime as a matched rate. Optional: older peers in both
+		// directions stay valid.
+		cache_write_default_lifetime: z.string().optional(),
 		cache_read_tokens: z.number().nullable().optional(),
 	}),
 });

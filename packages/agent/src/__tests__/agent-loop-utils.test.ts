@@ -591,6 +591,200 @@ describe("resolveTurnCost catalog pricing", () => {
 		});
 		expect(result.cost).toBe(0.5);
 		expect(result.source).toBe("provider_reported");
+		expect(result.source).toBe("provider_reported");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveTurnCost — per-lifetime cache-write pricing + estimate source (R-MC15)
+// ---------------------------------------------------------------------------
+
+describe("resolveTurnCost per-lifetime cache-write pricing (R-MC15)", () => {
+	it("prices a reported write split per-lifetime from catalog prices", () => {
+		// 400 tokens at the 5m/default price (2/M) + 600 at the 1h price (4/M).
+		// 400*2/1e6 + 600*4/1e6 = 0.0008 + 0.0024 = 0.0032.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: 600,
+				cacheWriteSplit: [
+					{ ttl: "5m", tokens: 400 },
+					{ ttl: "1h", tokens: 600 },
+				],
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { cache_write_5m_per_m: 2, cache_write_1h_per_m: 4 },
+			catalogPricingSource: "provider",
+		});
+		expect(result.cost).toBeCloseTo(0.0032, 10);
+		expect(result.breakdown?.cacheWrite).toBeCloseTo(0.0032, 10);
+		// A fully-priced split is NOT an estimate.
+		expect(result.source).toBe("provider");
+	});
+
+	it("marks the turn as `estimate` when write tokens are unsplit", () => {
+		// No split reported: the whole cache-write total prices at the default
+		// (5m) rate, which is an estimate of the real per-lifetime cost.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { cache_write_5m_per_m: 2 },
+			catalogPricingSource: "models_dev",
+		});
+		// 1000 * 2 / 1e6 = 0.002, priced at the default lifetime.
+		expect(result.cost).toBeCloseTo(0.002, 10);
+		expect(result.source).toBe("estimate");
+	});
+
+	it("prices an unsplit Responses write at its 30m protocol default as matched, not estimate (obj4)", () => {
+		// The Responses endpoint reports a cache-write TOTAL but no per-lifetime split
+		// (its usage carries no `{ttl,tokens}` breakdown, and the echo carries no token
+		// count). The driver stamped the protocol's default lifetime (30m); the whole
+		// unsplit total is attributed to that lifetime, which the catalog `cache_write`
+		// rate prices as a lifetime-MATCHED figure — not an estimate. This is the fix
+		// for a correctly-reported Responses write being mislabeled `estimate`.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+				// No split reported, but the route's protocol default lifetime is known.
+				cacheWriteDefaultLifetime: "30m",
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { cache_write_5m_per_m: 2 },
+			catalogPricingSource: "provider",
+		});
+		expect(result.cost).toBeCloseTo(0.002, 10);
+		expect(result.source).toBe("provider");
+	});
+
+	it("marks `estimate` when a split lifetime has no published price", () => {
+		// The split names a 30m lifetime the catalog has no price for; those tokens
+		// fall back to the default write price, so the turn is an estimate.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+				cacheWriteSplit: [{ ttl: "30m", tokens: 1000 }],
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { cache_write_5m_per_m: 2 },
+			catalogPricingSource: "models_dev",
+		});
+		expect(result.cost).toBeCloseTo(0.002, 10);
+		expect(result.source).toBe("estimate");
+	});
+
+	it("matches a 30m split against a Responses route's 30m default lifetime (no estimate, obj3)", () => {
+		// A Mantle-Responses turn correctly reports a 30m write. The route's protocol
+		// default lifetime is 30m (not 5m), so the catalog `cache_write` rate is a
+		// LIFETIME-MATCHED price for it, not a fallback — the turn is NOT an estimate.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+				cacheWriteSplit: [{ ttl: "30m", tokens: 1000 }],
+				// The driver stamped its protocol's default cache lifetime onto the
+				// done-chunk usage: the OpenAI Responses protocol's default is 30m.
+				cacheWriteDefaultLifetime: "30m",
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { cache_write_5m_per_m: 2 },
+			catalogPricingSource: "provider",
+		});
+		// 1000 * 2 / 1e6 = 0.002, priced at the default-lifetime rate, lifetime-matched.
+		expect(result.cost).toBeCloseTo(0.002, 10);
+		expect(result.source).toBe("provider");
+	});
+
+	it("still estimates a 5m split on a Responses route whose default is 30m (obj3)", () => {
+		// On a 30m-default route, a 5m split entry is NOT the default lifetime and has
+		// no published 5m price, so it falls back to the default rate and flags estimate.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+				cacheWriteSplit: [{ ttl: "5m", tokens: 1000 }],
+				cacheWriteDefaultLifetime: "30m",
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: undefined,
+			catalogPricing: { cache_write_5m_per_m: 2 },
+			catalogPricingSource: "provider",
+		});
+		expect(result.cost).toBeCloseTo(0.002, 10);
+		expect(result.source).toBe("estimate");
+	});
+	it("does not mark `estimate` when a config override prices cache writes", () => {
+		// An explicit operator price is authoritative, not an estimate, even with
+		// an unsplit write.
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+			},
+			backends: [{ id: "cat", price_per_m_cache_write: 3 }],
+			providerCostUsd: undefined,
+			catalogPricing: undefined,
+			catalogPricingSource: undefined,
+		});
+		expect(result.cost).toBeCloseTo(0.003, 10);
+		expect(result.source).toBe("config");
+	});
+
+	it("a provider-reported charge still outranks a per-lifetime estimate", () => {
+		const result = resolveTurnCost({
+			modelId: "cat",
+			usage: {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 1000,
+				cacheWrite1hTokens: null,
+			},
+			backends: [{ id: "cat" }],
+			providerCostUsd: 0.9,
+			catalogPricing: { cache_write_5m_per_m: 2 },
+			catalogPricingSource: "models_dev",
+		});
+		expect(result.cost).toBe(0.9);
+		expect(result.source).toBe("provider_reported");
 	});
 });
 

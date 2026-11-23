@@ -63,6 +63,11 @@ import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from ".
 import { resolveAwsCredentials } from "./aws-credential-cache";
 // Re-exported for the driver test suite; canonical definition lives in ./shared.
 import { quantizeCacheTtl } from "./bedrock";
+import {
+	CacheFieldRecoveryState,
+	classifyCacheFieldRejection,
+	isDurationTtl,
+} from "./cache-field-recovery";
 import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
 import {
 	creditTokenOf,
@@ -81,17 +86,11 @@ import {
 import { type SigV4Credentials, createSigV4Fetch } from "./sigv4-fetch";
 export { withEmptyRetry } from "./shared";
 
-/**
- * Whether the model accepts explicit `prompt_cache_breakpoint` markers on
- * the Responses API. GPT-5.6 family only (sol/terra/luna and any dated
- * variants): up to four breakpoints per request. GPT-5.4/5.5 reject the
- * field — they only have the automatic (exact-match, see gotchas) cache.
- * Mantle ids carry an "openai." prefix ("openai.gpt-5.6-terra"), so match
- * on substring rather than prefix.
- */
-export function supportsPromptCacheBreakpoints(modelId: string): boolean {
-	return modelId.includes("gpt-5.6");
-}
+// Prompt-cache breakpoint support is no longer a model-ID gate (#292). The
+// GPT-5.6 family accepts explicit `prompt_cache_breakpoint` markers and the
+// 5.4/5.5 generation rejects them, but which is which is discovered per route
+// through cache-field rejection recovery (R-MC14, see the Responses dispatch),
+// not an `includes("gpt-5.6")` string match.
 
 /** SigV4 service name for the Bedrock mantle endpoint. */
 const MANTLE_SIGV4_SERVICE = "bedrock";
@@ -183,13 +182,21 @@ function toReasoningEffort(
 export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
 	reasoningDisabled = false,
-): Record<string, string | boolean | null> {
+	/**
+	 * Prompt-cache lifetime to request via `prompt_cache_options.ttl` (R-MC14),
+	 * sent verbatim (the configured `cache_ttl`). Omitted when unset or when a
+	 * prior rejection dropped the field for this route. `promptCacheRetention`
+	 * "24h" is independent and always sent (GPT-5.x caches nothing without it).
+	 */
+	cacheTtl?: string,
+): Record<string, string | boolean | null | Record<string, string>> {
 	const reasoningEffort = reasoningDisabled ? "none" : toReasoningEffort(effort);
 	return {
 		store: false,
 		promptCacheRetention: "24h",
 		forceReasoning: true,
 		reasoningSummary: null,
+		...(cacheTtl !== undefined && { promptCacheOptions: { ttl: cacheTtl } }),
 		...(reasoningEffort && { reasoningEffort }),
 	};
 }
@@ -216,6 +223,11 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 	// region-root `/v1/models` endpoint without reaching into the AI SDK provider.
 	private readonly discoveryRegion: string;
 	private readonly discoveryFetch: typeof fetch;
+	// Local, in-memory prompt-cache request-recovery state (R-MC14). Keyed per
+	// route (the model id this driver serves) and protocol field; never synced,
+	// never keyed across models. Remembers which cache fields this provider
+	// rejected so later turns skip the doomed field instead of re-failing.
+	private readonly cacheRecovery = new CacheFieldRecoveryState();
 
 	constructor(config: {
 		region: string;
@@ -398,16 +410,16 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 
 		const provider = this.openaiProvider;
 		if (!provider) throw new Error("Bedrock Mantle OpenAI Responses provider was not initialized");
-		// Cache-provider selection by model generation: the GPT-5.6 family
-		// accepts explicit `prompt_cache_breakpoint` markers (up to four per
-		// request), so `{role:"cache"}` markers from the agent loop become
-		// `providerOptions.openai.promptCacheBreakpoint` via the bridge's
-		// position-aware attacher. GPT-5.4/5.5 reject the field — markers are
-		// dropped (null) and those models ride the automatic exact-match cache
-		// (≈ zero reads at agent-loop depth; see docs/gotchas.md). Permissive
-		// envelope: ids/names round-trip raw with only the length cap as a
-		// backstop.
-		const breakpointsSupported = supportsPromptCacheBreakpoints(modelId);
+		// Prompt-cache request recovery (R-MC14): the route's cache fields are
+		// attempted by default and only dropped once this provider has rejected
+		// them — no model-ID branch. The decision is remembered per route (keyed by
+		// the served model id) and protocol field. `prompt_cache_breakpoint` governs
+		// the explicit `{role:"cache"}` markers (GPT-5.6 family accepts up to four;
+		// GPT-5.4/5.5 reject the field and ride the automatic exact-match cache after
+		// one recovery). Replaces the old supportsPromptCacheBreakpoints(modelId)
+		// model-string gate (#292).
+		const breakpointDecision = this.cacheRecovery.decisionFor(modelId, "prompt_cache_breakpoint");
+		const breakpointsSupported = breakpointDecision?.kind !== "drop";
 		// Build the Responses `input` from history. `stripEncryptedReasoning` lets
 		// the layer-2 recovery re-build with all encrypted reasoning removed on a
 		// deployment-mismatch rejection (see the catch below).
@@ -456,7 +468,18 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 				: params.system
 			: undefined;
 
-		// One streaming attempt — built fresh per retry so a re-issue is a clean
+		// Prompt-cache ttl request + recovery (R-MC14): send the configured cache_ttl
+		// verbatim via `prompt_cache_options.ttl` unless a prior rejection on this route
+		// recorded a replacement value or a drop. The remembered decision wins; a fresh
+		// route sends the configured value and lets the catch below correct it.
+		const ttlDecision = this.cacheRecovery.decisionFor(modelId, "prompt_cache_options.ttl");
+		const requestedCacheTtl =
+			ttlDecision?.kind === "drop"
+				? undefined
+				: ttlDecision?.kind === "use-value"
+					? ttlDecision.value
+					: params.cache_ttl;
+
 		// new request (new SigV4 signature, new stream), not a replayed one.
 		const runAttempt = (
 			attemptMessages: ReturnType<typeof buildMessages>,
@@ -476,7 +499,11 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 						...(tools && params.tool_choice && { toolChoice: params.tool_choice }),
 						abortSignal: params.signal,
 						providerOptions: {
-							openai: buildMantleOpenAIOptions(params.effort, params.thinking?.type === "disabled"),
+							openai: buildMantleOpenAIOptions(
+								params.effort,
+								params.thinking?.type === "disabled",
+								requestedCacheTtl,
+							),
 						},
 					}).fullStream,
 				map: {
@@ -489,6 +516,10 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 					// against gpt-5.5 (sixfold). Emit only forward progress so the
 					// stream converges to exactly the final item.
 					coalescePrefixItems: true,
+					// Mantle routes GPT-5.x over the OpenAI Responses protocol, whose
+					// default cache lifetime is 30m. Stamp it so the cost layer prices a
+					// reported 30m write split as a lifetime-matched rate, not an estimate.
+					cacheWriteDefaultLifetime: "30m",
 				},
 			});
 
@@ -499,8 +530,14 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 		// catch); it rebuilds the input with ALL encrypted reasoning stripped and
 		// reissues exactly once. Any other error — and a second encrypted-reasoning
 		// rejection — propagates, but an invalid-`input` 400 is annotated first.
-		try {
-			yield* withEncryptedReasoningRetry({
+		// Prompt-cache request recovery (R-MC14) wraps the encrypted-reasoning retry:
+		// if the provider rejects a cache field (prompt_cache_options.ttl or
+		// prompt_cache_breakpoint), record the decision per route and reissue ONCE
+		// with the field corrected/dropped. This rejection is NOT a route failure and
+		// NOT a refusal — it is handled here, inside the driver, before the stream
+		// reaches route-health, so the route stays healthy and the turn still lands.
+		const runWithReasoningRetry = (): AsyncIterable<StreamChunk> =>
+			withEncryptedReasoningRetry({
 				build: buildMessages,
 				run: (attemptMessages) =>
 					withEmptyRetry(() => runAttempt(attemptMessages), {
@@ -520,7 +557,40 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 						{ model: modelId },
 					),
 			});
+
+		try {
+			yield* runWithReasoningRetry();
 		} catch (err) {
+			// A cache-field rejection: record the per-route decision and reissue once.
+			// The ttl field accepts duration strings; a provider-listed value is reused
+			// only when it is one (a Responses endpoint listing implicit/explicit modes
+			// for ttl is not a usable duration → drop). Breakpoints never carry a reusable
+			// value, so a rejection always drops them.
+			const cacheRejection = classifyCacheFieldRejection(err);
+			if (
+				cacheRejection &&
+				!this.cacheRecovery.decisionFor(modelId, cacheRejection.field) &&
+				(cacheRejection.field === "prompt_cache_options.ttl" ||
+					cacheRejection.field === "prompt_cache_breakpoint")
+			) {
+				const decision = this.cacheRecovery.record(modelId, cacheRejection, {
+					validValues:
+						cacheRejection.field === "prompt_cache_options.ttl" &&
+						cacheRejection.supportedValue !== undefined &&
+						isDurationTtl(cacheRejection.supportedValue)
+							? [cacheRejection.supportedValue]
+							: [],
+				});
+				this.logger?.warn?.(
+					`[${PROVIDER_NAME}] prompt-cache field '${cacheRejection.field}' rejected; retrying once (${decision.kind === "use-value" ? `value=${decision.value}` : "dropped"}) and remembering for this route`,
+					{ model: modelId },
+				);
+				// The remembered decision reshapes the request via the decisionFor reads
+				// above (breakpointsSupported / requestedCacheTtl), so a fresh dispatch
+				// applies it. Rebuild those from the recorded decision for this one retry.
+				yield* this.chatStream(params);
+				return;
+			}
 			// Responses request-body rejection (`Invalid 'input': value did not
 			// match any expected variant` and the broader invalid-`input` 400
 			// family) fires at the OpenAI wire AFTER the SDK's local validatePrompt

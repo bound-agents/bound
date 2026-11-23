@@ -79,12 +79,14 @@ export interface StickyTurn {
 
 /**
  * Compute the sticky window end for a turn (§5.3):
- * `created_at + max(route.cache_ttl_ms, 5m)`. `cacheTtlMs` is the advertised
- * TTL of the route that served the turn (null when unknown → the 5m floor).
+ * `created_at + max(route.cache_window_ms, 5m)`. `cacheWindowMs` is the route's
+ * EFFECTIVE cache window (2026-11-21-model-catalog.md R-MC16): the measured warm
+ * window from history, or the lifetime the route last requested (its configured
+ * `cache_ttl`) when no history exists (null → the 5m floor).
  */
-export function stickyUntilMs(createdAtIso: string, cacheTtlMs: number | null): number {
+export function stickyUntilMs(createdAtIso: string, cacheWindowMs: number | null): number {
 	const base = new Date(createdAtIso).getTime();
-	const window = Math.max(cacheTtlMs ?? 0, STICKY_MIN_WINDOW_MS);
+	const window = Math.max(cacheWindowMs ?? 0, STICKY_MIN_WINDOW_MS);
 	return base + window;
 }
 
@@ -119,10 +121,10 @@ export function resolveStickyRoute(input: {
 	priorTurn: StickyTurn | null;
 	requestedModel: string;
 	eligibleRouteIds: ReadonlySet<string>;
-	cacheTtlMsByRoute: (routeId: string) => number | null;
+	cacheWindowMsByRoute: (routeId: string) => number | null;
 	nowMs: number;
 }): StickyDecision {
-	const { priorTurn, requestedModel, eligibleRouteIds, cacheTtlMsByRoute, nowMs } = input;
+	const { priorTurn, requestedModel, eligibleRouteIds, cacheWindowMsByRoute, nowMs } = input;
 	if (!priorTurn || !priorTurn.routeId) {
 		return { kind: "ranked", reason: "no-prior-turn" };
 	}
@@ -142,7 +144,7 @@ export function resolveStickyRoute(input: {
 		return { kind: "ranked", reason: "route-ineligible" };
 	}
 
-	const until = stickyUntilMs(priorTurn.createdAt, cacheTtlMsByRoute(priorTurn.routeId));
+	const until = stickyUntilMs(priorTurn.createdAt, cacheWindowMsByRoute(priorTurn.routeId));
 	if (nowMs >= until) {
 		return { kind: "ranked", reason: "window-cold" };
 	}

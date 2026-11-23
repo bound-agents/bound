@@ -77,7 +77,9 @@ describe("cacheTtlToMs + stickyUntilMs (§5.3 cache-aware hysteresis)", () => {
 
 describe("resolveStickyRoute (§5.3)", () => {
 	const eligible = new Set([R_A, R_B]);
-	const ttl = (routeId: string) => (routeId === R_B ? 60 * 60 * 1000 : null);
+	// The lookup now carries the route's EFFECTIVE cache window (R-MC16): the
+	// measured warm window, or the configured TTL when no history exists.
+	const windowMs = (routeId: string) => (routeId === R_B ? 60 * 60 * 1000 : null);
 	const t0 = new Date("2026-01-01T00:00:00.000Z").getTime();
 
 	it("stays on route B within B's cache window even after route A recovers (Done-when #2)", () => {
@@ -92,7 +94,7 @@ describe("resolveStickyRoute (§5.3)", () => {
 			},
 			requestedModel: "opus",
 			eligibleRouteIds: eligible,
-			cacheTtlMsByRoute: ttl,
+			cacheWindowMsByRoute: windowMs,
 			nowMs: t0 + 30 * 60 * 1000, // 30 min later, inside B's 1h window
 		});
 		expect(decision).toEqual({ kind: "sticky", routeId: R_B });
@@ -108,7 +110,7 @@ describe("resolveStickyRoute (§5.3)", () => {
 			},
 			requestedModel: "opus",
 			eligibleRouteIds: eligible,
-			cacheTtlMsByRoute: ttl,
+			cacheWindowMsByRoute: windowMs,
 			nowMs: t0 + 2 * 60 * 60 * 1000, // 2h later, past B's 1h window
 		});
 		expect(decision).toEqual({ kind: "ranked", reason: "window-cold" });
@@ -124,7 +126,7 @@ describe("resolveStickyRoute (§5.3)", () => {
 			},
 			requestedModel: "opus",
 			eligibleRouteIds: eligible,
-			cacheTtlMsByRoute: ttl,
+			cacheWindowMsByRoute: windowMs,
 			nowMs: t0 + 60 * 1000,
 		});
 		expect(decision).toEqual({ kind: "ranked", reason: "route-ineligible" });
@@ -140,7 +142,7 @@ describe("resolveStickyRoute (§5.3)", () => {
 			},
 			requestedModel: "sonnet",
 			eligibleRouteIds: eligible,
-			cacheTtlMsByRoute: ttl,
+			cacheWindowMsByRoute: windowMs,
 			nowMs: t0 + 60 * 1000,
 		});
 		expect(decision).toEqual({ kind: "ranked", reason: "different-model" });
@@ -158,7 +160,7 @@ describe("resolveStickyRoute (§5.3)", () => {
 			},
 			requestedModel: "opus",
 			eligibleRouteIds: eligible,
-			cacheTtlMsByRoute: ttl,
+			cacheWindowMsByRoute: windowMs,
 			nowMs: t0 + 60 * 1000,
 		});
 		expect(decision).toEqual({ kind: "sticky", routeId: R_B });
@@ -169,10 +171,29 @@ describe("resolveStickyRoute (§5.3)", () => {
 			priorTurn: null,
 			requestedModel: "opus",
 			eligibleRouteIds: eligible,
-			cacheTtlMsByRoute: ttl,
+			cacheWindowMsByRoute: windowMs,
 			nowMs: t0,
 		});
 		expect(decision).toEqual({ kind: "ranked", reason: "no-prior-turn" });
+	});
+
+	it("uses a measured window that outlasts the configured TTL (R-MC16)", () => {
+		// Route A's configured TTL would floor at 5m, but history measured a 90-min
+		// warm window on it. A turn 40 min old must still stick — the measured window
+		// (not the short configured TTL) governs stickiness.
+		const decision = resolveStickyRoute({
+			priorTurn: {
+				modelId: "opus",
+				routeId: R_A,
+				substitutedFrom: null,
+				createdAt: "2026-01-01T00:00:00.000Z",
+			},
+			requestedModel: "opus",
+			eligibleRouteIds: eligible,
+			cacheWindowMsByRoute: (routeId) => (routeId === R_A ? 90 * 60 * 1000 : null),
+			nowMs: t0 + 40 * 60 * 1000,
+		});
+		expect(decision).toEqual({ kind: "sticky", routeId: R_A });
 	});
 });
 

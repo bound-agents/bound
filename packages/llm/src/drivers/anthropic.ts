@@ -43,6 +43,11 @@ import { createLoggingFetch } from "../fetch-logger";
 import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
 import { LLMError } from "../types";
 import { quantizeCacheTtl } from "./bedrock";
+import {
+	type CacheFieldDecision,
+	CacheFieldRecoveryState,
+	withCacheFieldRecovery,
+} from "./cache-field-recovery";
 import { type CreditStep, redeemFallbackCredit } from "./credit-redemption";
 import {
 	resolveFallbackTargetFromParams,
@@ -199,6 +204,10 @@ export class AnthropicDriver implements LLMBackend {
 	private readonly discoveryApiKey: string;
 	private readonly discoveryBaseUrl: string;
 	private readonly discoveryFetch: typeof fetch;
+	// Per-route prompt-cache field recovery (R-MC14): remembers when a route
+	// rejected the Anthropic Messages `cache_control` field, so later requests skip
+	// the doomed field. In-memory, keyed by route; a fresh process re-learns.
+	private readonly cacheRecovery = new CacheFieldRecoveryState();
 
 	constructor(config: {
 		apiKey: string;
@@ -293,29 +302,45 @@ export class AnthropicDriver implements LLMBackend {
 		// the ANTHROPIC_ENVELOPE charset, reasoning replays its signature via
 		// providerOptions.anthropic, and cache breakpoints route through
 		// providerOptions.anthropic.cacheControl. All three are bridge defaults.
-		const cacheTtl = quantizeCacheTtl(params.cache_ttl);
-		const bridgeMessages = toModelMessages(params.messages, {
-			cacheProvider: "anthropic",
-			cacheTtl,
-			resolveFileRef: params.resolveFileRef,
-			reasoningProviderOptions: "anthropic",
-			targetEnvelope: ANTHROPIC_ENVELOPE,
-		});
-		// Inject the system prompt as a `role: "system"` ModelMessage at index 0
-		// so its `cache_control` survives AI SDK normalization. The top-level
-		// `system: string` parameter would strip providerOptions and orphan the
-		// cache anchor. See `buildAnthropicSystemMessage`.
-		const systemMessage = buildAnthropicSystemMessage({
-			system: params.system,
-			cacheEnabled: shouldEnableAnthropicSystemCacheControl({
-				cacheTtl,
-				bridgeMessages,
-			}),
-			cacheTtl,
-		});
-		const messages = systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
 		const tools = toToolSet(params.tools);
 		const reasoning = buildAnthropicReasoningOptions(params);
+
+		// Build the messages + system anchor for ONE attempt, applying any
+		// cache-field recovery decision for this route: `drop` sends no cache_control
+		// (caching disabled this turn), `use-value` resends with the provider-listed
+		// ttl. `undefined` sends the configured cache_ttl. The recoverable field is
+		// the Anthropic Messages `cache_control` (its optional `ttl`).
+		const buildMessages = (decision: CacheFieldDecision | undefined) => {
+			const effectiveTtl: "5m" | "1h" | undefined =
+				decision?.kind === "drop"
+					? undefined
+					: decision?.kind === "use-value" && (decision.value === "5m" || decision.value === "1h")
+						? decision.value
+						: quantizeCacheTtl(params.cache_ttl);
+			const cachingDropped = decision?.kind === "drop";
+			const bridgeMessages = toModelMessages(params.messages, {
+				cacheProvider: cachingDropped ? null : "anthropic",
+				cacheTtl: effectiveTtl,
+				resolveFileRef: params.resolveFileRef,
+				reasoningProviderOptions: "anthropic",
+				targetEnvelope: ANTHROPIC_ENVELOPE,
+			});
+			// Inject the system prompt as a `role: "system"` ModelMessage at index 0
+			// so its `cache_control` survives AI SDK normalization. The top-level
+			// `system: string` parameter would strip providerOptions and orphan the
+			// cache anchor. See `buildAnthropicSystemMessage`.
+			const systemMessage = buildAnthropicSystemMessage({
+				system: params.system,
+				cacheEnabled:
+					!cachingDropped &&
+					shouldEnableAnthropicSystemCacheControl({
+						cacheTtl: effectiveTtl,
+						bridgeMessages,
+					}),
+				cacheTtl: effectiveTtl,
+			});
+			return systemMessage ? [systemMessage, ...bridgeMessages] : bridgeMessages;
+		};
 
 		// Emit heartbeat immediately. Extended thinking can produce a 60s+ gap
 		// before the first content event, which would trip the relay silence
@@ -327,7 +352,11 @@ export class AnthropicDriver implements LLMBackend {
 		// `fallbacks: "default"` + the `server-side-fallback-2026-07-01` beta, so the
 		// API picks a substitute itself rather than Bound replaying a different model.
 		// Earlier thinking blocks are NEVER stripped on the credited retry.
-		const buildStream = (serverSideFallback: boolean): AsyncIterable<StreamChunk> => {
+		const buildStream = (
+			serverSideFallback: boolean,
+			cacheDecision: CacheFieldDecision | undefined,
+		): AsyncIterable<StreamChunk> => {
+			const messages = buildMessages(cacheDecision);
 			const result = streamText({
 				model: this.provider.languageModel(modelId),
 				messages,
@@ -360,6 +389,9 @@ export class AnthropicDriver implements LLMBackend {
 						usageProvider: "anthropic",
 						estimateInputFromMessages: params.messages,
 						providerName: "anthropic",
+						// Anthropic Messages' default cache lifetime is 5m; stamp it so the
+						// cost layer prices a reported 5m split entry as a matched rate.
+						cacheWriteDefaultLifetime: "5m",
 					});
 				} catch (err) {
 					throw mapError(err, "anthropic");
@@ -367,17 +399,33 @@ export class AnthropicDriver implements LLMBackend {
 			})();
 		};
 
+		// Prompt-cache request recovery (R-MC14) wraps the credit-redemption executor:
+		// on an Anthropic Messages `cache_control` rejection, record the per-route
+		// decision and reissue ONCE with the field dropped (or resent with a listed
+		// ttl). The rejection is handled here, inside the driver, before the stream
+		// reaches route-health — it is never a route failure and never a refusal.
+		//
 		// Wrap the primary attempt with the inline credit-redemption executor. On a
 		// co-located credit-bearing refusal the planner (server_side_auto) returns a
 		// single server-side-fallback step, so the replay re-issues with the
 		// server-side fallback directive; a non-co-located / token-less refusal flows
 		// through to the loop-host router.
-		yield* redeemFallbackCredit(buildStream(false), {
-			driver: this.fallbackSupport(),
-			executingEndpoint: this.reasoningOrigin,
-			resolveTarget: () => resolveFallbackTargetFromParams(params, this.reasoningOrigin),
-			serverToolsRan: serverToolsRanInChunks,
-			runStep: (step: CreditStep) => buildStream(step.kind === "server-side-fallback"),
+		yield* withCacheFieldRecovery({
+			routeId: modelId,
+			state: this.cacheRecovery,
+			fields: ["cache_control"],
+			// Anthropic Messages `cache_control.ttl` accepts only "5m"/"1h"; a listed
+			// value outside that set is unusable, so the field is dropped.
+			validValuesFor: () => ["5m", "1h"],
+			run: (cacheDecision) =>
+				redeemFallbackCredit(buildStream(false, cacheDecision), {
+					driver: this.fallbackSupport(),
+					executingEndpoint: this.reasoningOrigin,
+					resolveTarget: () => resolveFallbackTargetFromParams(params, this.reasoningOrigin),
+					serverToolsRan: serverToolsRanInChunks,
+					runStep: (step: CreditStep) =>
+						buildStream(step.kind === "server-side-fallback", cacheDecision),
+				}),
 		});
 	}
 

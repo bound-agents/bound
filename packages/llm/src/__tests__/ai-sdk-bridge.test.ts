@@ -3958,6 +3958,145 @@ describe("mapChunks — finish / usage", () => {
 		expect(done?.usage.cache_write_1h_tokens).toBe(500);
 	});
 
+	it("reports the full anthropic write split keyed by any ephemeral_<ttl> lifetime", async () => {
+		// cache_creation carries one ephemeral_<ttl>_input_tokens field per lifetime.
+		// The split must be parsed generically — not just the 1h key — so a 5m + 1h
+		// write surfaces both lifetimes with their token counts.
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 1000,
+								usage: {
+									cache_creation: {
+										ephemeral_5m_input_tokens: 400,
+										ephemeral_1h_input_tokens: 600,
+									},
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		expect(done?.usage.cache_write_1h_tokens).toBe(600);
+		// Generalized split: both non-zero lifetimes present, keyed by ttl.
+		expect(done?.usage.cache_write_split).toEqual([
+			{ ttl: "5m", tokens: 400 },
+			{ ttl: "1h", tokens: 600 },
+		]);
+	});
+
+	it("reports the full bedrock write split from cacheDetails, any ttl", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: {
+								usage: {
+									cacheWriteInputTokens: 1000,
+									cacheDetails: [
+										{ inputTokens: 600, ttl: "1h" },
+										{ inputTokens: 400, ttl: "5m" },
+									],
+								},
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 100, outputTokens: 10 },
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		// cacheDetails order is preserved; both lifetimes surface.
+		expect(done?.usage.cache_write_split).toEqual([
+			{ ttl: "1h", tokens: 600 },
+			{ ttl: "5m", tokens: 400 },
+		]);
+	});
+
+	it("sums split entries of the same ttl across multiple finish-steps", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "step 1" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 500,
+								usage: { cache_creation: { ephemeral_1h_input_tokens: 500 } },
+							},
+						},
+					},
+					{
+						type: "finish-step",
+						providerMetadata: {
+							anthropic: {
+								cacheCreationInputTokens: 300,
+								usage: { cache_creation: { ephemeral_1h_input_tokens: 300 } },
+							},
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 10, outputTokens: 2 },
+					},
+				),
+				{ usageProvider: "anthropic" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_split).toEqual([{ ttl: "1h", tokens: 800 }]);
+	});
+
+	it("leaves the write split absent when no provider reported one", async () => {
+		const out = await collect(
+			mapChunks(
+				events(
+					{ type: "text-delta", id: "t1", text: "ok" },
+					{
+						type: "finish-step",
+						providerMetadata: {
+							bedrock: { usage: { cacheWriteInputTokens: 1000 } },
+						},
+					},
+					{
+						type: "finish",
+						finishReason: "stop",
+						totalUsage: { inputTokens: 100, outputTokens: 10 },
+					},
+				),
+				{ usageProvider: "bedrock" },
+			),
+		);
+		const done = out.find((c) => c.type === "done") as (StreamChunk & { type: "done" }) | undefined;
+		expect(done?.usage.cache_write_tokens).toBe(1000);
+		expect(done?.usage.cache_write_split).toBeUndefined();
+	});
+
 	it("falls back to char-based estimation when zero-usage + output text", async () => {
 		const messages: LLMMessage[] = [{ role: "user", content: "this is a prompt of some length" }];
 		const out = await collect(

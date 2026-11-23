@@ -114,4 +114,48 @@ describe("AnthropicDriver.chat", () => {
 		// temperature is omitted alongside active reasoning.
 		expect(body).not.toContain('"temperature":0.9');
 	});
+
+	it("recovers from a cache_control rejection by retrying once without the field (R-MC14)", async () => {
+		// A compatible Anthropic-Messages endpoint that rejects the cache_control ttl
+		// must not fail the whole turn: the driver drops the field and reissues once.
+		let attempt = 0;
+		const bodies: string[] = [];
+		const recoveringFetch: typeof fetch = async (_input, init) => {
+			bodies.push(typeof init?.body === "string" ? init.body : "");
+			attempt++;
+			if (attempt === 1) {
+				return new Response(
+					JSON.stringify({
+						type: "error",
+						error: { type: "invalid_request_error", message: "cache_control: unsupported ttl" },
+					}),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				);
+			}
+			return anthropicSse();
+		};
+		const driver = new AnthropicDriver({
+			apiKey: "test-key",
+			model: "claude-opus-4-7",
+			contextWindow: 200000,
+			fetch: recoveringFetch,
+		});
+
+		// A system prompt anchors the cache_control breakpoint on the system message.
+		const chunks = await collect(
+			driver.chat({ ...baseParams, system: "you are a helpful assistant", cache_ttl: "1h" }),
+		);
+		// Two attempts total: the rejected one and the recovered one.
+		expect(attempt).toBe(2);
+		// The first attempt carried cache_control; the retry dropped it.
+		expect(bodies[0]).toContain("cache_control");
+		expect(bodies[1]).not.toContain("cache_control");
+		// The turn still lands — the rejection was never a route failure.
+		const text = chunks
+			.filter((c): c is Extract<StreamChunk, { type: "text" }> => c.type === "text")
+			.map((c) => c.content)
+			.join("");
+		expect(text).toContain("hello");
+		expect(chunks.some((c) => c.type === "done")).toBe(true);
+	});
 });

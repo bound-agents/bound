@@ -93,6 +93,16 @@ export interface MapChunksOptions {
 	 * every other provider (the blob is not deployment-bound there).
 	 */
 	reasoningOrigin?: string;
+	/**
+	 * The TTL the route's wire protocol treats as its DEFAULT cache lifetime: `5m`
+	 * for Anthropic Messages/Converse, `30m` for OpenAI Responses. The executing
+	 * driver sets it from the protocol it speaks so the cost layer can price a
+	 * split entry at this lifetime as a MATCHED rate rather than an estimate.
+	 * Unset on routes without a protocol default (the cost layer then treats any
+	 * non-1h lifetime as the default — the conservative legacy behavior). It names
+	 * the protocol, never a measured value.
+	 */
+	cacheWriteDefaultLifetime?: string;
 }
 
 type ProviderMetadata = Record<string, Record<string, unknown>>;
@@ -137,6 +147,11 @@ interface FinishState {
 	 * readStepCacheWrite1hTokens.
 	 */
 	cacheWrite1hTokens?: number | null;
+	/**
+	 * Per-lifetime cache-write split accumulated across finish-steps, keyed by the
+	 * provider's own TTL vocabulary. Null when no step reported one (unknown).
+	 */
+	cacheWriteSplit?: CacheWriteSplitEntry[] | null;
 }
 
 /**
@@ -161,47 +176,77 @@ function readStepCacheWriteTokens(
 }
 
 /**
- * Pull a step's 1h-TTL cache-write subset out of providerMetadata. Returns null
- * when the provider did not report the split (distinct from 0 = split reported
- * with no 1h writes), so the caller can forward null → "split unknown, bill the
- * whole cache-write total at the 5m rate" versus 0 → "no 1h writes this step".
- *
- * Anthropic surfaces the split on the raw usage object under
- * `providerMetadata.<key>.usage.cache_creation.ephemeral_1h_input_tokens` — the
- * key is `anthropic`, or the SDK's custom `providerOptionsName` mirror when a
- * dotted provider id is used (both carry the same metadata). Bedrock surfaces
- * per-TTL writes as `providerMetadata.bedrock.usage.cacheDetails`
- * (Array<{ inputTokens, ttl }>); the 1h subset sums entries whose ttl is "1h".
+ * A per-lifetime cache-write split entry: `tokens` written at TTL `ttl`.
+ * Lifetimes are the provider's own vocabulary verbatim ("5m", "1h", "30m", …) —
+ * the bridge never invents or quantizes them.
  */
-function readStepCacheWrite1hTokens(
+export interface CacheWriteSplitEntry {
+	ttl: string;
+	tokens: number;
+}
+
+/**
+ * Pull a step's per-lifetime cache-write split out of providerMetadata, keyed by
+ * the TTL each provider reports. Returns null when the provider did not report a
+ * split (distinct from an empty array), so the caller can forward null → "split
+ * unknown" versus a concrete split.
+ *
+ * Anthropic Messages surfaces the split on the raw usage object under
+ * `providerMetadata.<key>.usage.cache_creation.ephemeral_<ttl>_input_tokens` —
+ * one field per lifetime, parsed GENERICALLY (any `ephemeral_*_input_tokens`,
+ * not just `1h`). The key is `anthropic`, or the SDK's custom
+ * `providerOptionsName` mirror when a dotted provider id is used (both carry the
+ * same metadata). Bedrock Converse surfaces per-TTL writes as
+ * `providerMetadata.bedrock.usage.cacheDetails` (Array<{ inputTokens, ttl }>),
+ * one entry per lifetime. A zero-token lifetime is dropped so the split carries
+ * only lifetimes that actually saw a write.
+ */
+function readStepCacheWriteSplit(
 	meta: ProviderMetadata | undefined,
 	usageProvider: "bedrock" | "anthropic" | null | undefined,
-): number | null {
+): CacheWriteSplitEntry[] | null {
 	if (!meta) return null;
 	if (usageProvider === "bedrock") {
 		const bedrockUsage = meta.bedrock?.usage as
 			{ cacheDetails?: Array<{ inputTokens?: number; ttl?: string }> } | undefined;
 		const details = bedrockUsage?.cacheDetails;
 		if (!Array.isArray(details)) return null;
-		let sum = 0;
+		const split: CacheWriteSplitEntry[] = [];
 		for (const d of details) {
-			if (d?.ttl === "1h") sum += d.inputTokens ?? 0;
+			const tokens = d?.inputTokens ?? 0;
+			if (typeof d?.ttl === "string" && tokens > 0) split.push({ ttl: d.ttl, tokens });
 		}
-		return sum;
+		return split;
 	}
 	if (usageProvider === "anthropic") {
 		// The raw usage mirror lives under `anthropic` or, when the SDK used a
 		// custom provider key, under whatever that key is. Scan each metadata
-		// namespace for a usage.cache_creation carrying the ephemeral split.
+		// namespace for a usage.cache_creation carrying the ephemeral_<ttl> fields.
 		for (const ns of Object.values(meta)) {
-			const usage = (ns as { usage?: { cache_creation?: { ephemeral_1h_input_tokens?: number } } })
-				?.usage;
-			const oneH = usage?.cache_creation?.ephemeral_1h_input_tokens;
-			if (typeof oneH === "number") return oneH;
+			const creation = (ns as { usage?: { cache_creation?: Record<string, unknown> } })?.usage
+				?.cache_creation;
+			if (!creation || typeof creation !== "object") continue;
+			const split: CacheWriteSplitEntry[] = [];
+			for (const [key, value] of Object.entries(creation)) {
+				// `ephemeral_<ttl>_input_tokens` → lifetime `<ttl>`.
+				const m = /^ephemeral_(.+)_input_tokens$/.exec(key);
+				if (!m) continue;
+				const tokens = typeof value === "number" ? value : 0;
+				if (tokens > 0) split.push({ ttl: m[1], tokens });
+			}
+			return split;
 		}
 		return null;
 	}
 	return null;
+}
+
+/** The 1h subset of a cache-write split, summed; null when the split is unknown. */
+function oneHourFromSplit(split: CacheWriteSplitEntry[] | null): number | null {
+	if (split === null) return null;
+	let sum = 0;
+	for (const e of split) if (e.ttl === "1h") sum += e.tokens;
+	return sum;
 }
 
 /**
@@ -257,9 +302,15 @@ export async function* mapChunks(
 	// The 1h-TTL subset of cache-write tokens, summed across finish-steps with
 	// its own seen flag so null (no step reported the split) stays distinct from
 	// 0 (split reported, no 1h writes). Null downstream means every cache-write
-	// token bills at the 5m rate.
+	// token bills at the 5m rate. Derived from the per-lifetime split below.
 	let cacheWrite1hAccum = 0;
 	let cacheWrite1hSeen = false;
+	// Per-lifetime cache-write split accumulated across finish-steps, keyed by the
+	// provider's own TTL vocabulary and preserving first-seen order. Entries of the
+	// same ttl across steps are summed. Null (never set) means no step reported a
+	// split; a concrete array (possibly empty) means at least one step did.
+	const cacheWriteSplitAccum = new Map<string, number>();
+	let cacheWriteSplitSeen = false;
 	// Last finish-step's raw Anthropic stop block (R-RT18, slice 5). The AI SDK
 	// collapses a 200-shaped Anthropic `stop_reason: "refusal"` to
 	// finishReason="content-filter" at the `finish` layer, but the raw stop block —
@@ -402,10 +453,17 @@ export async function* mapChunks(
 					cacheWriteAccum += stepCacheWrite;
 					cacheWriteSeen = true;
 				}
-				const step1h = readStepCacheWrite1hTokens(meta, opts.usageProvider);
-				if (step1h != null) {
-					cacheWrite1hAccum += step1h;
-					cacheWrite1hSeen = true;
+				const stepSplit = readStepCacheWriteSplit(meta, opts.usageProvider);
+				if (stepSplit != null) {
+					cacheWriteSplitSeen = true;
+					for (const e of stepSplit) {
+						cacheWriteSplitAccum.set(e.ttl, (cacheWriteSplitAccum.get(e.ttl) ?? 0) + e.tokens);
+					}
+					const step1h = oneHourFromSplit(stepSplit);
+					if (step1h != null) {
+						cacheWrite1hAccum += step1h;
+						cacheWrite1hSeen = true;
+					}
 				}
 				// Capture a raw Anthropic refusal stop block (R-RT18, slice 5). The
 				// anthropic/bedrock adapters surface `stop_reason` + `stop_details` on
@@ -475,6 +533,9 @@ export async function* mapChunks(
 							totalUsage,
 							cacheWriteTokens: cacheWriteSeen ? cacheWriteAccum : null,
 							cacheWrite1hTokens: cacheWrite1hSeen ? cacheWrite1hAccum : null,
+							cacheWriteSplit: cacheWriteSplitSeen
+								? Array.from(cacheWriteSplitAccum, ([ttl, tokens]) => ({ ttl, tokens }))
+								: null,
 						},
 						{ text: outputText, reasoning: reasoningText, toolInput: toolInputText },
 						opts,
@@ -559,6 +620,12 @@ interface DoneUsage {
 	output_tokens: number;
 	cache_write_tokens: number | null;
 	cache_write_1h_tokens: number | null;
+	/**
+	 * Per-lifetime cache-write split, keyed by the provider's own TTL vocabulary.
+	 * Absent when no provider reported one (the whole cache-write total then bills
+	 * at the default lifetime). Never a guess.
+	 */
+	cache_write_split?: CacheWriteSplitEntry[];
 	cache_read_tokens: number | null;
 	estimated: boolean;
 }
@@ -636,6 +703,10 @@ function extractUsage(
 			finish.cacheWrite1hTokens != null
 				? Math.min(finish.cacheWrite1hTokens, cacheWriteTokens ?? finish.cacheWrite1hTokens)
 				: null,
+		...(finish.cacheWriteSplit != null && { cache_write_split: finish.cacheWriteSplit }),
+		...(opts.cacheWriteDefaultLifetime !== undefined && {
+			cache_write_default_lifetime: opts.cacheWriteDefaultLifetime,
+		}),
 		cache_read_tokens: cacheReadTokens,
 		estimated,
 	};

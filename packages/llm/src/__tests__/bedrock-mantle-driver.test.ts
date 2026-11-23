@@ -4,7 +4,6 @@ import {
 	buildMantleOpenAIOptions,
 	deriveMantleBaseUrl,
 	deriveMantleBaseUrlForMode,
-	supportsPromptCacheBreakpoints,
 	withEmptyRetry,
 } from "../drivers/bedrock-mantle";
 import type { ChatParams, StreamChunk } from "../types";
@@ -153,16 +152,28 @@ describe("BedrockMantleDriver", () => {
 		expect(caps.prompt_caching).toBe(true);
 	});
 
-	it("gates explicit prompt_cache_breakpoint support on the model generation", () => {
-		// GPT-5.6 family (mantle "openai." prefix included): breakpoints.
-		expect(supportsPromptCacheBreakpoints("openai.gpt-5.6-terra")).toBe(true);
-		expect(supportsPromptCacheBreakpoints("openai.gpt-5.6-sol")).toBe(true);
-		expect(supportsPromptCacheBreakpoints("openai.gpt-5.6-luna")).toBe(true);
-		expect(supportsPromptCacheBreakpoints("gpt-5.6")).toBe(true);
-		// GPT-5.4/5.5 reject the field — automatic cache only.
-		expect(supportsPromptCacheBreakpoints("openai.gpt-5.4")).toBe(false);
-		expect(supportsPromptCacheBreakpoints("openai.gpt-5.5")).toBe(false);
-		expect(supportsPromptCacheBreakpoints("anthropic.claude-sonnet-5")).toBe(false);
+	it("attempts prompt_cache_breakpoint by default (no model-ID gate, #292)", () => {
+		// The old supportsPromptCacheBreakpoints(modelId) string gate is retired:
+		// breakpoints are attempted for every Responses model and only dropped per
+		// route after an observed rejection (R-MC14, exercised via the recovery
+		// module's own tests). This test pins that the model-ID branch is gone —
+		// there is no exported gate to assert against anymore.
+		expect(buildMantleOpenAIOptions(undefined)).not.toHaveProperty("promptCacheOptions");
+	});
+
+	it("sends prompt_cache_options.ttl verbatim when a cache_ttl is requested (R-MC14)", () => {
+		// The configured cache_ttl rides on prompt_cache_options.ttl unchanged; the
+		// provider echoes/rejects it and rejection recovery corrects it per route.
+		const opts = buildMantleOpenAIOptions(undefined, false, "30m");
+		expect(opts.promptCacheOptions).toEqual({ ttl: "30m" });
+		// promptCacheRetention is independent and always present.
+		expect(opts.promptCacheRetention).toBe("24h");
+	});
+
+	it("omits prompt_cache_options when no ttl is requested (dropped/unset)", () => {
+		expect(buildMantleOpenAIOptions(undefined, false, undefined)).not.toHaveProperty(
+			"promptCacheOptions",
+		);
 	});
 
 	it("sends Anthropic mode to /anthropic/v1/messages with SigV4 and no x-api-key", async () => {

@@ -1299,6 +1299,9 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 							cacheReadTokens: a.usage.cacheReadTokens,
 							cacheWriteTokens: a.usage.cacheWriteTokens,
 							cacheWrite1hTokens: a.usage.cacheWrite1hTokens,
+							...(a.usage.cacheWriteSplit !== undefined && {
+								cacheWriteSplit: a.usage.cacheWriteSplit,
+							}),
 						},
 						backends,
 						providerCostUsd: a.costUsdFromHub ?? undefined,
