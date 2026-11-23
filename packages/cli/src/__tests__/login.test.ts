@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDirSync } from "@bound/shared/test-utils";
-import { runLogin, runMcpLogin } from "../commands/login";
+import { openInBrowser, runLogin, runMcpLogin } from "../commands/login";
 
 // These tests drive the impure edges of `bound login` through the injection
 // seams the command exposes for exactly this purpose:
@@ -325,5 +325,35 @@ describe("runMcpLogin — daemon-backed claim flow", () => {
 		await expect(
 			runMcpLogin({ mcp: "ghserver", daemonUrl: "http://daemon.test", fetchImpl }),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("openInBrowser", () => {
+	it("does nothing when BOUND_NO_BROWSER=1 (the test preload sets it)", () => {
+		expect(process.env.BOUND_NO_BROWSER).toBe("1");
+		const calls: string[] = [];
+		const fakeSpawn = ((cmd: string) => {
+			calls.push(cmd);
+			throw new Error("must not spawn");
+		}) as unknown as typeof import("node:child_process").spawn;
+		openInBrowser("https://idp.example/authz", fakeSpawn);
+		expect(calls).toEqual([]);
+	});
+
+	it("spawns the platform opener detached when allowed", () => {
+		const saved = process.env.BOUND_NO_BROWSER;
+		process.env.BOUND_NO_BROWSER = "0";
+		try {
+			const calls: Array<{ cmd: string; args: string[] }> = [];
+			const fakeSpawn = ((cmd: string, args: string[]) => {
+				calls.push({ cmd, args });
+				return { on() {}, unref() {} };
+			}) as unknown as typeof import("node:child_process").spawn;
+			openInBrowser("https://idp.example/authz", fakeSpawn);
+			expect(calls).toHaveLength(1);
+			expect(calls[0]?.args).toContain("https://idp.example/authz");
+		} finally {
+			process.env.BOUND_NO_BROWSER = saved;
+		}
 	});
 });

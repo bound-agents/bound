@@ -20,6 +20,12 @@ Bun.plugin(justBashWorkerRewritePlugin());
 // coverage measures it (see svelte-test-plugin.ts).
 Bun.plugin(svelteTestPlugin(join(import.meta.dir, "..")));
 
+// Never launch a real browser from a test. `bound login` falls back to the
+// platform opener when no `openBrowser` is injected; a test that covers that
+// fallback would otherwise open its fixture URL (https://idp.example/...) in the
+// operator's default browser on every run.
+process.env.BOUND_NO_BROWSER = "1";
+
 if (!process.env.LOG_LEVEL) {
 	process.env.LOG_LEVEL = "silent";
 	process.env.BOUND_LOG_STDERR = "0";

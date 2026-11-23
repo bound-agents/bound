@@ -70,13 +70,18 @@ export function defaultCopilotTokenStorePath(configDir: string): string {
 	return resolve(configDir, "copilot-auth.json");
 }
 
-/** Open a URL in the default browser, best-effort per platform. */
-function openInBrowser(url: string): void {
+/**
+ * Open a URL in the default browser, best-effort per platform. Skipped when
+ * `BOUND_NO_BROWSER=1` (set by the test preload so the default-opener path can
+ * be exercised without launching a real browser); the URL is printed either way.
+ */
+export function openInBrowser(url: string, spawnImpl: typeof spawn = spawn): void {
+	if (process.env.BOUND_NO_BROWSER === "1") return;
 	const platform = process.platform;
 	const cmd = platform === "darwin" ? "open" : platform === "win32" ? "cmd" : "xdg-open";
 	const args = platform === "win32" ? ["/c", "start", "", url] : [url];
 	try {
-		const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+		const child = spawnImpl(cmd, args, { stdio: "ignore", detached: true });
 		child.on("error", () => {
 			/* fall through to the printed URL */
 		});
