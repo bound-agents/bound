@@ -111,6 +111,25 @@ Recording `field_sources` makes every resolved value inspectable in the UI and C
 
 Resolved `pricing` carries any context-based tiers the source publishes. Cost calculation selects the tier whose `threshold` the turn's request size (input + cache-read + cache-write tokens) strictly exceeds; the base rates apply at or below the lowest threshold. Local config `price` / `price_per_m_*` are operator overrides over this resolved pricing: a `price(turn)` callback is authoritative, an explicitly-set `price_per_m_*` (including a deliberate `0`) overrides the corresponding resolved field, and an unset field falls through to the provider- or `models.dev`-published rate. A model no layer can price records its turn cost as unknown rather than a misleading `0`.
 
+### 3.3 Prompt caching: request, observe, price
+
+Bound does not model per-provider cache semantics ahead of time. An aggregating provider (GitHub Copilot, Bedrock Mantle, request routers) inherits each upstream's semantics per model and wire protocol, and may choose the upstream per request; an "OpenAI-compatible" endpoint shares a request shape, not cache behavior. Any static per-provider model of TTLs, write billing, or reporting is wrong somewhere. Caching instead follows three steps per request.
+
+**Request.** When the route's wire protocol defines a cache-lifetime field, the driver sends the configured `cache_ttl` in it: Anthropic Messages `cache_control.ttl`, Bedrock Converse `cachePoint.ttl`, OpenAI Responses `prompt_cache_options.ttl`. A protocol without such a field gets none. When a provider rejects a request specifically because of a cache field (an invalid-value or unsupported-parameter error naming that field), the driver retries once: with the provider-listed supported value when the error lists one, otherwise without the field. It remembers the outcome in local route state, and the rejection is never a route failure. Explicit cache breakpoints use the same rule. This recovery exists so a turn never fails over a cache field; it is not a source of capability metadata, because many providers ignore unknown fields silently.
+
+**Observe.** Drivers normalize usage to cache-read tokens, cache-write tokens, and, when the provider reports one, a per-lifetime write split (`{ ttl, tokens }[]`). Reported splits include Anthropic Messages `usage.cache_creation.ephemeral_*_input_tokens` (also returned through Copilot and Mantle) and Bedrock Converse `usage.cacheDetails[].ttl`. A provider-reported charge is captured when the response carries one.
+
+**Price.** A turn's cache writes are priced from what was reported, in this order:
+
+1. a provider-reported charge for the turn;
+2. a published per-lifetime write price multiplied by the reported split;
+3. a published write price multiplied by unsplit write tokens, or by split tokens whose lifetime has no published price, recorded with pricing source `estimate`;
+4. unknown.
+
+Per-lifetime write prices come from provider discovery (for example Copilot's `cache_write_1h_price`), from `models.dev` `cache_write` (which describes the protocol's default lifetime), or from a local `price_per_m_cache_write_1h` override. Bound never derives a per-lifetime price from a vendor multiplier: whether a reseller inherits its upstream's multipliers is a fact about that reseller, not a protocol rule.
+
+**Effective cache window.** Thread stickiness (`2026-11-21-model-routing.md` §5.3) uses a route's effective cache window: the longest gap between consecutive turns on that route after which the later turn still reported cache-read tokens, measured from `turns` on the serving host. A route without such history uses the lifetime it last requested.
+
 ### 3.2 Completeness gate
 
 Consistent with `2026-11-21-model-routing.md` (R-RT2), a backend is only eligible for routing once its resolved `capabilities.max_context` is known from at least one of the three sources. A model absent from provider metadata and `models.dev` with no local `context_window` override stays unready and surfaces a clear configuration gap rather than dispatching turns on a guessed window.
@@ -268,6 +287,12 @@ When a provider is removed from a host or a logical model is no longer advertise
 **R-MC4.** A backend whose merged metadata lacks `capabilities.max_context` across all three layers shall remain unready, shall not be advertised as routable, and shall surface a clear configuration error rather than substituting a guessed default.
 
 ### 8.2 `models.dev` registry cache
+
+**R-MC14.** Drivers shall send the configured `cache_ttl` in the route protocol's own cache-lifetime field when one exists, shall recover from a rejection of a cache field by one retry with the provider-listed value or without the field, shall remember that outcome in local route state, and shall never count it as a route failure. Cache capability shall not branch on model ID strings.
+
+**R-MC15.** Turn cost shall price cache writes from a provider-reported charge, else published per-lifetime prices times the reported write split, else a published write price times unreported or unpriced write tokens recorded as `estimate`, else unknown. No per-lifetime price shall be derived from a vendor multiplier.
+
+**R-MC16.** A route's effective cache window shall be measured from `turns` as the longest inter-turn gap followed by a cache read on that route, falling back to the last requested lifetime when no such history exists.
 
 **R-MC5.** Each host shall fetch and cache `models.dev` metadata locally on disk with conditional HTTP refresh (`ETag` / `If-None-Match`) on a configurable interval (default 24 hours). The cache shall be local-only and shall not sync through `change_log`.
 

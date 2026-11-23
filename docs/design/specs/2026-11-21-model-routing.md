@@ -163,7 +163,7 @@ Thread stickiness reuses the existing synced `turns` table — no separate stick
 
 On the next turn for a thread, resolution reads the thread's latest ok row from `turns` (`status IS NULL OR status = 'ok'`, per the turns status convention where legacy `NULL` means ok) projecting `(model_id, route_id, substituted_from, created_at)`. If the turn targets the same logical model (or inherits a sticky refusal substitution unless the operator explicitly cleared it):
 
-- Look up `route_id` in the current eligible candidate pool and compute `sticky_until = created_at + max(route.cache_ttl_ms, 5m)` from the route's advertised `cache_ttl`. (If `route_id` is no longer advertised or eligible, it is skipped immediately.)
+- Look up `route_id` in the current eligible candidate pool and compute `sticky_until = created_at + max(route.cache_window_ms, 5m)` from the route's effective cache window (`2026-11-21-model-catalog.md` §3.3: measured from `turns`, else the lifetime the route last requested). (If `route_id` is no longer advertised or eligible, it is skipped immediately.)
 - If `now < sticky_until` and `route_id` is eligible (live, healthy, not drained, meets turn requirements), the router selects `route_id` directly — even if a higher-ranked route `R0` has since recovered.
 - If `route_id` is ineligible (failed, drained, offline, or lacks a new turn capability such as `vision`), the router selects the next eligible route from the ranked list; the resulting `turns` row updates stickiness automatically.
 - If `now >= sticky_until` (the cache window has gone cold) or the thread has no prior `ok` turn, the router selects from the ranked list starting at route `#1`.
@@ -340,7 +340,7 @@ A single turn can execute multiple attempts (for example, a refused primary atte
 
 **R-RT8.** Candidate ranking shall be deterministic: explicit per-model `model_routing_rules.route_order` first, then locality (local before remote) for unlisted routes, then lexicographical `RouteId`. Host heartbeat timestamps (`modified_at`, `online_at`) shall gate liveness (5-minute staleness) only and shall never be used as a ranking tie-breaker.
 
-**R-RT9.** The synced `turns` table shall record `route_id` and `substituted_from` (both nullable). On subsequent turns, resolution shall read the thread's latest ok turn (`status IS NULL OR status = 'ok'`) and stick to its `route_id` while that route remains eligible and `now < created_at + max(route.cache_ttl_ms, 5m)`. A higher-ranked route recovering from backoff shall not pull a warm sticky thread off its active route.
+**R-RT9.** The synced `turns` table shall record `route_id` and `substituted_from` (both nullable). On subsequent turns, resolution shall read the thread's latest ok turn (`status IS NULL OR status = 'ok'`) and stick to its `route_id` while that route remains eligible and `now < created_at + max(route.cache_window_ms, 5m)` (effective cache window per `2026-11-21-model-catalog.md` R-MC16). A higher-ranked route recovering from backoff shall not pull a warm sticky thread off its active route.
 
 **R-RT10.** A thread, task, or auxiliary invocation may declare a hard pin to a specific `RouteId`. While hard-pinned, resolution shall consider only that `RouteId`, shall disable route failover and model substitution, and shall surface raw failures directly.
 
