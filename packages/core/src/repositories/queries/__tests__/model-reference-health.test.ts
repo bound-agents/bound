@@ -244,6 +244,39 @@ describe("analyzeModelReferences", () => {
 		expect(report.danglingAgents).toEqual([{ agentName: "reviewer", logicalModel: "sonnet-gone" }]);
 	});
 
+	it("raises a dangling scheduled-task reference and skips role-targeting + pin + finished + deleted tasks", () => {
+		advertiseHost(db, SITE_A, [{ route_id: "site-a:bedrock:opus", logical_model: "opus" }]);
+		// Dangling: a live (pending) task naming a decommissioned model literally.
+		insertTask(db, "task-dangling", "pending", "sonnet-gone");
+		// Dangling: a running task likewise counts (live status).
+		insertTask(db, "task-running", "running", "sonnet-gone");
+		// Not dangling: targets a cluster role.
+		insertTask(db, "task-role", "pending", "default");
+		// Not dangling: live model.
+		insertTask(db, "task-live", "pending", "opus");
+		// Not dangling: a hard pin's logical-model prefix is still live.
+		insertTask(db, "task-pinned-live", "pending", "opus@site-a:bedrock:opus");
+		// Dangling: pin whose logical-model prefix is gone is still surfaced.
+		insertTask(db, "task-pinned-gone", "pending", "sonnet-gone@site-x:p:sonnet-gone");
+		// Not surfaced: finished tasks never re-run.
+		insertTask(db, "task-completed", "completed", "sonnet-gone");
+		insertTask(db, "task-failed", "failed", "sonnet-gone");
+		insertTask(db, "task-cancelled", "cancelled", "sonnet-gone");
+		// Not surfaced: a soft-deleted task.
+		const deletedId = insertTask(db, "task-deleted", "pending", "sonnet-gone");
+		softDelete(db, "tasks", deletedId, SITE_A);
+
+		const report = analyzeModelReferences(db);
+		expect(report.danglingTasks.map((t) => t.taskId).sort()).toEqual([
+			"task-dangling",
+			"task-pinned-gone",
+			"task-running",
+		]);
+		for (const t of report.danglingTasks) {
+			expect(t.logicalModel).toBe("sonnet-gone");
+		}
+	});
+
 	it("keeps a model transient (not decommissioned) while a stale host still advertises it", () => {
 		// SITE_A offline but NOT evicted (deleted = 0) still advertises sonnet.
 		advertiseHost(db, SITE_A, [{ route_id: "site-a:bedrock:sonnet", logical_model: "sonnet" }]);
@@ -332,6 +365,26 @@ function insertAgent(db: Database, name: string, modelHint: string): string {
 			model_hint: modelHint,
 			retired_at: null,
 			created_by_thread: null,
+			created_at: "2026-01-01T00:00:00.000Z",
+			deleted: 0,
+			modified_at: "2026-01-01T00:00:00.000Z",
+		},
+		SITE_A,
+	);
+	return id;
+}
+
+/** Insert a scheduled task with a model_hint; returns the generated id. */
+function insertTask(db: Database, id: string, status: string, modelHint: string): string {
+	insertRow(
+		db,
+		"tasks",
+		{
+			id,
+			type: "cron",
+			status,
+			trigger_spec: "{}",
+			model_hint: modelHint,
 			created_at: "2026-01-01T00:00:00.000Z",
 			deleted: 0,
 			modified_at: "2026-01-01T00:00:00.000Z",

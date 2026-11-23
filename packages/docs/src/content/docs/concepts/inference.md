@@ -321,6 +321,11 @@ Scheduled tasks naming the model literally park with an advisory (a task targeti
 cluster role follows the role instead). A cluster role or auxiliary agent pointing at the
 decommissioned model raises an operator advisory rather than being silently reassigned.
 Historical turn records keep the model and route that originally served each turn.
+Live scheduled tasks naming the model literally park with an advisory (a task targeting a
+cluster role follows the role instead); heartbeats are never parked, so for them the
+advisory is the only signal that the `model_hint` has gone dead. A cluster role, auxiliary
+agent, or live scheduled task pointing at the
+decommissioned model raises an operator advisory rather than being silently reassigned.
 
 **When the model comes back.** Once any host advertises a ready route for the model again,
 it reappears in the picker and existing threads resume on their next turn. Dormant

@@ -7,11 +7,14 @@ import { createAdvisory } from "./advisories";
  * (2026-11-21-model-routing.md §6.3 R-RT23/R-RT24; 2026-11-21-model-catalog.md
  * §7.3 R-MC13).
  *
- * A cluster role (`default`/`heavy`/`fast`) or an aux-agent `model_hint` that
- * points at a logical model advertised by no non-deleted host is a dangling
- * reference: Bound neither silently reassigns it nor cascade-deletes it. Instead
- * it raises an operator advisory so a human decides, and auto-resolves that
- * advisory once the model is re-advertised anywhere in the cluster.
+ * A cluster role (`default`/`heavy`/`fast`), an aux-agent `model_hint`, or a live
+ * scheduled task's `model_hint` that points at a logical model advertised by no
+ * non-deleted host is a dangling reference: Bound neither silently reassigns it
+ * nor cascade-deletes it. Instead it raises an operator advisory so a human
+ * decides, and auto-resolves that advisory once the model is re-advertised
+ * anywhere in the cluster. Scheduled tasks matter because heartbeats are never
+ * poison-pill parked (scheduler.ts) — a dead heartbeat model_hint re-arms and
+ * fails silently forever, so the advisory is the operator's only signal.
  *
  * This reconciler is the write companion of the pure `analyzeModelReferences`
  * read. It is idempotent: a dangling reference whose advisory already exists is
@@ -38,6 +41,11 @@ function agentTitle(agentName: string, logicalModel: string): string {
 	return `Aux agent "${agentName}" targets decommissioned model "${logicalModel}"`;
 }
 
+/** Deterministic advisory title for a dangling scheduled-task reference. */
+function taskTitle(taskId: string, logicalModel: string): string {
+	return `Scheduled task "${taskId}" targets decommissioned model "${logicalModel}"`;
+}
+
 export interface ReconcileResult {
 	/** Dangling advisories newly raised this pass. */
 	raised: number;
@@ -60,6 +68,9 @@ export function reconcileModelReferenceAdvisories(db: Database, siteId: string):
 	}
 	for (const { agentName, logicalModel } of report.danglingAgents) {
 		expectedTitles.add(agentTitle(agentName, logicalModel));
+	}
+	for (const { taskId, logicalModel } of report.danglingTasks) {
+		expectedTitles.add(taskTitle(taskId, logicalModel));
 	}
 
 	// Existing open (non-applied/dismissed, non-deleted) dangling advisories,
@@ -115,6 +126,24 @@ export function reconcileModelReferenceAdvisories(db: Database, siteId: string):
 				action: null,
 				impact: `Invocations of aux agent "${agentName}" fail until its model_hint is updated or the model returns.`,
 				evidence: `agents."${agentName}".model_hint -> "${logicalModel}"`,
+			},
+			siteId,
+		);
+		raised++;
+	}
+	for (const { taskId, logicalModel } of report.danglingTasks) {
+		const title = taskTitle(taskId, logicalModel);
+		if (openByTitle.has(title)) continue;
+		createAdvisory(
+			db,
+			{
+				type: DANGLING_TYPE,
+				status: "proposed",
+				title,
+				detail: `Scheduled task "${taskId}" names logical model "${logicalModel}" in its model_hint, which no non-deleted host in the cluster currently advertises (decommissioned). Bound will not silently substitute another model; the task's runs fail validation until its model_hint is updated or the model is re-advertised. Heartbeat tasks are never poison-pill parked, so they keep re-arming and failing silently — this advisory is the only operator signal. This advisory resolves on its own if "${logicalModel}" returns.`,
+				action: null,
+				impact: `Runs of scheduled task "${taskId}" fail until its model_hint is updated or the model returns.`,
+				evidence: `tasks."${taskId}".model_hint -> "${logicalModel}"`,
 			},
 			siteId,
 		);

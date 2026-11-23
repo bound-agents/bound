@@ -18,8 +18,8 @@ import {
  * entry when its target disappears — which would destroy operator intent on a
  * temporary provider outage or a reverted config edit — the entry is retained as
  * a dormant no-op and surfaced here so Settings › Models can mark it stale for
- * manual pruning, and so cluster-role / aux-agent references to a decommissioned
- * model can raise (and later auto-resolve) an operator advisory.
+ * manual pruning, and so cluster-role / aux-agent / scheduled-task references to
+ * a decommissioned model can raise (and later auto-resolve) an operator advisory.
  *
  * The live set is the union of every logical model / RouteId advertised by a
  * **non-deleted** `hosts` row (`deleted = 0`). Host-liveness freshness is
@@ -33,7 +33,10 @@ import {
  *
  * This analyzer is a pure read over the DB: it classifies, it never writes. The
  * advisory lifecycle (raise on dangling, auto-resolve on re-advertise) consumes
- * its output; see reconcileModelReferenceAdvisories in @bound/agent.
+ * its output; see reconcileModelReferenceAdvisories in @bound/agent. Scheduled
+ * tasks are surfaced because heartbeats are never poison-pill parked
+ * (scheduler.ts): a dead heartbeat model_hint re-arms and fails silently
+ * forever, so the advisory is the operator's only signal.
  */
 
 /** A `route_order` entry whose RouteId is advertised nowhere (dormant no-op). */
@@ -60,6 +63,12 @@ export interface DanglingAgent {
 	logicalModel: string;
 }
 
+/** A live scheduled task whose `model_hint` names a decommissioned logical model literally. */
+export interface DanglingTask {
+	taskId: string;
+	logicalModel: string;
+}
+
 /**
  * The full classification of every synced routing reference against the live
  * advertised set. `stale*` entries are dormant no-ops surfaced for manual
@@ -73,6 +82,7 @@ export interface ModelReferenceReport {
 	staleFallbackModels: string[];
 	danglingRoles: DanglingRole[];
 	danglingAgents: DanglingAgent[];
+	danglingTasks: DanglingTask[];
 }
 
 /** Parse `hosts.models` JSON into a tolerant list of entries (bad rows skipped). */
@@ -250,6 +260,30 @@ export function analyzeModelReferences(db: Database): ModelReferenceReport {
 		}
 	}
 
+	// Dangling scheduled tasks: a live (non-finished, non-deleted) task whose
+	// model_hint names a decommissioned logical model literally. Heartbeats are
+	// never poison-pill parked (they must always re-arm), so their advisory is the
+	// only operator signal that a model_hint has gone dead. A task targeting a
+	// cluster role follows the role's current assignment, so it is never dangling
+	// by itself. Finished tasks (completed/failed/cancelled) never re-run, so a
+	// dead hint on them is inert and not surfaced.
+	const danglingTasks: DanglingTask[] = [];
+	const taskRows = db
+		.query(
+			"SELECT id, model_hint FROM tasks WHERE deleted = 0 AND model_hint IS NOT NULL AND status IN ('pending', 'claimed', 'running')",
+		)
+		.all() as Array<{ id: string; model_hint: string | null }>;
+	for (const task of taskRows) {
+		if (!task.model_hint) continue;
+		const logical = hintLogicalModel(task.model_hint);
+		if (logical === null) continue;
+		// Cluster-role targets follow the role; never dangling on their own.
+		if (logical === "default" || logical === "heavy" || logical === "fast") continue;
+		if (!liveModels.has(logical)) {
+			danglingTasks.push({ taskId: task.id, logicalModel: logical });
+		}
+	}
+
 	return {
 		staleRouteOrderEntries,
 		staleRouteDrains,
@@ -257,5 +291,6 @@ export function analyzeModelReferences(db: Database): ModelReferenceReport {
 		staleFallbackModels,
 		danglingRoles,
 		danglingAgents,
+		danglingTasks,
 	};
 }
