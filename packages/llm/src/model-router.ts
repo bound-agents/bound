@@ -74,6 +74,16 @@ export function makeRouteId(siteId: string, provider: string, backendId: string)
 const UNRESOLVED_CONTEXT_WINDOW = 0;
 
 /**
+ * Upper bound on a provider- or registry-reported `max_output_tokens`, as a
+ * fraction of the resolved context window. Operator decision (2026-11-23):
+ * context management assumes the output reservation is much smaller than the
+ * window, and some providers report output equal to the whole window. 25%
+ * leaves today's 128k output limits on 512k+ windows untouched. A
+ * `max_output_tokens` set in local config is never capped.
+ */
+export const MAX_OUTPUT_CONTEXT_FRACTION = 0.25;
+
+/**
  * A local route entry in the flat {@link ModelRouter} registry. Each carries
  * its {@link RouteId} (addressing/ranking/health/stickiness) and, separately,
  * its provider `reasoningOrigin` (`${siteId}:${provider}[:${detail}]`, for
@@ -508,12 +518,13 @@ export class ModelRouter {
 	 * router are touched — an unready backend (R-MC4 gate) and an id unknown to
 	 * the router are both skipped.
 	 *
-	 * Output-limit sanity (requirement 5): a `max_output_tokens` that did NOT
-	 * come from local config and is `>= max_context` would drive the truncation
-	 * target `computeBaseTruncationTarget = max_context - max_output` to zero or
-	 * negative, so it is treated as unknown (left unset / cleared) and logged
-	 * once per backend. A config-sourced value is always respected — the
-	 * operator's explicit cap is authoritative.
+	 * Output-limit cap: a `max_output_tokens` that did NOT come from local config
+	 * is capped at {@link MAX_OUTPUT_CONTEXT_FRACTION} of the resolved
+	 * `max_context`. Context management assumes the output reservation is small
+	 * relative to the window (`computeBaseTruncationTarget = max_context -
+	 * max_output`); a provider that reports output equal to the whole window
+	 * would otherwise leave no room for the prompt. A config-sourced value is
+	 * always respected — the operator's explicit cap is authoritative.
 	 */
 	applyResolvedCatalog(
 		catalog: ReadonlyMap<string, ResolvedCatalogEntry>,
@@ -534,28 +545,30 @@ export class ModelRouter {
 			const resolvedMaxOutput = resolved.metadata.max_output_tokens;
 			const outputSource = resolved.metadata.field_sources.max_output_tokens;
 			if (typeof resolvedMaxOutput === "number") {
-				// A config value is authoritative even if it equals/exceeds the window.
+				let maxOutput = resolvedMaxOutput;
+				// A config value is authoritative even if it exceeds the cap.
 				if (outputSource !== "config") {
 					const window = resolvedMaxContext ?? this.effectiveCaps.get(backendId)?.max_context;
-					if (typeof window === "number" && resolvedMaxOutput >= window) {
-						// Discard the bogus provider/models.dev value and log once; the
-						// loop then sends no explicit max_tokens and the provider default
-						// keeps a sane truncation target.
-						const existing = this.backendConfigs.get(backendId);
-						if (existing?.maxOutputTokens !== undefined) {
-							this.backendConfigs.set(backendId, { ...existing, maxOutputTokens: undefined });
+					if (typeof window === "number" && window > 0) {
+						const cap = Math.floor(window * MAX_OUTPUT_CONTEXT_FRACTION);
+						if (maxOutput > cap) {
+							logger?.warn(
+								"[llm] Capping reported max_output_tokens to a fraction of max_context",
+								{
+									backend: backendId,
+									reportedMaxOutputTokens: maxOutput,
+									maxContext: window,
+									cappedTo: cap,
+								},
+							);
+							maxOutput = cap;
 						}
-						logger?.warn(
-							"[llm] Ignoring non-config max_output_tokens >= max_context (requirement 5)",
-							{ backend: backendId, maxOutputTokens: resolvedMaxOutput, maxContext: window },
-						);
-						continue;
 					}
 				}
 				const existing = this.backendConfigs.get(backendId);
 				this.backendConfigs.set(backendId, {
 					...(existing ?? { id: backendId, provider: "", model: backendId }),
-					maxOutputTokens: resolvedMaxOutput,
+					maxOutputTokens: maxOutput,
 				} as BackendConfig);
 			}
 

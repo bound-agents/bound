@@ -115,6 +115,8 @@ Resolved `pricing` carries any context-based tiers the source publishes. Cost ca
 
 Consistent with `2026-11-21-model-routing.md` (R-RT2), a backend is only eligible for routing once its resolved `capabilities.max_context` is known from at least one of the three sources. A model absent from provider metadata and `models.dev` with no local `context_window` override stays unready and surfaces a clear configuration gap rather than dispatching turns on a guessed window.
 
+A `max_output_tokens` resolved from provider metadata or `models.dev` is capped at 25% of the resolved `capabilities.max_context`. Context management reserves the output limit out of the window when it sizes the prompt and assumes that reservation is small relative to the window; some providers publish an output limit equal to the whole window. A `max_output_tokens` set in local config is never capped.
+
 ---
 
 ## 4. Provider API Discovery and Driver Capabilities

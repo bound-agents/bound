@@ -389,7 +389,7 @@ describe("resolved catalog metadata on the local routing path (requirement 1 + 7
 		expect(result.modelRouter?.getMaxOutputTokens("gpt")).toBe(128000);
 	});
 
-	it("drops a models.dev max_output_tokens that is >= max_context (output>=context, req 5)", async () => {
+	it("caps a models.dev max_output_tokens at 25% of max_context", async () => {
 		const ctx = cAppContext(gptBackend());
 		const { fetch: modelsDevFetch, release } = payloadFetch({
 			// context == output (no limit.input) → output would zero the truncation target.
@@ -400,8 +400,7 @@ describe("resolved catalog metadata on the local routing path (requirement 1 + 7
 		await result.modelsDevRefresh;
 
 		expect(result.modelRouter?.getEffectiveCapabilities("gpt")?.max_context).toBe(1048576);
-		// Dropped → the loop sends no explicit max_tokens, truncation target stays sane.
-		expect(result.modelRouter?.getMaxOutputTokens("gpt")).toBeUndefined();
+		expect(result.modelRouter?.getMaxOutputTokens("gpt")).toBe(262144);
 	});
 
 	it("prefers the backend's own provider namespace over a cross-provider collision (req 3)", async () => {
@@ -436,11 +435,11 @@ describe("resolved catalog metadata on the local routing path (requirement 1 + 7
 
 		// Provider-scoped lookup → amazon-bedrock's limits, not xai's.
 		// max_context = min(500000, 372000 + 128000) = 500000; max_output 128000
-		// (< max_context, so the output>=context rule does not drop it). A
-		// cross-provider (unscoped) hit would have applied xai's output 500000,
-		// which being == max_context the req-5 rule would then DROP → undefined.
+		// (above the 25% cap of 500000 = 125000, so it is capped). A cross-provider
+		// (unscoped) hit would have applied xai's output 500000, capped the same way;
+		// the max_context assertion is what distinguishes the scoped lookup.
 		expect(result.modelRouter?.getEffectiveCapabilities("grok")?.max_context).toBe(500000);
-		expect(result.modelRouter?.getMaxOutputTokens("grok")).toBe(128000);
+		expect(result.modelRouter?.getMaxOutputTokens("grok")).toBe(125000);
 	});
 
 	it("re-applies on a models.dev refresh: a first-boot-unready backend flips ready + windowed", async () => {

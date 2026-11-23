@@ -115,10 +115,10 @@ describe("ModelRouter — applyResolvedCatalog (requirement 1 + 5)", () => {
 		expect(router.getMaxOutputTokens("grok")).toBeUndefined();
 
 		router.applyResolvedCatalog(
-			new Map([["grok", resolvedBackend({ maxContext: 500000, maxOutputTokens: 128000 })]]),
+			new Map([["grok", resolvedBackend({ maxContext: 512000, maxOutputTokens: 128000 })]]),
 		);
 
-		expect(router.getEffectiveCapabilities("grok")?.max_context).toBe(500000);
+		expect(router.getEffectiveCapabilities("grok")?.max_context).toBe(512000);
 		expect(router.getMaxOutputTokens("grok")).toBe(128000);
 	});
 
@@ -142,10 +142,8 @@ describe("ModelRouter — applyResolvedCatalog (requirement 1 + 5)", () => {
 		expect(router.getMaxOutputTokens("nova")).toBe(8192);
 	});
 
-	it("drops a non-config max_output_tokens that is >= max_context (output>=context sanity, req 5)", () => {
-		// amazon-bedrock us.moonshotai.kimi-k3.1: context 1048576, output 1048576.
-		// output == context would make computeBaseTruncationTarget 0; the
-		// non-config value must be treated as unknown.
+	it("caps a non-config max_output_tokens at 25% of max_context", () => {
+		// amazon-bedrock us.moonshotai.kimi-k3.1 reports context 1048576, output 1048576.
 		const router = createModelRouter({
 			backends: [{ id: "kimi", provider: "bedrock", model: "kimi", region: "us-east-1" }],
 			default: "kimi",
@@ -154,12 +152,21 @@ describe("ModelRouter — applyResolvedCatalog (requirement 1 + 5)", () => {
 			new Map([["kimi", resolvedBackend({ maxContext: 1048576, maxOutputTokens: 1048576 })]]),
 		);
 		expect(router.getEffectiveCapabilities("kimi")?.max_context).toBe(1048576);
-		// Dropped → no max_output_tokens, so the loop sends the provider default and
-		// the truncation target stays sane.
-		expect(router.getMaxOutputTokens("kimi")).toBeUndefined();
+		expect(router.getMaxOutputTokens("kimi")).toBe(262144);
 	});
 
-	it("respects a config max_output_tokens even when it is >= max_context (req 5)", () => {
+	it("leaves a non-config max_output_tokens at or below 25% of max_context unchanged", () => {
+		const router = createModelRouter({
+			backends: [{ id: "gpt", provider: "bedrock", model: "gpt", region: "us-east-1" }],
+			default: "gpt",
+		});
+		router.applyResolvedCatalog(
+			new Map([["gpt", resolvedBackend({ maxContext: 512000, maxOutputTokens: 128000 })]]),
+		);
+		expect(router.getMaxOutputTokens("gpt")).toBe(128000);
+	});
+
+	it("respects a config max_output_tokens even above the 25% cap", () => {
 		const router = createModelRouter({
 			backends: [
 				{

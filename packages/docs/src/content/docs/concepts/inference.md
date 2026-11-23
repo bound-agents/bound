@@ -58,9 +58,10 @@ limits come from), then the `models.dev` fallback registry. `context_window` and
 value below what the provider or `models.dev` reports, or for a model neither
 source knows. A backend whose context window resolves from none of the three
 sources stays unready — not advertised, not routable — rather than running on a
-guessed window. A reported output limit that is as large as the whole context
-window is treated as unknown (it would leave no room for the prompt); an explicit
-`max_output_tokens` override is always honoured.
+guessed window. A reported output limit above 25% of the context window is capped
+at 25%: Bound reserves the output limit out of the window when it sizes the
+prompt, and some providers report an output limit as large as the whole window.
+An explicit `max_output_tokens` override is always honoured.
 
 The same precedence resolves each model's **display name** — the name shown in the
 model picker, the Settings › Models page, the thread chip, and the per-turn
