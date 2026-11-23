@@ -161,13 +161,18 @@ describe("BedrockMantleDriver", () => {
 		expect(buildMantleOpenAIOptions(undefined)).not.toHaveProperty("promptCacheOptions");
 	});
 
-	it("sends prompt_cache_options.ttl verbatim when a cache_ttl is requested (R-MC14)", () => {
-		// The configured cache_ttl rides on prompt_cache_options.ttl unchanged; the
-		// provider echoes/rejects it and rejection recovery corrects it per route.
-		const opts = buildMantleOpenAIOptions(undefined, false, "30m");
-		expect(opts.promptCacheOptions).toEqual({ ttl: "30m" });
+	it("maps the configured cache_ttl into the Responses lifetime vocabulary (30m) before sending (#293)", () => {
+		// The OpenAI Responses protocol exposes a single cache lifetime, and the
+		// @ai-sdk/openai schema validates `promptCacheOptions.ttl` as `z.literal("30m")`
+		// LOCALLY — any other value throws InvalidArgumentError before a request is sent.
+		// So the configured Anthropic-vocabulary cache_ttl ("1h"/"5m") must be quantized
+		// to the Responses field's own accepted value, never forwarded verbatim.
+		for (const configured of ["1h", "5m", "30m", "12h"]) {
+			const opts = buildMantleOpenAIOptions(undefined, false, configured);
+			expect(opts.promptCacheOptions).toEqual({ ttl: "30m" });
+		}
 		// promptCacheRetention is independent and always present.
-		expect(opts.promptCacheRetention).toBe("24h");
+		expect(buildMantleOpenAIOptions(undefined, false, "1h").promptCacheRetention).toBe("24h");
 	});
 
 	it("omits prompt_cache_options when no ttl is requested (dropped/unset)", () => {
@@ -633,5 +638,92 @@ describe("BedrockMantleDriver — encrypted-reasoning cross-deployment recovery"
 		// absence is not a strip signal; the prior-text presence is the real tell).
 		expect(bodies).toHaveLength(1);
 		expect(bodies[0]).toContain("prior answer");
+	});
+});
+
+describe("BedrockMantleDriver — Responses cache_ttl mapping and SDK-local recovery (#293)", () => {
+	const responsesParams = (cacheTtl: string): ChatParams => ({
+		model: "openai.gpt-5.6-sol",
+		messages: [{ role: "user", content: "hello" }],
+		cache_ttl: cacheTtl,
+	});
+
+	// The operator config sets cache_ttl in the Anthropic vocabulary ("1h"/"5m").
+	// On the Responses route the SDK accepts only "30m" for prompt_cache_options.ttl
+	// (validated locally), so each configured value must land as "30m" on the wire —
+	// the request must succeed, never a route failure.
+	for (const configured of ["1h", "5m", "30m", "12h"]) {
+		it(`sends prompt_cache_options.ttl "30m" for a configured cache_ttl "${configured}"`, async () => {
+			const bodies: string[] = [];
+			const captureFetch: typeof fetch = async (input, init) => {
+				const req = new Request(input as RequestInfo, init);
+				bodies.push(await req.clone().text());
+				return responsesSse();
+			};
+			const driver = new BedrockMantleDriver({
+				region: "us-east-1",
+				model: "openai.gpt-5.6-sol",
+				contextWindow: 272_000,
+				providerMode: "openai_responses",
+				fetch: captureFetch,
+				credentials: fakeCredentials,
+				siteId: "this-host:us-east-1",
+			});
+
+			const out = await collect(driver.chat(responsesParams(configured)));
+
+			expect(bodies).toHaveLength(1); // one request, no local-rejection failure
+			const body = JSON.parse(bodies[0] ?? "{}") as { prompt_cache_options?: { ttl?: string } };
+			expect(body.prompt_cache_options?.ttl).toBe("30m");
+			// The configured Anthropic-vocabulary lifetime never reaches the wire verbatim.
+			if (configured !== "30m") expect(bodies[0]).not.toContain(`"ttl":"${configured}"`);
+			expect(out.some((c) => c.type === "text" && c.content.includes("answer"))).toBe(true);
+		});
+	}
+
+	it("recovers from an SDK-local cache-ttl rejection without failing the turn", async () => {
+		// Defense in depth: even if a cache-lifetime value reached the SDK that its
+		// local schema rejects (AI_InvalidArgumentError, no 400), recovery must drop
+		// the field, retry once, remember the route, and let the turn land. The SDK
+		// rejects promptCacheOptions BEFORE any fetch, so the first (failing) attempt
+		// never reaches captureFetch; only the recovered, field-dropped retry does.
+		const bodies: string[] = [];
+		const captureFetch: typeof fetch = async (input, init) => {
+			const req = new Request(input as RequestInfo, init);
+			bodies.push(await req.clone().text());
+			return responsesSse();
+		};
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-5.6-sol",
+			contextWindow: 272_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+			siteId: "this-host:us-east-1",
+		});
+
+		// Force a value the SDK schema rejects locally by recording a use-value
+		// decision the quantizer would otherwise never produce. Use the public recovery
+		// state the driver reads from before building the request.
+		(
+			driver as unknown as {
+				cacheRecovery: {
+					record: (r: string, rej: { field: string; supportedValue?: string }, o: unknown) => void;
+				};
+			}
+		).cacheRecovery.record(
+			"openai.gpt-5.6-sol",
+			{ field: "prompt_cache_options.ttl", supportedValue: "1h" },
+			{ validValues: ["1h"] },
+		);
+
+		const out = await collect(driver.chat(responsesParams("30m")));
+
+		// The turn still lands with a text answer; recovery dropped the bad field.
+		expect(out.some((c) => c.type === "text" && c.content.includes("answer"))).toBe(true);
+		expect(bodies.length).toBeGreaterThanOrEqual(1);
+		// The final, successful request carries no rejected lifetime value.
+		expect(bodies.at(-1)).not.toContain('"ttl":"1h"');
 	});
 });

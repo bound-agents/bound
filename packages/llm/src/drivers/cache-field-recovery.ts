@@ -41,18 +41,35 @@ export interface CacheFieldRejection {
 
 /**
  * Walk the common AI SDK error shape (RetryError → lastError, APICallError with
- * `.responseBody`) collecting status codes and body text, mirroring
- * `isResponsesInputRejection`. Returns the parsed body object plus the status.
+ * `.responseBody`, InvalidArgumentError → cause) collecting status codes, body
+ * text, and whether a node is a LOCAL SDK argument-validation failure, mirroring
+ * `isResponsesInputRejection`. Returns the parsed body object plus the status and
+ * a `localArgRejection` flag.
+ *
+ * `localArgRejection` is true when a walked node is @ai-sdk's own pre-flight
+ * provider-options validation failure (`AI_InvalidArgumentError`, usually
+ * `argument: "providerOptions"`): the SDK rejects a bad field value against its
+ * typed schema BEFORE any request is sent, so there is no HTTP status and no
+ * responseBody — only the SDK's message and a wrapped TypeValidationError in
+ * `.cause` naming the failing path. A field match comes from that message/path
+ * text (collected into `bodyText`), never a `param`.
  */
-function collectError(err: unknown): { statusCode?: number; bodyText: string; param?: string } {
+function collectError(err: unknown): {
+	statusCode?: number;
+	bodyText: string;
+	param?: string;
+	localArgRejection: boolean;
+} {
 	let statusCode: number | undefined;
 	let param: string | undefined;
+	let localArgRejection = false;
 	const bodyTexts: string[] = [];
 	const seen = new Set<unknown>();
 	let node: unknown = err;
 	for (let depth = 0; depth < 4 && node && !seen.has(node); depth++) {
 		seen.add(node);
 		const e = node as {
+			name?: unknown;
 			statusCode?: number;
 			status?: number;
 			$metadata?: { httpStatusCode?: number };
@@ -62,6 +79,11 @@ function collectError(err: unknown): { statusCode?: number; bodyText: string; pa
 			cause?: unknown;
 		};
 		statusCode = statusCode ?? e.statusCode ?? e.status ?? e.$metadata?.httpStatusCode;
+		// @ai-sdk tags its local provider-options validation failure by name; the
+		// SDK throws it before a request exists, so it carries no status/body.
+		if (e.name === "AI_InvalidArgumentError" || e.name === "AI_TypeValidationError") {
+			localArgRejection = true;
+		}
 		if (typeof e.message === "string") bodyTexts.push(e.message);
 		if (typeof e.responseBody === "string") {
 			bodyTexts.push(e.responseBody);
@@ -75,21 +97,28 @@ function collectError(err: unknown): { statusCode?: number; bodyText: string; pa
 		}
 		node = e.lastError ?? e.cause;
 	}
-	return { statusCode, bodyText: bodyTexts.join(" "), param };
+	return { statusCode, bodyText: bodyTexts.join(" "), param, localArgRejection };
 }
 
 /**
  * Classify an error as a cache-field rejection, or null when it is not one.
  *
- * Only a 400 counts (an invalid-value / unsupported-parameter rejection); a 5xx
- * or a 429 that happens to mention a cache field is a transport failure, not a
- * capability signal. The field is taken from the error's `param` when present,
- * else matched from the body text. A "Supported values are: 'X'" clause yields
- * the first listed value as a candidate replacement.
+ * Two shapes count. (1) A provider 400 (an invalid-value / unsupported-parameter
+ * rejection at the wire): a 5xx or 429 that happens to mention a cache field is a
+ * transport failure, not a capability signal, so it is ignored. (2) An @ai-sdk
+ * LOCAL argument-validation failure (`AI_InvalidArgumentError` /
+ * `AI_TypeValidationError`): the SDK rejects a bad field value against its typed
+ * schema BEFORE a request is sent, so it carries no HTTP status — the field is
+ * read from the error message/path text. An error with any other HTTP status is
+ * NOT a cache-field rejection. The field is taken from the error's `param` when
+ * present, else matched from the body text. A "Supported values are: 'X'" clause
+ * yields the first listed value as a candidate replacement (a local rejection
+ * never carries one, so such a field is dropped, not resent).
  */
 export function classifyCacheFieldRejection(err: unknown): CacheFieldRejection | null {
-	const { statusCode, bodyText, param } = collectError(err);
-	if (statusCode !== 400) return null;
+	const { statusCode, bodyText, param, localArgRejection } = collectError(err);
+	// A wire rejection must be a 400; a local SDK argument rejection has no status.
+	if (statusCode !== 400 && !(statusCode === undefined && localArgRejection)) return null;
 	if (bodyText.length === 0 && !param) return null;
 
 	const lowerBody = bodyText.toLowerCase();

@@ -166,6 +166,43 @@ function toReasoningEffort(
 }
 
 /**
+ * The OpenAI Responses `prompt_cache_options.ttl` wire vocabulary, as accepted by
+ * @ai-sdk/openai LOCALLY: the provider-options schema validates this field with
+ * `z.literal("30m")` (see node_modules .../@ai-sdk/openai/dist/index.js, the two
+ * `ttl: z.literal("30m").optional()` sites on both the model-settings and the
+ * Responses provider-options objects). It is the protocol's single cache lifetime;
+ * any other value — including the Anthropic vocabulary's "5m"/"1h" or the OpenAI
+ * docs' future "12h" that this pinned SDK does not yet admit — throws
+ * InvalidArgumentError before a request is sent. Maintained in one place as the
+ * local source of truth for the mapper below (R-MC14, catalog §2.1).
+ */
+const RESPONSES_CACHE_TTL_VALUES = ["30m"] as const;
+type ResponsesCacheTtl = (typeof RESPONSES_CACHE_TTL_VALUES)[number];
+
+/**
+ * Map a configured `cache_ttl` into the OpenAI Responses protocol's own cache
+ * lifetime before it is sent, the way {@link quantizeCacheTtl} maps to the
+ * Anthropic/Converse "5m"/"1h" set. The configured value is expressed in the
+ * Anthropic vocabulary ("5m"/"1h") or may already be a Responses value; either
+ * way the Responses endpoint exposes exactly one lifetime, so any caching-intent
+ * value collapses to it. Returns undefined when no caching is requested, so the
+ * field is omitted. Never returns a value outside {@link RESPONSES_CACHE_TTL_VALUES},
+ * which is the whole point: the SDK rejects anything else locally (#293).
+ */
+export function quantizeResponsesCacheTtl(
+	cacheTtl: string | undefined,
+): ResponsesCacheTtl | undefined {
+	if (cacheTtl === undefined) return undefined;
+	// A value the SDK already accepts passes through; everything else (the
+	// Anthropic "5m"/"1h", or a future "12h") collapses to the one supported
+	// lifetime. The protocol admits a single value, so there is no nearest-neighbor
+	// choice to make — caching intent maps to the only lifetime the field accepts.
+	return (RESPONSES_CACHE_TTL_VALUES as readonly string[]).includes(cacheTtl)
+		? (cacheTtl as ResponsesCacheTtl)
+		: RESPONSES_CACHE_TTL_VALUES[0];
+}
+
+/**
  * Mantle's `openai.` model IDs bypass the SDK's reasoning-model detection, so `forceReasoning` preserves
  * `reasoningEffort`. `store: false` satisfies zero retention; GPT-5.x requires `promptCacheRetention: "24h"`.
  * See the Mantle cache gotcha for 5.4/5.5 exact-match behavior and 5.6 breakpoints.
@@ -183,20 +220,26 @@ export function buildMantleOpenAIOptions(
 	effort: ChatParams["effort"],
 	reasoningDisabled = false,
 	/**
-	 * Prompt-cache lifetime to request via `prompt_cache_options.ttl` (R-MC14),
-	 * sent verbatim (the configured `cache_ttl`). Omitted when unset or when a
-	 * prior rejection dropped the field for this route. `promptCacheRetention`
-	 * "24h" is independent and always sent (GPT-5.x caches nothing without it).
+	 * Prompt-cache lifetime to request via `prompt_cache_options.ttl` (R-MC14).
+	 * The configured `cache_ttl` arrives in the Anthropic vocabulary ("5m"/"1h");
+	 * {@link quantizeResponsesCacheTtl} maps it into the OpenAI Responses protocol's
+	 * own single lifetime ("30m") before it is sent, because the @ai-sdk/openai
+	 * schema validates this field LOCALLY against `z.literal("30m")` and throws
+	 * InvalidArgumentError on any other value before a request leaves the process
+	 * (#293). Omitted when unset or when a prior rejection dropped the field for
+	 * this route. `promptCacheRetention` "24h" is independent and always sent
+	 * (GPT-5.x caches nothing without it).
 	 */
 	cacheTtl?: string,
 ): Record<string, string | boolean | null | Record<string, string>> {
 	const reasoningEffort = reasoningDisabled ? "none" : toReasoningEffort(effort);
+	const responsesTtl = quantizeResponsesCacheTtl(cacheTtl);
 	return {
 		store: false,
 		promptCacheRetention: "24h",
 		forceReasoning: true,
 		reasoningSummary: null,
-		...(cacheTtl !== undefined && { promptCacheOptions: { ttl: cacheTtl } }),
+		...(responsesTtl !== undefined && { promptCacheOptions: { ttl: responsesTtl } }),
 		...(reasoningEffort && { reasoningEffort }),
 	};
 }

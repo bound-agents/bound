@@ -114,6 +114,32 @@ describe("classifyCacheFieldRejection", () => {
 		wrapper.lastError = inner;
 		expect(classifyCacheFieldRejection(wrapper)?.supportedValue).toBe("30m");
 	});
+
+	it("detects an SDK-local InvalidArgumentError on the cache ttl field (#293)", () => {
+		// ai-sdk/openai validates prompt_cache_options.ttl LOCALLY against a typed
+		// literal: a rejected value throws AI_InvalidArgumentError before any request
+		// is sent, so there is NO 400 and NO responseBody, only the SDK's own message
+		// (invalid openai provider options) wrapping a TypeValidationError that names
+		// the path. A guard requiring statusCode===400 would miss it and the route dies.
+		const inner = new Error(
+			"Type validation failed: Value at path [promptCacheOptions, ttl]: invalid option for prompt_cache_options.ttl",
+		);
+		const err = new Error("invalid openai provider options") as Error & { cause: unknown };
+		(err as { name: string }).name = "AI_InvalidArgumentError";
+		err.cause = inner;
+		const result = classifyCacheFieldRejection(err);
+		expect(result?.field).toBe("prompt_cache_options.ttl");
+	});
+
+	it("ignores an SDK-local InvalidArgumentError that names a non-cache field", () => {
+		// A local validation failure on, e.g., temperature must NOT be mistaken for a
+		// cache-field rejection; recovery would wrongly swallow a real argument bug.
+		const inner = new Error("Type validation failed: Value at path [temperature]: out of range");
+		const err = new Error("invalid openai provider options") as Error & { cause: unknown };
+		(err as { name: string }).name = "AI_InvalidArgumentError";
+		err.cause = inner;
+		expect(classifyCacheFieldRejection(err)).toBeNull();
+	});
 });
 
 describe("isDurationTtl", () => {
