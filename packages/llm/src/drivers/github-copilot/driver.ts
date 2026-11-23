@@ -40,10 +40,13 @@ import type { DiscoveredModel } from "../../catalog/discovery";
 import type { DriverFallbackSupport } from "../../fallback-policy";
 import type {
 	BackendCapabilities,
+	BackendReadiness,
 	ChatParams,
 	ContentBlock,
 	LLMBackend,
 	LLMMessage,
+	ModelDescriptor,
+	ModelRegistrar,
 	StreamChunk,
 } from "../../types";
 import { LLMError } from "../../types";
@@ -74,6 +77,7 @@ import {
 	type CopilotRoute,
 	computeCopilotCostBreakdown,
 	resolveRoute,
+	routeFromEndpoints,
 	routeFromModelName,
 } from "./catalog";
 import {
@@ -334,8 +338,153 @@ function copilotEntryToDiscoveredModel(entry: CopilotModelEntry): DiscoveredMode
 	return model;
 }
 
+/** Retry/backoff caps for the background lineup fetch (mirrors umans). */
+const LINEUP_RETRY_BASE_MS = 1000;
+const LINEUP_RETRY_MAX_MS = 60_000;
+
+/**
+ * Readiness handle for the namespace (lineup) Copilot driver. Owns the disposed
+ * flag + a pending-retry handle so a fetch that resolves after `dispose()` is a
+ * no-op (cannot register stale models into the live router). Mirrors
+ * `UmansReadiness`, with one deliberate difference: `CopilotCatalog.load()`
+ * swallows a fetch failure into an EMPTY map rather than throwing, so an empty
+ * lineup is the retry signal here (a reachable-but-empty account and an
+ * unreachable endpoint are indistinguishable, so both retry until one yields a
+ * non-empty catalog; a genuinely empty account simply keeps retrying in the
+ * background without ever being advertised, exactly as not-ready requires).
+ */
+class CopilotLineupReadiness implements BackendReadiness {
+	private ready = false;
+	private disposed = false;
+	private pendingRetry?: ReturnType<typeof setTimeout>;
+	private readonly retryBaseMs: number;
+	private readonly retryMaxMs: number;
+
+	constructor(
+		private readonly deps: {
+			/** Load the account's Copilot catalog (self-configuring lineup). */
+			loadCatalog: () => Promise<Map<string, CopilotModelEntry>>;
+			/** Build a concrete per-model driver sharing the namespace's account. */
+			buildPerModelDriver: (model: string, contextWindow: number) => LLMBackend;
+			/** The namespace entry's config id; expanded ids are `${namespaceId}-${providerModelId}`. */
+			namespaceId: string;
+			logger?: Logger;
+			retryBaseMs?: number;
+			retryMaxMs?: number;
+		},
+	) {
+		this.retryBaseMs = deps.retryBaseMs ?? LINEUP_RETRY_BASE_MS;
+		this.retryMaxMs = deps.retryMaxMs ?? LINEUP_RETRY_MAX_MS;
+	}
+
+	isReady(): boolean {
+		return this.ready;
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		if (this.pendingRetry !== undefined) clearTimeout(this.pendingRetry);
+		this.pendingRetry = undefined;
+	}
+
+	start(registrar: ModelRegistrar): void {
+		void this.runFetchLoop(registrar);
+	}
+
+	private async runFetchLoop(registrar: ModelRegistrar): Promise<void> {
+		let attempt = 0;
+		while (!this.disposed) {
+			let entries: Map<string, CopilotModelEntry>;
+			try {
+				entries = await this.deps.loadCatalog();
+			} catch (error) {
+				// loadCatalog() degrades to an empty map internally; a throw here is an
+				// endpoint-resolution failure (account lookup). Treat it like an empty
+				// lineup and retry.
+				this.deps.logger?.warn?.("copilot lineup fetch threw; retrying", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+				entries = new Map();
+			}
+			if (this.disposed) return;
+
+			const descriptors = this.buildDescriptors(entries);
+			if (descriptors.length > 0) {
+				if (this.disposed) return; // re-check just before the live-router write
+				this.ready = true;
+				registrar.register(PROVIDER_NAME, descriptors);
+				this.deps.logger?.info?.("copilot lineup ready", { models: descriptors.length });
+				return;
+			}
+
+			attempt++;
+			const delay = Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** (attempt - 1));
+			this.deps.logger?.warn?.("copilot lineup empty; retrying", { attempt, delayMs: delay });
+			await new Promise<void>((resolve) => {
+				this.pendingRetry = setTimeout(resolve, delay);
+			});
+			this.pendingRetry = undefined;
+		}
+	}
+
+	/**
+	 * Turn the fetched catalog into one descriptor+backend per CHAT-ROUTABLE model
+	 * (requirement 1): a model whose `supported_endpoints` the driver cannot route
+	 * (`routeFromEndpoints` returns null, e.g. an embeddings-only model) is
+	 * excluded. The provider-local `auto` pseudo-model is not in the `/models`
+	 * catalog, so it never appears here; it stays a separately-configured entry.
+	 * Each expanded backend id is `${namespaceId}-${providerModelId}` (requirement
+	 * 2) — deterministic and stable across restarts, and human-readable (e.g.
+	 * `copilot-claude-opus-5.5` under namespace id `copilot`). Logical-model
+	 * grouping (normalize.ts strips the `copilot-` dashed prefix) collapses the
+	 * expanded id and the raw `providerModelId` to the same logical key, so cross-
+	 * provider pooling and routing treat an expanded backend exactly like a static
+	 * one.
+	 */
+	private buildDescriptors(
+		entries: Map<string, CopilotModelEntry>,
+	): Array<{ descriptor: ModelDescriptor; backend: LLMBackend }> {
+		const out: Array<{ descriptor: ModelDescriptor; backend: LLMBackend }> = [];
+		for (const entry of entries.values()) {
+			// Routable iff the driver speaks one of the entry's endpoints. A model
+			// whose endpoints are present but unroutable is excluded; a model with NO
+			// endpoints listed (legacy) is routed by the name heuristic, so it is kept.
+			if (entry.supportedEndpoints && routeFromEndpoints(entry.supportedEndpoints) === null) {
+				continue;
+			}
+			const discovered = copilotEntryToDiscoveredModel(entry);
+			const caps = discovered.capabilities;
+			const maxContext = caps?.max_context;
+			const capabilities: BackendCapabilities = {
+				streaming: true,
+				tool_use: caps?.tool_use ?? false,
+				system_prompt: true,
+				prompt_caching: true,
+				vision: caps?.vision ?? false,
+				extended_thinking: caps?.reasoning?.supported ?? false,
+				...(maxContext !== undefined && { max_context: maxContext }),
+			};
+			const backendId = `${this.deps.namespaceId}-${entry.id}`;
+			const descriptor: ModelDescriptor = {
+				id: backendId,
+				providerModelId: entry.id,
+				capabilities,
+				...(discovered.maxOutputTokens !== undefined && {
+					maxOutputTokens: discovered.maxOutputTokens,
+				}),
+			};
+			out.push({
+				descriptor,
+				backend: this.deps.buildPerModelDriver(entry.id, maxContext ?? 0),
+			});
+		}
+		return out;
+	}
+}
+
 export class GitHubCopilotDriver implements LLMBackend {
 	private readonly tokenManager: CopilotTokenManager;
+	/** Concrete provider model id. Empty string on a namespace instance (no model). */
 	private readonly model: string;
 	private readonly contextWindow: number;
 	private readonly logger?: Logger;
@@ -371,10 +520,26 @@ export class GitHubCopilotDriver implements LLMBackend {
 		catalog: CopilotCatalog;
 		autoSessions: CopilotAutoSessionCache;
 	}> | null = null;
+	/**
+	 * Self-configuration handle. Present ONLY on a namespace instance (built with
+	 * no `model`): it fetches the account's Copilot catalog and registers one
+	 * concrete per-model driver per chat-routable model (mirrors the umans lineup
+	 * driver). A single-model instance leaves this undefined and is immediately
+	 * invokable.
+	 */
+	readonly readiness?: BackendReadiness;
+	/** True on the namespace instance; its `chat()` throws a guard. */
+	private readonly isNamespace: boolean;
 
 	constructor(config: {
 		tokenManager: CopilotTokenManager;
-		model: string;
+		/**
+		 * Concrete provider model id. OMITTED builds a namespace instance: it owns
+		 * `readiness`, fetches the account's Copilot catalog, and registers one
+		 * per-model driver per chat-routable model (self-configuring expansion,
+		 * catalog §4.1). Its own `chat()` throws a guard.
+		 */
+		model?: string;
 		contextWindow: number;
 		/**
 		 * Either an already-resolved account (tests, the login path) or a resolver
@@ -394,9 +559,21 @@ export class GitHubCopilotDriver implements LLMBackend {
 		 * route. Omitted in tests that don't exercise the cross-provider path.
 		 */
 		siteId?: string;
+		/**
+		 * The namespace entry's config `id` (e.g. `copilot`). Present ONLY on a
+		 * namespace instance; expanded per-model backend ids are derived as
+		 * `${namespaceId}-${providerModelId}` (requirement 2). Omitted on a
+		 * single-model instance.
+		 */
+		namespaceId?: string;
+		/** Namespace-lineup retry backoff base, ms (test seam; default below). */
+		lineupRetryBaseMs?: number;
+		/** Namespace-lineup retry backoff cap, ms (test seam; default below). */
+		lineupRetryMaxMs?: number;
 	}) {
 		this.tokenManager = config.tokenManager;
-		this.model = config.model;
+		this.model = config.model ?? "";
+		this.isNamespace = config.model === undefined;
 		this.contextWindow = config.contextWindow;
 		this.logger = config.logger;
 		this.baseFetch = resolveProviderFetch(PROVIDER_NAME, config);
@@ -413,6 +590,39 @@ export class GitHubCopilotDriver implements LLMBackend {
 				: () => {
 						throw new Error("GitHubCopilotDriver requires account or resolveAccount");
 					});
+		if (this.isNamespace) {
+			// Namespace instance: own the lineup readiness. The per-model drivers it
+			// builds on expansion share this instance's token manager, resolved
+			// account, fetch, and siteId (so each concrete route stamps the same
+			// `reasoning_origin`). The fetch is NOT started here — the wiring layer
+			// calls `readiness.start(registrar)` once the registrar is bound.
+			this.readiness = new CopilotLineupReadiness({
+				buildPerModelDriver: (model, contextWindow) =>
+					new GitHubCopilotDriver({
+						tokenManager: config.tokenManager,
+						model,
+						contextWindow,
+						...(config.account && { account: config.account }),
+						...(config.resolveAccount && { resolveAccount: config.resolveAccount }),
+						...(config.logger && { logger: config.logger }),
+						...(config.fetch && { fetch: config.fetch }),
+						...(config.connectTimeoutMs !== undefined && {
+							connectTimeoutMs: config.connectTimeoutMs,
+						}),
+						...(config.now && { now: config.now }),
+						...(config.siteId && { siteId: config.siteId }),
+					}),
+				namespaceId: config.namespaceId ?? "",
+				loadCatalog: () => this.endpoint().then(({ catalog }) => catalog.load()),
+				...(config.logger && { logger: config.logger }),
+				...(config.lineupRetryBaseMs !== undefined && {
+					retryBaseMs: config.lineupRetryBaseMs,
+				}),
+				...(config.lineupRetryMaxMs !== undefined && {
+					retryMaxMs: config.lineupRetryMaxMs,
+				}),
+			});
+		}
 	}
 
 	/**
@@ -473,6 +683,17 @@ export class GitHubCopilotDriver implements LLMBackend {
 	}
 
 	private async *chatStream(params: ChatParams): AsyncIterable<StreamChunk> {
+		// Namespace guard (defense-in-depth, mirrors umans). The namespace instance
+		// owns no concrete model and must never serve inference. Some CLI-layer sites
+		// call modelRouter.getDefault().chat(...) directly, bypassing the resolveModel
+		// not-ready gate during the warmup window; a clear throw degrades gracefully
+		// instead of a request against an empty model id.
+		if (this.isNamespace) {
+			throw new LLMError(
+				"github-copilot namespace backend is not directly invokable — lineup not yet resolved / backend not ready",
+				PROVIDER_NAME,
+			);
+		}
 		const configuredModel = params.model || this.model;
 		const { apiEndpoint, catalog, autoSessions } = await this.endpoint();
 

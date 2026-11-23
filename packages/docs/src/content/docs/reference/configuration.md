@@ -254,11 +254,16 @@ accepted by the schema. Set up with `bound init --umans` (reads `UMANS_API_KEY`)
 
 ### GitHub Copilot
 
-A `github-copilot` backend drives a Copilot model through Bound's own GitHub App, authenticated
+A `github-copilot` backend drives Copilot models through Bound's own GitHub App, authenticated
 by the device-flow token `bound login --copilot` writes to `config/copilot-auth.json` (no
 `api_key`). The Copilot API fronts several model families; Bound reads each model's capabilities
-from the live catalog and routes it to the matching wire surface automatically. The `model` is
-the Copilot model ID, or the literal `auto` to let Copilot pick a model per request.
+from the live catalog and routes it to the matching wire surface automatically.
+
+An entry takes one of two forms. **Self-configuring** (no `model`): the entry expands at startup
+into one backend per chat-routable model in the account's Copilot catalog, with each model's
+context window, output limit, capabilities, display name, pricing, and reasoning metadata read
+from the catalog. **Single-model** (`model` set): one concrete backend for that Copilot model ID,
+or the literal `auto` to let Copilot pick a model per request.
 
 ```js
 export default {
@@ -303,6 +308,122 @@ cache-write price bills the 1h subset of cache writes separately when the catalo
 The Auto pool's discount applies only to `model: "auto"` turns, and a time-boxed promo discount
 applies only before its end date. Setting any `price_per_m_*` field or a `price(turn)` callback on
 the backend overrides the catalog entirely; absent both, a turn with no catalog pricing records `0`.
+
+#### Self-configuring form (one entry, whole lineup)
+
+Instead of one entry per model, a single `github-copilot` entry with **no `model`** expands at
+startup into one backend per chat-routable model in the account's catalog. A model whose
+`supported_endpoints` the driver cannot route (for example an embeddings-only model) is excluded,
+and the `auto` selector is not in the `/models` catalog, so it stays a separate entry you add by
+hand when you want it. An expanded backend's id is `copilot-<provider-model-id>` (the entry id
+plus the catalog model id), so the lineup is deterministic across restarts.
+
+Authoritative per-model fields — context window, output limit, capabilities, display name, and
+pricing — come from the catalog and are rejected on the namespace entry itself (there is no single
+model to apply them to). What you *can* set on the namespace entry is a blanket reasoning/cache
+choice (`thinking`, `effort`, `cache_ttl`, `system_prompt_suffix`), which every expanded backend
+inherits, and a `copilot_model_overrides` map keyed by provider model id to pin one model's request
+controls without listing the rest.
+
+This entry replaces the twelve hand-written `copilot-*` backends (the eleven concrete models plus
+`copilot-auto`):
+
+```js
+export default {
+  backends: [
+    {
+      id: "copilot",
+      provider: "github-copilot",
+      // Blanket reasoning/cache controls inherited by every expanded backend.
+      // These are not catalog-derivable, so they are configured once here.
+      thinking: { type: "adaptive", display: "summarized" },
+      effort: "medium",
+      cache_ttl: "1h",
+      // Per-model request-control pins, keyed by provider model id. Here they
+      // bind the four Claude models' expanded rows back to the logical ids the
+      // old hand-written `copilot-opus-5.5` … entries resolved to, so existing
+      // thread/task/agent model_hints that named those ids keep resolving (see
+      // "Expanded ids and existing references" below).
+      copilot_model_overrides: {
+        "claude-opus-5.5": { logical_model: "opus-5-5" },
+        "claude-sonnet-5.5": { logical_model: "sonnet-5-5" },
+        "claude-haiku-5.5": { logical_model: "haiku-5-5" },
+        "claude-fable-5.2": { logical_model: "fable-5-2" },
+      },
+    },
+    {
+      // `auto` is a provider-local selector, not a catalog model, so it stays a
+      // separate single-model entry.
+      id: "copilot-auto",
+      provider: "github-copilot",
+      model: "auto",
+      context_window: 128000,
+      max_output_tokens: 32000,
+    },
+  ],
+  default: "copilot-auto",
+};
+```
+
+**Per-model value coverage.** With the entry above, every value the twelve hand-written entries
+carried is now sourced from the catalog, the top-level `defaults` block, or the override map:
+
+| Value | Where it comes from now |
+|---|---|
+| `context_window`, `max_output_tokens`, capabilities, pricing, display name | Copilot catalog (per model) |
+| `thinking` (all four Claude models carried `adaptive`) | Namespace-entry blanket `thinking`, inherited by every expanded row |
+| `effort` (the three non-opus Claude models carried `medium`) | Namespace-entry blanket `effort`; a model that advertises no effort ladder drops it |
+| `cache_ttl` (`1h` on all four Claude models) | Namespace-entry blanket `cache_ttl` |
+| reasoning mode for GPT / Grok / Gemini (the eight entries carried nothing) | Catalog reasoning metadata + the top-level `defaults` block |
+| `logical_model` for the four Claude models | `copilot_model_overrides` pins (see below) |
+| `context_window`, `max_output_tokens` for `auto` | Still set by hand on the `copilot-auto` entry (not a catalog model) |
+
+#### Expanded ids and existing references
+
+Resolution goes through **logical models**, not backend-id string equality, so an expanded backend
+pools and resolves by the same logical key a hand-written entry did. Structural normalization strips
+the dashed `copilot-` prefix, so for the GPT, Grok, and Gemini families the old config id and the
+expanded id land on the same logical key (`copilot-gpt-6.2-sol` and the expanded
+`copilot-gpt-6.2-sol` both normalize to `gpt-6-2-sol`) and existing references resolve unchanged.
+
+The four Claude models are the exception. Their raw catalog ids carry a `claude-` segment that is
+**not** a stripped vendor prefix, so the expanded `copilot-claude-opus-5.5` normalizes to
+`claude-opus-5-5`, while the old hand-written `copilot-opus-5.5` normalized to the bare family
+`opus-5-5`. Left alone, a thread or task that named `copilot-opus-5.5` would strand. Two facts pull
+in opposite directions here, so this is surfaced as a decision rather than resolved silently:
+
+- Expanding to the raw catalog id is the right default for pooling: `claude-opus-5-5` is exactly
+  what the direct Bedrock and Bedrock Mantle Anthropic routes normalize to, so Copilot Claude pools
+  cross-provider with them automatically — the whole point of logical models.
+- But it diverges from the logical key the hand-written `copilot-*` id produced, breaking the
+  requirement that existing references keep resolving.
+
+The mitigation applied above is the `copilot_model_overrides` `logical_model` pin: it binds each of
+the four Claude expanded rows to the old family key (`opus-5-5`, …) so existing references resolve,
+without touching the shared normalization rule. The alternative — adding `claude` to the dashed
+vendor prefixes stripped by normalization — is a **cross-cutting change to the one structural rule
+every provider shares** (it would also collapse `claude-`-prefixed ids on Anthropic, Bedrock, and
+Mantle to bare family keys), so it is not made as a side effect of Copilot expansion. Choosing
+between the per-model pin (local, Copilot-only) and the normalization change (global, affects every
+provider's `claude-` ids) is an open operator decision; the pin is the conservative default until
+that call is made.
+
+#### Mantle is not self-configuring
+
+Bedrock Mantle also fronts many models through one endpoint, but it is **not** expanded into a
+lineup, and this is a provider limitation rather than an omission. Expanding one Mantle
+`(region, profile)` entry would require each discovered model's **wire protocol** — Anthropic
+Messages versus OpenAI Responses — to build the right per-model driver, because Mantle routes the
+two protocols to different base paths. Mantle's `/v1/models` discovery returns only bare
+entitlement rows (`id`, `object`, `owned_by`, `status`, `data_retention`); it publishes no
+per-model protocol field. The only way to infer the protocol from the id would be a vendor-prefix
+rule (`openai.*` → Responses, `anthropic.*` → Messages, and a guess for everything else), which is
+exactly the hardcoded model-id branching Bound's catalog goals forbid — and a single region mixes
+vendors, so one entry could not carry a single protocol anyway. Mantle therefore stays per-entry
+config with an explicit `provider_mode`, which is why that field is required there. Self-configuring
+Mantle becomes possible only if Mantle adds a per-model protocol/endpoint field to its models
+listing; until then, one entry per `(model, provider_mode)` is the supported form. Display names,
+limits, and pricing for those entries still fill from `models.dev`.
 
 ---
 

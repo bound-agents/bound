@@ -173,7 +173,29 @@ const modelDefaultsSchema = z
 	})
 	.strict();
 
-export type ModelDefaults = z.infer<typeof modelDefaultsSchema>;
+// Per-model request-control overrides for a self-configuring `github-copilot`
+// NAMESPACE entry (requirement 2). A namespace entry cannot carry a single
+// `thinking` / `effort` / `cache_ttl` because it expands into many backends; this
+// map keys those per-backend request controls by the provider model id (e.g.
+// `claude-opus-5.5`), so an operator pins one model's controls WITHOUT listing
+// every model. Only request controls are accepted — never authoritative catalog
+// fields (context window, capabilities, pricing), which always come from the
+// Copilot catalog. `logical_model` is allowed so an operator can bind one expanded
+// model to a specific logical id (e.g. map `claude-opus-5.5` back to `opus-5.5`
+// for continuity with pre-expansion references; see the migration list). Keys are
+// raw provider model ids as published by the Copilot `/models` catalog.
+const copilotModelOverrideSchema = z
+	.object({
+		thinking: thinkingConfigSchema.optional(),
+		effort: effortSchema.optional(),
+		cache_ttl: durationStringSchema().optional(),
+		logical_model: z.string().optional(),
+		max_output_tokens: z.number().int().positive().optional(),
+		system_prompt_suffix: z.string().optional(),
+	})
+	.strict();
+
+export type CopilotModelOverride = z.infer<typeof copilotModelOverrideSchema>;
 
 const modelBackendSchema = z
 	.object({
@@ -279,6 +301,15 @@ const modelBackendSchema = z
 		// spoke uses its own headers rather than honoring a hub-set set (mirrors
 		// `connect_timeout_ms`). Absent → no extra headers.
 		additional_headers: z.record(z.string(), z.string()).optional(),
+		// Per-model request-control overrides for a self-configuring `github-copilot`
+		// NAMESPACE entry (no `model`). Keyed by provider model id (e.g.
+		// `claude-opus-5.5`): the override's `thinking` / `effort` / `cache_ttl` /
+		// `logical_model` / `max_output_tokens` / `system_prompt_suffix` apply to just
+		// that expanded backend, so one model's controls are pinned WITHOUT listing
+		// every model (requirement 2). Ignored on a single-model `github-copilot`
+		// entry (which sets the controls directly) and on every other provider. See
+		// `copilotModelOverrideSchema`.
+		copilot_model_overrides: z.record(z.string(), copilotModelOverrideSchema).optional(),
 	})
 	.strict()
 	.superRefine((backend, ctx) => {
@@ -394,19 +425,24 @@ export const modelBackendsSchema = z
 	)
 	.refine(
 		(data) => {
-			// `model` is required for every provider EXCEPT umans (which fetches its
-			// lineup at runtime). `context_window` is OPTIONAL for all providers
-			// (requirement 2): the dynamic catalog resolves the window from provider
-			// discovery or models.dev, and the R-MC4 readiness gate keeps a backend
-			// whose window is unresolved across all layers unready rather than failing
-			// validation. `tier` was removed (R-RT3, slice 2).
+			// `model` is required for every provider EXCEPT the self-configuring
+			// namespace forms: `umans` always, and `github-copilot` WITHOUT a `model`
+			// (a namespace entry that fetches its lineup at runtime and expands into one
+			// backend per catalog model, catalog §4.1). A `github-copilot` entry WITH a
+			// `model` is a single concrete backend and still requires it. `context_window`
+			// is OPTIONAL for all providers (requirement 2): the dynamic catalog resolves
+			// the window from provider discovery or models.dev, and the R-MC4 readiness
+			// gate keeps a backend whose window is unresolved across all layers unready
+			// rather than failing validation. `tier` was removed (R-RT3, slice 2).
 			return data.backends.every((b) => {
 				if (b.provider === "umans") return true;
+				if (b.provider === "github-copilot") return true;
 				return b.model !== undefined;
 			});
 		},
 		{
-			message: "model is required for all providers except umans (which is self-configuring)",
+			message:
+				"model is required for all providers except umans and github-copilot (which are self-configuring)",
 		},
 	)
 	.refine(
@@ -431,6 +467,32 @@ export const modelBackendsSchema = z
 		{
 			message:
 				"umans backends must not set model, context_window, capabilities, or pricing — these are fetched/derived at runtime",
+		},
+	)
+	.refine(
+		(data) => {
+			// A `github-copilot` NAMESPACE entry (no `model`) is self-configuring: its
+			// per-model lineup, context windows, capabilities, and pricing all come from
+			// the Copilot catalog at runtime, so operator-set authoritative fields on the
+			// namespace entry itself are rejected (they would have no single model to
+			// apply to). Per-model overrides go in `copilot_model_overrides` instead
+			// (keyed by provider model id). A `github-copilot` entry WITH a `model` is a
+			// single concrete backend and keeps the normal override fields.
+			return data.backends.every((b) => {
+				if (b.provider !== "github-copilot" || b.model !== undefined) return true;
+				if (b.context_window !== undefined) return false;
+				if (b.capabilities !== undefined) return false;
+				if (b.price_per_m_input !== undefined) return false;
+				if (b.price_per_m_output !== undefined) return false;
+				if (b.price_per_m_cache_write !== undefined) return false;
+				if (b.price_per_m_cache_write_1h !== undefined) return false;
+				if (b.price_per_m_cache_read !== undefined) return false;
+				return true;
+			});
+		},
+		{
+			message:
+				"a github-copilot namespace entry (no model) must not set context_window, capabilities, or pricing — these are fetched from the Copilot catalog; use copilot_model_overrides for per-model request controls",
 		},
 	);
 

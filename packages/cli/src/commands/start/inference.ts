@@ -181,6 +181,24 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				: undefined,
 			connectTimeoutMs: b.connect_timeout_ms,
 			additionalHeaders: b.additional_headers,
+			// Per-model overrides for a self-configuring github-copilot namespace
+			// entry (invariant #17: a per-backend field must be copied here or it
+			// never reaches the router/driver). snake_case → camelCase per key.
+			copilotModelOverrides: b.copilot_model_overrides
+				? Object.fromEntries(
+						Object.entries(b.copilot_model_overrides).map(([modelId, ov]) => [
+							modelId,
+							{
+								thinking: ov.thinking,
+								effort: ov.effort,
+								cacheTtl: ov.cache_ttl,
+								logicalModel: ov.logical_model,
+								maxOutputTokens: ov.max_output_tokens,
+								systemPromptSuffix: ov.system_prompt_suffix,
+							},
+						]),
+					)
+				: undefined,
 		})),
 		default: rawBackends.default,
 	};
@@ -412,11 +430,33 @@ export function wireBackendReadiness(
  * (which reads `appContext.config.modelBackends.backends`) resolves pricing.
  * These rows are constructed in-memory and never re-validated against the
  * schema (they don't round-trip through the loader).
+ *
+ * Per-model request controls the operator sets once on the namespace entry
+ * (`thinking`, `effort`, `cache_ttl`, `system_prompt_suffix`) are NOT
+ * catalog-derivable, so they are propagated from the placeholder to every
+ * expanded row (invariant #17): an operator configures a self-configuring
+ * provider's reasoning/cache behavior in one place and the whole expanded
+ * lineup inherits it. A per-model override is still possible later via
+ * `model_aliases`-scoped config; absence here just means "inherit the
+ * namespace's choice", matching how the 12 hand-written `copilot-*` rows each
+ * carried their own `thinking`/`cache_ttl` today.
  */
 function buildSharedRow(
 	descriptor: ModelDescriptor,
 	placeholder: SharedBackendRow | undefined,
 ): SharedBackendRow {
+	// Per-model override for this expanded backend, keyed by the raw provider
+	// model id (requirement 2). A matching override's request controls win over
+	// the blanket namespace-entry inheritance below, so an operator pins ONE
+	// model's reasoning/cache without listing every model. Non-namespace rows
+	// (`placeholder` without `copilot_model_overrides`) see an empty override.
+	const override = descriptor.providerModelId
+		? placeholder?.copilot_model_overrides?.[descriptor.providerModelId]
+		: undefined;
+	const thinking = override?.thinking ?? placeholder?.thinking;
+	const effort = override?.effort ?? placeholder?.effort;
+	const cacheTtl = override?.cache_ttl ?? placeholder?.cache_ttl;
+	const systemPromptSuffix = override?.system_prompt_suffix ?? placeholder?.system_prompt_suffix;
 	return {
 		id: descriptor.id,
 		provider: placeholder?.provider ?? "umans",
@@ -429,7 +469,16 @@ function buildSharedRow(
 		price_per_m_cache_write: descriptor.pricing?.cacheWritePerM,
 		price_per_m_cache_write_1h: descriptor.pricing?.cacheWrite1hPerM,
 		price_per_m_cache_read: descriptor.pricing?.cacheReadPerM,
-		max_output_tokens: descriptor.maxOutputTokens,
+		// A per-model override's max_output_tokens / logical_model win over the
+		// catalog-derived values; otherwise the catalog values stand.
+		max_output_tokens: override?.max_output_tokens ?? descriptor.maxOutputTokens,
+		...(override?.logical_model !== undefined && { logical_model: override.logical_model }),
+		// Per-model request controls: the override wins, else the namespace entry's
+		// blanket value is inherited (invariant #17), else absent.
+		...(thinking !== undefined && { thinking }),
+		...(effort !== undefined && { effort }),
+		...(cacheTtl !== undefined && { cache_ttl: cacheTtl }),
+		...(systemPromptSuffix !== undefined && { system_prompt_suffix: systemPromptSuffix }),
 	} as SharedBackendRow;
 }
 

@@ -74,6 +74,13 @@ export interface BackendReadiness {
  */
 export interface ModelDescriptor {
 	id: string;
+	/**
+	 * Raw provider model id this descriptor expands from (e.g. `claude-opus-5.5`),
+	 * when `id` is a namespace-prefixed expanded id (`copilot-claude-opus-5.5`).
+	 * The expansion wiring keys per-model config overrides off this, since `id`
+	 * carries the namespace prefix. Absent on statically-configured descriptors.
+	 */
+	providerModelId?: string;
 	capabilities: BackendCapabilities;
 	tier?: number;
 	pricing?: {
@@ -542,6 +549,25 @@ export interface BackendConfig {
 	 * relay. Absent → no extra headers.
 	 */
 	additionalHeaders?: Record<string, string>;
+	/**
+	 * Per-model request-control overrides for a self-configuring `github-copilot`
+	 * NAMESPACE backend (no `model`). Keyed by provider model id (e.g.
+	 * `claude-opus-5.5`); each value's `thinking` / `effort` / `cacheTtl` /
+	 * `logicalModel` / `maxOutputTokens` / `systemPromptSuffix` apply to just that
+	 * expanded per-model backend, so one model's controls are pinned WITHOUT
+	 * listing every model. Absent / non-namespace → no per-model overrides.
+	 */
+	copilotModelOverrides?: Record<
+		string,
+		{
+			thinking?: unknown;
+			effort?: string;
+			cacheTtl?: string;
+			logicalModel?: string;
+			maxOutputTokens?: number;
+			systemPromptSuffix?: string;
+		}
+	>;
 	[key: string]: unknown;
 }
 

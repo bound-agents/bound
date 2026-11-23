@@ -1021,14 +1021,29 @@ function createBackendFromConfig(
 				copilotTokenManagers.set(storePath, tokenManager);
 			}
 			const manager = tokenManager;
+			const resolveAccount = () =>
+				manager.getAccessToken().then((accessToken) => fetchAccountInfo(deps, accessToken));
+			// No `model` => self-configuring namespace: it owns `readiness`, fetches the
+			// account's Copilot catalog, and expands into one per-model backend per
+			// chat-routable model (catalog §4.1). `model` present => a single concrete
+			// backend, unchanged. `model: undefined` is passed through so the driver's
+			// namespace detection (`config.model === undefined`) fires.
 			return new GitHubCopilotDriver({
 				tokenManager: manager,
+				// `model` present => a single concrete backend. `model: undefined`
+				// is passed through so the driver's namespace detection
+				// (`config.model === undefined`) fires and it self-configures.
 				model: config.model,
+				// No `model` => namespace instance also gets its per-model override map so
+				// expansion can apply each model's request controls (requirement 2). Expanded
+				// per-model backend ids are `${config.id}-${providerModelId}`.
+				...(config.model || !config.copilotModelOverrides
+					? {}
+					: { copilotModelOverrides: config.copilotModelOverrides }),
 				contextWindow,
 				// The validated Copilot API endpoint is plan-specific and comes from
 				// the account lookup — resolved once, lazily, on first chat.
-				resolveAccount: () =>
-					manager.getAccessToken().then((accessToken) => fetchAccountInfo(deps, accessToken)),
+				resolveAccount,
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,

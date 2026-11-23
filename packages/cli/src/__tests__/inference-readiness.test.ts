@@ -14,8 +14,13 @@ import { join } from "node:path";
 import { calculateTurnCost } from "@bound/agent";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import { createModelRouter } from "@bound/llm";
-import type { UmansModelMeta, UmansUsage } from "@bound/llm";
+import { GitHubCopilotDriver, createModelRouter } from "@bound/llm";
+import type {
+	CopilotAccountInfo,
+	CopilotTokenManager,
+	UmansModelMeta,
+	UmansUsage,
+} from "@bound/llm";
 import type { ResolvedBackend } from "@bound/llm";
 import { createLogger } from "@bound/shared";
 import {
@@ -174,6 +179,137 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		// Default redirected off the placeholder to a concrete id.
 		expect(["umans-coder", "umans-flash"]).toContain(router.getDefaultId());
 		expect(shared.default).not.toBe("umans");
+	});
+
+	it("propagates the namespace placeholder's thinking/effort/cache_ttl to every expanded row (#17)", async () => {
+		const metadataFetch = async () => ({ ok: true as const, value: lineup() });
+		const usageFetch = async () => ({
+			ok: true as const,
+			value: { concurrencyLimit: 4 } satisfies UmansUsage,
+		});
+		const shared = {
+			backends: [
+				{
+					id: "umans",
+					provider: "umans",
+					api_key: "sk-test",
+					// Per-model request controls the operator sets once on the namespace
+					// entry; they are not catalog-derivable and must reach every expanded row.
+					thinking: { type: "adaptive" as const },
+					effort: "medium",
+					cache_ttl: "1h",
+				},
+			],
+			default: "umans",
+		};
+		const routerConfig = toRouterConfig(shared as never);
+		routerConfig.backends[0].metadataFetch = metadataFetch;
+		routerConfig.backends[0].usageFetch = usageFetch;
+		const router = createModelRouter(routerConfig);
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await new Promise((r) => setTimeout(r, 50));
+
+		const rows = shared.backends as Array<Record<string, unknown>>;
+		expect(rows.map((b) => b.id).sort()).toEqual(["umans-coder", "umans-flash"]);
+		for (const row of rows) {
+			expect(row.thinking).toEqual({ type: "adaptive" });
+			expect(row.effort).toBe("medium");
+			expect(row.cache_ttl).toBe("1h");
+		}
+	});
+
+	it("pins a github-copilot expanded row's logical_model from a per-model override so an old copilot-* reference survives (requirement 2 / claude divergence mitigation)", async () => {
+		// The 4 Claude Copilot models are the requirement-2 exception: the raw
+		// catalog id `claude-opus-5.5` normalizes to `claude-opus-5-5` (pooling with
+		// the direct Bedrock Anthropic routes — a routing win) while the old
+		// hand-written config id `copilot-opus-5.5` normalized to the bare family
+		// `opus-5-5`. An operator bridges that gap WITHOUT changing the shared
+		// structural rule by pinning the expanded row's logical model with a
+		// per-model override, so threads/tasks that named `copilot-opus-5.5` keep
+		// resolving. This proves the pin reaches the expanded shared-config row
+		// end-to-end (schema → toRouterConfig → buildSharedRow).
+		const account: CopilotAccountInfo = {
+			chatEnabled: true,
+			copilotPlan: "enterprise",
+			apiEndpoint: "https://api.enterprise.githubcopilot.com",
+		};
+		const tokenManager = {
+			getAccessToken: async () => "ghu_abc",
+		} as unknown as CopilotTokenManager;
+		const catalogFetch = (async (input: RequestInfo | URL) => {
+			const url = new URL(new Request(input).url);
+			if (url.pathname.endsWith("/models")) {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "claude-opus-5.5",
+								supported_endpoints: ["/v1/messages"],
+								capabilities: { limits: { max_context_window_tokens: 200000 } },
+							},
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		// A `github-copilot` namespace entry (no `model`) with a per-model override
+		// pinning the claude model's logical id back to the old `opus-5-5` family key.
+		const shared = {
+			backends: [
+				{
+					id: "copilot",
+					provider: "github-copilot",
+					copilot_model_overrides: {
+						"claude-opus-5.5": { logical_model: "opus-5-5" },
+					},
+				},
+			],
+			default: "copilot",
+		};
+		// Build the router from an EMPTY config so createModelRouter does not try to
+		// construct the copilot namespace from config (the real factory needs a
+		// token-store file on disk). The namespace driver is seeded directly below;
+		// toRouterConfig(shared) is used only to translate the per-model override map
+		// (snake_case → camelCase) the way production does, per invariant #17.
+		const routerConfig = toRouterConfig(shared as never);
+		const copilotOverrides = routerConfig.backends[0].copilotModelOverrides;
+		const router = createModelRouter({ backends: [], default: "copilot" });
+		// Seed the namespace driver (the real factory needs a token-store file on
+		// disk; this injects a resolved account + a catalog fetch instead).
+		const namespace = new GitHubCopilotDriver({
+			tokenManager,
+			namespaceId: "copilot",
+			contextWindow: 0,
+			account,
+			fetch: catalogFetch,
+			copilotModelOverrides: copilotOverrides,
+		});
+		router.addDynamicBackend("copilot", namespace, {
+			streaming: true,
+			tool_use: false,
+			system_prompt: true,
+			prompt_caching: true,
+			vision: false,
+			extended_thinking: false,
+		});
+		router.markNotReady("copilot");
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await new Promise((r) => setTimeout(r, 50));
+
+		const rows = shared.backends as Array<Record<string, unknown>>;
+		const expanded = rows.find((b) => b.id === "copilot-claude-opus-5.5");
+		expect(expanded).toBeDefined();
+		// The per-model override pinned the expanded row's logical_model to the old
+		// family key, so a `copilot-opus-5.5` reference (which normalizes to
+		// `opus-5-5`) resolves to this same logical model.
+		expect(expanded?.logical_model).toBe("opus-5-5");
 	});
 });
 

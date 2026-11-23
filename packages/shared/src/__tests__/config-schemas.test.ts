@@ -441,6 +441,89 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
+		// --- github-copilot (self-configuring namespace form) ---
+
+		it("accepts a github-copilot namespace entry with no model (self-configuring)", () => {
+			const config = {
+				backends: [{ id: "copilot", provider: "github-copilot" }],
+				default: "copilot",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("accepts a github-copilot namespace with blanket controls + copilot_model_overrides", () => {
+			const config = {
+				backends: [
+					{
+						id: "copilot",
+						provider: "github-copilot",
+						thinking: { type: "adaptive" },
+						effort: "medium",
+						cache_ttl: "1h",
+						copilot_model_overrides: {
+							"claude-opus-5.5": { logical_model: "opus-5-5", cache_ttl: "5m" },
+						},
+					},
+				],
+				default: "copilot",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects a github-copilot namespace (no model) that sets an authoritative catalog field", () => {
+			// context_window / capabilities / pricing come from the Copilot catalog on a
+			// namespace entry; setting them has no single model to apply to.
+			for (const authoritative of [
+				{ context_window: 200000 },
+				{ price_per_m_input: 3 },
+				{ capabilities: { vision: true } },
+			]) {
+				const config = {
+					backends: [{ id: "copilot", provider: "github-copilot", ...authoritative }],
+					default: "copilot",
+				};
+				const result = modelBackendsSchema.safeParse(config);
+				expect(result.success).toBe(false);
+			}
+		});
+
+		it("still accepts a single-model github-copilot entry that sets context_window", () => {
+			// A `model`-bearing github-copilot entry is a concrete backend and keeps the
+			// normal override fields (the namespace rejection only fires with no model).
+			const config = {
+				backends: [
+					{
+						id: "copilot-opus",
+						provider: "github-copilot",
+						model: "claude-opus-5.5",
+						context_window: 200000,
+					},
+				],
+				default: "copilot-opus",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects an unknown key inside copilot_model_overrides (strict)", () => {
+			const config = {
+				backends: [
+					{
+						id: "copilot",
+						provider: "github-copilot",
+						copilot_model_overrides: {
+							"claude-opus-5.5": { not_a_field: true },
+						},
+					},
+				],
+				default: "copilot",
+			};
+			const result = modelBackendsSchema.safeParse(config);
+			expect(result.success).toBe(false);
+		});
+
 		it("still rejects a NON-umans row that omits model/context_window (AC.2)", () => {
 			const config = {
 				backends: [{ id: "x", provider: "cerebras", api_key: "k", base_url: "https://x/v1" }],
