@@ -157,11 +157,13 @@ For each discovered or configured backend, Bound determines its `logical_model` 
 
 1. **Cluster-synced alias override** — an explicit operator mapping for `provider_key = ${provider}:${provider_model_id}` in the synced `model_aliases` table (`2026-11-21-model-routing.md`, `R-RT6`), including an explicit `null` to keep a backend ungrouped. `model_aliases` is cluster-global and last-writer-wins per `provider_key`; an operator who wants a host-local grouping uses local config `logical_model` instead.
 2. **Local config `logical_model`** — an explicit logical model ID declared on the backend entry (or the static `id` for manually named backends).
-3. **Structural normalization** — one deterministic pattern rule set (shared with `models.dev` lookup in §5.2) applied to `(provider, provider_model_id)`:
+3. **Structural normalization** — one deterministic pattern rule set (shared with `models.dev` lookup in §5.2) applied to `(provider, provider_model_id)`, deriving the canonical key from naming patterns rather than an enumerated model list:
    - strip region/routing prefixes (`us.`, `eu.`, `ap.`, `global.`);
-   - strip provider/vendor prefixes (`anthropic.`, `openai.`, `google.`, `copilot-`, `bedrock-`);
+   - strip vendor prefixes: dashed vendor prefixes (`copilot-`, `bedrock-`), the enumerated dotted vendor prefixes outside Bedrock namespaces (`anthropic.`, `openai.`, `google.`), and — inside the Bedrock-style namespaces (`bedrock`, `bedrock-mantle`, and the `models.dev` `amazon-bedrock` namespace) — a `<vendor>.<model>` segment detected **structurally**: a leading dotted segment whose head carries no digit is a vendor segment and is dropped, so `moonshotai.`, `zai.`, `deepseek.`, `amazon.`, and any future Bedrock vendor collapse to the same family key as the direct provider, while a family-version head (`gpt-5.4`, `glm-5.2`, `kimi-k2.5`) is left intact because its head carries a digit;
    - strip deployment revision suffixes (`-v1:0`, `:0`, dated snapshot suffixes when a family key is present);
    - normalize punctuation separators (`.` vs `-` in version numbers) into one canonical form.
+
+A **provider-local pseudo-model** — a provider's own session-router token that selects a concrete model per request rather than naming one (GitHub Copilot `auto`) — never normalizes to a bare cross-provider key. It is scoped to a provider-qualified key (`${provider}:${token}`, e.g. `github-copilot:auto`) so it can never pool with another provider's identically-named token, and is treated as an unrecognized namespace (§6.2) so it never auto-groups.
 
 ### 6.2 Confidence predicate and unassigned backends
 

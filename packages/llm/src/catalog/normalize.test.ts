@@ -193,14 +193,19 @@ describe("normalizeModelKey", () => {
 			);
 		});
 
-		it("keeps a dotted head that is itself a family root, to avoid a bare-key collision", () => {
-			// `deepseek.`, `qwen.`, `mistral.` are both Bedrock vendor segments AND
-			// model-family roots. The segment is genuinely ambiguous, so the head is
-			// KEPT: stripping `deepseek.v3` to a bare `v3` would collide with any other
-			// provider's `v3`. Keeping `deepseek.v3` is the conservative choice that
-			// never false-pools (requirement 1: different models must never collide).
-			expect(normalizeModelKey("bedrock", "deepseek.v3-v1:0").key).toBe("deepseek.v3");
+		it("strips a digit-free dotted head even when it coincides with a family root", () => {
+			// `deepseek.`, `qwen.`, `mistral.` are both Bedrock vendor segments and
+			// model-family roots. The head carries no digit, so it is a vendor segment
+			// and strips; the body that follows IS the model. Audited against the real
+			// models.dev snapshot: the resulting bare keys (`v3`, `r1`, `qwen3-32b`,
+			// `pixtral-large-2502`) never collide with a genuinely different model —
+			// every provider advertising them means the same model (requirement 3).
+			expect(normalizeModelKey("bedrock", "deepseek.v3-v1:0").key).toBe("v3");
+			expect(normalizeModelKey("bedrock", "deepseek.r1-v1:0").key).toBe("r1");
 			expect(normalizeModelKey("bedrock", "qwen.qwen3-32b-v1:0").key).toBe("qwen3-32b");
+			expect(normalizeModelKey("bedrock", "mistral.pixtral-large-2502-v1:0").key).toBe(
+				"pixtral-large-2502",
+			);
 		});
 
 		it("only strips a dotted vendor inside a Bedrock-style namespace", () => {

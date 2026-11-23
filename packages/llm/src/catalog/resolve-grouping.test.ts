@@ -105,5 +105,34 @@ describe("resolveLogicalModel", () => {
 			expect(r.logicalModel).toBe("gpt-6-2-sol");
 			expect(r.source).toBe("normalization");
 		});
+
+		it("keeps a github-copilot `auto` pseudo-model unassigned and provider-scoped (R-MC9)", () => {
+			// `auto` is Copilot's per-session router, not a model. Its normalized key is
+			// provider-scoped (`github-copilot:auto`) and recognizedNamespace=false, so
+			// even when that scoped key is somehow in the confirmed/models.dev set it
+			// never auto-groups — it stays unassigned, never cross-provider-pooled.
+			const r = resolveLogicalModel({
+				...baseArgs,
+				provider: "github-copilot",
+				providerModelId: "auto",
+				confirmedLogicalKeys: new Set(["github-copilot:auto", "auto"]),
+				modelsDevKeys: new Set(["auto"]),
+			});
+			expect(r.logicalModel).toBeNull();
+			expect(r.source).toBe("unassigned");
+		});
+
+		it("still honors an explicit alias/config mapping for a pseudo-model", () => {
+			// The pseudo-model gate only blocks AUTOMATIC grouping; an operator can
+			// still bind `auto` to a logical model via alias or config (higher tiers).
+			const r = resolveLogicalModel({
+				...baseArgs,
+				provider: "github-copilot",
+				providerModelId: "auto",
+				configLogicalModel: "copilot-auto",
+			});
+			expect(r.logicalModel).toBe("copilot-auto");
+			expect(r.source).toBe("config");
+		});
 	});
 });

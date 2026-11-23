@@ -181,12 +181,12 @@ function stripDashedVendorPrefix(id: string): string {
  * Strip a leading dotted vendor prefix (rule 2). Outside a Bedrock-style
  * namespace only the enumerated `DOTTED_VENDOR_PREFIXES` are stripped (direct
  * `anthropic`/`openai`/… vendor ids). Inside a Bedrock-style namespace the
- * strip is STRUCTURAL: a leading dotted segment is a vendor segment iff it has
- * NO digit and is not itself a model-family root, with a non-empty model body
- * following. That collapses `moonshotai.`, `zai.`, `deepseek.`, `amazon.`,
- * `openai.`, … to the same family key as the direct provider without an
- * enumerated list (R-MC1/R-MC8), while leaving a family-version head intact
- * (`gpt-5.4`, `glm-5.2`, `kimi-k2.5` — the head has a digit or is a family root).
+ * strip is STRUCTURAL: a leading dotted segment is a vendor segment iff its head
+ * carries NO digit, with a non-empty model body following. That collapses
+ * `moonshotai.`, `zai.`, `deepseek.`, `amazon.`, `openai.`, … to the same family
+ * key as the direct provider without an enumerated list (R-MC1/R-MC8), while
+ * leaving a family-version head intact (`gpt-5.4`, `glm-5.2`, `kimi-k2.5` — the
+ * head carries a digit, so it is never a vendor segment).
  */
 function stripDottedVendorPrefix(id: string, namespace: string): string {
 	const dot = id.indexOf(".");
