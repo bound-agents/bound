@@ -70,6 +70,8 @@ function resolvedBackend(opts: {
 	maxContext?: number;
 	maxOutputTokens?: number;
 	maxOutputSource?: "config" | "provider" | "models_dev";
+	reasoning?: ModelMetadata["capabilities"]["reasoning"];
+	reasoningSource?: "config" | "provider" | "models_dev";
 	ready?: boolean;
 }): ResolvedBackend {
 	const field_sources: ModelMetadata["field_sources"] = {};
@@ -77,11 +79,18 @@ function resolvedBackend(opts: {
 	if (opts.maxOutputTokens !== undefined) {
 		field_sources.max_output_tokens = opts.maxOutputSource ?? "models_dev";
 	}
+	if (opts.reasoning !== undefined) {
+		field_sources.reasoning = opts.reasoningSource ?? "models_dev";
+	}
 	const metadata: ModelMetadata = {
 		provider_model_id: "m",
 		logical_model: null,
 		vendor: null,
-		capabilities: opts.maxContext !== undefined ? { max_context: opts.maxContext } : {},
+		display_name: "m",
+		capabilities: {
+			...(opts.maxContext !== undefined && { max_context: opts.maxContext }),
+			...(opts.reasoning !== undefined && { reasoning: opts.reasoning }),
+		},
 		...(opts.maxOutputTokens !== undefined && { max_output_tokens: opts.maxOutputTokens }),
 		field_sources,
 	};
@@ -213,6 +222,216 @@ describe("ModelRouter — applyResolvedCatalog (requirement 1 + 5)", () => {
 		);
 		// 'a' keeps its config window; nothing from the unready entry applied.
 		expect(router.getEffectiveCapabilities("a")?.max_context).toBe(200000);
+	});
+});
+
+describe("ModelRouter — derive thinking/effort from resolved reasoning metadata (requirement 2)", () => {
+	// A bedrock-mantle Anthropic backend with NO thinking/effort in config, so the
+	// router must derive its reasoning request from the resolved catalog.
+	function anthropicBackendNoReasoningConfig() {
+		return createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					model: "anthropic.claude-opus-5-5",
+					region: "us-east-1",
+					contextWindow: 200000,
+				},
+			],
+			default: "opus",
+		});
+	}
+
+	it("derives no reasoning (disabled) when the model advertises reasoning.supported=false", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "nr",
+					provider: "bedrock",
+					model: "amazon.nova",
+					region: "us-east-1",
+					contextWindow: 300000,
+				},
+			],
+			default: "nr",
+		});
+		router.applyResolvedCatalog(
+			new Map([["nr", resolvedBackend({ maxContext: 300000, reasoning: { supported: false } })]]),
+		);
+		expect(router.getThinkingConfig("nr")).toEqual({ type: "disabled" });
+		expect(router.getEffort("nr")).toBeUndefined();
+	});
+
+	it("derives enabled thinking when the model advertises a toggle (no effort ladder)", () => {
+		const router = anthropicBackendNoReasoningConfig();
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({ maxContext: 200000, reasoning: { supported: true, toggle: true } }),
+				],
+			]),
+		);
+		expect(router.getThinkingConfig("opus")).toEqual({ type: "enabled", budget_tokens: 10000 });
+	});
+
+	it("derives an effort when the model advertises an effort ladder but no default is set", () => {
+		// The resolved ladder lists effort tiers but no operator effort preference
+		// exists; derivation must NOT invent a tier — effort stays undefined so the
+		// driver omits it, and thinking is derived as enabled from the ladder.
+		const router = anthropicBackendNoReasoningConfig();
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({
+						maxContext: 200000,
+						reasoning: { supported: true, effort_values: ["low", "medium", "high"] },
+					}),
+				],
+			]),
+		);
+		expect(router.getThinkingConfig("opus")).toEqual({ type: "enabled", budget_tokens: 10000 });
+		expect(router.getEffort("opus")).toBeUndefined();
+	});
+
+	it("derives adaptive thinking when the provider advertises adaptive_thinking", () => {
+		const router = anthropicBackendNoReasoningConfig();
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({
+						maxContext: 200000,
+						reasoning: { supported: true, adaptive: true, effort_values: ["low", "high"] },
+						reasoningSource: "provider",
+					}),
+				],
+			]),
+		);
+		expect(router.getThinkingConfig("opus")).toEqual({ type: "adaptive", display: "summarized" });
+	});
+
+	it("leaves thinking/effort undefined when NO reasoning metadata resolved (no source)", () => {
+		// kimi-k2.5 case: absent from models.dev, no provider reasoning, no config.
+		// Derivation has no source, so it must not invent anything.
+		const router = anthropicBackendNoReasoningConfig();
+		router.applyResolvedCatalog(new Map([["opus", resolvedBackend({ maxContext: 200000 })]]));
+		expect(router.getThinkingConfig("opus")).toBeUndefined();
+		expect(router.getEffort("opus")).toBeUndefined();
+	});
+
+	it("explicit config thinking/effort win over derivation (requirement 4 byte-identical)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					model: "anthropic.claude-opus-5-5",
+					region: "us-east-1",
+					contextWindow: 200000,
+					thinking: { type: "adaptive", display: "summarized" },
+					effort: "high",
+				},
+			],
+			default: "opus",
+		});
+		// A resolved toggle would derive {enabled}, but explicit adaptive config wins.
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({ maxContext: 200000, reasoning: { supported: true, toggle: true } }),
+				],
+			]),
+		);
+		expect(router.getThinkingConfig("opus")).toEqual({ type: "adaptive", display: "summarized" });
+		expect(router.getEffort("opus")).toBe("high");
+	});
+
+	it("passes a configured effort through unchanged when the model lists it", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					model: "anthropic.claude-opus-5-5",
+					region: "us-east-1",
+					contextWindow: 200000,
+					effort: "medium",
+				},
+			],
+			default: "opus",
+		});
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({
+						maxContext: 200000,
+						reasoning: { supported: true, effort_values: ["low", "medium", "high"] },
+					}),
+				],
+			]),
+		);
+		expect(router.getEffort("opus")).toBe("medium");
+	});
+
+	it("clamps a configured effort the model does not list to the nearest listed value", () => {
+		// Config asks for "xhigh" but the model only lists up to "high" — clamp down.
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					model: "anthropic.claude-opus-5-5",
+					region: "us-east-1",
+					contextWindow: 200000,
+					effort: "xhigh",
+				},
+			],
+			default: "opus",
+		});
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({
+						maxContext: 200000,
+						reasoning: { supported: true, effort_values: ["low", "medium", "high"] },
+					}),
+				],
+			]),
+		);
+		expect(router.getEffort("opus")).toBe("high");
+	});
+
+	it("leaves a configured effort unclamped when the model publishes no effort ladder", () => {
+		// No effort_values resolved — the router has no ladder to clamp against, so it
+		// forwards the configured value and the driver's own protocol gate decides.
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "opus",
+					provider: "bedrock",
+					model: "anthropic.claude-opus-5-5",
+					region: "us-east-1",
+					contextWindow: 200000,
+					effort: "xhigh",
+				},
+			],
+			default: "opus",
+		});
+		router.applyResolvedCatalog(
+			new Map([
+				[
+					"opus",
+					resolvedBackend({ maxContext: 200000, reasoning: { supported: true, toggle: true } }),
+				],
+			]),
+		);
+		expect(router.getEffort("opus")).toBe("xhigh");
 	});
 });
 

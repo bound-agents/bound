@@ -1,5 +1,4 @@
 import type { Logger } from "@bound/shared";
-import type { ResolvedPricing } from "./catalog/resolve-metadata";
 import { AnthropicDriver } from "./drivers/anthropic";
 import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
@@ -25,7 +24,7 @@ export interface BackendInfo {
 	id: string;
 	capabilities: BackendCapabilities;
 }
-
+import type { FieldSource, ResolvedPricing, ResolvedReasoning } from "./catalog/resolve-metadata";
 /**
  * Narrow structural view of a resolved catalog entry for `applyResolvedCatalog`
  * (slice 6 follow-up). Declared locally so the router — which must not depend on
@@ -36,13 +35,12 @@ export interface BackendInfo {
 export interface ResolvedCatalogEntry {
 	ready: boolean;
 	metadata: {
-		capabilities: { max_context?: number };
+		capabilities: { max_context?: number; reasoning?: ResolvedReasoning };
 		max_output_tokens?: number;
 		pricing?: ResolvedPricing;
 		field_sources: Record<string, string>;
 	};
 }
-
 /**
  * A concrete serving endpoint identity (`2026-11-21-model-routing.md` §3.1,
  * R-RT1): `RouteId = ${siteId}:${provider}:${backendId}`. This is the routing,
@@ -82,6 +80,44 @@ const UNRESOLVED_CONTEXT_WINDOW = 0;
  * `max_output_tokens` set in local config is never capped.
  */
 export const MAX_OUTPUT_CONTEXT_FRACTION = 0.25;
+
+/**
+ * Reasoning-effort levels in ascending strength, used to clamp a configured or
+ * default effort to the nearest value a model actually lists (requirement 3,
+ * `2026-11-21-model-catalog.md` §3.1). This is a protocol-level strength ordering,
+ * not a per-model capability list — the per-model ladder is the resolved
+ * `effort_values`, which this only walks to pick the nearest listed neighbour.
+ */
+const EFFORT_STRENGTH_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * Clamp `effort` to the nearest value in the model's resolved `ladder`
+ * (requirement 3). When the model lists the exact value, it passes through. When
+ * it does not, the nearest listed level by strength rank wins (ties resolve to
+ * the stronger side). A value or ladder entry outside the known strength order,
+ * or an absent/empty ladder, means there is nothing to clamp against, so the
+ * value passes through unchanged and the driver's own protocol gate decides.
+ */
+export function clampEffortToLadder(effort: string, ladder: string[] | undefined): string {
+	if (!ladder || ladder.length === 0) return effort;
+	if (ladder.includes(effort)) return effort;
+	const target = EFFORT_STRENGTH_ORDER.indexOf(effort);
+	if (target < 0) return effort; // unknown vocabulary — leave it to the driver.
+	let best: string | undefined;
+	let bestDist = Number.POSITIVE_INFINITY;
+	for (const level of ladder) {
+		const rank = EFFORT_STRENGTH_ORDER.indexOf(level);
+		if (rank < 0) continue;
+		const dist = Math.abs(rank - target);
+		// Strict `<` keeps the first-seen on a tie; walk highest-first so a tie
+		// resolves to the stronger neighbour.
+		if (dist < bestDist) {
+			bestDist = dist;
+			best = level;
+		}
+	}
+	return best ?? effort;
+}
 
 /**
  * A local route entry in the flat {@link ModelRouter} registry. Each carries
@@ -142,6 +178,15 @@ export class ModelRouter {
 	 * Provider-agnostic — umans is merely the first `readiness` implementer.
 	 */
 	private notReady: Set<string>;
+	/**
+	 * Catalog-resolved reasoning metadata per backendId plus the winning source
+	 * (requirement 2, `2026-11-21-model-catalog.md` §3.1). Written by
+	 * `applyResolvedCatalog`; read by `getThinkingConfig` / `getEffort` to DERIVE a
+	 * reasoning request for a backend whose config sets no explicit `thinking`.
+	 * Explicit per-backend config always wins (requirement 4), so this only fills
+	 * the absence; a backend with no resolved reasoning stays underived.
+	 */
+	private resolvedReasoning: Map<string, { reasoning: ResolvedReasoning; source: FieldSource }>;
 
 	constructor(
 		backends: Map<string, LLMBackend>,
@@ -160,6 +205,7 @@ export class ModelRouter {
 		this.routeHealth = new RouteHealth(clock);
 		this.backendConfigs = backendConfigs ?? new Map();
 		this.resolvedPricing = new Map();
+		this.resolvedReasoning = new Map();
 		this.clock = clock;
 		this.routeIdentities = routeIdentities ?? new Map();
 		this.notReady =
@@ -170,7 +216,6 @@ export class ModelRouter {
 					.map(([id]) => id),
 			);
 	}
-
 	/**
 	 * Rebuilds internal backend state from a new ModelBackendsConfig. Held
 	 * references to this router see the updated state immediately — callers
@@ -592,6 +637,17 @@ export class ModelRouter {
 					this.resolvedPricing.set(backendId, { pricing, source: pricingSource });
 				}
 			}
+
+			// Store the catalog-resolved reasoning metadata (provider over models.dev)
+			// for driver-default derivation at getThinkingConfig / getEffort. A
+			// config-sourced reasoning capability is not meaningful here (config carries
+			// explicit thinking/effort directly, which always wins), so only the
+			// provider/models.dev fallback is stored.
+			const reasoning = resolved.metadata.capabilities.reasoning;
+			const reasoningSource = resolved.metadata.field_sources.reasoning;
+			if (reasoning && (reasoningSource === "provider" || reasoningSource === "models_dev")) {
+				this.resolvedReasoning.set(backendId, { reasoning, source: reasoningSource });
+			}
 		}
 	}
 
@@ -680,7 +736,33 @@ export class ModelRouter {
 			}
 			return { type: "enabled", budget_tokens: t.budget_tokens ?? 10000 };
 		}
-		return undefined;
+		// No explicit config thinking (requirement 2): derive from resolved catalog
+		// reasoning metadata. Explicit config above always wins (requirement 4).
+		return this.deriveThinkingFromMetadata(backendId);
+	}
+
+	/**
+	 * Derive a `thinking` request from the catalog-resolved reasoning metadata when
+	 * a backend sets no explicit `thinking` config (requirement 2, catalog §3.1).
+	 * The decision uses only published facts — never a model-ID test:
+	 *
+	 * - no resolved reasoning at all → `undefined` (no source; invent nothing).
+	 * - `supported === false` → `{type:"disabled"}` (the source says this model does
+	 *   no reasoning, so actively request none).
+	 * - the source advertises `adaptive` → `{type:"adaptive"}` (model-controlled depth;
+	 *   today only GitHub Copilot's catalog publishes this).
+	 * - otherwise (a toggle and/or an effort ladder, i.e. reasoning is on) →
+	 *   `{type:"enabled"}`. Driver protocol rules filter this further: a non-Anthropic
+	 *   Bedrock model drops `budgetTokens`, and an effort-only model forwards effort
+	 *   through its own mechanism.
+	 */
+	private deriveThinkingFromMetadata(backendId: string): ChatParams["thinking"] | undefined {
+		const entry = this.resolvedReasoning.get(backendId);
+		if (!entry) return undefined;
+		const r = entry.reasoning;
+		if (r.supported === false) return { type: "disabled" };
+		if (r.adaptive) return { type: "adaptive", display: "summarized" };
+		return { type: "enabled", budget_tokens: 10000 };
 	}
 
 	/** Returns whether this backend replaces native reasoning with Bound's think tool. */
@@ -704,7 +786,16 @@ export class ModelRouter {
 		const config = this.backendConfigs.get(backendId);
 		if (!config) return undefined;
 		const effort = config.effort as ChatParams["effort"] | undefined;
-		return effort ?? undefined;
+		if (effort === undefined) return undefined;
+		// Clamp an effort the model does not list to the nearest listed value
+		// (requirement 3). The ladder comes from resolved catalog reasoning metadata;
+		// without one the value passes through and the driver's own protocol gate
+		// (`BEDROCK_EFFORTS` / `ANTHROPIC_EFFORTS` / Copilot `resolveReasoningEffort`)
+		// decides. Never a model-ID test.
+		return clampEffortToLadder(
+			effort,
+			this.resolvedReasoning.get(backendId)?.reasoning.effort_values,
+		);
 	}
 
 	/**

@@ -176,4 +176,61 @@ describe("toRouterConfig", () => {
 			"/Users/test/.config/bound/chatgpt-auth.json",
 		);
 	});
+
+	it("applies top-level `defaults.effort` to a backend that sets no effort", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{ id: "a", provider: "bedrock", model: "m", region: "us-east-1", context_window: 200000 },
+			],
+			default: "a",
+			defaults: { effort: "medium" },
+		};
+		const router = createModelRouter(toRouterConfig(cfg));
+		expect(router.getEffort("a")).toBe("medium");
+	});
+
+	it("lets a per-backend effort win over `defaults.effort` (requirement 3: per-backend wins)", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{
+					id: "a",
+					provider: "bedrock",
+					model: "m",
+					region: "us-east-1",
+					context_window: 200000,
+					effort: "high",
+				},
+			],
+			default: "a",
+			defaults: { effort: "medium" },
+		};
+		const router = createModelRouter(toRouterConfig(cfg));
+		expect(router.getEffort("a")).toBe("high");
+	});
+
+	it("applies top-level `defaults.cache_ttl` only to a backend that sets no cache_ttl", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{ id: "a", provider: "bedrock", model: "m", region: "us-east-1", context_window: 200000 },
+				{
+					id: "b",
+					provider: "bedrock",
+					model: "m2",
+					region: "us-east-1",
+					context_window: 200000,
+					cache_ttl: "5m",
+				},
+			],
+			default: "a",
+			defaults: { cache_ttl: "1h" },
+		};
+		const router = createModelRouter(toRouterConfig(cfg));
+		expect(router.getCacheTtl("a")).toBe("1h");
+		expect(router.getCacheTtl("b")).toBe("5m");
+	});
+
+	it("leaves effort/cache_ttl untouched when no `defaults` block is present", () => {
+		const router = createModelRouter(toRouterConfig(bedrockOpusWithThinking()));
+		expect(router.getEffort("opus")).toBeUndefined();
+	});
 });

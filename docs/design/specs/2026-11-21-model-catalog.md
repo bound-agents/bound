@@ -79,6 +79,20 @@ type ModelMetadata = {
     prompt_caching: boolean;
     vision: boolean;
     extended_thinking: boolean;
+    // Structured reasoning metadata derived from provider discovery or the
+    // registry's `reasoning` / `reasoning_options`. `supported` is the reasoning
+    // boolean; `toggle` means an on/off reasoning switch is advertised;
+    // `effort_values` is the published effort ladder in source order; `adaptive`
+    // means the provider advertises model-controlled adaptive thinking (only some
+    // provider catalogs publish it). A driver derives a backend's reasoning
+    // request from these fields plus its own protocol rules when the backend sets
+    // no explicit `thinking`, never from a model-ID test.
+    reasoning?: {
+      supported: boolean;
+      toggle?: boolean;
+      effort_values?: string[];
+      adaptive?: boolean;
+    };
     max_context?: number;
   };
   max_output_tokens?: number;

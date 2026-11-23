@@ -115,6 +115,22 @@ meaning and availability remain provider-specific. A fallback route must support
 capabilities the turn requests; controls should not be assumed to behave identically across
 providers.
 
+A backend's reasoning request comes from its own config first. When a backend sets no
+`thinking`, Bound derives one from the model's resolved reasoning metadata (the `reasoning`
+block in the [resolved catalog](#local-and-hosted-backends), published by the provider or
+`models.dev`): a model that advertises no reasoning gets none, a model that advertises an
+on/off toggle or an effort ladder gets reasoning enabled, and a model whose provider
+advertises adaptive thinking gets adaptive thinking. A backend with no resolved reasoning
+metadata and no config keeps whatever default its driver and protocol apply. The decision
+reads published capabilities, never the model's name.
+
+An `effort` level — whether set on the backend or inherited from the top-level `defaults`
+block — is clamped to the nearest value the model actually lists before it reaches the
+provider. A model that lists `low | medium | high` receives `high` for a configured
+`xhigh`; a model that publishes no effort ladder has its configured value forwarded
+unchanged for the driver's own validation to accept or drop. This keeps a cluster-wide
+effort preference from erroring on a model that does not offer that exact level.
+
 ### Route failures and model refusals
 
 A request can end in two distinct ways that both stop the turn. Bound separates them

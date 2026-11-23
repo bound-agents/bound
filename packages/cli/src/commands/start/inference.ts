@@ -147,6 +147,7 @@ export async function runStartupSummaryRecovery(
  * is observable on the resulting router.
  */
 export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBackendsConfig {
+	const defaults = rawBackends.defaults;
 	return {
 		backends: rawBackends.backends.map((b): BackendConfig => ({
 			id: b.id,
@@ -166,10 +167,12 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 			capabilities: b.capabilities,
 			pricePerMInput: b.price_per_m_input,
 			thinking: b.thinking,
-			effort: b.effort,
+			// Top-level `defaults` fill effort/cache_ttl only when this backend sets
+			// none (requirement 3: a per-backend value always wins).
+			effort: b.effort ?? defaults?.effort,
 			maxOutputTokens: b.max_output_tokens,
 			systemPromptSuffix: b.system_prompt_suffix,
-			cacheTtl: b.cache_ttl,
+			cacheTtl: b.cache_ttl ?? defaults?.cache_ttl,
 			cacheWarming: b.cache_warming
 				? {
 						enabled: b.cache_warming.enabled,

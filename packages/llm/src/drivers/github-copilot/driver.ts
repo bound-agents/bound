@@ -313,6 +313,18 @@ function copilotEntryToDiscoveredModel(entry: CopilotModelEntry): DiscoveredMode
 				? Math.min(ctxWindow, entry.maxPromptTokens + (entry.maxOutputTokens ?? 0))
 				: ctxWindow;
 	}
+	// Structured reasoning metadata from the Copilot catalog's `supports` facts
+	// (requirement 1): the advertised effort ladder and the adaptive-thinking flag.
+	// Only emitted when the catalog states something, so absence stays distinct from
+	// an explicit denial and lower layers (models.dev) can still fill it.
+	if (entry.reasoningEfforts !== undefined || entry.adaptiveThinking !== undefined) {
+		capabilities.reasoning = {
+			supported: true,
+			...(entry.reasoningEfforts !== undefined &&
+				entry.reasoningEfforts.length > 0 && { effort_values: entry.reasoningEfforts }),
+			...(entry.adaptiveThinking !== undefined && { adaptive: entry.adaptiveThinking }),
+		};
+	}
 	const model: DiscoveredModel = {
 		providerModelId: entry.id,
 		...(entry.name !== undefined && entry.name.length > 0 && { displayName: entry.name }),

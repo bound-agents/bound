@@ -18,6 +18,29 @@
 /** Source of a resolved metadata field, recorded for operator inspection. */
 export type FieldSource = "config" | "provider" | "models_dev" | "driver_default";
 
+/**
+ * Published reasoning metadata for one model, derived structurally from a
+ * provider discovery layer or `models.dev` `reasoning_options` (catalog §3.1).
+ * It records only what a source states, never a model-ID assumption:
+ *
+ * - `supported` — the `reasoning` boolean. `false` means the source asserts the
+ *   model does no reasoning; absence of the whole object means no source spoke.
+ * - `toggle` — the source advertises an on/off reasoning switch
+ *   (`reasoning_options` entry `{type:"toggle"}`).
+ * - `effort_values` — the published effort ladder in registry order
+ *   (`reasoning_options` entry `{type:"effort", values:[...]}`).
+ * - `adaptive` — the source advertises model-controlled adaptive thinking.
+ *   Today only GitHub Copilot's catalog publishes this (`supports.adaptive_thinking`);
+ *   `models.dev` never does, so a driver that needs it for a non-Copilot route
+ *   must fall back to its own protocol rules or report the gap (requirement 2).
+ */
+export interface ResolvedReasoning {
+	supported: boolean;
+	toggle?: boolean;
+	effort_values?: string[];
+	adaptive?: boolean;
+}
+
 export interface ResolvedCapabilities {
 	streaming?: boolean;
 	tool_use?: boolean;
@@ -25,6 +48,17 @@ export interface ResolvedCapabilities {
 	prompt_caching?: boolean;
 	vision?: boolean;
 	extended_thinking?: boolean;
+	/**
+	 * Structured reasoning metadata derived from provider discovery or `models.dev`
+	 * `reasoning_options` (catalog §3.1). Records published facts only — never a
+	 * model-ID lookup. `supported` is the `reasoning` boolean; `toggle` means the
+	 * provider advertises an on/off reasoning switch; `effort_values` is the
+	 * published effort ladder in registry order; `adaptive` means the provider
+	 * advertises model-controlled adaptive thinking (today only GitHub Copilot's
+	 * `supports.adaptive_thinking`). A driver derives its reasoning request from
+	 * these fields plus its own protocol rules (requirement 2).
+	 */
+	reasoning?: ResolvedReasoning;
 	max_context?: number;
 }
 
@@ -120,6 +154,7 @@ const CAPABILITY_KEYS: Array<keyof ResolvedCapabilities> = [
 	"prompt_caching",
 	"vision",
 	"extended_thinking",
+	"reasoning",
 	"max_context",
 ];
 

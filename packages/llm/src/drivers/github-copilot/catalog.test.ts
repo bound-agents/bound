@@ -110,6 +110,29 @@ describe("CopilotCatalog", () => {
 		expect(gpt41?.zeroPriced).toBe(true);
 	});
 
+	it("parses reasoning_effort + adaptive_thinking from supports into the catalog entry", async () => {
+		const catalog = new CopilotCatalog({
+			apiEndpoint,
+			fetch: modelsFetch([
+				{
+					id: "claude-opus-5.5",
+					supported_endpoints: ["/v1/messages"],
+					capabilities: {
+						limits: { max_context_window_tokens: 1000000 },
+						supports: {
+							tool_calls: true,
+							reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+							adaptive_thinking: true,
+						},
+					},
+				},
+			]),
+		});
+		const entry = await catalog.getEntry("claude-opus-5.5");
+		expect(entry?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+		expect(entry?.adaptiveThinking).toBe(true);
+	});
+
 	it("caches within the TTL and refetches after it expires", async () => {
 		let calls = 0;
 		let clock = 0;

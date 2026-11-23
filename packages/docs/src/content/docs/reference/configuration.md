@@ -96,6 +96,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `default` | string | `""` | Backend `id` used when a turn names no model. Must reference a real backend, or be `""` when `backends` is empty. |
 | `daily_budget_usd` | number ≥ 0 | absent | Optional soft daily spend ceiling. |
 | `models_dev` | models.dev block | absent | `models.dev` fallback-registry settings (see below). Absent means fetch the public catalog every 24h. |
+| `defaults` | defaults block | absent | Top-level operator-preference defaults applied to every backend that does not set the same field (see below). |
 
 **Backend entry:**
 
@@ -120,7 +121,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `price` | function | absent | Optional `price(turn)` callback returning this turn's USD cost. Highest-precedence pricing source: it overrides the static `price_per_m_*` fields, provider pricing, and `models.dev`. It runs in the bounded evaluator and receives the turn's usage and static prices. Candidate evaluation and validation errors reject startup or reload; an error in a runtime-only branch falls back to the static/derived pricing. |
 | `capabilities` | capabilities override | absent | Force capability flags (see below). |
 | `thinking` | thinking config | absent | Extended-thinking / reasoning config (see below). |
-| `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. |
+| `effort` | string (non-empty) | absent | Provider-validated reasoning depth. Common Anthropic and Bedrock Converse values are `low`, `medium`, `high`, `xhigh`, and `max`; other providers may support different values. An `effort` a model does not list is clamped to the nearest value it does, using the resolved reasoning ladder; with no resolved ladder the value is forwarded for the driver to accept or drop. Inherited from the top-level `defaults.effort` when unset here. |
 | `max_output_tokens` | int > 0 | absent | Optional override of the per-backend output-token cap, applied as the lower of this value and the default limit. Normally resolved automatically from the provider's discovery API, then `models.dev`; set it to cap output below what those sources report, or for a model neither source knows. A resolved (non-override) value larger than 25% of the resolved context window is capped at 25%, because context management reserves the output limit out of the window; an explicit override here is always respected. |
 | `system_prompt_suffix` | string | absent | Text appended to the system prompt only when this backend serves the turn. |
 | `cache_ttl` | enum `5m`\|`1h` | absent (`5m`) | Prompt-cache TTL hint. Unsupported `1h` hints fall back to `5m`. |
@@ -144,7 +145,7 @@ object:
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `type` | `enabled`\|`adaptive`\|`tool` | `enabled` + `budget_tokens` is the legacy fixed-budget shape (removed on Opus 4.7); `adaptive` lets the model decide, with depth set by the backend's `effort`. `tool` disables the provider's native reasoning and exposes Bound's optional `think({ thought })` scratchpad tool instead. |
+| `type` | `enabled`\|`adaptive`\|`tool` | `enabled` + `budget_tokens` is the legacy fixed-budget shape (removed on Opus 4.7); `adaptive` lets the model decide, with depth set by the backend's `effort`. `tool` disables the provider's native reasoning and exposes Bound's optional `think({ thought })` scratchpad tool instead. When `thinking` is absent entirely, Bound derives the reasoning request from the model's resolved reasoning metadata: no reasoning support → none; a toggle or effort ladder → enabled; a provider-advertised adaptive capability → adaptive. |
 | `budget_tokens` | int > 0 | Legacy fixed thinking budget. Rejected (400) on Opus 4.7; incompatible with `adaptive` and `tool`. |
 | `display` | `omitted`\|`summarized` | Opt into visible reasoning text on Opus 4.7 (default `omitted`); incompatible with `enabled` and `tool`. |
 
@@ -180,6 +181,22 @@ A failed fetch never blocks startup: the host falls back to its cached snapshot,
 or to local config and provider APIs alone when no cache exists. A backend whose
 `max_context` is unresolved across all three layers (local config, provider
 discovery, `models.dev`) stays unready rather than running on a guessed window.
+
+**Defaults block** (`defaults`) — top-level operator-preference defaults applied to
+every backend that does not set the same field itself. A per-backend value always wins.
+This lets an operator state a cluster-wide preference once instead of copying it onto each
+entry.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `effort` | string (non-empty) | absent | Default reasoning depth for backends that set no `effort`. Clamped per-model to the nearest listed value, same as a per-backend `effort`. |
+| `cache_ttl` | enum `5m`\|`1h` | absent | Default prompt-cache TTL hint for backends that set no `cache_ttl`. |
+
+`thinking` is deliberately not a `defaults` field: the `thinking` shapes are
+provider-specific (adaptive reasoning is Anthropic-only; a generic `enabled` would be wrong
+for a model that only offers an effort ladder or a toggle), so a single cluster-wide
+`thinking` default is not meaningfully generic. A backend that sets no `thinking` instead
+has one derived per-model from the resolved reasoning metadata (see below).
 
 ### Price callback
 

@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { modelsDevNamespaceFor, normalizeModelKey } from "./normalize";
-import type { MetadataLayer, PricingTier } from "./resolve-metadata";
+import type { MetadataLayer, PricingTier, ResolvedReasoning } from "./resolve-metadata";
 
 const DEFAULT_URL = "https://models.dev/api.json";
 const DEFAULT_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h (R-MC5)
@@ -72,13 +72,56 @@ function parseContextTiers(raw: unknown): PricingTier[] {
 }
 
 /**
+ * Parse a `models.dev` entry's `reasoning` boolean + `reasoning_options` array
+ * into {@link ResolvedReasoning} (requirement 1, catalog §3.1). The published
+ * shapes are `{type:"toggle"}`, `{type:"effort", values:string[]}`, and
+ * `{type:"budget_tokens", min, max}`; only `toggle` and `effort` carry signal
+ * a driver can act on structurally, so `budget_tokens` is noted (it still means
+ * reasoning is supported) but contributes no field.
+ *
+ * Returns `undefined` only when the entry says NOTHING about reasoning — neither
+ * the boolean nor the options array — so absence stays distinct from an explicit
+ * `reasoning:false`. Defensive: a malformed options array is ignored rather than
+ * throwing, so one bad row never poisons the index.
+ */
+function parseReasoningOptions(
+	reasoning: unknown,
+	rawOptions: unknown,
+): ResolvedReasoning | undefined {
+	const hasBool = typeof reasoning === "boolean";
+	const options = Array.isArray(rawOptions) ? rawOptions : undefined;
+	if (!hasBool && !options) return undefined;
+
+	// `supported` is the boolean when present; otherwise the presence of any
+	// reasoning option implies reasoning is supported.
+	const supported = hasBool ? (reasoning as boolean) : true;
+	const result: ResolvedReasoning = { supported };
+
+	if (options) {
+		for (const opt of options) {
+			if (!isRecord(opt)) continue;
+			if (opt.type === "toggle") {
+				result.toggle = true;
+			} else if (opt.type === "effort" && Array.isArray(opt.values)) {
+				const values = opt.values.filter((v): v is string => typeof v === "string");
+				if (values.length > 0) result.effort_values = values;
+			}
+			// `budget_tokens` carries no structural signal a driver acts on; it is
+			// left out deliberately (its presence already set `supported`).
+		}
+	}
+	return result;
+}
+
+/**
  * Parse one raw `models.dev` model entry into a gap-filling `MetadataLayer`.
  * Defensive: any shape mismatch yields `undefined` so one malformed row never
  * poisons the index. Documented payload shape (per model id):
  *   { limit?: { context?, output? },
  *     cost?: { input?, output?, cache_read?, cache_write? },
  *     modalities?: { input?: string[] },
- *     reasoning?: boolean }
+ *     reasoning?: boolean,
+ *     reasoning_options?: ({type:"toggle"} | {type:"effort", values:string[]} | {type:"budget_tokens", …})[] }
  */
 function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 	if (!isRecord(entry)) return undefined;
@@ -114,8 +157,12 @@ function parseModelEntry(entry: unknown): MetadataLayer | undefined {
 		if (modalitiesInput.includes("image")) capabilities.vision = true;
 	}
 
-	if (typeof entry.reasoning === "boolean") {
-		capabilities.extended_thinking = entry.reasoning;
+	const reasoning = parseReasoningOptions(entry.reasoning, entry.reasoning_options);
+	if (reasoning) {
+		capabilities.reasoning = reasoning;
+		// Keep the legacy flat `extended_thinking` boolean in sync for consumers
+		// that only read it; `reasoning.supported` is the authoritative field.
+		capabilities.extended_thinking = reasoning.supported;
 	}
 
 	const cost = isRecord(entry.cost) ? entry.cost : undefined;

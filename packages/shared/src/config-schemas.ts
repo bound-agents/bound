@@ -147,6 +147,34 @@ export const cacheWarmingConfigSchema = z
 
 export type CacheWarmingConfig = z.infer<typeof cacheWarmingConfigSchema>;
 
+// Top-level operator-preference defaults (2026-11-21-model-catalog.md §3,
+// requirement 3). A value here is applied to every backend that does NOT set
+// the same field itself; a per-backend value always wins. This exists so an
+// operator states a cluster-wide preference once rather than copying it onto
+// each entry (the minimal-configuration goal), while leaving derivation from
+// catalog reasoning metadata (§3.1) to fill backends that set neither.
+//
+//   - `effort` — the output-config depth knob. The accepted vocabulary is
+//     provider-specific (validated per-driver, like the per-backend field); a
+//     default a given model does not list is clamped to the nearest listed
+//     value or dropped by the driver's own effort resolution, never sent raw.
+//   - `cache_ttl` — the prompt-cache lifetime hint, same shape as the
+//     per-backend `cache_ttl`.
+//   - `thinking` is intentionally NOT accepted here: the `thinking` shapes are
+//     provider-specific (adaptive is Anthropic-only; a generic `{type:"enabled"}`
+//     would be wrong for a model that only supports effort or a toggle), so a
+//     single cluster-wide `thinking` default is not meaningfully generic. A
+//     backend with no `thinking` has it DERIVED from resolved reasoning metadata
+//     (§3.1) instead, which is model-specific by construction.
+const modelDefaultsSchema = z
+	.object({
+		effort: effortSchema.optional(),
+		cache_ttl: durationStringSchema().optional(),
+	})
+	.strict();
+
+export type ModelDefaults = z.infer<typeof modelDefaultsSchema>;
+
 const modelBackendSchema = z
 	.object({
 		id: z.string().min(1),
@@ -290,6 +318,10 @@ export const modelBackendsSchema = z
 		// fallback when that cluster role is unset. So `default` is optional even
 		// with non-empty backends.
 		default: z.string().default(""),
+		// Top-level operator-preference defaults (requirement 3). Applied to every
+		// backend that does not set the same field itself; a per-backend value wins.
+		// See `modelDefaultsSchema`.
+		defaults: modelDefaultsSchema.optional(),
 		daily_budget_usd: z.number().min(0).optional(),
 		// Opt-in cache-warming driver (issue #10). Co-located here because its
 		// economics derive from per-backend `cache_ttl` + cache pricing above.

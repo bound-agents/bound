@@ -68,6 +68,36 @@ describe("resolveModelMetadata", () => {
 			expect(r.metadata.field_sources.vendor).toBe("models_dev");
 		});
 
+		it("resolves the reasoning capability by precedence and records its source", () => {
+			// Provider discovery supplies reasoning; models.dev also has a (losing) one.
+			const provider: MetadataLayer = {
+				capabilities: {
+					max_context: 200,
+					reasoning: { supported: true, adaptive: true, effort_values: ["low", "high"] },
+				},
+			};
+			const modelsDev: MetadataLayer = {
+				capabilities: { reasoning: { supported: true, toggle: true } },
+			};
+			const r = resolveModelMetadata({ providerModelId, config: {}, provider, modelsDev });
+			expect(r.metadata.capabilities.reasoning).toEqual({
+				supported: true,
+				adaptive: true,
+				effort_values: ["low", "high"],
+			});
+			expect(r.metadata.field_sources.reasoning).toBe("provider");
+		});
+
+		it("falls back to the models.dev reasoning capability when the provider has none", () => {
+			const provider: MetadataLayer = { capabilities: { max_context: 200 } };
+			const modelsDev: MetadataLayer = {
+				capabilities: { reasoning: { supported: true, toggle: true } },
+			};
+			const r = resolveModelMetadata({ providerModelId, config: {}, provider, modelsDev });
+			expect(r.metadata.capabilities.reasoning).toEqual({ supported: true, toggle: true });
+			expect(r.metadata.field_sources.reasoning).toBe("models_dev");
+		});
+
 		it("carries provider-published allowed_fallback_models through", () => {
 			const provider: MetadataLayer = {
 				capabilities: { max_context: 200 },

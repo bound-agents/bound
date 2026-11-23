@@ -71,6 +71,72 @@ describe("indexModelsDevSnapshot / lookupModelsDev", () => {
 		expect(layer?.capabilities?.extended_thinking).toBe(true);
 	});
 
+	it("parses reasoning_options into structured reasoning metadata (effort + toggle)", () => {
+		// Real models.dev shape: `reasoning: true` plus a `reasoning_options`
+		// array that may carry a `toggle` entry and/or an `effort` entry with a
+		// `values` list. Both are published facts, not a model-ID lookup.
+		const index = indexModelsDevSnapshot({
+			anthropic: {
+				models: {
+					"claude-reasoner": {
+						limit: { context: 200000 },
+						reasoning: true,
+						reasoning_options: [
+							{ type: "toggle" },
+							{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] },
+						],
+					},
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "anthropic", "claude-reasoner");
+		expect(layer?.capabilities?.reasoning).toEqual({
+			supported: true,
+			toggle: true,
+			effort_values: ["low", "medium", "high", "xhigh", "max"],
+		});
+		// `extended_thinking` stays set for backward-compat consumers.
+		expect(layer?.capabilities?.extended_thinking).toBe(true);
+	});
+
+	it("parses an effort-only reasoning_options (no toggle)", () => {
+		const index = indexModelsDevSnapshot({
+			openai: {
+				models: {
+					"gpt-reasoner": {
+						limit: { context: 400000 },
+						reasoning: true,
+						reasoning_options: [{ type: "effort", values: ["none", "low", "medium", "high"] }],
+					},
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "openai", "gpt-reasoner");
+		expect(layer?.capabilities?.reasoning).toEqual({
+			supported: true,
+			effort_values: ["none", "low", "medium", "high"],
+		});
+	});
+
+	it("records reasoning.supported=false when the registry says reasoning:false", () => {
+		const index = indexModelsDevSnapshot({
+			"amazon-bedrock": {
+				models: {
+					"amazon.nova-lite": { limit: { context: 300000 }, reasoning: false },
+				},
+			},
+		});
+		const layer = lookupModelsDev(index, "amazon-bedrock", "amazon.nova-lite");
+		expect(layer?.capabilities?.reasoning).toEqual({ supported: false });
+		expect(layer?.capabilities?.extended_thinking).toBe(false);
+	});
+
+	it("omits reasoning metadata entirely when the entry says nothing about it", () => {
+		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
+		const layer = lookupModelsDev(index, "openai", "gpt-6");
+		expect(layer?.capabilities?.reasoning).toBeUndefined();
+	});
+
 	it("normalizes a region/vendor-prefixed query id to the same entry", () => {
 		const index = indexModelsDevSnapshot(SAMPLE_PAYLOAD);
 		// A Bedrock-style id resolves to the same canonical entry as the direct id.

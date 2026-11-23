@@ -55,6 +55,8 @@ export interface CopilotModelEntry {
 	supportsVision?: boolean;
 	/** Reasoning-effort levels the model advertises (e.g. ["low","medium","high","max"]). */
 	reasoningEfforts?: string[];
+	/** True when the model advertises Anthropic-style model-controlled adaptive thinking. */
+	adaptiveThinking?: boolean;
 	/** True when every token price is 0 (Free-callable). */
 	zeroPriced?: boolean;
 	/** Parsed structured pricing from billing.token_prices; absent when billing has none. */
@@ -84,7 +86,13 @@ interface RawModelEntry {
 			max_output_tokens?: number;
 			max_context_window_tokens?: number;
 		};
-		supports?: { tool_calls?: boolean; vision?: boolean; reasoning_effort?: string[] };
+		supports?: {
+			tool_calls?: boolean;
+			vision?: boolean;
+			reasoning_effort?: string[];
+			/** True when the model supports Anthropic-style model-controlled adaptive thinking. */
+			adaptive_thinking?: boolean;
+		};
 	};
 	policy?: { state?: string };
 	model_picker_enabled?: boolean;
@@ -184,6 +192,7 @@ function parseEntry(raw: RawModelEntry): CopilotModelEntry | null {
 		supportsToolCalls: raw.capabilities?.supports?.tool_calls,
 		supportsVision: raw.capabilities?.supports?.vision,
 		reasoningEfforts: raw.capabilities?.supports?.reasoning_effort,
+		adaptiveThinking: raw.capabilities?.supports?.adaptive_thinking,
 		...(zeroPriced !== undefined && { zeroPriced }),
 		...(pricing && { pricing }),
 		policyState: raw.policy?.state,
