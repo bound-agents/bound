@@ -144,6 +144,20 @@ export interface RouteEntry {
 /** Copilot token managers keyed by token-store path; every backend over one file shares one. */
 const copilotTokenManagers = new Map<string, CopilotTokenManager>();
 
+/**
+ * ChatGPT OAuth token managers keyed by token-store path. Refresh rotates the
+ * refresh token (the old one dies), so every backend over one store file — a
+ * namespace and its expanded siblings, or several concrete entries — shares one.
+ */
+const chatgptTokenManagers = new Map<string, TokenManager>();
+
+/** Defaults for the three providers served by `OpenAICompatibleDriver`. */
+const OPENAI_COMPATIBLE_FLAVORS: Record<string, { defaultBaseUrl: string; label: string }> = {
+	"openai-compatible": { defaultBaseUrl: "http://localhost:8000", label: "OpenAI-compatible" },
+	cerebras: { defaultBaseUrl: "https://api.cerebras.ai/v1", label: "Cerebras" },
+	zai: { defaultBaseUrl: "https://api.z.ai/api/coding/paas/v4", label: "z.AI" },
+};
+
 export class ModelRouter {
 	private backends: Map<string, LLMBackend>;
 	private defaultId: string;
@@ -1027,83 +1041,55 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("Anthropic driver requires apiKey in config");
 			}
-			if (!config.model) {
-				throw new Error("Anthropic driver requires model in config");
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
+			// No `model` => self-configuring namespace: it owns `readiness`, fetches
+			// `/v1/models`, and expands into one concrete backend per listed model
+			// (catalog §2.1). Expanded ids are `${config.id}-${providerModelId}`.
 			return new AnthropicDriver({
 				apiKey,
-				model: config.model,
-				contextWindow,
+				...(config.model
+					? {
+							model: config.model,
+							contextWindow: config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW,
+						}
+					: {
+							namespaceId: config.id,
+							...(config.modelOverrides !== undefined && {
+								modelOverrides: config.modelOverrides,
+							}),
+						}),
 				baseUrl: config.baseUrl,
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				...(siteId !== undefined && { siteId }),
 			});
 		}
 
-		case "openai-compatible": {
-			const baseUrl = config.baseUrl ?? "http://localhost:8000";
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error("OpenAI-compatible driver requires apiKey in config");
-			}
-			if (!config.model) {
-				throw new Error("OpenAI-compatible driver requires model in config");
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			return new OpenAICompatibleDriver({
-				baseUrl,
-				apiKey,
-				model: config.model,
-				contextWindow,
-				providerName: "openai-compatible",
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				additionalHeaders: config.additionalHeaders,
-			});
-		}
-
-		case "cerebras": {
-			const baseUrl = config.baseUrl ?? "https://api.cerebras.ai/v1";
-			const apiKey = config.apiKey as string | undefined;
-			if (!apiKey) {
-				throw new Error("Cerebras driver requires apiKey in config");
-			}
-			if (!config.model) {
-				throw new Error("Cerebras driver requires model in config");
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			return new OpenAICompatibleDriver({
-				baseUrl,
-				apiKey,
-				model: config.model,
-				contextWindow,
-				providerName: "cerebras",
-				logger,
-				fetch,
-				connectTimeoutMs: config.connectTimeoutMs,
-				additionalHeaders: config.additionalHeaders,
-			});
-		}
-
+		case "openai-compatible":
+		case "cerebras":
 		case "zai": {
-			const baseUrl = config.baseUrl ?? "https://api.z.ai/api/coding/paas/v4";
+			const flavor = OPENAI_COMPATIBLE_FLAVORS[provider];
+			const baseUrl = config.baseUrl ?? flavor.defaultBaseUrl;
 			const apiKey = config.apiKey as string | undefined;
 			if (!apiKey) {
-				throw new Error("z.AI driver requires apiKey in config");
+				throw new Error(`${flavor.label} driver requires apiKey in config`);
 			}
-			if (!config.model) {
-				throw new Error("z.AI driver requires model in config");
-			}
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
+			// No `model` => self-configuring namespace over `/models` (catalog §2.1).
 			return new OpenAICompatibleDriver({
 				baseUrl,
 				apiKey,
-				model: config.model,
-				contextWindow,
-				providerName: "zai",
+				...(config.model
+					? {
+							model: config.model,
+							contextWindow: config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW,
+						}
+					: {
+							namespaceId: config.id,
+							...(config.modelOverrides !== undefined && {
+								modelOverrides: config.modelOverrides,
+							}),
+						}),
+				providerName: provider,
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
@@ -1112,19 +1098,34 @@ function createBackendFromConfig(
 		}
 
 		case "chatgpt-oauth": {
-			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
-			const store = new FileTokenStore(config.tokenStorePath ?? "config/chatgpt-auth.json");
-			const tokens = store.load();
-			if (!tokens) {
-				throw new Error("ChatGPT OAuth is not logged in — run `bound login --chatgpt`");
+			const storePath = config.tokenStorePath ?? "config/chatgpt-auth.json";
+			// One token manager per store file: refresh rotates the refresh token, so
+			// N backends holding N managers over one file would race the same token.
+			let tokenManager = chatgptTokenManagers.get(storePath);
+			if (!tokenManager) {
+				const store = new FileTokenStore(storePath);
+				const tokens = store.load();
+				if (!tokens) {
+					throw new Error("ChatGPT OAuth is not logged in — run `bound login --chatgpt`");
+				}
+				tokenManager = new TokenManager(tokens, { fetch: fetch ?? globalThis.fetch }, store);
+				chatgptTokenManagers.set(storePath, tokenManager);
 			}
-			if (!config.model) {
-				throw new Error("ChatGPT OAuth driver requires model in config");
-			}
+			// No `model` => self-configuring namespace over the Codex `/models`
+			// inventory (catalog §2.1); expanded siblings share this TokenManager.
 			return new ChatGptOAuthDriver({
-				tokenManager: new TokenManager(tokens, { fetch: fetch ?? globalThis.fetch }, store),
-				model: config.model,
-				contextWindow,
+				tokenManager,
+				...(config.model
+					? {
+							model: config.model,
+							contextWindow: config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW,
+						}
+					: {
+							namespaceId: config.id,
+							...(config.modelOverrides !== undefined && {
+								modelOverrides: config.modelOverrides,
+							}),
+						}),
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { AnthropicDriver } from "../drivers/anthropic";
+import { ChatGptOAuthDriver } from "../drivers/chatgpt-oauth/driver";
+import { OpenAICompatibleDriver } from "../drivers/openai-compatible";
 import { OpenCodeGoDriver } from "../drivers/opencode-go";
 import { createModelRouter } from "../model-router";
 import type { ModelBackendsConfig } from "../types";
@@ -180,6 +183,33 @@ describe("createBackendFromConfig — driver construction per provider", () => {
 			}),
 		).toThrow("Bedrock Mantle driver requires providerMode");
 	});
+
+	for (const provider of ["anthropic", "openai-compatible", "cerebras", "zai"] as const) {
+		it(`constructs a self-configuring ${provider} namespace backend when model is omitted`, () => {
+			const router = singleBackendRouter({
+				backends: [{ id: "ns", provider, apiKey: "k" }],
+				default: "ns",
+			});
+			const backend = router.getBackend("ns") as unknown as {
+				readiness?: { isReady(): boolean; dispose(): void };
+				discoverModels?: unknown;
+			};
+			expect(backend).toBeInstanceOf(
+				provider === "anthropic" ? AnthropicDriver : OpenAICompatibleDriver,
+			);
+			expect(typeof backend.discoverModels).toBe("function");
+			expect(backend.readiness?.isReady()).toBe(false);
+			backend.readiness?.dispose();
+		});
+
+		it(`constructs a concrete ${provider} backend (no readiness) when model is set`, () => {
+			const router = singleBackendRouter({
+				backends: [{ id: "c", provider, apiKey: "k", model: "m" }],
+				default: "c",
+			});
+			expect((router.getBackend("c") as { readiness?: unknown }).readiness).toBeUndefined();
+		});
+	}
 });
 
 describe("buildRouterState — flat registry (R-RT1, slice 2)", () => {
@@ -250,5 +280,67 @@ describe("createBackendFromConfig — github-copilot token sharing", () => {
 		} finally {
 			cleanupTmpDirSync(dir);
 		}
+	});
+});
+
+describe("createBackendFromConfig — chatgpt-oauth token sharing and namespace mode", () => {
+	it("shares one token manager per store file across concrete and namespace entries", async () => {
+		const { mkdtempSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { cleanupTmpDirSync } = await import("@bound/shared/test-utils");
+		const dir = mkdtempSync(join(tmpdir(), "chatgpt-share-"));
+		try {
+			const storePath = join(dir, "chatgpt-auth.json");
+			writeFileSync(
+				storePath,
+				JSON.stringify({
+					accessToken: "a",
+					refreshToken: "r",
+					idToken: "i",
+					accountId: "acct",
+					accessTokenExpiresAt: Date.now() + 3_600_000,
+				}),
+			);
+			const router = createModelRouter({
+				backends: [
+					{ id: "codex", provider: "chatgpt-oauth", tokenStorePath: storePath },
+					{
+						id: "astra",
+						provider: "chatgpt-oauth",
+						model: "gpt-6-astra",
+						tokenStorePath: storePath,
+					},
+				],
+				default: "astra",
+			});
+			const managerOf = (id: string) =>
+				(router.getBackend(id) as unknown as { tokenManager: unknown }).tokenManager;
+			expect(managerOf("codex")).toBeDefined();
+			expect(managerOf("codex")).toBe(managerOf("astra"));
+
+			const ns = router.getBackend("codex") as ChatGptOAuthDriver;
+			expect(ns).toBeInstanceOf(ChatGptOAuthDriver);
+			expect(ns.readiness?.isReady()).toBe(false);
+			ns.readiness?.dispose();
+			expect((router.getBackend("astra") as ChatGptOAuthDriver).readiness).toBeUndefined();
+		} finally {
+			cleanupTmpDirSync(dir);
+		}
+	});
+
+	it("rejects a chatgpt-oauth backend whose store file has no tokens", () => {
+		expect(() =>
+			createModelRouter({
+				backends: [
+					{
+						id: "codex",
+						provider: "chatgpt-oauth",
+						tokenStorePath: "does-not-exist/chatgpt-auth-missing.json",
+					},
+				],
+				default: "codex",
+			}),
+		).toThrow("ChatGPT OAuth is not logged in");
 	});
 });

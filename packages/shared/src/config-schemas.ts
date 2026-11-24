@@ -242,13 +242,13 @@ const modelBackendSchema = z
 			"chatgpt-oauth",
 			"github-copilot",
 		]),
-		// `model` and `context_window` are REQUIRED for every provider EXCEPT
-		// `umans`, which is config-light + self-configuring: a umans entry is a
-		// NAMESPACE that fetches its full model lineup (ids, context windows,
-		// pricing) at runtime, so it carries only provider + id + api_key +
-		// default. The object-level refinements below enforce "required unless
-		// umans" and "reject authoritative fields on umans". See the model-router
-		// umans case + UmansDriver readiness.
+		// `model` is OPTIONAL on every provider. Omitting `model` turns the entry
+		// into a self-configuring NAMESPACE that discovers its lineup at runtime
+		// and expands into one backend per model (2026-11-21-model-catalog.md
+		// §2.1). `umans` is always a namespace and rejects `model`; the other
+		// providers accept either a concrete `model` or an omitted `model`
+		// namespace. The object-level refinements below enforce that namespace
+		// entries do not set top-level authoritative fields (use `model_overrides`).
 		model: z.string().min(1).optional(),
 		provider_mode: z.enum(["anthropic", "openai_responses"]).optional(),
 		base_url: z.string().url().optional(),
@@ -458,33 +458,20 @@ export const modelBackendsSchema = z
 	)
 	.refine(
 		(data) => {
-			// `model` is required for every provider EXCEPT the self-configuring
-			// namespace forms: `umans` always, and `github-copilot` WITHOUT a `model`
-			// (a namespace entry that fetches its lineup at runtime and expands into one
-			// backend per catalog model, catalog §4.1). A `github-copilot` entry WITH a
-			// `model` is a single concrete backend and still requires it. `context_window`
-			// is OPTIONAL for all providers (requirement 2): the dynamic catalog resolves
-			// the window from provider discovery or models.dev, and the R-MC4 readiness
-			// gate keeps a backend whose window is unresolved across all layers unready
-			// rather than failing validation.
-			return data.backends.every((b) => {
-				if (b.provider === "umans") return true;
-				if (b.provider === "github-copilot") return true;
-				// `bedrock` / `bedrock-mantle` WITHOUT a `model` is a self-configuring
-				// namespace for its (profile, region): it fetches its lineup from the
-				// control plane and expands into one backend per catalog model
-				// (2026-11-21-model-catalog.md §2.1). A `model`-bearing entry is a single
-				// concrete backend and still requires it.
-				if (b.provider === "bedrock" || b.provider === "bedrock-mantle") return true;
-				// `opencode-go` WITHOUT a `model` is a self-configuring namespace: it
-				// fetches `/models` and expands into one backend per routable chat model.
-				if (b.provider === "opencode-go") return true;
-				return b.model !== undefined;
-			});
+			// `model` is optional on every provider: omitting it makes the entry a
+			// self-configuring NAMESPACE that fetches its lineup from the provider and
+			// expands into one backend per catalog model (2026-11-21-model-catalog.md
+			// §2.1). `umans` is always a namespace and rejects `model` (next check). An
+			// entry WITH a `model` is a single concrete backend. `context_window` is
+			// OPTIONAL for all providers: the dynamic catalog resolves the window from
+			// provider discovery or models.dev, and the R-MC4 readiness gate keeps a
+			// backend whose window is unresolved across all layers unready rather than
+			// failing validation.
+			return data.backends.every((b) => b.model === undefined || b.model.length > 0);
 		},
 		{
 			message:
-				"model is required for all providers except umans, github-copilot, bedrock, bedrock-mantle, and opencode-go (which are self-configuring when no model is set)",
+				"model must be a non-empty provider model id; omit it to make the entry a self-configuring namespace",
 		},
 	)
 	.refine(
@@ -513,16 +500,15 @@ export const modelBackendsSchema = z
 	)
 	.refine(
 		(data) => {
-			// A self-configuring NAMESPACE entry (no `model`) — `github-copilot`,
-			// `bedrock`, `bedrock-mantle`, or `opencode-go` — fetches its per-model lineup, context
-			// windows, capabilities, and pricing from the provider at runtime, so
-			// operator-set authoritative fields on the namespace entry itself are
-			// rejected (they would have no single model to apply to). Per-model
-			// overrides go in `model_overrides` instead (keyed by provider model id). An
-			// entry WITH a `model` is a single concrete backend and keeps these fields.
-			const NAMESPACE_PROVIDERS = ["github-copilot", "bedrock", "bedrock-mantle", "opencode-go"];
+			// A self-configuring NAMESPACE entry (any non-umans provider with no
+			// `model`) fetches its per-model lineup, context windows, capabilities, and
+			// pricing from the provider at runtime, so operator-set authoritative fields
+			// on the namespace entry itself are rejected (they would have no single
+			// model to apply to). Per-model overrides go in `model_overrides` instead
+			// (keyed by provider model id). An entry WITH a `model` is a single concrete
+			// backend and keeps these fields. `umans` has its own check above.
 			return data.backends.every((b) => {
-				if (!NAMESPACE_PROVIDERS.includes(b.provider) || b.model !== undefined) return true;
+				if (b.provider === "umans" || b.model !== undefined) return true;
 				if (b.context_window !== undefined) return false;
 				if (b.capabilities !== undefined) return false;
 				if (b.price_per_m_input !== undefined) return false;
@@ -535,7 +521,7 @@ export const modelBackendsSchema = z
 		},
 		{
 			message:
-				"a self-configuring namespace entry (github-copilot / bedrock / bedrock-mantle / opencode-go with no model) must not set context_window, capabilities, or pricing — these are fetched from the provider; use model_overrides for per-model request controls",
+				"a self-configuring namespace entry (no model) must not set context_window, capabilities, or pricing — these are fetched from the provider; use model_overrides for per-model request controls",
 		},
 	);
 

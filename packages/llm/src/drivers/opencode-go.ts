@@ -14,15 +14,13 @@ import type { DiscoveredModel, SupportsModelDiscovery } from "../catalog/discove
 import type { DriverFallbackSupport } from "../fallback-policy";
 import type {
 	BackendCapabilities,
-	BackendConfig,
 	BackendReadiness,
 	ChatParams,
 	LLMBackend,
-	ModelDescriptor,
-	ModelRegistrar,
 	StreamChunk,
 } from "../types";
 import { LLMError } from "../types";
+import { NamespaceLineupReadiness, type NamespaceModelOverride } from "./namespace-readiness";
 import {
 	type OpenCodeGoCatalogEntry,
 	type OpenCodeGoProtocol,
@@ -45,10 +43,6 @@ const PROVIDER_NAME = "opencode-go";
 const BOUND_USER_AGENT = "bound";
 export const MAX_OPENCODE_SESSION_ID_LENGTH = 256;
 
-/** Retry/backoff caps for the background namespace lineup fetch (mirrors Copilot). */
-const LINEUP_RETRY_BASE_MS = 1000;
-const LINEUP_RETRY_MAX_MS = 60_000;
-
 export function deriveOpenCodeGoBaseUrl(override?: string): string {
 	return override ?? DEFAULT_OPENCODE_GO_BASE_URL;
 }
@@ -65,8 +59,7 @@ export function classifyOpenCodeGoProtocol(modelId: string): "openai-compatible"
 	return "openai-compatible";
 }
 
-/** Per-model override entry (camelCase, from `toRouterConfig`). */
-type ModelOverride = NonNullable<BackendConfig["modelOverrides"]>[string];
+type ModelOverride = NamespaceModelOverride;
 
 export interface OpenCodeGoDriverConfig {
 	apiKey: string;
@@ -98,118 +91,6 @@ export interface OpenCodeGoDriverConfig {
 	/** Lineup retry backoff base/cap (test seam). */
 	lineupRetryBaseMs?: number;
 	lineupRetryMaxMs?: number;
-}
-
-/**
- * Readiness handle for the self-configuring OpenCode Go namespace. Fetches
- * `/models`, keeps routable chat models, and registers one concrete backend per
- * model. A failed or empty fetch retries with capped exponential backoff;
- * `dispose()` aborts the in-flight fetch and turns any later result into a no-op.
- */
-class OpenCodeGoLineupReadiness implements BackendReadiness {
-	private ready = false;
-	private disposed = false;
-	private pendingRetry?: ReturnType<typeof setTimeout>;
-	private readonly controller = new AbortController();
-	private readonly retryBaseMs: number;
-	private readonly retryMaxMs: number;
-
-	constructor(
-		private readonly deps: {
-			loadCatalog: (signal: AbortSignal) => Promise<OpenCodeGoCatalogEntry[]>;
-			buildPerModelDriver: (entry: OpenCodeGoCatalogEntry, contextWindow: number) => LLMBackend;
-			namespaceId: string;
-			modelOverrides?: Record<string, ModelOverride>;
-			logger?: Logger;
-			retryBaseMs?: number;
-			retryMaxMs?: number;
-		},
-	) {
-		this.retryBaseMs = deps.retryBaseMs ?? LINEUP_RETRY_BASE_MS;
-		this.retryMaxMs = deps.retryMaxMs ?? LINEUP_RETRY_MAX_MS;
-	}
-
-	isReady(): boolean {
-		return this.ready;
-	}
-
-	dispose(): void {
-		this.disposed = true;
-		if (this.pendingRetry !== undefined) clearTimeout(this.pendingRetry);
-		this.pendingRetry = undefined;
-		this.controller.abort();
-	}
-
-	start(registrar: ModelRegistrar): void {
-		void this.runFetchLoop(registrar);
-	}
-
-	private async runFetchLoop(registrar: ModelRegistrar): Promise<void> {
-		let attempt = 0;
-		while (!this.disposed) {
-			let entries: OpenCodeGoCatalogEntry[] = [];
-			try {
-				entries = await this.deps.loadCatalog(this.controller.signal);
-			} catch (error) {
-				if (this.disposed) return;
-				this.deps.logger?.warn?.("opencode-go lineup fetch failed; retrying", {
-					error: error instanceof Error ? error.message : String(error),
-				});
-				entries = [];
-			}
-			if (this.disposed) return;
-
-			if (entries.length > 0) {
-				const models = this.buildEntries(entries);
-				if (this.disposed) return; // re-check just before the live-router write
-				this.ready = true;
-				registrar.register(this.deps.namespaceId, models);
-				this.deps.logger?.info?.("opencode-go lineup ready", { models: models.length });
-				return;
-			}
-
-			attempt++;
-			const delay = Math.min(this.retryMaxMs, this.retryBaseMs * 2 ** (attempt - 1));
-			this.deps.logger?.warn?.("opencode-go lineup empty; retrying", {
-				attempt,
-				delayMs: delay,
-			});
-			await new Promise<void>((resolve) => {
-				this.pendingRetry = setTimeout(resolve, delay);
-			});
-			this.pendingRetry = undefined;
-		}
-	}
-
-	private buildEntries(
-		entries: OpenCodeGoCatalogEntry[],
-	): Array<{ descriptor: ModelDescriptor; backend: LLMBackend }> {
-		return entries.map((entry) => {
-			const override = this.deps.modelOverrides?.[entry.id];
-			const discovered = entry.discovered;
-			const caps = discovered.capabilities;
-			const maxContext = override?.contextWindow ?? caps?.max_context;
-			const capabilities: BackendCapabilities = {
-				streaming: true,
-				tool_use: caps?.tool_use ?? true,
-				system_prompt: true,
-				prompt_caching: override?.promptCaching ?? false,
-				vision: caps?.vision ?? false,
-				extended_thinking: caps?.reasoning?.supported ?? false,
-				...(maxContext !== undefined && { max_context: maxContext }),
-			};
-			const maxOutputTokens = override?.maxOutputTokens ?? discovered.maxOutputTokens;
-			const descriptor: ModelDescriptor = {
-				id: `${this.deps.namespaceId}-${entry.id}`,
-				providerModelId: entry.id,
-				discovered,
-				capabilities,
-				...(override?.logicalModel !== undefined && { logicalModel: override.logicalModel }),
-				...(maxOutputTokens !== undefined && { maxOutputTokens }),
-			};
-			return { descriptor, backend: this.deps.buildPerModelDriver(entry, maxContext ?? 0) };
-		});
-	}
 }
 
 /**
@@ -289,10 +170,11 @@ export class OpenCodeGoDriver implements LLMBackend, SupportsModelDiscovery {
 		if (this.isNamespace) {
 			// The fetch is NOT started here — the wiring layer calls
 			// `readiness.start(registrar)` once the registrar is bound.
-			this.readiness = new OpenCodeGoLineupReadiness({
+			this.readiness = new NamespaceLineupReadiness<OpenCodeGoCatalogEntry>({
+				providerName: PROVIDER_NAME,
 				namespaceId: config.namespaceId ?? PROVIDER_NAME,
-				loadCatalog: (signal) => this.fetchCatalog(signal),
-				buildPerModelDriver: (entry, contextWindow) =>
+				loadLineup: (signal) => this.fetchCatalog(signal),
+				buildPerModelBackend: (entry, contextWindow) =>
 					new OpenCodeGoDriver({
 						apiKey: config.apiKey,
 						model: entry.id,

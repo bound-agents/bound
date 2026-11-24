@@ -18,13 +18,79 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../bridge";
-import type { DiscoveredModel } from "../catalog/discovery";
+import type { DiscoveredModel, SupportsModelDiscovery } from "../catalog/discovery";
 import { parseOpenAIModelsList } from "../catalog/discovery-fetch";
 import type { DriverFallbackSupport } from "../fallback-policy";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import type {
+	BackendCapabilities,
+	BackendReadiness,
+	ChatParams,
+	LLMBackend,
+	StreamChunk,
+} from "../types";
 import { LLMError } from "../types";
+import {
+	NamespaceLineupReadiness,
+	type NamespaceModelOverride,
+	lineupFromDiscovered,
+} from "./namespace-readiness";
 import { resolveProviderFetch, runProviderStream } from "./shared";
-export class OpenAICompatibleDriver implements LLMBackend {
+
+export interface OpenAICompatibleDriverConfig {
+	baseUrl: string;
+	apiKey: string;
+	/**
+	 * Concrete provider model id. Omitted => self-configuring namespace: the
+	 * driver owns `readiness`, fetches `/models`, and expands into one concrete
+	 * backend per listed model (catalog §2.1).
+	 */
+	model?: string;
+	contextWindow?: number;
+	/** Optional provider tag used in error messages and telemetry. */
+	providerName?: string;
+	/**
+	 * Optional logger for debug-level interception of outgoing AI SDK
+	 * request bodies. When provided, raw request payloads are routed
+	 * through pino at `LOG_LEVEL=debug`; otherwise the SDK's default
+	 * fetch is used with zero overhead.
+	 */
+	logger?: Logger;
+	/**
+	 * Custom fetch for wire-body interception (harness/test only). When
+	 * set, takes precedence over the logger-backed fetch. Production
+	 * callers leave this unset and use `logger` instead. Mirrors the same
+	 * field on `BedrockDriver` so `createBackendFromConfig` can thread a
+	 * single fetch override through whichever provider the config picks.
+	 */
+	fetch?: typeof fetch;
+	/**
+	 * Per-backend connect / time-to-first-byte deadline (ms), forwarded to
+	 * the logging fetch. When set, response headers must arrive within this
+	 * window or the request is aborted with a self-identifying error. Only
+	 * applies to the logger-backed fetch; an explicit `fetch` override
+	 * (harness/test) is used verbatim. See `createLoggingFetch`.
+	 */
+	connectTimeoutMs?: number;
+	/**
+	 * Arbitrary custom HTTP headers added to every request. Threaded into
+	 * the AI SDK's `headers` option, which the SDK layers on top of the
+	 * apiKey-derived `Authorization` (applied first), so a header set here
+	 * cannot silently clobber auth unless it names `Authorization` itself.
+	 * Absent → no extra headers.
+	 */
+	additionalHeaders?: Record<string, string>;
+	/** Namespace config id; expanded ids are `${namespaceId}-${providerModelId}`. */
+	namespaceId?: string;
+	/** Per-model overrides keyed by provider model id (namespace only). */
+	modelOverrides?: Record<string, NamespaceModelOverride>;
+	/** Lineup retry backoff base/cap (test seam). */
+	lineupRetryBaseMs?: number;
+	lineupRetryMaxMs?: number;
+}
+
+export class OpenAICompatibleDriver implements LLMBackend, SupportsModelDiscovery {
+	readonly readiness?: BackendReadiness;
+	private readonly isNamespace: boolean;
 	private provider: ReturnType<typeof createOpenAICompatible>;
 	private model: string;
 	private contextWindow: number;
@@ -35,47 +101,10 @@ export class OpenAICompatibleDriver implements LLMBackend {
 	private readonly discoveryHeaders?: Record<string, string>;
 	private readonly discoveryFetch: typeof fetch;
 
-	constructor(config: {
-		baseUrl: string;
-		apiKey: string;
-		model: string;
-		contextWindow: number;
-		/** Optional provider tag used in error messages and telemetry. */
-		providerName?: string;
-		/**
-		 * Optional logger for debug-level interception of outgoing AI SDK
-		 * request bodies. When provided, raw request payloads are routed
-		 * through pino at `LOG_LEVEL=debug`; otherwise the SDK's default
-		 * fetch is used with zero overhead.
-		 */
-		logger?: Logger;
-		/**
-		 * Custom fetch for wire-body interception (harness/test only). When
-		 * set, takes precedence over the logger-backed fetch. Production
-		 * callers leave this unset and use `logger` instead. Mirrors the same
-		 * field on `BedrockDriver` so `createBackendFromConfig` can thread a
-		 * single fetch override through whichever provider the config picks.
-		 */
-		fetch?: typeof fetch;
-		/**
-		 * Per-backend connect / time-to-first-byte deadline (ms), forwarded to
-		 * the logging fetch. When set, response headers must arrive within this
-		 * window or the request is aborted with a self-identifying error. Only
-		 * applies to the logger-backed fetch; an explicit `fetch` override
-		 * (harness/test) is used verbatim. See `createLoggingFetch`.
-		 */
-		connectTimeoutMs?: number;
-		/**
-		 * Arbitrary custom HTTP headers added to every request. Threaded into
-		 * the AI SDK's `headers` option, which the SDK layers on top of the
-		 * apiKey-derived `Authorization` (applied first), so a header set here
-		 * cannot silently clobber auth unless it names `Authorization` itself.
-		 * Absent → no extra headers.
-		 */
-		additionalHeaders?: Record<string, string>;
-	}) {
-		this.model = config.model;
-		this.contextWindow = config.contextWindow;
+	constructor(config: OpenAICompatibleDriverConfig) {
+		this.isNamespace = !config.model;
+		this.model = config.model ?? "";
+		this.contextWindow = config.contextWindow ?? 0;
 		this.providerName = config.providerName ?? "openai-compatible";
 		const customFetch = resolveProviderFetch(this.providerName, config);
 		this.provider = createOpenAICompatible({
@@ -89,6 +118,36 @@ export class OpenAICompatibleDriver implements LLMBackend {
 		this.discoveryApiKey = config.apiKey;
 		this.discoveryHeaders = config.additionalHeaders;
 		this.discoveryFetch = customFetch ?? globalThis.fetch;
+
+		if (this.isNamespace) {
+			// The fetch is NOT started here — the wiring layer calls
+			// `readiness.start(registrar)` once the registrar is bound.
+			this.readiness = new NamespaceLineupReadiness({
+				providerName: this.providerName,
+				namespaceId: config.namespaceId ?? this.providerName,
+				loadLineup: async (signal) => lineupFromDiscovered(await this.discoverModels(signal)),
+				buildPerModelBackend: (entry, contextWindow) =>
+					new OpenAICompatibleDriver({
+						baseUrl: config.baseUrl,
+						apiKey: config.apiKey,
+						model: entry.id,
+						contextWindow,
+						providerName: this.providerName,
+						...(config.logger !== undefined && { logger: config.logger }),
+						...(config.fetch !== undefined && { fetch: config.fetch }),
+						...(config.connectTimeoutMs !== undefined && {
+							connectTimeoutMs: config.connectTimeoutMs,
+						}),
+						...(config.additionalHeaders !== undefined && {
+							additionalHeaders: config.additionalHeaders,
+						}),
+					}),
+				...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
+				...(config.logger !== undefined && { logger: config.logger }),
+				...(config.lineupRetryBaseMs !== undefined && { retryBaseMs: config.lineupRetryBaseMs }),
+				...(config.lineupRetryMaxMs !== undefined && { retryMaxMs: config.lineupRetryMaxMs }),
+			});
+		}
 	}
 
 	/**
@@ -120,6 +179,14 @@ export class OpenAICompatibleDriver implements LLMBackend {
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+		// Namespace guard: the placeholder owns no concrete model and must never
+		// serve inference, even if a caller bypasses the readiness gate.
+		if (this.isNamespace) {
+			throw new LLMError(
+				`${this.providerName} namespace backend is not directly invokable — lineup not yet resolved / backend not ready`,
+				this.providerName,
+			);
+		}
 		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
 		// sentinel (the old hand-rolled driver treated empty string as missing).
 		// Without this, empty string flows through and the upstream server rejects

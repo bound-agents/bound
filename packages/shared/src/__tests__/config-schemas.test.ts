@@ -547,13 +547,13 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(false);
 		});
 
-		it("still rejects a NON-umans row that omits model/context_window (AC.2)", () => {
+		it("accepts a NON-umans row that omits model as a self-configuring namespace", () => {
 			const config = {
 				backends: [{ id: "x", provider: "cerebras", api_key: "k", base_url: "https://x/v1" }],
 				default: "x",
 			};
 			const result = modelBackendsSchema.safeParse(config);
-			expect(result.success).toBe(false);
+			expect(result.success).toBe(true);
 		});
 
 		it("accepts a NON-umans row that omits context_window (optional, catalog resolves it)", () => {
@@ -576,16 +576,82 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("still rejects a NON-self-configuring row that omits model (model stays required)", () => {
-			// anthropic is a direct vendor API, not a self-configuring namespace, so a
-			// model is still mandatory. (bedrock / bedrock-mantle WITHOUT a model are now
-			// valid namespace entries — covered below.)
+		it("rejects an anthropic namespace entry (no model) that sets context_window", () => {
+			// Every non-umans provider without a `model` is a self-configuring
+			// namespace; authoritative catalog fields belong in model_overrides.
 			const config = {
 				backends: [{ id: "x", provider: "anthropic", api_key: "k", context_window: 200000 }],
 				default: "x",
 			};
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(false);
+			expect(JSON.stringify(result.error?.issues)).toContain(
+				"a self-configuring namespace entry (no model) must not set context_window",
+			);
+		});
+
+		for (const [provider, extra] of [
+			["anthropic", { api_key: "k" }],
+			["openai-compatible", { api_key: "k", base_url: "http://localhost:8000/v1" }],
+			["cerebras", { api_key: "k" }],
+			["zai", { api_key: "k" }],
+			["chatgpt-oauth", { token_store_path: "/tmp/chatgpt.json" }],
+		] as const) {
+			it(`accepts a ${provider} namespace entry (no model) with model_overrides`, () => {
+				const config = {
+					backends: [
+						{
+							id: "ns",
+							provider,
+							...extra,
+							model_overrides: { m: { logical_model: "lm", context_window: 100000 } },
+						},
+					],
+					default: "ns",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+			});
+
+			it(`rejects top-level pricing on a ${provider} namespace entry`, () => {
+				const config = {
+					backends: [{ id: "ns", provider, ...extra, price_per_m_input: 1 }],
+					default: "ns",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+			});
+
+			it(`keeps context_window and pricing on a model-bearing ${provider} entry`, () => {
+				const config = {
+					backends: [
+						{
+							id: "c",
+							provider,
+							...extra,
+							model: "m",
+							context_window: 100000,
+							price_per_m_input: 1,
+						},
+					],
+					default: "c",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+			});
+		}
+
+		it("rejects an empty-string model", () => {
+			const config = {
+				backends: [{ id: "x", provider: "anthropic", api_key: "k", model: "" }],
+				default: "x",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+		});
+
+		it("still rejects model on a umans entry", () => {
+			const config = {
+				backends: [{ id: "u", provider: "umans", api_key: "k", model: "m" }],
+				default: "u",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(false);
 		});
 
 		it("accepts a bedrock namespace entry (no model) for a (profile, region)", () => {

@@ -36,11 +36,17 @@ import type { Logger } from "@bound/shared";
 import { streamText } from "ai";
 import type { ModelMessage } from "ai";
 import { ANTHROPIC_ENVELOPE, mapChunks, mapError, toModelMessages, toToolSet } from "../bridge";
-import type { DiscoveredModel } from "../catalog/discovery";
+import type { DiscoveredModel, SupportsModelDiscovery } from "../catalog/discovery";
 import { parseAnthropicModelsList } from "../catalog/discovery-fetch";
 import type { DriverFallbackSupport } from "../fallback-policy";
 import { createLoggingFetch } from "../fetch-logger";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../types";
+import type {
+	BackendCapabilities,
+	BackendReadiness,
+	ChatParams,
+	LLMBackend,
+	StreamChunk,
+} from "../types";
 import { LLMError } from "../types";
 import { quantizeCacheTtl } from "./bedrock";
 import {
@@ -53,7 +59,11 @@ import {
 	resolveFallbackTargetFromParams,
 	serverToolsRanInChunks,
 } from "./credit-redemption-config";
-
+import {
+	NamespaceLineupReadiness,
+	type NamespaceModelOverride,
+	lineupFromDiscovered,
+} from "./namespace-readiness";
 /**
  * The `providerOptions.anthropic` reasoning payload. Mirrors the subset of
  * `AnthropicLanguageModelOptions` (in `@ai-sdk/anthropic`) that controls
@@ -191,7 +201,9 @@ export function buildAnthropicReasoningOptions(
 	return Object.keys(opts).length > 0 ? opts : undefined;
 }
 
-export class AnthropicDriver implements LLMBackend {
+export class AnthropicDriver implements LLMBackend, SupportsModelDiscovery {
+	readonly readiness?: BackendReadiness;
+	private readonly isNamespace: boolean;
 	private provider: AnthropicProvider;
 	private model: string;
 	private contextWindow: number;
@@ -211,8 +223,13 @@ export class AnthropicDriver implements LLMBackend {
 
 	constructor(config: {
 		apiKey: string;
-		model: string;
-		contextWindow: number;
+		/**
+		 * Concrete provider model id. Omitted => self-configuring namespace: the
+		 * driver owns `readiness`, fetches `/v1/models`, and expands into one
+		 * concrete backend per listed model (catalog §2.1).
+		 */
+		model?: string;
+		contextWindow?: number;
 		/**
 		 * Optional base URL override (e.g. a proxy or gateway). Defaults to the
 		 * Anthropic API (`https://api.anthropic.com/v1`) inside the SDK.
@@ -247,9 +264,17 @@ export class AnthropicDriver implements LLMBackend {
 		 * that don't exercise the credited-retry path.
 		 */
 		siteId?: string;
+		/** Namespace config id; expanded ids are `${namespaceId}-${providerModelId}`. */
+		namespaceId?: string;
+		/** Per-model overrides keyed by provider model id (namespace only). */
+		modelOverrides?: Record<string, NamespaceModelOverride>;
+		/** Lineup retry backoff base/cap (test seam). */
+		lineupRetryBaseMs?: number;
+		lineupRetryMaxMs?: number;
 	}) {
-		this.model = config.model;
-		this.contextWindow = config.contextWindow;
+		this.isNamespace = !config.model;
+		this.model = config.model ?? "";
+		this.contextWindow = config.contextWindow ?? 0;
 		this.reasoningOrigin = config.siteId ? `${config.siteId}:anthropic` : "";
 		const customFetch =
 			config.fetch ??
@@ -264,6 +289,35 @@ export class AnthropicDriver implements LLMBackend {
 			...(config.baseUrl && { baseURL: config.baseUrl }),
 			...(customFetch && { fetch: customFetch }),
 		});
+
+		if (this.isNamespace) {
+			// The fetch is NOT started here — the wiring layer calls
+			// `readiness.start(registrar)` once the registrar is bound.
+			this.readiness = new NamespaceLineupReadiness({
+				providerName: "anthropic",
+				namespaceId: config.namespaceId ?? "anthropic",
+				loadLineup: async (signal) => lineupFromDiscovered(await this.discoverModels(signal)),
+				buildPerModelBackend: (entry, contextWindow) =>
+					new AnthropicDriver({
+						apiKey: config.apiKey,
+						model: entry.id,
+						contextWindow,
+						...(config.baseUrl !== undefined && { baseUrl: config.baseUrl }),
+						...(config.logger !== undefined && { logger: config.logger }),
+						...(config.fetch !== undefined && { fetch: config.fetch }),
+						...(config.connectTimeoutMs !== undefined && {
+							connectTimeoutMs: config.connectTimeoutMs,
+						}),
+						...(config.siteId !== undefined && { siteId: config.siteId }),
+					}),
+				// Anthropic Messages honors cache_control breakpoints on every model.
+				defaultPromptCaching: true,
+				...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
+				...(config.logger !== undefined && { logger: config.logger }),
+				...(config.lineupRetryBaseMs !== undefined && { retryBaseMs: config.lineupRetryBaseMs }),
+				...(config.lineupRetryMaxMs !== undefined && { retryMaxMs: config.lineupRetryMaxMs }),
+			});
+		}
 	}
 
 	/**
@@ -295,6 +349,14 @@ export class AnthropicDriver implements LLMBackend {
 	}
 
 	async *chat(params: ChatParams): AsyncIterable<StreamChunk> {
+		// Namespace guard: the placeholder owns no concrete model and must never
+		// serve inference, even if a caller bypasses the readiness gate.
+		if (this.isNamespace) {
+			throw new LLMError(
+				"anthropic namespace backend is not directly invokable — lineup not yet resolved / backend not ready",
+				"anthropic",
+			);
+		}
 		// Use `||` not `??` — callers sometimes pass `model: ""` as a "use default"
 		// sentinel (see the other drivers for the same note).
 		const modelId = params.model || this.model;

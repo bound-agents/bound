@@ -3,8 +3,21 @@ import type { Logger } from "@bound/shared";
 import { context } from "@opentelemetry/api";
 import { streamText } from "ai";
 import { PERMISSIVE_ENVELOPE, toModelMessages, toToolSet } from "../../bridge";
+import type { DiscoveredModel, SupportsModelDiscovery } from "../../catalog/discovery";
 import type { DriverFallbackSupport } from "../../fallback-policy";
-import type { BackendCapabilities, ChatParams, LLMBackend, StreamChunk } from "../../types";
+import type {
+	BackendCapabilities,
+	BackendReadiness,
+	ChatParams,
+	LLMBackend,
+	StreamChunk,
+} from "../../types";
+import { LLMError } from "../../types";
+import {
+	NamespaceLineupReadiness,
+	type NamespaceModelOverride,
+	lineupFromDiscovered,
+} from "../namespace-readiness";
 import {
 	EMPTY_COMPLETION_MAX_RETRIES,
 	bindAsyncIterable,
@@ -15,8 +28,36 @@ import {
 	withEncryptedReasoningRetry,
 } from "../shared";
 import { CHATGPT_BACKEND_BASE_URL } from "./auth-core";
+import { CODEX_MODELS_CLIENT_VERSION, parseCodexModels } from "./catalog";
 import type { TokenManager } from "./token-store";
 export const PROVIDER_NAME = "chatgpt-oauth";
+
+export interface ChatGptOAuthDriverConfig {
+	tokenManager: TokenManager;
+	/**
+	 * Concrete Codex model slug. Omitted => self-configuring namespace: the driver
+	 * owns `readiness`, fetches the Codex `/models` inventory, and expands into one
+	 * concrete backend per listed model (catalog §2.1).
+	 */
+	model?: string;
+	contextWindow?: number;
+	logger?: Logger;
+	fetch?: typeof fetch;
+	connectTimeoutMs?: number;
+	/**
+	 * This host's site id. Combined with the provider name to form the deployment
+	 * identity stamped onto / compared against encrypted reasoning. Omitted in
+	 * tests that don't exercise the cross-provider path.
+	 */
+	siteId?: string;
+	/** Namespace config id; expanded ids are `${namespaceId}-${providerModelId}`. */
+	namespaceId?: string;
+	/** Per-model overrides keyed by provider model id (namespace only). */
+	modelOverrides?: Record<string, NamespaceModelOverride>;
+	/** Lineup retry backoff base/cap (test seam). */
+	lineupRetryBaseMs?: number;
+	lineupRetryMaxMs?: number;
+}
 
 /**
  * Decorates every Responses request with the current OAuth access token and
@@ -40,9 +81,12 @@ export function createChatGptOAuthFetch(config: {
 }
 
 /** ChatGPT subscription OAuth driver over the native OpenAI Responses surface. */
-export class ChatGptOAuthDriver implements LLMBackend {
+export class ChatGptOAuthDriver implements LLMBackend, SupportsModelDiscovery {
+	readonly readiness?: BackendReadiness;
+	private readonly isNamespace: boolean;
 	private readonly provider: ReturnType<typeof createOpenAI>;
 	private readonly tokenManager: TokenManager;
+	private readonly authFetch: typeof fetch;
 	private readonly model: string;
 	private readonly contextWindow: number;
 	private readonly logger?: Logger;
@@ -56,38 +100,79 @@ export class ChatGptOAuthDriver implements LLMBackend {
 	 */
 	private readonly reasoningOrigin?: string;
 
-	constructor(config: {
-		tokenManager: TokenManager;
-		model: string;
-		contextWindow: number;
-		logger?: Logger;
-		fetch?: typeof fetch;
-		connectTimeoutMs?: number;
-		/**
-		 * This host's site id. Combined with the provider name to form the deployment
-		 * identity stamped onto / compared against encrypted reasoning. Omitted in
-		 * tests that don't exercise the cross-provider path.
-		 */
-		siteId?: string;
-	}) {
-		this.model = config.model;
-		this.contextWindow = config.contextWindow;
+	constructor(config: ChatGptOAuthDriverConfig) {
+		this.isNamespace = !config.model;
+		this.model = config.model ?? "";
+		this.contextWindow = config.contextWindow ?? 0;
 		this.logger = config.logger;
 		this.tokenManager = config.tokenManager;
 		this.reasoningOrigin = buildReasoningOrigin({
 			siteId: config.siteId,
 			provider: PROVIDER_NAME,
 		});
+		this.authFetch = createChatGptOAuthFetch({
+			tokenManager: config.tokenManager,
+			baseFetch: resolveProviderFetch(PROVIDER_NAME, config),
+		});
 		this.provider = createOpenAI({
 			name: PROVIDER_NAME,
 			// The native provider adds the terminal /responses path itself.
 			baseURL: CHATGPT_BACKEND_BASE_URL,
 			apiKey: "oauth",
-			fetch: createChatGptOAuthFetch({
-				tokenManager: config.tokenManager,
-				baseFetch: resolveProviderFetch(PROVIDER_NAME, config),
-			}),
+			fetch: this.authFetch,
 		});
+
+		if (this.isNamespace) {
+			// The fetch is NOT started here — the wiring layer calls
+			// `readiness.start(registrar)` once the registrar is bound. Expanded
+			// backends share this namespace's TokenManager so a refresh-token
+			// rotation is never raced across siblings.
+			this.readiness = new NamespaceLineupReadiness({
+				providerName: PROVIDER_NAME,
+				namespaceId: config.namespaceId ?? PROVIDER_NAME,
+				loadLineup: async (signal) => lineupFromDiscovered(await this.discoverModels(signal)),
+				buildPerModelBackend: (entry, contextWindow) =>
+					new ChatGptOAuthDriver({
+						tokenManager: config.tokenManager,
+						model: entry.id,
+						contextWindow,
+						...(config.logger !== undefined && { logger: config.logger }),
+						...(config.fetch !== undefined && { fetch: config.fetch }),
+						...(config.connectTimeoutMs !== undefined && {
+							connectTimeoutMs: config.connectTimeoutMs,
+						}),
+						...(config.siteId !== undefined && { siteId: config.siteId }),
+					}),
+				// The Codex endpoint serves an automatic prefix cache keyed by
+				// prompt_cache_key, same as a concrete chatgpt-oauth backend.
+				defaultPromptCaching: true,
+				...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
+				...(config.logger !== undefined && { logger: config.logger }),
+				...(config.lineupRetryBaseMs !== undefined && { retryBaseMs: config.lineupRetryBaseMs }),
+				...(config.lineupRetryMaxMs !== undefined && { retryMaxMs: config.lineupRetryMaxMs }),
+			});
+		}
+	}
+
+	/**
+	 * Live Codex inventory (catalog §4.1 / R-MC3): listed, API-callable models
+	 * with their published context window, image input, and effort ladder.
+	 * Throws on a non-OK response or transport failure.
+	 */
+	async discoverModels(signal?: AbortSignal): Promise<DiscoveredModel[]> {
+		const url = `${CHATGPT_BACKEND_BASE_URL}/models?client_version=${CODEX_MODELS_CLIENT_VERSION}`;
+		const res = await this.authFetch(url, {
+			headers: { Accept: "application/json" },
+			...(signal && { signal }),
+		});
+		if (!res.ok) {
+			throw new LLMError(
+				`${PROVIDER_NAME} model discovery failed: HTTP ${res.status}`,
+				PROVIDER_NAME,
+				res.status,
+			);
+		}
+		return parseCodexModels(await res.json());
 	}
 
 	chat(params: ChatParams): AsyncIterable<StreamChunk> {
@@ -106,6 +191,14 @@ export class ChatGptOAuthDriver implements LLMBackend {
 	}
 
 	private async *chatStream(params: ChatParams): AsyncIterable<StreamChunk> {
+		// Namespace guard: the placeholder owns no concrete model and must never
+		// serve inference, even if a caller bypasses the readiness gate.
+		if (this.isNamespace) {
+			throw new LLMError(
+				`${PROVIDER_NAME} namespace backend is not directly invokable — lineup not yet resolved / backend not ready`,
+				PROVIDER_NAME,
+			);
+		}
 		const modelId = params.model || this.model;
 		const tools = toToolSet(params.tools);
 		const buildMessages = (stripEncryptedReasoning: boolean) =>

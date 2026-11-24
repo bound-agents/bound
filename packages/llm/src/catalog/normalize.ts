@@ -131,6 +131,7 @@ const MODELS_DEV_NAMESPACE_BY_PROVIDER: Record<string, string> = {
 	"bedrock-mantle": "amazon-bedrock",
 	"github-copilot": "github-copilot",
 	anthropic: "anthropic",
+	cerebras: "cerebras",
 	"chatgpt-oauth": "openai",
 	"opencode-go": "opencode-go",
 	zai: "zai",

@@ -526,6 +526,47 @@ tiers from `cost.text.*.overrides`) all come from the listing. `context_window`,
 `price_per_m_*` are rejected on the namespace entry; use `model_overrides` instead. An
 `opencode-go` entry *with* a `model` is a single concrete backend exactly as before.
 
+#### ChatGPT OAuth, Anthropic, and OpenAI-compatible self-configuring namespaces
+
+Every provider accepts the namespace form, not just the ones above. A `chatgpt-oauth`, `anthropic`,
+`openai-compatible`, `cerebras`, or `zai` entry with **no `model`** fetches its provider's model
+listing at startup with this host's own credentials and expands into one backend per listed model,
+id `<entry-id>-<provider-model-id>`. A failed or empty listing retries in the background with
+backoff; the entry serves no inference until the lineup lands.
+
+| Provider | Listing | Metadata from the listing |
+|---|---|---|
+| `chatgpt-oauth` | `GET https://chatgpt.com/backend-api/codex/models?client_version=1.0.0` | Display name, context window, image input, reasoning effort ladder |
+| `anthropic` | `GET <base_url>/models` (default `https://api.anthropic.com/v1/models`) | Display name, limits, and fallback targets where published |
+| `openai-compatible`, `cerebras`, `zai` | `GET <base_url>/models` | Model ids only |
+
+The Codex listing keeps rows with `visibility: "list"` (or no `visibility`) that are not marked
+`supported_in_api: false`, so hidden internal models such as `codex-auto-review` never expand. Every
+expanded `chatgpt-oauth` backend shares one OAuth token manager per `token_store_path`, so a
+refresh-token rotation is never raced between sibling models. Whatever a listing leaves out —
+windows and pricing for the OpenAI-compatible family, pricing for Codex — fills from `models.dev`.
+
+```js
+export default {
+  backends: [
+    { id: "codex", provider: "chatgpt-oauth" },
+    {
+      id: "cerebras",
+      provider: "cerebras",
+      api_key: process.env.CEREBRAS_API_KEY,
+      model_overrides: {
+        "gpt-oss-120b": { context_window: 131072, logical_model: "gpt-oss-120b" },
+      },
+    },
+  ],
+  default: "codex-gpt-6.2-sol",
+};
+```
+
+As with every namespace entry, `context_window`, `capabilities`, and `price_per_m_*` are rejected at
+the top level; put per-model values in `model_overrides`. An entry *with* a `model` stays a single
+concrete backend.
+
 ---
 
 ## `network.js` / `network.json`
