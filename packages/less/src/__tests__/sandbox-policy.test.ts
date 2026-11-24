@@ -605,7 +605,7 @@ describe(".git exec-surface protection", () => {
 		const hooks = join(repo, ".git", "hooks");
 		mkdirSync(redirectedHooks);
 		rmSync(hooks, { recursive: true, force: true });
-		symlinkSync(redirectedHooks, hooks, "dir");
+		symlinkSync(redirectedHooks, hooks, process.platform === "win32" ? "junction" : "dir");
 
 		const metadata = {
 			gitdir: join(repo, ".git"),
