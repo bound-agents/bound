@@ -532,6 +532,13 @@ export interface RouteRelayRequestParams {
 	idempotencyKey?: string;
 	streamId?: string;
 	traceContext?: string;
+	/**
+	 * Clock read that derives `expires_at`. Rows that form
+	 * one envelope (every `inference_part` of one split request) must share a single
+	 * read: the receiver rejects a part set whose `expires_at` values disagree.
+	 * Defaults to a fresh `new Date()`.
+	 */
+	now?: Date;
 	/** Cluster role, for the spoke hub-hop capability gate. */
 	topologyRole: TopologyRole | undefined;
 }
@@ -613,7 +620,7 @@ export function routeRelayRequest(
 	// too, and readDurableResponseByRefId's WHERE unions (ownSiteId, LOCAL_WORK_TARGET)
 	// so the awaiter finds it by ref_id unchanged.
 	const id = crypto.randomUUID();
-	const now = new Date();
+	const now = params.now ?? new Date();
 	const inserted = insertDurableWork(db, {
 		id,
 		target_site_id: selfTargeted ? LOCAL_WORK_TARGET : params.targetSiteId,

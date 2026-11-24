@@ -719,8 +719,53 @@ describe("createRelayStream$", () => {
 			).count,
 		).toBe(0);
 	});
-});
 
+	it("stamps every part of one oversized request with the same expires_at", async () => {
+		// The receiver's handleInferencePart rejects a sibling whose envelope
+		// (source_site, stream_id, expires_at) differs from the triggering part. Inserting
+		// ~2 MiB parts takes milliseconds each, so a per-part clock read drifts expires_at.
+		// Tick the wall clock forward on every read to make that drift deterministic.
+		({ db, tmpDir } = createTestDb());
+		const RealDate = Date;
+		let tick = 0;
+		class TickingDate extends RealDate {
+			constructor(...args: unknown[]) {
+				if (args.length === 0) super(RealDate.now() + tick++);
+				else super(...(args as [string]));
+			}
+		}
+		globalThis.Date = TickingDate as DateConstructor;
+		try {
+			const eventBus = new TypedEventEmitter();
+			const aborted$ = new Subject<void>();
+			const stream$ = createRelayStream$(
+				{ db, eventBus, siteId: "hub", logger: mockLogger, maxPayloadBytes: 512 },
+				{
+					...payloadFixture,
+					segments: [
+						{ kind: "inline" as const, message: { role: "user", content: "電".repeat(4000) } },
+					],
+				} as any,
+				[eligibleHostFixture("spoke-1", "spoke-1.local")] as any,
+				aborted$,
+				undefined,
+				{ perHostTimeoutMs: 100, firstTokenTimeoutMs: 100, pollIntervalMs: 20 },
+			);
+			await lastValueFrom(stream$, { defaultValue: undefined }).catch(() => undefined);
+		} finally {
+			globalThis.Date = RealDate;
+		}
+		const rows = db
+			.prepare(
+				"SELECT expires_at, source_site, stream_id FROM durable_work WHERE kind = 'inference_part' AND claim_state != 'dead_letter'",
+			)
+			.all() as Array<{ expires_at: string; source_site: string; stream_id: string }>;
+		expect(rows.length).toBeGreaterThan(1);
+		expect(new Set(rows.map((row) => row.expires_at)).size).toBe(1);
+		expect(new Set(rows.map((row) => row.source_site)).size).toBe(1);
+		expect(new Set(rows.map((row) => row.stream_id)).size).toBe(1);
+	});
+});
 describe("createRelayStream$ — 4D-D durable chunk union", () => {
 	let db: Database;
 	let tmpDir: string;

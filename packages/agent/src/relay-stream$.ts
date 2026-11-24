@@ -322,6 +322,9 @@ export function createRelayStream$(
 			// by stream_id through the union-aware consumer below.
 			let outboxEntry: { id: string };
 			if (requestParts) {
+				// One clock read for the whole part set: the receiver's envelope check
+				// requires every sibling to carry the same expires_at.
+				const partsNow = new Date();
 				const partIds = requestParts.map((part) => {
 					const routed = routeRelayRequest(deps.db, {
 						targetSiteId: host.site_id,
@@ -334,6 +337,7 @@ export function createRelayStream$(
 						idempotencyKey: `inference-part:${requestId}:${part.index}`,
 						streamId,
 						traceContext: traceContext ? JSON.stringify(traceContext) : undefined,
+						now: partsNow,
 						topologyRole: deps.topologyRole,
 					});
 					if (routed.path === "error") throw new Error(routed.reason);
