@@ -626,7 +626,7 @@ describe("LineView — live WS events and polling", () => {
 		expect(target.textContent ?? "").not.toContain("zai-glm-5.3-flash");
 	});
 
-	it("fetches provenance and mounts a footer under the matching assistant message", async () => {
+	it("fetches provenance and annotates a substituted turn in the message header", async () => {
 		const threadId = "thread-abc-1234567890";
 		dom = installDom();
 		dom.route("GET", new RegExp(`/api/threads/${threadId}$`), () => thread());
@@ -649,7 +649,7 @@ describe("LineView — live WS events and polling", () => {
 					created_at: "2026-11-19T01:00:00.000Z",
 					model_id: "gpt-5.6-sol",
 					route_id: "site-hub:codex:sol",
-					substituted_from: null,
+					substituted_from: "opus-4.8",
 					status: "ok",
 					cost_usd: 0.5,
 					attempts: null,
@@ -660,10 +660,9 @@ describe("LineView — live WS events and polling", () => {
 		const { target } = await dom.mount(Component, { threadId });
 		await openSockets(dom);
 		await dom.settle();
-		// The provenance data path reached a live surface: a footer mounted under the
-		// assistant message that the turn answered.
-		const footer = target.querySelector('[data-message-id="a1"] .provenance');
-		expect(footer).not.toBeNull();
-		expect(footer?.querySelector(".model")?.textContent).toBe("gpt-5.6-sol");
+		// No per-message footer; the substitution shows as a quiet header note.
+		expect(target.querySelector('[data-message-id="a1"] .provenance')).toBeNull();
+		const note = target.querySelector('[data-message-id="a1"] .model-note');
+		expect(note?.textContent).toBe("\u00b7 fallback from opus-4.8");
 	});
 });

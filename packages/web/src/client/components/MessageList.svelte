@@ -12,7 +12,6 @@
 	import McpAppPanel from "./McpAppPanel.svelte";
 	import McpChallengeCard from "./McpChallengeCard.svelte";
 	import MessageBubble from "./MessageBubble.svelte";
-	import MessageProvenanceFooter from "./MessageProvenanceFooter.svelte";
 	import ModelSubstitutionNotice from "./ModelSubstitutionNotice.svelte";
 	import ReasoningBlock from "./ReasoningBlock.svelte";
 	import RouteFailoverNotice from "./RouteFailoverNotice.svelte";
@@ -59,6 +58,8 @@
 		/** Per-turn provenance (2026-11-21-model-routing.md §9.1), oldest-first. Each
 		 * assistant message mounts a footer for the turn that answered it. */
 		turnProvenance?: TurnProvenanceInfo[];
+		/** RouteId → `provider:model` label and friendly host name, for the header note tooltip. */
+		describeRoute?: (routeId: string | null) => { label: string; host: string | null };
 		/** Logical model id → user-facing display name (spec §2.1); the footer shows this, never the id. */
 		modelDisplay?: (modelId: string | null) => string;
 		/** Thread-level route-failover notice (§9.2), or null when not failing over. */
@@ -93,6 +94,7 @@
 		appInstances = [],
 		yardTrees = [],
 		turnProvenance = [],
+		describeRoute = (routeId: string | null) => ({ label: routeId ?? "\u2014", host: null }),
 		modelDisplay = (modelId: string | null) => modelId ?? "\u2014",
 		routeFailover = null,
 		modelSubstitution = null,
@@ -340,6 +342,35 @@
 		return id ? (provenanceByMessageId.get(id) ?? null) : null;
 	}
 
+	/**
+	 * Quiet header annotation beside the model name, shown only when it says
+	 * something the model name does not: a refusal/substitution fallback, or a
+	 * turn that failed over off its first route. Tooltip carries the route label,
+	 * host, and attempts.
+	 */
+	function noteForItem(item: DisplayItem): { text: string; title: string } | null {
+		const prov = provenanceForItem(item);
+		if (!prov) return null;
+		const served = describeRoute(prov.route_id);
+		const lines = [`${served.label}${served.host ? ` on ${served.host}` : ""}`];
+		for (const a of prov.attempts ?? []) {
+			const r = describeRoute(a.route_id);
+			const outcome =
+				a.outcome === "ok" ? "served" : a.outcome === "refusal" ? "refused" : "route error";
+			lines.push(
+				`${modelDisplay(a.model_id)} · ${r.label}${r.host ? ` on ${r.host}` : ""} · ${outcome}`,
+			);
+		}
+		const title = lines.join("\n");
+		if (prov.substituted_from) {
+			return { text: `· fallback from ${modelDisplay(prov.substituted_from)}`, title };
+		}
+		if ((prov.attempts ?? []).some((a) => a.outcome === "route-error") && served.host) {
+			return { text: `· via ${served.host}`, title };
+		}
+		return null;
+	}
+
 	function isItemInRange(item: DisplayItem): boolean {
 		if (!turnRange) return true;
 		if (item.kind === "toolGroup") {
@@ -446,15 +477,11 @@
 								content={item.msg.content}
 								toolName={item.msg.tool_name}
 								modelId={item.msg.model_id ? modelDisplay(item.msg.model_id) : null}
+								modelNote={noteForItem(item)?.text ?? null}
+								modelNoteTitle={noteForItem(item)?.title ?? null}
 								exitCode={item.msg.exit_code}
 								{threadColor}
 							/>
-							{@const prov = provenanceForItem(item)}
-							{#if prov}
-								<div class="provenance-row">
-									<MessageProvenanceFooter turn={prov} {modelDisplay} />
-								</div>
-							{/if}
 						{/if}
 					</div>
 				</div>

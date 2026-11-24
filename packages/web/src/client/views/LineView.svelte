@@ -24,6 +24,7 @@
 	} from "../lib/mcp-app-store";
 	import { contentPreviewText } from "../lib/message-grouping";
 	import { getLineColor, getLineName } from "../lib/metro-lines";
+	import { type ModelLabels, buildModelLabels, parseRouteId } from "../lib/model-labels";
 	import { modelStore } from "../lib/modelStore";
 	import { navigateTo } from "../lib/router";
 	import {
@@ -91,6 +92,17 @@
 	// grouping key. Falls back to the id itself when the catalog has no entry.
 	let modelDisplayNames = $state<Map<string, string>>(new Map());
 
+	let routeLabels = $state<ModelLabels>(buildModelLabels([]));
+	let hostBySite = $state<Map<string, string>>(new Map());
+
+	function describeRoute(routeId: string | null): { label: string; host: string | null } {
+		const parsed = routeId ? parseRouteId(routeId) : null;
+		return {
+			label: routeLabels.routeLabel(routeId),
+			host: parsed ? (hostBySite.get(parsed.siteId) ?? null) : null,
+		};
+	}
+
 	function modelDisplay(modelId: string | null): string {
 		if (!modelId) return "\u2014";
 		return modelDisplayNames.get(modelId) ?? modelId;
@@ -123,6 +135,10 @@
 				}
 			}
 			modelDisplayNames = names;
+			routeLabels = buildModelLabels(data.models);
+			const hosts = new Map<string, string>();
+			for (const m of data.models) for (const r of m.routes) hosts.set(r.site_id, r.host_name);
+			hostBySite = hosts;
 		} catch {
 			// Best-effort: an older server leaves the footer/chip showing the id.
 		}
@@ -643,6 +659,7 @@
 				appInstances={threadAppInstances}
 				{yardTrees}
 				{turnProvenance}
+				{describeRoute}
 				{modelDisplay}
 				{routeFailover}
 				{modelSubstitution}

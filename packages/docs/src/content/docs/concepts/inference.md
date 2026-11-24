@@ -66,8 +66,8 @@ prompt, and some providers report an output limit as large as the whole window.
 An explicit `max_output_tokens` override is always honoured.
 
 The same precedence resolves each model's **display name** — the name shown in the
-model picker, the Settings › Models page, the thread chip, and the per-turn
-provenance footer. A provider-published display name wins, then the `models.dev`
+model picker, the Settings › Models page, the thread chip, and the message-header
+routing note. A provider-published display name wins, then the `models.dev`
 name, then the raw provider model id with its version dots intact. The internal
 grouping key (`logical_model`), route ids, and site ids are never shown as a
 model name. When a logical model's routes resolve different names, the one from

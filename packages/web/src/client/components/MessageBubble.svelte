@@ -9,6 +9,9 @@
 		content: string;
 		toolName?: string | null;
 		modelId?: string | null;
+		/** Quiet routing annotation beside the model name (fallback / failover host). */
+		modelNote?: string | null;
+		modelNoteTitle?: string | null;
 		exitCode?: number | null;
 		threadColor?: number;
 	}
@@ -18,6 +21,8 @@
 		content,
 		toolName: _toolName = null,
 		modelId = null,
+		modelNote = null,
+		modelNoteTitle = null,
 		exitCode = null,
 		threadColor = 0,
 	}: Props = $props();
@@ -156,6 +161,9 @@
 			<span class="role">{roleLabel}</span>
 			{#if role === "assistant" && modelId}
 				<span class="model mono">{modelId}</span>
+				{#if modelNote}
+					<span class="model-note" title={modelNoteTitle ?? undefined}>{modelNote}</span>
+				{/if}
 			{/if}
 		</div>
 		{#each displayBlocks as block, i}
@@ -441,5 +449,10 @@
 		padding: 6px 10px;
 		border-bottom: 1px solid var(--rule-faint);
 		color: var(--ink-2);
+	}
+	.model-note {
+		font-size: var(--text-xs, 11px);
+		color: var(--text-muted);
+		opacity: 0.8;
 	}
 </style>

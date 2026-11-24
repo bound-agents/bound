@@ -487,59 +487,72 @@ describe("MessageList", () => {
 		};
 	}
 
-	it("mounts a provenance footer under the assistant message for its turn", async () => {
-		const Comp = await load();
-		const { target } = await dom.mount(Comp, {
-			messages: [
-				msg({ id: "u1", role: "user", content: "q", created_at: "2026-01-01T09:30:00.000Z" }),
-				msg({
-					id: "a1",
-					role: "assistant",
-					content: "answer",
-					model_id: "gpt-5.6-sol",
-					created_at: "2026-01-01T09:31:05.000Z",
-				}),
-			],
-			turnProvenance: [turn()],
-		});
-		await dom.settle();
-		// The footer mounted inside the assistant row, naming the serving model/route.
-		const assistantRow = target.querySelector('[data-message-id="a1"]');
-		const footer = assistantRow?.querySelector(".provenance");
-		expect(footer).not.toBeNull();
-		expect(footer?.querySelector(".model")?.textContent).toBe("gpt-5.6-sol");
-		expect(footer?.querySelector(".route")?.textContent).toContain("codex / sol");
+	const assistantAt = (created_at: string) =>
+		msg({ id: "a1", role: "assistant", content: "answer", model_id: "gpt-5.6-sol", created_at });
+	const describeRoute = (routeId: string | null) => ({
+		label: routeId === "site-hub:codex:sol" ? "codex:sol" : (routeId ?? ""),
+		host: routeId?.startsWith("site-hub") ? "hub" : null,
 	});
 
-	it("renders no footer on an assistant message with no matching turn", async () => {
+	it("renders no per-message provenance footer", async () => {
 		const Comp = await load();
 		const { target } = await dom.mount(Comp, {
-			messages: [
-				msg({
-					id: "a1",
-					role: "assistant",
-					content: "answer",
-					created_at: "2026-01-01T09:31:05.000Z",
-				}),
-			],
-			turnProvenance: [],
+			messages: [assistantAt("2026-01-01T09:31:05.000Z")],
+			turnProvenance: [turn()],
+			describeRoute,
 		});
 		await dom.settle();
 		expect(target.querySelector(".provenance")).toBeNull();
+		// A plain served-on-first-route turn adds no annotation.
+		expect(target.querySelector(".model-note")).toBeNull();
 	});
 
-	it("does not render a footer under a user message", async () => {
+	it("annotates a substitution fallback beside the model name", async () => {
 		const Comp = await load();
 		const { target } = await dom.mount(Comp, {
-			messages: [
-				msg({ id: "u1", role: "user", content: "q", created_at: "2026-01-01T09:30:00.000Z" }),
-			],
-			// A turn whose timestamp precedes the user message must not attach to it.
-			turnProvenance: [turn({ created_at: "2026-01-01T09:29:00.000Z" })],
+			messages: [assistantAt("2026-01-01T09:31:05.000Z")],
+			turnProvenance: [turn({ substituted_from: "opus-4.8" })],
+			describeRoute,
+			modelDisplay: (id: string | null) => (id === "opus-4.8" ? "Claude Opus 4.8" : (id ?? "")),
 		});
 		await dom.settle();
-		const userRow = target.querySelector('[data-message-id="u1"]');
-		expect(userRow?.querySelector(".provenance")).toBeNull();
+		const note = target.querySelector('[data-message-id="a1"] .model-note');
+		expect(note?.textContent).toBe("· fallback from Claude Opus 4.8");
+		expect(note?.getAttribute("title")).toContain("codex:sol on hub");
+	});
+
+	it("annotates a failover with the serving host and lists attempts in the tooltip", async () => {
+		const Comp = await load();
+		const { target } = await dom.mount(Comp, {
+			messages: [assistantAt("2026-01-01T09:31:05.000Z")],
+			turnProvenance: [
+				turn({
+					attempts: [
+						{
+							model_id: "gpt-5.6-sol",
+							route_id: "site-msi:codex:sol",
+							outcome: "route-error",
+							refusal_category: null,
+							credit_redeemed: false,
+							cost_usd: 0,
+						},
+						{
+							model_id: "gpt-5.6-sol",
+							route_id: "site-hub:codex:sol",
+							outcome: "ok",
+							refusal_category: null,
+							credit_redeemed: false,
+							cost_usd: 0.5,
+						},
+					],
+				}),
+			],
+			describeRoute,
+		});
+		await dom.settle();
+		const note = target.querySelector('[data-message-id="a1"] .model-note');
+		expect(note?.textContent).toBe("· via hub");
+		expect(note?.getAttribute("title")).toContain("route error");
 	});
 
 	it("mounts the route-failover notice at the thread level when provided", async () => {
