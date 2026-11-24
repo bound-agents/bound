@@ -162,6 +162,43 @@ describe("reconcileModelReferenceAdvisories", () => {
 		expect(active[0].title).toContain("heavy");
 	});
 
+	it("raises and auto-resolves a dangling advisory for an operator-named alias", () => {
+		advertiseHost(db, SITE_A, ["opus"]);
+		// Alias `reviewer` points at a model advertised nowhere.
+		setRoles(db, { default: "opus", reviewer: "sonnet-gone" });
+
+		const raised = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(raised.raised).toBe(1);
+		const active = listActiveAdvisories(db).filter((a) => a.type === "model_reference_dangling");
+		expect(active).toHaveLength(1);
+		expect(active[0].title).toContain("reviewer");
+		expect(active[0].title).toContain("sonnet-gone");
+
+		// The alias target comes back on another host → the advisory auto-resolves.
+		advertiseHost(db, SITE_B, ["sonnet-gone"]);
+		const back = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(back.resolved).toBe(1);
+		expect(back.raised).toBe(0);
+		expect(
+			listActiveAdvisories(db).filter((a) => a.type === "model_reference_dangling"),
+		).toHaveLength(0);
+	});
+
+	it("does not dangle an aux agent or task targeting a live alias", () => {
+		advertiseHost(db, SITE_A, ["opus"]);
+		setRoles(db, { reviewer: "opus" });
+		// Agent and task name the alias, not the model; the alias resolves, so neither
+		// is dangling on its own.
+		insertAgent(db, "scout", "reviewer");
+		insertTask(db, "hb-reviewer", "reviewer");
+
+		const result = reconcileModelReferenceAdvisories(db, SITE_A);
+		expect(result.raised).toBe(0);
+		expect(
+			listActiveAdvisories(db).filter((a) => a.type === "model_reference_dangling"),
+		).toHaveLength(0);
+	});
+
 	it("raises a dangling advisory for an aux agent naming a decommissioned model", () => {
 		advertiseHost(db, SITE_A, ["opus"]);
 		setRoles(db, { default: "opus" });

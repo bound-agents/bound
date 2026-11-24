@@ -382,32 +382,38 @@ carried is now sourced from the catalog, the top-level `defaults` block, or the 
 #### Expanded ids and existing references
 
 Resolution goes through **logical models**, not backend-id string equality, so an expanded backend
-pools and resolves by the same logical key a hand-written entry did. Structural normalization strips
-the dashed `copilot-` prefix, so for the GPT, Grok, and Gemini families the old config id and the
-expanded id land on the same logical key (`copilot-gpt-6.2-sol` and the expanded
-`copilot-gpt-6.2-sol` both normalize to `gpt-6-2-sol`) and existing references resolve unchanged.
+pools and resolves by the same logical key a hand-written entry did. A model hint resolves in this
+order:
+
+1. **Exact id.** A hint that names a registered backend id or an advertised cluster entry id (including
+   an `@RouteId` pin) resolves to it directly — literal id matches always win.
+2. **Role or alias.** A hint that names an entry in [`routing.model_roles`](#routingmodel_roles) — the
+   three reserved roles or an operator-named alias — follows the mapping to its target logical model.
+3. **Logical model.** Otherwise the hint is normalized and matched against the advertised logical
+   models: structural normalization strips the dashed `copilot-` prefix, so for the GPT, Grok, and
+   Gemini families the old config id and the expanded id land on the same logical key
+   (`copilot-gpt-6.2-sol` and the expanded `copilot-gpt-6.2-sol` both normalize to `gpt-6-2-sol`) and
+   existing references resolve unchanged. Matching never crosses to a different logical model.
 
 The four Claude models are the exception. Their raw catalog ids carry a `claude-` segment that is
 **not** a stripped vendor prefix, so the expanded `copilot-claude-opus-5.5` normalizes to
 `claude-opus-5-5`, while the old hand-written `copilot-opus-5.5` normalized to the bare family
-`opus-5-5`. Left alone, a thread or task that named `copilot-opus-5.5` would strand. Two facts pull
-in opposite directions here, so this is surfaced as a decision rather than resolved silently:
+`opus-5-5`. Left alone, a thread or task that named `copilot-opus-5.5` would not match the expanded
+row through normalization.
 
-- Expanding to the raw catalog id is the right default for pooling: `claude-opus-5-5` is exactly
-  what the direct Bedrock and Bedrock Mantle Anthropic routes normalize to, so Copilot Claude pools
-  cross-provider with them automatically — the whole point of logical models.
-- But it diverges from the logical key the hand-written `copilot-*` id produced, breaking the
-  requirement that existing references keep resolving.
-
-The mitigation applied above is the `model_overrides` `logical_model` pin: it binds each of
-the four Claude expanded rows to the old family key (`opus-5-5`, …) so existing references resolve,
-without touching the shared normalization rule. The alternative — adding `claude` to the dashed
-vendor prefixes stripped by normalization — is a **cross-cutting change to the one structural rule
-every provider shares** (it would also collapse `claude-`-prefixed ids on Anthropic, Bedrock, and
-Mantle to bare family keys), so it is not made as a side effect of Copilot expansion. Choosing
-between the per-model pin (local, Copilot-only) and the normalization change (global, affects every
-provider's `claude-` ids) is an open operator decision; the pin is the conservative default until
-that call is made.
+Expanding to the raw catalog id is the right default for pooling: `claude-opus-5-5` is exactly what
+the direct Bedrock and Bedrock Mantle Anthropic routes normalize to, so Copilot Claude pools
+cross-provider with them automatically — the whole point of logical models. To keep an old reference
+like `copilot-opus-5.5` resolving, add a cluster alias in
+[`routing.model_roles`](#routingmodel_roles) pointing the old name at the expanded logical model:
+`{ "copilot-opus-5.5": "claude-opus-5-5" }`. A cluster alias is replicated, lives beside the other
+routing preferences, and is the general mechanism for any name→logical-model indirection — so it is
+preferred over a per-backend `model_overrides` `logical_model` pin, which is host-local config that
+must be repeated on every host and only shifts which logical key the row advertises. The alternative
+normalization change — adding `claude` to the dashed vendor prefixes stripped by normalization — is a
+**cross-cutting change to the one structural rule every provider shares** (it would also collapse
+`claude-`-prefixed ids on Anthropic, Bedrock, and Mantle to bare family keys), so it is not made as a
+side effect of Copilot expansion.
 
 #### Bedrock and Bedrock Mantle self-configuring namespaces
 
@@ -637,12 +643,24 @@ the web UI's **Persona** view, or the corresponding API.
 
 ### `routing.model_roles`
 
-`routing.model_roles` is a replicated, cluster-wide JSON object naming the logical models
-that fill cluster roles: `{ "default": "<logical-model>", "heavy"?: "...", "fast"?: "..." }`.
-A turn that requests no model, or the literal `"default"`, resolves to `routing.model_roles.default`
-first. The per-host [`model_backends` `default`](#model_backendsjs--model_backendsjson) is only
-a bootstrap fallback used when the cluster role is unset or names a model the host cannot serve
-locally. Because the role is replicated, every host agrees on what `"default"` means.
+`routing.model_roles` is a replicated, cluster-wide JSON object mapping **names** to logical models.
+It holds two kinds of name, differing only in intent:
+
+- The three **reserved roles** `default`, `heavy`, and `fast` carry documented semantics. A turn that
+  requests no model, or the literal `"default"`, resolves to `routing.model_roles.default` first; the
+  per-host [`model_backends` `default`](#model_backendsjs--model_backendsjson) is only a bootstrap
+  fallback used when the cluster role is unset or names a model the host cannot serve locally.
+- Any other name is an **alias**: a stable second name for a logical model. A hint naming the alias
+  follows the mapping to its target, an aux agent or scheduled task targeting it follows the alias
+  instead of parking, and an alias pointing at a model no host serves raises the same dangling-reference
+  advisory a dead role does. Operators typically repoint roles while leaving aliases fixed, but the
+  mechanism is identical.
+
+Example: `{ "default": "opus", "heavy": "opus", "fast": "haiku", "copilot-opus-5.5": "claude-opus-5-5" }`.
+Names must be non-empty and must not contain `@` (reserved for `logical@RouteId` pins). An exact
+backend or advertised-entry id always beats an alias of the same name (see
+[Expanded ids and existing references](#expanded-ids-and-existing-references) for the full resolution
+order). Because the map is replicated, every host agrees on what each name means.
 
 ### `routing.default_fallback_models`
 

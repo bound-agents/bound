@@ -122,6 +122,97 @@ describe("resolveModel — default-model resolution (§5.1, R-RT9/R-RT14)", () =
 	});
 });
 
+describe("resolveModel — role/alias resolution (§2.1, #281)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	function setRoles(roles: Record<string, string>): void {
+		insertRow(
+			db,
+			"cluster_config",
+			{
+				key: ROUTING_MODEL_ROLES_KEY,
+				value: JSON.stringify(roles),
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			SITE,
+		);
+	}
+
+	it("resolves an operator-named alias to its target local backend", () => {
+		const router = routerWithOpus();
+		// Alias `reviewer` → the local `opus` backend.
+		setRoles({ reviewer: "opus" });
+		const res = resolveModel("reviewer", router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("resolves a non-default reserved role (heavy) to its target", () => {
+		const router = routerWithOpus();
+		setRoles({ heavy: "opus" });
+		const res = resolveModel("heavy", router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("lets an exact backend id beat an alias of the same name", () => {
+		const router = routerWithOpus();
+		// A perverse alias `opus` pointing elsewhere must NOT shadow the real
+		// backend id `opus` — literal id precedence.
+		router.addDynamicBackend("sonnet", stubBackend(), caps(), undefined, {
+			routeId: makeRouteId(SITE, "anthropic", "sonnet"),
+			reasoningOrigin: `${SITE}:anthropic`,
+		});
+		setRoles({ opus: "sonnet" });
+		const res = resolveModel("opus", router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("leaves a bare hint that is no role/alias untouched", () => {
+		const router = routerWithOpus();
+		setRoles({ reviewer: "opus" });
+		const res = resolveModel("opus", router, db, SITE);
+		expect(res.kind).toBe("local");
+		if (res.kind === "local") expect(res.modelId).toBe("opus");
+	});
+
+	it("resolves an alias to a remote-only target (relay host selection)", () => {
+		const router = routerWithOpus();
+		// `sonnet` is served only by a remote host; the alias points there.
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, sync_url, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			[
+				"site-remote",
+				"Remote",
+				"https://remote.example",
+				JSON.stringify([
+					{
+						id: "sonnet",
+						route_id: "site-remote:anthropic:sonnet",
+						logical_model: "sonnet",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				0,
+				now,
+				now,
+			],
+		);
+		setRoles({ heavy: "sonnet" });
+		const res = resolveModel("heavy", router, db, SITE);
+		expect(res.kind).toBe("remote");
+		if (res.kind === "remote") expect(res.modelId).toBe("sonnet");
+	});
+});
+
 describe("resolveModel — hard route pin (§5.4)", () => {
 	let db: Database;
 	afterEach(() => db.close());

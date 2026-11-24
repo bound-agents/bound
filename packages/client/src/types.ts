@@ -172,7 +172,12 @@ export interface RoutingModelsResponse {
 /** The cluster-default fallback list, model roles, and alias overrides. */
 export interface ClusterDefaultsResponse {
 	default_fallback_models: string[];
-	roles: { default?: string; heavy?: string; fast?: string };
+	/**
+	 * Cluster model-role / alias map (routing.model_roles). The three reserved
+	 * roles (default/heavy/fast) plus arbitrary operator-named aliases share this
+	 * map — a name → logical model (2026-11-21-model-catalog.md §2.1, #281).
+	 */
+	roles: { default?: string; heavy?: string; fast?: string; [name: string]: string | undefined };
 	aliases: Array<{ provider_key: string; logical_model: string | null }>;
 }
 

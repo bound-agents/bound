@@ -19,6 +19,7 @@ import {
 	type HostModelEntry,
 	ROUTING_MODEL_ROLES_KEY,
 	hintMatchesLogicalModel,
+	resolveModelRoleTarget,
 } from "@bound/shared";
 import {
 	cacheTtlToMs,
@@ -259,8 +260,17 @@ export function resolveModel(
 	// Default-model resolution (§5.1, R-RT9/R-RT14): an omitted or "default"
 	// request resolves to the synced cluster role `routing.model_roles.default`
 	// first, then to the local `model_backends.default` as a bootstrap fallback.
-	const effectiveModelId =
+	const defaultResolved =
 		!modelId || modelId === "default" ? resolveDefaultModelId(db, modelRouter) : modelId;
+
+	// Role/alias resolution (§2.1, #281): a hint naming any OTHER cluster role or
+	// operator-named alias in `routing.model_roles` follows the mapping to its
+	// target logical model, exactly as `"default"` does above. Resolution is a
+	// literal-id-first order: a hint that names a registered backend or an
+	// advertised entry id is left untouched (an exact id beats an alias of the same
+	// name), so this only fires for a bare name that is NOT itself a live id. `@pin`
+	// hints never reach here — the pin is handled below on the raw hint.
+	const effectiveModelId = resolveRoleAliasModelId(defaultResolved, modelRouter, db);
 
 	// Phase 0: Readiness gate. A backend exposing async self-configuration
 	// (`readiness`) registers a not-ready placeholder/namespace id until its
@@ -579,6 +589,38 @@ function resolveDefaultModelId(db: Database, modelRouter: ModelRouter): string {
 		}
 	}
 	return localDefault;
+}
+
+/**
+ * Resolve a hint that names a cluster role or operator-named alias to its target
+ * logical model (§2.1, #281). The three reserved roles and arbitrary aliases are
+ * the same mechanism (`routing.model_roles`: a name → logical model). This fires
+ * ONLY when the hint is not itself a live id (literal precedence, R-exact-id): if
+ * the hint already names a registered local backend or an advertised cluster
+ * entry id, it is returned unchanged so an exact id always beats an alias of the
+ * same name. A role/alias whose target is advertised nowhere resolves to that
+ * (dead) target and fails downstream exactly as a direct dead hint would — the
+ * dangling advisory is the operator's signal. Pins (`<name>@<RouteId>`) never
+ * reach here; they carry an `@` and are handled on the raw hint.
+ */
+function resolveRoleAliasModelId(hint: string, modelRouter: ModelRouter, db: Database): string {
+	// Literal precedence: a hint that is already a live id (local backend or any
+	// advertised cluster entry) is never reinterpreted as a role/alias.
+	if (modelRouter.tryGetBackend(hint)) return hint;
+	if (isModelRegisteredInCluster(hint, modelRouter, db)) return hint;
+
+	const row = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
+	if (!row) return hint;
+	try {
+		const roles = JSON.parse(row.value) as ClusterModelRoles;
+		if (roles && typeof roles === "object") {
+			const target = resolveModelRoleTarget(roles, hint);
+			if (target !== null) return target;
+		}
+	} catch {
+		// Malformed roles JSON — leave the hint untouched.
+	}
+	return hint;
 }
 
 /**

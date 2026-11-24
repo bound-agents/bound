@@ -3,6 +3,7 @@ import {
 	type ClusterModelRoles,
 	type HostModelEntry,
 	type NormalizeKeyFn,
+	RESERVED_MODEL_ROLES,
 	ROUTING_DEFAULT_FALLBACK_MODELS_KEY,
 	ROUTING_MODEL_ROLES_KEY,
 	hintMatchesAnyLogicalModel,
@@ -53,9 +54,12 @@ export interface StaleModelAlias {
 	logicalModel: string;
 }
 
-/** A cluster role (`default` | `heavy` | `fast`) pointing at a decommissioned model. */
+/**
+ * A cluster role or alias pointing at a decommissioned model. `role` is the
+ * reserved role name (`default`/`heavy`/`fast`) or an operator-named alias.
+ */
 export interface DanglingRole {
-	role: "default" | "heavy" | "fast";
+	role: string;
 	logicalModel: string;
 }
 
@@ -234,11 +238,19 @@ export function analyzeModelReferences(
 		}
 	}
 
-	// Dangling cluster roles: a role whose assigned logical model is advertised
-	// nowhere. Unlike the stale lists above, a dangling role raises an advisory
-	// (R-MC13) because a role silently resolving to nothing would strand omitted-
-	// model requests without an operator ever seeing why.
+	// Dangling cluster roles/aliases: a role or alias whose assigned logical model
+	// is advertised nowhere. Unlike the stale lists above, a dangling role raises
+	// an advisory (R-MC13) because a role silently resolving to nothing would strand
+	// omitted-model requests without an operator ever seeing why. The three reserved
+	// roles (default/heavy/fast) and operator-named aliases are the same mechanism
+	// (a cluster-wide name → logical model) and are checked identically: every
+	// well-formed entry whose target is a real string is a candidate.
 	const danglingRoles: DanglingRole[] = [];
+	// The three reserved roles always carry documented resolution semantics (e.g.
+	// `default`'s bootstrap fallback) even when the cluster map omits them, so an
+	// agent/task hint naming one is never dangling on its own. Aliases are added
+	// below only when actually present in the map.
+	const roleNames = new Set<string>(RESERVED_MODEL_ROLES);
 	const rolesRow = db
 		.query("SELECT value FROM cluster_config WHERE key = ? AND deleted = 0 LIMIT 1")
 		.get(ROUTING_MODEL_ROLES_KEY) as { value: string } | null;
@@ -250,9 +262,13 @@ export function analyzeModelReferences(
 			roles = null;
 		}
 		if (roles && typeof roles === "object") {
-			for (const role of ["default", "heavy", "fast"] as const) {
+			for (const role of Object.keys(roles)) {
 				const model = roles[role];
-				if (model && !hintMatchesAnyLogicalModel(model, liveModels, normalizeKey)) {
+				if (typeof model !== "string" || model.length === 0) continue;
+				// The name is a live role/alias regardless of whether its target
+				// resolves, so an agent/task targeting it is never dangling on its own.
+				roleNames.add(role);
+				if (!hintMatchesAnyLogicalModel(model, liveModels, normalizeKey)) {
 					danglingRoles.push({ role, logicalModel: model });
 				}
 			}
@@ -260,9 +276,9 @@ export function analyzeModelReferences(
 	}
 
 	// Dangling aux agents: a live (non-retired) agent whose model_hint names a
-	// decommissioned logical model literally. An agent targeting a cluster role
-	// (`default`/`heavy`/`fast`) follows the role's current assignment, so it is
-	// never dangling by itself — the dangling role, if any, is reported above.
+	// decommissioned logical model literally. An agent targeting a cluster role or
+	// alias follows the mapping's current assignment, so it is never dangling by
+	// itself — the dangling role/alias, if any, is reported above.
 	const danglingAgents: DanglingAgent[] = [];
 	const agentRows = db
 		.query(
@@ -273,8 +289,8 @@ export function analyzeModelReferences(
 		if (!agent.model_hint) continue;
 		const logical = hintLogicalModel(agent.model_hint);
 		if (logical === null) continue;
-		// Cluster-role targets follow the role; never dangling on their own.
-		if (logical === "default" || logical === "heavy" || logical === "fast") continue;
+		// Role/alias targets follow the mapping; never dangling on their own.
+		if (roleNames.has(logical)) continue;
 		if (!hintMatchesAnyLogicalModel(logical, liveModels, normalizeKey)) {
 			danglingAgents.push({ agentName: agent.name, logicalModel: logical });
 		}
@@ -284,9 +300,10 @@ export function analyzeModelReferences(
 	// model_hint names a decommissioned logical model literally. Heartbeats are
 	// never poison-pill parked (they must always re-arm), so their advisory is the
 	// only operator signal that a model_hint has gone dead. A task targeting a
-	// cluster role follows the role's current assignment, so it is never dangling
-	// by itself. Finished tasks (completed/failed/cancelled) never re-run, so a
-	// dead hint on them is inert and not surfaced.
+	// only operator signal that a model_hint has gone dead. A task targeting a
+	// cluster role or alias follows the mapping's current assignment, so it is never
+	// dangling by itself. Finished tasks (completed/failed/cancelled) never re-run,
+	// so a dead hint on them is inert and not surfaced.
 	const danglingTasks: DanglingTask[] = [];
 	const taskRows = db
 		.query(
@@ -297,8 +314,8 @@ export function analyzeModelReferences(
 		if (!task.model_hint) continue;
 		const logical = hintLogicalModel(task.model_hint);
 		if (logical === null) continue;
-		// Cluster-role targets follow the role; never dangling on their own.
-		if (logical === "default" || logical === "heavy" || logical === "fast") continue;
+		// Role/alias targets follow the mapping; never dangling on their own.
+		if (roleNames.has(logical)) continue;
 		if (!hintMatchesAnyLogicalModel(logical, liveModels, normalizeKey)) {
 			danglingTasks.push({ taskId: task.id, logicalModel: logical });
 		}

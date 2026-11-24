@@ -612,19 +612,35 @@ export const WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY = "webhooks_allow_unauthenticate
 export const ROUTING_DEFAULT_FALLBACK_MODELS_KEY = "routing.default_fallback_models";
 
 /**
- * `cluster_config` key holding the cluster model-role map (JSON `ClusterModelRoles`
- * = `{ default, heavy?, fast? }`; §4.2). An omitted/"default" model resolves to
- * `routing.model_roles.default` before the per-host `model_backends.default`
- * bootstrap fallback (R-RT9/R-RT14).
+ * `cluster_config` key holding the cluster model-role map (JSON `ClusterModelRoles`).
+ * The three reserved roles (`default`, `heavy`, `fast`) keep their documented
+ * semantics — an omitted/"default" model resolves to `routing.model_roles.default`
+ * before the per-host `model_backends.default` bootstrap fallback (R-RT9/R-RT14).
+ * Beyond those, the map holds arbitrary operator-named **aliases**: a role and an
+ * alias are the same mechanism (a cluster-wide name → logical model), differing
+ * only in intent — operators repoint `default`, while an alias like `opus` is a
+ * stable second name for one logical model. A hint naming any entry follows the
+ * mapping; a name pointing at a model no host serves raises the dangling advisory.
  */
 export const ROUTING_MODEL_ROLES_KEY = "routing.model_roles";
 
-/** Shape of the JSON stored under {@link ROUTING_MODEL_ROLES_KEY}. */
+/**
+ * Shape of the JSON stored under {@link ROUTING_MODEL_ROLES_KEY}. The three
+ * reserved roles are named for their documented semantics; the index signature
+ * admits arbitrary alias names (validated by {@link isValidModelRoleName}).
+ */
 export interface ClusterModelRoles {
 	default?: string;
 	heavy?: string;
 	fast?: string;
+	[name: string]: string | undefined;
 }
+
+/**
+ * Role/alias name validation and resolution ({@link RESERVED_MODEL_ROLES},
+ * `isValidModelRoleName`, `resolveModelRoleTarget`) live in `./model-hint-match`
+ * beside the hint-matching family they belong to.
+ */
 
 export const TABLE_REDUCER_MAP: Record<SyncedTableName, ReducerType> = {
 	users: "lww",

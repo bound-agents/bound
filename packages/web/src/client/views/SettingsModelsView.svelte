@@ -239,10 +239,15 @@
 					<span class="cd-value">{defaults.default_fallback_models.join(", ") || "(none)"}</span>
 				</div>
 				<div class="cd-row">
-					<span class="cd-label">Roles</span>
+					<span class="cd-label">Roles &amp; aliases</span>
 					<span class="cd-value">
-						default: {defaults.roles.default ?? "(unset)"}, heavy: {defaults.roles.heavy ??
-							"(unset)"}, fast: {defaults.roles.fast ?? "(unset)"}
+						{#if Object.keys(defaults.roles).length === 0}
+							(none)
+						{:else}
+							{Object.entries(defaults.roles)
+								.map(([name, model]) => `${name}: ${model}`)
+								.join(", ")}
+						{/if}
 					</span>
 				</div>
 			</section>

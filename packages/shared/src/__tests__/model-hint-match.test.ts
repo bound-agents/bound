@@ -4,8 +4,11 @@ import {
 	type NormalizeKeyFn,
 	hintMatchesAnyLogicalModel,
 	hintMatchesLogicalModel,
+	isValidModelRoleName,
 	normalizeHintKey,
+	resolveModelRoleTarget,
 } from "../model-hint-match";
+import type { ClusterModelRoles } from "../types";
 
 /**
  * A stand-in for `@bound/llm`'s `normalizeModelKey` that captures the two rules
@@ -66,5 +69,36 @@ describe("model-hint-match", () => {
 			expect(hintMatchesAnyLogicalModel("gpt-9.9-nova", live, fakeNormalize)).toBe(false);
 			expect(hintMatchesAnyLogicalModel("kimi-k2.5", live, fakeNormalize)).toBe(false);
 		});
+	});
+});
+
+describe("isValidModelRoleName", () => {
+	it("accepts non-empty names free of the @ pin syntax", () => {
+		expect(isValidModelRoleName("default")).toBe(true);
+		expect(isValidModelRoleName("opus")).toBe(true);
+		expect(isValidModelRoleName("gpt-5.6-sol")).toBe(true);
+		expect(isValidModelRoleName("reviewer-model")).toBe(true);
+	});
+
+	it("rejects an empty name or one carrying the @ RouteId separator", () => {
+		expect(isValidModelRoleName("")).toBe(false);
+		expect(isValidModelRoleName("opus@site:p:opus")).toBe(false);
+	});
+});
+
+describe("resolveModelRoleTarget", () => {
+	const roles: ClusterModelRoles = { default: "opus", opus: "claude-opus-4-8", empty: "" };
+
+	it("returns the logical model a role/alias names", () => {
+		expect(resolveModelRoleTarget(roles, "default")).toBe("opus");
+		expect(resolveModelRoleTarget(roles, "opus")).toBe("claude-opus-4-8");
+	});
+
+	it("returns null for a hint that is not a role/alias", () => {
+		expect(resolveModelRoleTarget(roles, "gpt-5.6-sol")).toBeNull();
+	});
+
+	it("treats an empty-string target as absent", () => {
+		expect(resolveModelRoleTarget(roles, "empty")).toBeNull();
 	});
 });

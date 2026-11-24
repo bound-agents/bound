@@ -332,6 +332,56 @@ describe("PUT /cluster-defaults", () => {
 		expect(body.default_fallback_models).toEqual([]);
 		expect(body.roles).toEqual({});
 	});
+
+	it("stores operator-named aliases alongside the reserved roles", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/cluster-defaults", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					roles: { default: "opus", reviewer: "opus", "gpt-fast": "gpt-5.6-sol" },
+				}),
+			}),
+		);
+		expect(res.status).toBe(200);
+		const roles = db
+			.prepare("SELECT value FROM cluster_config WHERE key = 'routing.model_roles'")
+			.get() as { value: string } | null;
+		expect(JSON.parse(roles?.value ?? "null")).toEqual({
+			default: "opus",
+			reviewer: "opus",
+			"gpt-fast": "gpt-5.6-sol",
+		});
+	});
+
+	it("rejects a role/alias name carrying the @ RouteId-pin syntax", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/cluster-defaults", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ roles: { "opus@site:p:opus": "opus" } }),
+			}),
+		);
+		expect(res.status).toBe(400);
+		const nothing = db
+			.prepare("SELECT value FROM cluster_config WHERE key = 'routing.model_roles'")
+			.get() as { value: string } | null;
+		expect(nothing).toBeNull();
+	});
+
+	it("rejects a role/alias whose target is not a string", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request("http://localhost/cluster-defaults", {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ roles: { default: 123 } }),
+			}),
+		);
+		expect(res.status).toBe(400);
+	});
 });
 
 describe("PUT/DELETE /aliases/:providerKey", () => {

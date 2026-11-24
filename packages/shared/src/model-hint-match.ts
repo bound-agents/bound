@@ -42,8 +42,36 @@
  */
 export const HINT_NORMALIZE_PROVIDER = "openai-compatible";
 
+import type { ClusterModelRoles } from "./types.js";
+
 /** A `normalizeModelKey`-shaped function: `(provider, id) → { key }`. */
 export type NormalizeKeyFn = (provider: string, providerModelId: string) => { key: string };
+
+/** The three reserved cluster-role names with documented resolution semantics. */
+export const RESERVED_MODEL_ROLES = ["default", "heavy", "fast"] as const;
+export type ReservedModelRole = (typeof RESERVED_MODEL_ROLES)[number];
+
+/**
+ * Whether `name` is a valid cluster model-role / alias name: non-empty and free
+ * of the reserved hint syntax. The only reserved character is `@`, which pins a
+ * hint to a `RouteId` (`<logical>@<RouteId>`); a role/alias name carrying one
+ * could never be targeted unambiguously. Everything else is allowed so aliases
+ * can mirror logical-model names verbatim (`opus`, `gpt-5.6-sol`).
+ */
+export function isValidModelRoleName(name: string): boolean {
+	return name.length > 0 && !name.includes("@");
+}
+
+/**
+ * Resolve a bare hint to the logical model a role/alias names, or `null` when the
+ * hint is not a role/alias in `roles`. The hint must be exactly the role/alias
+ * name (no `@RouteId` suffix — pins are resolved by the caller before this).
+ * Malformed values (non-string, empty) are treated as absent.
+ */
+export function resolveModelRoleTarget(roles: ClusterModelRoles, hint: string): string | null {
+	const target = roles[hint];
+	return typeof target === "string" && target.length > 0 ? target : null;
+}
 
 /**
  * Normalize a bare model-hint logical-model name to its canonical structural

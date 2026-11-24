@@ -136,6 +136,15 @@ export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableV
  * so the stable-context simply omits `role` on every model rather than guessing.
  * A logical model named by more than one role resolves to the first match in
  * declaration order (`default` → `heavy` → `fast`).
+ *
+ * Only the three RESERVED roles are surfaced as a stable-context `role=`
+ * annotation: that attribute is a capability tier for aux/`infer()` model
+ * selection (its legend names exactly default/heavy/fast), not a routing-name
+ * directory. Operator-named aliases (§2.1, #281) share the same `routing.model_roles`
+ * map but are deliberately NOT rendered — an alias is a convenience name for a
+ * logical model, not a capability signal. Keeping aliases out of this projection
+ * also preserves R-VC25 stable-prefix purity: adding or renaming an alias never
+ * changes the stable-context bytes, so it cannot churn the cross-thread cache.
  */
 export function loadClusterModelRoles(db: Database): Map<string, "default" | "heavy" | "fast"> {
 	const out = new Map<string, "default" | "heavy" | "fast">();

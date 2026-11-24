@@ -20,7 +20,9 @@ against it.
 The decision has three broad questions:
 
 1. **What did the turn request?** An omitted model and `"default"` use the configured default
-   route; a named model narrows the eligible inventory.
+   route. A hint that names a [role or alias](/bound/reference/configuration/#routingmodel_roles)
+   follows that mapping to a logical model (an exact backend id always beats an alias of the same
+   name); otherwise a named model narrows the eligible inventory directly.
 2. **Which backends are eligible?** Eligibility depends on the advertised model, provider
    capabilities, and current backend configuration.
 3. **Where can the request run?** Bound gathers every eligible route for the model
@@ -317,11 +319,11 @@ host-liveness eviction removes the dead host's row does the model flip to
 *decommissioned*. A decommissioned model leaves the picker for new threads and tasks.
 Existing threads that target it stay readable and, on the next turn, surface a notice
 asking the operator to pick another model — Bound does not silently substitute one.
-Live scheduled tasks naming the model literally park with an advisory (a task targeting a
-cluster role follows the role instead); heartbeat and consolidation tasks are never parked,
-so for them the advisory is the only signal that the `model_hint` has gone dead. A cluster
-role, auxiliary agent, or live scheduled task pointing at the decommissioned model raises an
-operator advisory rather than being silently reassigned.
+Live scheduled tasks naming the model literally park with an advisory (a task or aux agent that
+targets a cluster role or alias follows the mapping instead); heartbeat and consolidation tasks
+are never parked, so for them the advisory is the only signal that the `model_hint` has gone dead.
+A cluster role or alias, auxiliary agent, or live scheduled task pointing at the decommissioned
+model raises an operator advisory rather than being silently reassigned.
 Historical turn records keep the model and route that originally served each turn.
 
 **When the model comes back.** Once any host advertises a ready route for the model again,

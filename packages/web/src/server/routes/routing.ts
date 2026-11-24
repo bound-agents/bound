@@ -22,6 +22,7 @@ import {
 	ROUTING_DEFAULT_FALLBACK_MODELS_KEY,
 	ROUTING_MODEL_ROLES_KEY,
 	hostModelsSchema,
+	isValidModelRoleName,
 	parseJsonSafe,
 } from "@bound/shared";
 import { Hono } from "hono";
@@ -526,8 +527,24 @@ export function createRoutingRoutes(
 				return c.json({ error: "default_fallback_models must be an array of strings" }, 400);
 			}
 		}
-		if (roles !== undefined && (typeof roles !== "object" || roles === null)) {
-			return c.json({ error: "roles must be an object" }, 400);
+		if (roles !== undefined) {
+			if (typeof roles !== "object" || roles === null || Array.isArray(roles)) {
+				return c.json({ error: "roles must be an object" }, 400);
+			}
+			// Every entry is a cluster-wide name → logical model (§2.1, #281): the three
+			// reserved roles and operator-named aliases share this map. Names must be
+			// non-empty and free of the `@` RouteId-pin syntax; targets must be strings.
+			for (const [name, target] of Object.entries(roles as Record<string, unknown>)) {
+				if (!isValidModelRoleName(name)) {
+					return c.json(
+						{ error: `Invalid role/alias name "${name}": must be non-empty and contain no '@'` },
+						400,
+					);
+				}
+				if (typeof target !== "string") {
+					return c.json({ error: `Role/alias "${name}" must map to a string logical model` }, 400);
+				}
+			}
 		}
 		try {
 			if (fallback !== undefined) {
