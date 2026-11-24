@@ -233,4 +233,11 @@ describe("toRouterConfig", () => {
 		const router = createModelRouter(toRouterConfig(bedrockOpusWithThinking()));
 		expect(router.getEffort("opus")).toBeUndefined();
 	});
+	it("propagates `logical_model` so local hint resolution matches the pin", () => {
+		const cfg = bedrockOpusWithThinking();
+		(cfg.backends[0] as Record<string, unknown>).logical_model = "opus-pin";
+		const routerConfig = toRouterConfig(cfg);
+		expect(routerConfig.backends[0].logicalModel).toBe("opus-pin");
+		expect(createModelRouter(routerConfig).resolveLocalBackendIdForHint("opus-pin")).toBe("opus");
+	});
 });

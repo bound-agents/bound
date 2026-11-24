@@ -364,6 +364,8 @@ export class ModelRouter {
 	 *     `logical_model`, falling back to the normalized key of its
 	 *     `(provider, providerModelId)`) matches the hint's normalized key;
 	 *   - else null.
+	 * An operator `logical_model` pin is matched as-is (literally or through its
+	 * normalized key) instead of the structural key.
 	 * Not-ready backends are skipped (they are excluded from resolution until
 	 * warmup completes). A tie — two local backends under one logical model —
 	 * resolves to the lexically-first id for determinism; cross-route pooling and
@@ -381,7 +383,7 @@ export class ModelRouter {
 			const config = this.backendConfigs.get(id);
 			const providerModelId = config?.model ?? id;
 			const provider = config?.provider ?? "";
-			const logical = normalizeModelKey(provider, providerModelId).key;
+			const logical = config?.logicalModel ?? normalizeModelKey(provider, providerModelId).key;
 			if (hintMatchesLogicalModel(hint, logical, normalizeModelKey)) matches.push(id);
 		}
 		if (matches.length === 0) return null;
@@ -536,10 +538,25 @@ export class ModelRouter {
 		caps: BackendCapabilities,
 		maxOutputTokens?: number,
 		routeIdentity?: { routeId: RouteId; reasoningOrigin: string },
+		config?: BackendConfig,
 	): void {
 		this.backends.set(id, backend);
 		this.effectiveCaps.set(id, caps);
 		if (routeIdentity) this.routeIdentities.set(id, routeIdentity);
+		// A full router config for the backend (the self-configuring registrar
+		// derives it through `toRouterConfig` from the expanded shared row, so
+		// request controls, defaults, the provider, the raw provider model id and
+		// the logical-model pin all reach the getters). It REPLACES any prior
+		// config: a re-registration after a reload must reflect the new config.
+		if (config) {
+			this.backendConfigs.set(id, {
+				...config,
+				id,
+				maxOutputTokens: config.maxOutputTokens ?? maxOutputTokens,
+			});
+			this.notReady.delete(id);
+			return;
+		}
 		// Record the per-model output budget so getMaxOutputTokens resolves it.
 		// Dynamic backends (e.g. umans models fetched at warmup) have no static
 		// config row in backendConfigs; without this the loop sends no max_tokens

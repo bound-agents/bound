@@ -173,6 +173,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 			effort: b.effort ?? defaults?.effort,
 			maxOutputTokens: b.max_output_tokens,
 			systemPromptSuffix: b.system_prompt_suffix,
+			logicalModel: b.logical_model,
 			cacheTtl: b.cache_ttl ?? defaults?.cache_ttl,
 			cacheWarming: b.cache_warming
 				? {
@@ -386,12 +387,21 @@ export function wireBackendReadiness(
 				// 1. Append one snake_case pricing/context row per model id to the
 				//    LIVE shared array BEFORE making the model selectable, so the
 				//    first turn resolves its own pricing (no $0 interim).
-				for (const { descriptor } of models) {
-					sharedConfig.backends.push(buildSharedRow(descriptor, placeholder));
-				}
+				const rows = models.map(({ descriptor }) => buildSharedRow(descriptor, placeholder));
+				sharedConfig.backends.push(...rows);
 
-				// 2. Make each model selectable via the router primitives.
-				for (const { descriptor, backend } of models) {
+				// 2. Make each model selectable via the router primitives. Each
+				//    backend's router config is derived from its shared row through
+				//    `toRouterConfig` (invariant #17), the same translation a static
+				//    row gets: provider, raw provider model id, request controls
+				//    (model_overrides > namespace entry > top-level defaults), the
+				//    output cap and the logical-model pin.
+				const routerRows = toRouterConfig({
+					backends: rows,
+					default: "",
+					defaults: sharedConfig.defaults,
+				} as SharedModelBackendsConfig).backends;
+				models.forEach(({ descriptor, backend }, i) => {
 					modelRouter.addDynamicBackend(
 						descriptor.id,
 						backend,
@@ -401,9 +411,10 @@ export function wireBackendReadiness(
 							routeId: makeRouteId(appContext.siteId, providerId, descriptor.id),
 							reasoningOrigin: `${appContext.siteId}:${providerId}`,
 						},
+						routerRows[i],
 					);
 					modelRouter.clearNotReady(descriptor.id);
-				}
+				});
 
 				// 3. Remove the namespace placeholder + redirect the default.
 				const preferredId = models[0]?.descriptor.id;

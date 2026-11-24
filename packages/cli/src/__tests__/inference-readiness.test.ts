@@ -23,6 +23,7 @@ import type {
 } from "@bound/llm";
 import type { ResolvedBackend } from "@bound/llm";
 import { createLogger } from "@bound/shared";
+import { BedrockNamespaceDriver } from "../../../llm/src/drivers/bedrock-namespace";
 import {
 	advertiseLocalModels,
 	gateUnreadyBackends,
@@ -543,5 +544,334 @@ describe("R-MC4 readiness gate on the production path", () => {
 		gateUnreadyBackends(router, catalog, appContext.logger);
 		expect(router.isNotReady("cfg-only")).toBe(false);
 		expect(router.listBackends().map((b) => b.id)).toContain("cfg-only");
+	});
+});
+
+// --- Expanded-backend router config (invariant #17, #281) --------------------
+// BedrockNamespaceDriver is not on the @bound/llm public surface; it is imported
+// by path so the recorded control-plane fixtures go through its `fetch` seam.
+// The registrar must hand each expanded backend a FULL router BackendConfig —
+// the same one toRouterConfig would produce for its shared row — so namespace /
+// model_overrides / top-level defaults request controls and the logical-model
+// pin reach inference, and the hint fallback normalizes the raw provider model
+// id under the real provider rather than the namespace-prefixed backend id.
+
+const BEDROCK_FOUNDATION_MODELS = {
+	modelSummaries: [
+		{
+			modelId: "anthropic.claude-haiku-5-5",
+			modelArn: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-5-5",
+			providerName: "Anthropic",
+			inputModalities: ["TEXT", "IMAGE"],
+			outputModalities: ["TEXT"],
+			modelLifecycle: { status: "ACTIVE" },
+			inferenceTypesSupported: ["INFERENCE_PROFILE"],
+			inferenceAPIsSupported: { converse: { streaming: true, sync: true }, openAiResponses: false },
+			explicitPromptCaching: { isSupported: true },
+		},
+		{
+			modelId: "openai.gpt-5.6-sol",
+			modelArn: "arn:aws:bedrock:us-east-1::foundation-model/openai.gpt-5.6-sol",
+			providerName: "OpenAI",
+			inputModalities: ["TEXT", "IMAGE"],
+			outputModalities: ["TEXT"],
+			modelLifecycle: { status: "ACTIVE" },
+			inferenceTypesSupported: ["INFERENCE_PROFILE"],
+			inferenceAPIsSupported: { converse: { streaming: true, sync: true }, openAiResponses: true },
+			explicitPromptCaching: { isSupported: true },
+		},
+	],
+};
+
+const BEDROCK_INFERENCE_PROFILES = {
+	inferenceProfileSummaries: [
+		{
+			inferenceProfileId: "global.anthropic.claude-haiku-5-5",
+			type: "SYSTEM_DEFINED",
+			status: "ACTIVE",
+			models: [{ modelArn: "arn:aws:bedrock:::foundation-model/anthropic.claude-haiku-5-5" }],
+		},
+		{
+			inferenceProfileId: "global.openai.gpt-5.6-sol",
+			type: "SYSTEM_DEFINED",
+			status: "ACTIVE",
+			models: [{ modelArn: "arn:aws:bedrock:::foundation-model/openai.gpt-5.6-sol" }],
+		},
+	],
+};
+
+function bedrockFixtureFetch(): typeof fetch {
+	return (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const path = new URL(new Request(input, init).url).pathname;
+		if (path.endsWith("/foundation-models")) {
+			return new Response(JSON.stringify(BEDROCK_FOUNDATION_MODELS), { status: 200 });
+		}
+		if (path.endsWith("/inference-profiles")) {
+			return new Response(JSON.stringify(BEDROCK_INFERENCE_PROFILES), { status: 200 });
+		}
+		return new Response("not found", { status: 404 });
+	}) as typeof fetch;
+}
+
+/** A static single-model entry that must come through expansion untouched. */
+function explicitEntry() {
+	return {
+		id: "explicit",
+		provider: "openai-compatible",
+		api_key: "sk-test",
+		base_url: "http://localhost:8000",
+		model: "gpt-6-luna",
+		context_window: 128000,
+		effort: "medium",
+		cache_ttl: "5m",
+		system_prompt_suffix: "explicit-suffix",
+	};
+}
+
+const NAMESPACE_CAPS = {
+	streaming: true,
+	tool_use: true,
+	system_prompt: true,
+	prompt_caching: true,
+	vision: true,
+	extended_thinking: true,
+};
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+	for (let i = 0; i < 100 && !predicate(); i++) {
+		await new Promise((r) => setTimeout(r, 5));
+	}
+}
+
+describe("expanded backends get a full router config", () => {
+	it("bedrock: namespace, model_overrides and defaults reach the router getters; hint fallback finds the expanded id", async () => {
+		const shared = {
+			backends: [
+				explicitEntry(),
+				{
+					id: "bedrock-main",
+					provider: "bedrock",
+					region: "us-east-1",
+					// Namespace-level controls every expanded model inherits.
+					thinking: { type: "adaptive" as const },
+					effort: "high",
+					model_overrides: {
+						// One model's controls pinned without listing the others.
+						"anthropic.claude-haiku-5-5": {
+							thinking: { type: "enabled" as const, budget_tokens: 2048 },
+							effort: "low",
+							cache_ttl: "1h",
+							system_prompt_suffix: "haiku-suffix",
+						},
+					},
+				},
+			],
+			default: "explicit",
+			// Top-level defaults fill fields neither the namespace nor an override sets.
+			defaults: { effort: "minimal", cache_ttl: "1h" },
+		};
+		const routerConfig = toRouterConfig(shared as never);
+		const router = createModelRouter({
+			backends: [routerConfig.backends[0]],
+			default: "explicit",
+		});
+		const explicitBefore = {
+			effort: router.getEffort("explicit"),
+			thinking: router.getThinkingConfig("explicit"),
+			cacheTtl: router.getCacheTtl("explicit"),
+			suffix: router.getSystemPromptSuffix("explicit"),
+			maxOutput: router.getMaxOutputTokens("explicit"),
+		};
+		// Seed the namespace driver with the recorded control-plane fixtures (the
+		// config factory would sign live AWS requests).
+		router.addDynamicBackend(
+			"bedrock-main",
+			new BedrockNamespaceDriver({
+				namespaceId: "bedrock-main",
+				region: "us-east-1",
+				fetch: bedrockFixtureFetch(),
+				modelOverrides: routerConfig.backends[1].modelOverrides,
+			}),
+			NAMESPACE_CAPS,
+		);
+		router.markNotReady("bedrock-main");
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+
+		const gpt = "bedrock-main-openai.gpt-5.6-sol";
+		const haiku = "bedrock-main-anthropic.claude-haiku-5-5";
+		expect(router.tryGetBackend(gpt)).not.toBeNull();
+		expect(router.tryGetBackend(haiku)).not.toBeNull();
+
+		// Namespace-level values.
+		expect(router.getThinkingConfig(gpt)).toEqual({ type: "adaptive", display: "summarized" });
+		expect(router.getEffort(gpt)).toBe("high");
+		// Neither namespace nor override sets cache_ttl for gpt: the defaults block
+		// fills it (not the capability fallback "5m").
+		expect(router.getCacheTtl(gpt)).toBe("1h");
+		expect(router.getSystemPromptSuffix(gpt)).toBeUndefined();
+
+		// Per-model override wins over the namespace entry.
+		expect(router.getThinkingConfig(haiku)).toEqual({ type: "enabled", budget_tokens: 2048 });
+		expect(router.getEffort(haiku)).toBe("low");
+		expect(router.getCacheTtl(haiku)).toBe("1h");
+		expect(router.getSystemPromptSuffix(haiku)).toBe("haiku-suffix");
+
+		// An old hand-written hint resolves through the logical model to the
+		// expanded backend (raw model id normalized under the bedrock provider).
+		expect(router.resolveLocalBackendIdForHint("gpt-5.6-sol")).toBe(gpt);
+		expect(router.resolveLocalBackendIdForHint("claude-haiku-5.5")).toBe(haiku);
+
+		// The explicit single-model entry is unchanged by the expansion.
+		expect({
+			effort: router.getEffort("explicit"),
+			thinking: router.getThinkingConfig("explicit"),
+			cacheTtl: router.getCacheTtl("explicit"),
+			suffix: router.getSystemPromptSuffix("explicit"),
+			maxOutput: router.getMaxOutputTokens("explicit"),
+		}).toEqual(explicitBefore);
+		expect(explicitBefore).toEqual({
+			effort: "medium",
+			thinking: undefined,
+			cacheTtl: "5m",
+			suffix: "explicit-suffix",
+			maxOutput: undefined,
+		});
+		expect(router.resolveLocalBackendIdForHint("gpt-6-luna")).toBe("explicit");
+	});
+
+	it("github-copilot: defaults, namespace thinking, an override and its logical_model pin reach the router", async () => {
+		const account: CopilotAccountInfo = {
+			chatEnabled: true,
+			copilotPlan: "enterprise",
+			apiEndpoint: "https://api.enterprise.githubcopilot.com",
+		};
+		const tokenManager = {
+			getAccessToken: async () => "ghu_abc",
+		} as unknown as CopilotTokenManager;
+		const catalogFetch = (async (input: RequestInfo | URL) => {
+			const url = new URL(new Request(input).url);
+			if (url.pathname.endsWith("/models")) {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "claude-opus-5.5",
+								supported_endpoints: ["/v1/messages"],
+								capabilities: {
+									limits: { max_context_window_tokens: 200000, max_output_tokens: 32000 },
+								},
+							},
+							{
+								id: "gpt-6.2-sol",
+								supported_endpoints: ["/responses"],
+								capabilities: { limits: { max_context_window_tokens: 400000 } },
+							},
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		const shared = {
+			backends: [
+				{
+					id: "copilot",
+					provider: "github-copilot",
+					thinking: { type: "adaptive" as const },
+					model_overrides: {
+						"claude-opus-5.5": {
+							effort: "high",
+							max_output_tokens: 16000,
+							logical_model: "opus-5-5",
+						},
+					},
+				},
+			],
+			default: "copilot",
+			defaults: { effort: "medium", cache_ttl: "1h" },
+		};
+		const routerConfig = toRouterConfig(shared as never);
+		const router = createModelRouter({ backends: [], default: "copilot" });
+		router.addDynamicBackend(
+			"copilot",
+			new GitHubCopilotDriver({
+				tokenManager,
+				namespaceId: "copilot",
+				contextWindow: 0,
+				account,
+				fetch: catalogFetch,
+				modelOverrides: routerConfig.backends[0].modelOverrides,
+			}),
+			NAMESPACE_CAPS,
+		);
+		router.markNotReady("copilot");
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await waitFor(() => router.tryGetBackend("copilot") === null);
+
+		const opus = "copilot-claude-opus-5.5";
+		const sol = "copilot-gpt-6.2-sol";
+		expect(router.tryGetBackend(opus)).not.toBeNull();
+
+		// Defaults fill effort + cache_ttl where nothing more specific is set.
+		expect(router.getEffort(sol)).toBe("medium");
+		expect(router.getCacheTtl(sol)).toBe("1h");
+		// Namespace thinking inherited by every expanded model.
+		expect(router.getThinkingConfig(sol)).toEqual({ type: "adaptive", display: "summarized" });
+		expect(router.getThinkingConfig(opus)).toEqual({ type: "adaptive", display: "summarized" });
+		// Override wins over defaults, including the operator output cap.
+		expect(router.getEffort(opus)).toBe("high");
+		expect(router.getCacheTtl(opus)).toBe("1h");
+		expect(router.getMaxOutputTokens(opus)).toBe(16000);
+
+		// The logical_model pin governs local hint resolution: the old
+		// hand-written `copilot-opus-5.5` (normalizes to `opus-5-5`) finds the
+		// expanded claude backend.
+		expect(router.resolveLocalBackendIdForHint("copilot-opus-5.5")).toBe(opus);
+		expect(router.resolveLocalBackendIdForHint("gpt-6.2-sol")).toBe(sol);
+	});
+
+	it("re-applies the full config after a SIGHUP-style reload + re-expansion", async () => {
+		const metadataFetch = async () => ({ ok: true as const, value: lineup() });
+		const usageFetch = async () => ({
+			ok: true as const,
+			value: { concurrencyLimit: 2 } satisfies UmansUsage,
+		});
+		const build = (effort: string, cacheTtl: string) => ({
+			backends: [{ id: "umans", provider: "umans", api_key: "sk-test", effort }],
+			default: "umans",
+			defaults: { cache_ttl: cacheTtl },
+		});
+		const shared = build("low", "1h");
+		const routerConfig = toRouterConfig(shared as never);
+		routerConfig.backends[0].metadataFetch = metadataFetch;
+		routerConfig.backends[0].usageFetch = usageFetch;
+		const router = createModelRouter(routerConfig);
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await waitFor(() => router.tryGetBackend("umans") === null);
+		expect(router.getEffort("umans-coder")).toBe("low");
+		expect(router.getCacheTtl("umans-coder")).toBe("1h");
+		expect(router.getMaxOutputTokens("umans-coder")).toBe(8192);
+
+		const reloaded = build("high", "5m");
+		(appContext.config as { modelBackends: unknown }).modelBackends = reloaded;
+		const reloadedConfig = toRouterConfig(reloaded as never);
+		reloadedConfig.backends[0].metadataFetch = metadataFetch;
+		reloadedConfig.backends[0].usageFetch = usageFetch;
+		router.reload(reloadedConfig);
+		wireBackendReadiness(appContext, router);
+		await waitFor(() => router.tryGetBackend("umans") === null);
+
+		expect(router.getEffort("umans-coder")).toBe("high");
+		expect(router.getCacheTtl("umans-coder")).toBe("5m");
+		expect(router.getMaxOutputTokens("umans-coder")).toBe(8192);
 	});
 });

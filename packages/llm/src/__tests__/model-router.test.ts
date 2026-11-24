@@ -1802,6 +1802,40 @@ describe("ModelRouter generic readiness (AC.20)", () => {
 		expect(router.getMaxOutputTokens("m-a")).toBe(8192);
 	});
 
+	it("stores a full BackendConfig handed to addDynamicBackend, replacing any prior one", () => {
+		const router = new ModelRouter(new Map<string, LLMBackend>(), "");
+		const backend = new CachingMockBackend("ns-openai.gpt-5.6-sol");
+		const caps = backend.capabilities();
+		router.addDynamicBackend("ns-openai.gpt-5.6-sol", backend, caps, 4096, undefined, {
+			id: "ignored",
+			provider: "bedrock",
+			model: "openai.gpt-5.6-sol",
+			effort: "high",
+			cacheTtl: "1h",
+			thinking: { type: "adaptive" },
+			systemPromptSuffix: "sfx",
+		});
+		const id = "ns-openai.gpt-5.6-sol";
+		expect(router.getEffort(id)).toBe("high");
+		expect(router.getCacheTtl(id)).toBe("1h");
+		expect(router.getThinkingConfig(id)).toEqual({ type: "adaptive", display: "summarized" });
+		expect(router.getSystemPromptSuffix(id)).toBe("sfx");
+		// The descriptor budget fills an absent config cap.
+		expect(router.getMaxOutputTokens(id)).toBe(4096);
+		expect(router.resolveLocalBackendIdForHint("gpt-5.6-sol")).toBe(id);
+
+		// Re-registration replaces the prior config rather than merging stale fields.
+		router.addDynamicBackend(id, backend, caps, 4096, undefined, {
+			id,
+			provider: "bedrock",
+			model: "openai.gpt-5.6-sol",
+			maxOutputTokens: 2048,
+		});
+		expect(router.getEffort(id)).toBeUndefined();
+		expect(router.getCacheTtl(id)).toBe("5m");
+		expect(router.getMaxOutputTokens(id)).toBe(2048);
+	});
+
 	it("leaves getMaxOutputTokens undefined when a dynamic backend reports no budget", () => {
 		// A dynamic backend without a per-model output limit stays undefined —
 		// the caller (clampMaxOutputTokens) then omits max_tokens, unchanged.
@@ -1948,6 +1982,24 @@ describe("ModelRouter — resolveLocalBackendIdForHint", () => {
 
 	it("returns null when nothing matches", () => {
 		expect(make().resolveLocalBackendIdForHint("no-such-model")).toBeNull();
+	});
+
+	it("matches an operator logical_model pin instead of the structural key", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "copilot-claude-opus-5.5",
+					provider: "openai-compatible",
+					model: "claude-opus-5.5",
+					apiKey: "k",
+					baseUrl: "http://localhost",
+					contextWindow: 1000,
+					logicalModel: "opus-5-5",
+				},
+			],
+			default: "copilot-claude-opus-5.5",
+		});
+		expect(router.resolveLocalBackendIdForHint("copilot-opus-5.5")).toBe("copilot-claude-opus-5.5");
 	});
 
 	it("skips not-ready backends on both the literal and logical paths", () => {

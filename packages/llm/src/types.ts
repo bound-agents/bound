@@ -517,6 +517,12 @@ export interface BackendConfig {
 	/** Text appended to the stable system prompt for turns served by this backend. */
 	systemPromptSuffix?: string;
 	/**
+	 * Operator-pinned logical model (`logical_model`, or a namespace
+	 * `model_overrides` pin on an expanded backend). Local hint resolution
+	 * matches it in place of the structural key of `(provider, model)`.
+	 */
+	logicalModel?: string;
+	/**
 	 * Prompt cache TTL hint forwarded to the provider's cache breakpoint.
 	 * Bedrock supports "5m" (default) and "1h" (extended, only for newer
 	 * Claude models). Anthropic native API supports both via cache_control.
