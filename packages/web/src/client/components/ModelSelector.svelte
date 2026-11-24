@@ -1,20 +1,24 @@
 <script lang="ts">
-	import {
-		type ClusterModelInfo,
-		type ModelRoutingInfo,
-		sortClusterModelsById,
-	} from "@bound/client";
+	import type { ClusterModelInfo, ModelRoutingInfo } from "@bound/client";
 	import { Cpu } from "lucide-svelte";
 	import { onMount } from "svelte";
 	import { client } from "../lib/bound";
-	import { resolveInitialModel } from "../lib/model-hint";
+	import {
+		type ModelOption,
+		buildModelOptions,
+		logicalModelFor,
+		resolveInitialModel,
+	} from "../lib/model-hint";
 	import { modelStore } from "../lib/modelStore";
 	import ModelHealthDot from "./ModelHealthDot.svelte";
 
 	const { modelHint = undefined } = $props<{ modelHint?: string | null }>();
 
+	// Selected logical model id (spec §9.1: the picker chooses a logical model by
+	// display name; concrete routes live only under Advanced › Pin route).
 	let selectedModel = $state("");
 	let models = $state<ClusterModelInfo[]>([]);
+	let options = $state<ModelOption[]>([]);
 	// Per-logical-model health, keyed by logical model id, for the three-state dot.
 	let routing = $state<ModelRoutingInfo[]>([]);
 	// Advanced route-pin disclosure (hard pin to a specific RouteId; §9.1).
@@ -32,12 +36,13 @@
 				// just leaves every dot grey rather than failing the picker.
 				client.getRoutingModels().catch(() => ({ models: [] })),
 			]);
-			models = sortClusterModelsById(data.models);
+			models = data.models;
 			routing = routingData.models;
-			const resolved = resolveInitialModel(models, data.default, modelHint);
+			options = buildModelOptions(models, routing);
+			const resolved = resolveInitialModel(options, models, data.default, modelHint);
 			selectedModel = resolved.selectedModel;
 			modelStore.setModel(resolved.modelId);
-			if (modelHint && resolved.modelId === modelHint) {
+			if (modelHint && logicalModelFor(modelHint, options, models)) {
 				hintApplied = true;
 			}
 		} catch (error) {
@@ -58,41 +63,28 @@
 		return "unknown";
 	}
 
-	// The currently-selected logical model (its id, @host suffix stripped).
-	const selectedLogical = $derived(
-		selectedModel.includes("@") ? selectedModel.split("@")[0] : selectedModel,
-	);
-
-	// Advertised routes for the selected model, for the Advanced pin dropdown.
+	// Advertised routes for the selected logical model, for the Advanced pin dropdown.
 	const selectedRoutes = $derived(
-		routing.find((m) => m.logical_model === selectedLogical)?.routes ?? [],
+		routing.find((m) => m.logical_model === selectedModel)?.routes ?? [],
 	);
-
-	// The user-facing display name for a logical model (spec §2.1): the routing
-	// catalog's resolved name, never the internal grouping key. Falls back to the
-	// id only when the routing API has no entry (older server / unresolved).
-	function displayName(modelId: string): string {
-		return routing.find((m) => m.logical_model === modelId)?.display_name ?? modelId;
-	}
 
 	// Handle the case where modelHint arrives after models have loaded.
 	// Common path: LineView's onMount fetches the thread (which has model_hint)
 	// asynchronously, so ModelSelector may already be mounted with no hint yet.
 	$effect(() => {
-		if (modelHint && models.length > 0 && !hintApplied) {
-			const hintMatch = models.find((m) => m.id === modelHint);
-			if (hintMatch) {
-				selectedModel = `${hintMatch.id}@${hintMatch.host}`;
-				modelStore.setModel(hintMatch.id);
+		if (modelHint && options.length > 0 && !hintApplied) {
+			const logical = logicalModelFor(modelHint, options, models);
+			if (logical) {
+				selectedModel = logical;
+				modelStore.setModel(logical);
 				hintApplied = true;
 			}
 		}
 	});
 
 	function handleChange(): void {
-		// Extract model ID (strip @host suffix if present)
-		const modelId = selectedModel.includes("@") ? selectedModel.split("@")[0] : selectedModel;
-		modelStore.setModel(modelId);
+		// Option values are logical model ids — the hint the server resolves.
+		modelStore.setModel(selectedModel);
 	}
 </script>
 
@@ -100,19 +92,10 @@
 	<label for="model">
 		<Cpu size={14} />
 	</label>
-	<ModelHealthDot state={healthFor(selectedLogical)} />
+	<ModelHealthDot state={healthFor(selectedModel)} />
 	<select id="model" aria-label="Model" bind:value={selectedModel} onchange={handleChange}>
-		{#each models as model}
-			<option
-				value={model.id + "@" + model.host}
-				class:relay={model.via === "relay"}
-				class:stale={model.status === "offline?"}
-			>
-				{displayName(model.id)}
-				{#if model.via === "relay"}
-					({model.host}{model.status === "offline?" ? " · offline?" : " · via relay"})
-				{/if}
-			</option>
+		{#each options as option}
+			<option value={option.id}>{option.label}</option>
 		{/each}
 	</select>
 	{#if selectedRoutes.length > 0}
@@ -165,14 +148,5 @@
 	select:focus {
 		outline: none;
 		border-color: var(--ink);
-	}
-
-	option.relay {
-		color: var(--ink-3);
-	}
-
-	option.stale {
-		color: var(--ink-4);
-		font-style: italic;
 	}
 </style>

@@ -70,7 +70,8 @@ export function PickerView({
 					const response = await client.listModels();
 					setItems(
 						sortClusterModelsById(response.models).map((m) => ({
-							id: m.id,
+							// Select the logical model (spec §9.1); older servers omit it.
+							id: m.logical_model ?? m.id,
 							// Show the user-facing display name (spec §2.1), never the internal id.
 							// Older servers omit display_name; fall back to the model id.
 							label: m.display_name ?? m.id,

@@ -110,6 +110,11 @@ export interface NetworkStatus {
 export interface ClusterModelInfo {
 	id: string;
 	/**
+	 * Logical model this row's backend serves (spec §2.1) — the selection key and
+	 * a valid model hint. Optional because older servers omit it.
+	 */
+	logical_model?: string;
+	/**
 	 * User-facing display name (spec §2.1); the UI shows this, never the internal
 	 * id. Optional because servers older than this field omit it.
 	 */

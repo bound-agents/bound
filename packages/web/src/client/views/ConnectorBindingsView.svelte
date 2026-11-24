@@ -278,10 +278,10 @@
 									<option value="">Cluster default{defaultModel ? ` (${defaultModel})` : ""}</option
 									>
 									{#each availableModels as m (`${m.host}/${m.id}`)}
-										<option value={m.id}
-											>{m.id}{m.via === "relay" ? ` — ${m.host}` : ""}{m.status === "offline?"
-												? " (offline?)"
-												: ""}</option
+										<option value={m.logical_model ?? m.id}
+											>{m.display_name ?? m.logical_model ?? m.id}{m.via === "relay"
+												? ` — ${m.host}`
+												: ""}{m.status === "offline?" ? " (offline?)" : ""}</option
 										>
 									{/each}
 								</select>

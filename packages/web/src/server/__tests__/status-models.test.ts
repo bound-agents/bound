@@ -178,6 +178,55 @@ describe("/api/models cluster aggregation (AC5.1-AC5.5)", () => {
 			expect(sharedModels).toHaveLength(1);
 		});
 
+		it("collapses expanded backend ids for one logical model across hosts into one named row", async () => {
+			const now = new Date().toISOString();
+			const entry = (id: string) => ({
+				id,
+				provider: "x",
+				logical_model: "gpt-6-1-sol",
+				display_name: "GPT-6.1 Sol",
+			});
+			const insert = db.prepare(
+				"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, 0)",
+			);
+			insert.run(
+				"host-a",
+				"host-a",
+				JSON.stringify([entry("bedrock-main-openai.gpt-6.1-sol")]),
+				now,
+				now,
+			);
+			insert.run("host-b", "host-b", JSON.stringify([entry("copilot-gpt-6.1-sol")]), now, now);
+
+			const res = await app.fetch(new Request("http://localhost/models"));
+			const body = (await res.json()) as {
+				models: Array<{ id: string; logical_model: string; display_name: string }>;
+			};
+			const rows = body.models.filter((m) => m.logical_model === "gpt-6-1-sol");
+			expect(rows).toHaveLength(1);
+			expect(rows[0].display_name).toBe("GPT-6.1 Sol");
+			// Rows without an advertised logical model fall back to their own id.
+			expect(body.models.find((m) => m.id === "local-claude")?.logical_model).toBe("local-claude");
+		});
+
+		it("maps a local expanded backend to its advertised logical model", async () => {
+			const now = new Date().toISOString();
+			db.prepare("UPDATE hosts SET models = ?, modified_at = ? WHERE site_id = ?").run(
+				JSON.stringify([
+					{ id: "local-gpt", provider: "openai", logical_model: "gpt-x", display_name: "GPT X" },
+					{ id: "local-claude", provider: "anthropic" },
+				]),
+				now,
+				localSiteId,
+			);
+			const res = await app.fetch(new Request("http://localhost/models"));
+			const body = (await res.json()) as {
+				models: Array<{ id: string; logical_model: string; display_name: string; via: string }>;
+			};
+			const row = body.models.find((m) => m.id === "local-gpt");
+			expect(row).toMatchObject({ logical_model: "gpt-x", display_name: "GPT X", via: "local" });
+		});
+
 		it("collapses a model present both locally and remotely, keeping the local annotation", async () => {
 			// local-gpt is a local backend (seeded in beforeEach); advertise the same
 			// id from a remote host. The API must return one entry, local-first.

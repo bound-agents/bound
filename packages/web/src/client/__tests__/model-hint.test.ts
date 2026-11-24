@@ -1,46 +1,62 @@
 import { describe, expect, it } from "bun:test";
-import { resolveInitialModel } from "../lib/model-hint";
+import { buildModelOptions, logicalModelFor, resolveInitialModel } from "../lib/model-hint";
 
 const models = [
-	{ id: "claude-opus-4", host: "local" },
-	{ id: "claude-sonnet-4-5", host: "local" },
-	{ id: "gpt-4o", host: "remote" },
+	{ id: "zai-glm-5.3-flash", logical_model: "glm-5-3-flash", display_name: "GLM-5.3 Flash" },
+	{ id: "copilot-glm-5.3-flash", logical_model: "glm-5-3-flash", display_name: "GLM-5.3 Flash" },
+	{ id: "opencode-go-kimi-k3", logical_model: "kimi-k3", display_name: "Kimi K3" },
+	{ id: "legacy", display_name: "legacy" },
 ];
+const options = buildModelOptions(models, []);
+
+describe("buildModelOptions", () => {
+	it("collapses backends of one logical model and labels by display name", () => {
+		expect(options).toEqual([
+			{ id: "glm-5-3-flash", label: "GLM-5.3 Flash" },
+			{ id: "kimi-k3", label: "Kimi K3" },
+			{ id: "legacy", label: "legacy" },
+		]);
+	});
+
+	it("prefers the routing API and never labels with a backend id", () => {
+		const opts = buildModelOptions(models, [
+			{ logical_model: "gpt-6-1-sol", display_name: null },
+			{ logical_model: "kimi-k3", display_name: "Kimi K3" },
+		]);
+		expect(opts).toEqual([
+			{ id: "gpt-6-1-sol", label: "gpt-6-1-sol" },
+			{ id: "kimi-k3", label: "Kimi K3" },
+		]);
+		for (const o of opts) expect(models.map((m) => m.id)).not.toContain(o.label);
+	});
+});
 
 describe("resolveInitialModel", () => {
-	it("uses global default when no hint provided", () => {
-		const result = resolveInitialModel(models, "claude-opus-4", null);
-		expect(result.selectedModel).toBe("claude-opus-4@local");
-		expect(result.modelId).toBe("claude-opus-4");
+	it("maps a backend-id default to its logical option", () => {
+		expect(resolveInitialModel(options, models, "zai-glm-5.3-flash", null)).toEqual({
+			selectedModel: "glm-5-3-flash",
+			modelId: "glm-5-3-flash",
+		});
 	});
 
-	it("uses hint when the hint model exists in the list", () => {
-		const result = resolveInitialModel(models, "claude-opus-4", "claude-sonnet-4-5");
-		expect(result.selectedModel).toBe("claude-sonnet-4-5@local");
-		expect(result.modelId).toBe("claude-sonnet-4-5");
+	it("hint (backend or logical id) takes precedence over the default", () => {
+		expect(
+			resolveInitialModel(options, models, "zai-glm-5.3-flash", "opencode-go-kimi-k3").modelId,
+		).toBe("kimi-k3");
+		expect(resolveInitialModel(options, models, "zai-glm-5.3-flash", "kimi-k3").modelId).toBe(
+			"kimi-k3",
+		);
 	});
 
-	it("falls back to global default when hint model is not found", () => {
-		const result = resolveInitialModel(models, "claude-opus-4", "unknown-model");
-		expect(result.selectedModel).toBe("claude-opus-4@local");
-		expect(result.modelId).toBe("claude-opus-4");
+	it("falls back to the default when the hint is unknown, and to the raw default when nothing matches", () => {
+		expect(resolveInitialModel(options, models, "kimi-k3", "ghost").modelId).toBe("kimi-k3");
+		expect(resolveInitialModel([], [], "ghost", undefined)).toEqual({
+			selectedModel: "ghost",
+			modelId: "ghost",
+		});
 	});
 
-	it("returns raw default string when models list is empty", () => {
-		const result = resolveInitialModel([], "claude-opus-4", null);
-		expect(result.selectedModel).toBe("claude-opus-4");
-		expect(result.modelId).toBe("claude-opus-4");
-	});
-
-	it("treats undefined hint same as null", () => {
-		const result = resolveInitialModel(models, "claude-opus-4", undefined);
-		expect(result.selectedModel).toBe("claude-opus-4@local");
-		expect(result.modelId).toBe("claude-opus-4");
-	});
-
-	it("hint takes precedence over global default", () => {
-		const result = resolveInitialModel(models, "claude-opus-4", "gpt-4o");
-		expect(result.selectedModel).toBe("gpt-4o@remote");
-		expect(result.modelId).toBe("gpt-4o");
+	it("logicalModelFor returns undefined for unknown ids", () => {
+		expect(logicalModelFor("nope", options, models)).toBeUndefined();
 	});
 });

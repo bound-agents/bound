@@ -33,7 +33,9 @@ export interface ModelInfo {
 
 export interface ClusterModelInfo {
 	id: string;
-	/** User-facing display name (spec §2.1), from the serving host's hosts.models advertisement; falls back to the id. */
+	/** Logical model this backend serves (spec §2.1); the picker's selection key. Falls back to the id. */
+	logical_model: string;
+	/** User-facing display name (spec §2.1) of the logical model; never a backend id when a logical model is known. */
 	display_name: string;
 	provider: string;
 	host: string;
@@ -130,31 +132,37 @@ export function createStatusRoutes(
 		// discovery endpoint) or a static snapshot — resolve per request.
 		const resolved = typeof modelsConfig === "function" ? modelsConfig() : modelsConfig;
 
-		// Logical model id → user-facing display name (spec §2.1), harvested from
-		// every host's hosts.models advertisement. The `ClusterModelInfo.id` the
-		// picker shows is the logical model id, so this maps it to the resolved name
-		// (never the internal grouping key). First advertised name per id wins; the
-		// id itself is the fallback when no host advertised a name.
+		// Backend id / logical model id → logical model and user-facing display name
+		// (spec §2.1), harvested from every host's hosts.models advertisement
+		// (including this host's own row, which carries the logical model of each
+		// local expanded backend). First advertised value per key wins.
 		const displayNameByModelId = new Map<string, string>();
+		const logicalByModelId = new Map<string, string>();
 		for (const host of listHostSiteIdNameAndModels(db)) {
 			if (host.models === null) continue;
 			const parsed = parseJsonSafe(hostModelsSchema, host.models, "host.models");
 			if (!parsed.ok) continue;
 			for (const raw of parsed.value) {
 				if (typeof raw === "string") continue;
+				const logical = raw.logical_model ?? raw.id;
+				if (!logicalByModelId.has(raw.id)) logicalByModelId.set(raw.id, logical);
 				if (!raw.display_name) continue;
-				// Key by both the logical model and the backend id: local models are
-				// listed by backend id, remote ones by logical model.
-				for (const key of new Set([raw.logical_model ?? raw.id, raw.id])) {
+				for (const key of new Set([logical, raw.id])) {
 					if (!displayNameByModelId.has(key)) displayNameByModelId.set(key, raw.display_name);
 				}
 			}
 		}
-		const displayNameFor = (modelId: string): string =>
-			displayNameByModelId.get(modelId) ?? modelId;
+		const logicalFor = (modelId: string): string => logicalByModelId.get(modelId) ?? modelId;
+		// Never a backend id when a logical model is known: logical name, then the
+		// backend's own advertised name, then the logical id.
+		const displayNameFor = (modelId: string): string => {
+			const logical = logicalFor(modelId);
+			return displayNameByModelId.get(logical) ?? displayNameByModelId.get(modelId) ?? logical;
+		};
 
 		const localModels: ClusterModelInfo[] = (resolved?.models ?? []).map((m) => ({
 			id: m.id,
+			logical_model: logicalFor(m.id),
 			display_name: displayNameFor(m.id),
 			provider: m.provider,
 			host: hostName,
@@ -192,6 +200,7 @@ export function createStatusRoutes(
 			for (const modelId of modelIds) {
 				remoteModels.push({
 					id: modelId,
+					logical_model: logicalFor(modelId),
 					display_name: displayNameFor(modelId),
 					provider: "remote",
 					host: host.host_name,
@@ -201,17 +210,16 @@ export function createStatusRoutes(
 			}
 		}
 
-		// #271: A model provided by multiple backends/hosts (pooled backends, or
-		// the same id local + remote / on two remotes) must appear once. Dedup the
-		// concatenated list by id, keeping the first-seen entry. localModels come
-		// first, so a model present both locally and remotely resolves to the local
-		// annotation (via/status "local"). This is presentational only — routing
-		// (resolveModel/ModelRouter) re-picks an eligible provider per call.
+		// #271 / spec §9.1: one row per LOGICAL model. Expanded backends of the same
+		// logical model (pooled providers, several hosts, local + remote) collapse
+		// to the first-seen entry; localModels come first so a locally servable
+		// model keeps the local annotation. Presentational only — routing re-picks
+		// an eligible provider per call.
 		const deduped: ClusterModelInfo[] = [];
 		const seenModelIds = new Set<string>();
 		for (const model of [...localModels, ...remoteModels]) {
-			if (seenModelIds.has(model.id)) continue;
-			seenModelIds.add(model.id);
+			if (seenModelIds.has(model.logical_model)) continue;
+			seenModelIds.add(model.logical_model);
 			deduped.push(model);
 		}
 
