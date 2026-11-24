@@ -18,7 +18,7 @@
  * structured metadata, and `models.dev` is the metadata fallback layer.
  */
 
-import type { DiscoveredModel } from "./discovery";
+import type { BedrockDiscoveryFields, DiscoveredModel } from "./discovery";
 
 function isRecord(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -43,6 +43,54 @@ function stringField(row: unknown, key: string): string | undefined {
 	if (!isRecord(row)) return undefined;
 	const v = row[key];
 	return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+/**
+ * Extract the Bedrock `ListFoundationModels` lineup-filter fields from one
+ * `modelSummaries` row, or `undefined` when the row carries none of them. The
+ * undocumented-but-live `inferenceAPIsSupported` / `explicitPromptCaching`
+ * blocks (operator-accepted, 2026-11-23) are read with the same tolerance as the
+ * documented `modelLifecycle.status` / `inferenceTypesSupported` / modality
+ * lists: a missing nested field stays unset, never guessed, so the namespace
+ * lineup filter treats "no signal" as "no protocol".
+ */
+function parseBedrockLineupFields(row: unknown): BedrockDiscoveryFields | undefined {
+	if (!isRecord(row)) return undefined;
+	const out: BedrockDiscoveryFields = {};
+	const arn = stringField(row, "modelArn");
+	if (arn) out.modelArn = arn;
+	if (isRecord(row.modelLifecycle)) {
+		const status = row.modelLifecycle.status;
+		if (typeof status === "string") out.lifecycleStatus = status;
+	}
+	if (Array.isArray(row.inferenceTypesSupported)) {
+		out.inferenceTypes = row.inferenceTypesSupported.filter(
+			(t): t is string => typeof t === "string",
+		);
+	}
+	if (Array.isArray(row.inputModalities)) {
+		out.inputText = row.inputModalities.some(
+			(m) => typeof m === "string" && m.toUpperCase() === "TEXT",
+		);
+	}
+	if (Array.isArray(row.outputModalities)) {
+		const mods = row.outputModalities.filter((m): m is string => typeof m === "string");
+		out.outputTextOnly = mods.length === 1 && mods[0]?.toUpperCase() === "TEXT";
+	}
+	if (isRecord(row.inferenceAPIsSupported)) {
+		const apis = row.inferenceAPIsSupported;
+		if (typeof apis.openAiResponses === "boolean") out.openAiResponses = apis.openAiResponses;
+		if (isRecord(apis.converse) && typeof apis.converse.streaming === "boolean") {
+			out.converseStreaming = apis.converse.streaming;
+		}
+	}
+	if (
+		isRecord(row.explicitPromptCaching) &&
+		typeof row.explicitPromptCaching.isSupported === "boolean"
+	) {
+		out.explicitPromptCaching = row.explicitPromptCaching.isSupported;
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
@@ -109,6 +157,8 @@ export function parseBedrockFoundationModels(body: unknown): DiscoveredModel[] {
 			const max = row.converse.maxTokensMaximum;
 			if (typeof max === "number" && Number.isFinite(max)) model.maxOutputTokens = max;
 		}
+		const bedrock = parseBedrockLineupFields(row);
+		if (bedrock) model.bedrock = bedrock;
 		out.push(model);
 	}
 	return out;
@@ -125,7 +175,20 @@ export function parseBedrockInferenceProfiles(body: unknown): DiscoveredModel[] 
 	for (const row of summaryArray(body, "inferenceProfileSummaries")) {
 		const id = stringField(row, "inferenceProfileId");
 		if (!id) continue;
-		out.push({ providerModelId: id });
+		const model: DiscoveredModel = { providerModelId: id };
+		if (isRecord(row)) {
+			const bedrock: BedrockDiscoveryFields = {};
+			if (typeof row.type === "string") bedrock.profileType = row.type;
+			if (typeof row.status === "string") bedrock.profileStatus = row.status;
+			if (Array.isArray(row.models)) {
+				const arns = row.models
+					.map((m) => (isRecord(m) && typeof m.modelArn === "string" ? m.modelArn : undefined))
+					.filter((a): a is string => a !== undefined);
+				if (arns.length > 0) bedrock.profileModelArns = arns;
+			}
+			if (Object.keys(bedrock).length > 0) model.bedrock = bedrock;
+		}
+		out.push(model);
 	}
 	return out;
 }

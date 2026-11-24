@@ -109,14 +109,14 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 		).toEqual({ value: 0.0002, error: null });
 	});
 
-	it("rejects functions outside backend.price", async () => {
+	it("rejects functions outside backend.price or a model_overrides[*].price", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),
 			`export default { backends: [{ id: "local", provider: "openai-compatible", model: () => "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1" }], default: "local" };`,
 		);
 
 		await expect(loadModelBackendsConfig(configDir)).rejects.toThrow(
-			"only backend.price may be a function",
+			"only backend.price or a model_overrides[*].price may be a function",
 		);
 	});
 
@@ -127,5 +127,40 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 		);
 
 		await expect(loadModelBackendsConfig(configDir)).rejects.toThrow("finite non-negative number");
+	});
+
+	it("compiles a model_overrides[*].price callback keyed by the expanded backend id", async () => {
+		// Requirement 5: a per-model `price(turn)` callback on a namespace entry's
+		// override object is the per-model analogue of the top-level per-backend
+		// `price`. The loader must compile it into the hardened pricing registry
+		// keyed by the expanded `${backendId}-${providerModelId}` so the hot path
+		// resolves it for the expanded backend.
+		writeFileSync(
+			join(configDir, "model_backends.js"),
+			`export default { backends: [{ id: "bedrock", provider: "bedrock", region: "us-east-1", profile: "admin", model_overrides: { "anthropic.claude-haiku-5-5": { price(turn) { return turn.inputTokens / 1000; } } } }], default: "bedrock" };`,
+		);
+
+		await loadModelBackendsConfig(configDir);
+		expect(
+			calculateDynamicPrice("bedrock-anthropic.claude-haiku-5-5", {
+				modelId: "bedrock-anthropic.claude-haiku-5-5",
+				inputTokens: 100,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				pricesPerM: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+		).toEqual({ value: 0.1, error: null });
+	});
+
+	it("rejects a function at a non-price key inside model_overrides", async () => {
+		writeFileSync(
+			join(configDir, "model_backends.js"),
+			`export default { backends: [{ id: "bedrock", provider: "bedrock", region: "us-east-1", profile: "admin", model_overrides: { "anthropic.claude-haiku-5-5": { logical_model: () => "haiku" } } }], default: "bedrock" };`,
+		);
+
+		await expect(loadModelBackendsConfig(configDir)).rejects.toThrow(
+			"only backend.price or a model_overrides[*].price may be a function",
+		);
 	});
 });

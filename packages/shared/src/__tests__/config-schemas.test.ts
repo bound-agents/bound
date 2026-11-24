@@ -452,7 +452,7 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("accepts a github-copilot namespace with blanket controls + copilot_model_overrides", () => {
+		it("accepts a github-copilot namespace with blanket controls + model_overrides", () => {
 			const config = {
 				backends: [
 					{
@@ -461,7 +461,7 @@ describe("Config schemas", () => {
 						thinking: { type: "adaptive" },
 						effort: "medium",
 						cache_ttl: "1h",
-						copilot_model_overrides: {
+						model_overrides: {
 							"claude-opus-5.5": { logical_model: "opus-5-5", cache_ttl: "5m" },
 						},
 					},
@@ -507,13 +507,13 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("rejects an unknown key inside copilot_model_overrides (strict)", () => {
+		it("rejects an unknown key inside model_overrides (strict)", () => {
 			const config = {
 				backends: [
 					{
 						id: "copilot",
 						provider: "github-copilot",
-						copilot_model_overrides: {
+						model_overrides: {
 							"claude-opus-5.5": { not_a_field: true },
 						},
 					},
@@ -553,13 +553,98 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
-		it("still rejects a NON-umans row that omits model (model stays required)", () => {
+		it("still rejects a NON-self-configuring row that omits model (model stays required)", () => {
+			// anthropic is a direct vendor API, not a self-configuring namespace, so a
+			// model is still mandatory. (bedrock / bedrock-mantle WITHOUT a model are now
+			// valid namespace entries — covered below.)
 			const config = {
-				backends: [{ id: "x", provider: "bedrock", region: "us-east-1", context_window: 200000 }],
+				backends: [{ id: "x", provider: "anthropic", api_key: "k", context_window: 200000 }],
 				default: "x",
 			};
 			const result = modelBackendsSchema.safeParse(config);
 			expect(result.success).toBe(false);
+		});
+
+		it("accepts a bedrock namespace entry (no model) for a (profile, region)", () => {
+			const config = {
+				backends: [
+					{ id: "bedrock-use1", provider: "bedrock", region: "us-east-1", profile: "admin" },
+				],
+				default: "bedrock-use1",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+		});
+
+		it("accepts a bedrock-mantle namespace entry (no model, no provider_mode)", () => {
+			const config = {
+				backends: [
+					{ id: "mantle-use1", provider: "bedrock-mantle", region: "us-east-1", profile: "admin" },
+				],
+				default: "mantle-use1",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+		});
+
+		it("accepts a bedrock namespace with cross_region and model_overrides", () => {
+			const config = {
+				backends: [
+					{
+						id: "bedrock-use1",
+						provider: "bedrock",
+						region: "us-east-1",
+						profile: "admin",
+						cross_region: "global",
+						model_overrides: {
+							"anthropic.claude-haiku-5-5": {
+								logical_model: "haiku",
+								price_per_m_cache_write_1h: 1.0,
+							},
+						},
+					},
+				],
+				default: "bedrock-use1",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+		});
+
+		it("accepts a `price` turn callback inside model_overrides (JS-config only)", () => {
+			// Requirement 5: a tiered per-model `price(turn)` callback is a legitimate
+			// operator fact with no published source (e.g. the haiku tiered price). It
+			// is the per-model analogue of the top-level per-backend `price` and must be
+			// expressible on a namespace entry's override object.
+			const config = {
+				backends: [
+					{
+						id: "bedrock",
+						provider: "bedrock",
+						region: "us-east-1",
+						profile: "admin",
+						model_overrides: {
+							"anthropic.claude-haiku-5-5": {
+								price: (turn: { inputTokens: number }) => turn.inputTokens / 1_000_000,
+							},
+						},
+					},
+				],
+				default: "bedrock",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+		});
+
+		it("rejects a bedrock namespace entry (no model) that sets an authoritative catalog field", () => {
+			for (const authoritative of [
+				{ context_window: 200000 },
+				{ price_per_m_input: 3 },
+				{ capabilities: { vision: true } },
+			]) {
+				const config = {
+					backends: [
+						{ id: "bedrock-use1", provider: "bedrock", region: "us-east-1", ...authoritative },
+					],
+					default: "bedrock-use1",
+				};
+				expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+			}
 		});
 
 		it("rejects negative context_window", () => {

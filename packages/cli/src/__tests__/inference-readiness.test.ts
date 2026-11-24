@@ -264,7 +264,7 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 				{
 					id: "copilot",
 					provider: "github-copilot",
-					copilot_model_overrides: {
+					model_overrides: {
 						"claude-opus-5.5": { logical_model: "opus-5-5" },
 					},
 				},
@@ -277,7 +277,7 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		// toRouterConfig(shared) is used only to translate the per-model override map
 		// (snake_case → camelCase) the way production does, per invariant #17.
 		const routerConfig = toRouterConfig(shared as never);
-		const copilotOverrides = routerConfig.backends[0].copilotModelOverrides;
+		const copilotOverrides = routerConfig.backends[0].modelOverrides;
 		const router = createModelRouter({ backends: [], default: "copilot" });
 		// Seed the namespace driver (the real factory needs a token-store file on
 		// disk; this injects a resolved account + a catalog fetch instead).
@@ -287,7 +287,7 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 			contextWindow: 0,
 			account,
 			fetch: catalogFetch,
-			copilotModelOverrides: copilotOverrides,
+			modelOverrides: copilotOverrides,
 		});
 		router.addDynamicBackend("copilot", namespace, {
 			streaming: true,

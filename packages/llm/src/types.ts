@@ -496,6 +496,12 @@ export interface BackendConfig {
 	id: string;
 	provider: string;
 	providerMode?: "anthropic" | "openai_responses";
+	/**
+	 * Preferred cross-region inference-profile scope for a self-configuring
+	 * `bedrock` / `bedrock-mantle` namespace entry (`global` | `us` | `eu` | …).
+	 * Default `global` (decision 3). Ignored on a concrete (model-bearing) entry.
+	 */
+	crossRegion?: string;
 	model: string;
 	baseUrl?: string;
 	/** Absolute path to the ChatGPT OAuth token bundle, when configured. */
@@ -550,14 +556,15 @@ export interface BackendConfig {
 	 */
 	additionalHeaders?: Record<string, string>;
 	/**
-	 * Per-model request-control overrides for a self-configuring `github-copilot`
-	 * NAMESPACE backend (no `model`). Keyed by provider model id (e.g.
-	 * `claude-opus-5.5`); each value's `thinking` / `effort` / `cacheTtl` /
-	 * `logicalModel` / `maxOutputTokens` / `systemPromptSuffix` apply to just that
-	 * expanded per-model backend, so one model's controls are pinned WITHOUT
-	 * listing every model. Absent / non-namespace → no per-model overrides.
+	 * Per-model request-control + operator-fact overrides for a self-configuring
+	 * NAMESPACE backend (no `model`), provider-agnostic across every namespace
+	 * provider (`github-copilot`, `bedrock`, `bedrock-mantle`, `umans`). Keyed by
+	 * provider model id (the bare foundation-model id OR the resolved
+	 * inference-profile id); each value pins just that expanded backend's request
+	 * controls + operator facts WITHOUT listing every model (requirement 5). Absent
+	 * / non-namespace → no per-model overrides.
 	 */
-	copilotModelOverrides?: Record<
+	modelOverrides?: Record<
 		string,
 		{
 			thinking?: unknown;
@@ -565,7 +572,14 @@ export interface BackendConfig {
 			cacheTtl?: string;
 			logicalModel?: string;
 			maxOutputTokens?: number;
+			contextWindow?: number;
 			systemPromptSuffix?: string;
+			pricePerMInput?: number;
+			pricePerMOutput?: number;
+			pricePerMCacheWrite?: number;
+			pricePerMCacheWrite1h?: number;
+			pricePerMCacheRead?: number;
+			promptCaching?: boolean;
 		}
 	>;
 	[key: string]: unknown;

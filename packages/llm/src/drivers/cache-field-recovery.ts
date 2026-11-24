@@ -117,8 +117,15 @@ function collectError(err: unknown): {
  */
 export function classifyCacheFieldRejection(err: unknown): CacheFieldRejection | null {
 	const { statusCode, bodyText, param, localArgRejection } = collectError(err);
-	// A wire rejection must be a 400; a local SDK argument rejection has no status.
-	if (statusCode !== 400 && !(statusCode === undefined && localArgRejection)) return null;
+	// A wire rejection must be a 400 or a 403 Bedrock prompt-caching-entitlement
+	// denial; a local SDK argument rejection has no status.
+	if (
+		statusCode !== 400 &&
+		statusCode !== 403 &&
+		!(statusCode === undefined && localArgRejection)
+	) {
+		return null;
+	}
 	if (bodyText.length === 0 && !param) return null;
 
 	const lowerBody = bodyText.toLowerCase();
@@ -141,6 +148,15 @@ export function classifyCacheFieldRejection(err: unknown): CacheFieldRejection |
 				break;
 			}
 		}
+	}
+	// Bedrock Converse does not name the `cachePoint` field by its wire key: a 403
+	// AccessDenied ("did not allow prompt caching") and a 400 ("Extended TTL prompt
+	// caching is only supported for Anthropic models") both identify the cache field
+	// by the phrase "prompt caching". Map either to the canonical `cachepoint` field
+	// so recovery drops it / drops the extended ttl (R-MC7). A 403 is only a
+	// cache-field rejection when it carries this phrase; a plain 403 is not.
+	if (!matched && lowerBody.includes("prompt caching")) {
+		matched = "cachepoint";
 	}
 	if (!matched) return null;
 

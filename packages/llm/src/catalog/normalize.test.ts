@@ -272,3 +272,31 @@ describe("normalizeModelKey", () => {
 		});
 	});
 });
+
+describe("Bedrock/Mantle namespace expansion grouping (requirement 6)", () => {
+	// The expanded backend id is `${namespaceId}-${providerModelId}`. For grouping to
+	// fold it onto the right logical model, the namespace id MUST start with the
+	// `bedrock-` dashed vendor prefix (which rule 2 strips). A namespace id like
+	// `bedrock` yields `bedrock-anthropic.claude-opus-5-5` → `claude-opus-5-5`; a
+	// non-conforming id like `bedrock-use1` would leave a spurious `use1-` prefix.
+	it("folds an expanded bedrock-prefixed id onto the bare foundation-model family key", () => {
+		const expanded = normalizeModelKey("bedrock", "bedrock-anthropic.claude-opus-5-5").key;
+		const bare = normalizeModelKey("bedrock", "anthropic.claude-opus-5-5").key;
+		expect(expanded).toBe(bare);
+		// And it pools with the Mantle concrete entry for the same model.
+		expect(expanded).toBe(normalizeModelKey("bedrock-mantle", "anthropic.claude-opus-5-5").key);
+	});
+
+	it("folds a global./us. profile callable id onto the same key as the bare model", () => {
+		const bare = normalizeModelKey("bedrock", "openai.gpt-5.6-sol").key;
+		expect(normalizeModelKey("bedrock", "global.openai.gpt-5.6-sol").key).toBe(bare);
+		expect(normalizeModelKey("bedrock", "us.openai.gpt-5.6-sol").key).toBe(bare);
+		expect(normalizeModelKey("bedrock", "bedrock-global.openai.gpt-5.6-sol").key).toBe(bare);
+	});
+
+	it("pools a Converse model's expanded id with its profile and bare forms", () => {
+		const bare = normalizeModelKey("bedrock", "moonshotai.kimi-k3.1").key;
+		expect(normalizeModelKey("bedrock", "us.moonshotai.kimi-k3.1").key).toBe(bare);
+		expect(normalizeModelKey("bedrock", "bedrock-us.moonshotai.kimi-k3.1").key).toBe(bare);
+	});
+});

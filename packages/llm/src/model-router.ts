@@ -2,6 +2,7 @@ import type { Logger } from "@bound/shared";
 import { AnthropicDriver } from "./drivers/anthropic";
 import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
+import { BedrockNamespaceDriver } from "./drivers/bedrock-namespace";
 import { ChatGptOAuthDriver } from "./drivers/chatgpt-oauth/driver";
 import { FileTokenStore, TokenManager } from "./drivers/chatgpt-oauth/token-store";
 import { fetchAccountInfo } from "./drivers/github-copilot/auth-core";
@@ -896,6 +897,27 @@ function createBackendFromConfig(
 				throw new Error("Bedrock driver requires region in config");
 			}
 			const profile = config.profile as string | undefined;
+			// No `model` => self-configuring namespace for this (profile, region): it owns
+			// `readiness`, fetches ListFoundationModels + ListInferenceProfiles, runs the
+			// lineup filter, and expands into one concrete per-model backend (Converse or
+			// Responses-on-runtime) per catalog model (catalog §2.1). `model` present =>
+			// a single concrete Converse backend, unchanged.
+			if (config.model === undefined) {
+				return new BedrockNamespaceDriver({
+					namespaceId: config.id,
+					region,
+					...(profile !== undefined && { profile }),
+					...(config.crossRegion !== undefined && {
+						crossRegion: config.crossRegion as string,
+					}),
+					...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
+					...(logger !== undefined && { logger }),
+					...(siteId !== undefined && { siteId }),
+					...(config.connectTimeoutMs !== undefined && {
+						connectTimeoutMs: config.connectTimeoutMs,
+					}),
+				});
+			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new BedrockDriver({
 				region,
@@ -1035,11 +1057,11 @@ function createBackendFromConfig(
 				// (`config.model === undefined`) fires and it self-configures.
 				model: config.model,
 				// No `model` => namespace instance also gets its per-model override map so
-				// expansion can apply each model's request controls (requirement 2). Expanded
+				// expansion can apply each model's request controls (requirement 5). Expanded
 				// per-model backend ids are `${config.id}-${providerModelId}`.
-				...(config.model || !config.copilotModelOverrides
+				...(config.model || !config.modelOverrides
 					? {}
-					: { copilotModelOverrides: config.copilotModelOverrides }),
+					: { modelOverrides: config.modelOverrides }),
 				contextWindow,
 				// The validated Copilot API endpoint is plan-specific and comes from
 				// the account lookup — resolved once, lazily, on first chat.
@@ -1099,11 +1121,34 @@ function createBackendFromConfig(
 			if (!region) {
 				throw new Error("Bedrock Mantle driver requires region in config");
 			}
+			const profile = config.profile as string | undefined;
+			// No `model` => self-configuring namespace for this (profile, region). Unlike
+			// a concrete Mantle entry it needs no `provider_mode`: the per-model protocol
+			// is derived from the ListFoundationModels join on expansion (requirement 4),
+			// and the Mantle lineup comes from GET /v1/models. It reuses the same
+			// namespace driver as `bedrock`; the driver's own base URLs differ per
+			// protocol. `model` present => a single concrete Mantle backend, unchanged.
+			if (config.model === undefined) {
+				return new BedrockNamespaceDriver({
+					namespaceId: config.id,
+					region,
+					mantle: true,
+					...(profile !== undefined && { profile }),
+					...(config.crossRegion !== undefined && {
+						crossRegion: config.crossRegion as string,
+					}),
+					...(config.modelOverrides !== undefined && { modelOverrides: config.modelOverrides }),
+					...(logger !== undefined && { logger }),
+					...(siteId !== undefined && { siteId }),
+					...(config.connectTimeoutMs !== undefined && {
+						connectTimeoutMs: config.connectTimeoutMs,
+					}),
+				});
+			}
 			const providerMode = config.providerMode as "anthropic" | "openai_responses" | undefined;
 			if (!providerMode) {
 				throw new Error("Bedrock Mantle driver requires providerMode in config");
 			}
-			const profile = config.profile as string | undefined;
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new BedrockMantleDriver({
 				region,

@@ -140,6 +140,33 @@ describe("classifyCacheFieldRejection", () => {
 		err.cause = inner;
 		expect(classifyCacheFieldRejection(err)).toBeNull();
 	});
+
+	it("detects a Bedrock 403 'did not allow prompt caching' as a cachePoint rejection (R-MC7)", () => {
+		// Bedrock Converse returns a 403 AccessDenied when the account/model is not
+		// entitled to explicit prompt caching. It names no field, but the 'prompt
+		// caching' phrase identifies the cachePoint field so recovery drops it.
+		const err = apiError(
+			{ message: "The provided model identifier did not allow prompt caching for this request." },
+			403,
+		);
+		const result = classifyCacheFieldRejection(err);
+		expect(result?.field).toBe("cachepoint");
+		expect(result?.supportedValue).toBeUndefined();
+	});
+
+	it("detects a Bedrock 400 'Extended TTL prompt caching is only supported for Anthropic models' as a ttl rejection (R-MC7)", () => {
+		// A non-Anthropic Bedrock model rejects the 1h (extended) cachePoint ttl; the
+		// cachePoint itself is fine, only the extended ttl is not — recovery drops ttl.
+		const err = apiError(
+			{
+				message:
+					"Extended TTL prompt caching is only supported for Anthropic models. Use the default cache lifetime instead.",
+			},
+			400,
+		);
+		const result = classifyCacheFieldRejection(err);
+		expect(result?.field).toBe("cachepoint");
+	});
 });
 
 describe("isDurationTtl", () => {

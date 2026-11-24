@@ -36,6 +36,53 @@ export interface DiscoveredModel {
 	vendor?: string | null;
 	/** Provider-published fallback targets (Anthropic fallback beta; catalog §4.1). */
 	allowedFallbackModels?: string[];
+	/**
+	 * Bedrock control-plane lineup-filter fields (`ListFoundationModels`), carried
+	 * verbatim from the two undocumented-but-live blocks AWS publishes:
+	 * `inferenceAPIsSupported` (which wire protocols the model serves) and
+	 * `explicitPromptCaching`, plus the documented `modelLifecycle.status`,
+	 * `inferenceTypesSupported`, and modality lists. The namespace lineup filter
+	 * (`bedrock-lineup.ts`, requirement 1/2/7) reads these to decide callability
+	 * and protocol without a model-ID branch; absent for non-Bedrock providers.
+	 */
+	bedrock?: BedrockDiscoveryFields;
+}
+
+/**
+ * The Bedrock `ListFoundationModels` fields the namespace lineup filter needs.
+ * Every field is optional: the undocumented `inferenceAPIsSupported` /
+ * `explicitPromptCaching` blocks are left unset when a row omits them, so the
+ * filter treats "no signal" as "no protocol" rather than guessing.
+ */
+export interface BedrockDiscoveryFields {
+	/** The foundation-model ARN this region publishes (`arn:aws:bedrock:{region}::foundation-model/{id}`). */
+	modelArn?: string;
+	/** `modelLifecycle.status`: `ACTIVE` | `LEGACY` (others possible). */
+	lifecycleStatus?: string;
+	/** `inferenceTypesSupported`: `ON_DEMAND` | `INFERENCE_PROFILE` | `PROVISIONED`. */
+	inferenceTypes?: string[];
+	/** TEXT present in `inputModalities`. */
+	inputText?: boolean;
+	/** `outputModalities` is exactly `["TEXT"]` (text-only output). */
+	outputTextOnly?: boolean;
+	/** `inferenceAPIsSupported.openAiResponses`. */
+	openAiResponses?: boolean;
+	/** `inferenceAPIsSupported.converse.streaming`. */
+	converseStreaming?: boolean;
+	/** `explicitPromptCaching.isSupported`. */
+	explicitPromptCaching?: boolean;
+	/**
+	 * Present ONLY on an inference-profile row (`ListInferenceProfiles`): the
+	 * profile `type` (`SYSTEM_DEFINED` | `APPLICATION`), `status`, and the
+	 * foundation-model ARNs it routes to (`models[].modelArn`). A foundation-model
+	 * row leaves these unset; a profile row leaves the foundation-model fields
+	 * (`modelArn`, `lifecycleStatus`, modalities, protocol) unset. The lineup filter
+	 * uses `profileModelArns` to resolve an INFERENCE_PROFILE-only model's callable
+	 * profile id.
+	 */
+	profileType?: string;
+	profileStatus?: string;
+	profileModelArns?: string[];
 }
 
 /**

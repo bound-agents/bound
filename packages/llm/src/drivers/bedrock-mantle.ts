@@ -148,6 +148,34 @@ function stripPlaceholderAnthropicApiKeyFetch(baseFetch: typeof fetch): typeof f
 	}) as typeof fetch;
 }
 
+/**
+ * Classify a Mantle "model <id> isn't supported on this route" rejection
+ * (requirement 4). The mantle host serves most models under `/v1` and some under
+ * `/openai/v1`; a request on the wrong prefix is rejected with this documented
+ * message. Duck-types the AI SDK error shape the way the cache-field classifier
+ * does — walking `message` / `responseBody` / wrapped `lastError`/`cause` — and
+ * matches the phrase, never a model-ID string (R-MC1). Any other error is not a
+ * route-prefix rejection.
+ */
+function isRoutePrefixRejection(err: unknown): boolean {
+	const seen = new Set<unknown>();
+	let node: unknown = err;
+	for (let depth = 0; depth < 4 && node && !seen.has(node); depth++) {
+		seen.add(node);
+		const e = node as {
+			message?: unknown;
+			responseBody?: unknown;
+			lastError?: unknown;
+			cause?: unknown;
+		};
+		for (const text of [e.message, e.responseBody]) {
+			if (typeof text === "string" && /isn't supported on this route/i.test(text)) return true;
+		}
+		node = e.lastError ?? e.cause;
+	}
+	return false;
+}
+
 /** Maps bound's `"max"` effort to OpenAI's strongest supported level; unsupported values omit the option. */
 function toReasoningEffort(
 	effort: ChatParams["effort"],
@@ -271,6 +299,16 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 	// never keyed across models. Remembers which cache fields this provider
 	// rejected so later turns skip the doomed field instead of re-failing.
 	private readonly cacheRecovery = new CacheFieldRecoveryState();
+	// Mantle route-prefix recovery (R-MC-adjacent, requirement 4). The correct
+	// path prefix (`/v1` vs `/openai/v1`) for a model is only on its model card; a
+	// request on the wrong prefix is rejected with "model <id> isn't supported on
+	// this route". The openai_responses provider is built on the documented default
+	// prefix and, on that rejection, rebuilt ONCE on the other prefix and remembered
+	// here per route (the served model id). Never a route failure; a fresh process
+	// re-learns. Undefined = not yet learned (use the constructor default).
+	private readonly routePrefixByModel = new Map<string, "/v1" | "/openai/v1">();
+	// Retained so the openai provider can be rebuilt with the alternate prefix.
+	private readonly rebuildOpenAIProvider?: (prefix: "/v1" | "/openai/v1") => void;
 
 	constructor(config: {
 		region: string;
@@ -341,13 +379,35 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 				fetch: stripPlaceholderAnthropicApiKeyFetch(signedFetch),
 			});
 		} else {
-			this.openaiProvider = createOpenAI({
-				baseURL: deriveMantleBaseUrlForMode(config.region, config.providerMode, config.baseUrl),
-				// SigV4 supplies the real Authorization header; this sentinel only keeps
-				// the SDK from throwing on a missing key. It is overwritten on the wire.
-				apiKey: "sigv4",
-				fetch: signedFetch,
-			});
+			// Build the openai Responses provider on the documented default prefix. A
+			// rebuild closure (retained below) lets route-prefix recovery swap the
+			// prefix on an "isn't supported on this route" rejection (requirement 4)
+			// WITHOUT re-signing credentials or rebuilding the fetch chain.
+			const defaultBaseUrl = deriveMantleBaseUrlForMode(
+				config.region,
+				config.providerMode,
+				config.baseUrl,
+			);
+			const makeOpenAI = (baseURL: string) =>
+				createOpenAI({
+					baseURL,
+					// SigV4 supplies the real Authorization header; this sentinel only keeps
+					// the SDK from throwing on a missing key. It is overwritten on the wire.
+					apiKey: "sigv4",
+					fetch: signedFetch,
+				});
+			this.openaiProvider = makeOpenAI(defaultBaseUrl);
+			// Recovery rebuilds the provider pointed at the ALTERNATE path prefix. An
+			// explicit `baseUrl` override pins the host+prefix verbatim, so a
+			// config-overridden base URL is left out of recovery (the override is the
+			// operator's deliberate choice). Otherwise swap `/openai/v1` <-> `/v1`.
+			if (config.baseUrl === undefined) {
+				this.rebuildOpenAIProvider = (prefix) => {
+					this.openaiProvider = makeOpenAI(
+						`https://bedrock-mantle.${config.region}.api.aws${prefix}`,
+					);
+				};
+			}
 		}
 	}
 
@@ -451,6 +511,14 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 			return;
 		}
 
+		// Apply the remembered route-prefix decision for this model before building the
+		// provider reference (requirement 4): a route that learned the alternate prefix
+		// on an earlier turn starts there, so a second turn never re-triggers the
+		// "isn't supported on this route" rejection. A fresh route uses the ctor default.
+		const rememberedPrefix = this.routePrefixByModel.get(modelId);
+		if (rememberedPrefix && this.rebuildOpenAIProvider) {
+			this.rebuildOpenAIProvider(rememberedPrefix);
+		}
 		const provider = this.openaiProvider;
 		if (!provider) throw new Error("Bedrock Mantle OpenAI Responses provider was not initialized");
 		// Prompt-cache request recovery (R-MC14): the route's cache fields are
@@ -631,6 +699,26 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 				// The remembered decision reshapes the request via the decisionFor reads
 				// above (breakpointsSupported / requestedCacheTtl), so a fresh dispatch
 				// applies it. Rebuild those from the recorded decision for this one retry.
+				yield* this.chatStream(params);
+				return;
+			}
+			// Route-prefix rejection (requirement 4): the mantle host rejects a request
+			// on the wrong path prefix with "model <id> isn't supported on this route".
+			// Flip `/openai/v1` <-> `/v1`, remember the working prefix for this route, and
+			// reissue ONCE. Never a route failure. Skipped when an explicit baseUrl pins
+			// the prefix (no rebuild closure) or the prefix was already learned.
+			if (
+				this.rebuildOpenAIProvider &&
+				!this.routePrefixByModel.has(modelId) &&
+				isRoutePrefixRejection(err)
+			) {
+				const current = deriveMantleBaseUrlForMode(this.discoveryRegion, "openai_responses");
+				const alternate = current.endsWith("/openai/v1") ? "/v1" : "/openai/v1";
+				this.routePrefixByModel.set(modelId, alternate);
+				this.logger?.warn?.(
+					`[${PROVIDER_NAME}] route-prefix rejection; retrying once on '${alternate}' and remembering for this route`,
+					{ model: modelId },
+				);
 				yield* this.chatStream(params);
 				return;
 			}

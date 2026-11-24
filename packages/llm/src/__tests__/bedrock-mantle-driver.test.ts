@@ -727,3 +727,53 @@ describe("BedrockMantleDriver — Responses cache_ttl mapping and SDK-local reco
 		expect(bodies.at(-1)).not.toContain('"ttl":"1h"');
 	});
 });
+
+describe("BedrockMantleDriver — route-prefix recovery (requirement 4)", () => {
+	// On the mantle host the correct path prefix (`/v1` vs `/openai/v1`) is only on
+	// the model card. A request on the wrong prefix is rejected with "model
+	// <model-id> isn't supported on this route". The driver starts on the documented
+	// default (`/openai/v1` for the openai_responses mode, preserving today's
+	// working configs byte-identical) and, on that rejection, retries ONCE on the
+	// other prefix and remembers the working prefix per route — never a route
+	// failure, same recovery family as cache-field recovery.
+	const routeError = () =>
+		new Response(
+			JSON.stringify({
+				error: {
+					type: "invalid_request_error",
+					message: "model openai.gpt-5.6-sol isn't supported on this route",
+				},
+			}),
+			{ status: 400, headers: { "content-type": "application/json" } },
+		);
+
+	it("recovers to the other prefix on 'isn't supported on this route' and remembers it", async () => {
+		const urls: string[] = [];
+		const captureFetch: typeof fetch = async (input, init) => {
+			const req = new Request(input as RequestInfo, init);
+			urls.push(new URL(req.url).pathname);
+			// The default /openai/v1 route is rejected; the /v1 route succeeds.
+			if (new URL(req.url).pathname.startsWith("/openai/v1")) return routeError();
+			return responsesSse();
+		};
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-5.6-sol",
+			contextWindow: 272_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+			siteId: "this-host:us-east-1",
+		});
+		const out = await collect(driver.chat(baseParams));
+		// First attempt hit /openai/v1 and was rejected; recovery retried on /v1.
+		expect(urls.some((u) => u.startsWith("/openai/v1"))).toBe(true);
+		expect(urls.some((u) => u.startsWith("/v1"))).toBe(true);
+		expect(out.some((c) => c.type === "text" && c.content.includes("answer"))).toBe(true);
+
+		// A SECOND turn on the same route goes straight to /v1 (remembered), no re-reject.
+		urls.length = 0;
+		await collect(driver.chat(baseParams));
+		expect(urls.every((u) => u.startsWith("/v1"))).toBe(true);
+	});
+});

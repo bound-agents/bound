@@ -164,6 +164,7 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 			tokenStorePath: b.token_store_path,
 			region: b.region,
 			profile: b.profile,
+			crossRegion: b.cross_region,
 			capabilities: b.capabilities,
 			pricePerMInput: b.price_per_m_input,
 			thinking: b.thinking,
@@ -181,12 +182,16 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 				: undefined,
 			connectTimeoutMs: b.connect_timeout_ms,
 			additionalHeaders: b.additional_headers,
-			// Per-model overrides for a self-configuring github-copilot namespace
-			// entry (invariant #17: a per-backend field must be copied here or it
-			// never reaches the router/driver). snake_case → camelCase per key.
-			copilotModelOverrides: b.copilot_model_overrides
+			// Per-model overrides for a self-configuring namespace entry (invariant #17:
+			// a per-backend field must be copied here or it never reaches the
+			// router/driver). Provider-agnostic across every namespace provider. The
+			// `price` turn callback is intentionally NOT copied: it lives on the
+			// JS-config override object and the loader compiles it into the pricing
+			// registry separately, exactly as the top-level per-backend `price` does.
+			// snake_case → camelCase per key.
+			modelOverrides: b.model_overrides
 				? Object.fromEntries(
-						Object.entries(b.copilot_model_overrides).map(([modelId, ov]) => [
+						Object.entries(b.model_overrides).map(([modelId, ov]) => [
 							modelId,
 							{
 								thinking: ov.thinking,
@@ -194,7 +199,14 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 								cacheTtl: ov.cache_ttl,
 								logicalModel: ov.logical_model,
 								maxOutputTokens: ov.max_output_tokens,
+								contextWindow: ov.context_window,
 								systemPromptSuffix: ov.system_prompt_suffix,
+								pricePerMInput: ov.price_per_m_input,
+								pricePerMOutput: ov.price_per_m_output,
+								pricePerMCacheWrite: ov.price_per_m_cache_write,
+								pricePerMCacheWrite1h: ov.price_per_m_cache_write_1h,
+								pricePerMCacheRead: ov.price_per_m_cache_read,
+								promptCaching: ov.prompt_caching,
 							},
 						]),
 					)
@@ -449,9 +461,9 @@ function buildSharedRow(
 	// model id (requirement 2). A matching override's request controls win over
 	// the blanket namespace-entry inheritance below, so an operator pins ONE
 	// model's reasoning/cache without listing every model. Non-namespace rows
-	// (`placeholder` without `copilot_model_overrides`) see an empty override.
+	// (`placeholder` without `model_overrides`) see an empty override.
 	const override = descriptor.providerModelId
-		? placeholder?.copilot_model_overrides?.[descriptor.providerModelId]
+		? placeholder?.model_overrides?.[descriptor.providerModelId]
 		: undefined;
 	const thinking = override?.thinking ?? placeholder?.thinking;
 	const effort = override?.effort ?? placeholder?.effort;

@@ -121,6 +121,83 @@ describe("parseBedrockFoundationModels", () => {
 		expect(out[2]?.maxOutputTokens).toBeUndefined();
 	});
 
+	it("captures lineup-filter fields: inferenceAPIsSupported, explicitPromptCaching, modelLifecycle, inferenceTypesSupported, modalities", () => {
+		const body = {
+			modelSummaries: [
+				{
+					modelId: "openai.gpt-6.1-sol",
+					modelArn: "arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-6.1-sol",
+					providerName: "OpenAI",
+					inputModalities: ["TEXT", "IMAGE"],
+					outputModalities: ["TEXT"],
+					modelLifecycle: { status: "ACTIVE" },
+					inferenceTypesSupported: ["INFERENCE_PROFILE"],
+					inferenceAPIsSupported: {
+						converse: { streaming: true, sync: true },
+						openAiResponses: true,
+						openAiChatCompletions: true,
+					},
+					explicitPromptCaching: { isSupported: true },
+				},
+				{
+					modelId: "moonshotai.kimi-k2.5",
+					modelArn: "arn:aws:bedrock:us-west-2::foundation-model/moonshotai.kimi-k2.5",
+					providerName: "Moonshot AI",
+					inputModalities: ["TEXT"],
+					outputModalities: ["TEXT"],
+					modelLifecycle: { status: "ACTIVE" },
+					inferenceTypesSupported: ["ON_DEMAND"],
+					inferenceAPIsSupported: {
+						converse: { streaming: true, sync: true },
+						openAiResponses: false,
+					},
+					explicitPromptCaching: { isSupported: false },
+				},
+				// A LEGACY model's status is surfaced so the filter can exclude it.
+				{
+					modelId: "anthropic.claude-opus-4-7",
+					modelArn: "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-7",
+					providerName: "Anthropic",
+					inputModalities: ["TEXT", "IMAGE"],
+					outputModalities: ["TEXT"],
+					modelLifecycle: { status: "LEGACY" },
+					inferenceTypesSupported: ["INFERENCE_PROFILE"],
+					inferenceAPIsSupported: {
+						converse: { streaming: true, sync: true },
+						openAiResponses: false,
+					},
+					explicitPromptCaching: { isSupported: true },
+				},
+			],
+		};
+		const out = parseBedrockFoundationModels(body);
+		const gpt = out[0];
+		expect(gpt?.bedrock?.modelArn).toBe(
+			"arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-6.1-sol",
+		);
+		expect(gpt?.bedrock?.lifecycleStatus).toBe("ACTIVE");
+		expect(gpt?.bedrock?.inferenceTypes).toEqual(["INFERENCE_PROFILE"]);
+		expect(gpt?.bedrock?.inputText).toBe(true);
+		expect(gpt?.bedrock?.outputTextOnly).toBe(true);
+		expect(gpt?.bedrock?.openAiResponses).toBe(true);
+		expect(gpt?.bedrock?.converseStreaming).toBe(true);
+		expect(gpt?.bedrock?.explicitPromptCaching).toBe(true);
+		const kimi = out[1];
+		expect(kimi?.bedrock?.openAiResponses).toBe(false);
+		expect(kimi?.bedrock?.inferenceTypes).toEqual(["ON_DEMAND"]);
+		expect(kimi?.bedrock?.explicitPromptCaching).toBe(false);
+		const legacy = out[2];
+		expect(legacy?.bedrock?.lifecycleStatus).toBe("LEGACY");
+	});
+
+	it("leaves bedrock block fields unset when inferenceAPIsSupported/explicitPromptCaching are absent", () => {
+		const out = parseBedrockFoundationModels({
+			modelSummaries: [{ modelId: "meta.llama4-70b-v1:0", providerName: "Meta" }],
+		});
+		expect(out[0]?.bedrock?.openAiResponses).toBeUndefined();
+		expect(out[0]?.bedrock?.explicitPromptCaching).toBeUndefined();
+	});
+
 	it("skips malformed rows and tolerates a missing modelSummaries array", () => {
 		expect(parseBedrockFoundationModels({ modelSummaries: [{ no_id: true }, 42, null] })).toEqual(
 			[],

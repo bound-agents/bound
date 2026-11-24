@@ -322,8 +322,9 @@ Authoritative per-model fields — context window, output limit, capabilities, d
 pricing — come from the catalog and are rejected on the namespace entry itself (there is no single
 model to apply them to). What you *can* set on the namespace entry is a blanket reasoning/cache
 choice (`thinking`, `effort`, `cache_ttl`, `system_prompt_suffix`), which every expanded backend
-inherits, and a `copilot_model_overrides` map keyed by provider model id to pin one model's request
-controls without listing the rest.
+inherits, and a `model_overrides` map keyed by provider model id to pin one model's request
+controls without listing the rest. `model_overrides` is provider-agnostic — the same field works on
+the `bedrock` and `bedrock-mantle` namespace entries described below.
 
 This entry replaces the twelve hand-written `copilot-*` backends (the eleven concrete models plus
 `copilot-auto`):
@@ -344,7 +345,7 @@ export default {
       // old hand-written `copilot-opus-5.5` … entries resolved to, so existing
       // thread/task/agent model_hints that named those ids keep resolving (see
       // "Expanded ids and existing references" below).
-      copilot_model_overrides: {
+      model_overrides: {
         "claude-opus-5.5": { logical_model: "opus-5-5" },
         "claude-sonnet-5.5": { logical_model: "sonnet-5-5" },
         "claude-haiku-5.5": { logical_model: "haiku-5-5" },
@@ -375,7 +376,7 @@ carried is now sourced from the catalog, the top-level `defaults` block, or the 
 | `effort` (the three non-opus Claude models carried `medium`) | Namespace-entry blanket `effort`; a model that advertises no effort ladder drops it |
 | `cache_ttl` (`1h` on all four Claude models) | Namespace-entry blanket `cache_ttl` |
 | reasoning mode for GPT / Grok / Gemini (the eight entries carried nothing) | Catalog reasoning metadata + the top-level `defaults` block |
-| `logical_model` for the four Claude models | `copilot_model_overrides` pins (see below) |
+| `logical_model` for the four Claude models | `model_overrides` pins (see below) |
 | `context_window`, `max_output_tokens` for `auto` | Still set by hand on the `copilot-auto` entry (not a catalog model) |
 
 #### Expanded ids and existing references
@@ -398,7 +399,7 @@ in opposite directions here, so this is surfaced as a decision rather than resol
 - But it diverges from the logical key the hand-written `copilot-*` id produced, breaking the
   requirement that existing references keep resolving.
 
-The mitigation applied above is the `copilot_model_overrides` `logical_model` pin: it binds each of
+The mitigation applied above is the `model_overrides` `logical_model` pin: it binds each of
 the four Claude expanded rows to the old family key (`opus-5-5`, …) so existing references resolve,
 without touching the shared normalization rule. The alternative — adding `claude` to the dashed
 vendor prefixes stripped by normalization — is a **cross-cutting change to the one structural rule
@@ -408,22 +409,79 @@ between the per-model pin (local, Copilot-only) and the normalization change (gl
 provider's `claude-` ids) is an open operator decision; the pin is the conservative default until
 that call is made.
 
-#### Mantle is not self-configuring
+#### Bedrock and Bedrock Mantle self-configuring namespaces
 
-Bedrock Mantle also fronts many models through one endpoint, but it is **not** expanded into a
-lineup, and this is a provider limitation rather than an omission. Expanding one Mantle
-`(region, profile)` entry would require each discovered model's **wire protocol** — Anthropic
-Messages versus OpenAI Responses — to build the right per-model driver, because Mantle routes the
-two protocols to different base paths. Mantle's `/v1/models` discovery returns only bare
-entitlement rows (`id`, `object`, `owned_by`, `status`, `data_retention`); it publishes no
-per-model protocol field. The only way to infer the protocol from the id would be a vendor-prefix
-rule (`openai.*` → Responses, `anthropic.*` → Messages, and a guess for everything else), which is
-exactly the hardcoded model-id branching Bound's catalog goals forbid — and a single region mixes
-vendors, so one entry could not carry a single protocol anyway. Mantle therefore stays per-entry
-config with an explicit `provider_mode`, which is why that field is required there. Self-configuring
-Mantle becomes possible only if Mantle adds a per-model protocol/endpoint field to its models
-listing; until then, one entry per `(model, provider_mode)` is the supported form. Display names,
-limits, and pricing for those entries still fill from `models.dev`.
+A `bedrock` or `bedrock-mantle` entry with **no `model`** is a self-configuring namespace for its
+`(profile, region)`: at startup it fetches the account's entitled lineup from the control plane and
+expands into one backend per eligible model. One entry per `(AWS profile, region)` permutation; the
+region is part of the entry. An expanded backend's id is `<entry-id>-<provider-model-id>`, so for
+grouping to fold it onto the right logical model the **entry id must start with `bedrock-`** (the
+dashed vendor prefix normalization strips) — e.g. an entry id `bedrock-use1` would leave a spurious
+`use1-` segment on every expanded key.
+
+```js
+export default {
+  backends: [
+    {
+      // One namespace entry per (profile, region). The id MUST be bedrock-prefixed.
+      id: "bedrock-us-east-1",
+      provider: "bedrock",
+      region: "us-east-1",
+      profile: "my-aws-profile",
+      // Preferred cross-region inference-profile scope for INFERENCE_PROFILE-only
+      // models. Default "global"; falls back to the geo profile when no global.
+      cross_region: "global",
+      // Blanket reasoning/cache controls inherited by every expanded backend.
+      thinking: { type: "adaptive", display: "summarized" },
+      cache_ttl: "1h",
+      // Provider-agnostic per-model overrides, keyed by the bare foundation-model id
+      // OR the resolved inference-profile id (either matches the expanded backend).
+      model_overrides: {
+        "anthropic.claude-haiku-5-5": {
+          logical_model: "haiku",
+          effort: "medium",
+          // A per-model `price(turn)` callback is the per-model analogue of the
+          // top-level per-backend `price`: JS-config only, and the same `turn`
+          // shape. Use it for a model whose rate the control plane and `models.dev`
+          // do not publish (e.g. a tiered long-context price step).
+          price(turn) {
+            return turn.inputTokens > 100_000
+              ? (turn.inputTokens * 0.5 + turn.outputTokens * 2.5) / 1_000_000
+              : (turn.inputTokens * 0.1 + turn.outputTokens * 0.5) / 1_000_000;
+          },
+        },
+      },
+    },
+  ],
+  default: "bedrock-us-east-1",
+};
+```
+
+**Lineup filter.** Every inclusion decision comes from published control-plane fields, never a
+model-ID branch: `ListFoundationModels` supplies `TEXT` input + text-only output, `modelLifecycle`
+`ACTIVE`, `inferenceTypesSupported`, the per-model `inferenceAPIsSupported` block (which wire
+protocols the model serves), and `explicitPromptCaching.isSupported`; `ListInferenceProfiles`
+supplies the `SYSTEM_DEFINED` profiles whose covered ARNs make an `INFERENCE_PROFILE`-only model
+callable. A model is callable by its bare id when it is `ON_DEMAND`, else by a `SYSTEM_DEFINED`
+profile covering this region's model ARN (preferring `cross_region`, default `global`, falling back
+to the geo profile, else excluded).
+
+**Protocol per model.** `inferenceAPIsSupported.openAiResponses: true` → OpenAI Responses on
+`bedrock-runtime` (reusing the Mantle Responses request builder; only the base URL differs). Else
+`converse.streaming: true` → Converse. Else the model is excluded. `explicitPromptCaching.isSupported`
+becomes the backend's `prompt_caching` capability (a `model_overrides.prompt_caching` still wins).
+
+**Mantle namespace.** A `bedrock-mantle` namespace entry needs no `provider_mode` (the per-model
+protocol is derived from the join). Its lineup comes from the Mantle `GET /v1/models` listing joined
+with `ListFoundationModels` on the exact model id; a Mantle id with no protocol-bearing
+foundation-model join (versioned snapshots, Anthropic Messages ids) is excluded and never guessed.
+Because GPT and Claude are served on `bedrock-runtime` per AWS's recommendation, a `bedrock-mantle`
+namespace is only needed for a model that is genuinely Mantle-only.
+
+**Explicit (model-bearing) entries still work unchanged.** A `bedrock` or `bedrock-mantle` entry
+*with* a `model` is a single concrete backend exactly as before; `provider_mode` is still required on
+a concrete `bedrock-mantle` entry. Display names, limits, and pricing for every form fill from
+`models.dev` where the control plane is silent.
 
 ---
 
