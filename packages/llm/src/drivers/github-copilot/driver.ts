@@ -823,6 +823,11 @@ export class GitHubCopilotDriver implements LLMBackend {
 							: field === "prompt_cache_options"
 								? []
 								: ["5m", "1h"],
+					onRecover: (field, decision) =>
+						this.logger?.warn?.(
+							`[${PROVIDER_NAME}] prompt-cache field '${field}' rejected; retrying once (${decision.kind === "use-value" ? `value=${decision.value}` : "dropped"}) and remembering for this route`,
+							{ model: modelId },
+						),
 					run: (cacheDecision) =>
 						withEncryptedReasoningRetry({
 							build: (stripEncryptedReasoning) => stripEncryptedReasoning,

@@ -311,6 +311,26 @@ describe("withCacheFieldRecovery", () => {
 		expect(state.decisionFor(ROUTE, "cache_control")).toEqual({ kind: "drop" });
 	});
 
+	it("calls onRecover once with the field and decision before the retry", async () => {
+		const state = new CacheFieldRecoveryState();
+		const rejection = apiError({
+			error: { message: "prompt_cache_options is not supported on this model" },
+		});
+		const { run } = makeSource([rejection, [okChunk]]);
+		const seen: Array<[string, unknown]> = [];
+		await drain(
+			withCacheFieldRecovery({
+				routeId: ROUTE,
+				state,
+				fields: ["prompt_cache_options.ttl", "prompt_cache_options"],
+				validValuesFor: () => [],
+				onRecover: (field, decision) => seen.push([field, decision]),
+				run,
+			}),
+		);
+		expect(seen).toEqual([["prompt_cache_options", { kind: "drop" }]]);
+	});
+
 	it("retries with the provider-listed supported value when valid", async () => {
 		const state = new CacheFieldRecoveryState();
 		const rejection = apiError({

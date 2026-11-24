@@ -407,8 +407,18 @@ export const modelBackendsSchema = z
 			// `default` is optional (resolved from the cluster role at runtime), but
 			// when set it must name a real backend. Empty is always valid: hub-only
 			// nodes have no backends, and normal nodes may defer to the cluster role.
+			// A self-configuring namespace entry (no `model`) expands at startup into
+			// `<entry-id>-<provider-model-id>` backends whose ids aren't known until
+			// discovery lands, so a default under a namespace entry's `<id>-` prefix
+			// is accepted here and resolved (or reported unready) at runtime.
 			if (data.default === "") return true;
-			return data.backends.some((b) => b.id === data.default);
+			return data.backends.some(
+				(b) =>
+					b.id === data.default ||
+					(b.model === undefined &&
+						data.default.startsWith(`${b.id}-`) &&
+						data.default.length > b.id.length + 1),
+			);
 		},
 		{
 			message: "default, when set, must reference a backend ID defined in backends",

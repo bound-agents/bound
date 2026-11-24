@@ -76,6 +76,35 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("accepts a default under a namespace entry's expanded-id prefix", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [{ id: "zai", provider: "zai", api_key: "k" }],
+				default: "zai-glm-5.3-flash",
+			});
+			expect(result.success).toBe(true);
+		});
+
+		it("rejects a default under a concrete (model-bearing) entry's prefix or a bare prefix", () => {
+			const concrete = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "local-compat",
+						provider: "openai-compatible",
+						model: "llama3",
+						base_url: "http://localhost:11434/v1",
+						context_window: 4096,
+					},
+				],
+				default: "local-compat-llama3",
+			});
+			expect(concrete.success).toBe(false);
+			const bare = modelBackendsSchema.safeParse({
+				backends: [{ id: "zai", provider: "zai", api_key: "k" }],
+				default: "zai-",
+			});
+			expect(bare.success).toBe(false);
+		});
+
 		it("rejects a backend that declares the removed `tier` field, naming the key (R-RT3)", () => {
 			const result = modelBackendsSchema.safeParse({
 				backends: [

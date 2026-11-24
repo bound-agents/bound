@@ -255,6 +255,12 @@ export interface WithCacheFieldRecoveryOptions<T> {
 	 */
 	validValuesFor: (field: string) => string[];
 	/**
+	 * Called once, before the single retry, with the rejected field and the
+	 * recorded decision — the driver's hook to log the recovery (a silent retry
+	 * is indistinguishable from a request that never sent the field).
+	 */
+	onRecover?: (field: string, decision: CacheFieldDecision) => void;
+	/**
 	 * Run ONE streaming attempt. `decision` is the remembered/just-recorded
 	 * recovery decision for a field this driver sends, or `undefined` when none is
 	 * recorded (send the configured value). The driver reshapes its request from
@@ -309,6 +315,7 @@ export async function* withCacheFieldRecovery<T>(
 		const decision = opts.state.record(opts.routeId, rejection, {
 			validValues: opts.validValuesFor(rejection.field),
 		});
+		opts.onRecover?.(rejection.field, decision);
 		yield* opts.run(decision);
 	}
 }
