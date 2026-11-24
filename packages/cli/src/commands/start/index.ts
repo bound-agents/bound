@@ -17,6 +17,7 @@ import type { StartArgs } from "./bootstrap.js";
 import {
 	initInference,
 	resolveGateApplyAdvertise,
+	settleExpandedBackendPasses,
 	toRouterConfig,
 	wireBackendReadiness,
 } from "./inference.js";
@@ -303,7 +304,7 @@ export async function startNode(
 				modelsDevCache ?? null,
 				aliases,
 			);
-			wireBackendReadiness(appContext, modelRouter);
+			wireBackendReadiness(appContext, modelRouter, { modelsDevCache: modelsDevCache ?? null });
 			appContext.logger.info("[sighup] Model router reloaded", {
 				backends: modelRouter.listBackends().map((b) => b.id),
 				default: modelRouter.getDefaultId(),
@@ -395,6 +396,8 @@ Press Ctrl+C to stop.
 			// closed handle, but awaiting it here keeps teardown orderly and avoids a
 			// post-close no-op warning. Never rejects.
 			await modelsDevRefresh;
+			// Same for any post-registration catalog pass of expanded backends.
+			if (modelRouter) await settleExpandedBackendPasses(modelRouter);
 			heartbeatHandle?.stop();
 			schedulerHandle?.stop();
 			pruningHandle?.stop();

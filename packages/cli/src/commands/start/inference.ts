@@ -346,6 +346,82 @@ export function gateUnreadyBackends(
 const lastRegisteredByProvider = new Map<string, string[]>();
 
 /**
+ * Backend ids currently materialized by a self-configuring namespace. Catalog
+ * resolution skips provider discovery for these: the namespace's own lineup
+ * fetch is their provider layer, already folded into each expanded config row
+ * (context window, output cap, pricing, logical-model pin), and rediscovering
+ * per expanded model would issue one control-plane request per model per pass.
+ */
+const expandedBackendIds = new Set<string>();
+
+/**
+ * A coalescing runner for an async pass. `schedule()` starts a pass on the next
+ * microtask when idle, so N synchronous schedules (N namespaces registering in
+ * one tick) run once; a schedule that lands while a pass is running queues
+ * exactly one trailing pass, so the last state is always resolved without
+ * passes ever running concurrently. A failing pass is reported through
+ * `onError` and never rejects. `settled()` resolves once the queue drains.
+ */
+export function createCoalescedPass(
+	run: () => Promise<void>,
+	onError: (error: unknown) => void,
+): { schedule(): void; settled(): Promise<void> } {
+	let draining: Promise<void> | null = null;
+	let pending = false;
+	const drain = async (): Promise<void> => {
+		await Promise.resolve();
+		while (pending) {
+			pending = false;
+			try {
+				await run();
+			} catch (error) {
+				onError(error);
+			}
+		}
+		draining = null;
+	};
+	return {
+		schedule() {
+			pending = true;
+			if (!draining) draining = drain();
+		},
+		settled() {
+			return draining ?? Promise.resolve();
+		},
+	};
+}
+
+/**
+ * Per-router state for the post-registration catalog pass: the `models.dev`
+ * cache it resolves against (kept across SIGHUP re-wiring) and its coalesced
+ * runner. Weakly keyed so a discarded router releases its state.
+ */
+const expandedCatalogPasses = new WeakMap<
+	ReturnType<typeof createModelRouter>,
+	{ cache: ModelsDevCache | null; pass: ReturnType<typeof createCoalescedPass> }
+>();
+
+/**
+ * Resolves once every scheduled post-registration catalog pass for `modelRouter`
+ * has finished. Node teardown awaits this before closing the DB; tests await it
+ * to observe the settled advertisement.
+ */
+export function settleExpandedBackendPasses(
+	modelRouter: ReturnType<typeof createModelRouter>,
+): Promise<void> {
+	return expandedCatalogPasses.get(modelRouter)?.pass.settled() ?? Promise.resolve();
+}
+
+export interface WireBackendReadinessOptions {
+	/**
+	 * The `models.dev` cache the post-registration catalog pass resolves
+	 * against. When omitted, the cache from an earlier wiring of the same router
+	 * is reused (null when there was none).
+	 */
+	modelsDevCache?: ModelsDevCache | null;
+}
+
+/**
  * Wires up any self-configuring (`readiness`-bearing) backends. Generic — no
  * provider-specific names. Called from `initInference` (after the router is
  * built) and from the SIGHUP `onModelBackendsChanged` handler (after
@@ -366,9 +442,46 @@ const lastRegisteredByProvider = new Map<string, string[]>();
 export function wireBackendReadiness(
 	appContext: AppContext,
 	modelRouter: ReturnType<typeof createModelRouter>,
+	options?: WireBackendReadinessOptions,
 ): void {
 	const readinessBackends = modelRouter.getReadinessBackends();
 	if (readinessBackends.length === 0) return;
+
+	// The resolve → gate → apply → advertise pass that follows every
+	// registration. register() is synchronous, so the pass is fire-and-forget
+	// through a per-router coalescing runner: namespaces registering together at
+	// boot share one pass, and a registration during a running pass gets one
+	// trailing pass over the latest live config.
+	let state = expandedCatalogPasses.get(modelRouter);
+	if (!state) {
+		const created = {
+			cache: options?.modelsDevCache ?? null,
+			pass: createCoalescedPass(
+				async () => {
+					if (isDbClosed(appContext.db)) return;
+					const aliases = new Map<string, string | null>(
+						listModelAliases(appContext.db).map((a) => [a.provider_key, a.logical_model]),
+					);
+					await resolveGateApplyAdvertise(
+						appContext,
+						modelRouter,
+						appContext.config.modelBackends,
+						created.cache,
+						aliases,
+					);
+				},
+				(error) =>
+					appContext.logger.warn("[llm] Expanded-backend catalog pass failed", {
+						error: formatError(error as Error),
+					}),
+			),
+		};
+		state = created;
+		expandedCatalogPasses.set(modelRouter, state);
+	} else if (options?.modelsDevCache !== undefined) {
+		state.cache = options.modelsDevCache;
+	}
+	const catalogPass = state.pass;
 
 	for (const { id: namespaceId } of readinessBackends) {
 		const registrar: ModelRegistrar = {
@@ -429,9 +542,15 @@ export function wireBackendReadiness(
 				sharedConfig.backends = sharedConfig.backends.filter((b) => b.id !== namespaceId);
 
 				lastRegisteredByProvider.set(providerId, [...newIds]);
+				for (const id of priorIds) expandedBackendIds.delete(id);
+				for (const id of newIds) expandedBackendIds.add(id);
 
-				// 4. Re-advertise so peers learn the now-selectable model ids.
+				// 4. Re-advertise so peers learn the now-selectable model ids at once,
+				//    then resolve the catalog over the live config so the advertised
+				//    rows and the router carry resolved logical model, window,
+				//    pricing and reasoning, and unready models are gated (R-MC4).
 				advertiseLocalModels(appContext, modelRouter, appContext.config.modelBackends);
+				catalogPass.schedule();
 
 				appContext.logger.info("[llm] Dynamic backend lineup registered", {
 					providerId,
@@ -562,7 +681,7 @@ export async function resolveLocalCatalog(
 
 		const backend = modelRouter.tryGetBackend(backendId);
 		let discovery: DiscoveredModel[] = [];
-		if (backend && supportsModelDiscovery(backend)) {
+		if (backend && supportsModelDiscovery(backend) && !expandedBackendIds.has(backendId)) {
 			try {
 				discovery = await backend.discoverModels();
 			} catch (error) {
@@ -623,6 +742,9 @@ export async function resolveGateApplyAdvertise(
 		aliases,
 		appContext.logger,
 	);
+	// Resolution is async and can straddle node teardown; never advertise into a
+	// closed DB.
+	if (isDbClosed(appContext.db)) return catalog;
 	gateUnreadyBackends(modelRouter, catalog, appContext.logger);
 	modelRouter.applyResolvedCatalog(catalog, appContext.logger);
 	advertiseLocalModels(appContext, modelRouter, rawBackends, catalog);
@@ -723,9 +845,13 @@ export async function initInference(
 				// (`gateUnreadyBackends` clears their not-ready flag), and re-advertise
 				// so peers learn them — all without a restart.
 				if (status !== "updated") return status;
+				// The LIVE config: expanded namespace rows and a SIGHUP-reloaded config
+				// replace the startup snapshot, and a first-boot-unready expanded backend
+				// must be able to recover its window from this refresh too.
+				const liveBackends = appContext.config.modelBackends;
 				const refreshedCatalog = await resolveLocalCatalog(
 					modelRouter,
-					rawBackends,
+					liveBackends,
 					modelsDevCache,
 					aliases,
 					appContext.logger,
@@ -738,7 +864,7 @@ export async function initInference(
 				// window/output budget now resolves from the refreshed models.dev snapshot
 				// starts using the real values without a restart (requirement 1).
 				modelRouter.applyResolvedCatalog(refreshedCatalog, appContext.logger);
-				advertiseLocalModels(appContext, modelRouter, rawBackends, refreshedCatalog);
+				advertiseLocalModels(appContext, modelRouter, liveBackends, refreshedCatalog);
 				return status;
 			});
 		}
@@ -753,7 +879,7 @@ export async function initInference(
 		// Kick off any self-configuring backends' background lineup fetch. Does
 		// NOT block startup — readiness backends stay not-ready (excluded from
 		// selection) until their fetch lands. Generic; umans is the first user.
-		wireBackendReadiness(appContext, modelRouter);
+		wireBackendReadiness(appContext, modelRouter, { modelsDevCache });
 	}
 
 	// 11a. Post-restart summary extraction

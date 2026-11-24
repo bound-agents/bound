@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { calculateTurnCost } from "@bound/agent";
 import { applySchema, createDatabase } from "@bound/core";
 import type { AppContext } from "@bound/core";
-import { GitHubCopilotDriver, createModelRouter } from "@bound/llm";
+import { GitHubCopilotDriver, ModelsDevCache, createModelRouter } from "@bound/llm";
 import type {
 	CopilotAccountInfo,
 	CopilotTokenManager,
@@ -26,8 +26,10 @@ import { createLogger } from "@bound/shared";
 import { BedrockNamespaceDriver } from "../../../llm/src/drivers/bedrock-namespace";
 import {
 	advertiseLocalModels,
+	createCoalescedPass,
 	gateUnreadyBackends,
 	resolveLocalCatalog,
+	settleExpandedBackendPasses,
 	toRouterConfig,
 	wireBackendReadiness,
 } from "../commands/start/inference";
@@ -174,7 +176,10 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 			expect("tier" in entry).toBe(false);
 			expect(typeof entry.route_id).toBe("string");
 			expect((entry.route_id as string).endsWith(`:umans:${entry.id as string}`)).toBe(true);
-			expect(entry.logical_model).toBe(entry.id);
+			// The post-registration catalog pass replaces the backend-id placeholder
+			// with the catalog grouping. umans ids are neither in a recognized
+			// namespace nor in models.dev, so they stay unassigned.
+			expect(entry.logical_model).toBeUndefined();
 		}
 
 		// Default redirected off the placeholder to a concrete id.
@@ -697,8 +702,11 @@ describe("expanded backends get a full router config", () => {
 		router.markNotReady("bedrock-main");
 		const appContext = makeAppContext(shared);
 
-		wireBackendReadiness(appContext, router);
+		// Expanded Bedrock models carry no window of their own; models.dev supplies
+		// it, so the post-registration catalog pass keeps them ready (R-MC4).
+		wireBackendReadiness(appContext, router, { modelsDevCache: await loadedModelsDevCache() });
 		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+		await settleExpandedBackendPasses(router);
 
 		const gpt = "bedrock-main-openai.gpt-5.6-sol";
 		const haiku = "bedrock-main-anthropic.claude-haiku-5-5";
@@ -873,5 +881,235 @@ describe("expanded backends get a full router config", () => {
 		expect(router.getEffort("umans-coder")).toBe("high");
 		expect(router.getCacheTtl("umans-coder")).toBe("5m");
 		expect(router.getMaxOutputTokens("umans-coder")).toBe(8192);
+	});
+});
+
+// --- Expanded backends advertise catalog-resolved metadata (#281) -------------
+// A namespace registering its expanded backends must run the same resolve →
+// gate → apply → advertise pass the rest of startup uses, so hosts.models carries
+// the catalog logical model (not the backend id placeholder), the resolved
+// max_context, and a model_overrides logical_model pin.
+
+const MODELS_DEV_BEDROCK = {
+	"amazon-bedrock": {
+		models: {
+			"openai.gpt-5.6-sol": { limit: { context: 400000, output: 64000 } },
+			"anthropic.claude-haiku-5-5": { limit: { context: 200000, output: 32000 } },
+		},
+	},
+};
+
+async function loadedModelsDevCache(): Promise<ModelsDevCache> {
+	const cache = new ModelsDevCache({
+		cachePath: null,
+		fetchImpl: (async () =>
+			new Response(JSON.stringify(MODELS_DEV_BEDROCK), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			})) as unknown as typeof fetch,
+	});
+	expect(await cache.refresh()).toBe("updated");
+	return cache;
+}
+
+function bedrockMainShared() {
+	return {
+		backends: [
+			{
+				id: "bedrock-main",
+				provider: "bedrock",
+				region: "us-east-1",
+				model_overrides: {
+					"anthropic.claude-haiku-5-5": { logical_model: "haiku-pinned" },
+				},
+			},
+		],
+		default: "bedrock-main",
+	};
+}
+
+function seedBedrockMain(
+	router: ReturnType<typeof createModelRouter>,
+	shared: ReturnType<typeof bedrockMainShared>,
+) {
+	const routerConfig = toRouterConfig(shared as never);
+	router.addDynamicBackend(
+		"bedrock-main",
+		new BedrockNamespaceDriver({
+			namespaceId: "bedrock-main",
+			region: "us-east-1",
+			fetch: bedrockFixtureFetch(),
+			modelOverrides: routerConfig.backends[0].modelOverrides,
+		}),
+		NAMESPACE_CAPS,
+	);
+	router.markNotReady("bedrock-main");
+}
+
+function advertisedModels(): Array<{
+	id: string;
+	logical_model?: string;
+	capabilities?: { max_context?: number };
+}> {
+	const row = db.query("SELECT models FROM hosts WHERE site_id = ?").get(siteId) as {
+		models: string;
+	};
+	return JSON.parse(row.models);
+}
+
+describe("expanded backends advertise catalog-resolved metadata", () => {
+	const gpt = "bedrock-main-openai.gpt-5.6-sol";
+	const haiku = "bedrock-main-anthropic.claude-haiku-5-5";
+
+	it("advertises the catalog logical model, resolved max_context and a logical_model pin after registration", async () => {
+		const cache = await loadedModelsDevCache();
+		const shared = bedrockMainShared();
+		const router = createModelRouter({ backends: [], default: "bedrock-main" });
+		seedBedrockMain(router, shared);
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router, { modelsDevCache: cache });
+		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+		await settleExpandedBackendPasses(router);
+
+		const advertised = advertisedModels();
+		const ids = advertised.map((m) => m.id).sort();
+		expect(ids).toEqual([haiku, gpt].sort());
+		expect(ids).not.toContain("bedrock-main");
+		const gptEntry = advertised.find((m) => m.id === gpt);
+		expect(gptEntry?.logical_model).toBe("gpt-5-6-sol");
+		expect(gptEntry?.capabilities?.max_context).toBe(400000);
+		expect(advertised.find((m) => m.id === haiku)?.logical_model).toBe("haiku-pinned");
+		// The router got the resolved metadata too (applyResolvedCatalog).
+		expect(router.getEffectiveCapabilities(gpt)?.max_context).toBe(400000);
+		expect(router.isNotReady(gpt)).toBe(false);
+	});
+
+	it("re-registration after a SIGHUP-style reload re-resolves without duplicating rows", async () => {
+		const cache = await loadedModelsDevCache();
+		const shared = bedrockMainShared();
+		const router = createModelRouter({ backends: [], default: "bedrock-main" });
+		seedBedrockMain(router, shared);
+		const appContext = makeAppContext(shared);
+		wireBackendReadiness(appContext, router, { modelsDevCache: cache });
+		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+		await settleExpandedBackendPasses(router);
+
+		const reloaded = bedrockMainShared();
+		(appContext.config as { modelBackends: unknown }).modelBackends = reloaded;
+		router.reload({ backends: [], default: "bedrock-main" });
+		seedBedrockMain(router, reloaded);
+		wireBackendReadiness(appContext, router);
+		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+		await settleExpandedBackendPasses(router);
+
+		const cfgIds = (reloaded.backends as Array<{ id: string }>).map((b) => b.id).sort();
+		expect(cfgIds).toEqual([haiku, gpt].sort());
+		const advertised = advertisedModels();
+		expect(advertised.map((m) => m.id).sort()).toEqual([haiku, gpt].sort());
+		// The cache handed to the first wiring is kept for later re-registrations.
+		expect(advertised.find((m) => m.id === gpt)?.logical_model).toBe("gpt-5-6-sol");
+		expect(advertised.find((m) => m.id === gpt)?.capabilities?.max_context).toBe(400000);
+	});
+
+	it("gates an expanded backend whose max_context resolves nowhere, like a static backend", async () => {
+		const shared = bedrockMainShared();
+		const router = createModelRouter({ backends: [], default: "bedrock-main" });
+		seedBedrockMain(router, shared);
+		const appContext = makeAppContext(shared);
+		wireBackendReadiness(appContext, router, { modelsDevCache: null });
+		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+		await settleExpandedBackendPasses(router);
+
+		expect(router.isNotReady(gpt)).toBe(true);
+		expect(advertisedModels().map((m) => m.id)).not.toContain(gpt);
+	});
+});
+
+describe("expanded-backend catalog pass failure", () => {
+	it("logs a failing pass instead of rejecting, keeping the immediate advertisement", async () => {
+		const shared = bedrockMainShared();
+		const router = createModelRouter({ backends: [], default: "bedrock-main" });
+		seedBedrockMain(router, shared);
+		const appContext = makeAppContext(shared);
+		const warnings: string[] = [];
+		(appContext.logger as unknown as { warn: unknown }).warn = (msg: string) => {
+			warnings.push(msg);
+		};
+		(router as unknown as { applyResolvedCatalog: unknown }).applyResolvedCatalog = () => {
+			throw new Error("apply failed");
+		};
+		wireBackendReadiness(appContext, router, { modelsDevCache: await loadedModelsDevCache() });
+		await waitFor(() => router.tryGetBackend("bedrock-main") === null);
+		await settleExpandedBackendPasses(router);
+
+		expect(warnings).toContain("[llm] Expanded-backend catalog pass failed");
+		expect(advertisedModels().map((m) => m.id)).toContain("bedrock-main-openai.gpt-5.6-sol");
+	});
+});
+
+describe("createCoalescedPass", () => {
+	it("runs one pass for schedules in the same tick", async () => {
+		let runs = 0;
+		const pass = createCoalescedPass(
+			async () => {
+				runs++;
+			},
+			() => {},
+		);
+		pass.schedule();
+		pass.schedule();
+		pass.schedule();
+		await pass.settled();
+		expect(runs).toBe(1);
+	});
+
+	it("a schedule during a running pass triggers exactly one trailing pass", async () => {
+		let runs = 0;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const pass = createCoalescedPass(
+			async () => {
+				runs++;
+				if (runs === 1) await gate;
+			},
+			() => {},
+		);
+		pass.schedule();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(runs).toBe(1);
+		pass.schedule();
+		pass.schedule();
+		release();
+		await pass.settled();
+		expect(runs).toBe(2);
+	});
+
+	it("reports a failing pass and keeps draining", async () => {
+		const errors: unknown[] = [];
+		let runs = 0;
+		const pass = createCoalescedPass(
+			async () => {
+				runs++;
+				if (runs === 1) throw new Error("boom");
+			},
+			(e) => errors.push(e),
+		);
+		pass.schedule();
+		await pass.settled();
+		pass.schedule();
+		await pass.settled();
+		expect(runs).toBe(2);
+		expect((errors[0] as Error).message).toBe("boom");
+	});
+
+	it("settled() resolves immediately when idle", async () => {
+		const pass = createCoalescedPass(
+			async () => {},
+			() => {},
+		);
+		await pass.settled();
 	});
 });
