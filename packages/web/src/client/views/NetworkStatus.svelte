@@ -7,6 +7,7 @@
 	import TicketTab from "../components/TicketTab.svelte";
 	import TopologyDiagram from "../components/TopologyDiagram.svelte";
 	import { client } from "../lib/bound";
+	import { buildModelLabels, compareLabels, parseRouteId } from "../lib/model-labels";
 
 	interface HostInfo {
 		site_id: string;
@@ -119,9 +120,14 @@
 		try {
 			const parsed = JSON.parse(modelsStr);
 			if (!Array.isArray(parsed)) return [];
-			return parsed.map((entry: unknown) =>
-				typeof entry === "string" ? entry : ((entry as { id?: string })?.id ?? "unknown"),
-			);
+			const labels = parsed.map((entry: unknown) => {
+				if (typeof entry === "string") return entry;
+				const e = entry as { id?: string; route_id?: string; provider_model_id?: string };
+				const route = e.route_id ? parseRouteId(e.route_id) : null;
+				if (route && e.provider_model_id) return `${route.provider}:${e.provider_model_id}`;
+				return buildModelLabels([]).routeLabel(e.route_id ?? e.id ?? "unknown");
+			});
+			return labels.sort(compareLabels);
 		} catch {
 			return [];
 		}

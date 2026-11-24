@@ -23,9 +23,11 @@
 			cache_read: number;
 			cache_write: number;
 		}>;
+		/** Maps a backend id to its user-facing route label (`provider:model`). */
+		labelFor?: (id: string) => string;
 	}
 
-	let { data }: Props = $props();
+	let { data, labelFor = (id: string) => id }: Props = $props();
 
 	// Tooltip state
 	let tooltipVisible = $state(false);
@@ -182,7 +184,7 @@
 		tooltipY = event.clientY - rect.top;
 
 		const lines: string[] = [
-			series.model_id,
+			labelFor(series.model_id),
 			formatBucketTooltipLabel(point.bucket),
 			`Cost: ${formatUSD(point.cost_usd)}`,
 		];
@@ -325,7 +327,7 @@
 			{#each seriesList as series}
 				<div class="legend-item">
 					<div class="legend-color" style="background-color: {series.color}"></div>
-					<span class="legend-label">{series.model_id}</span>
+					<span class="legend-label">{labelFor(series.model_id)}</span>
 				</div>
 			{/each}
 		</div>

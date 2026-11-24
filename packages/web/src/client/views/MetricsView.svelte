@@ -11,8 +11,10 @@
 	import Page from "../components/Page.svelte";
 	import SectionHeader from "../components/SectionHeader.svelte";
 	import TokenBarChart from "../components/TokenBarChart.svelte";
+	import { client } from "../lib/bound";
 	import { formatRelativeTime } from "../lib/format-time";
 	import { MetricsStore } from "../lib/metrics-store";
+	import { type ModelLabels, buildModelLabels } from "../lib/model-labels";
 
 	const store = new MetricsStore();
 
@@ -26,6 +28,16 @@
 	let initialLoading = $state(false);
 	let refreshing = $state(false);
 	let error: string | null = $state(null);
+	let labels: ModelLabels = $state(buildModelLabels([]));
+	const routeLabel = (id: string): string => labels.routeLabel(id);
+
+	async function loadLabels(): Promise<void> {
+		try {
+			labels = buildModelLabels((await client.getRoutingModels()).models);
+		} catch {
+			// Older servers without the routing API keep raw ids.
+		}
+	}
 
 	function syncState(): void {
 		data = store.state.data;
@@ -68,6 +80,7 @@
 
 	onMount(() => {
 		loadMetrics();
+		void loadLabels();
 
 		// Only poll when range includes "now"
 		pollInterval = setInterval(() => {
@@ -209,8 +222,8 @@
 						</MetroCard>
 					</div>
 
-					<TokenBarChart data={data.tokens.byModel} />
-					<CostTimeline data={data.tokens.costByModelTimeline} />
+					<TokenBarChart data={data.tokens.byModel} labelFor={routeLabel} />
+					<CostTimeline data={data.tokens.costByModelTimeline} labelFor={routeLabel} />
 				{/if}
 
 				<SectionHeader

@@ -140,6 +140,8 @@ export interface RouteSupplyInfo {
 	provider: string | null;
 	/** This route's user-facing display name (spec §2.1), or null when unadvertised. */
 	display_name: string | null;
+	/** The raw provider model id (e.g. `anthropic.claude-opus-5-5`), or null when unadvertised. */
+	provider_model_id: string | null;
 	drained: boolean;
 	/** `healthy` | `backoff` | `half_open` from the local router, else `unknown` (remote routes). */
 	health: "healthy" | "backoff" | "half_open" | "unknown";

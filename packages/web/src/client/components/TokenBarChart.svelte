@@ -11,9 +11,11 @@
 			cache_read: number;
 			cache_write: number;
 		}>;
+		/** Maps a backend id to its user-facing route label (`provider:model`). */
+		labelFor?: (id: string) => string;
 	}
 
-	let { data }: Props = $props();
+	let { data, labelFor = (id: string) => id }: Props = $props();
 
 	// Tooltip state
 	let tooltipVisible = $state(false);
@@ -85,7 +87,7 @@
 		tooltipY = event.clientY - rect.top;
 		const total = rowTotal(d);
 		tooltipLines = [
-			d.model_id,
+			labelFor(d.model_id),
 			`Input:       ${d.tokens_in.toLocaleString()}`,
 			`Output:      ${d.tokens_out.toLocaleString()}`,
 			`Cache read:  ${d.cache_read.toLocaleString()}`,
@@ -123,7 +125,7 @@
 				text-anchor="end"
 				dominant-baseline="middle"
 			>
-				{d.model_id}
+				{labelFor(d.model_id)}
 			</text>
 
 			<!-- Input - blue -->
