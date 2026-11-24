@@ -583,7 +583,9 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 		// verbatim via `prompt_cache_options.ttl` unless a prior rejection on this route
 		// recorded a replacement value or a drop. The remembered decision wins; a fresh
 		// route sends the configured value and lets the catch below correct it.
-		const ttlDecision = this.cacheRecovery.decisionFor(modelId, "prompt_cache_options.ttl");
+		const ttlDecision =
+			this.cacheRecovery.decisionFor(modelId, "prompt_cache_options.ttl") ??
+			this.cacheRecovery.decisionFor(modelId, "prompt_cache_options");
 		const requestedCacheTtl =
 			ttlDecision?.kind === "drop"
 				? undefined
@@ -682,6 +684,7 @@ export class BedrockMantleDriver implements LLMBackend, SupportsModelDiscovery {
 				cacheRejection &&
 				!this.cacheRecovery.decisionFor(modelId, cacheRejection.field) &&
 				(cacheRejection.field === "prompt_cache_options.ttl" ||
+					cacheRejection.field === "prompt_cache_options" ||
 					cacheRejection.field === "prompt_cache_breakpoint")
 			) {
 				const decision = this.cacheRecovery.record(modelId, cacheRejection, {

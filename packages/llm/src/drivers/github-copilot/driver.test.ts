@@ -810,16 +810,87 @@ describe("GitHubCopilotDriver reasoning effort (Responses route)", () => {
 		expect(reasoning?.effort).toBe("none");
 	});
 
-	it("sends prompt_cache_options.ttl=30m on the Responses route when caching is requested (R-MC14, obj2)", async () => {
+	it("sends prompt_cache_options with mode=implicit and ttl=30m on the Responses route when caching is requested (R-MC14, obj2)", async () => {
 		// §3.3 Request: the Responses route sends the protocol's OWN cache-lifetime
-		// field. The caller signals caching via cache_ttl; the Responses protocol's
-		// single lifetime is 30m, so that is what rides on prompt_cache_options.ttl.
+		// field. Copilot's Responses endpoint requires `mode` alongside `ttl`
+		// (omitting it 400s with "Invalid value: ''. Supported values are: 'implicit'
+		// and 'explicit'."). This route sends no explicit breakpoints, so `implicit`
+		// matches the wire contract.
 		const body = await responsesBody(
 			{ model: "gpt-5.6", cache_ttl: "1h", messages: [{ role: "user", content: "hi" }] },
 			gpt56Catalog,
 		);
-		const cacheOpts = body.prompt_cache_options as { ttl?: string } | undefined;
-		expect(cacheOpts?.ttl).toBe("30m");
+		const cacheOpts = body.prompt_cache_options as { mode?: string; ttl?: string } | undefined;
+		expect(cacheOpts).toEqual({ mode: "implicit", ttl: "30m" });
+	});
+
+	it("recovers from a 400 rejecting prompt_cache_options on Responses, retries once without it, and remembers for the route (R-MC14)", async () => {
+		const requests: Request[] = [];
+		let responsesCalls = 0;
+		const driver = new GitHubCopilotDriver({
+			tokenManager,
+			model: "gpt-5.4-nano",
+			contextWindow: 128_000,
+			account,
+			fetch: makeResponsesFetch({
+				requests,
+				catalog: [
+					{
+						id: "gpt-5.4-nano",
+						supported_endpoints: ["/responses"],
+						capabilities: { supports: { tool_calls: true } },
+					},
+				],
+				inference: () => {
+					responsesCalls++;
+					if (responsesCalls === 1) {
+						return new Response(
+							JSON.stringify({
+								error: {
+									message: "prompt_cache_options is not supported on this model",
+									code: "invalid_request_body",
+								},
+							}),
+							{ status: 400, headers: { "content-type": "application/json" } },
+						);
+					}
+					return responsesSse("gpt-5.4-nano");
+				},
+			}),
+		});
+
+		// Turn 1: first request carries prompt_cache_options and 400s; driver retries
+		// once without it and succeeds.
+		await drain(
+			driver.chat({
+				model: "gpt-5.4-nano",
+				cache_ttl: "1h",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+		// Turn 2: route remembers the drop, so prompt_cache_options is omitted up front.
+		await drain(
+			driver.chat({
+				model: "gpt-5.4-nano",
+				cache_ttl: "1h",
+				messages: [{ role: "user", content: "again" }],
+			}),
+		);
+
+		const infReqs = requests.filter((r) => new URL(r.url).pathname.endsWith("/responses"));
+		expect(infReqs).toHaveLength(3);
+		const first = JSON.parse(await infReqs[0].clone().text()) as {
+			prompt_cache_options?: unknown;
+		};
+		const retry = JSON.parse(await infReqs[1].clone().text()) as {
+			prompt_cache_options?: unknown;
+		};
+		const secondTurn = JSON.parse(await infReqs[2].clone().text()) as {
+			prompt_cache_options?: unknown;
+		};
+		expect(first.prompt_cache_options).toEqual({ mode: "implicit", ttl: "30m" });
+		expect(retry.prompt_cache_options).toBeUndefined();
+		expect(secondTurn.prompt_cache_options).toBeUndefined();
 	});
 
 	it("omits prompt_cache_options when no caching is requested (Responses route)", async () => {

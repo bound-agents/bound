@@ -726,6 +726,47 @@ describe("BedrockMantleDriver — Responses cache_ttl mapping and SDK-local reco
 		// The final, successful request carries no rejected lifetime value.
 		expect(bodies.at(-1)).not.toContain('"ttl":"1h"');
 	});
+
+	it("recovers from a 400 naming prompt_cache_options (whole object) and remembers the drop", async () => {
+		const bodies: string[] = [];
+		let calls = 0;
+		const captureFetch: typeof fetch = async (input, init) => {
+			const req = new Request(input as RequestInfo, init);
+			bodies.push(await req.clone().text());
+			calls++;
+			if (calls === 1) {
+				return new Response(
+					JSON.stringify({
+						error: {
+							message: "prompt_cache_options is not supported on this model",
+							code: "invalid_request_body",
+						},
+					}),
+					{ status: 400, headers: { "content-type": "application/json" } },
+				);
+			}
+			return responsesSse();
+		};
+		const driver = new BedrockMantleDriver({
+			region: "us-east-1",
+			model: "openai.gpt-5.4",
+			contextWindow: 272_000,
+			providerMode: "openai_responses",
+			fetch: captureFetch,
+			credentials: fakeCredentials,
+			siteId: "this-host:us-east-1",
+		});
+
+		const first = await collect(driver.chat(responsesParams("1h")));
+		const second = await collect(driver.chat(responsesParams("1h")));
+
+		expect(first.some((c) => c.type === "text" && c.content.includes("answer"))).toBe(true);
+		expect(second.some((c) => c.type === "text" && c.content.includes("answer"))).toBe(true);
+		expect(bodies).toHaveLength(3);
+		expect(JSON.parse(bodies[0] ?? "{}").prompt_cache_options).toEqual({ ttl: "30m" });
+		expect(JSON.parse(bodies[1] ?? "{}").prompt_cache_options).toBeUndefined();
+		expect(JSON.parse(bodies[2] ?? "{}").prompt_cache_options).toBeUndefined();
+	});
 });
 
 describe("BedrockMantleDriver — route-prefix recovery (requirement 4)", () => {

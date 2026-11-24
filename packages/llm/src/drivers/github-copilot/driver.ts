@@ -803,19 +803,26 @@ export class GitHubCopilotDriver implements LLMBackend {
 					routeId: modelId,
 					state: this.cacheRecovery,
 					// The cache-lifetime field depends on the route: Messages sends
-					// `cache_control`, Responses sends `prompt_cache_options.ttl`. Chat
-					// sends none, so its field list is empty and recovery never fires.
+					// `cache_control`, Responses sends `prompt_cache_options` (`{ mode, ttl }`,
+					// which providers may reject by either `prompt_cache_options.ttl` or the
+					// parent `prompt_cache_options`). Chat sends none, so its field list is
+					// empty and recovery never fires.
 					fields:
 						route === "messages"
 							? ["cache_control"]
 							: route === "responses"
-								? ["prompt_cache_options.ttl"]
+								? ["prompt_cache_options.ttl", "prompt_cache_options"]
 								: [],
 					// Messages `cache_control.ttl` accepts "5m"/"1h"; Responses
 					// `prompt_cache_options.ttl` accepts only "30m" (the protocol's single
-					// lifetime). A listed value outside the route's set is dropped.
+					// lifetime); a rejection of the whole `prompt_cache_options` object always
+					// drops it. A listed value outside the route's set is dropped.
 					validValuesFor: (field) =>
-						field === "prompt_cache_options.ttl" ? ["30m"] : ["5m", "1h"],
+						field === "prompt_cache_options.ttl"
+							? ["30m"]
+							: field === "prompt_cache_options"
+								? []
+								: ["5m", "1h"],
 					run: (cacheDecision) =>
 						withEncryptedReasoningRetry({
 							build: (stripEncryptedReasoning) => stripEncryptedReasoning,
@@ -1032,14 +1039,20 @@ export class GitHubCopilotDriver implements LLMBackend {
 		const openaiOptions: OpenAIResponsesProviderOptions = {
 			...(params.threadId && { promptCacheKey: params.threadId }),
 			// R-MC14 Request: when caching is intended, send the OpenAI Responses
-			// protocol's OWN cache-lifetime field, `prompt_cache_options.ttl`. The
-			// SDK's typed union accepts only "30m" — the Responses protocol's single
-			// lifetime — so that is the value sent (not the Anthropic 5m/1h cache_ttl,
-			// which names a different protocol's lifetimes). A prior rejection recorded
-			// for this route drops the field (`drop`) or resends a provider-listed
-			// value; recovery, not a per-provider special case, handles the rejection.
+			// protocol's OWN cache-lifetime field, `prompt_cache_options` (`{ mode, ttl }`).
+			// Copilot's Responses endpoint requires `mode` whenever `prompt_cache_options`
+			// is present (omitting it 400s with `Invalid value: ''. Supported values are:
+			// 'implicit' and 'explicit'.`); this route sends no explicit breakpoints
+			// (`cacheProvider: null`), so `mode: "implicit"` matches the wire contract.
+			// The SDK's typed union accepts only "30m" for `ttl`. A prior rejection
+			// recorded for this route drops the field (`drop`) or resends a
+			// provider-listed value; recovery, not a per-provider special case, handles
+			// models that reject `prompt_cache_options`.
 			...(this.responsesCacheTtl(params, cacheDecision) && {
-				promptCacheOptions: { ttl: this.responsesCacheTtl(params, cacheDecision) as "30m" },
+				promptCacheOptions: {
+					mode: "implicit" as const,
+					ttl: this.responsesCacheTtl(params, cacheDecision) as "30m",
+				},
 			}),
 			...(effort && {
 				forceReasoning: true,
