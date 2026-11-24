@@ -240,4 +240,26 @@ describe("toRouterConfig", () => {
 		expect(routerConfig.backends[0].logicalModel).toBe("opus-pin");
 		expect(createModelRouter(routerConfig).resolveLocalBackendIdForHint("opus-pin")).toBe("opus");
 	});
+
+	it("preserves omitted `model` on self-configuring namespace entries so the router builds readiness drivers", () => {
+		const cfg: SharedModelBackendsConfig = {
+			backends: [
+				{ id: "bedrock-main", provider: "bedrock", region: "us-east-1", profile: "p" },
+				{ id: "mantle-main", provider: "bedrock-mantle", region: "us-east-1", profile: "p" },
+			],
+			default: "bedrock-main",
+		};
+		const routerConfig = toRouterConfig(cfg);
+		expect(routerConfig.backends[0].model).toBeUndefined();
+		expect(routerConfig.backends[1].model).toBeUndefined();
+
+		const router = createModelRouter(routerConfig, { siteId: "site-a" });
+		const readinessIds = router
+			.getReadinessBackends()
+			.map((b) => b.id)
+			.sort();
+		expect(readinessIds).toEqual(["bedrock-main", "mantle-main"]);
+		expect(router.isNotReady("bedrock-main")).toBe(true);
+		expect(router.isNotReady("mantle-main")).toBe(true);
+	});
 });

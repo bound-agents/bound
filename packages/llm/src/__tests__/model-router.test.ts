@@ -2010,3 +2010,63 @@ describe("ModelRouter — resolveLocalBackendIdForHint", () => {
 		expect(router.resolveLocalBackendIdForHint("gpt-5.6-sol")).toBeNull();
 	});
 });
+
+describe("ModelRouter — namespace detection and reload context", () => {
+	it("builds readiness-bearing namespace drivers for bedrock and bedrock-mantle when model is omitted or empty", () => {
+		const router = createModelRouter(
+			{
+				backends: [
+					{ id: "bedrock-main", provider: "bedrock", region: "us-east-1", profile: "p" },
+					{
+						id: "mantle-main",
+						provider: "bedrock-mantle",
+						region: "us-east-1",
+						profile: "p",
+						model: "",
+					},
+				],
+				default: "bedrock-main",
+			},
+			{ siteId: "site-a" },
+		);
+		expect(router.getReadinessBackends().map((b) => b.id)).toEqual(["bedrock-main", "mantle-main"]);
+		expect(router.isNotReady("bedrock-main")).toBe(true);
+		expect(router.isNotReady("mantle-main")).toBe(true);
+		expect(router.getRouteId("bedrock-main")).toBe("site-a:bedrock:bedrock-main");
+	});
+
+	it("preserves siteId and routeIdentities across reload()", () => {
+		const router = createModelRouter(
+			{
+				backends: [
+					{
+						id: "a",
+						provider: "openai-compatible",
+						apiKey: "k",
+						model: "m1",
+						baseUrl: "http://localhost",
+						contextWindow: 1000,
+					},
+				],
+				default: "a",
+			},
+			{ siteId: "site-a" },
+		);
+		expect(router.getRouteId("a")).toBe("site-a:openai-compatible:a");
+
+		router.reload({
+			backends: [
+				{
+					id: "b",
+					provider: "openai-compatible",
+					apiKey: "k",
+					model: "m2",
+					baseUrl: "http://localhost",
+					contextWindow: 1000,
+				},
+			],
+			default: "b",
+		});
+		expect(router.getRouteId("b")).toBe("site-a:openai-compatible:b");
+	});
+});

@@ -573,7 +573,7 @@ export class GitHubCopilotDriver implements LLMBackend {
 	}) {
 		this.tokenManager = config.tokenManager;
 		this.model = config.model ?? "";
-		this.isNamespace = config.model === undefined;
+		this.isNamespace = !config.model;
 		this.contextWindow = config.contextWindow;
 		this.logger = config.logger;
 		this.baseFetch = resolveProviderFetch(PROVIDER_NAME, config);

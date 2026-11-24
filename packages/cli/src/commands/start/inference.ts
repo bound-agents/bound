@@ -153,11 +153,11 @@ export function toRouterConfig(rawBackends: SharedModelBackendsConfig): ModelBac
 			id: b.id,
 			provider: b.provider,
 			providerMode: b.provider_mode,
-			// umans is a self-configuring namespace with no operator-set
-			// model — the lineup is fetched at runtime. Coerce to "" so the
-			// loose BackendConfig.model stays a string; the umans driver
-			// never reads config.model (it uses the per-model `modelId`).
-			model: b.model ?? "",
+			// Self-configuring namespace entries (umans, github-copilot, bedrock,
+			// bedrock-mantle) omit `model` so the router detects the namespace form
+			// (`!config.model`) and constructs the readiness-bearing namespace driver.
+			// Do NOT coerce `undefined` to `""` here.
+			model: b.model,
 			baseUrl: b.base_url,
 			contextWindow: b.context_window,
 			apiKey: b.api_key,
@@ -768,7 +768,7 @@ export async function initInference(
 	// Map backend IDs to their provider-specific model names for chat() calls
 	const backendModelMap = new Map<string, string>();
 	for (const b of routerConfig.backends) {
-		backendModelMap.set(b.id, b.model);
+		if (b.model !== undefined) backendModelMap.set(b.id, b.model);
 	}
 
 	// Debug-level logger that drivers use to intercept raw AI SDK request bodies.

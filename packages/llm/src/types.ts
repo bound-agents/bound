@@ -502,7 +502,7 @@ export interface BackendConfig {
 	 * Default `global` (decision 3). Ignored on a concrete (model-bearing) entry.
 	 */
 	crossRegion?: string;
-	model: string;
+	model?: string;
 	baseUrl?: string;
 	/** Absolute path to the ChatGPT OAuth token bundle, when configured. */
 	tokenStorePath?: string;

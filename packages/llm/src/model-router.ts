@@ -190,6 +190,9 @@ export class ModelRouter {
 	 * the absence; a backend with no resolved reasoning stays underived.
 	 */
 	private resolvedReasoning: Map<string, { reasoning: ResolvedReasoning; source: FieldSource }>;
+	private readonly logger?: Logger;
+	private readonly fetchByBackendId?: Map<string, typeof globalThis.fetch>;
+	private readonly siteId?: string;
 
 	constructor(
 		backends: Map<string, LLMBackend>,
@@ -199,6 +202,11 @@ export class ModelRouter {
 		notReady?: Set<string>,
 		clock: () => number = Date.now,
 		routeIdentities?: Map<string, { routeId: RouteId; reasoningOrigin: string }>,
+		reloadContext?: {
+			logger?: Logger;
+			fetchByBackendId?: Map<string, typeof globalThis.fetch>;
+			siteId?: string;
+		},
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -211,6 +219,9 @@ export class ModelRouter {
 		this.resolvedReasoning = new Map();
 		this.clock = clock;
 		this.routeIdentities = routeIdentities ?? new Map();
+		this.logger = reloadContext?.logger;
+		this.fetchByBackendId = reloadContext?.fetchByBackendId;
+		this.siteId = reloadContext?.siteId;
 		this.notReady =
 			notReady ??
 			new Set(
@@ -234,7 +245,7 @@ export class ModelRouter {
 	 * the new driver instances.
 	 */
 	reload(config: ModelBackendsConfig): void {
-		const next = buildRouterState(config);
+		const next = buildRouterState(config, this.logger, this.fetchByBackendId, this.siteId);
 		// Dispose readiness on superseded backends BEFORE reassigning so an
 		// in-flight lineup fetch holding the OLD registrar (bound to the same
 		// live router) cannot register stale models / clobber the re-seeded
@@ -959,7 +970,7 @@ function createBackendFromConfig(
 			// lineup filter, and expands into one concrete per-model backend (Converse or
 			// Responses-on-runtime) per catalog model (catalog §2.1). `model` present =>
 			// a single concrete Converse backend, unchanged.
-			if (config.model === undefined) {
+			if (!config.model) {
 				return new BedrockNamespaceDriver({
 					namespaceId: config.id,
 					region,
@@ -992,6 +1003,9 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("Anthropic driver requires apiKey in config");
 			}
+			if (!config.model) {
+				throw new Error("Anthropic driver requires model in config");
+			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new AnthropicDriver({
 				apiKey,
@@ -1009,6 +1023,9 @@ function createBackendFromConfig(
 			const apiKey = config.apiKey as string | undefined;
 			if (!apiKey) {
 				throw new Error("OpenAI-compatible driver requires apiKey in config");
+			}
+			if (!config.model) {
+				throw new Error("OpenAI-compatible driver requires model in config");
 			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenAICompatibleDriver({
@@ -1030,6 +1047,9 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("Cerebras driver requires apiKey in config");
 			}
+			if (!config.model) {
+				throw new Error("Cerebras driver requires model in config");
+			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenAICompatibleDriver({
 				baseUrl,
@@ -1049,6 +1069,9 @@ function createBackendFromConfig(
 			const apiKey = config.apiKey as string | undefined;
 			if (!apiKey) {
 				throw new Error("z.AI driver requires apiKey in config");
+			}
+			if (!config.model) {
+				throw new Error("z.AI driver requires model in config");
 			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenAICompatibleDriver({
@@ -1070,6 +1093,9 @@ function createBackendFromConfig(
 			const tokens = store.load();
 			if (!tokens) {
 				throw new Error("ChatGPT OAuth is not logged in — run `bound login --chatgpt`");
+			}
+			if (!config.model) {
+				throw new Error("ChatGPT OAuth driver requires model in config");
 			}
 			return new ChatGptOAuthDriver({
 				tokenManager: new TokenManager(tokens, { fetch: fetch ?? globalThis.fetch }, store),
@@ -1113,6 +1139,7 @@ function createBackendFromConfig(
 				// is passed through so the driver's namespace detection
 				// (`config.model === undefined`) fires and it self-configures.
 				model: config.model,
+				...(!config.model ? { namespaceId: config.id } : {}),
 				// No `model` => namespace instance also gets its per-model override map so
 				// expansion can apply each model's request controls (requirement 5). Expanded
 				// per-model backend ids are `${config.id}-${providerModelId}`.
@@ -1134,6 +1161,9 @@ function createBackendFromConfig(
 			const apiKey = config.apiKey as string | undefined;
 			if (!apiKey) {
 				throw new Error("OpenCode Go driver requires apiKey in config");
+			}
+			if (!config.model) {
+				throw new Error("OpenCode Go driver requires model in config");
 			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenCodeGoDriver({
@@ -1185,7 +1215,7 @@ function createBackendFromConfig(
 			// and the Mantle lineup comes from GET /v1/models. It reuses the same
 			// namespace driver as `bedrock`; the driver's own base URLs differ per
 			// protocol. `model` present => a single concrete Mantle backend, unchanged.
-			if (config.model === undefined) {
+			if (!config.model) {
 				return new BedrockNamespaceDriver({
 					namespaceId: config.id,
 					region,
@@ -1341,5 +1371,10 @@ export function createModelRouter(
 		undefined,
 		options?.clock,
 		state.routeIdentities,
+		{
+			logger: options?.logger,
+			fetchByBackendId: options?.fetchByBackendId,
+			siteId: options?.siteId,
+		},
 	);
 }
