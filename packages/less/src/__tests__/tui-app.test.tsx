@@ -315,6 +315,80 @@ describe("App Component", () => {
 		expect(output).toContain("abc-def-ghi");
 	});
 
+	it("shows the display name for a backend-id or logical-id model in the status line", async () => {
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 150));
+		const client = {
+			...mockClient,
+			listModels: vi.fn().mockResolvedValue({
+				models: [
+					{
+						id: "opencode-go-kimi-k3",
+						logical_model: "kimi-k3",
+						display_name: "Kimi K3",
+						provider: "opencode-go",
+						host: "MSI",
+						via: "local",
+						status: "local",
+					},
+				],
+				default: "",
+			}),
+			getRoutingModels: vi.fn().mockResolvedValue({
+				models: [
+					{
+						logical_model: "glm-5.3-flash",
+						display_name: "GLM-5.3 Flash",
+						route_order: null,
+						fallback_policy: {},
+						routes: [
+							{
+								route_id: "site-msi:zai:zai-glm-5.3-flash",
+								site_id: "site-msi",
+								host_name: "MSI",
+								provider: "zai",
+								display_name: "GLM-5.3 Flash",
+								drained: false,
+								health: "healthy",
+							},
+						],
+						stale_routes: [],
+					},
+				],
+			}),
+		};
+		const renderWith = (model: string) =>
+			render(
+				React.createElement(App, {
+					client,
+					threadId: "abc-def-ghi",
+					configDir: "/tmp",
+					cwd: "/home/user",
+					hostname: "localhost",
+					mcpManager: mockMcpManager,
+					mcpConfigs: [],
+					// biome-ignore lint/suspicious/noExplicitAny: test setup pattern
+					logger: mockLogger as any,
+					initialMessages: [],
+					model,
+					toolHandlers: new Map(),
+					// biome-ignore lint/suspicious/noExplicitAny: test setup pattern
+				} as any),
+			);
+
+		// Backend id known only via a routing route (served on another host).
+		const a = renderWith("zai-glm-5.3-flash");
+		await tick();
+		expect(a.lastFrame() ?? "").toContain("GLM-5.3 Flash");
+		expect(a.lastFrame() ?? "").not.toContain("zai-glm-5.3-flash");
+		a.unmount();
+
+		// Logical id the picker selects, mapped via /models logical_model.
+		const b = renderWith("kimi-k3");
+		await tick();
+		expect(b.lastFrame() ?? "").toContain("Kimi K3");
+		b.unmount();
+	});
+
 	describe("model picker selection feedback", () => {
 		const tick = () => new Promise((resolve) => setTimeout(resolve, 150));
 

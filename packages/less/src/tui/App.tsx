@@ -236,11 +236,43 @@ export function App({
 	useEffect(() => {
 		if (!client) return;
 		let cancelled = false;
-		client
-			.listModels()
-			.then((res) => {
+		// The status line's model can be a logical model id (the picker selects
+		// logical models) or a backend id (inherited from a thread hint or a turn's
+		// model_id, e.g. `zai-glm-5.3-flash`). `/models` returns one row per logical
+		// model, so key by both its backend id and its logical id, then add every
+		// route's backend id from the routing API so a backend served on another
+		// host still resolves to its model's display name.
+		Promise.all([
+			client.listModels(),
+			// Best-effort: an older server (or a client without the routing API)
+			// leaves only the /models names. Deferred so a missing method rejects
+			// into the catch instead of throwing synchronously.
+			Promise.resolve()
+				.then(() => client.getRoutingModels())
+				.catch(() => ({
+					models: [] as Awaited<ReturnType<typeof client.getRoutingModels>>["models"],
+				})),
+		])
+			.then(([res, routing]) => {
 				if (cancelled) return;
-				setModelDisplayNames(new Map(res.models.map((m) => [m.id, m.display_name ?? m.id])));
+				const names = new Map<string, string>();
+				for (const m of routing.models) {
+					if (!m.display_name) continue;
+					names.set(m.logical_model, m.display_name);
+					for (const r of m.routes) {
+						// RouteId is `${siteId}:${provider}:${backendId}`; the backend id may
+						// itself contain colons (e.g. Bedrock `...-v1:0`).
+						const backendId = r.route_id.split(":").slice(2).join(":");
+						if (backendId && !names.has(backendId)) names.set(backendId, m.display_name);
+					}
+				}
+				for (const m of res.models) {
+					const name = m.display_name ?? (m.logical_model && names.get(m.logical_model));
+					if (!name) continue;
+					if (!names.has(m.id)) names.set(m.id, name);
+					if (m.logical_model && !names.has(m.logical_model)) names.set(m.logical_model, name);
+				}
+				setModelDisplayNames(names);
 			})
 			.catch(() => {
 				// Best-effort: an older server / failed fetch leaves the id showing.
