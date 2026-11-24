@@ -39,7 +39,6 @@ writeFileSync(
 				base_url: "http://localhost:11434/v1",
 				api_key: "test",
 				context_window: 4096,
-				tier: 1,
 			},
 		],
 		default: "test-model",

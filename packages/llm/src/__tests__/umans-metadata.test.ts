@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-	type UmansModelMeta,
-	deriveUmansTiers,
-	fetchUmansModelMetadata,
-	fetchUmansUsage,
-} from "../umans-metadata";
+import { fetchUmansModelMetadata, fetchUmansUsage } from "../umans-metadata";
 
 // Build a fetch stub that maps URL substrings to JSON responses (or errors).
 function stubFetch(
@@ -236,65 +231,5 @@ describe("fetchUmansUsage", () => {
 		}) as typeof fetch;
 		const res = await fetchUmansUsage("https://api.code.umans.ai", "sk-test", { fetch });
 		expect(res.ok).toBe(false);
-	});
-});
-
-describe("deriveUmansTiers (AC.18)", () => {
-	function meta(id: string, price?: number): UmansModelMeta {
-		return {
-			id,
-			contextWindow: 100000,
-			supportsVision: false,
-			supportsTools: true,
-			reasoningSupported: false,
-			reasoningCanDisable: true,
-			pricePerMInput: price,
-		};
-	}
-
-	it("K=1 → tier 5 (cheapest)", () => {
-		const tiers = deriveUmansTiers([meta("a", 1)]);
-		expect(tiers.get("a")).toBe(5);
-	});
-
-	it("K=5 → cheapest tier 5, dearest tier 1, evenly distributed", () => {
-		const tiers = deriveUmansTiers([
-			meta("e", 50),
-			meta("a", 1),
-			meta("d", 20),
-			meta("b", 5),
-			meta("c", 10),
-		]);
-		// sorted asc: a(1) b(5) c(10) d(20) e(50) → tiers 5,4,3,2,1
-		expect(tiers.get("a")).toBe(5);
-		expect(tiers.get("b")).toBe(4);
-		expect(tiers.get("c")).toBe(3);
-		expect(tiers.get("d")).toBe(2);
-		expect(tiers.get("e")).toBe(1);
-	});
-
-	it("K>5 → still spans tiers 1..5, cheapest 5 / dearest 1", () => {
-		const models = [10, 20, 30, 40, 50, 60].map((p, i) => meta(`m${i}`, p));
-		const tiers = deriveUmansTiers(models);
-		const values = models.map((m) => tiers.get(m.id));
-		// cheapest gets 5, dearest gets 1; all within 1..5
-		expect(Math.max(...(values as number[]))).toBe(5);
-		expect(Math.min(...(values as number[]))).toBe(1);
-		expect(tiers.get("m0")).toBe(5);
-		expect(tiers.get("m5")).toBe(1);
-	});
-
-	it("a model with no listed price sorts as cheapest and is still registered (tier 5)", () => {
-		const tiers = deriveUmansTiers([meta("priced", 10), meta("free")]);
-		expect(tiers.get("free")).toBe(5);
-		expect(tiers.has("priced")).toBe(true);
-	});
-
-	it("is deterministic via stable secondary sort by id on price ties", () => {
-		const t1 = deriveUmansTiers([meta("b", 5), meta("a", 5), meta("c", 5)]);
-		const t2 = deriveUmansTiers([meta("c", 5), meta("a", 5), meta("b", 5)]);
-		expect(t1.get("a")).toBe(t2.get("a"));
-		expect(t1.get("b")).toBe(t2.get("b"));
-		expect(t1.get("c")).toBe(t2.get("c"));
 	});
 });

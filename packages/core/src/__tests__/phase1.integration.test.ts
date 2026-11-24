@@ -34,7 +34,6 @@ describe("Phase 1 Integration", async () => {
 					provider: "openai-compatible",
 					model: "llama3",
 					context_window: 4096,
-					tier: 1,
 					base_url: "http://localhost:11434",
 				},
 				{
@@ -42,7 +41,6 @@ describe("Phase 1 Integration", async () => {
 					provider: "anthropic",
 					model: "claude-opus-4",
 					context_window: 200000,
-					tier: 5,
 					api_key: "test-key",
 				},
 			],

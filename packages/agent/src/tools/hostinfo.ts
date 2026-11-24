@@ -54,7 +54,6 @@ function lookupStats<T>(map: Map<string, T>, host: HostRow): T | undefined {
 
 interface ModelInfo {
 	id: string;
-	tier?: number;
 	capabilities?: { max_context?: number };
 }
 

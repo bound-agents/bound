@@ -55,7 +55,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 	let model = "llama3";
 	// umans is config-light + self-configuring: the namespace entry carries only
 	// provider + id + api_key + default; the full model lineup (ids, context
-	// windows, pricing, tiers) is fetched at runtime. We take a dedicated
+	// windows, pricing) is fetched at runtime. We take a dedicated
 	// config-write branch for it below.
 	let isUmans = false;
 
@@ -121,7 +121,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 		}
 	} else if (args.umans) {
 		// umans preset — config-light + self-configuring. The full model lineup,
-		// pricing, context windows, tiers, and concurrency limit are fetched at
+		// pricing, context windows, and concurrency limit are fetched at
 		// runtime, so the config carries only provider + id + api_key + default.
 		provider = "umans";
 		isUmans = true;
@@ -151,7 +151,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 		// Hub-only: no inference backends. Inference is relayed to spokes.
 		modelBackendsConfig = { backends: [], default: "" };
 	} else if (isUmans) {
-		// Config-light umans namespace. NO model/tier/context_window/base_url/
+		// Config-light umans namespace. NO model/context_window/base_url/
 		// pricing — all fetched/derived at runtime. `default` MUST be the
 		// namespace id ("umans"), not a concrete model id: a concrete id does
 		// not exist at startup and would crash the default-existence check.
@@ -166,7 +166,6 @@ export async function runInit(args: InitArgs): Promise<void> {
 			provider,
 			model,
 			context_window: 8192,
-			tier: 3,
 		};
 
 		if (baseUrl && provider !== "bedrock") {

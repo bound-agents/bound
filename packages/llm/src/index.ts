@@ -83,7 +83,6 @@ export { UmansDriver, type UmansAccount } from "./drivers/umans";
 export {
 	fetchUmansModelMetadata,
 	fetchUmansUsage,
-	deriveUmansTiers,
 	UMANS_ANTHROPIC_BASE,
 	UMANS_OPENAI_BASE,
 	type UmansModelMeta,

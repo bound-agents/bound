@@ -294,7 +294,6 @@ describe("Model Resolution", () => {
 					JSON.stringify([
 						{
 							id: "real-but-offline-model",
-							tier: 2,
 							capabilities: {
 								streaming: true,
 								tool_use: true,
@@ -865,7 +864,6 @@ describe("Model Resolution", () => {
 					JSON.stringify([
 						{
 							id: "vision-model",
-							tier: 1,
 							capabilities: { vision: false, tool_use: true },
 						},
 					]),
@@ -954,7 +952,6 @@ describe("Model Resolution", () => {
 					JSON.stringify([
 						{
 							id: "vision-model",
-							tier: 1,
 							capabilities: { vision: false, tool_use: true },
 						},
 					]),
@@ -1271,7 +1268,7 @@ describe("findAnyRemoteModel", () => {
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			["spoke-stale", "stale", JSON.stringify([{ id: "gpt-4", tier: 3 }]), stale, stale],
+			["spoke-stale", "stale", JSON.stringify([{ id: "gpt-4" }]), stale, stale],
 		);
 
 		const result = findAnyRemoteModel(db, "local-site");
@@ -1284,7 +1281,7 @@ describe("findAnyRemoteModel", () => {
 		db.run(
 			`INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted)
 			 VALUES (?, ?, ?, ?, ?, 0)`,
-			["local-site", "self", JSON.stringify([{ id: "claude", tier: 2 }]), now, now],
+			["local-site", "self", JSON.stringify([{ id: "claude" }]), now, now],
 		);
 
 		const result = findAnyRemoteModel(db, "local-site");
@@ -1302,7 +1299,7 @@ describe("resolveModel — hub-only mode (empty default)", () => {
 			[
 				"spoke-1",
 				"spoke",
-				JSON.stringify([{ id: "claude-3", tier: 2, capabilities: { max_context: 200000 } }]),
+				JSON.stringify([{ id: "claude-3", capabilities: { max_context: 200000 } }]),
 				now,
 				now,
 			],

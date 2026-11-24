@@ -308,8 +308,8 @@ export const hostModelsSchema = z.union([
 	z.array(
 		z.object({
 			id: z.string().min(1),
-			// R-RT2 route advertisement fields; `tier` was removed (R-RT3). Older
-			// peers simply ignore the unknown keys (this union member is non-strict).
+			// R-RT2 route advertisement fields. This union member is non-strict, so
+			// unknown keys from other peers are ignored rather than rejected.
 			route_id: z.string().optional(),
 			logical_model: z.string().optional(),
 			display_name: z.string().optional(),

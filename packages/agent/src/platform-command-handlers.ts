@@ -46,7 +46,7 @@ export function createModelCommandSpec(deps: PlatformCommandHandlerDeps): Platfo
 		options: [
 			{
 				name: "model",
-				description: "Model ID or tier ('reset' to clear; omit to show current)",
+				description: "Model ID, logical model, or alias ('reset' to clear; omit to show current)",
 				required: false,
 			},
 		],

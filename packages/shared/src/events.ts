@@ -23,7 +23,6 @@ export interface EventMap {
 	"model:fallback": {
 		requested_model: string;
 		fallback_model: string;
-		tier: number;
 		thread_id: string;
 		task_id?: string;
 		reason: string;

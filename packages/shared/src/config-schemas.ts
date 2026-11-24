@@ -223,7 +223,10 @@ const modelOverrideSchema = z
 	.strict();
 
 export type ModelOverride = z.infer<typeof modelOverrideSchema>;
-
+// umans case + UmansDriver readiness. There is no `tier` field: within-model
+// priority is the synced model_routing_rules.route_order and cross-model
+// selection is cluster roles + fallback lists (2026-11-21-model-routing.md
+// R-RT3). Strict mode rejects a backend still declaring `tier`.
 const modelBackendSchema = z
 	.object({
 		id: z.string().min(1),
@@ -245,12 +248,7 @@ const modelBackendSchema = z
 		// pricing) at runtime, so it carries only provider + id + api_key +
 		// default. The object-level refinements below enforce "required unless
 		// umans" and "reject authoritative fields on umans". See the model-router
-		// umans case + UmansDriver readiness. `tier` was removed in the
-		// 2026-11-21-model-routing slice 2 (R-RT3): within-model priority is now
-		// the synced model_routing_rules.route_order and cross-model selection is
-		// cluster roles + fallback lists. A config still declaring `tier` is
-		// stripped with one warning by the loader (transition shim, removed in
-		// slice 9); it is not a schema field.
+		// umans case + UmansDriver readiness.
 		model: z.string().min(1).optional(),
 		provider_mode: z.enum(["anthropic", "openai_responses"]).optional(),
 		base_url: z.string().url().optional(),
@@ -468,7 +466,7 @@ export const modelBackendsSchema = z
 			// is OPTIONAL for all providers (requirement 2): the dynamic catalog resolves
 			// the window from provider discovery or models.dev, and the R-MC4 readiness
 			// gate keeps a backend whose window is unresolved across all layers unready
-			// rather than failing validation. `tier` was removed (R-RT3, slice 2).
+			// rather than failing validation.
 			return data.backends.every((b) => {
 				if (b.provider === "umans") return true;
 				if (b.provider === "github-copilot") return true;

@@ -398,7 +398,7 @@ Create a new task in the `tasks` table. Exactly one of `delay`, `cron`, or `on_e
 | `cron` | one-of | string | Cron expression (5-field) for recurring tasks |
 | `on_event` | one-of | string | Event name for event-driven trigger |
 | `payload` | no | string | Task payload as JSON string |
-| `model_hint` | no | string | Model ID or tier to suggest to scheduler |
+| `model_hint` | no | string | Model ID, logical model, or alias to suggest to scheduler |
 | `thread_id` | no | string | Thread ID for task context |
 | `no_history` | no | boolean | Skip loading conversation history |
 | `after` | no | string | Task ID this task depends on |
@@ -615,7 +615,7 @@ Set or clear the preferred model for the current task. Requires `taskId` to be p
 
 | Parameter | Required | Type | Description |
 |---|---|---|---|
-| `model` | one-of | string | Model ID or tier to switch to |
+| `model` | one-of | string | Model ID, logical model, or alias to switch to |
 | `reset` | one-of | boolean | Pass `true` to clear the hint |
 
 Updates `model_hint` on the task row (the task row must already exist — the command fails if it does not). When a `modelRouter` is available, the requested model is validated against the cluster-wide pool. Capability requirements are derived from recent thread history (e.g., `vision` when the recent thread contains image blocks); capability mismatches log a warning but the hint is still accepted.

@@ -1578,7 +1578,6 @@ describe("MainAgentLoop", () => {
 							provider: "anthropic",
 							model: "claude-opus",
 							context_window: 8000,
-							tier: 1,
 							price_per_m_input: 3.0,
 							price_per_m_output: 15.0,
 						},
@@ -1641,7 +1640,6 @@ describe("MainAgentLoop", () => {
 							provider: "bedrock",
 							model: "claude-opus",
 							context_window: 200000,
-							tier: 1,
 							price_per_m_input: 5.0,
 							price_per_m_output: 25.0,
 							price_per_m_cache_read: 0.5,
@@ -1754,7 +1752,6 @@ describe("MainAgentLoop", () => {
 							provider: "anthropic",
 							model: "claude-opus",
 							context_window: 8000,
-							tier: 1,
 							price_per_m_input: 3.0,
 							price_per_m_output: 15.0,
 						},
@@ -1818,7 +1815,6 @@ describe("MainAgentLoop", () => {
 							provider: "anthropic",
 							model: "claude-opus",
 							context_window: 8000,
-							tier: 1,
 							price_per_m_input: 3.0,
 							price_per_m_output: 15.0,
 						},
@@ -1880,7 +1876,6 @@ describe("MainAgentLoop", () => {
 							provider: "anthropic",
 							model: "claude-opus",
 							context_window: 8000,
-							tier: 1,
 						},
 					],
 					default: "claude-opus",
@@ -2816,7 +2811,6 @@ describe("MainAgentLoop", () => {
 					JSON.stringify([
 						{
 							id: "claude-opus",
-							tier: 1,
 							capabilities: {
 								max_context: 200000,
 								streaming: true,

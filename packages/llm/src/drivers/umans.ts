@@ -44,7 +44,6 @@ import {
 	UMANS_ANTHROPIC_BASE,
 	type UmansModelMeta,
 	type UmansUsage,
-	deriveUmansTiers,
 	fetchUmansModelMetadata,
 	fetchUmansUsage,
 } from "../umans-metadata";
@@ -368,7 +367,6 @@ class UmansReadiness implements BackendReadiness {
 		}
 		this.account.usageCache = { value: usage, fetchedAt: Date.now() };
 
-		const tiers = deriveUmansTiers(models);
 		const entries = models.map((m) => {
 			const capabilities: BackendCapabilities = {
 				streaming: true,
@@ -382,7 +380,6 @@ class UmansReadiness implements BackendReadiness {
 			const descriptor: ModelDescriptor = {
 				id: m.id,
 				capabilities,
-				tier: tiers.get(m.id),
 				// Cache pricing omitted until umans exposes it (cost-0, not a bug).
 				pricing: {
 					inputPerM: m.pricePerMInput ?? 0,

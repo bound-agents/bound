@@ -80,7 +80,7 @@ const taskSchema = z.object({
 		.string()
 		.optional()
 		.describe(
-			"Model ID or tier to suggest to scheduler. On update, pass an empty string to clear back to the system default.",
+			"Model ID, logical model, or alias to suggest to scheduler. On update, pass an empty string to clear back to the system default.",
 		),
 	no_history: z
 		.boolean()

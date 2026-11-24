@@ -354,11 +354,7 @@ describe("buildStaticSystemParts — property tests", () => {
 	it("Y9: host capabilities — local backends, MCP servers, platforms render from the hosts row", () => {
 		const db = freshDb();
 		seedHost(db, "site-X", {
-			models: JSON.stringify([
-				{ id: "opus", tier: 1 },
-				{ id: "haiku", tier: 3 },
-				{ id: "gpt-5.5", tier: 1 },
-			]),
+			models: JSON.stringify([{ id: "opus" }, { id: "haiku" }, { id: "gpt-5.5" }]),
 			mcpServers: JSON.stringify(["github", "atproto", "pdf"]),
 			platforms: JSON.stringify(["discord"]),
 		});

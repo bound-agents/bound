@@ -1680,7 +1680,6 @@ describe("RelayProcessor - executeInference", () => {
 							provider: "anthropic",
 							model: "priced-model",
 							context_window: 8000,
-							tier: 1,
 							price_per_m_input: 3.0,
 							price_per_m_output: 15.0,
 							price_per_m_cache_read: 0.3,

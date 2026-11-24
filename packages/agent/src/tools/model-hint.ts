@@ -7,7 +7,7 @@ import type { RegisteredTool, ToolContext } from "../types.js";
 import { defineToolSchema } from "./tool-schema.js";
 
 const modelHintSchema = z.object({
-	model: z.string().optional().describe("Model ID or tier to switch to"),
+	model: z.string().optional().describe("Model ID, logical model, or alias to switch to"),
 	reset: z.boolean().optional().describe("Clear the hint"),
 });
 

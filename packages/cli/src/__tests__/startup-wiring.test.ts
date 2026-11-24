@@ -65,7 +65,6 @@ async function writeConfig(configDir: string, baseUrl: string, operator: string)
 						provider: "openai-compatible",
 						model: "fake-model",
 						context_window: 8192,
-						tier: 3,
 						base_url: baseUrl,
 						api_key: "test-key",
 					},
@@ -354,7 +353,7 @@ describe("model_backends.js startup configuration", () => {
 		try {
 			await Bun.write(
 				join(configDir, "model_backends.js"),
-				`export default { default: "local", backends: [{ id: "local", provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen", context_window: 8192, tier: 1, price(turn) { return turn.inputTokens / 100; } }] };`,
+				`export default { default: "local", backends: [{ id: "local", provider: "openai-compatible", base_url: "http://localhost:11434/v1", model: "qwen", context_window: 8192, price(turn) { return turn.inputTokens / 100; } }] };`,
 			);
 
 			const config = await loadStartupModelBackends(configDir);

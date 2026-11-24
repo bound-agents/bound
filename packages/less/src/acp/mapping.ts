@@ -56,7 +56,7 @@ export const PERMISSION_OPTIONS: PermissionOption[] = [
 /**
  * Marker prefixing daemon-originated notices when they ride the ACP transcript.
  * Alerts (inference timeouts, non-retryable LLM errors, fatal loop / task
- * errors, plus informational notices like a same-tier model fallback or a
+ * errors, plus informational notices like a model fallback or a
  * content-filter stop) render as `agent_message_chunk` text — the only
  * persistent, visible in-transcript vehicle ACP offers — so without a marker
  * they read as the model's own words.
@@ -613,7 +613,7 @@ export function messageToSessionUpdate(
 		}
 		case "alert":
 			// Daemon alerts (inference timeouts, non-retryable LLM errors, fatal
-			// loop/task errors, plus informational notices like a same-tier model
+			// loop/task errors, plus informational notices like a model
 			// fallback or a content-filter stop) are surfaced live by
 			// AcpSession.handleAlert as an agent_message_chunk. Replay must mirror
 			// that so a resumed transcript keeps the alert in place — otherwise it

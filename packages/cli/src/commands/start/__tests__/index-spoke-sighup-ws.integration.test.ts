@@ -57,7 +57,6 @@ function writeHubBackend(configDir: string, baseUrl: string): void {
 						provider: "openai-compatible",
 						model: "fake-model",
 						context_window: 8192,
-						tier: 3,
 						base_url: baseUrl,
 						api_key: "test-key",
 					},

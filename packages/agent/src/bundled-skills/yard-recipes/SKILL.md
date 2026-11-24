@@ -74,11 +74,11 @@ program that overrides per invocation is routing around the roster, and
 the next program to dispatch the same identity inherits none of the
 judgment. If an override feels necessary, the roster is wrong: fix the
 identity's `model_hint` or define the missing role — the `aux-agents`
-skill carries the tier-to-role guidance.
+skill carries the model-to-role guidance.
 
 `infer()` is the one exception: it has no identity, so it alone takes an
 explicit model id. Planning, verdict extraction, and synthesis are
-judgment work — give it a tier-1 model (pass it in `input`, e.g.
+judgment work — give it a `heavy`-role model (pass it in `input`, e.g.
 `input.planner_model`).
 
 ## Recipe: scatter-gather corpus change

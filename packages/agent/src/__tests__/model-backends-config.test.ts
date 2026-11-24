@@ -29,7 +29,6 @@ describe("model_backends.js loader", () => {
 						provider: "openai-compatible",
 						model: "x",
 						context_window: 8192,
-						tier: 1,
 						base_url: "http://localhost:11434/v1",
 					},
 				],
@@ -51,7 +50,6 @@ describe("model_backends.js loader", () => {
 						provider: "openai-compatible",
 						model: "x",
 						context_window: 8192,
-						tier: 1,
 						base_url: "http://localhost:11434/v1",
 					},
 				],
@@ -60,7 +58,7 @@ describe("model_backends.js loader", () => {
 		);
 		writeFileSync(
 			join(configDir, "model_backends.js"),
-			`export default { backends: [{ id: "js", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1" }], default: "js" };`,
+			`export default { backends: [{ id: "js", provider: "openai-compatible", model: "x", context_window: 8192, base_url: "http://localhost:11434/v1" }], default: "js" };`,
 		);
 
 		const config = await loadModelBackendsConfig(configDir);
@@ -70,7 +68,7 @@ describe("model_backends.js loader", () => {
 	it("loads the default export and preserves a backend price callback", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),
-			`export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "\${TEST_BACKEND_URL:-http://localhost:11434/v1}", price(turn) { return turn.inputTokens / 1000; } }], default: "local" };`,
+			`export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, base_url: "\${TEST_BACKEND_URL:-http://localhost:11434/v1}", price(turn) { return turn.inputTokens / 1000; } }], default: "local" };`,
 		);
 
 		const config = await loadModelBackendsConfig(configDir);
@@ -82,7 +80,7 @@ describe("model_backends.js loader", () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),
 			`const price = (turn) => turn.inputTokens / 1_000_000;
-export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1", price }], default: "local" };`,
+export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, base_url: "http://localhost:11434/v1", price }], default: "local" };`,
 		);
 
 		const config = await loadModelBackendsConfig(configDir);
@@ -93,7 +91,7 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 		writeFileSync(
 			join(configDir, "model_backends.js"),
 			`const scaled = (rate, turn) => rate * turn.inputTokens / 1_000_000;
-export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1", price(turn) { return scaled(2, turn); } }], default: "local" };`,
+export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, base_url: "http://localhost:11434/v1", price(turn) { return scaled(2, turn); } }], default: "local" };`,
 		);
 
 		await loadModelBackendsConfig(configDir);
@@ -112,7 +110,7 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 	it("rejects functions outside backend.price or a model_overrides[*].price", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),
-			`export default { backends: [{ id: "local", provider: "openai-compatible", model: () => "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1" }], default: "local" };`,
+			`export default { backends: [{ id: "local", provider: "openai-compatible", model: () => "x", context_window: 8192, base_url: "http://localhost:11434/v1" }], default: "local" };`,
 		);
 
 		await expect(loadModelBackendsConfig(configDir)).rejects.toThrow(
@@ -123,7 +121,7 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 	it("does not publish a candidate with an invalid price callback", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),
-			`export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, tier: 1, base_url: "http://localhost:11434/v1", price() { return -1; } }], default: "local" };`,
+			`export default { backends: [{ id: "local", provider: "openai-compatible", model: "x", context_window: 8192, base_url: "http://localhost:11434/v1", price() { return -1; } }], default: "local" };`,
 		);
 
 		await expect(loadModelBackendsConfig(configDir)).rejects.toThrow("finite non-negative number");

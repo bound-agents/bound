@@ -267,7 +267,7 @@ interface BackendConfig {
   model: string;
   baseUrl?: string;
   contextWindow?: number;
-  [key: string]: unknown;  // provider-specific fields (apiKey, region, profile, tier,
+  [key: string]: unknown;  // provider-specific fields (apiKey, region, profile,
                            //   pricePerMInput, thinking, and an optional
                            //   `capabilities: Partial<BackendCapabilities>` that merges
                            //   over driver-reported capabilities)
@@ -289,7 +289,7 @@ Provider-specific extra fields:
 | `openai-compatible` | `apiKey` | `baseUrl` (default `http://localhost:8000`), `contextWindow` (default 8 192) |
 | `cerebras` | `apiKey` | `baseUrl` (default `https://api.cerebras.ai/v1`), `contextWindow` (default 128 000) |
 | `zai` | `apiKey` | `baseUrl` (default `https://api.z.ai/api/coding/paas/v4`), `contextWindow` (default 128 000) |
-| `umans` | `apiKey` | `baseUrl` (default `https://api.code.umans.ai`) — **no** `model`/`tier`/`contextWindow`/pricing (self-configuring) |
+| `umans` | `apiKey` | `baseUrl` (default `https://api.code.umans.ai`) — **no** `model`/`contextWindow`/pricing (self-configuring) |
 | `github-copilot` | — (device-flow token store) | `tokenStorePath` (default `config/copilot-auth.json`), `contextWindow` (default 128 000). No `apiKey`; the plan-specific API endpoint is discovered and host-validated from the account lookup. Each model is routed to Anthropic Messages, OpenAI Responses, or chat completions by its catalog `supported_endpoints` (name heuristic on catalog miss); `model: "auto"` resolves a per-request session. |
 
 `cerebras` and `zai` are thin wrappers that delegate to `OpenAICompatibleDriver` with provider-specific defaults.
@@ -310,7 +310,7 @@ excluded from `listEligible`/`listBackends` and `resolveModel` defers to them as
 SIGHUP handler) calls `readiness.start(registrar)` with a registrar bound to the
 live shared config + router. The driver background-fetches `/v1/models/info` +
 `/v1/models` + `/v1/usage` (with retry/backoff, AbortController-cancellable on
-`dispose()`), derives the full lineup + per-model price-ranked tiers, then calls
+`dispose()`), derives the full lineup, then calls
 `registrar.register(...)`. The registrar appends one snake_case pricing row per
 model id to the shared config array (the source `calculateTurnCost` reads),
 then uses the **provider-agnostic** router primitives

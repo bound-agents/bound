@@ -537,7 +537,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "fable",
-							tier: 1,
 							max_output_tokens: 64_000,
 							capabilities: { max_context: 700_000, tool_use: true },
 						},
@@ -603,7 +602,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
 							capabilities: { vision: false, tool_use: true },
 						},
 					]),
@@ -624,7 +622,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 2,
 							capabilities: { vision: true, tool_use: true },
 						},
 					]),
@@ -657,7 +654,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
 							capabilities: { vision: false, tool_use: true },
 						},
 					]),
@@ -696,7 +692,6 @@ describe("Relay Router", () => {
 						"old-model",
 						{
 							id: "new-model",
-							tier: 1,
 							capabilities: { vision: true, tool_use: true },
 						},
 					]),
@@ -803,7 +798,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
 							capabilities: { vision: true, tool_use: false },
 						},
 					]),
@@ -824,7 +818,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
 							capabilities: { vision: true, tool_use: true },
 						},
 					]),
@@ -864,7 +857,6 @@ describe("Relay Router", () => {
 					JSON.stringify([
 						{
 							id: "claude-3",
-							tier: 1,
 							capabilities: { vision: false, tool_use: true },
 						},
 					]),

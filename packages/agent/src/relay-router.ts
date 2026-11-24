@@ -339,7 +339,7 @@ export function findEligibleHostsByModel(
  * Finds any eligible remote host with any available model.
  * Used for hub-only mode where the local default model ID is empty and the hub
  * relies entirely on remote spoke inference.
- * Returns the first model/host pair sorted by tier (ascending) then online_at (descending).
+ * Returns the first model/host pair ordered by stable RouteId (R-RT8).
  */
 export function findAnyRemoteModel(
 	db: Database,

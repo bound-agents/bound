@@ -38,7 +38,6 @@ function backends(): SharedModelBackendsConfig {
 				base_url: "http://localhost:11434/v1",
 				api_key: "x",
 				context_window: 8192,
-				tier: 3,
 				price_per_m_input: 0,
 				price_per_m_output: 0,
 			},

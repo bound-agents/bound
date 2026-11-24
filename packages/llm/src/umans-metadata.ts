@@ -390,38 +390,3 @@ export async function fetchUmansUsage(
 		},
 	};
 }
-
-/**
- * Derive a bound-style tier (1 = most expensive/best, 5 = cheapest) for each
- * umans model by RANK, not by absolute price thresholds — so an arbitrary
- * number of models distributes evenly across the 5 tiers.
- *
- * Algorithm:
- *  1. Sort by `pricePerMInput` ascending, with a STABLE secondary sort by
- *     model id (deterministic across fetches/reloads). Models with no listed
- *     price sort as cheapest (price 0) and are still registered.
- *  2. Even-bucket: `bucket = 1 + floor(rank * 5 / n)` (clamped 1..5), then
- *     invert `tier = 6 - bucket` so cheapest → tier 5, dearest → tier 1.
- *
- * Worked: n=5 → buckets 1,2,3,4,5 → tiers 5,4,3,2,1; n=1 → tier 5;
- * n=6 → tiers 5,5,4,3,2,1.
- */
-export function deriveUmansTiers(models: UmansModelMeta[]): Map<string, number> {
-	const tiers = new Map<string, number>();
-	const n = models.length;
-	if (n === 0) return tiers;
-
-	const sorted = [...models].sort((a, b) => {
-		const pa = a.pricePerMInput ?? 0;
-		const pb = b.pricePerMInput ?? 0;
-		if (pa !== pb) return pa - pb;
-		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-	});
-
-	sorted.forEach((m, rank) => {
-		const bucket = Math.min(5, Math.max(1, 1 + Math.floor((rank * 5) / n)));
-		const tier = 6 - bucket;
-		tiers.set(m.id, tier);
-	});
-	return tiers;
-}

@@ -153,7 +153,6 @@ describe("Quiescence note injection", () => {
 							model: "mock",
 							base_url: "http://localhost:11434",
 							context_window: 8000,
-							tier: 1,
 							price_per_m_input: 0,
 							price_per_m_output: 0,
 						},

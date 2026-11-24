@@ -192,7 +192,6 @@ interface EventMap {
   "model:fallback": {
     requested_model: string;
     fallback_model: string;
-    tier: number;
     thread_id: string;
     task_id?: string;
     reason: string;
@@ -345,10 +344,9 @@ type ModelBackendsConfig = {
     api_key?: string;               // Required for cerebras, anthropic, zai, and opencode-go
     region?: string;
     profile?: string;
-    context_window: number;
-    tier: number;                   // 1–5
-    price_per_m_input: number;
-    price_per_m_output: number;
+    context_window?: number;
+    price_per_m_input?: number;
+    price_per_m_output?: number;
     price_per_m_cache_write?: number;
     price_per_m_cache_read?: number;
     capabilities?: Partial<{        // Merges over driver-reported capabilities at ModelRouter construction time

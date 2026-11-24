@@ -76,6 +76,29 @@ describe("Config schemas", () => {
 			expect(result.success).toBe(true);
 		});
 
+		it("rejects a backend that declares the removed `tier` field, naming the key (R-RT3)", () => {
+			const result = modelBackendsSchema.safeParse({
+				backends: [
+					{
+						id: "local-compat",
+						provider: "openai-compatible",
+						model: "llama3",
+						base_url: "http://localhost:11434/v1",
+						context_window: 4096,
+						tier: 1,
+					},
+				],
+				default: "local-compat",
+			});
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				const unrecognized = result.error.issues.find((i) => i.code === "unrecognized_keys");
+				expect(unrecognized).toBeDefined();
+				expect((unrecognized as { keys: string[] }).keys).toContain("tier");
+				expect(result.error.message).toContain("tier");
+			}
+		});
+
 		it("leaves price_per_m_input/output unset when the operator omits them (distinguishable from an explicit 0)", () => {
 			// The catalog precedence (2026-11-21-model-catalog.md §3) treats an
 			// EXPLICITLY-SET config price as an operator override that beats

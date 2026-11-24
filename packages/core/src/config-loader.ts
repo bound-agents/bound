@@ -128,52 +128,12 @@ function expandEnvVarsInObject(obj: unknown): unknown {
 	return obj;
 }
 
-/**
- * Options shared by the config loaders. `warn` receives one human-readable
- * message per emitted transition warning (e.g. the `tier` strip below); when
- * absent, warnings fall silently (callers without a logger in scope).
- */
-export interface ConfigLoadOptions {
-	warn?: (message: string) => void;
-}
-
-/**
- * Transition shim (`2026-11-21-model-routing.md` R-RT3, slice 2): `tier` was
- * removed from the model_backends schema. Strict validation (Invariant #13)
- * would reject any config still declaring it, so strip `tier` from each backend
- * entry BEFORE parsing and log one warning per file naming the replacements.
- * Removed entirely in slice 9. No-op for configs whose shape has no `backends`
- * array, so every other config schema passes through untouched.
- */
-function stripLegacyTier(config: unknown, filename: string, warn?: (m: string) => void): unknown {
-	if (config === null || typeof config !== "object" || Array.isArray(config)) return config;
-	const backends = (config as { backends?: unknown }).backends;
-	if (!Array.isArray(backends)) return config;
-
-	let stripped = false;
-	const nextBackends = backends.map((entry) => {
-		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
-		if (!("tier" in entry)) return entry;
-		stripped = true;
-		const { tier: _tier, ...rest } = entry as Record<string, unknown>;
-		return rest;
-	});
-	if (!stripped) return config;
-
-	warn?.(
-		`${filename}: 'tier' is no longer a model_backends field and was ignored. Within-model route priority now comes from the synced model_routing_rules.route_order; cross-model selection comes from cluster model roles and fallback lists (2026-11-21-model-routing.md, 2026-11-21-model-catalog.md). Remove 'tier' from this file.`,
-	);
-	return { ...(config as Record<string, unknown>), backends: nextBackends };
-}
-
 function validateConfig<T>(
 	filename: string,
 	schema: ZodSchema<T>,
 	config: unknown,
-	options?: ConfigLoadOptions,
 ): Result<T, ConfigError> {
-	const preprocessed = stripLegacyTier(config, filename, options?.warn);
-	const result = schema.safeParse(preprocessed);
+	const result = schema.safeParse(config);
 	if (result.success && result.data !== undefined) return ok(result.data);
 
 	const fieldErrors: Record<string, string[]> = {};
@@ -194,18 +154,17 @@ export async function loadConfigWithPrecedence<T>(
 	configDir: string,
 	basename: string,
 	schema: ZodSchema<T>,
-	options?: ConfigLoadOptions,
 ): Promise<Result<T, ConfigError>> {
 	const jsFilename = `${basename}.js`;
 	const jsonFilename = `${basename}.json`;
 	if (!existsSync(join(configDir, jsFilename))) {
-		return loadConfigFile(configDir, jsonFilename, schema, options);
+		return loadConfigFile(configDir, jsonFilename, schema);
 	}
 
 	try {
 		const source = expandEnvVars(readFileSync(join(configDir, jsFilename), "utf-8"));
 		const evaluated = await evaluateJavaScriptConfig(source, jsFilename);
-		return validateConfig(jsFilename, schema, expandEnvVarsInObject(evaluated), options);
+		return validateConfig(jsFilename, schema, expandEnvVarsInObject(evaluated));
 	} catch (error) {
 		return err({
 			filename: jsFilename,
@@ -220,14 +179,13 @@ export function loadConfigFile<T>(
 	configDir: string,
 	filename: string,
 	schema: ZodSchema<T>,
-	options?: ConfigLoadOptions,
 ): Result<T, ConfigError> {
 	try {
 		const path = `${configDir}/${filename}`;
 		const content = readFileSync(path, "utf-8");
 		const parsed = JSON.parse(content);
 
-		return validateConfig(filename, schema, expandEnvVarsInObject(parsed), options);
+		return validateConfig(filename, schema, expandEnvVarsInObject(parsed));
 	} catch (error) {
 		if (error instanceof SyntaxError) {
 			return err({
@@ -268,9 +226,8 @@ export function loadConfigFile<T>(
 export async function loadModelBackendsConfig<T>(
 	configDir: string,
 	schema: ZodSchema<T>,
-	options?: ConfigLoadOptions,
 ): Promise<Result<T, ConfigError>> {
-	return loadConfigWithPrecedence(configDir, "model_backends", schema, options);
+	return loadConfigWithPrecedence(configDir, "model_backends", schema);
 }
 
 export async function loadRequiredConfigs(

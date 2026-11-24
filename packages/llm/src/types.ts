@@ -91,7 +91,6 @@ export interface ModelDescriptor {
 	 */
 	discovered?: DiscoveredModel;
 	capabilities: BackendCapabilities;
-	tier?: number;
 	pricing?: {
 		inputPerM: number;
 		outputPerM: number;

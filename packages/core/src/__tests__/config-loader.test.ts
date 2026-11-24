@@ -53,7 +53,6 @@ describe("Config Loader", async () => {
 				provider: "openai-compatible",
 				model: "llama3",
 				context_window: 4096,
-				tier: 1,
 				base_url: "http://localhost:11434",
 			},
 		],
@@ -351,7 +350,6 @@ describe("Config Loader", async () => {
 						provider: "openai-compatible",
 						model: "x",
 						context_window: 8192,
-						tier: 1,
 						base_url: "http://localhost:11434/v1",
 					},
 				],
@@ -462,58 +460,47 @@ export default { hub };`,
 		});
 	});
 
-	describe("tier transition strip (R-RT3, slice 2)", async () => {
-		it("loads a model_backends config that declares tier, stripping it, with one warning per file", async () => {
-			const warnings: string[] = [];
-			const configWithTier = modelBackendsConfig();
-			writeJsonConfig("model_backends.json", configWithTier);
-
-			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema, {
-				warn: (msg) => warnings.push(msg),
-			});
-
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				// tier is stripped from every backend entry before strict validation.
-				for (const b of result.value.backends) {
-					expect((b as Record<string, unknown>).tier).toBeUndefined();
-				}
-			}
-			// Exactly one warning naming the replacements.
-			expect(warnings).toHaveLength(1);
-			expect(warnings[0]).toContain("tier");
-		});
-
-		it("emits no tier warning when no backend declares tier", async () => {
-			const warnings: string[] = [];
+	describe("model_backends `tier` is not a field (R-RT3)", async () => {
+		it("rejects a JSON model_backends config whose backend declares tier, naming the key", async () => {
 			const cfg = modelBackendsConfig();
-			const { tier: _tier, ...first } = cfg.backends[0] as Record<string, unknown>;
-			writeJsonConfig("model_backends.json", { ...cfg, backends: [first] });
-
-			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema, {
-				warn: (msg) => warnings.push(msg),
+			writeJsonConfig("model_backends.json", {
+				...cfg,
+				backends: [{ ...(cfg.backends[0] as Record<string, unknown>), tier: 1 }],
 			});
 
-			expect(result.ok).toBe(true);
-			expect(warnings).toHaveLength(0);
+			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
+
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error.filename).toBe("model_backends.json");
+				expect(result.error.message).toContain("tier");
+			}
 		});
 
-		it("strips tier through the JS-config precedence path with one warning", async () => {
-			const warnings: string[] = [];
-			writeJavaScriptConfig("model_backends.js", modelBackendsConfig());
+		it("rejects tier through the JS-config precedence path", async () => {
+			const cfg = modelBackendsConfig();
+			writeJavaScriptConfig("model_backends.js", {
+				...cfg,
+				backends: [{ ...(cfg.backends[0] as Record<string, unknown>), tier: 2 }],
+			});
 
 			const result = await loadConfigWithPrecedence(
 				configDir,
 				"model_backends",
 				modelBackendsSchema,
-				{ warn: (msg) => warnings.push(msg) },
 			);
 
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				expect((result.value.backends[0] as Record<string, unknown>).tier).toBeUndefined();
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error.filename).toBe("model_backends.js");
+				expect(result.error.message).toContain("tier");
 			}
-			expect(warnings).toHaveLength(1);
+		});
+
+		it("loads the same config once tier is absent", async () => {
+			writeJsonConfig("model_backends.json", modelBackendsConfig());
+			const result = loadConfigFile(configDir, "model_backends.json", modelBackendsSchema);
+			expect(result.ok).toBe(true);
 		});
 	});
 });

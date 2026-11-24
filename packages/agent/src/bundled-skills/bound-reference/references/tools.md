@@ -86,7 +86,7 @@ age cutoff.
 
 ### `model_hint`
 Set or clear the model hint for the current task — switch to a different model
-tier or ID, or `reset` to clear the hint.
+ID, logical model, or alias, or `reset` to clear the hint.
 
 ### `hostinfo`
 Display registered host information and cluster topology: which hosts are online,

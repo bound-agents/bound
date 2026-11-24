@@ -355,7 +355,6 @@ describe("SIGHUP handler", () => {
 					base_url: "http://localhost:11434",
 					api_key: "test",
 					context_window: 4096,
-					tier: 3,
 					price_per_m_input: 0,
 					price_per_m_output: 0,
 				},
@@ -372,7 +371,6 @@ describe("SIGHUP handler", () => {
 					base_url: "http://localhost:11434",
 					api_key: "test",
 					context_window: 8192,
-					tier: 2,
 					price_per_m_input: 0,
 					price_per_m_output: 0,
 				},
@@ -419,7 +417,6 @@ describe("SIGHUP handler", () => {
 					model: "llama3",
 					base_url: "http://localhost:11434",
 					context_window: 4096,
-					tier: 3,
 				},
 			],
 			default: "json",
@@ -435,7 +432,7 @@ describe("SIGHUP handler", () => {
 
 		writeFileSync(
 			join(tempDir, "model_backends.js"),
-			`export default { backends: [{ id: "js", provider: "openai-compatible", model: "llama4", base_url: "http://localhost:11434", context_window: 8192, tier: 2 }], default: "js" };`,
+			`export default { backends: [{ id: "js", provider: "openai-compatible", model: "llama4", base_url: "http://localhost:11434", context_window: 8192 }], default: "js" };`,
 		);
 
 		await reloadConfigs({
@@ -459,7 +456,6 @@ describe("SIGHUP handler", () => {
 					base_url: "http://localhost:11434",
 					api_key: "test",
 					context_window: 4096,
-					tier: 3,
 					price_per_m_input: 0,
 					price_per_m_output: 0,
 				},
@@ -510,7 +506,6 @@ describe("SIGHUP handler", () => {
 					base_url: "http://localhost:11434",
 					api_key: "test",
 					context_window: 4096,
-					tier: 3,
 					price_per_m_input: 0,
 					price_per_m_output: 0,
 				},
@@ -553,7 +548,6 @@ describe("SIGHUP handler", () => {
 					model: "llama3",
 					base_url: "http://localhost:11434",
 					context_window: 4096,
-					tier: 3,
 					price_per_m_input: 0,
 					price_per_m_output: 0,
 				},
@@ -568,7 +562,7 @@ describe("SIGHUP handler", () => {
 
 		writeFileSync(
 			join(tempDir, "model_backends.js"),
-			`export default { default: "candidate", backends: [{ id: "candidate", provider: "openai-compatible", model: "llama4", base_url: "http://localhost:11434", context_window: 8192, tier: 2, price() { return 4; } }] };`,
+			`export default { default: "candidate", backends: [{ id: "candidate", provider: "openai-compatible", model: "llama4", base_url: "http://localhost:11434", context_window: 8192, price() { return 4; } }] };`,
 		);
 
 		await reloadConfigs({

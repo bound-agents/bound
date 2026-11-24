@@ -259,7 +259,6 @@ it("routes repeated stale re-emissions through scheduler CAS into one durable wa
 							model: "mock",
 							base_url: "http://localhost",
 							context_window: 8000,
-							tier: 1,
 							price_per_m_input: 0,
 							price_per_m_output: 0,
 						},
