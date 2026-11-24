@@ -1,4 +1,6 @@
 import type { Logger } from "@bound/shared";
+import { hintMatchesLogicalModel } from "@bound/shared";
+import { normalizeModelKey } from "./catalog/normalize";
 import { AnthropicDriver } from "./drivers/anthropic";
 import { BedrockDriver } from "./drivers/bedrock";
 import { BedrockMantleDriver } from "./drivers/bedrock-mantle";
@@ -347,6 +349,44 @@ export class ModelRouter {
 	/** Returns the backend for modelId, or null if not found (non-throwing). */
 	tryGetBackend(modelId: string): LLMBackend | null {
 		return this.backends.get(modelId) ?? null;
+	}
+
+	/**
+	 * Resolve a model HINT to a local backend id, matching THROUGH the logical
+	 * model when no backend id matches literally (2026-11-21-model-catalog.md
+	 * §2.1, #281). A self-configuring namespace expands a backend to an id like
+	 * `bedrock-use1-openai.gpt-5.6-sol` that groups under the logical model
+	 * `gpt-5-6-sol`; a thread/task/agent still carrying the old hand-written
+	 * `gpt-5.6-sol` hint matches no backend id literally, but both normalize to
+	 * the same key. Returns:
+	 *   - the hint itself when it IS a registered backend id (literal precedence);
+	 *   - else the single registered backend whose logical model (its config
+	 *     `logical_model`, falling back to the normalized key of its
+	 *     `(provider, providerModelId)`) matches the hint's normalized key;
+	 *   - else null.
+	 * Not-ready backends are skipped (they are excluded from resolution until
+	 * warmup completes). A tie — two local backends under one logical model —
+	 * resolves to the lexically-first id for determinism; cross-route pooling and
+	 * ranking across the tie happen downstream in `resolveModel`/the relay finder.
+	 */
+	resolveLocalBackendIdForHint(hint: string): string | null {
+		// Literal id match wins outright.
+		if (this.backends.has(hint) && !this.isNotReady(hint)) return hint;
+
+		// Logical-model fallback: scan ready backends for one whose logical model
+		// normalizes to the hint's key. Deterministic lexical tie-break.
+		const matches: string[] = [];
+		for (const id of this.backends.keys()) {
+			if (this.isNotReady(id)) continue;
+			const config = this.backendConfigs.get(id);
+			const providerModelId = config?.model ?? id;
+			const provider = config?.provider ?? "";
+			const logical = normalizeModelKey(provider, providerModelId).key;
+			if (hintMatchesLogicalModel(hint, logical, normalizeModelKey)) matches.push(id);
+		}
+		if (matches.length === 0) return null;
+		matches.sort();
+		return matches[0];
 	}
 
 	/**

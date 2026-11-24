@@ -1,10 +1,22 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { ROUTING_DEFAULT_FALLBACK_MODELS_KEY, ROUTING_MODEL_ROLES_KEY } from "@bound/shared";
+import type { NormalizeKeyFn } from "@bound/shared";
 import { insertRow, softDelete } from "../../../change-log";
 import { applyMetricsSchema } from "../../../metrics-schema";
 import { applySchema } from "../../../schema";
 import { analyzeModelReferences } from "../model-reference-health";
+
+/**
+ * `@bound/core` cannot import `@bound/llm`'s real `normalizeModelKey`, so the
+ * dangling checker takes the normalizer injected and the test supplies a fake
+ * reproducing the two observable rules the matcher leans on: canonicalize
+ * version dots to dashes, and lowercase. The genuine normalizer is exercised
+ * end-to-end in the agent/web suites that pass it.
+ */
+const fakeNormalize: NormalizeKeyFn = (_provider, id) => ({
+	key: id.replace(/(\d)\.(\d)/g, "$1-$2").toLowerCase(),
+});
 
 const SITE_A = "site-aaaaaa";
 const SITE_B = "site-bbbbbb";
@@ -74,7 +86,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		const stale = report.staleRouteOrderEntries.find((e) => e.routeId === "site-a:bedrock:opus");
 		expect(stale).toBeUndefined();
 		expect(report.staleRouteOrderEntries).toHaveLength(0);
@@ -96,7 +108,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.staleRouteOrderEntries).toEqual([
 			{ logicalModel: "opus", routeId: "site-b:anthropic:opus" },
 		]);
@@ -117,7 +129,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.staleRouteDrains).toEqual(["site-b:anthropic:opus"]);
 	});
 
@@ -136,7 +148,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.staleRouteDrains).toHaveLength(0);
 	});
 
@@ -154,7 +166,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.staleModelAliases).toEqual([
 			{ providerKey: "anthropic:claude-decommissioned", logicalModel: "sonnet-gone" },
 		]);
@@ -174,7 +186,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.staleModelAliases).toHaveLength(0);
 	});
 
@@ -192,7 +204,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.staleFallbackModels).toEqual(["sonnet-gone"]);
 	});
 
@@ -210,7 +222,7 @@ describe("analyzeModelReferences", () => {
 			SITE_A,
 		);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.danglingRoles).toEqual([{ role: "heavy", logicalModel: "sonnet-gone" }]);
 	});
 
@@ -240,7 +252,7 @@ describe("analyzeModelReferences", () => {
 		const retiredId = insertAgent(db, "old", "sonnet-gone");
 		softDelete(db, "agents", retiredId, SITE_A);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.danglingAgents).toEqual([{ agentName: "reviewer", logicalModel: "sonnet-gone" }]);
 	});
 
@@ -266,7 +278,7 @@ describe("analyzeModelReferences", () => {
 		const deletedId = insertTask(db, "task-deleted", "pending", "sonnet-gone");
 		softDelete(db, "tasks", deletedId, SITE_A);
 
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.danglingTasks.map((t) => t.taskId).sort()).toEqual([
 			"task-dangling",
 			"task-pinned-gone",
@@ -311,7 +323,7 @@ describe("analyzeModelReferences", () => {
 		insertAgent(db, "by-id", "opus-4.8");
 		insertAgent(db, "by-logical", "claude-opus-4-8");
 		insertTask(db, "task-by-id", "pending", "opus-4.8");
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.danglingAgents).toEqual([]);
 		expect(report.danglingTasks).toEqual([]);
 	});
@@ -320,7 +332,7 @@ describe("analyzeModelReferences", () => {
 		advertiseHost(db, SITE_A, [{ route_id: "site-a:bedrock:opus", logical_model: "opus" }]);
 		insertAgent(db, "retired-scout", "gpt-gone", { retiredAt: "2026-08-17T06:30:23.043Z" });
 		insertAgent(db, "live-scout", "gpt-gone");
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.danglingAgents).toEqual([{ agentName: "live-scout", logicalModel: "gpt-gone" }]);
 	});
 
@@ -340,11 +352,11 @@ describe("analyzeModelReferences", () => {
 		);
 
 		// sonnet is still advertised by a (stale) non-deleted host → not dangling.
-		expect(analyzeModelReferences(db).danglingRoles).toHaveLength(0);
+		expect(analyzeModelReferences(db, fakeNormalize).danglingRoles).toHaveLength(0);
 
 		// Evict the host (soft-delete the row) → model now advertised nowhere → dangling.
 		softDelete(db, "hosts", SITE_A, SITE_A);
-		expect(analyzeModelReferences(db).danglingRoles).toEqual([
+		expect(analyzeModelReferences(db, fakeNormalize).danglingRoles).toEqual([
 			{ role: "default", logicalModel: "sonnet" },
 		]);
 	});
@@ -362,11 +374,11 @@ describe("analyzeModelReferences", () => {
 			},
 			SITE_A,
 		);
-		expect(analyzeModelReferences(db).danglingRoles).toHaveLength(1);
+		expect(analyzeModelReferences(db, fakeNormalize).danglingRoles).toHaveLength(1);
 
 		// Re-advertise from a different host → no longer dangling.
 		advertiseHost(db, SITE_B, [{ route_id: "site-b:anthropic:sonnet", logical_model: "sonnet" }]);
-		expect(analyzeModelReferences(db).danglingRoles).toHaveLength(0);
+		expect(analyzeModelReferences(db, fakeNormalize).danglingRoles).toHaveLength(0);
 	});
 
 	it("tolerates malformed JSON in config rows and advertisements", () => {
@@ -392,9 +404,57 @@ describe("analyzeModelReferences", () => {
 			},
 			SITE_A,
 		);
-		const report = analyzeModelReferences(db);
+		const report = analyzeModelReferences(db, fakeNormalize);
 		expect(report.danglingRoles).toHaveLength(0);
 		expect(report.staleFallbackModels).toHaveLength(0);
+	});
+
+	it("keeps an old literal id live when a host advertises its normalized logical model", () => {
+		// A self-configuring namespace advertises the expanded backend under its
+		// normalized logical model; the old hand-written hint carries the raw id.
+		// Both normalize to `gpt-5-6-sol`, so the hint resolves THROUGH the logical
+		// model and must not be reported dangling.
+		advertiseHost(db, SITE_A, [
+			{ route_id: "site-a:bedrock:use1-openai.gpt-5.6-sol", logical_model: "gpt-5-6-sol" },
+		]);
+		insertAgent(db, "old-hint-agent", "gpt-5.6-sol");
+		insertTask(db, "old-hint-task", "pending", "gpt-5.6-sol");
+		const report = analyzeModelReferences(db, fakeNormalize);
+		expect(report.danglingAgents).toEqual([]);
+		expect(report.danglingTasks).toEqual([]);
+	});
+
+	it("reports a hint matching no advertised logical model, literally or normalized, as dangling", () => {
+		advertiseHost(db, SITE_A, [
+			{ route_id: "site-a:bedrock:use1-openai.gpt-5.6-sol", logical_model: "gpt-5-6-sol" },
+		]);
+		insertAgent(db, "dead-hint-agent", "gpt-9.9-nova");
+		insertTask(db, "dead-hint-task", "pending", "gpt-9.9-nova");
+		const report = analyzeModelReferences(db, fakeNormalize);
+		expect(report.danglingAgents).toEqual([
+			{ agentName: "dead-hint-agent", logicalModel: "gpt-9.9-nova" },
+		]);
+		expect(report.danglingTasks).toEqual([
+			{ taskId: "dead-hint-task", logicalModel: "gpt-9.9-nova" },
+		]);
+	});
+
+	it("resolves a cluster role through the normalized logical model", () => {
+		advertiseHost(db, SITE_A, [
+			{ route_id: "site-a:bedrock:use1-openai.gpt-5.6-sol", logical_model: "gpt-5-6-sol" },
+		]);
+		insertRow(
+			db,
+			"cluster_config",
+			{
+				key: ROUTING_MODEL_ROLES_KEY,
+				value: JSON.stringify({ default: "gpt-5.6-sol" }),
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			SITE_A,
+		);
+		expect(analyzeModelReferences(db, fakeNormalize).danglingRoles).toHaveLength(0);
 	});
 });
 

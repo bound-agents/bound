@@ -1,10 +1,11 @@
 import type { Database } from "bun:sqlite";
-import type {
-	BackendCapabilities,
-	CapabilityRequirements,
-	ChatParams,
-	LLMBackend,
-	ModelRouter,
+import {
+	type BackendCapabilities,
+	type CapabilityRequirements,
+	type ChatParams,
+	type LLMBackend,
+	type ModelRouter,
+	normalizeModelKey,
 } from "@bound/llm";
 
 import {
@@ -17,6 +18,7 @@ import {
 	type ClusterModelRoles,
 	type HostModelEntry,
 	ROUTING_MODEL_ROLES_KEY,
+	hintMatchesLogicalModel,
 } from "@bound/shared";
 import {
 	cacheTtlToMs,
@@ -312,9 +314,17 @@ export function resolveModel(
 		);
 		if (sticky) return sticky;
 	}
-	// Phase 1: Identify — check local backends first
-	const localBackend = modelRouter.tryGetBackend(effectiveModelId);
-	const localRouteId = localBackend ? modelRouter.getRouteId(effectiveModelId) : null;
+	// Phase 1: Identify — check local backends first. A hint that matches no local
+	// backend id literally can still resolve THROUGH the logical model (#281): an
+	// expanded self-configuring backend (`bedrock-use1-openai.gpt-5.6-sol`) carries
+	// the logical model the old hand-written hint (`gpt-5.6-sol`) normalizes to.
+	// `resolveLocalBackendIdForHint` returns the literal id when it IS registered
+	// (literal precedence), else the local backend under the same logical model.
+	// Every subsequent local lookup keys off this resolved id.
+	const localModelId =
+		modelRouter.resolveLocalBackendIdForHint(effectiveModelId) ?? effectiveModelId;
+	const localBackend = modelRouter.tryGetBackend(localModelId);
+	const localRouteId = localBackend ? modelRouter.getRouteId(localModelId) : null;
 
 	// A local route no longer wins just by existing (R-RT7): when this backend
 	// id is within its per-RouteId cooldown (rate-limited / backoff), skip the
@@ -347,13 +357,13 @@ export function resolveModel(
 	})();
 	if (
 		localBackend &&
-		!modelRouter.isRateLimited(effectiveModelId) &&
+		!modelRouter.isRateLimited(localModelId) &&
 		!(localRouteId && drainedRouteIds.has(localRouteId)) &&
 		localTrialClaimable
 	) {
 		// Phase 2: Qualify (local)
 		if (requirements) {
-			const caps = modelRouter.getEffectiveCapabilities(effectiveModelId);
+			const caps = modelRouter.getEffectiveCapabilities(localModelId);
 			const unmet = caps ? getUnmetCapabilities(caps, requirements) : Object.keys(requirements);
 
 			if (unmet.length > 0) {
@@ -397,12 +407,7 @@ export function resolveModel(
 		}
 
 		// Phase 3: Dispatch (local, qualification passed)
-		const localResolution = buildLocalResolution(
-			modelRouter,
-			localBackend,
-			effectiveModelId,
-			false,
-		);
+		const localResolution = buildLocalResolution(modelRouter, localBackend, localModelId, false);
 		if (localResolution) return localResolution;
 		// A ready local backend that advertises no context window is a
 		// misconfiguration — surface it rather than dispatch on a guessed window.
@@ -447,6 +452,7 @@ export function resolveModel(
 	const remoteResult = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements, {
 		routeOrder,
 		drainedRouteIds,
+		normalizeKey: normalizeModelKey,
 	});
 	if (remoteResult.ok) {
 		// Phase 2: Qualify (remote) — remote capability filtering via requirements parameter
@@ -520,8 +526,29 @@ function isModelRegisteredInCluster(
 		for (const entry of rawModels) {
 			if (typeof entry === "string") {
 				if (entry === modelId) return true;
-			} else if (entry && typeof entry === "object" && (entry as HostModelEntry).id === modelId) {
-				return true;
+				// A legacy advertisement carries no logical_model, so its only logical
+				// identity is the id itself — match the hint through the normalized key.
+				if (hintMatchesLogicalModel(modelId, entry, normalizeModelKey)) return true;
+			} else if (
+				entry &&
+				typeof entry === "object" &&
+				typeof (entry as HostModelEntry).id === "string"
+			) {
+				const hostEntry = entry as HostModelEntry;
+				if (hostEntry.id === modelId) return true;
+				// Literal id missed: a hint resolving THROUGH the logical model keeps the
+				// model known-in-cluster (transient, not decommissioned), so the dangling
+				// discriminator and resolution agree. Match the advertised logical_model,
+				// falling back to the id when the entry carries none.
+				if (
+					hintMatchesLogicalModel(
+						modelId,
+						hostEntry.logical_model ?? hostEntry.id,
+						normalizeModelKey,
+					)
+				) {
+					return true;
+				}
 			}
 		}
 	}
@@ -689,6 +716,7 @@ function resolveStickyForThread(
 	const remote = findEligibleHostsByModel(db, effectiveModelId, localSiteId, requirements, {
 		routeOrder,
 		drainedRouteIds: drained,
+		normalizeKey: normalizeModelKey,
 	});
 	if (remote.ok) {
 		for (const host of remote.hosts) {

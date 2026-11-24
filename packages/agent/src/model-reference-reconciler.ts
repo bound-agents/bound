@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { analyzeModelReferences, listAdvisoriesByType, softDelete } from "@bound/core";
+import { normalizeModelKey } from "@bound/llm";
 import { createAdvisory } from "./advisories";
 
 /**
@@ -59,7 +60,7 @@ export interface ReconcileResult {
  * has returned. Idempotent and safe to call repeatedly. Returns the counts.
  */
 export function reconcileModelReferenceAdvisories(db: Database, siteId: string): ReconcileResult {
-	const report = analyzeModelReferences(db);
+	const report = analyzeModelReferences(db, normalizeModelKey);
 
 	// The exact set of dangling-reference titles we SHOULD have open right now.
 	const expectedTitles = new Set<string>();

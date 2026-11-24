@@ -58,3 +58,4 @@ export * from "./trace-collector.js";
 export * from "./trace-exporter-context.js";
 export * from "./trace-reexport.js";
 export * from "./read-structure.js";
+export * from "./model-hint-match.js";

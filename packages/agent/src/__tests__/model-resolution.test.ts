@@ -1581,3 +1581,149 @@ describe("resolveTargetCapabilities", () => {
 		expect(resolveTargetCapabilities(res, routerStub(fullCaps))).toBeNull();
 	});
 });
+
+describe("resolveModel — model hints resolve through logical models (#281)", () => {
+	function mockBackend(id: string) {
+		return {
+			id,
+			chat: async function* () {
+				yield { type: "text", text: "test" } as const;
+			},
+			capabilities: () => ({ streaming: true, tools: true, vision: false, max_context: 200000 }),
+		};
+	}
+
+	// An expanded self-configuring backend is registered with its config carrying
+	// the real `provider` + provider `model` id, which is how the namespace
+	// expansion materializes each row. Its logical model is the normalized key of
+	// `(provider, model)` — here `(bedrock, openai.gpt-5.6-sol)` → `gpt-5-6-sol`.
+	function routerWith(
+		configs: Array<{ id: string; provider: string; model: string }>,
+		defaultId: string,
+	) {
+		const backends = new Map(configs.map((c) => [c.id, mockBackend(c.id)]));
+		const backendConfigs = new Map(
+			configs.map((c) => [c.id, { id: c.id, provider: c.provider, model: c.model }]),
+		);
+		return new ModelRouter(
+			backends,
+			defaultId,
+			undefined,
+			backendConfigs as unknown as ConstructorParameters<typeof ModelRouter>[3],
+		);
+	}
+
+	it("resolves an old hand-written id to a local expanded backend via the normalized key", () => {
+		// The operator collapsed config onto the bedrock namespace: the expanded
+		// backend's id is `bedrock-use1-openai.gpt-5.6-sol`, serving provider model
+		// `openai.gpt-5.6-sol`, which groups under the logical model `gpt-5-6-sol`. A
+		// thread still carrying the old `gpt-5.6-sol` hint matches no backend id
+		// literally, yet both normalize to `gpt-5-6-sol`, so it resolves locally.
+		const expandedId = "bedrock-use1-openai.gpt-5.6-sol";
+		const modelRouter = routerWith(
+			[{ id: expandedId, provider: "bedrock", model: "openai.gpt-5.6-sol" }],
+			expandedId,
+		);
+
+		const resolution = resolveModel("gpt-5.6-sol", modelRouter, db, "local-site");
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") {
+			expect(resolution.modelId).toBe(expandedId);
+		}
+	});
+
+	it("resolves an old hand-written id to a remote expanded backend via the normalized key", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (
+				site_id, host_name, models, deleted, online_at, modified_at
+			) VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				"remote-1",
+				"Remote Host",
+				JSON.stringify([
+					{
+						id: "bedrock-use1-openai.gpt-5.6-sol",
+						logical_model: "gpt-5-6-sol",
+						route_id: "remote-1:bedrock:use1-openai.gpt-5.6-sol",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				0,
+				now,
+				now,
+			],
+		);
+		// A local default on a DIFFERENT model, so the requested hint has no local route.
+		const backends = new Map([["local-default", mockBackend("local-default")]]);
+		const modelRouter = new ModelRouter(backends, "local-default");
+
+		const resolution = resolveModel("gpt-5.6-sol", modelRouter, db, "local-site");
+		expect(resolution.kind).toBe("remote");
+		if (resolution.kind === "remote") {
+			expect(resolution.hosts.map((h) => h.site_id)).toContain("remote-1");
+		}
+	});
+
+	it("resolves a literal logical_model pin (opus) against an advertised entry", () => {
+		const now = new Date().toISOString();
+		db.run(
+			`INSERT INTO hosts (
+				site_id, host_name, models, deleted, online_at, modified_at
+			) VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				"remote-1",
+				"Remote Host",
+				JSON.stringify([
+					{
+						id: "bedrock-use1-anthropic.claude-opus",
+						logical_model: "opus",
+						route_id: "remote-1:bedrock:use1-anthropic.claude-opus",
+						capabilities: { max_context: 200000 },
+					},
+				]),
+				0,
+				now,
+				now,
+			],
+		);
+		const backends = new Map([["local-default", mockBackend("local-default")]]);
+		const modelRouter = new ModelRouter(backends, "local-default");
+
+		const resolution = resolveModel("opus", modelRouter, db, "local-site");
+		expect(resolution.kind).toBe("remote");
+		if (resolution.kind === "remote") {
+			expect(resolution.hosts.map((h) => h.site_id)).toContain("remote-1");
+		}
+	});
+
+	it("prefers an exact local backend id over a logical-model match", () => {
+		// Two local backends both group under `gpt-5-6-sol`: the expanded id and a
+		// backend whose id IS the hint. A literal id match must win — the exact id,
+		// not the normalized-key fallback.
+		const exactId = "gpt-5.6-sol";
+		const expandedId = "bedrock-use1-openai.gpt-5.6-sol";
+		const backends = new Map([
+			[expandedId, mockBackend(expandedId)],
+			[exactId, mockBackend(exactId)],
+		]);
+		const modelRouter = new ModelRouter(backends, expandedId);
+
+		const resolution = resolveModel(exactId, modelRouter, db, "local-site");
+		expect(resolution.kind).toBe("local");
+		if (resolution.kind === "local") {
+			expect(resolution.modelId).toBe(exactId);
+		}
+	});
+
+	it("raises unknown-model for a hint matching no backend id and no logical model", () => {
+		const backends = new Map([["local-default", mockBackend("local-default")]]);
+		const modelRouter = new ModelRouter(backends, "local-default");
+
+		const resolution = resolveModel("gpt-9.9-nova", modelRouter, db, "local-site");
+		expect(resolution.kind).toBe("error");
+		if (resolution.kind === "error") {
+			expect(resolution.reason).toBe("unknown-model");
+		}
+	});
+});

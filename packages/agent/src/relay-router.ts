@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { LOCAL_WORK_TARGET, findHostWorkSpoolCapabilityById, insertDurableWork } from "@bound/core";
 import type { CapabilityRequirements } from "@bound/llm";
 import type { HostModelEntry, RelayKind } from "@bound/shared";
+import { type NormalizeKeyFn, hintMatchesLogicalModel } from "@bound/shared";
 import { DURABLE_WORK_REGISTRY } from "./durable-work-registry";
 import { type TopologyRole, resolveHubSiteId, resolveTopologyRole } from "./topology";
 
@@ -157,6 +158,16 @@ export function findEligibleHostsByModel(
 		routeOrder?: string[] | null;
 		/** RouteIds currently drained (§6.2) — excluded from candidates entirely. */
 		drainedRouteIds?: ReadonlySet<string>;
+		/**
+		 * Structural normalizer (`@bound/llm`'s `normalizeModelKey`), injected so a
+		 * `modelId` that matches no advertised entry id LITERALLY can still resolve
+		 * THROUGH the logical model: a host advertising the expanded backend under
+		 * the same normalized `logical_model` key is pooled in. Literal id matches
+		 * take precedence and the logical-model fallback never crosses to a
+		 * different logical model (§2.1). Omitted → literal-only matching (today's
+		 * behavior).
+		 */
+		normalizeKey?: NormalizeKeyFn;
 	},
 ): RelayRoutingResult | RelayRoutingError {
 	const rows = db
@@ -174,8 +185,20 @@ export function findEligibleHostsByModel(
 		modified_at: string | null;
 	}>;
 
+	// Literal-id matches and logical-model fallback are collected into SEPARATE
+	// buckets. Literal id matches win: when any host advertises the requested id
+	// (legacy string or HostModelEntry.id) the logical buckets are discarded, so
+	// an exact backend id behaves exactly as before. Only when NO host matches the
+	// id literally does the logical fallback supply candidates — every route whose
+	// advertised logical model normalizes to the same key as the hint, pooled
+	// together and never crossing to a different logical model (§2.1).
 	const verified: EligibleHost[] = [];
 	const unverified: EligibleHost[] = [];
+	const logicalVerified: EligibleHost[] = [];
+	const logicalUnverified: EligibleHost[] = [];
+	const normalizeKey = prefs?.normalizeKey;
+	const matchesLogical = (candidate: string): boolean =>
+		!!normalizeKey && hintMatchesLogicalModel(modelId, candidate, normalizeKey);
 
 	for (const row of rows) {
 		if (!row.models) continue;
@@ -196,9 +219,12 @@ export function findEligibleHostsByModel(
 		// Parse each entry as either a legacy string or a HostModelEntry object
 		for (const entry of rawModels) {
 			if (typeof entry === "string") {
-				// Legacy format: plain model ID string, no capability metadata
-				if (entry === modelId) {
-					unverified.push({
+				// Legacy format: plain model ID string, no capability metadata. A legacy
+				// advertisement carries no logical_model, so its only logical identity is
+				// the id itself.
+				const isLiteral = entry === modelId;
+				if (isLiteral || matchesLogical(entry)) {
+					(isLiteral ? unverified : logicalUnverified).push({
 						site_id: row.site_id,
 						host_name: row.host_name,
 						sync_url: row.sync_url,
@@ -212,9 +238,14 @@ export function findEligibleHostsByModel(
 				typeof entry === "object" &&
 				typeof (entry as HostModelEntry).id === "string"
 			) {
-				// New object format: HostModelEntry with id, route metadata, capabilities
+				// New object format: HostModelEntry with id, route metadata, capabilities.
 				const hostEntry = entry as HostModelEntry;
-				if (hostEntry.id !== modelId) continue;
+				// Literal id match wins; else fall back to logical-model match against the
+				// advertised logical_model (the key the expanded backend groups under),
+				// falling back to its id when it carries no logical_model.
+				const isLiteral = hostEntry.id === modelId;
+				const isLogical = !isLiteral && matchesLogical(hostEntry.logical_model ?? hostEntry.id);
+				if (!isLiteral && !isLogical) continue;
 				// §6.2: a drained route is excluded from candidates entirely.
 				if (hostEntry.route_id && prefs?.drainedRouteIds?.has(hostEntry.route_id)) continue;
 
@@ -230,13 +261,15 @@ export function findEligibleHostsByModel(
 					thinkingMode: hostEntry.thinking_mode,
 					unverified: false,
 				};
+				const verifiedBucket = isLiteral ? verified : logicalVerified;
+				const unverifiedBucket = isLiteral ? unverified : logicalUnverified;
 
 				// Apply capability filter (only for verified hosts)
 				if (requirements) {
 					const caps = hostEntry.capabilities;
 					if (!caps) {
 						// No capability metadata → treat as unverified fallback
-						unverified.push({ ...host, unverified: true });
+						unverifiedBucket.push({ ...host, unverified: true });
 						continue;
 					}
 					if (requirements.vision && !caps.vision) continue; // Exclude
@@ -245,23 +278,30 @@ export function findEligibleHostsByModel(
 					if (requirements.prompt_caching && !caps.prompt_caching) continue;
 				}
 
-				verified.push(host);
+				verifiedBucket.push(host);
 			}
 		}
 	}
 
-	// When requirements are set: return only verified matches; unverified hosts are
-	// fallback when no verified match exists (AC7.3/AC7.4).
-	// When no requirements: return all (verified + unverified) sorted by preference.
+	// Literal id matches take precedence (§2.1): when any host advertised the
+	// requested id literally, resolve to those and discard the logical-model
+	// fallback buckets entirely. Only when NO host matched the id literally do the
+	// logical buckets supply candidates. Within whichever set wins, the
+	// requirements/verified split is unchanged (AC7.3/AC7.4): verified matches
+	// first, unverified as fallback when no verified match exists; no requirements
+	// → all combined, verified first.
+	const hasLiteral = verified.length > 0 || unverified.length > 0;
+	const v = hasLiteral ? verified : logicalVerified;
+	const u = hasLiteral ? unverified : logicalUnverified;
 	let eligible: EligibleHost[];
-	if (requirements && verified.length > 0) {
-		eligible = verified;
-	} else if (requirements && verified.length === 0) {
+	if (requirements && v.length > 0) {
+		eligible = v;
+	} else if (requirements && v.length === 0) {
 		// No verified match — fall back to unverified hosts
-		eligible = unverified;
+		eligible = u;
 	} else {
 		// No requirements — combine all, verified first
-		eligible = [...verified, ...unverified];
+		eligible = [...v, ...u];
 	}
 
 	if (eligible.length === 0) {

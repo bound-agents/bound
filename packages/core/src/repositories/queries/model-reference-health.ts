@@ -2,8 +2,10 @@ import type { Database } from "bun:sqlite";
 import {
 	type ClusterModelRoles,
 	type HostModelEntry,
+	type NormalizeKeyFn,
 	ROUTING_DEFAULT_FALLBACK_MODELS_KEY,
 	ROUTING_MODEL_ROLES_KEY,
+	hintMatchesAnyLogicalModel,
 } from "@bound/shared";
 
 /**
@@ -148,8 +150,19 @@ function hintLogicalModel(hint: string): string | null {
 /**
  * Analyze every synced routing reference against the live advertised set.
  * See {@link ModelReferenceReport}. Pure read; tolerant of malformed JSON.
+ *
+ * `normalizeKey` is the injected structural normalizer (`@bound/llm`'s
+ * `normalizeModelKey`): `@bound/core` depends only on `@bound/shared` and cannot
+ * import it, so the caller (the reconciler in `@bound/agent`, the Settings route
+ * in `@bound/web`) passes it in. Threading it here keeps the dangling checker's
+ * liveness verdict IDENTICAL to resolution's (model-resolution.ts /
+ * relay-router.ts): a hint that resolves THROUGH a logical model is never
+ * reported dangling, and vice versa.
  */
-export function analyzeModelReferences(db: Database): ModelReferenceReport {
+export function analyzeModelReferences(
+	db: Database,
+	normalizeKey: NormalizeKeyFn,
+): ModelReferenceReport {
 	const { models: liveModels, routes: liveRoutes } = liveAdvertisedSets(db);
 
 	// Stale route_order entries: a RouteId listed in a live rule but advertised
@@ -239,7 +252,7 @@ export function analyzeModelReferences(db: Database): ModelReferenceReport {
 		if (roles && typeof roles === "object") {
 			for (const role of ["default", "heavy", "fast"] as const) {
 				const model = roles[role];
-				if (model && !liveModels.has(model)) {
+				if (model && !hintMatchesAnyLogicalModel(model, liveModels, normalizeKey)) {
 					danglingRoles.push({ role, logicalModel: model });
 				}
 			}
@@ -262,7 +275,7 @@ export function analyzeModelReferences(db: Database): ModelReferenceReport {
 		if (logical === null) continue;
 		// Cluster-role targets follow the role; never dangling on their own.
 		if (logical === "default" || logical === "heavy" || logical === "fast") continue;
-		if (!liveModels.has(logical)) {
+		if (!hintMatchesAnyLogicalModel(logical, liveModels, normalizeKey)) {
 			danglingAgents.push({ agentName: agent.name, logicalModel: logical });
 		}
 	}
@@ -286,7 +299,7 @@ export function analyzeModelReferences(db: Database): ModelReferenceReport {
 		if (logical === null) continue;
 		// Cluster-role targets follow the role; never dangling on their own.
 		if (logical === "default" || logical === "heavy" || logical === "fast") continue;
-		if (!liveModels.has(logical)) {
+		if (!hintMatchesAnyLogicalModel(logical, liveModels, normalizeKey)) {
 			danglingTasks.push({ taskId: task.id, logicalModel: logical });
 		}
 	}

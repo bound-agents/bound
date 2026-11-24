@@ -15,7 +15,7 @@ import {
 	softDelete,
 	updateRow,
 } from "@bound/core";
-import type { ModelRouter } from "@bound/llm";
+import { type ModelRouter, normalizeModelKey } from "@bound/llm";
 import {
 	type HostModelEntry,
 	type ModelFallbackPolicy,
@@ -245,7 +245,7 @@ export function createRoutingRoutes(
 			const supply = collectSupply(db);
 			const drained = new Set(listDrainedRouteIds(db));
 			const rules = new Map(listModelRoutingRules(db).map((r) => [r.logical_model, r]));
-			const report = analyzeModelReferences(db);
+			const report = analyzeModelReferences(db, normalizeModelKey);
 			const staleByModel = new Map<string, StaleRoute[]>();
 			const hostNameBySite = new Map(
 				listHostSiteIdNameAndModels(db).map((h) => [h.site_id, h.host_name]),
@@ -311,7 +311,7 @@ export function createRoutingRoutes(
 	// GET /references — stale/dangling reference report for the cleanup surfaces.
 	app.get("/references", (c) => {
 		try {
-			return c.json(analyzeModelReferences(db));
+			return c.json(analyzeModelReferences(db, normalizeModelKey));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json({ error: "Failed to analyze references", details: message }, 500);
