@@ -1913,3 +1913,48 @@ describe("ModelRouter umans factory case (AC.1)", () => {
 		).toThrow(/umans/i);
 	});
 });
+
+describe("ModelRouter — resolveLocalBackendIdForHint", () => {
+	const make = () =>
+		createModelRouter({
+			backends: [
+				{
+					id: "ns-openai.gpt-5.6-sol",
+					provider: "openai-compatible",
+					apiKey: "k",
+					model: "gpt-5.6-sol",
+					baseUrl: "http://localhost",
+					contextWindow: 1000,
+				},
+				{
+					id: "gpt-6-luna",
+					provider: "openai-compatible",
+					apiKey: "k",
+					model: "gpt-6-luna",
+					baseUrl: "http://localhost",
+					contextWindow: 1000,
+				},
+			],
+			default: "gpt-6-luna",
+		});
+
+	it("returns a literal backend id unchanged", () => {
+		expect(make().resolveLocalBackendIdForHint("gpt-6-luna")).toBe("gpt-6-luna");
+	});
+
+	it("falls back to a backend whose logical model matches the hint", () => {
+		expect(make().resolveLocalBackendIdForHint("gpt-5.6-sol")).toBe("ns-openai.gpt-5.6-sol");
+	});
+
+	it("returns null when nothing matches", () => {
+		expect(make().resolveLocalBackendIdForHint("no-such-model")).toBeNull();
+	});
+
+	it("skips not-ready backends on both the literal and logical paths", () => {
+		const router = make();
+		router.markNotReady("ns-openai.gpt-5.6-sol");
+		router.markNotReady("gpt-6-luna");
+		expect(router.resolveLocalBackendIdForHint("gpt-6-luna")).toBeNull();
+		expect(router.resolveLocalBackendIdForHint("gpt-5.6-sol")).toBeNull();
+	});
+});
