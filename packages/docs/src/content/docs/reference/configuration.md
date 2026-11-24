@@ -489,6 +489,43 @@ namespace is only needed for a model that is genuinely Mantle-only.
 a concrete `bedrock-mantle` entry. Display names, limits, and pricing for every form fill from
 `models.dev` where the control plane is silent.
 
+#### OpenCode Go self-configuring namespace
+
+An `opencode-go` entry with **no `model`** is a self-configuring namespace for its API key: at
+startup it fetches `GET <base_url>/models` (default `https://opencode.ai/zen/go/v1/models`) and
+expands into one backend per routable chat model. An expanded backend's id is
+`<entry-id>-<provider-model-id>`.
+
+```js
+export default {
+  backends: [
+    {
+      id: "opencode-go",
+      provider: "opencode-go",
+      api_key: process.env.OPENCODE_API_KEY,
+      model_overrides: {
+        "deepseek-v4.1-flash": { logical_model: "deepseek-flash" },
+      },
+    },
+  ],
+  default: "opencode-go-deepseek-v4.1-flash",
+};
+```
+
+**Lineup filter.** Only rows with `type: "chat"` (or no `type`) are kept; `decision` and
+`embedding` rows are excluded. Each model is served on its `recommended_api` when Bound speaks it
+(`chat-completions`, `messages`, or `responses`), otherwise on the first of `messages`,
+`responses`, `chat-completions` listed in its `api` block, using that protocol's published
+`base_url`. A model whose `api` block lists only protocols Bound does not speak (for example
+`interactions` / `generate-content`) is excluded. Responses-protocol models run with `store: false`
+and replay encrypted reasoning across turns.
+
+**Metadata.** Display name, context window, output limit, vision (any `image/*` input modality),
+tool use, the reasoning effort ladder, and per-token pricing (including context-threshold price
+tiers from `cost.text.*.overrides`) all come from the listing. `context_window`, `capabilities`, and
+`price_per_m_*` are rejected on the namespace entry; use `model_overrides` instead. An
+`opencode-go` entry *with* a `model` is a single concrete backend exactly as before.
+
 ---
 
 ## `network.js` / `network.json`

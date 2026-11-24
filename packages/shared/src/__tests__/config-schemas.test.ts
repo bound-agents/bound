@@ -608,6 +608,62 @@ describe("Config schemas", () => {
 			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
 		});
 
+		it("accepts an opencode-go namespace entry (no model)", () => {
+			const config = {
+				backends: [
+					{
+						id: "ocg",
+						provider: "opencode-go",
+						api_key: "k",
+						model_overrides: { "deepseek-v4.1-flash": { logical_model: "ds-flash" } },
+					},
+				],
+				default: "ocg",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+		});
+
+		it("rejects top-level context_window on an opencode-go namespace entry", () => {
+			const config = {
+				backends: [{ id: "ocg", provider: "opencode-go", api_key: "k", context_window: 100000 }],
+				default: "ocg",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+		});
+
+		it("rejects top-level price_per_m_input on an opencode-go namespace entry", () => {
+			const config = {
+				backends: [{ id: "ocg", provider: "opencode-go", api_key: "k", price_per_m_input: 1 }],
+				default: "ocg",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+		});
+
+		it("keeps context_window and pricing on a model-bearing opencode-go entry", () => {
+			const config = {
+				backends: [
+					{
+						id: "ocg-glm",
+						provider: "opencode-go",
+						api_key: "k",
+						model: "glm-5",
+						context_window: 200000,
+						price_per_m_input: 1,
+					},
+				],
+				default: "ocg-glm",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(true);
+		});
+
+		it("still requires api_key on an opencode-go namespace entry", () => {
+			const config = {
+				backends: [{ id: "ocg", provider: "opencode-go" }],
+				default: "ocg",
+			};
+			expect(modelBackendsSchema.safeParse(config).success).toBe(false);
+		});
+
 		it("accepts a bedrock namespace with cross_region and model_overrides", () => {
 			const config = {
 				backends: [

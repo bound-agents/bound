@@ -476,12 +476,15 @@ export const modelBackendsSchema = z
 				// (2026-11-21-model-catalog.md §2.1). A `model`-bearing entry is a single
 				// concrete backend and still requires it.
 				if (b.provider === "bedrock" || b.provider === "bedrock-mantle") return true;
+				// `opencode-go` WITHOUT a `model` is a self-configuring namespace: it
+				// fetches `/models` and expands into one backend per routable chat model.
+				if (b.provider === "opencode-go") return true;
 				return b.model !== undefined;
 			});
 		},
 		{
 			message:
-				"model is required for all providers except umans, github-copilot, bedrock, and bedrock-mantle (which are self-configuring when no model is set)",
+				"model is required for all providers except umans, github-copilot, bedrock, bedrock-mantle, and opencode-go (which are self-configuring when no model is set)",
 		},
 	)
 	.refine(
@@ -511,13 +514,13 @@ export const modelBackendsSchema = z
 	.refine(
 		(data) => {
 			// A self-configuring NAMESPACE entry (no `model`) — `github-copilot`,
-			// `bedrock`, or `bedrock-mantle` — fetches its per-model lineup, context
+			// `bedrock`, `bedrock-mantle`, or `opencode-go` — fetches its per-model lineup, context
 			// windows, capabilities, and pricing from the provider at runtime, so
 			// operator-set authoritative fields on the namespace entry itself are
 			// rejected (they would have no single model to apply to). Per-model
 			// overrides go in `model_overrides` instead (keyed by provider model id). An
 			// entry WITH a `model` is a single concrete backend and keeps these fields.
-			const NAMESPACE_PROVIDERS = ["github-copilot", "bedrock", "bedrock-mantle"];
+			const NAMESPACE_PROVIDERS = ["github-copilot", "bedrock", "bedrock-mantle", "opencode-go"];
 			return data.backends.every((b) => {
 				if (!NAMESPACE_PROVIDERS.includes(b.provider) || b.model !== undefined) return true;
 				if (b.context_window !== undefined) return false;
@@ -532,7 +535,7 @@ export const modelBackendsSchema = z
 		},
 		{
 			message:
-				"a self-configuring namespace entry (github-copilot / bedrock / bedrock-mantle with no model) must not set context_window, capabilities, or pricing — these are fetched from the provider; use model_overrides for per-model request controls",
+				"a self-configuring namespace entry (github-copilot / bedrock / bedrock-mantle / opencode-go with no model) must not set context_window, capabilities, or pricing — these are fetched from the provider; use model_overrides for per-model request controls",
 		},
 	);
 

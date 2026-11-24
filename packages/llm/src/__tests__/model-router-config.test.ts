@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { OpenCodeGoDriver } from "../drivers/opencode-go";
 import { createModelRouter } from "../model-router";
 import type { ModelBackendsConfig } from "../types";
 
@@ -96,6 +97,25 @@ describe("createBackendFromConfig — driver construction per provider", () => {
 			default: "g",
 		});
 		expect(router.getBackend("g").capabilities()).toBeDefined();
+	});
+
+	it("constructs a self-configuring opencode-go namespace backend when model is omitted", () => {
+		const router = singleBackendRouter({
+			backends: [{ id: "ocg", provider: "opencode-go", apiKey: "k" }],
+			default: "ocg",
+		});
+		const backend = router.getBackend("ocg") as OpenCodeGoDriver;
+		expect(backend).toBeInstanceOf(OpenCodeGoDriver);
+		expect(backend.readiness?.isReady()).toBe(false);
+		backend.readiness?.dispose();
+	});
+
+	it("constructs a concrete opencode-go backend (no readiness) when model is set", () => {
+		const router = singleBackendRouter({
+			backends: [{ id: "g", provider: "opencode-go", apiKey: "k", model: "glm-5" }],
+			default: "g",
+		});
+		expect((router.getBackend("g") as OpenCodeGoDriver).readiness).toBeUndefined();
 	});
 
 	it("rejects an opencode-go backend missing apiKey", () => {

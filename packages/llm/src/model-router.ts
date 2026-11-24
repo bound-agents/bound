@@ -1186,8 +1186,21 @@ function createBackendFromConfig(
 			if (!apiKey) {
 				throw new Error("OpenCode Go driver requires apiKey in config");
 			}
+			// No `model` => self-configuring namespace: it owns `readiness`, fetches the
+			// `/models` listing, and expands into one concrete backend per routable chat
+			// model (2026-11-21-model-catalog.md §2.1). Expanded ids are
+			// `${config.id}-${providerModelId}`.
 			if (!config.model) {
-				throw new Error("OpenCode Go driver requires model in config");
+				return new OpenCodeGoDriver({
+					apiKey,
+					namespaceId: config.id,
+					...(config.modelOverrides && { modelOverrides: config.modelOverrides }),
+					...(config.baseUrl !== undefined && { baseUrl: config.baseUrl }),
+					logger,
+					fetch,
+					connectTimeoutMs: config.connectTimeoutMs,
+					siteId,
+				});
 			}
 			const contextWindow = config.contextWindow ?? UNRESOLVED_CONTEXT_WINDOW;
 			return new OpenCodeGoDriver({
@@ -1198,6 +1211,7 @@ function createBackendFromConfig(
 				logger,
 				fetch,
 				connectTimeoutMs: config.connectTimeoutMs,
+				siteId,
 			});
 		}
 

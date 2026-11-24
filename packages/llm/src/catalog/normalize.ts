@@ -132,6 +132,8 @@ const MODELS_DEV_NAMESPACE_BY_PROVIDER: Record<string, string> = {
 	"github-copilot": "github-copilot",
 	anthropic: "anthropic",
 	"chatgpt-oauth": "openai",
+	"opencode-go": "opencode-go",
+	zai: "zai",
 };
 
 /**
