@@ -433,14 +433,19 @@
 					</div>
 					<div class="row-content">
 						{#if item.kind === "toolGroup"}
-							<ToolCallCard messages={item.messages} {resultsByToolUseId} {lineColor} />
+							<ToolCallCard
+								messages={item.messages}
+								{resultsByToolUseId}
+								{lineColor}
+								{modelDisplay}
+							/>
 						{:else}
 							<MessageBubble
 								role={item.msg.role as
 									"user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
 								content={item.msg.content}
 								toolName={item.msg.tool_name}
-								modelId={item.msg.model_id}
+								modelId={item.msg.model_id ? modelDisplay(item.msg.model_id) : null}
 								exitCode={item.msg.exit_code}
 								{threadColor}
 							/>

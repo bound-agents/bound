@@ -576,22 +576,54 @@ describe("LineView — live WS events and polling", () => {
 
 	// --- Thread model chip + per-turn provenance wiring (§9.1) ---
 
-	it("mounts the thread model chip in the header with the active model", async () => {
-		const { target } = await mountView({
-			thread: thread(),
-			messages: [
+	it("mounts the thread model chip in the header with the active model's display name", async () => {
+		dom = null;
+		const mountPromise = (async () => {
+			const mounted = await mountView({
+				thread: thread(),
+				messages: [
+					{
+						id: "a1",
+						role: "assistant",
+						content: "hi",
+						// A turn's model_id is the serving BACKEND id, never the logical key.
+						model_id: "zai-glm-5.3-flash",
+						created_at: "2026-11-19T01:00:05.000Z",
+					},
+				],
+			});
+			return mounted;
+		})();
+		// mountView installs the DOM synchronously before its first await, so the
+		// routing route can be registered before LineView's onMount fetch lands.
+		requireDom().route("GET", "/api/routing/models", () => ({
+			models: [
 				{
-					id: "a1",
-					role: "assistant",
-					content: "hi",
-					model_id: "gpt-5.6-sol",
-					created_at: "2026-11-19T01:00:05.000Z",
+					logical_model: "glm-5.3-flash",
+					display_name: "GLM-5.3 Flash",
+					route_order: null,
+					fallback_policy: {},
+					routes: [
+						{
+							route_id: "site-msi:zai:zai-glm-5.3-flash",
+							site_id: "site-msi",
+							host_name: "MSI",
+							provider: "zai",
+							display_name: "GLM-5.3 Flash",
+							drained: false,
+							health: "healthy",
+						},
+					],
+					stale_routes: [],
 				},
 			],
-		});
+		}));
+		const { target } = await mountPromise;
+		await requireDom().settle();
 		const chip = target.querySelector(".chip");
 		expect(chip).not.toBeNull();
-		expect(chip?.querySelector(".name")?.textContent).toBe("gpt-5.6-sol");
+		expect(chip?.querySelector(".name")?.textContent).toBe("GLM-5.3 Flash");
+		expect(target.textContent ?? "").not.toContain("zai-glm-5.3-flash");
 	});
 
 	it("fetches provenance and mounts a footer under the matching assistant message", async () => {

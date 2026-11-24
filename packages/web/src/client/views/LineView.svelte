@@ -108,7 +108,21 @@
 	async function loadModelDisplayNames(): Promise<void> {
 		try {
 			const data = await client.getRoutingModels();
-			modelDisplayNames = new Map(data.models.map((m) => [m.logical_model, m.display_name]));
+			// Key by the logical model AND every route's backend id: a turn's
+			// model_id is the serving backend id (e.g. `zai-glm-5.3-flash`), which
+			// never equals the logical model key. RouteId is
+			// `${siteId}:${provider}:${backendId}`, and a backend id may itself
+			// contain colons (Bedrock `...-v1:0`).
+			const names = new Map<string, string>();
+			for (const m of data.models) {
+				if (!m.display_name) continue;
+				names.set(m.logical_model, m.display_name);
+				for (const r of m.routes) {
+					const backendId = r.route_id.split(":").slice(2).join(":");
+					if (backendId && !names.has(backendId)) names.set(backendId, m.display_name);
+				}
+			}
+			modelDisplayNames = names;
 		} catch {
 			// Best-effort: an older server leaves the footer/chip showing the id.
 		}
@@ -587,7 +601,7 @@
 			{#if thread}
 				<StatusChip status={agentActive ? "active" : "idle"} />
 				<ThreadModelChip
-					model={activeModel}
+					model={modelDisplay(activeModel)}
 					viaHost={chipVia.host}
 					viaProvider={chipVia.provider}
 				/>
@@ -708,7 +722,7 @@
 								</div>
 								<div class="field">
 									<span class="kicker">Model</span>
-									<span class="mono">{activeModel}</span>
+									<span class="mono">{modelDisplay(activeModel)}</span>
 								</div>
 								<div class="field">
 									<span class="kicker">Opened</span>
@@ -773,7 +787,12 @@
 						{/if}
 					</div>
 				{:else}
-					<ContextDebugPanel {threadId} {wsEvents} onTurnChange={(range) => (turnRange = range)} />
+					<ContextDebugPanel
+						{threadId}
+						{wsEvents}
+						{modelDisplay}
+						onTurnChange={(range) => (turnRange = range)}
+					/>
 				{/if}
 			</div>
 		</aside>

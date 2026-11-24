@@ -44,9 +44,16 @@
 		messages: ToolMessage[];
 		resultsByToolUseId?: Record<string, ToolResultMsg>;
 		lineColor?: string;
+		/** Model id → user-facing display name (spec §2.1); the header shows this, never the raw id. */
+		modelDisplay?: (modelId: string | null) => string;
 	}
 
-	const { messages, resultsByToolUseId = {}, lineColor = "var(--rule-soft)" }: Props = $props();
+	const {
+		messages,
+		resultsByToolUseId = {},
+		lineColor = "var(--rule-soft)",
+		modelDisplay = (modelId: string | null) => modelId ?? "",
+	}: Props = $props();
 
 	const parsedMessages = $derived(messages.map((m) => parseToolCallContent(m.content)));
 	const firstParsed = $derived(parsedMessages[0]);
@@ -56,7 +63,10 @@
 	// by the scheduler, not produced by the agent. The model_id we want to
 	// display in the AGENT header lives on the first real assistant-produced
 	// tool_call message that follows.
-	const headModelId = $derived(messages.find((m) => m.model_id)?.model_id ?? null);
+	const headModelId = $derived.by(() => {
+		const id = messages.find((m) => m.model_id)?.model_id ?? null;
+		return id ? modelDisplay(id) : null;
+	});
 
 	const allToolUses = $derived(parsedMessages.flatMap((p) => p.toolUses));
 	const totalCount = $derived(allToolUses.length);

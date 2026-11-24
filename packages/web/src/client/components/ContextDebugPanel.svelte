@@ -26,9 +26,16 @@
 		threadId: string;
 		wsEvents: typeof wsEvents;
 		onTurnChange?: (range: { from: string; to: string | null } | null) => void;
+		/** Model id → user-facing display name (spec §2.1); never shows the raw backend id. */
+		modelDisplay?: (modelId: string | null) => string;
 	}
 
-	const { threadId, wsEvents: wsEventsStore, onTurnChange }: Props = $props();
+	const {
+		threadId,
+		wsEvents: wsEventsStore,
+		onTurnChange,
+		modelDisplay = (modelId: string | null) => modelId ?? "\u2014",
+	}: Props = $props();
 
 	let turns = $state<ContextDebugTurn[]>([]);
 	let selectedTurnIdx = $state(-1);
@@ -446,7 +453,7 @@
 			<div class="footer-fields">
 				<div class="field">
 					<span class="kicker">Model</span>
-					<span class="mono">{selectedTurn.model_id}</span>
+					<span class="mono">{modelDisplay(selectedTurn.model_id)}</span>
 				</div>
 				<div class="field">
 					<span class="kicker">Tokens In / Out</span>
