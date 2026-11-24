@@ -346,13 +346,15 @@ export function gateUnreadyBackends(
 const lastRegisteredByProvider = new Map<string, string[]>();
 
 /**
- * Backend ids currently materialized by a self-configuring namespace. Catalog
- * resolution skips provider discovery for these: the namespace's own lineup
- * fetch is their provider layer, already folded into each expanded config row
- * (context window, output cap, pricing, logical-model pin), and rediscovering
- * per expanded model would issue one control-plane request per model per pass.
+ * Backend ids currently materialized by a self-configuring namespace, mapped to
+ * the provider-layer {@link DiscoveredModel} captured during namespace lineup
+ * expansion (or `undefined` when the namespace supplied none). Catalog
+ * resolution skips per-model `discoverModels()` calls for these (avoiding one
+ * control-plane request per model per pass) while still feeding the captured
+ * discovery row into the provider metadata layer — preserving provider-only
+ * facts such as Copilot's `adaptive_thinking` flag.
  */
-const expandedBackendIds = new Set<string>();
+const expandedBackendDiscovery = new Map<string, DiscoveredModel | undefined>();
 
 /**
  * A coalescing runner for an async pass. `schedule()` starts a pass on the next
@@ -542,8 +544,10 @@ export function wireBackendReadiness(
 				sharedConfig.backends = sharedConfig.backends.filter((b) => b.id !== namespaceId);
 
 				lastRegisteredByProvider.set(providerId, [...newIds]);
-				for (const id of priorIds) expandedBackendIds.delete(id);
-				for (const id of newIds) expandedBackendIds.add(id);
+				for (const id of priorIds) expandedBackendDiscovery.delete(id);
+				for (const { descriptor } of models) {
+					expandedBackendDiscovery.set(descriptor.id, descriptor.discovered);
+				}
 
 				// 4. Re-advertise so peers learn the now-selectable model ids at once,
 				//    then resolve the catalog over the live config so the advertised
@@ -681,7 +685,10 @@ export async function resolveLocalCatalog(
 
 		const backend = modelRouter.tryGetBackend(backendId);
 		let discovery: DiscoveredModel[] = [];
-		if (backend && supportsModelDiscovery(backend) && !expandedBackendIds.has(backendId)) {
+		if (expandedBackendDiscovery.has(backendId)) {
+			const cached = expandedBackendDiscovery.get(backendId);
+			if (cached) discovery = [cached];
+		} else if (backend && supportsModelDiscovery(backend)) {
 			try {
 				discovery = await backend.discoverModels();
 			} catch (error) {
@@ -693,8 +700,15 @@ export async function resolveLocalCatalog(
 		}
 
 		const config: MetadataLayer = {};
+		const configCaps: NonNullable<MetadataLayer["capabilities"]> = {};
 		if (rawBackend.context_window !== undefined) {
-			config.capabilities = { max_context: rawBackend.context_window };
+			configCaps.max_context = rawBackend.context_window;
+		}
+		if (rawBackend.capabilities?.vision !== undefined) {
+			configCaps.vision = rawBackend.capabilities.vision;
+		}
+		if (Object.keys(configCaps).length > 0) {
+			config.capabilities = configCaps;
 		}
 		if (rawBackend.max_output_tokens !== undefined) {
 			config.max_output_tokens = rawBackend.max_output_tokens;

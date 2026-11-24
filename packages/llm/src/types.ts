@@ -1,4 +1,5 @@
 import type { ContextSegment } from "@bound/shared";
+import type { DiscoveredModel } from "./catalog/discovery";
 import type { DriverFallbackSupport } from "./fallback-policy";
 import type { ModelDeclinedOutcome } from "./model-declined";
 export interface LLMBackend {
@@ -81,6 +82,14 @@ export interface ModelDescriptor {
 	 * carries the namespace prefix. Absent on statically-configured descriptors.
 	 */
 	providerModelId?: string;
+	/**
+	 * Provider-layer discovery metadata captured when a self-configuring namespace
+	 * fetched its lineup (e.g. Copilot's `/models` `adaptive_thinking` / effort
+	 * ladder / vision). Passed directly into catalog resolution for expanded
+	 * backends so provider-only facts aren't lost when per-model discovery is
+	 * skipped.
+	 */
+	discovered?: DiscoveredModel;
 	capabilities: BackendCapabilities;
 	tier?: number;
 	pricing?: {

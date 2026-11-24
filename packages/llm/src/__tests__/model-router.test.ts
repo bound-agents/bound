@@ -70,6 +70,9 @@ function resolvedBackend(opts: {
 	maxContext?: number;
 	maxOutputTokens?: number;
 	maxOutputSource?: "config" | "provider" | "models_dev";
+	vision?: boolean;
+	visionSource?: "config" | "provider" | "models_dev";
+	extendedThinking?: boolean;
 	reasoning?: ModelMetadata["capabilities"]["reasoning"];
 	reasoningSource?: "config" | "provider" | "models_dev";
 	ready?: boolean;
@@ -78,6 +81,12 @@ function resolvedBackend(opts: {
 	if (opts.maxContext !== undefined) field_sources.max_context = "models_dev";
 	if (opts.maxOutputTokens !== undefined) {
 		field_sources.max_output_tokens = opts.maxOutputSource ?? "models_dev";
+	}
+	if (opts.vision !== undefined) {
+		field_sources.vision = opts.visionSource ?? "models_dev";
+	}
+	if (opts.extendedThinking !== undefined) {
+		field_sources.extended_thinking = "models_dev";
 	}
 	if (opts.reasoning !== undefined) {
 		field_sources.reasoning = opts.reasoningSource ?? "models_dev";
@@ -89,6 +98,8 @@ function resolvedBackend(opts: {
 		display_name: "m",
 		capabilities: {
 			...(opts.maxContext !== undefined && { max_context: opts.maxContext }),
+			...(opts.vision !== undefined && { vision: opts.vision }),
+			...(opts.extendedThinking !== undefined && { extended_thinking: opts.extendedThinking }),
 			...(opts.reasoning !== undefined && { reasoning: opts.reasoning }),
 		},
 		...(opts.maxOutputTokens !== undefined && { max_output_tokens: opts.maxOutputTokens }),
@@ -222,6 +233,60 @@ describe("ModelRouter — applyResolvedCatalog (requirement 1 + 5)", () => {
 		);
 		// 'a' keeps its config window; nothing from the unready entry applied.
 		expect(router.getEffectiveCapabilities("a")?.max_context).toBe(200000);
+	});
+
+	it("propagates catalog-resolved vision over a driver default of false", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "kimi-k3",
+					provider: "opencode-go",
+					apiKey: "k",
+					model: "kimi-k3",
+				},
+			],
+			default: "kimi-k3",
+		});
+		expect(router.getEffectiveCapabilities("kimi-k3")?.vision).toBe(false);
+		router.applyResolvedCatalog(
+			new Map([["kimi-k3", resolvedBackend({ maxContext: 1048576, vision: true })]]),
+		);
+		expect(router.getEffectiveCapabilities("kimi-k3")?.vision).toBe(true);
+	});
+
+	it("preserves explicit config capabilities.vision over catalog models_dev", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "kimi-k3",
+					provider: "opencode-go",
+					apiKey: "k",
+					model: "kimi-k3",
+					capabilities: { vision: false },
+				},
+			],
+			default: "kimi-k3",
+		});
+		router.applyResolvedCatalog(
+			new Map([["kimi-k3", resolvedBackend({ maxContext: 1048576, vision: true })]]),
+		);
+		expect(router.getEffectiveCapabilities("kimi-k3")?.vision).toBe(false);
+	});
+
+	it("keeps driver default vision when catalog omits vision", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "deepseek",
+					provider: "opencode-go",
+					apiKey: "k",
+					model: "deepseek-v4-pro",
+				},
+			],
+			default: "deepseek",
+		});
+		router.applyResolvedCatalog(new Map([["deepseek", resolvedBackend({ maxContext: 1000000 })]]));
+		expect(router.getEffectiveCapabilities("deepseek")?.vision).toBe(false);
 	});
 });
 

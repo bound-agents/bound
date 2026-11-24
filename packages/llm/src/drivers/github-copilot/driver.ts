@@ -468,6 +468,7 @@ class CopilotLineupReadiness implements BackendReadiness {
 			const descriptor: ModelDescriptor = {
 				id: backendId,
 				providerModelId: entry.id,
+				discovered,
 				capabilities,
 				...(discovered.maxOutputTokens !== undefined && {
 					maxOutputTokens: discovered.maxOutputTokens,

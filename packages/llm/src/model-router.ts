@@ -38,7 +38,12 @@ import type { FieldSource, ResolvedPricing, ResolvedReasoning } from "./catalog/
 export interface ResolvedCatalogEntry {
 	ready: boolean;
 	metadata: {
-		capabilities: { max_context?: number; reasoning?: ResolvedReasoning };
+		capabilities: {
+			max_context?: number;
+			vision?: boolean;
+			extended_thinking?: boolean;
+			reasoning?: ResolvedReasoning;
+		};
 		max_output_tokens?: number;
 		pricing?: ResolvedPricing;
 		field_sources: Record<string, string>;
@@ -648,11 +653,27 @@ export class ModelRouter {
 			if (!resolved.ready) continue;
 			if (!this.backends.has(backendId)) continue;
 
-			const resolvedMaxContext = resolved.metadata.capabilities.max_context;
-			if (typeof resolvedMaxContext === "number") {
-				const caps = this.effectiveCaps.get(backendId);
-				if (caps) {
-					this.effectiveCaps.set(backendId, { ...caps, max_context: resolvedMaxContext });
+			const resolvedCaps = resolved.metadata.capabilities;
+			const resolvedMaxContext = resolvedCaps.max_context;
+			const caps = this.effectiveCaps.get(backendId);
+			if (caps) {
+				const explicitCaps = this.backendConfigs.get(backendId)?.capabilities as
+					Partial<BackendCapabilities> | undefined;
+				let updated = caps;
+				if (typeof resolvedMaxContext === "number") {
+					updated = { ...updated, max_context: resolvedMaxContext };
+				}
+				if (typeof resolvedCaps.vision === "boolean" && explicitCaps?.vision === undefined) {
+					updated = { ...updated, vision: resolvedCaps.vision };
+				}
+				if (
+					typeof resolvedCaps.extended_thinking === "boolean" &&
+					explicitCaps?.extended_thinking === undefined
+				) {
+					updated = { ...updated, extended_thinking: resolvedCaps.extended_thinking };
+				}
+				if (updated !== caps) {
+					this.effectiveCaps.set(backendId, updated);
 				}
 			}
 

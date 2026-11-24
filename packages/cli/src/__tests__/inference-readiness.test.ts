@@ -321,6 +321,76 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		// namespace entry's id.
 		expect(expanded?.model).toBe("claude-opus-5.5");
 	});
+
+	it("preserves provider-discovered adaptive_thinking across expanded-backend catalog resolution", async () => {
+		const account: CopilotAccountInfo = {
+			chatEnabled: true,
+			copilotPlan: "enterprise",
+			apiEndpoint: "https://api.enterprise.githubcopilot.com",
+		};
+		const tokenManager = {
+			getAccessToken: async () => "ghu_abc",
+		} as unknown as CopilotTokenManager;
+		const catalogFetch = (async (input: RequestInfo | URL) => {
+			const url = new URL(new Request(input).url);
+			if (url.pathname.endsWith("/models")) {
+				return new Response(
+					JSON.stringify({
+						data: [
+							{
+								id: "claude-opus-5.5",
+								supported_endpoints: ["/v1/messages"],
+								capabilities: {
+									limits: { max_context_window_tokens: 1_000_000, max_output_tokens: 128_000 },
+									supports: {
+										adaptive_thinking: true,
+										reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+										vision: true,
+										tool_calls: true,
+									},
+								},
+							},
+						],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				);
+			}
+			return new Response("not found", { status: 404 });
+		}) as typeof fetch;
+
+		const shared = {
+			backends: [{ id: "copilot", provider: "github-copilot" }],
+			default: "copilot",
+		};
+		const router = createModelRouter({ backends: [], default: "copilot" });
+		const namespace = new GitHubCopilotDriver({
+			tokenManager,
+			namespaceId: "copilot",
+			contextWindow: 0,
+			account,
+			fetch: catalogFetch,
+		});
+		router.addDynamicBackend("copilot", namespace, {
+			streaming: true,
+			tool_use: false,
+			system_prompt: true,
+			prompt_caching: true,
+			vision: false,
+			extended_thinking: false,
+		});
+		router.markNotReady("copilot");
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await new Promise((r) => setTimeout(r, 80));
+
+		// Copilot's `adaptive_thinking: true` must survive catalog resolution so
+		// getThinkingConfig derives `{ type: "adaptive", display: "summarized" }` instead of `{ type: "enabled" }`.
+		expect(router.getThinkingConfig("copilot-claude-opus-5.5")).toEqual({
+			type: "adaptive",
+			display: "summarized",
+		});
+	});
 });
 
 describe("reload re-gating + no duplicate rows (AC.7)", () => {
