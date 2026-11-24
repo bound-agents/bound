@@ -2081,4 +2081,77 @@ describe("RelayProcessor - executeInference", () => {
 			.get(streamId) as { n: number };
 		expect(streamEnds.n).toBe(0);
 	});
+
+	it("resolves a relayed logical-model hint to a local expanded backend id and applies its router config", async () => {
+		const mockBackend = new MockBackend();
+		mockBackend.setTextResponse("expanded-ok");
+
+		const expandedId = "bedrock-main-openai.gpt-6.1-sol";
+		const backends = new Map<string, LLMBackend>([[expandedId, mockBackend]]);
+		const backendConfigs = new Map([
+			[
+				expandedId,
+				{
+					id: expandedId,
+					provider: "bedrock",
+					model: "openai.gpt-6.1-sol",
+					effort: "medium" as const,
+					cacheTtl: "1h",
+					maxOutputTokens: 16384,
+				},
+			],
+		]);
+		const mockRouter = new ModelRouter(backends, expandedId, undefined, backendConfigs);
+
+		const processor = new RelayProcessor(
+			db,
+			"target-site",
+			new Map(),
+			mockRouter,
+			createMockLogger(),
+			createMockEventBus(),
+		);
+
+		const now = new Date();
+		const streamId = randomUUID();
+		const requestId = randomUUID();
+		db.run(
+			`INSERT INTO durable_work (id, target_site_id, kind, ref_id, idempotency_key, stream_id, payload, expires_at, source_site, received_at, claim_state, attempt_count, created_at)
+			 VALUES (?, 'target-site', 'inference', NULL, ?, ?, ?, ?, 'target-site', ?, 'pending', 0, ?)`,
+			[
+				requestId,
+				requestId,
+				streamId,
+				JSON.stringify({
+					threadId: "thread-expanded",
+					model: "gpt-6.1-sol",
+					segments: [{ kind: "inline", message: { role: "user", content: "hi" } }],
+					nowMs: 0,
+					timeout_ms: 5000,
+				}),
+				new Date(now.getTime() + 60000).toISOString(),
+				now.toISOString(),
+				now.toISOString(),
+			],
+		);
+
+		const handle = processor.start(10);
+		await waitFor(
+			() =>
+				(
+					db
+						.query(
+							"SELECT COUNT(*) as n FROM durable_work WHERE stream_id = ? AND kind = 'stream_end'",
+						)
+						.get(streamId) as { n: number } | null
+				)?.n > 0,
+			{ message: "stream_end not written for logical-model relay test" },
+		);
+		handle.stop();
+
+		expect(mockBackend.capturedParams.length).toBe(1);
+		expect(mockBackend.capturedParams[0].effort).toBe("medium");
+		expect(mockBackend.capturedParams[0].cache_ttl).toBe("1h");
+		expect(mockBackend.capturedParams[0].max_tokens).toBe(16384);
+	});
 });

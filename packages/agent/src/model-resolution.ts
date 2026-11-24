@@ -357,13 +357,13 @@ export function resolveModel(
 	// (returns false), so it is only consulted when the route is actually half_open.
 	const localTrialClaimable = (() => {
 		if (!localBackend) return true; // no local route; condition below handles it
-		if (modelRouter.getRouteHealthState(effectiveModelId).status !== "half_open") {
+		if (modelRouter.getRouteHealthState(localModelId).status !== "half_open") {
 			return true; // healthy (or backoff, excluded by isRateLimited) — no claim needed
 		}
 		const coldOrNewThread = prefs?.threadId
 			? findLatestOkTurnRouteByThread(db, prefs.threadId) === null
 			: true;
-		return modelRouter.canTrialRoute(effectiveModelId, { coldOrNewThread, claim: true });
+		return modelRouter.canTrialRoute(localModelId, { coldOrNewThread, claim: true });
 	})();
 	if (
 		localBackend &&

@@ -1963,7 +1963,9 @@ export class RelayProcessor {
 			return;
 		}
 
-		const backend = this.modelRouter.tryGetBackend(payload.model);
+		const resolvedModelId =
+			this.modelRouter.resolveLocalBackendIdForHint(payload.model) ?? payload.model;
+		const backend = this.modelRouter.tryGetBackend(resolvedModelId);
 		if (!backend) {
 			this.writeResponse(
 				entry,
@@ -2009,7 +2011,7 @@ export class RelayProcessor {
 		// those markers reach AWS as providerOptions.bedrock.cachePoint and
 		// trigger 403 "unsupported model or your request did not allow prompt
 		// caching." See docs/design/sync-protocol.md for the capability flow.
-		const backendCaps = this.modelRouter.getEffectiveCapabilities(payload.model) ?? undefined;
+		const backendCaps = this.modelRouter.getEffectiveCapabilities(resolvedModelId) ?? undefined;
 		messages = stripCacheMarkersIfUnsupported(messages, backendCaps);
 
 		// AC4.3: Record relay cycle for inference request receipt
@@ -2095,15 +2097,15 @@ export class RelayProcessor {
 				throw new Error("Model router is not available");
 			}
 			const effectiveThinking =
-				payload.thinking ?? this.modelRouter.getThinkingConfig(payload.model);
-			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(payload.model);
+				payload.thinking ?? this.modelRouter.getThinkingConfig(resolvedModelId);
+			const effectiveEffort = payload.effort ?? this.modelRouter.getEffort(resolvedModelId);
 			// Defense-in-depth: clamp the requester's max_tokens to this host's
 			// per-backend cap. Without this, a stale requester binary (or a hub
 			// routing decision made against stale peer capabilities) can send an
 			// invalid ceiling. When both values are absent, the helper supplies the
 			// same conservative 8k fallback reserved by context assembly — never a
 			// provider-defined model maximum.
-			const localMaxOutputTokens = this.modelRouter.getMaxOutputTokens(payload.model);
+			const localMaxOutputTokens = this.modelRouter.getMaxOutputTokens(resolvedModelId);
 			const effectiveMaxTokens = clampMaxOutputTokens(payload.max_tokens, localMaxOutputTokens);
 			const chatStream = backend.chat({
 				// Compatibility-only fallback for requests spooled before threadId existed.
@@ -2118,7 +2120,7 @@ export class RelayProcessor {
 				tool_choice: payload.tool_choice,
 				thinking: effectiveThinking,
 				effort: effectiveEffort,
-				cache_ttl: payload.cache_ttl ?? this.modelRouter.getCacheTtl(payload.model),
+				cache_ttl: payload.cache_ttl ?? this.modelRouter.getCacheTtl(resolvedModelId),
 				// R-RT18 / §7.3 step 2: forward the resolved fallback chain so the
 				// executing driver can run inline credit redemption on a remote turn.
 				// Without these the driver sees fallback_models === undefined and
@@ -2148,9 +2150,9 @@ export class RelayProcessor {
 					// The hub serves this turn; price it from its own catalog-resolved
 					// pricing when the operator set no explicit override. The requesting
 					// spoke is often hub-only and holds no pricing config of its own.
-					const catalogPricing = this.modelRouter?.getResolvedPricing(payload.model);
+					const catalogPricing = this.modelRouter?.getResolvedPricing(resolvedModelId);
 					const resolved = resolveTurnCost({
-						modelId: payload.model,
+						modelId: resolvedModelId,
 						usage: {
 							inputTokens: chunk.usage.input_tokens,
 							outputTokens: chunk.usage.output_tokens,
