@@ -2008,6 +2008,92 @@ describe("ModelRouter umans factory case (AC.1)", () => {
 	});
 });
 
+describe("ModelRouter — namespace-expanded default", () => {
+	const zaiNamespace = (defaultId: string): ModelBackendsConfig => ({
+		backends: [{ id: "zai", provider: "zai", apiKey: "k" }],
+		default: defaultId,
+	});
+	const register = (router: ModelRouter, id: string): void => {
+		router.addDynamicBackend(id, new MockBackend(id), { ...READY_CAPS });
+	};
+
+	it("keeps the namespace placeholder as default until the named expanded id registers", () => {
+		const router = createModelRouter(zaiNamespace("zai-glm-5.3-flash"));
+		// Pre-expansion: the namespace stands in, and an omitted-model turn reports
+		// it not-ready rather than "unknown backend".
+		expect(router.getDefaultId()).toBe("zai");
+		expect(router.isNotReady("zai")).toBe(true);
+
+		register(router, "zai-other");
+		expect(router.getDefaultId()).toBe("zai");
+
+		register(router, "zai-glm-5.3-flash");
+		expect(router.getDefaultId()).toBe("zai-glm-5.3-flash");
+		expect((router.getDefault() as MockBackend).id).toBe("zai-glm-5.3-flash");
+	});
+
+	it("keeps the requested default when the placeholder is removed after expansion", () => {
+		const router = createModelRouter(zaiNamespace("zai-glm-5.3-flash"));
+		register(router, "zai-glm-5.3-flash");
+		// Registrar order: register expands, then redirect (a no-op here), then the
+		// placeholder is removed.
+		router.redirectDefault("zai", "zai-other");
+		router.removeBackend("zai");
+		expect(router.getDefaultId()).toBe("zai-glm-5.3-flash");
+	});
+
+	it("falls back to the redirected id when the lineup lacks the requested model", () => {
+		const router = createModelRouter(zaiNamespace("zai-retired"));
+		register(router, "zai-other");
+		router.redirectDefault("zai", "zai-other");
+		router.removeBackend("zai");
+		expect(router.getDefaultId()).toBe("zai-other");
+
+		// The placeholder's expansion is over, so a later registration of the
+		// requested id must not steal the reconciled default.
+		register(router, "zai-retired");
+		expect(router.getDefaultId()).toBe("zai-other");
+	});
+
+	it("rejects a default that names no backend and matches no namespace prefix", () => {
+		expect(() => createModelRouter(zaiNamespace("zai-"))).toThrow(/not found in backends/);
+		// A concrete (model-bearing) entry's prefix is not an expansion target.
+		expect(() =>
+			createModelRouter({
+				backends: [{ id: "zai", provider: "zai", apiKey: "k", model: "glm-5.3" }],
+				default: "zai-glm-5.3-flash",
+			}),
+		).toThrow(/not found in backends/);
+	});
+
+	it("resolves the pending default against the longest matching namespace id", () => {
+		const router = createModelRouter({
+			backends: [
+				{ id: "zai", provider: "zai", apiKey: "k" },
+				{ id: "zai-pro", provider: "zai", apiKey: "k" },
+			],
+			default: "zai-pro-glm-5.3-flash",
+		});
+		expect(router.getDefaultId()).toBe("zai-pro");
+
+		// Removing the shorter-prefix namespace must not abandon zai-pro's pending
+		// default.
+		router.removeBackend("zai");
+		register(router, "zai-pro-glm-5.3-flash");
+		expect(router.getDefaultId()).toBe("zai-pro-glm-5.3-flash");
+	});
+
+	it("carries the pending default across reload()", () => {
+		const config = zaiNamespace("zai-glm-5.3-flash");
+		const router = createModelRouter(config);
+		router.reload(config);
+		expect(router.getDefaultId()).toBe("zai");
+
+		register(router, "zai-glm-5.3-flash");
+		expect(router.getDefaultId()).toBe("zai-glm-5.3-flash");
+	});
+});
+
 describe("ModelRouter — resolveLocalBackendIdForHint", () => {
 	const make = () =>
 		createModelRouter({

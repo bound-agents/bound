@@ -535,13 +535,27 @@ export function wireBackendReadiness(
 				const preferredId = models[0]?.descriptor.id;
 				if (preferredId) {
 					modelRouter.redirectDefault(namespaceId, preferredId);
-					// Keep the shared-config default pointing at a real id too.
-					if (sharedConfig.default === namespaceId) {
-						sharedConfig.default = preferredId;
-					}
 				}
 				modelRouter.removeBackend(namespaceId);
 				sharedConfig.backends = sharedConfig.backends.filter((b) => b.id !== namespaceId);
+				// The live shared config feeds the next full router reload (SIGHUP).
+				// Once this namespace's placeholder is gone, a default naming none of
+				// the remaining rows is unresolvable, and that reload would throw and
+				// leave the process on its old routing config. Fall back to the
+				// lineup's first id; reaching this branch means the operator named a
+				// namespace-expanded default the lineup did not produce.
+				if (
+					preferredId &&
+					sharedConfig.default !== "" &&
+					!sharedConfig.backends.some((b) => b.id === sharedConfig.default)
+				) {
+					appContext.logger.warn("[llm] Default backend not in expanded lineup; falling back", {
+						default: sharedConfig.default,
+						fallback: preferredId,
+						namespace: namespaceId,
+					});
+					sharedConfig.default = preferredId;
+				}
 
 				lastRegisteredByProvider.set(providerId, [...newIds]);
 				for (const id of priorIds) expandedBackendDiscovery.delete(id);

@@ -391,6 +391,59 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 			display: "summarized",
 		});
 	});
+
+	it("resolves a default naming a namespace-expanded id once the lineup lands", async () => {
+		const metadataFetch = async () => ({ ok: true as const, value: lineup() });
+		const usageFetch = async () => ({
+			ok: true as const,
+			value: { concurrencyLimit: 4 } satisfies UmansUsage,
+		});
+		const shared = {
+			backends: [{ id: "umans", provider: "umans", api_key: "sk-test" }],
+			// umans expanded ids are the bare provider model ids.
+			default: "umans-flash",
+		};
+		const routerConfig = toRouterConfig(shared as never);
+		routerConfig.backends[0].metadataFetch = metadataFetch;
+		routerConfig.backends[0].usageFetch = usageFetch;
+		const router = createModelRouter(routerConfig);
+		const appContext = makeAppContext(shared);
+
+		// Pre-expansion: the placeholder is the working default and is not ready.
+		expect(router.getDefaultId()).toBe("umans");
+		expect(router.isNotReady("umans")).toBe(true);
+
+		wireBackendReadiness(appContext, router);
+		await new Promise((r) => setTimeout(r, 50));
+
+		expect(router.getDefaultId()).toBe("umans-flash");
+		expect(shared.default).toBe("umans-flash");
+	});
+
+	it("falls back and reconciles the shared default when the named model is not in the lineup", async () => {
+		const metadataFetch = async () => ({ ok: true as const, value: lineup() });
+		const usageFetch = async () => ({
+			ok: true as const,
+			value: { concurrencyLimit: 4 } satisfies UmansUsage,
+		});
+		const shared = {
+			backends: [{ id: "umans", provider: "umans", api_key: "sk-test" }],
+			default: "umans-retired",
+		};
+		const routerConfig = toRouterConfig(shared as never);
+		routerConfig.backends[0].metadataFetch = metadataFetch;
+		routerConfig.backends[0].usageFetch = usageFetch;
+		const router = createModelRouter(routerConfig);
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await new Promise((r) => setTimeout(r, 50));
+
+		// The lineup's first id is the deterministic fallback, and the live shared
+		// config follows it so a later SIGHUP reload can resolve the default.
+		expect(router.getDefaultId()).toBe("umans-coder");
+		expect(shared.default).toBe("umans-coder");
+	});
 });
 
 describe("reload re-gating + no duplicate rows (AC.7)", () => {

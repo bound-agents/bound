@@ -93,7 +93,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `backends` | array&lt;backend&gt; | — | The backends this host can serve locally. May be empty (hub-only). |
-| `default` | string | `""` | Backend `id` used when a turn names no model. Must reference a real backend, or be `""` when `backends` is empty. |
+| `default` | string | `""` | Backend `id` used when a turn names no model. Must reference a real backend, or be `""` when `backends` is empty. May also name a self-configuring namespace's expanded id (`<entry-id>-<provider-model-id>`); it resolves when that namespace's lineup lands (see below). |
 | `daily_budget_usd` | number ≥ 0 | absent | Optional soft daily spend ceiling. |
 | `models_dev` | models.dev block | absent | `models.dev` fallback-registry settings (see below). Absent means fetch the public catalog every 24h. |
 | `defaults` | defaults block | absent | Top-level operator-preference defaults applied to every backend that does not set the same field (see below). |
@@ -494,7 +494,10 @@ a concrete `bedrock-mantle` entry. Display names, limits, and pricing for every 
 An `opencode-go` entry with **no `model`** is a self-configuring namespace for its API key: at
 startup it fetches `GET <base_url>/models` (default `https://opencode.ai/zen/go/v1/models`) and
 expands into one backend per routable chat model. An expanded backend's id is
-`<entry-id>-<provider-model-id>`.
+`<entry-id>-<provider-model-id>`. `default` may name an expanded id; until the lineup lands,
+omitted-model turns report that model as warming up rather than routing elsewhere. If the lineup
+does not carry the named model, the namespace's first model becomes the default and the fallback is
+logged.
 
 ```js
 export default {

@@ -212,6 +212,15 @@ export class ModelRouter {
 	private readonly logger?: Logger;
 	private readonly fetchByBackendId?: Map<string, typeof globalThis.fetch>;
 	private readonly siteId?: string;
+	/**
+	 * An expanded backend id named by `model_backends.default` that the lineup
+	 * has not registered yet (see `buildRouterState`), plus the namespace entry
+	 * whose expansion should produce it. While set, `defaultId` names the
+	 * namespace placeholder; `addDynamicBackend` switches the default to `id`
+	 * when it registers. Cleared when that namespace's placeholder is removed
+	 * (its expansion is complete) and on reload.
+	 */
+	private pendingDefault: { id: string; namespaceId: string } | null;
 
 	constructor(
 		backends: Map<string, LLMBackend>,
@@ -226,6 +235,7 @@ export class ModelRouter {
 			fetchByBackendId?: Map<string, typeof globalThis.fetch>;
 			siteId?: string;
 		},
+		pendingDefault: { id: string; namespaceId: string } | null = null,
 	) {
 		this.backends = backends;
 		this.defaultId = defaultId;
@@ -241,6 +251,7 @@ export class ModelRouter {
 		this.logger = reloadContext?.logger;
 		this.fetchByBackendId = reloadContext?.fetchByBackendId;
 		this.siteId = reloadContext?.siteId;
+		this.pendingDefault = pendingDefault;
 		this.notReady =
 			notReady ??
 			new Set(
@@ -255,7 +266,7 @@ export class ModelRouter {
 	 * (agent-loop, scheduler, server, command context) do not need to swap
 	 * the instance.
 	 *
-	 * Atomicity: if the new config is invalid (e.g. default not in backends,
+	 * Atomicity: if the new config is invalid (e.g. an unknown default,
 	 * unsupported provider), the router is left in its prior state and the
 	 * error propagates to the caller.
 	 *
@@ -275,6 +286,7 @@ export class ModelRouter {
 		}
 		this.backends = next.backends;
 		this.defaultId = next.defaultId;
+		this.pendingDefault = next.pendingDefault;
 		this.effectiveCaps = next.effectiveCaps;
 		this.routeIdentities = next.routeIdentities;
 		this.backendConfigs = next.backendConfigs;
@@ -371,7 +383,11 @@ export class ModelRouter {
 			});
 	}
 
-	/** Returns the default backend ID. */
+	/**
+	 * Returns the default backend ID. While a `default` naming a
+	 * namespace-expanded id is still awaiting its lineup, this is the owning
+	 * namespace's id (an omitted-model turn then reports it not-ready).
+	 */
 	getDefaultId(): string {
 		return this.defaultId;
 	}
@@ -570,6 +586,12 @@ export class ModelRouter {
 		routeIdentity?: { routeId: RouteId; reasoningOrigin: string },
 		config?: BackendConfig,
 	): void {
+		// A `default` naming this expanded id was recorded at construction; the
+		// lineup has now produced it, so the placeholder can stop standing in.
+		if (this.pendingDefault?.id === id) {
+			this.defaultId = id;
+			this.pendingDefault = null;
+		}
 		this.backends.set(id, backend);
 		this.effectiveCaps.set(id, caps);
 		if (routeIdentity) this.routeIdentities.set(id, routeIdentity);
@@ -610,6 +632,11 @@ export class ModelRouter {
 		this.routeIdentities.delete(id);
 		this.notReady.delete(id);
 		this.routeHealth.clear(id);
+		// The owning namespace's expansion is complete once its placeholder is
+		// removed; a requested expanded default that never registered is
+		// abandoned. The CLI registrar redirects the default to the lineup's
+		// preferred id and reconciles the live shared config.
+		if (this.pendingDefault?.namespaceId === id) this.pendingDefault = null;
 	}
 
 	/** Clear the not-ready flag for an id (it has become selectable). */
@@ -1306,6 +1333,26 @@ interface RouterState {
 	effectiveCaps: Map<string, BackendCapabilities>;
 	backendConfigs: Map<string, BackendConfig>;
 	routeIdentities: Map<string, { routeId: RouteId; reasoningOrigin: string }>;
+	/** An expanded-id default awaiting its namespace's lineup (see ModelRouter). */
+	pendingDefault: { id: string; namespaceId: string } | null;
+}
+
+/**
+ * The id of the self-configuring namespace entry (no concrete `model`) whose
+ * expansion could produce `id`, or null. Expanded backend ids are
+ * `<entry-id>-<provider-model-id>`. The longest matching entry id wins so a
+ * namespace whose id is a prefix of another (`ns` vs `ns-2`) claims only its
+ * own models.
+ */
+function findNamespacePrefixOwner(config: ModelBackendsConfig, id: string): string | null {
+	let owner: string | null = null;
+	for (const backend of config.backends) {
+		if (backend.model) continue;
+		if (id.length <= backend.id.length + 1) continue;
+		if (!id.startsWith(`${backend.id}-`)) continue;
+		if (owner === null || backend.id.length > owner.length) owner = backend.id;
+	}
+	return owner;
 }
 
 function buildRouterState(
@@ -1352,16 +1399,41 @@ function buildRouterState(
 	// Hub-only mode: empty backends array is valid (inference proxied to spokes).
 	// In this case the default is "" and no local backends are available.
 	if (config.backends.length === 0) {
-		return { backends, defaultId: "", effectiveCaps, backendConfigs, routeIdentities };
+		return {
+			backends,
+			defaultId: "",
+			effectiveCaps,
+			backendConfigs,
+			routeIdentities,
+			pendingDefault: null,
+		};
 	}
 
-	// Verify default backend exists
-	const defaultExists = backends.has(config.default);
-	if (!defaultExists) {
-		throw new LLMError(`Default backend "${config.default}" not found in backends`, "router");
+	// Verify the default backend exists. A self-configuring namespace entry
+	// (no `model`) expands at runtime into `<entry-id>-<provider-model-id>`
+	// backends, so a default naming one of those ids is legitimate before
+	// discovery lands: keep the namespace placeholder as the working default
+	// (so an omitted-model turn reports it not-ready rather than "unknown
+	// backend") and switch to the requested id when it registers.
+	let defaultId = config.default;
+	let pendingDefault: RouterState["pendingDefault"] = null;
+	if (!backends.has(config.default)) {
+		const namespaceId = findNamespacePrefixOwner(config, config.default);
+		if (namespaceId === null) {
+			throw new LLMError(`Default backend "${config.default}" not found in backends`, "router");
+		}
+		defaultId = namespaceId;
+		pendingDefault = { id: config.default, namespaceId };
 	}
 
-	return { backends, defaultId: config.default, effectiveCaps, backendConfigs, routeIdentities };
+	return {
+		backends,
+		defaultId,
+		effectiveCaps,
+		backendConfigs,
+		routeIdentities,
+		pendingDefault,
+	};
 }
 
 export interface CreateModelRouterOptions {
@@ -1415,5 +1487,6 @@ export function createModelRouter(
 			fetchByBackendId: options?.fetchByBackendId,
 			siteId: options?.siteId,
 		},
+		state.pendingDefault,
 	);
 }
