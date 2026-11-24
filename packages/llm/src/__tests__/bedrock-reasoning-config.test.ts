@@ -10,10 +10,13 @@
  *     budgetTokens applies only to Anthropic models on Bedrock and will be
  *     ignored for this model.
  *
- * Support matrix (mirrors @ai-sdk/amazon-bedrock@4 detection logic):
- *   - `anthropic.*`        → budgetTokens, adaptive thinking, effort all OK
+ * Support matrix (mirrors @ai-sdk/amazon-bedrock@5 detection logic):
+ *   - `anthropic.*`        → budgetTokens, adaptive thinking, disabled, effort all OK
  *   - `openai.*`           → only maxReasoningEffort (maps to reasoning_effort)
- *   - every other provider → only maxReasoningEffort (raw reasoningConfig)
+ *   - every other provider → type: "enabled" + maxReasoningEffort (raw reasoningConfig;
+ *                            Amazon Nova 2 rejects maxReasoningEffort without type: "enabled");
+ *                            thinking.type === "disabled" returns undefined so non-reasoning
+ *                            models (e.g. Nova Pro) don't reject a stray effort
  *
  * These tests lock in model-family gating so a non-Anthropic model doesn't
  * receive budgetTokens or `type: "adaptive"` reasoning, eliminating the
@@ -82,7 +85,7 @@ describe("buildReasoningConfig — Anthropic models", () => {
 });
 
 describe("buildReasoningConfig — non-Anthropic models", () => {
-	it("drops budgetTokens for Moonshot (keeps effort only)", () => {
+	it("drops budgetTokens for Moonshot and includes type: enabled alongside effort", () => {
 		const cfg = buildReasoningConfig(
 			{
 				messages: [],
@@ -91,10 +94,10 @@ describe("buildReasoningConfig — non-Anthropic models", () => {
 			},
 			"moonshotai.kimi-k2.5",
 		);
-		expect(cfg).toEqual({ maxReasoningEffort: "high" });
+		expect(cfg).toEqual({ type: "enabled", maxReasoningEffort: "high" });
 	});
 
-	it("drops adaptive thinking for Moonshot (keeps effort only)", () => {
+	it("drops adaptive thinking for Moonshot and includes type: enabled alongside effort", () => {
 		const cfg = buildReasoningConfig(
 			{
 				messages: [],
@@ -103,7 +106,30 @@ describe("buildReasoningConfig — non-Anthropic models", () => {
 			},
 			"moonshotai.kimi-k2.5",
 		);
-		expect(cfg).toEqual({ maxReasoningEffort: "medium" });
+		expect(cfg).toEqual({ type: "enabled", maxReasoningEffort: "medium" });
+	});
+
+	it("includes type: enabled with maxReasoningEffort for Amazon Nova 2", () => {
+		const cfg = buildReasoningConfig(
+			{
+				messages: [],
+				effort: "medium",
+			},
+			"global.amazon.nova-2-lite-v1:0",
+		);
+		expect(cfg).toEqual({ type: "enabled", maxReasoningEffort: "medium" });
+	});
+
+	it("returns undefined for non-Anthropic models when thinking is disabled even if effort is set", () => {
+		const cfg = buildReasoningConfig(
+			{
+				messages: [],
+				thinking: { type: "disabled" },
+				effort: "medium",
+			},
+			"us.amazon.nova-pro-v1:0",
+		);
+		expect(cfg).toBeUndefined();
 	});
 
 	it("returns undefined for MiniMax when only budget_tokens is set (nothing to forward)", () => {

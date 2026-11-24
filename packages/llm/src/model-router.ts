@@ -854,6 +854,12 @@ export class ModelRouter {
 		if (this.usesThinkingTool(backendId)) return undefined;
 		const config = this.backendConfigs.get(backendId);
 		if (!config) return undefined;
+		// When the catalog explicitly marks a model as non-reasoning and the
+		// operator didn't explicitly enable thinking on this backend, suppress
+		// effort (e.g. inherited from top-level `defaults.effort`) so drivers
+		// don't send reasoning parameters to models that reject them.
+		const resolved = this.resolvedReasoning.get(backendId)?.reasoning;
+		if (resolved?.supported === false && config.thinking === undefined) return undefined;
 		const effort = config.effort as ChatParams["effort"] | undefined;
 		if (effort === undefined) return undefined;
 		// Clamp an effort the model does not list to the nearest listed value
@@ -861,10 +867,7 @@ export class ModelRouter {
 		// without one the value passes through and the driver's own protocol gate
 		// (`BEDROCK_EFFORTS` / `ANTHROPIC_EFFORTS` / Copilot `resolveReasoningEffort`)
 		// decides. Never a model-ID test.
-		return clampEffortToLadder(
-			effort,
-			this.resolvedReasoning.get(backendId)?.reasoning.effort_values,
-		);
+		return clampEffortToLadder(effort, resolved?.effort_values);
 	}
 
 	/**

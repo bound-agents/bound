@@ -433,6 +433,29 @@ describe("ModelRouter — derive thinking/effort from resolved reasoning metadat
 		);
 		expect(router.getEffort("opus")).toBe("xhigh");
 	});
+
+	it("suppresses inherited effort when catalog marks the model as non-reasoning (supported: false)", () => {
+		const router = createModelRouter({
+			backends: [
+				{
+					id: "nova-pro",
+					provider: "bedrock",
+					model: "amazon.nova-pro-v1:0",
+					region: "us-east-1",
+					contextWindow: 300000,
+					effort: "medium",
+				},
+			],
+			default: "nova-pro",
+		});
+		router.applyResolvedCatalog(
+			new Map([
+				["nova-pro", resolvedBackend({ maxContext: 300000, reasoning: { supported: false } })],
+			]),
+		);
+		expect(router.getThinkingConfig("nova-pro")).toEqual({ type: "disabled" });
+		expect(router.getEffort("nova-pro")).toBeUndefined();
+	});
 });
 
 describe("ModelRouter — system prompt suffix", () => {

@@ -495,12 +495,20 @@ export class BedrockDriver implements LLMBackend {
  * The @ai-sdk/amazon-bedrock SDK emits warnings when non-Anthropic models
  * receive `budgetTokens` or `type: "adaptive"` — those features are routed
  * through Anthropic-specific `additionalModelRequestFields.thinking`. For
- * other providers (Moonshot, MiniMax, DeepSeek, OpenAI-on-Bedrock, …) only
- * `maxReasoningEffort` is honored, forwarded as either `reasoning_effort`
- * (OpenAI) or raw `reasoningConfig.maxReasoningEffort`.
+ * OpenAI-on-Bedrock (`openai.*`), only `maxReasoningEffort` is forwarded (the
+ * SDK maps it to `reasoning_effort`). For other non-Anthropic Converse models
+ * (Amazon Nova 2, Moonshot, MiniMax, DeepSeek, GLM, …), `maxReasoningEffort`
+ * travels inside `additionalModelRequestFields.reasoningConfig`, where models
+ * like Nova 2 reject `maxReasoningEffort` unless `type: "enabled"` is also
+ * present; `budgetTokens` and `type: "adaptive"` are still dropped.
  *
- * Detection mirrors the SDK: substring match on `"anthropic"` in the model
- * id, which covers both plain ids (`anthropic.claude-opus-4-7`) and
+ * When `params.thinking?.type === "disabled"`, `maxReasoningEffort` is never
+ * forwarded: Anthropic receives `{ type: "disabled" }`, and non-Anthropic
+ * models omit `reasoningConfig` entirely so non-reasoning models (e.g. Nova
+ * Pro) don't reject a stray effort from top-level `defaults.effort`.
+ *
+ * Detection mirrors the SDK: substring match on `"anthropic"` / `"openai"` in
+ * the model id, which covers both plain ids (`anthropic.claude-opus-4-7`) and
  * inference-profile ARNs (`.../us.anthropic.claude-opus-4-7`).
  *
  * Exported so the gating behavior can be unit-tested without stubbing the
@@ -512,11 +520,13 @@ export function buildReasoningConfig(
 ): BedrockReasoningConfig | undefined {
 	if (!params.thinking && !params.effort) return undefined;
 	const isAnthropicModel = modelId.includes("anthropic");
+	const isOpenAIModel = modelId.includes("openai");
+	if (params.thinking?.type === "disabled") {
+		return isAnthropicModel ? { type: "disabled" } : undefined;
+	}
 	const config: BedrockReasoningConfig = {};
 	if (isAnthropicModel) {
-		if (params.thinking?.type === "disabled") {
-			config.type = "disabled";
-		} else if (params.thinking?.type === "enabled") {
+		if (params.thinking?.type === "enabled") {
 			config.type = "enabled";
 			config.budgetTokens = params.thinking.budget_tokens;
 		} else if (params.thinking?.type === "adaptive") {
@@ -524,8 +534,9 @@ export function buildReasoningConfig(
 			if (params.thinking.display) config.display = params.thinking.display;
 		}
 	}
-	// Non-Anthropic thinking-related fields are dropped intentionally —
-	// sending them triggers AI SDK "unsupported feature" warnings.
+	// Non-Anthropic thinking-related fields (`budgetTokens`, `type: "adaptive"`)
+	// are dropped intentionally — sending them triggers AI SDK "unsupported
+	// feature" warnings.
 	// `effort` is a free-form string (provider-validated), so only forward it to
 	// Bedrock's Converse `maxReasoningEffort` when it is one of the values that
 	// field actually accepts — a foreign level (e.g. a umans-only one) must not
@@ -533,6 +544,11 @@ export function buildReasoningConfig(
 	const BEDROCK_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 	if (params.effort && (BEDROCK_EFFORTS as readonly string[]).includes(params.effort)) {
 		config.maxReasoningEffort = params.effort as (typeof BEDROCK_EFFORTS)[number];
+		// Non-Anthropic, non-OpenAI Converse models (e.g. Amazon Nova 2) reject
+		// `reasoningConfig.maxReasoningEffort` unless `type: "enabled"` is present.
+		if (!isAnthropicModel && !isOpenAIModel) {
+			config.type = "enabled";
+		}
 	}
 	return Object.keys(config).length > 0 ? config : undefined;
 }
