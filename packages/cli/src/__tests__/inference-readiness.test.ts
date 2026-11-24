@@ -310,6 +310,10 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		// family key, so a `copilot-opus-5.5` reference (which normalizes to
 		// `opus-5-5`) resolves to this same logical model.
 		expect(expanded?.logical_model).toBe("opus-5-5");
+		// The shared row carries the raw provider model id, not the namespace-prefixed
+		// backend id, so catalog grouping and models.dev lookup never see the
+		// namespace entry's id.
+		expect(expanded?.model).toBe("claude-opus-5.5");
 	});
 });
 

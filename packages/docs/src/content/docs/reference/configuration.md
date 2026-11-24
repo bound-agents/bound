@@ -414,16 +414,16 @@ that call is made.
 A `bedrock` or `bedrock-mantle` entry with **no `model`** is a self-configuring namespace for its
 `(profile, region)`: at startup it fetches the account's entitled lineup from the control plane and
 expands into one backend per eligible model. One entry per `(AWS profile, region)` permutation; the
-region is part of the entry. An expanded backend's id is `<entry-id>-<provider-model-id>`, so for
-grouping to fold it onto the right logical model the **entry id must start with `bedrock-`** (the
-dashed vendor prefix normalization strips) — e.g. an entry id `bedrock-use1` would leave a spurious
-`use1-` segment on every expanded key.
+region is part of the entry. An expanded backend's id is `<entry-id>-<provider-model-id>`. The entry
+id is free-form: logical-model grouping and `models.dev` lookup read the raw provider model id, so
+the same model pools across every region entry and with Mantle and Copilot routes regardless of
+what the entry is called.
 
 ```js
 export default {
   backends: [
     {
-      // One namespace entry per (profile, region). The id MUST be bedrock-prefixed.
+      // One namespace entry per (profile, region); the id is free-form.
       id: "bedrock-us-east-1",
       provider: "bedrock",
       region: "us-east-1",

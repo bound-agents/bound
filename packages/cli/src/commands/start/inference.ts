@@ -472,7 +472,13 @@ function buildSharedRow(
 	return {
 		id: descriptor.id,
 		provider: placeholder?.provider ?? "umans",
-		model: descriptor.id,
+		// The raw provider model id, not the namespace-prefixed backend id: catalog
+		// grouping and models.dev lookup normalize this field, so a prefixed id would
+		// leak the namespace entry's id into every expanded model's logical key
+		// (e.g. `bedrock-us-east-1-anthropic.claude-opus-5-5` grouping as
+		// `us-east-1-anthropic.claude-opus-5-5`). Drivers without a raw id (umans)
+		// already use the raw id as the backend id.
+		model: descriptor.providerModelId ?? descriptor.id,
 		base_url: placeholder?.base_url,
 		api_key: placeholder?.api_key,
 		context_window: descriptor.capabilities.max_context,
