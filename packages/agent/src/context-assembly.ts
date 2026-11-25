@@ -1853,6 +1853,10 @@ Original output was too large for the context window. If you need the full conte
 	let stablePrefixInputFingerprint: string | undefined;
 	// Hash of the stable volatile subsection bytes the fingerprint describes.
 	let stableSubsectionHash: string | undefined;
+	// Epoch ms at which the stable subsection bytes (and therefore the
+	// fingerprint) were collected. A cache hit carries the original render
+	// time; the drift detector opens its change_log window there (#303).
+	let stableRenderedAtMs: number | undefined;
 	if (!noHistory) {
 		// --- VARYING SUFFIX: per-thread content that busts the cache ---
 		// Extract latest user message for relevance-aware memory boosting
@@ -1903,6 +1907,9 @@ Original output was too large for the context window. If you need the full conte
 						threadId,
 						budgetPressure: false,
 						siteId,
+						// The assembly clock, not the wall clock, decides cache
+						// freshness and stamps the render time (R-UD4 purity).
+						nowMs: assemblyNowMs,
 					})
 				: undefined;
 		const stableContentForWire = cachedStable
@@ -1932,6 +1939,7 @@ Original output was too large for the context window. If you need the full conte
 		stablePrefixInputFingerprint =
 			cachedStable?.inputFingerprint ?? volatileCtx.stablePrefixInputFingerprint;
 		stableSubsectionHash = hashSystemPromptString(stableContentForWire);
+		stableRenderedAtMs = cachedStable?.renderedAtMs ?? assemblyNowMs;
 		relevantMemoryDebug = volatileCtx.relevantMemory;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
@@ -2045,6 +2053,7 @@ Original output was too large for the context window. If you need the full conte
 			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
 		});
 		stableSubsectionHash = hashSystemPromptString(nhStable.join("\n"));
+		stableRenderedAtMs = assemblyNowMs;
 
 		const varyingTailLines: string[] = [];
 
@@ -2137,13 +2146,17 @@ Original output was too large for the context window. If you need the full conte
 		| "stablePrefixHash"
 		| "stablePrefixInputFingerprint"
 		| "stableSubsectionHash"
+		| "stablePrefixRenderedAt"
 		| "stablePrefixDriftVersion"
 	> = {
 		stablePrefixHash: hashSystemPromptString(systemPrompt),
-		...(stablePrefixInputFingerprint !== undefined && stableSubsectionHash !== undefined
+		...(stablePrefixInputFingerprint !== undefined &&
+		stableSubsectionHash !== undefined &&
+		stableRenderedAtMs !== undefined
 			? {
 					stablePrefixInputFingerprint,
 					stableSubsectionHash,
+					stablePrefixRenderedAt: new Date(stableRenderedAtMs).toISOString(),
 					stablePrefixDriftVersion: STABLE_PREFIX_DRIFT_VERSION,
 				}
 			: {}),

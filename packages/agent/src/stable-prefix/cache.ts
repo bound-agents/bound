@@ -64,6 +64,13 @@ interface CachedEntry {
 export interface StableSubsectionSnapshot {
 	lines: string[];
 	inputFingerprint: string;
+	/**
+	 * Epoch ms at which `lines` were rendered (the collect instant of
+	 * `inputFingerprint`). On a hit this is the original render time, not the
+	 * current request, so the drift detector can open its change_log window
+	 * where the fingerprint was actually taken.
+	 */
+	renderedAtMs: number;
 }
 
 export interface GetStableSubsectionParams {
@@ -106,7 +113,7 @@ export class StableSubsectionCache {
 		return this.getSnapshot(params).lines;
 	}
 
-	/** Same as {@link get}, also returning the fingerprint of the rendering inputs. */
+	/** Same as {@link get}, also returning the fingerprint and render time of the rendering inputs. */
 	getSnapshot(params: GetStableSubsectionParams): StableSubsectionSnapshot {
 		const ttlMs = params.ttlMs ?? STABLE_SUBSECTION_TTL_MS;
 		const nowMs = params.nowMs ?? Date.now();
@@ -119,14 +126,18 @@ export class StableSubsectionCache {
 
 		const cached = this.entries.get(params.threadId);
 		if (cached && nowMs - cached.createdAtMs < ttlMs) {
-			return { lines: cached.lines, inputFingerprint: cached.inputFingerprint };
+			return {
+				lines: cached.lines,
+				inputFingerprint: cached.inputFingerprint,
+				renderedAtMs: cached.createdAtMs,
+			};
 		}
 
 		const inputs = collectStableVolatileInputs(params.db, params.budgetPressure, params.siteId);
 		const lines = composeStableVolatileSubsection(inputs);
 		const inputFingerprint = hashStableVolatileInputs(inputs);
 		this.entries.set(params.threadId, { lines, inputFingerprint, createdAtMs: nowMs });
-		return { lines, inputFingerprint };
+		return { lines, inputFingerprint, renderedAtMs: nowMs };
 	}
 
 	/**

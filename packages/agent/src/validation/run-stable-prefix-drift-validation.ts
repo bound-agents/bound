@@ -28,8 +28,10 @@
  *   - **Collect drift** (`collect:`): different input fingerprint,
  *     no `change_log` row covering `semantic_memory | skills | hosts`
  *     or a sibling thread's `threads.summary` change between the two
- *     cold rebuilds, and the local
- *     `change_log` provably retains that whole window. Either the input collector is reading something
+ *     fingerprints' collect instants (`stablePrefixRenderedAt`; a cache
+ *     hit's fingerprint was collected at its original render, not at the
+ *     turn), and the local `change_log` provably retains that whole
+ *     window. Either the input collector is reading something
  *     that doesn't go through the outbox (a documented narrow
  *     exception, e.g., `last_accessed_at` bumps) and that something
  *     leaked into the fingerprint, OR the collector is reading
@@ -134,6 +136,8 @@ interface ColdTurnRow {
 	hash: string | null;
 	input_fp: string | null;
 	drift_version: number | null;
+	/** Instant the stable bytes and fingerprint were collected (cache hits: original render). */
+	rendered_at: string | null;
 	host_origin: string | null;
 }
 
@@ -159,6 +163,7 @@ export function runStablePrefixDriftValidation(
 				json_extract(context_debug, '$.stableSubsectionHash') AS hash,
 				json_extract(context_debug, '$.stablePrefixInputFingerprint') AS input_fp,
 				json_extract(context_debug, '$.stablePrefixDriftVersion') AS drift_version,
+				json_extract(context_debug, '$.stablePrefixRenderedAt') AS rendered_at,
 				host_origin
 			FROM turns
 			WHERE created_at >= ?
@@ -238,18 +243,20 @@ export function runStablePrefixDriftValidation(
 		// declared write — the collector is reading something it
 		// shouldn't.
 		if (curr.input_fp !== prev.input_fp) {
-			const coverage = changeLogTouchedStableSources(
-				db,
-				curr.thread_id,
-				prev.created_at,
-				curr.created_at,
-			);
+			// The window spans the two fingerprints' collect instants, not the
+			// turns' times: a stable-subsection cache hit records the fingerprint
+			// taken when its bytes were rendered, up to one cache TTL before the
+			// turn, so a write between that render and the turn already moved
+			// the fingerprint the turn reports (#303).
+			const fromIso = renderedAt(prev);
+			const toIso = renderedAt(curr);
+			const coverage = changeLogTouchedStableSources(db, curr.thread_id, fromIso, toIso);
 			if (coverage === "covered") continue;
 			// An uncovered shift is only evidence of a collector leak when the
 			// local change_log provably still holds every row in the window, and
 			// every sibling `threads` write in it can be compared against that
 			// sibling's previous logged row.
-			if (coverage === "unprovable" || !changeLogRetainedSince(db, prev.created_at)) {
+			if (coverage === "unprovable" || !changeLogRetainedSince(db, fromIso)) {
 				markUnknown("incomplete-history", curr, prev);
 				continue;
 			}
@@ -475,6 +482,15 @@ function changeLogRetainedSince(db: Database, fromIso: string): boolean {
 		.prepare("SELECT 1 AS hit FROM change_log WHERE timestamp <= ? LIMIT 1")
 		.get(fromIso) as { hit: number } | null;
 	return row !== null;
+}
+
+/**
+ * Collect instant of a turn's recorded fingerprint. Current-generation rows
+ * always carry `stablePrefixRenderedAt`; `created_at` is a defensive fallback
+ * for a row missing it, equal to the render time on a fresh render.
+ */
+function renderedAt(row: ColdTurnRow): string {
+	return row.rendered_at ?? row.created_at;
 }
 
 function buildLeak(

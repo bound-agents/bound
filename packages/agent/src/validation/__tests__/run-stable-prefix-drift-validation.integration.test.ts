@@ -16,7 +16,12 @@ function insertColdTurn(
 	createdAtIso: string,
 	hash: string | null,
 	inputFp: string | null,
-	opts: { version?: number | null; wholePromptHash?: string; host?: string } = {},
+	opts: {
+		version?: number | null;
+		wholePromptHash?: string;
+		host?: string;
+		renderedAt?: string;
+	} = {},
 ): void {
 	const version = opts.version === undefined ? STABLE_PREFIX_DRIFT_VERSION : opts.version;
 	const debug = JSON.stringify({
@@ -24,6 +29,7 @@ function insertColdTurn(
 		stablePrefixHash: opts.wholePromptHash ?? `whole-${hash}`,
 		stableSubsectionHash: hash,
 		stablePrefixInputFingerprint: inputFp,
+		stablePrefixRenderedAt: opts.renderedAt ?? createdAtIso,
 		...(version !== null ? { stablePrefixDriftVersion: version } : {}),
 	});
 	db.prepare(
@@ -359,6 +365,57 @@ describe("runStablePrefixDriftValidation (integration)", () => {
 		expect(report.leaks).toHaveLength(0);
 		expect(report.unknownCount).toBe(2);
 		expect(report.unknown.map((u) => u.reason)).toEqual(["cross-host", "cross-host"]);
+	});
+
+	it("#303: a cache-hit turn's coverage window opens at its render time, not its turn time", () => {
+		// T0 fresh render (fp-A). A declared input changes at T0+5m. The T0+10m
+		// turn is a stable-subsection cache hit: it sends the T0 bytes and records
+		// fingerprint fp-A, rendered at T0. The T0+45m turn renders fresh (fp-B).
+		// The write at T0+5m explains fp-A -> fp-B even though it precedes the
+		// cache-hit turn's own created_at.
+		const at = (m: number) => new Date(NOW - 50 * 60 * 1000 + m * 60 * 1000).toISOString();
+		seedRetainedHistory(db, at(0));
+		insertColdTurn(db, "turn-1", "thread-A", at(0), "hash-A", "fp-A");
+		insertChangeLog(db, "semantic_memory", at(5));
+		insertColdTurn(db, "turn-2", "thread-A", at(10), "hash-A", "fp-A", { renderedAt: at(0) });
+		insertColdTurn(db, "turn-3", "thread-A", at(45), "hash-B", "fp-B");
+
+		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
+		expect(report.pairsExamined).toBe(2);
+		expect(report.composeDriftCount).toBe(0);
+		expect(report.collectDriftCount).toBe(0);
+		expect(report.unknownCount).toBe(0);
+	});
+
+	it("#303: the same cache-hit sequence with no covering write is still a collect leak", () => {
+		const at = (m: number) => new Date(NOW - 50 * 60 * 1000 + m * 60 * 1000).toISOString();
+		seedRetainedHistory(db, at(0));
+		insertColdTurn(db, "turn-1", "thread-A", at(0), "hash-A", "fp-A");
+		insertColdTurn(db, "turn-2", "thread-A", at(10), "hash-A", "fp-A", { renderedAt: at(0) });
+		insertColdTurn(db, "turn-3", "thread-A", at(45), "hash-B", "fp-B");
+
+		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
+		expect(report.pairsExamined).toBe(2);
+		expect(report.collectDriftCount).toBe(1);
+		expect(report.leaks[0]).toMatchObject({
+			flavor: "collect",
+			prev_turn_id: "turn-2",
+			curr_turn_id: "turn-3",
+		});
+	});
+
+	it("#303: a write after a cache-hit turn's render does not cover that turn's fingerprint", () => {
+		// turn-2 is a cache hit whose bytes (fp-B) were rendered at T0+2m. A
+		// write at T0+10m lands after that render, so it cannot explain fp-B.
+		const at = (m: number) => new Date(NOW - 50 * 60 * 1000 + m * 60 * 1000).toISOString();
+		seedRetainedHistory(db, at(0));
+		insertColdTurn(db, "turn-1", "thread-A", at(1), "hash-A", "fp-A");
+		insertChangeLog(db, "semantic_memory", at(10));
+		insertColdTurn(db, "turn-2", "thread-A", at(20), "hash-B", "fp-B", { renderedAt: at(2) });
+
+		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
+		expect(report.pairsExamined).toBe(1);
+		expect(report.collectDriftCount).toBe(1);
 	});
 
 	it("cadence gate fires once per hour", () => {

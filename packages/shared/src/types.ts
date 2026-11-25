@@ -1308,6 +1308,17 @@ export interface ContextDebugInfo {
 	 */
 	stableSubsectionHash?: string;
 	/**
+	 * ISO instant at which the stable subsection bytes and
+	 * `stablePrefixInputFingerprint` were collected. Equals assembly time on a
+	 * fresh render; on a stable-subsection cache hit it is the cached render's
+	 * time, which can precede the turn by up to the cache TTL. The drift
+	 * detector bounds its change_log coverage window by these instants, not
+	 * by `turns.created_at`.
+	 *
+	 * `undefined` on warm turns and on older rows.
+	 */
+	stablePrefixRenderedAt?: string;
+	/**
 	 * Generation of the renderer/fingerprint scope that produced
 	 * `stableSubsectionHash` and `stablePrefixInputFingerprint`
 	 * (`STABLE_PREFIX_DRIFT_VERSION` in `@bound/agent`). The drift detector

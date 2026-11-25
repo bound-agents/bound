@@ -24,6 +24,7 @@ import {
 } from "../context-assembly";
 import { StableSubsectionCache } from "../stable-prefix/cache";
 import { STABLE_PREFIX_DRIFT_VERSION } from "../stable-prefix/hash";
+import { runStablePrefixDriftValidation } from "../validation/run-stable-prefix-drift-validation";
 
 describe("Context Assembly Pipeline", () => {
 	let tmpDir: string;
@@ -8776,5 +8777,87 @@ describe("stable-prefix drift provenance (#303)", () => {
 		expect(second.debug.stableSubsectionHash).toBe(first.debug.stableSubsectionHash);
 		expect(second.debug.stablePrefixInputFingerprint).toBe(cachedFp);
 		expect(second.systemPrompt).not.toContain("second body");
+	});
+
+	// Runs real cache-hit assembly output through the drift detector: the
+	// T0+10m turn serves T0 bytes, so a write between T0 and T0+10m explains
+	// the fingerprint shift at T0+45m only if the window opens at T0.
+	function runCacheHitSequence(t0Ms: number, key: string, logWrite: boolean) {
+		const min = 60 * 1000;
+		const iso = (ms: number) => new Date(ms).toISOString();
+		const logChange = (table: string, atMs: number, rowId: string) =>
+			db.run(
+				"INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data) VALUES (?, ?, ?, 'h', ?, '{}')",
+				[`${iso(atMs)}-${table}-${rowId}`, table, rowId, iso(atMs)],
+			);
+		// Retained history before the window: nothing inside it was pruned.
+		logChange("messages", t0Ms - min, `seed-${key}`);
+
+		const cache = new StableSubsectionCache();
+		const assemble = (atMs: number, withCache: boolean) =>
+			assembleContext({
+				db,
+				threadId,
+				userId,
+				...(withCache ? { stableSubsectionCache: cache } : {}),
+				clock: frozenClock(atMs),
+			}).debug;
+		const fresh = assemble(t0Ms, true);
+		const memId = randomUUID();
+		db.run(
+			"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, last_accessed_at, deleted) VALUES (?, ?, 'new body', 'pinned', 'test', ?, ?, ?, 0)",
+			[memId, key, iso(t0Ms + 5 * min), iso(t0Ms + 5 * min), iso(t0Ms + 5 * min)],
+		);
+		if (logWrite) logChange("semantic_memory", t0Ms + 5 * min, memId);
+		const hit = assemble(t0Ms + 10 * min, true);
+		const rebuilt = assemble(t0Ms + 45 * min, false);
+
+		expect(hit.stablePrefixRenderedAt).toBe(iso(t0Ms));
+		expect(hit.stablePrefixInputFingerprint).toBe(fresh.stablePrefixInputFingerprint);
+		expect(rebuilt.stablePrefixRenderedAt).toBe(iso(t0Ms + 45 * min));
+		expect(rebuilt.stablePrefixInputFingerprint).not.toBe(fresh.stablePrefixInputFingerprint);
+
+		const turnThread = `drift-${key}`;
+		for (const [i, [atMs, debug]] of (
+			[
+				[t0Ms, fresh],
+				[t0Ms + 10 * min, hit],
+				[t0Ms + 45 * min, rebuilt],
+			] as const
+		).entries()) {
+			db.run(
+				"INSERT INTO turns (id, thread_id, model_id, tokens_in, tokens_out, created_at, modified_at, host_origin, deleted, context_debug) VALUES (?, ?, 'm', 0, 0, ?, ?, 'h', 0, ?)",
+				[
+					`${turnThread}-${i}`,
+					turnThread,
+					iso(atMs),
+					iso(atMs),
+					JSON.stringify({ ...debug, cachePath: "cold" }),
+				],
+			);
+		}
+		const report = runStablePrefixDriftValidation(db, "h", t0Ms + 50 * min);
+		const leaks = report.leaks.filter((l) => l.thread_id === turnThread);
+		return { report, leaks };
+	}
+
+	it("a covering write before a cache-hit turn explains the next fresh render's shift", () => {
+		const { leaks, report } = runCacheHitSequence(
+			Date.parse("2026-05-26T12:00:00Z"),
+			"pin-covered",
+			true,
+		);
+		expect(leaks).toEqual([]);
+		expect(report.unknownCount).toBe(0);
+	});
+
+	it("the same cache-hit sequence without a covering write is a collect leak", () => {
+		const { leaks } = runCacheHitSequence(
+			Date.parse("2026-05-28T12:00:00Z"),
+			"pin-uncovered",
+			false,
+		);
+		expect(leaks).toHaveLength(1);
+		expect(leaks[0]).toMatchObject({ flavor: "collect", curr_turn_id: "drift-pin-uncovered-2" });
 	});
 });
