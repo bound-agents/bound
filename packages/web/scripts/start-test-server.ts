@@ -11,7 +11,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAppContext } from "@bound/core";
-import { TypedEventEmitter } from "@bound/shared";
+import { BOUND_NAMESPACE, TypedEventEmitter, deterministicUUID } from "@bound/shared";
 import { createWebServer } from "../src/index";
 
 // Create minimal config files in a temp directory
@@ -50,8 +50,9 @@ async function main() {
 		const ctx = await createAppContext(configDir, ":memory:");
 		const eventBus = new TypedEventEmitter();
 		const webServer = await createWebServer(ctx.db, eventBus, {
-			port: 3000,
-			host: "localhost",
+			port: Number(process.env.E2E_PORT ?? 3000),
+			host: "127.0.0.1",
+			operatorUserId: deterministicUUID(BOUND_NAMESPACE, "test-user"),
 		});
 		await webServer.start();
 		console.log(`Test server started at ${webServer.address()}`);

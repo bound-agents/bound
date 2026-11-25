@@ -16,17 +16,22 @@
 	let width = $state(0);
 	let height = $state(0);
 
-	// Clamp inside the positioned container so right-edge and top-edge hovers
-	// never clip; flip to the cursor's left when there is no room on the right.
+	// Viewport-anchored (position: fixed) and clamped on every side, so right-,
+	// top-, and bottom-edge hovers and narrow phone screens never clip. `x`/`y`
+	// are relative to the chart container, which is the tooltip's parent.
 	const pos = $derived.by(() => {
-		const box = el?.offsetParent as HTMLElement | null | undefined;
-		const maxW =
-			box?.clientWidth ??
-			(typeof window !== "undefined" ? window.innerWidth : Number.POSITIVE_INFINITY);
-		let left = x + offsetX;
-		if (left + width > maxW - 4) left = Math.max(4, x - offsetX - width);
-		// translateY(-100%) lifts the box by its height; keep its top >= 4.
-		const top = Math.max(y + offsetY, height + 4);
+		const parent = el?.parentElement?.getBoundingClientRect();
+		const vw = typeof window !== "undefined" ? window.innerWidth : Number.POSITIVE_INFINITY;
+		const vh = typeof window !== "undefined" ? window.innerHeight : Number.POSITIVE_INFINITY;
+		const cx = x + (parent?.left ?? 0);
+		const cy = y + (parent?.top ?? 0);
+		let left = cx + offsetX;
+		if (left + width > vw - 4) left = Math.max(4, cx - offsetX - width);
+		left = Math.max(4, Math.min(left, vw - width - 4));
+		// Prefer above the cursor; drop below when there's no room on top.
+		let top = cy + offsetY - height;
+		if (top < 4) top = cy + 16;
+		top = Math.max(4, Math.min(top, vh - height - 4));
 		return { left, top };
 	});
 </script>
@@ -47,7 +52,8 @@
 
 <style>
 	.chart-tooltip {
-		position: absolute;
+		position: fixed;
+		max-width: calc(100vw - 8px);
 		pointer-events: none;
 		z-index: 100;
 		background: var(--bg-secondary);
@@ -56,9 +62,9 @@
 		padding: 6px 10px;
 		font-size: 12px;
 		color: var(--ink);
-		white-space: nowrap;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-		transform: translateY(-100%);
 		display: flex;
 		flex-direction: column;
 		gap: 2px;

@@ -125,6 +125,22 @@
 		}
 	});
 
+	// Late fallback: the thread's messages often load after the model list, so a
+	// hint-less thread must still adopt its latest message's model rather than
+	// keep the host default it was prefilled with.
+	let fallbackApplied = $state(false);
+	let userPicked = false;
+	$effect(() => {
+		if (modelHint || userPicked || fallbackApplied || !fallbackModel || options.length === 0)
+			return;
+		const logical = logicalModelFor(fallbackModel, options, models, routing);
+		if (logical) {
+			selectedModel = logical;
+			modelStore.setModel(logical);
+			fallbackApplied = true;
+		}
+	});
+
 	function routesFor(modelId: string): RouteSupplyInfo[] {
 		return routing.find((m) => m.logical_model === modelId)?.routes ?? [];
 	}
@@ -177,6 +193,36 @@
 		tipVisible = false;
 	}
 
+	let popMaxHeight = $state<number | null>(null);
+
+	// The visible box the popover must fit in: the viewport intersected with every
+	// clipping ancestor (the conversation column scrolls, so it clips).
+	function clipBounds(el: HTMLElement): { top: number; bottom: number } {
+		let top = 0;
+		let bottom = window.innerHeight;
+		for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+			const s = getComputedStyle(a);
+			if (/(hidden|clip|scroll|auto)/.test(`${s.overflow} ${s.overflowY}`)) {
+				const r = a.getBoundingClientRect();
+				top = Math.max(top, r.top);
+				bottom = Math.min(bottom, r.bottom);
+			}
+		}
+		return { top, bottom };
+	}
+
+	function placePopover(): void {
+		if (!triggerEl || !rootEl || typeof window === "undefined") return;
+		const rect = triggerEl.getBoundingClientRect();
+		const bounds = clipBounds(rootEl);
+		const below = bounds.bottom - rect.bottom - 8;
+		const above = rect.top - bounds.top - 8;
+		const h = popEl?.scrollHeight ?? POPOVER_ESTIMATE;
+		openUp = below < h && above > below;
+		// Never taller than the room on the chosen side (short/mobile viewports).
+		popMaxHeight = Math.max(120, Math.floor(openUp ? above : below));
+	}
+
 	function openList(): void {
 		if (options.length === 0) return;
 		tipVisible = false;
@@ -184,22 +230,13 @@
 			0,
 			options.findIndex((o) => o.id === selectedModel),
 		);
-		if (triggerEl && typeof window !== "undefined") {
-			const rect = triggerEl.getBoundingClientRect();
-			const below = window.innerHeight - rect.bottom;
-			openUp = below < POPOVER_ESTIMATE && rect.top > below;
-		}
+		placePopover();
 		open = true;
 		void refreshRouting();
 		queueMicrotask(() => {
-			scrollActiveIntoView();
 			// Re-measure with the real height (listbox + pin section).
-			if (popEl && triggerEl && typeof window !== "undefined") {
-				const h = popEl.getBoundingClientRect().height;
-				const rect = triggerEl.getBoundingClientRect();
-				const below = window.innerHeight - rect.bottom;
-				if (h > 0) openUp = below < h + 4 && rect.top > below;
-			}
+			placePopover();
+			scrollActiveIntoView();
 		});
 	}
 
@@ -215,15 +252,23 @@
 
 	function choose(id: string): void {
 		if (id !== selectedModel) pinnedRoute = "";
+		userPicked = true;
 		selectedModel = id;
 		modelStore.setModel(id);
 		onselect?.(id);
 		close();
 	}
 
+	// Scroll only the listbox: element.scrollIntoView would also scroll the page
+	// (and the input bar with it) on short viewports.
 	function scrollActiveIntoView(): void {
 		const el = listEl?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
-		el?.scrollIntoView?.({ block: "nearest" });
+		if (!el || !listEl) return;
+		const top = el.offsetTop;
+		const bottom = top + el.offsetHeight;
+		if (top < listEl.scrollTop) listEl.scrollTop = top;
+		else if (bottom > listEl.scrollTop + listEl.clientHeight)
+			listEl.scrollTop = bottom - listEl.clientHeight;
 	}
 
 	function move(to: number): void {
@@ -352,8 +397,20 @@
 	{/if}
 
 	{#if open}
-		<div class="popover" class:up={openUp} bind:this={popEl}>
-			<ul id="model-listbox" class="listbox" role="listbox" aria-label="Models" bind:this={listEl}>
+		<div
+			class="popover"
+			class:up={openUp}
+			bind:this={popEl}
+			style={popMaxHeight ? `max-height: ${popMaxHeight}px` : undefined}
+		>
+			<ul
+				id="model-listbox"
+				class="listbox"
+				role="listbox"
+				aria-label="Models"
+				tabindex="-1"
+				bind:this={listEl}
+			>
 				{#each options as option, i (option.id)}
 					<li
 						id="model-opt-{i}"
@@ -485,8 +542,10 @@
 		left: 0;
 		top: calc(100% + 4px);
 		z-index: 40;
+		display: flex;
+		flex-direction: column;
 		min-width: 260px;
-		max-width: 380px;
+		max-width: min(380px, calc(100vw - 16px));
 		background: var(--paper, var(--bg));
 		border: 1px solid var(--ink);
 		box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
@@ -498,10 +557,13 @@
 	}
 
 	.listbox {
+		position: relative;
 		list-style: none;
 		margin: 0;
 		padding: 4px 0;
 		max-height: 280px;
+		min-height: 60px;
+		flex: 1 1 auto;
 		overflow-y: auto;
 	}
 
@@ -571,6 +633,9 @@
 	.pin-section {
 		display: flex;
 		flex-wrap: wrap;
+		flex-shrink: 0;
+		max-height: 45%;
+		overflow-y: auto;
 		gap: 4px;
 		padding: 8px 10px;
 		border-top: 1px solid var(--rule-soft);
@@ -585,6 +650,10 @@
 	}
 
 	.pin-choice {
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 		padding: 3px 8px;
 		border: 1px solid var(--rule-soft);
 		background: transparent;

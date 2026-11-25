@@ -7,7 +7,7 @@
 	"scripts": {
 		"test": "bun --no-orphans test --recursive",
 		"test:server": "bun run ./scripts/start-test-server.ts",
-		"test:e2e": "bunx playwright test e2e/",
+		"test:e2e": "bunx playwright test -c e2e/playwright.config.ts",
 		"lint": "bunx @biomejs/biome check . && bun fmt --no-script --check .",
 		"lint:fix": "bunx @biomejs/biome check --write . && bun fmt --no-script .",
 		"check": "bun lint && bun typecheck && bun run scripts/validate-outbox-invariant.ts && bun run scripts/validate-no-fk-on-synced-tables.ts && bun run scripts/validate-events-after-commit.ts && bun run scripts/validate-read-centralization.ts && bun run scripts/validate-just-bash-patch.ts && bun run scripts/validate-no-files-relay-offload.ts && bun run scripts/validate-kotlin-not-link-built.ts",

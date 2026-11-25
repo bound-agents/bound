@@ -261,6 +261,16 @@
 		text-align: right;
 	}
 
+	/* Below ~1400px the brand + nav + full clock overflow the row; drop the kicker. */
+	@media (max-width: 1400px) {
+		.clock-kicker {
+			display: none;
+		}
+		.clock {
+			padding: 0 10px;
+		}
+	}
+
 	/* Phone: the brand + 8 nav tabs + clock can't share one row at ~390px without
 	   overflowing the viewport. Wrap the bar, drop the nav to its own full-width
 	   row as a horizontally-scrollable strip (a platform departure ticker), and

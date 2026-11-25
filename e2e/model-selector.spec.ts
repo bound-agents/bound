@@ -1,224 +1,177 @@
-import { expect, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
+import { assertInViewport, assertNoLayoutShift, assertNotClipped } from "./helpers/geometry";
+import {
+	type RoutingFixture,
+	clusterDefaults,
+	json,
+	mockAmbient,
+	routingFixture,
+	statusModels,
+} from "./helpers/mocks";
 
-// Skip E2E tests if SKIP_E2E env var is set
-const skipE2E = process.env.SKIP_E2E === "1";
+const THREAD_ID = "thread-e2e-model-selector";
 
-test.describe.configure({ mode: skipE2E ? "skip" : "default" });
+async function mountThread(
+	page: Page,
+	opts: { modelHint?: string | null; messageModel?: string | null } = {},
+): Promise<RoutingFixture[]> {
+	const routing = routingFixture();
+	await mockAmbient(page);
+	// Host default is deliberately unrelated to the thread's own model.
+	await page.route("**/api/status/models", (r) => json(r, statusModels(routing, "kimi-k3")));
+	await page.route("**/api/routing/models", (r) => json(r, { models: routing }));
+	await page.route("**/api/routing/cluster-defaults", (r) =>
+		json(r, { ...clusterDefaults(), roles: {} }),
+	);
+	await page.route(`**/api/threads/${THREAD_ID}`, (r) =>
+		json(r, {
+			id: THREAD_ID,
+			user_id: "test-user",
+			interface: "web",
+			host_origin: "local",
+			color: 3,
+			title: "Model selector geometry",
+			summary: null,
+			model_hint: opts.modelHint ?? null,
+			created_at: "2026-11-24T00:00:00.000Z",
+			last_message_at: "2026-11-24T00:01:00.000Z",
+			modified_at: "2026-11-24T00:01:00.000Z",
+			deleted: 0,
+		}),
+	);
+	const messages = opts.messageModel
+		? [
+				{
+					id: "m1",
+					thread_id: THREAD_ID,
+					role: "user",
+					content: "hello",
+					model_id: null,
+					tool_name: null,
+					created_at: "2026-11-24T00:00:00.000Z",
+					modified_at: null,
+					host_origin: "local",
+					deleted: 0,
+				},
+				{
+					id: "m2",
+					thread_id: THREAD_ID,
+					role: "assistant",
+					content: "hi",
+					model_id: opts.messageModel,
+					tool_name: null,
+					created_at: "2026-11-24T00:00:30.000Z",
+					modified_at: null,
+					host_origin: "local",
+					deleted: 0,
+				},
+			]
+		: [];
+	await page.route(`**/api/threads/${THREAD_ID}/messages**`, (r) => json(r, messages));
+	await page.route(`**/api/threads/${THREAD_ID}/status`, (r) =>
+		json(r, { active: false, state: null, detail: null, tokens: 0, model: null }),
+	);
+	await page.route(`**/api/threads/${THREAD_ID}/provenance`, (r) => json(r, { turns: [] }));
+	await page.goto(`/#/line/${THREAD_ID}`);
+	await expect(page.locator("#model")).toHaveAttribute("data-value", /.+/);
+	return routing;
+}
 
-test.describe("Model Selector with Relay Annotations", () => {
-	test("should display local and remote models with relay annotations", async ({ page }) => {
-		// Mock /api/status/models to return a test dataset with local, remote, and offline models
-		await page.route("**/api/status/models", async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({
-					models: [
-						{
-							id: "claude-3-5-sonnet",
-							provider: "anthropic",
-							host: "local-host",
-							via: "local",
-							status: "local",
-						},
-						{
-							id: "remote-claude-3",
-							provider: "remote",
-							host: "test-remote-host",
-							via: "relay",
-							status: "online",
-						},
-						{
-							id: "offline-model",
-							provider: "remote",
-							host: "test-offline-host",
-							via: "relay",
-							status: "offline?",
-						},
-					],
-					default: "claude-3-5-sonnet",
-				}),
-			});
-		});
+const trigger = (page: Page) => page.locator("#model");
+const popover = (page: Page) => page.locator(".model-selector .popover");
 
-		// Navigate to the chat page
-		await page.goto("/");
-
-		// Wait for the page to load and stabilize
-		await page.waitForLoadState("networkidle");
-
-		// Find the model selector element
-		// It's typically a <select> with id="model" or similar
-		const modelSelector = page
-			.locator("select[id='model'], [role='combobox'][data-test='model-selector']")
-			.first();
-
-		// Verify the selector exists
-		await expect(modelSelector).toBeDefined();
-		const selectorCount = await modelSelector.count();
-		expect(selectorCount).toBeGreaterThanOrEqual(1);
-
-		// Get all option elements in the model selector
-		const options = modelSelector.locator("option");
-		const optionCount = await options.count();
-
-		// Verify we have at least 3 models (local + remote + offline)
-		expect(optionCount).toBeGreaterThanOrEqual(3);
-
-		// Verify the local model is present
-		const localOption = options.filter({ hasText: "claude-3-5-sonnet" }).first();
-		await expect(localOption).toBeDefined();
-		const localCount = await localOption.count();
-		expect(localCount).toBeGreaterThanOrEqual(1);
-
-		// Verify the remote model with relay annotation is present
-		const remoteOption = options
-			.filter({ hasText: /remote-claude-3.*test-remote-host.*via relay/ })
-			.first();
-		await expect(remoteOption).toBeDefined();
-		const remoteCount = await remoteOption.count();
-		expect(remoteCount).toBeGreaterThanOrEqual(1);
-
-		// Verify the offline model with offline annotation is present
-		const offlineOption = options
-			.filter({ hasText: /offline-model.*test-offline-host.*offline\?/ })
-			.first();
-		await expect(offlineOption).toBeDefined();
-		const offlineCount = await offlineOption.count();
-		expect(offlineCount).toBeGreaterThanOrEqual(1);
+test.describe("model selector", () => {
+	test("lists logical models alphabetically", async ({ page }) => {
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		await trigger(page).click();
+		const labels = await page.locator(".option-label").allTextContents();
+		expect(labels.length).toBeGreaterThanOrEqual(15);
+		const sorted = [...labels].sort((a, b) =>
+			a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }),
+		);
+		expect(labels).toEqual(sorted);
 	});
 
-	test("should render relay annotations in option text", async ({ page }) => {
-		// Mock /api/status/models with relay and offline models
-		await page.route("**/api/status/models", async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({
-					models: [
-						{
-							id: "local-model",
-							provider: "openai",
-							host: "local-host",
-							via: "local",
-							status: "local",
-						},
-						{
-							id: "gpt-4-remote",
-							provider: "remote",
-							host: "remote-host-1",
-							via: "relay",
-							status: "online",
-						},
-					],
-					default: "local-model",
-				}),
-			});
+	test("opening and keyboard navigation never shift the input bar", async ({ page }) => {
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		const wrap = page.locator(".input-wrap");
+		await assertNoLayoutShift(wrap, async () => {
+			await trigger(page).click();
+			await expect(popover(page)).toBeVisible();
 		});
-
-		// Navigate to the chat page
-		await page.goto("/");
-
-		// Wait for the page to load
-		await page.waitForLoadState("networkidle");
-
-		// Find the model selector
-		const modelSelector = page
-			.locator("select[id='model'], [role='combobox'][data-test='model-selector']")
-			.first();
-
-		// Get all option elements
-		const options = modelSelector.locator("option");
-
-		// Collect option texts to verify annotations are rendered
-		const optionTexts: string[] = [];
-		const count = await options.count();
-		for (let i = 0; i < count; i++) {
-			const text = await options.nth(i).textContent();
-			if (text) {
-				optionTexts.push(text);
-			}
+		await assertInViewport(popover(page));
+		await assertNotClipped(popover(page));
+		for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "End", "Home", "g"]) {
+			await assertNoLayoutShift(wrap, () => trigger(page).press(key));
 		}
-
-		// Verify at least one option contains relay annotation
-		const hasRelayAnnotation = optionTexts.some((text) => text.includes("via relay"));
-		expect(hasRelayAnnotation).toBeTruthy();
-
-		// Verify at least one option contains the remote host name
-		const hasRemoteHostAnnotation = optionTexts.some((text) => text.includes("remote-host-1"));
-		expect(hasRemoteHostAnnotation).toBeTruthy();
+		// Type-ahead lands on the first label starting with "g".
+		await expect(page.locator(".option.active .option-label")).toHaveText(/^g/i);
+		await page.keyboard.press("End");
+		await expect(page.locator(".option.active")).toBeInViewport();
+		await assertNoLayoutShift(wrap, () => trigger(page).press("Escape"));
+		await expect(popover(page)).toBeHidden();
+		await expect(trigger(page)).toBeFocused();
 	});
 
-	test("should distinguish same model on different hosts", async ({ page }) => {
-		// Mock /api/status/models with same model on multiple hosts
-		await page.route("**/api/status/models", async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({
-					models: [
-						{
-							id: "shared-model",
-							provider: "local",
-							host: "local-host",
-							via: "local",
-							status: "local",
-						},
-						{
-							id: "shared-model",
-							provider: "remote",
-							host: "remote-host-a",
-							via: "relay",
-							status: "online",
-						},
-						{
-							id: "shared-model",
-							provider: "remote",
-							host: "remote-host-b",
-							via: "relay",
-							status: "online",
-						},
-					],
-					default: "shared-model",
-				}),
-			});
-		});
+	test("popover flips up and stays on screen in a short viewport", async ({ page }) => {
+		const vp = page.viewportSize();
+		await page.setViewportSize({ width: vp?.width ?? 1280, height: 520 });
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		await trigger(page).click();
+		await assertInViewport(popover(page));
+		await assertNotClipped(popover(page));
+	});
 
-		// Navigate to the chat page
-		await page.goto("/");
+	test("status-dot routes popover stays on screen on hover and focus", async ({ page }) => {
+		await mountThread(page, { modelHint: "mai-code-2-extended-context-preview-edition" });
+		const wrap = page.locator(".input-wrap");
+		const dot = page.locator(".status-dot-btn");
+		const tip = page.locator("#model-routes-tip");
+		await assertNoLayoutShift(wrap, () => dot.hover());
+		await assertInViewport(tip);
+		await assertNotClipped(tip);
+		await page.mouse.move(0, 0);
+		await expect(tip).toBeHidden();
+		await assertNoLayoutShift(wrap, () => dot.focus());
+		await assertInViewport(tip);
+		await assertNotClipped(tip);
+		await dot.press("Escape");
+		await expect(tip).toBeHidden();
+	});
 
-		// Wait for the page to load
-		await page.waitForLoadState("networkidle");
+	test("Tab reaches route pins and pinning marks the trigger", async ({ page }) => {
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		await trigger(page).click();
+		await page.keyboard.press("Tab");
+		const auto = page.locator(".pin-choice", { hasText: "Auto" });
+		await expect(auto).toBeFocused();
+		await page.keyboard.press("Tab");
+		const first = page.locator(".pin-choice").nth(1);
+		await expect(first).toBeFocused();
+		await assertNotClipped(first);
+		await page.keyboard.press("Enter");
+		await expect(first).toHaveAttribute("aria-pressed", "true");
+		await expect(trigger(page)).toHaveClass(/pinned/);
+		await expect(page.locator(".pin-badge")).toBeVisible();
+	});
 
-		// Find the model selector
-		const modelSelector = page
-			.locator("select[id='model'], [role='combobox'][data-test='model-selector']")
-			.first();
+	test("switching models updates the header chip immediately", async ({ page }) => {
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		const chip = page.locator(".chip").first();
+		await expect(chip).toContainText("GPT-6 Luna");
+		await trigger(page).click();
+		await page.locator(".option", { hasText: "Kimi K3" }).click();
+		await expect(trigger(page)).toHaveAttribute("data-value", "kimi-k3");
+		await expect(chip).toContainText("Kimi K3");
+	});
 
-		// Get all option elements containing "shared-model"
-		const options = modelSelector.locator("option");
-		const sharedModelOptions = options.filter({ hasText: "shared-model" });
-
-		// Verify there are at least 3 entries for shared-model (local + 2 remote hosts)
-		const sharedCount = await sharedModelOptions.count();
-		expect(sharedCount).toBeGreaterThanOrEqual(3);
-
-		// Collect texts to verify different host annotations
-		const sharedTexts: string[] = [];
-		for (let i = 0; i < sharedCount; i++) {
-			const text = await sharedModelOptions.nth(i).textContent();
-			if (text) {
-				sharedTexts.push(text);
-			}
-		}
-
-		// Verify we have entries for different hosts
-		const hasLocalHost = sharedTexts.some((text) => text.includes("local-host"));
-		const hasRemoteHostA = sharedTexts.some((text) => text.includes("remote-host-a"));
-		const hasRemoteHostB = sharedTexts.some((text) => text.includes("remote-host-b"));
-
-		expect(hasLocalHost).toBeTruthy();
-		expect(hasRemoteHostA).toBeTruthy();
-		expect(hasRemoteHostB).toBeTruthy();
+	test("thread without model_hint prefills from its latest message's backend id", async ({
+		page,
+	}) => {
+		// `gpt-6-sol-remote` is the remote route's backend id for logical gpt-6-sol.
+		await mountThread(page, { modelHint: null, messageModel: "gpt-6-sol-remote" });
+		await expect(trigger(page)).toHaveAttribute("data-value", "gpt-6-sol");
+		await expect(trigger(page)).not.toHaveAttribute("data-value", "kimi-k3");
+		await expect(page.locator(".trigger-label")).toHaveText("GPT-6 Sol");
 	});
 });

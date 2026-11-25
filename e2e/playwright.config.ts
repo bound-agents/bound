@@ -1,49 +1,48 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Read environment variables from file.
- * https://github.com/motdotla/dotenv
+ * Playwright E2E config. Run via `bun run test:e2e` (which passes `-c`).
+ * The web bundle must be built first (`bun run --cwd packages/web build`);
+ * the test server serves the embedded assets from that build.
  */
-// require('dotenv').config();
+// A dedicated port: a developer's running bound daemon owns 3000.
+const PORT = Number(process.env.E2E_PORT ?? 3123);
+const BASE_URL = `http://127.0.0.1:${PORT}`;
 
-/**
- * See https://playwright.dev/docs/test-configuration.
- */
 export default defineConfig({
 	testDir: "./",
 	testMatch: "*.spec.ts",
-	/* Run tests in files in parallel */
 	fullyParallel: true,
-	/* Fail the build on CI if you accidentally left test.only in the source code. */
 	forbidOnly: !!process.env.CI,
-	/* Retry on CI only */
 	retries: process.env.CI ? 2 : 0,
-	/* Opt out of parallel tests on CI. */
-	workers: process.env.CI ? 1 : undefined,
-	/* Reporter to use. See https://playwright.dev/docs/test-reporters */
-	reporter: "html",
-	/* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
+	workers: process.env.CI ? 2 : undefined,
+	reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
+	outputDir: "./test-results",
 	use: {
-		/* Base URL to use in actions like `await page.goto('/')`. */
-		baseURL: "http://localhost:3000",
-		/* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-		trace: "on-first-retry",
+		baseURL: BASE_URL,
+		trace: "retain-on-failure",
+		screenshot: "only-on-failure",
 	},
-
-	/* Configure projects for major browsers */
 	projects: [
 		{
-			name: "chromium",
-			use: { ...devices["Desktop Chrome"] },
+			name: "desktop",
+			use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 800 } },
+		},
+		{
+			name: "mobile",
+			use: {
+				...devices["Desktop Chrome"],
+				viewport: { width: 390, height: 844 },
+				hasTouch: true,
+				isMobile: true,
+			},
 		},
 	],
-
-	/* Run your local dev server before starting the tests */
 	webServer: {
-		// Run from packages/web so Bun resolves workspace packages (@bound/core etc.)
-		// Note: playwright runs webServer command from the directory containing this config (e2e/)
+		// Playwright runs webServer from the config's directory (e2e/).
 		command: "bun ../packages/web/scripts/start-test-server.ts",
-		url: "http://localhost:3000",
+		env: { E2E_PORT: String(PORT) },
+		url: BASE_URL,
 		reuseExistingServer: !process.env.CI,
 		timeout: 120 * 1000,
 	},
