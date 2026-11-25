@@ -213,7 +213,6 @@ describe("createWsHandlers — message() dispatch routing for every transport fr
 			siteId: "dispatch-peer",
 			symmetricKey: symKey,
 			sendState: "ready" as "ready" | "pressured",
-			pendingDrain: null as null | (() => void),
 		};
 		const closed: Array<{ code: number }> = [];
 		const ws = {

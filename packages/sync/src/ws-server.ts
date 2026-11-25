@@ -53,7 +53,6 @@ export interface WsConnectionData {
 	symmetricKey: Uint8Array;
 	fingerprint: string;
 	sendState: "ready" | "pressured";
-	pendingDrain: (() => void) | null;
 }
 
 /**
@@ -136,7 +135,6 @@ export async function authenticateWsUpgrade(
 		symmetricKey,
 		fingerprint,
 		sendState: "ready",
-		pendingDrain: null,
 	};
 
 	logger?.debug("WS upgrade authenticated", { siteId, fingerprint });
@@ -215,6 +213,8 @@ export interface WsServerConfig {
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
 		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
 		drainChangelog: (peerSiteId: string) => void;
+		/** Re-drain a changelog range refused under backpressure (#305). */
+		resumeChangelogDrain?: (peerSiteId: string) => void;
 		handleRelaySend: (sourceSiteId: string, payload: RelaySendPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		handleSpoolTransfer: (
@@ -507,10 +507,9 @@ export function createWsHandlers(config: WsServerConfig): {
 				config.wsTransport.continueSnapshotSeed(ws.data.siteId);
 				config.wsTransport.continueRowPull(ws.data.siteId);
 				config.wsTransport.continueConsistencyStream(ws.data.siteId);
-			}
-			if (ws.data.pendingDrain) {
-				ws.data.pendingDrain();
-				ws.data.pendingDrain = null;
+				// A changelog push refused while pressured left an ordered gap after
+				// last_sent; re-drain it now that the socket accepts writes (#305).
+				config.wsTransport.resumeChangelogDrain?.(ws.data.siteId);
 			}
 		},
 

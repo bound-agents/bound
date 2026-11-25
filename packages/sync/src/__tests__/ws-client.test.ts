@@ -525,6 +525,7 @@ describe("WsSyncClient", () => {
 			sendState: "ready" | "pressured";
 			send(frame: Uint8Array): boolean;
 			recoverFromBackpressure(): void;
+			recoverRefusedSends(): void;
 		}
 
 		function makeClient(backpressureLimit: number): { client: WsSyncClient; internal: Internal } {
@@ -650,6 +651,64 @@ describe("WsSyncClient", () => {
 
 			expect(internal.sendState).toBe("pressured");
 			expect(drained).toEqual([]);
+		});
+		function makeResumeClient(resumed: string[]): { client: WsSyncClient; internal: Internal } {
+			const client = new WsSyncClient({
+				hubUrl: "http://localhost:3000",
+				privateKey: spokeKeypair.privateKey,
+				siteId: spokeSiteId,
+				keyManager: spokeKeyManager,
+				hubSiteId,
+				backpressureLimit: 100,
+				wsTransport: {
+					addPeer: () => {},
+					removePeer: () => {},
+					handleChangelogPush: () => {},
+					handleChangelogAck: () => {},
+					drainChangelog: () => {},
+					resumeChangelogDrain: (peerSiteId: string) => {
+						resumed.push(peerSiteId);
+					},
+					handleRelayDeliver: () => {},
+					handleRelayAck: () => {},
+					handleSpoolTransfer: () => {},
+					handleSpoolTransferAck: () => {},
+					drainDurableWorkSpool: () => {},
+					applySnapshotChunk: () => 0,
+					applyColumnChunk: () => {},
+				},
+			});
+			clients.push(client);
+			return { client, internal: client as unknown as Internal };
+		}
+
+		it("recoverRefusedSends re-drains a refused changelog range once the latch clears (#305)", () => {
+			const resumed: string[] = [];
+			const { internal } = makeResumeClient(resumed);
+			internal.ws = fakeWs(10);
+			internal.sendState = "pressured";
+			internal.recoverRefusedSends();
+			expect(internal.sendState).toBe("ready");
+			expect(resumed).toEqual([hubSiteId]);
+		});
+
+		it("recoverRefusedSends re-drains even without a latch (a thrown send never latches)", () => {
+			const resumed: string[] = [];
+			const { internal } = makeResumeClient(resumed);
+			internal.ws = fakeWs(10);
+			internal.sendState = "ready";
+			internal.recoverRefusedSends();
+			expect(resumed).toEqual([hubSiteId]);
+		});
+
+		it("recoverRefusedSends holds the changelog re-drain while the buffer is still full", () => {
+			const resumed: string[] = [];
+			const { internal } = makeResumeClient(resumed);
+			internal.ws = fakeWs(200);
+			internal.sendState = "pressured";
+			internal.recoverRefusedSends();
+			expect(internal.sendState).toBe("pressured");
+			expect(resumed).toEqual([]);
 		});
 	});
 

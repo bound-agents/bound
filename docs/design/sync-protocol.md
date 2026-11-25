@@ -410,7 +410,7 @@ On `connect()`, the client:
 
 **Reconnection:** After any disconnect (close or error), the client reconnects using exponential backoff with 0–25% jitter, starting at 1 second and doubling until `reconnectMaxInterval` (default 60 s). `close()` marks the client as stopped and cancels any pending reconnect timer.
 
-**Backpressure:** `send()` checks `ws.bufferedAmount` against `backpressureLimit` before writing. If the limit is exceeded the client marks itself as `pressured` and returns `false` so callers can shed load.
+**Backpressure:** `send()` checks `ws.bufferedAmount` against `backpressureLimit` before writing. If the limit is exceeded the client marks itself as `pressured` and returns `false` so callers can shed load. Each liveness tick clears a stale latch, re-drives the durable-work spool, and calls `WsTransport.resumeChangelogDrain(hub)` whenever the socket accepts writes.
 
 ### Hub Upgrade
 
@@ -428,7 +428,7 @@ On the server side, the sync listener mounts a WebSocket upgrade handler at `/sy
    | `stale_timestamp` | `408 Request Timeout` |
 
 3. Looks up the per-peer symmetric key and fingerprint via `KeyManager`. Missing entries fail with `403`.
-4. Returns a `WsConnectionData` record containing `{ siteId, symmetricKey, fingerprint, sendState, pendingDrain }` which Bun attaches to the upgraded socket as `ws.data`.
+4. Returns a `WsConnectionData` record containing `{ siteId, symmetricKey, fingerprint, sendState }` which Bun attaches to the upgraded socket as `ws.data`.
 
 The `WsConnectionManager` tracks one connection per `siteId`; a fresh upgrade from the same site closes the prior connection with code `1008` ("Duplicate connection").
 
@@ -454,7 +454,7 @@ On `start()`, `WsTransport` registers listeners for two event bus events:
 
 ### `drainChangelog(peerSiteId)` / `drainDurableWorkSpool(peerSiteId, reason)`
 
-Called when a peer connects or reconnects. `drainChangelog` queries `change_log WHERE hlc > last_sent AND site_id != peerSiteId`, batches the results in chunks of 100, and sends each as a `changelog_push` frame, updating `last_sent` after each successful batch and emitting a final `drain_complete` frame. `drainDurableWorkSpool` carries relay reconnect recovery: it re-sends any `durable_work` rows already `transferring` whose next hop is this peer (retaining their transfer token), then begins transfers for pending peer-targeted rows whose next hop is this peer, batched 100 per frame. It runs on both spokes and hubs — the push-on-write path only covers rows written while connected, so reconnect must drain what accumulated while the link was dark.
+Called when a peer connects or reconnects. `drainChangelog` queries `change_log WHERE hlc > last_sent AND site_id != peerSiteId`, batches the results in chunks of 100, and sends each as a `changelog_push` frame, updating `last_sent` after each successful batch and emitting a final `drain_complete` frame. A refused `changelog_push` frame — live or drained — marks the peer as having an unsent range after `last_sent`. Until a drain completes, live pushes to that peer are held back, so no later entry reaches the receiver ahead of the refused range, and `changelog_ack` cursors are clamped to `last_sent`, so `last_confirmed` never covers an undelivered row. `resumeChangelogDrain(peerSiteId)` re-runs the drain for a marked peer and is a no-op otherwise. The hub calls it from Bun's `drain` event; the client calls it from its liveness tick. `drainDurableWorkSpool` carries relay reconnect recovery: it re-sends any `durable_work` rows already `transferring` whose next hop is this peer (retaining their transfer token), then begins transfers for pending peer-targeted rows whose next hop is this peer, batched 100 per frame. It runs on both spokes and hubs — the push-on-write path only covers rows written while connected, so reconnect must drain what accumulated while the link was dark.
 
 ---
 

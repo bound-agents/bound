@@ -99,6 +99,7 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 	function makeHandlers() {
 		const manager = new WsConnectionManager();
 		const addPeerCalls: Array<{ peerSiteId: string }> = [];
+		const resumedChangelogDrains: string[] = [];
 		const capturedSendFrames: Array<(frame: Uint8Array) => boolean> = [];
 		const wsTransport = {
 			addPeer: (peerSiteId: string, sendFrame: (frame: Uint8Array) => boolean) => {
@@ -123,6 +124,9 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 			continueSnapshotSeed: () => {},
 			continueRowPull: () => {},
 			continueConsistencyStream: () => {},
+			resumeChangelogDrain: (peerSiteId: string) => {
+				resumedChangelogDrains.push(peerSiteId);
+			},
 		} as any;
 		const handlers = createWsHandlers({
 			connectionManager: manager,
@@ -130,7 +134,7 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 			keyManager: {} as any,
 			wsTransport,
 		});
-		return { handlers, manager, addPeerCalls, capturedSendFrames };
+		return { handlers, manager, addPeerCalls, capturedSendFrames, resumedChangelogDrains };
 	}
 
 	function makeFakeWs(sendResult: number) {
@@ -138,7 +142,6 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 			siteId: "fake-peer",
 			symmetricKey: new Uint8Array(32).fill(1),
 			sendState: "ready" as "ready" | "pressured",
-			pendingDrain: null as null | (() => void),
 		};
 		const closed: Array<{ code: number }> = [];
 		const ws = {
@@ -206,19 +209,14 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 		expect(closed.length).toBe(0);
 	});
 
-	it("drain() resets sendState to ready and fires a pending drain callback", () => {
-		const { handlers } = makeHandlers();
+	it("drain() resets sendState to ready and re-drains a refused changelog range (#305)", () => {
+		const { handlers, resumedChangelogDrains } = makeHandlers();
 		const { ws, data } = makeFakeWs(1);
 		handlers.websocket.open(ws);
 		data.sendState = "pressured";
-		let drained = false;
-		data.pendingDrain = () => {
-			drained = true;
-		};
 		handlers.websocket.drain(ws);
 		expect(data.sendState).toBe("ready");
-		expect(drained).toBe(true);
-		expect(data.pendingDrain).toBeNull();
+		expect(resumedChangelogDrains).toEqual(["fake-peer"]);
 	});
 
 	it("close() removes the connection from the manager", () => {

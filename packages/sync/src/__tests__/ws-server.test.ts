@@ -342,7 +342,6 @@ describe("createWsHandlers", async () => {
 				siteId: "spoke-site",
 				symmetricKey,
 				sendState: "ready",
-				pendingDrain: null,
 			},
 			close: () => {},
 		} as any;
@@ -410,7 +409,7 @@ describe("createWsHandlers", async () => {
 
 		const symmetricKey = new Uint8Array(32).fill(7);
 		const mockWs = {
-			data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
+			data: { siteId: "spoke-site", symmetricKey, sendState: "ready" },
 			close: () => {},
 		} as any;
 
@@ -466,7 +465,7 @@ describe("createWsHandlers", async () => {
 
 		const symmetricKey = new Uint8Array(32).fill(7);
 		const mockWs = {
-			data: { siteId: "spoke-site", symmetricKey, sendState: "ready", pendingDrain: null },
+			data: { siteId: "spoke-site", symmetricKey, sendState: "ready" },
 			close: () => {},
 		} as any;
 
@@ -521,7 +520,6 @@ describe("createWsHandlers", async () => {
 				siteId: "spoke-site",
 				symmetricKey: new Uint8Array(32).fill(7),
 				sendState: "ready",
-				pendingDrain: null,
 			},
 			close: () => {},
 		} as any;
@@ -578,7 +576,6 @@ describe("createWsHandlers", async () => {
 					symmetricKey,
 					fingerprint: "0123456789abcdef",
 					sendState: "ready" as const,
-					pendingDrain: null,
 				},
 				close: (code?: number, reason?: string) => closeCalls.push([code, reason]),
 				closeCalls,

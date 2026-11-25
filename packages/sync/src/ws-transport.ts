@@ -301,6 +301,14 @@ export class WsTransport {
 	private staleDurableWorkSweepTimer: ReturnType<typeof setInterval> | null = null;
 	/** Per-peer snapshot seeding progress. */
 	private snapshotStates = new Map<string, SnapshotState>();
+	/**
+	 * Peers with a refused (backpressured) changelog range after `last_sent`
+	 * (#305). While a peer is listed, live pushes to it are held back so a later
+	 * entry can never reach the wire — and be ACKed — ahead of the refused one;
+	 * ACKs are clamped to `last_sent`; and {@link resumeChangelogDrain} re-drains
+	 * the whole range in HLC order once the socket accepts writes again.
+	 */
+	private changelogResendNeeded = new Set<string>();
 
 	constructor(private config: WsTransportConfig) {
 		// Create coalescer with flush callback
@@ -351,6 +359,8 @@ export class WsTransport {
 			}
 		}
 		this.snapshotStates.delete(peerSiteId);
+		// A reconnect re-drains from last_sent, which never advanced past the gap.
+		this.changelogResendNeeded.delete(peerSiteId);
 
 		const consistencyState = this.pendingConsistencyStream.get(peerSiteId);
 		if (consistencyState) {
@@ -475,11 +485,18 @@ export class WsTransport {
 	 * Flush batched changelog entries to all connected peers.
 	 * - Echo suppression: skip entries where entry.site_id === peerSiteId
 	 * - Updates last_sent cursor after sending
+	 * - On refusal, marks the peer for an ordered re-drain and holds later live
+	 *   pushes until that re-drain completes (#305)
 	 */
 	private flushChangelogEntries(entries: ChangeLogEntry[]): void {
 		for (const [peerSiteId, peer] of this.peerConnections) {
 			// Skip peers that are mid-snapshot — the post-snapshot drain handles catchup.
 			if (this.snapshotStates.has(peerSiteId)) {
+				continue;
+			}
+			// A refused range is outstanding: sending these entries now would let the
+			// receiver ACK past it. They are committed, so the re-drain carries them.
+			if (this.changelogResendNeeded.has(peerSiteId)) {
 				continue;
 			}
 
@@ -501,6 +518,7 @@ export class WsTransport {
 						entryCount: entriesToSend.length,
 					});
 					allSent = false;
+					this.changelogResendNeeded.add(peerSiteId);
 					break;
 				}
 			}
@@ -610,7 +628,16 @@ export class WsTransport {
 	 * docs/design/specs/2026-06-29-unified-delegation.md.
 	 */
 	handleChangelogAck(peerSiteId: string, payload: ChangelogAckPayload): void {
-		const { cursor } = payload;
+		let { cursor } = payload;
+
+		// While a refused range is outstanding, the receiver's highest HLC can sit
+		// past entries it never got (a delivered prefix frame of a partially
+		// refused batch). Never let the confirmed watermark cover the gap (#305):
+		// clamp to last_sent, which only advances over fully sent batches.
+		if (this.changelogResendNeeded.has(peerSiteId)) {
+			const lastSent = getPeerCursor(this.config.db, peerSiteId)?.last_sent ?? HLC_ZERO;
+			if (cursor > lastSent) cursor = lastSent;
+		}
 
 		updatePeerCursor(this.config.db, peerSiteId, {
 			last_sent: cursor,
@@ -621,6 +648,16 @@ export class WsTransport {
 			peerSiteId,
 			cursor,
 		});
+	}
+
+	/**
+	 * Backpressure-recovery hook (#305): if a changelog push or drain to this
+	 * peer was refused, re-drain from `last_sent` in HLC order. No-op otherwise.
+	 * Called from the server's `drain` event and the client's liveness tick.
+	 */
+	resumeChangelogDrain(peerSiteId: string): void {
+		if (!this.changelogResendNeeded.has(peerSiteId)) return;
+		this.drainChangelog(peerSiteId);
 	}
 
 	/**
@@ -700,6 +737,7 @@ export class WsTransport {
 				this.config.logger?.debug("WsTransport drain - no missed entries", {
 					peerSiteId,
 				});
+				this.changelogResendNeeded.delete(peerSiteId);
 				__replicationTerminal = ["empty", 0];
 				return;
 			}
@@ -721,6 +759,7 @@ export class WsTransport {
 							totalBatches: Math.ceil(allEntries.length / batchSize),
 						});
 						backpressured = true;
+						this.changelogResendNeeded.add(peerSiteId);
 						break;
 					}
 				}
@@ -734,6 +773,7 @@ export class WsTransport {
 
 			// Send drain_complete frame
 			if (!backpressured) {
+				this.changelogResendNeeded.delete(peerSiteId);
 				__replicationTerminal = ["completed", allEntries.length];
 				const drainCompleteFrame = encodeFrame(
 					WsMessageType.DRAIN_COMPLETE,

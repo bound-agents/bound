@@ -50,6 +50,8 @@ export interface WsClientConfig {
 		handleChangelogPush: (peerSiteId: string, payload: ChangelogPushPayload) => void;
 		handleChangelogAck: (peerSiteId: string, payload: ChangelogAckPayload) => void;
 		drainChangelog: (peerSiteId: string) => void;
+		/** Re-drain a changelog range refused under backpressure (#305). */
+		resumeChangelogDrain?: (peerSiteId: string) => void;
 		handleRelayDeliver: (sourceSiteId: string, payload: RelayDeliverPayload) => void;
 		handleRelayAck: (sourceSiteId: string, payload: RelayAckPayload) => void;
 		/** Receive a hub→spoke durable-work spool transfer (R-DW10). */
@@ -333,6 +335,21 @@ export class WsSyncClient {
 		// Re-drive the spool so rows parked while latched re-send now, not on the next
 		// organic write or reconnect.
 		this.config.wsTransport?.drainDurableWorkSpool(this.config.hubSiteId);
+	}
+
+	/**
+	 * Liveness-tick recovery for refused writes. Clears a stale backpressure latch
+	 * (re-driving the spool), then — whenever the socket is accepting writes —
+	 * lets the transport re-drain any changelog range it had refused (#305). The
+	 * second leg is unconditional on the latch because a refusal can also come
+	 * from a thrown send() that never latched `pressured`; it is a no-op unless
+	 * the transport recorded a refusal.
+	 */
+	private recoverRefusedSends(): void {
+		this.recoverFromBackpressure();
+		if (this.sendState === "pressured") return;
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+		this.config.wsTransport?.resumeChangelogDrain?.(this.config.hubSiteId);
 	}
 
 	/**
@@ -905,7 +922,7 @@ export class WsSyncClient {
 			// latched `pressured` state can outlive its cause. Re-poll here so parked
 			// durable-work rows re-send within a check interval rather than waiting for
 			// the next organic write or the 30s transfer sweep.
-			this.recoverFromBackpressure();
+			this.recoverRefusedSends();
 			const idleMs = Date.now() - this.lastReceivedAt;
 			if (idleMs >= timeoutMs) {
 				this.config.logger?.warn(
