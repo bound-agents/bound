@@ -4,8 +4,49 @@ export interface ParsedToolCall {
 	name: string;
 	input: Record<string, unknown>;
 	argsJson: string;
-	/** True when the tool_use args JSON failed to parse, usually due to output truncation. */
+	/**
+	 * True only when the args JSON failed to parse AND the response ended on an
+	 * output-length stop (`finishReason === "length"`). A parse failure on any
+	 * other finish reason is malformed JSON, reported through `argsError`.
+	 */
 	truncated?: boolean;
+	/**
+	 * Set when the args JSON failed to parse. The call is non-executable either
+	 * way; `kind` separates a length-stop truncation from malformed JSON on an
+	 * otherwise normal finish. Carries no argument content.
+	 */
+	argsError?: ToolArgsError;
+}
+
+/** Bounded, content-free description of a tool-call argument parse failure. */
+export interface ToolArgsError {
+	kind: "truncated" | "invalid_json";
+	/** The response's finish reason when the stream ended. */
+	finishReason: LLMFinishReason | null;
+	/** Length of the raw argument text, in characters. */
+	argsLength: number;
+	/** The JSON parser's message, capped and with quoted spans elided. */
+	parseError: string;
+}
+
+const MAX_PARSE_ERROR_CHARS = 120;
+
+/**
+ * Reduce a JSON.parse exception to a bounded message that cannot echo the
+ * argument text. Engines quote fragments of the input in some messages, so
+ * any quoted span longer than a single token is elided.
+ */
+export function boundedJsonParseError(error: unknown): string {
+	const raw = error instanceof Error ? error.message : String(error);
+	const elided = raw.replace(/(["'`])[^"'`]{2,}\1/g, "$1…$1");
+	return elided.length > MAX_PARSE_ERROR_CHARS
+		? `${elided.slice(0, MAX_PARSE_ERROR_CHARS)}…`
+		: elided;
+}
+
+/** A tool call whose arguments could not be parsed must never execute. */
+export function hasUnparseableArgs(call: Pick<ParsedToolCall, "truncated" | "argsError">): boolean {
+	return call.truncated === true || call.argsError !== undefined;
 }
 
 /**
@@ -193,23 +234,26 @@ export function parseResponseChunks(
 				const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
 				const name = nameMap.get(chunk.id) ?? chunk.id;
 				let input: Record<string, unknown> = {};
-				let truncated = false;
-				try {
-					input = JSON.parse(fullArgsJson);
-				} catch {
-					truncated = true;
-					logger?.warn(
-						`[agent-loop] Failed to parse tool_use args for "${name}" (id=${chunk.id}), ` +
-							`args length=${fullArgsJson.length}. Output likely truncated by max_tokens limit.`,
-					);
-				}
-				toolCalls.push({
+				const call: ParsedToolCall = {
 					id: chunk.id,
 					name,
 					input,
 					argsJson: fullArgsJson,
-					truncated,
-				});
+					truncated: false,
+				};
+				try {
+					input = JSON.parse(fullArgsJson);
+					call.input = input;
+				} catch (parseError) {
+					// Classified once the stream's finish reason is known (below).
+					call.argsError = {
+						kind: "invalid_json",
+						finishReason: null,
+						argsLength: fullArgsJson.length,
+						parseError: boundedJsonParseError(parseError),
+					};
+				}
+				toolCalls.push(call);
 				break;
 			}
 			case "done":
@@ -259,6 +303,24 @@ export function parseResponseChunks(
 				void _exhaustive;
 			}
 		}
+	}
+
+	for (const call of toolCalls) {
+		if (!call.argsError) continue;
+		const truncated = finishReason === "length";
+		call.truncated = truncated;
+		call.argsError.kind = truncated ? "truncated" : "invalid_json";
+		call.argsError.finishReason = finishReason;
+		logger?.warn(
+			truncated
+				? `[agent-loop] Tool_use args for "${call.name}" (id=${call.id}) were cut off at the output-token limit`
+				: `[agent-loop] Tool_use args for "${call.name}" (id=${call.id}) are not valid JSON`,
+			{
+				finishReason,
+				argsLength: call.argsError.argsLength,
+				parseError: call.argsError.parseError,
+			},
+		);
 	}
 
 	return {
@@ -327,11 +389,11 @@ function isSupersededToolCallDraft(
 	emptySameToolCount: number,
 ): boolean {
 	if (earlier.name !== later.name) return false;
-	if (later.truncated) return false;
+	if (hasUnparseableArgs(later)) return false;
 
 	const earlierArgs = earlier.argsJson.trim();
 	const laterArgs = later.argsJson.trim();
-	if (earlier.truncated && (earlierArgs === "" || laterArgs.startsWith(earlierArgs))) {
+	if (hasUnparseableArgs(earlier) && (earlierArgs === "" || laterArgs.startsWith(earlierArgs))) {
 		return true;
 	}
 
@@ -339,5 +401,9 @@ function isSupersededToolCallDraft(
 }
 
 function isEmptyObjectCall(call: ParsedToolCall): boolean {
-	return !call.truncated && call.argsJson.trim() === "{}" && Object.keys(call.input).length === 0;
+	return (
+		!hasUnparseableArgs(call) &&
+		call.argsJson.trim() === "{}" &&
+		Object.keys(call.input).length === 0
+	);
 }

@@ -12,7 +12,7 @@
  *   T2 Usage is last-`done`-wins — multiple done chunks resolve to the last.
  *   T3 Tool-call args round-trip — accumulated partial_json is reassembled
  *      verbatim into argsJson; valid JSON parses into `input`, invalid JSON
- *      sets `truncated` and leaves `input` an empty object. Empty args → "{}".
+ *      sets `argsError` (truncated only on a length stop) and leaves `input` an empty object. Empty args → "{}".
  *   T4 Duplicate tool_use ids are remapped to unique ids, preserving the
  *      args/end routed to the second occurrence.
  *
@@ -169,7 +169,7 @@ describe("parseResponseChunks — tool-call args round-trip and truncation (T3)"
 		// Distinct names per block ⇒ no superseded-draft dropping interferes.
 		const argsArb = fc.oneof(
 			fc.json(), // valid JSON strings
-			fc.string(), // arbitrary strings (often unparseable → truncated)
+			fc.string(), // arbitrary strings (often unparseable → invalid_json)
 			fc.constant(""), // empty ⇒ defaults to "{}"
 		);
 		fc.assert(
@@ -198,7 +198,10 @@ describe("parseResponseChunks — tool-call args round-trip and truncation (T3)"
 								expect(tc.truncated).toBe(false);
 								expect(tc.input).toEqual(JSON.parse(effective));
 							} else {
-								expect(tc.truncated).toBe(true);
+								// No done chunk ⇒ no length stop: unparseable args are
+								// malformed JSON, not a max_tokens truncation (#307).
+								expect(tc.truncated).toBe(false);
+								expect(tc.argsError?.kind).toBe("invalid_json");
 								expect(tc.input).toEqual({});
 							}
 						});

@@ -16,7 +16,12 @@ import {
 	truncateForNudge,
 } from "./loop-guards";
 import { withSilenceTimeout } from "./silence-timeout";
-import { type ParsedResponse, type ParsedToolCall, parseResponseChunks } from "./stream-parser";
+import {
+	type ParsedResponse,
+	type ParsedToolCall,
+	hasUnparseableArgs,
+	parseResponseChunks,
+} from "./stream-parser";
 import {
 	type AgentLoopConfig,
 	type AgentLoopResult,
@@ -1110,7 +1115,7 @@ export abstract class ModularAgentLoop {
 	 * Runs before any tool executes, so it costs nothing when it fires.
 	 */
 	protected async runPreExecutionGuards(parsed: ParsedResponse): Promise<LoopTurnDecision> {
-		const firstTruncated = parsed.toolCalls.find((tc) => tc.truncated);
+		const firstTruncated = parsed.toolCalls.find((tc) => hasUnparseableArgs(tc));
 		if (firstTruncated) {
 			if (this.lastTruncatedToolName === firstTruncated.name) {
 				this.consecutiveTruncatedTurns++;
@@ -1121,7 +1126,7 @@ export abstract class ModularAgentLoop {
 			if (this.consecutiveTruncatedTurns >= this.guardThresholds.maxConsecutiveTruncatedTurns) {
 				return this.tripGuard(
 					"truncated",
-					`[Agent loop aborted] Detected ${this.consecutiveTruncatedTurns} consecutive turns with truncated "${firstTruncated.name}" tool calls. Aborting to prevent runaway token usage.`,
+					`[Agent loop aborted] Detected ${this.consecutiveTruncatedTurns} consecutive turns with ${firstTruncated.truncated ? "truncated" : "unparseable"} "${firstTruncated.name}" tool-call arguments. Aborting to prevent runaway token usage.`,
 				);
 			}
 		} else {

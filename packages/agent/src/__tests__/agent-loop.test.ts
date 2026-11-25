@@ -22,6 +22,7 @@ import {
 	MAX_CONSECUTIVE_DUPLICATE_TOOL_CALLS,
 	MAX_CONSECUTIVE_ERROR_TOOL_CALLS,
 	MAX_CONSECUTIVE_ROUTING_ERROR_TOOL_CALLS,
+	MAX_CONSECUTIVE_TRUNCATED_TURNS,
 	MainAgentLoop,
 } from "../agent-loop";
 import { zodToToolParams } from "../tools/tool-schema";
@@ -3055,6 +3056,122 @@ describe("MainAgentLoop", () => {
 				expect(msg.host_origin).toBe("test-site-id");
 				expect(msg.host_origin).not.toBe("test-host");
 			}
+		});
+	});
+
+	describe("unparseable tool-call arguments (#307)", () => {
+		function toolTurn(id: string, args: string, finishReason: "tool-calls" | "length") {
+			return async function* () {
+				yield { type: "tool_use_start" as const, id, name: "bash" };
+				yield { type: "tool_use_args" as const, id, partial_json: args };
+				yield { type: "tool_use_end" as const, id };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 15,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+					finish_reason: finishReason,
+				};
+			};
+		}
+		function toolResults(): string[] {
+			return (
+				db
+					.query(
+						"SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result' ORDER BY created_at",
+					)
+					.all(threadId) as Array<{ content: string }>
+			).map((row) => row.content);
+		}
+
+		it("reports invalid JSON on a normal finish, does not execute it, and runs the valid retry once", async () => {
+			const mockBackend = new MockLLMBackend();
+			mockBackend.pushResponse(toolTurn("bad-1", '{"command":"echo hi",}', "tool-calls"));
+			mockBackend.pushResponse(toolTurn("good-1", '{"command":"echo hi"}', "tool-calls"));
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Done." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+			const sandbox = createMockSandbox();
+			const agentLoop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+			const result = await agentLoop.run();
+
+			expect(result.error).toBeUndefined();
+			expect(sandbox.calls).toEqual(["echo hi"]);
+			const results = toolResults();
+			expect(results).toHaveLength(2);
+			expect(results[0]).toContain("not valid JSON");
+			expect(results[0]).toContain("finish_reason=tool-calls");
+			expect(results[0]).not.toContain("max_tokens");
+			expect(results[0]).not.toContain("echo hi");
+			expect(results[1]).toContain("mock output");
+		});
+
+		it("reports truncation only when the response stopped on a length limit", async () => {
+			const mockBackend = new MockLLMBackend();
+			mockBackend.pushResponse(toolTurn("cut-1", '{"command":"echo h', "length"));
+			mockBackend.pushResponse(async function* () {
+				yield { type: "text" as const, content: "Done." };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			});
+			const sandbox = createMockSandbox();
+			const agentLoop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+			await agentLoop.run();
+
+			expect(sandbox.calls).toEqual([]);
+			const [first] = toolResults();
+			expect(first).toContain("truncated");
+			expect(first).toContain("finish_reason=length");
+		});
+
+		it("keeps the repeated-invalid-call guard for malformed JSON on a normal finish", async () => {
+			const mockBackend = new MockLLMBackend();
+			for (let i = 0; i < MAX_CONSECUTIVE_TRUNCATED_TURNS + 3; i++) {
+				mockBackend.pushResponse(toolTurn(`bad-${i}`, '{"command":"echo hi",}', "tool-calls"));
+			}
+			const sandbox = createMockSandbox();
+			const agentLoop = new MainAgentLoop(makeCtx(), sandbox, createMockRouter(mockBackend), {
+				threadId,
+				userId: "test-user",
+			});
+			await agentLoop.run();
+
+			expect(mockBackend.getCallCount()).toBe(MAX_CONSECUTIVE_TRUNCATED_TURNS);
+			expect(sandbox.calls).toEqual([]);
+			const notices = db
+				.query(
+					"SELECT content FROM messages WHERE thread_id = ? AND role = 'developer' AND content LIKE '%unparseable \"bash\" tool-call arguments%'",
+				)
+				.all(threadId) as Array<{ content: string }>;
+			expect(notices).toHaveLength(1);
 		});
 	});
 

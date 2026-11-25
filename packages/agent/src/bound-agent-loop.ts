@@ -37,6 +37,7 @@ import {
 	classifyRouteError,
 	getLlmRetryAfterMs,
 	getLlmStatusCode,
+	hasUnparseableArgs,
 	scaledMaxRetries,
 	scaledSilenceTimeout,
 	shouldRetryRelayCall,
@@ -172,6 +173,23 @@ export const THINK_TOOL_RESULT = "Thinking complete - please continue your work.
 export const MAX_DEGENERATE_RETRIES = 2;
 
 /** Lazily get the tracer to ensure tests can register their provider first */
+/**
+ * Model-visible result for a tool call whose arguments never parsed. A
+ * max_tokens diagnosis is made only when the response ended on a length stop;
+ * otherwise the arguments are reported as malformed JSON. Never echoes the
+ * argument text.
+ */
+export function unparseableArgsToolResult(toolCall: ParsedToolCall): string {
+	const err = toolCall.argsError;
+	if (toolCall.truncated) {
+		return `Error: tool call arguments were truncated (the response stopped at the output-token limit, finish_reason=length). The "${toolCall.name}" call was cut off before the full arguments could be generated and was not executed. Try breaking the operation into smaller parts, or reduce the size of the arguments.`;
+	}
+	const detail = err
+		? ` (${err.parseError}; finish_reason=${err.finishReason ?? "unknown"}, ${err.argsLength} chars)`
+		: "";
+	return `Error: tool call arguments for "${toolCall.name}" were not valid JSON${detail}. The call was not executed. Re-issue it with well-formed JSON arguments.`;
+}
+
 function getTracer() {
 	return trace.getTracer("bound.agent-loop");
 }
@@ -1607,11 +1625,11 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			let toolMetadata: Record<string, unknown> | undefined;
 			const toolStartTime = Date.now();
 
-			if (toolCall.truncated) {
+			if (hasUnparseableArgs(toolCall)) {
 				results.push({
 					toolCall,
 					result: {
-						content: `Error: tool call arguments were truncated (output exceeded max_tokens limit). The "${toolCall.name}" call was cut off before the full arguments could be generated. Try breaking the operation into smaller parts, or reduce the size of the arguments.`,
+						content: unparseableArgsToolResult(toolCall),
 						exitCode: 1,
 						durationMs: 0,
 					},

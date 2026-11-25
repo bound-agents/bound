@@ -141,6 +141,8 @@ loop.cancel();
 
 The `alert` role is a reserved message role visible in the thread but excluded from LLM context during subsequent calls.
 
+A tool call whose arguments fail `JSON.parse` never executes. `parseResponseChunks` attaches a content-free `argsError` (`kind`, `finishReason`, `argsLength`, bounded `parseError`) and sets `truncated` only when the response ended with `finishReason === "length"`. The model receives a max_tokens diagnosis for a length stop and an invalid-JSON error for every other finish. Both kinds feed the consecutive-unparseable-call guard (`MAX_CONSECUTIVE_TRUNCATED_TURNS`).
+
 ### Deferred Tool Results — Backgrounding (#76)
 
 **Source:** `packages/loop/src/types.ts` (`DeferredToolResult` / `isDeferredToolResult`), `packages/agent/src/bound-agent-loop.ts` (`executeToolCall`, `executeToolRoundTrip`), `packages/core/src/dispatch.ts` (`resolveDeferredToolResult`)
