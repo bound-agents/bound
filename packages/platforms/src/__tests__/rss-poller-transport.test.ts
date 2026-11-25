@@ -52,6 +52,28 @@ describe("fetchValidatedUrl (pinned Node transport)", () => {
 		expect(await resp.text()).toContain("Transport Feed");
 	});
 
+	it("connects a hostname URL through the pinned address, keeping the Host header (#300)", async () => {
+		// An IP-literal URL bypasses the custom lookup entirely; only a hostname
+		// exercises it. `.invalid` never resolves in real DNS, so a 200 proves the
+		// connection used the pinned address rather than a fresh lookup.
+		let hostHeader: string | null = null;
+		server = Bun.serve({
+			port: 0,
+			fetch(req) {
+				hostHeader = req.headers.get("host");
+				return new Response(RSS_DOC, { status: 200 });
+			},
+		});
+		const url = new URL(`http://feed.example.invalid:${server.port}/rss`);
+		const resp = await fetchValidatedUrl(url, "127.0.0.1", {
+			headers: {},
+			signal: AbortSignal.timeout(5000),
+		});
+		expect(resp.status).toBe(200);
+		expect(await resp.text()).toContain("Transport Feed");
+		expect(hostHeader).toBe(`feed.example.invalid:${server.port}`);
+	});
+
 	it("rejects a streamed body that grows past the limit without a content-length", async () => {
 		const bigChunk = "y".repeat(1024 * 1024);
 		server = Bun.serve({

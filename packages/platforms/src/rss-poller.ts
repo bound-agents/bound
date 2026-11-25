@@ -209,7 +209,17 @@ export function fetchValidatedUrl(url: URL, address: string, init: RequestInit):
 							lookup: (_hostname: string, optionsOrCallback: unknown, maybeCallback?: unknown) => {
 								const callback =
 									typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
-								if (typeof callback === "function") callback(null, address, addressFamily(address));
+								if (typeof callback !== "function") return;
+								const family = addressFamily(address);
+								// `all: true` expects an array of {address, family}; answering it
+								// with the scalar form leaves the address undefined (#300). Either
+								// form only ever offers the validated address, keeping the SSRF pin.
+								const wantsAll =
+									typeof optionsOrCallback === "object" &&
+									optionsOrCallback !== null &&
+									(optionsOrCallback as { all?: unknown }).all === true;
+								if (wantsAll) callback(null, [{ address, family }]);
+								else callback(null, address, family);
 							},
 						}),
 			},
