@@ -13,9 +13,9 @@ export interface SlashCompletion {
 	 *  can keep typing the argument without an extra keystroke. */
 	takesArgs?: boolean;
 }
-
 export interface TextInputProps {
-	onSubmit: (value: string) => void;
+	/** Return `false` to refuse the submit and keep the draft. */
+	onSubmit: (value: string) => boolean | undefined | Promise<void>;
 	placeholder?: string;
 	disabled?: boolean;
 	/** Available columns for text. When set, the component renders explicit
@@ -467,7 +467,8 @@ export function TextInput({
 				// With the menu open, Enter runs the SELECTED command — the buffer
 				// may only hold "/mo" but the operator's intent is the highlighted
 				// "/model".
-				onSubmit(menuActive ? menuItems[menuSel].value : value);
+				// onSubmit returning false refuses the submit and keeps the draft.
+				if (onSubmit(menuActive ? menuItems[menuSel].value : value) === false) return;
 				setState({ value: "", pos: 0 });
 				setHist({ idx: null, draft: "" });
 				return;

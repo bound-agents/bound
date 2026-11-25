@@ -1191,7 +1191,21 @@ export function ChatView({
 						<Box flexGrow={1} flexShrink={1}>
 							<TextInput
 								placeholder="Enter message or /help"
-								onSubmit={handleSubmit}
+								onSubmit={(value) => {
+									// Offline: refuse a message send synchronously so TextInput keeps
+									// the draft. Slash commands still run.
+									if (
+										connectionState !== "connected" &&
+										value.trim().length > 0 &&
+										!value.trim().startsWith("/")
+									) {
+										setCommandError(
+											"Not connected - message not sent. Your text is kept; press Enter again once reconnected.",
+										);
+										return false;
+									}
+									return handleSubmit(value);
+								}}
 								columns={inputColumns}
 								hasFocus={!overlayCapturingInput}
 								history={inputHistory}

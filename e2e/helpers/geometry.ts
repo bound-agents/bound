@@ -73,7 +73,6 @@ export async function assertNotClipped(locator: Locator): Promise<void> {
 	}, TOL);
 	expect(failures, "element clipped by an ancestor").toEqual([]);
 }
-
 /** Fails when `action` moves or resizes `container` by more than 1px. */
 export async function assertNoLayoutShift(
 	container: Locator,
@@ -84,8 +83,29 @@ export async function assertNoLayoutShift(
 			const b = el.getBoundingClientRect();
 			return { top: b.top, height: b.height, width: b.width };
 		});
+	// The conversation column can still be settling (a few px over ~6 frames)
+	// right after mount; measuring mid-settle reports that drift as a shift.
+	const settle = () =>
+		container.evaluate(
+			(el) =>
+				new Promise<void>((resolve) => {
+					let last = Number.NaN;
+					let stable = 0;
+					let frames = 0;
+					const tick = () => {
+						const top = el.getBoundingClientRect().top;
+						stable = Math.abs(top - last) < 0.01 ? stable + 1 : 0;
+						last = top;
+						if (stable >= 3 || ++frames > 120) resolve();
+						else requestAnimationFrame(tick);
+					};
+					requestAnimationFrame(tick);
+				}),
+		);
+	await settle();
 	const before = await measure();
 	await action();
+	await settle();
 	const after = await measure();
 	expect(Math.abs(after.top - before.top), "top shifted").toBeLessThanOrEqual(TOL);
 	expect(Math.abs(after.height - before.height), "height shifted").toBeLessThanOrEqual(TOL);
