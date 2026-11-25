@@ -107,6 +107,32 @@ export default { backends: [{ id: "local", provider: "openai-compatible", model:
 		).toEqual({ value: 0.0002, error: null });
 	});
 
+	it("loads template literals in helpers and price callbacks without env expansion (#280)", async () => {
+		// biome-ignore lint/performance/noDelete: `process.env.X = undefined` stores the string "undefined"; only delete makes the var absent
+		delete process.env.id;
+		// biome-ignore lint/performance/noDelete: `process.env.X = undefined` stores the string "undefined"; only delete makes the var absent
+		delete process.env.rate;
+		writeFileSync(
+			join(configDir, "model_backends.js"),
+			`const test = (id) => ({ id: \`test-\${id}\`, provider: "openai-compatible", model: "x", context_window: 8192, base_url: "\${TEST_BACKEND_URL:-http://localhost:11434/v1}", price(turn) { const rate = 3; const tag = \`r\${rate}\`; return tag === "r3" ? turn.inputTokens * rate / 1000 : -1; } });
+export default { backends: [test("a")], default: "test-a" };`,
+		);
+
+		const config = await loadModelBackendsConfig(configDir);
+		expect(config.backends[0]?.id).toBe("test-a");
+		expect(config.backends[0]?.base_url).toBe("http://localhost:11434/v1");
+		expect(
+			calculateDynamicPrice("test-a", {
+				modelId: "test-a",
+				inputTokens: 100,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				pricesPerM: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+		).toEqual({ value: 0.3, error: null });
+	});
+
 	it("rejects functions outside backend.price or a model_overrides[*].price", async () => {
 		writeFileSync(
 			join(configDir, "model_backends.js"),

@@ -162,7 +162,9 @@ export async function loadConfigWithPrecedence<T>(
 	}
 
 	try {
-		const source = expandEnvVars(readFileSync(join(configDir, jsFilename), "utf-8"));
+		// Env references are expanded in the evaluated string values only. Expanding the
+		// raw source would treat JavaScript template literals (`id-${x}`) as env refs.
+		const source = readFileSync(join(configDir, jsFilename), "utf-8");
 		const evaluated = await evaluateJavaScriptConfig(source, jsFilename);
 		return validateConfig(jsFilename, schema, expandEnvVarsInObject(evaluated));
 	} catch (error) {

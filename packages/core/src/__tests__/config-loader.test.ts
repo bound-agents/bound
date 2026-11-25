@@ -406,6 +406,50 @@ export default { hub };`,
 			if (!invalid.ok) expect(invalid.error.filename).toBe("sync.js");
 		});
 
+		it("evaluates template literals in JavaScript source instead of treating them as env refs (#280)", async () => {
+			// biome-ignore lint/performance/noDelete: `process.env.X = undefined` stores the string "undefined"; only delete makes the var absent
+			delete process.env.id;
+			process.env.BOUND_JS_DISPLAY = "From Env";
+			writeFileSync(
+				join(configDir, "allowlist.js"),
+				`const user = (id) => ({ display_name: \`user-\${id}\` });
+const label = 'prefix-\${BOUND_JS_DISPLAY}';
+export default {
+	default_web_user: "alice",
+	users: { alice: user("alice"), bob: { display_name: label } },
+};`,
+			);
+
+			const result = await loadConfigWithPrecedence(configDir, "allowlist", allowlistSchema);
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.value.users.alice?.display_name).toBe("user-alice");
+				expect(result.value.users.bob?.display_name).toBe("prefix-From Env");
+			}
+			// biome-ignore lint/performance/noDelete: `process.env.X = undefined` stores the string "undefined"; only delete makes the var absent
+			delete process.env.BOUND_JS_DISPLAY;
+		});
+
+		it("still expands environment references in JSON config values", async () => {
+			process.env.BOUND_JSON_USER = "carol";
+			writeFileSync(
+				join(configDir, "allowlist.json"),
+				JSON.stringify({
+					default_web_user: "${BOUND_JSON_USER}",
+					users: { carol: { display_name: "${BOUND_JSON_MISSING:-Carol}" } },
+				}),
+			);
+
+			const result = loadConfigFile(configDir, "allowlist.json", allowlistSchema);
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.value.default_web_user).toBe("carol");
+				expect(result.value.users.carol?.display_name).toBe("Carol");
+			}
+			// biome-ignore lint/performance/noDelete: `process.env.X = undefined` stores the string "undefined"; only delete makes the var absent
+			delete process.env.BOUND_JSON_USER;
+		});
+
 		it("loads every optional JavaScript alternative through the aggregate loader", async () => {
 			for (const [name, _schema, value] of optionalCases) {
 				writeJavaScriptConfig(`${name}.js`, value);

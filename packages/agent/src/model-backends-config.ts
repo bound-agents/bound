@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expandEnvVars, loadConfigWithPrecedence, setInterruptBudget } from "@bound/core";
+import { loadConfigWithPrecedence, setInterruptBudget } from "@bound/core";
 import { modelBackendsSchema } from "@bound/shared";
 import type { ModelBackendsConfig } from "@bound/shared";
 import RELEASE_SYNC from "@jitl/quickjs-singlefile-cjs-release-sync";
@@ -143,12 +143,11 @@ export async function loadModelBackendsConfig(
 	if (!result.ok) {
 		// Preserve source-level policy errors (functions other than backend.price)
 		// which QuickJS serialization would otherwise erase before schema validation.
-		if (existsSync(jsPath))
-			await loadDynamicPriceFunctions(expandEnvVars(readFileSync(jsPath, "utf8")));
+		if (existsSync(jsPath)) await loadDynamicPriceFunctions(readFileSync(jsPath, "utf8"));
 		throw new Error(`${result.error.filename}: ${result.error.message}`);
 	}
 	const priceFunctions = existsSync(jsPath)
-		? await loadDynamicPriceFunctions(expandEnvVars(readFileSync(jsPath, "utf8")))
+		? await loadDynamicPriceFunctions(readFileSync(jsPath, "utf8"))
 		: [];
 	// Key each compiled price source by the pricing-registry id it must resolve
 	// under on the hot path: the backend id for a top-level per-backend `price`,
