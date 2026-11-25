@@ -13,6 +13,7 @@ import {
 	deadLetterClaimedDurableWork,
 	enqueueClientToolCall,
 	enqueueMessage,
+	expireClientToolCallIfInFlight,
 	readDurablePartsByStreamId,
 	recordRelayCycle,
 	releaseDurableWorkClaim,
@@ -1435,7 +1436,7 @@ export class RelayProcessor {
 		// the durable handoff to the WS layer) so a re-driven client_tool re-emits
 		// cleanly rather than wedging here.
 		const timeoutMs = payload.timeout_ms > 0 ? payload.timeout_ms : 30_000;
-		this.awaitClientResult(entry, payload, timeoutMs).catch((err) => {
+		this.awaitClientResult(entry, payload, timeoutMs, dispatchEntryId).catch((err) => {
 			this.logger.error("[relay] client_tool: awaitClientResult failed", {
 				threadId: payload.thread_id,
 				callId: payload.call_id,
@@ -1475,6 +1476,7 @@ export class RelayProcessor {
 		entry: RelayInboxEntry,
 		payload: ClientToolPayload,
 		timeoutMs: number,
+		dispatchEntryId: string,
 	): Promise<void> {
 		// Fast path: a re-driven client_tool whose result already landed (AC.7c).
 		const existing = this.readClientToolResult(payload.thread_id, payload.call_id);
@@ -1511,13 +1513,29 @@ export class RelayProcessor {
 			check();
 		});
 
-		if (result) {
+		let settled = result;
+		if (!settled && !expireClientToolCallIfInFlight(this.db, dispatchEntryId)) {
+			// The client's result was acknowledged between the last check and the
+			// expiry attempt: it won the call, so relay it instead of an error.
+			settled = this.readClientToolResult(payload.thread_id, payload.call_id);
+		}
+
+		if (settled) {
 			// The WS handler enqueues a local tool-result wake for ordinary agent
 			// continuation. This relay consumer owns continuation upstream, so close
 			// that wake here or the session host starts a detached second loop.
 			acknowledgeToolResultForCall(this.db, payload.thread_id, payload.call_id);
-			this.relayClientResult(entry, payload.call_id, result.content, result.isError);
+			this.relayClientResult(entry, payload.call_id, settled.content, settled.isError);
 		} else {
+			// This wait owns the relayed call's expiry (#278/#295): the entry is now
+			// expired, so the WS layer discards a late client result instead of
+			// persisting a second tool_result, and the client is told to stop.
+			this.eventBus.emit("client_tool_call:cancel", {
+				threadId: payload.thread_id,
+				entryId: dispatchEntryId,
+				callId: payload.call_id,
+				reason: "timeout",
+			});
 			this.logger.warn("[relay] client_tool: timed out waiting for client result", {
 				threadId: payload.thread_id,
 				callId: payload.call_id,

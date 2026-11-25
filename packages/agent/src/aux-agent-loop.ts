@@ -333,7 +333,13 @@ export class AuxAgentLoop extends BoundAgentLoop {
 					? resolveClientSessionHost(this.ctx.db, parentThreadId, this.ctx.siteId)
 					: null;
 				if (sessionHost) {
-					const relayed = await this.relayDeferredClientTool(toolCall, sessionHost);
+					// The session host waits as long as a local aux would (#278) and
+					// owns the call's expiry there.
+					const relayed = await this.relayDeferredClientTool(
+						toolCall,
+						sessionHost,
+						clientToolWaitMs(toolCall.input),
+					);
 					const isError = relayed.exitCode !== 0;
 					this.persistRelayedClientToolResult(toolCall.id, relayed.content, isError);
 					frame.messages.push({

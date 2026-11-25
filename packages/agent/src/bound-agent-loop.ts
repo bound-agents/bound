@@ -343,6 +343,12 @@ export interface BoundPreparedFrame extends PreparedLoopFrame {
 	cacheTtl: ReturnType<typeof selectCacheTtl>;
 }
 
+/**
+ * Extra producer-side wait on a relayed client tool beyond the session host's
+ * own wait, so the session host's result-or-expiry verdict lands first.
+ */
+export const RELAYED_CLIENT_TOOL_VERDICT_SLACK_MS = 30_000;
+
 export abstract class BoundAgentLoop extends ModularAgentLoop {
 	private filesChanged = 0;
 	private yielded = false;
@@ -2083,8 +2089,16 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	protected async relayDeferredClientTool(
 		toolCall: ParsedToolCall,
 		sessionHost: EligibleHost,
+		sessionWaitMs?: number,
 	): Promise<ToolExecutionResult> {
-		const timeoutMs = this.inferenceTimeoutMs;
+		// `sessionWaitMs` is how long the session host waits on the client; it owns
+		// that call's expiry and its single result. The producer waits a little
+		// longer, so the session host's verdict (result or expiry) arrives first.
+		const clientWaitMs = sessionWaitMs ?? this.inferenceTimeoutMs;
+		const timeoutMs =
+			sessionWaitMs === undefined
+				? this.inferenceTimeoutMs
+				: sessionWaitMs + RELAYED_CLIENT_TOOL_VERDICT_SLACK_MS;
 		const tracker = this.config.handleMessageTracker;
 		const dispatchCtx = tracker
 			? (tracker.openDispatch(this.config.threadId, toolCall.id, toolCall.name) as Context)
@@ -2096,7 +2110,7 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			call_id: toolCall.id,
 			tool_name: toolCall.name,
 			args: toolCall.input,
-			timeout_ms: timeoutMs,
+			timeout_ms: clientWaitMs,
 		};
 		const clientToolKey = `client-tool:${this.config.threadId}:${toolCall.id}`;
 		let awaitId: string;

@@ -1315,17 +1315,19 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				// A running aux loop owns its own client-tool wait, sized from each
 				// call's timeout (#278); its sessionless thread must not be reaped
 				// at the 5-minute TTL out from under it.
-				const liveThreadIds = [
-					...getClientSessions(appContext.db)
-						.filter((s) => s.live)
-						.map((s) => s.threadId),
-					...listRunningAuxLoopThreadIds(),
-				];
+				// An aux thread's call relayed here from another host (#295) waits
+				// under its parent's live session, and the relay wait expires it at
+				// the call's own timeout, so children of live session threads are
+				// spared as well.
+				const liveSessionThreadIds = getClientSessions(appContext.db)
+					.filter((s) => s.live)
+					.map((s) => s.threadId);
 				const expired = expireClientToolCalls(
 					appContext.db,
 					CLIENT_TOOL_CALL_TTL_MS,
 					undefined,
-					liveThreadIds,
+					[...liveSessionThreadIds, ...listRunningAuxLoopThreadIds()],
+					liveSessionThreadIds,
 				);
 				if (expired.length > 0) {
 					// Group by thread_id

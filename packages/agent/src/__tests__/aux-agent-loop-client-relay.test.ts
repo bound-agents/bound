@@ -17,11 +17,14 @@ const logger = { debug() {}, info() {}, warn() {}, error() {} };
 /** Records the relay hop instead of writing a real relay request. */
 class RelayProbeLoop extends AuxAgentLoop {
 	relayed: Array<{ callId: string; host: string }> = [];
+	sessionWaits: Array<number | undefined> = [];
 	protected override async relayDeferredClientTool(
 		toolCall: ParsedToolCall,
 		sessionHost: EligibleHost,
+		sessionWaitMs?: number,
 	): Promise<ToolExecutionResult> {
 		this.relayed.push({ callId: toolCall.id, host: sessionHost.site_id });
+		this.sessionWaits.push(sessionWaitMs);
 		return { content: "relayed output", exitCode: 0, durationMs: 0 };
 	}
 	run1(call: { id: string; name: string; input: Record<string, unknown> }) {
@@ -79,6 +82,20 @@ describe("aux client tools relay to the parent's session host (#295)", () => {
 		expect(loop.relayed).toEqual([{ callId: "c1", host: "msi" }]);
 		expect(findToolResultByThreadAndCallId(db, "aux", "c1")?.content).toBe("relayed output");
 		expect(frame.messages).toHaveLength(1);
+	});
+
+	it("sizes the relayed call's session-host wait from the call's own timeout (#278)", async () => {
+		addParentSession("msi");
+		const loop = makeLoop();
+
+		await loop.run1({
+			id: "c1",
+			name: "boundless_bash",
+			input: { command: "x", timeout: 600_000 },
+		});
+		await loop.run1({ id: "c2", name: "boundless_read", input: { path: "x" } });
+
+		expect(loop.sessionWaits).toEqual([600_000 + 30_000, 300_000]);
 	});
 
 	it("still fails the call with a clear error when the parent has no session anywhere", async () => {

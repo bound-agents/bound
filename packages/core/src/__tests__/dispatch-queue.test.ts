@@ -852,6 +852,36 @@ describe("expireClientToolCalls", () => {
 		expect(deadRow.status).toBe("expired");
 	});
 
+	it("spares a child thread's call while its parent's session is live (#295)", () => {
+		const parentThread = randomUUID();
+		const childThread = randomUUID();
+		const strayThread = randomUUID();
+		const oldTime = new Date(Date.now() - 2 * 3600_000).toISOString();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted, parent_thread_id) VALUES (?, 'u', 'aux', 'local', ?, ?, ?, 0, ?)",
+			[childThread, oldTime, oldTime, oldTime, parentThread],
+		);
+		const childId = randomUUID();
+		const strayId = randomUUID();
+		for (const [id, thread] of [
+			[childId, childThread],
+			[strayId, strayThread],
+		] as const) {
+			db.run(
+				"INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at) VALUES (?, ?, 'processing', ?, '{}', 'conn', ?, ?)",
+				[id, thread, CLIENT_TOOL_CALL, oldTime, oldTime],
+			);
+		}
+
+		const expired = expireClientToolCalls(db, 3600_000, undefined, [parentThread], [parentThread]);
+
+		expect(expired.map((e) => e.message_id)).toEqual([strayId]);
+		const childRow = db
+			.query("SELECT status FROM dispatch_queue WHERE message_id = ?")
+			.get(childId) as { status: string };
+		expect(childRow.status).toBe("processing");
+	});
+
 	it("expires only entries for specified thread when threadId provided", () => {
 		const thread1 = randomUUID();
 		const thread2 = randomUUID();

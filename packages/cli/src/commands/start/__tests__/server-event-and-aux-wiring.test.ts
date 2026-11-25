@@ -1361,6 +1361,98 @@ describe("initServer — client-tool expiry scan", () => {
 	});
 
 	/**
+	 * #295: an aux thread's call relayed here from another host waits under its
+	 * parent's live session, and the relay wait owns its expiry at the call's
+	 * own timeout. The aux thread has no session of its own and no aux loop runs
+	 * on this host, so only the children-of-live-session exclusion keeps the
+	 * 5-minute TTL sweep from reaping it.
+	 */
+	it("does not expire a stale call on a child thread of a live-session parent", async () => {
+		const now = new Date().toISOString();
+		const parentThreadId = randomUUID();
+		seedThread(db, siteId, parentThreadId, "boundless", "operator");
+		const childThreadId = randomUUID();
+		insertRow(
+			db,
+			"threads",
+			{
+				id: childThreadId,
+				user_id: "operator",
+				interface: "web",
+				host_origin: "test-host",
+				title: null,
+				summary: null,
+				created_at: now,
+				last_message_at: now,
+				modified_at: now,
+				deleted: 0,
+				parent_thread_id: parentThreadId,
+			},
+			siteId,
+		);
+		const peerSiteId = randomUUID();
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: peerSiteId,
+				host_name: "peer-host",
+				work_spool_capable: 0,
+				online_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			peerSiteId,
+		);
+		insertRow(
+			db,
+			"client_sessions",
+			{
+				id: randomUUID(),
+				connection_id: "live-conn",
+				thread_id: parentThreadId,
+				site_id: peerSiteId,
+				created_at: now,
+				modified_at: now,
+				deleted: 0,
+			},
+			peerSiteId,
+		);
+
+		const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+		db.prepare(
+			`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at)
+			 VALUES (?, ?, 'pending', 'client_tool_call', ?, ?, ?, ?)`,
+		).run(
+			randomUUID(),
+			childThreadId,
+			JSON.stringify({ call_id: "c-child", tool_name: "boundless_bash", arguments: {} }),
+			"live-conn",
+			staleAt,
+			staleAt,
+		);
+
+		const agentLoopFactory: any = () => ({
+			run: async () => ({ messagesCreated: 0, toolCallsMade: 0, yielded: false }),
+		});
+		agentLoopFactory.createAuxLoopRunner = () => undefined;
+
+		const appContext = makeAppContext(db, siteId);
+		result = await initServer({
+			...makeDeps(appContext, agentLoopFactory, makeRelayProcessor()),
+			scanIntervals: { expiryScanIntervalMs: 20 },
+		});
+
+		await new Promise((r) => setTimeout(r, 200));
+		const row = db
+			.query(
+				"SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = 'client_tool_call'",
+			)
+			.get(childThreadId) as { status: string } | null;
+		expect(row?.status).toBe("pending");
+	});
+
+	/**
 	 * #278: a running aux loop owns its client-tool wait, sized from the call's
 	 * own timeout. Its thread has no client session, so only the running-aux
 	 * exclusion keeps the 5-minute TTL sweep from reaping a call the aux is

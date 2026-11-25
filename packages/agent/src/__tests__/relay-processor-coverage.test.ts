@@ -1090,6 +1090,38 @@ describe("RelayProcessor - handleClientTool", () => {
 		expect(clientResult.is_error).toBe(false);
 	});
 
+	it("expires the relayed call and cancels the client when its wait runs out (#278/#295)", async () => {
+		insertThread(db, "thread-ct");
+		const { processor, emitted } = makeProcessor(makeResolver(true));
+		const id = randomUUID();
+		insertDurableRequest(db, {
+			id,
+			kind: "client_tool",
+			payload: basePayload({ timeout_ms: 150 }),
+		});
+		const handle = processor.start(10);
+		await waitFor(() => readResponse(db, id, "error") !== null, { timeoutMs: 6000 });
+		handle.stop();
+
+		// The wait owns the call's expiry: the WS layer discards a late client
+		// result for an expired entry instead of persisting a second tool_result.
+		const statuses = db
+			.query(
+				"SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = 'client_tool_call'",
+			)
+			.all("thread-ct") as Array<{ status: string }>;
+		expect(statuses.map((r) => r.status)).toEqual(["expired"]);
+		const cancel = emitted.find((e) => e.event === "client_tool_call:cancel");
+		expect(cancel?.args).toMatchObject({
+			threadId: "thread-ct",
+			callId: "call_1",
+			reason: "timeout",
+		});
+		const err = readResponse(db, id, "error");
+		if (!err) throw new Error("expected error response");
+		expect(JSON.parse(err.payload).retriable).toBe(true);
+	});
+
 	it("dead-letters an invalid client_tool payload with a non-retriable error", async () => {
 		const { processor } = makeProcessor(makeResolver(true));
 		const id = randomUUID();

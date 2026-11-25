@@ -72,9 +72,11 @@ names a tool that no server-side source provides. In a Yard program, that failur
 `aux()` effect.
 
 An auxiliary agent waits on each inherited client tool for the call's own `timeout` plus 30
-seconds, and never less than 300 seconds. If the wait runs out or the invocation is aborted,
-the agent records one error result, sends `tool:cancel` to the client, and discards any later
-result for that call. The error states the cause: an exceeded timeout while the session was
+seconds, and never less than 300 seconds. A relayed call gets the same wait on the session
+host, which owns that call's expiry; the session host's five-minute sweep of stale client
+calls skips calls from auxiliary threads whose parent session is still connected. If the wait
+runs out or the invocation is aborted, the agent records one error result, sends `tool:cancel`
+to the client, and discards any later result for that call. The error states the cause: an exceeded timeout while the session was
 still connected, a dropped client session, or an aborted invocation.
 
 ## Child threads and focused results

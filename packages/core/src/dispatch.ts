@@ -647,6 +647,7 @@ export function expireClientToolCalls(
 	ttlMs: number,
 	threadId?: string,
 	excludeThreadIds?: readonly string[],
+	excludeChildrenOfThreadIds?: readonly string[],
 ): DispatchEntry[] {
 	const now = new Date().toISOString();
 	const cutoff = new Date(Date.now() - ttlMs).toISOString();
@@ -661,6 +662,15 @@ export function expireClientToolCalls(
 	if (excluded.length > 0) {
 		conditions.push(`thread_id NOT IN (${excluded.map(() => "?").join(", ")})`);
 		params.push(...excluded);
+	}
+	// A child (aux) thread's call relayed here from another host waits under
+	// its parent's live session (#295); the relayed wait owns its expiry.
+	const parents = excludeChildrenOfThreadIds?.filter((t) => t.length > 0) ?? [];
+	if (parents.length > 0) {
+		conditions.push(
+			`thread_id NOT IN (SELECT id FROM threads WHERE parent_thread_id IN (${parents.map(() => "?").join(", ")}))`,
+		);
+		params.push(...parents);
 	}
 	const whereClause = conditions.join(" AND ");
 
