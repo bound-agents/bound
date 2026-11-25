@@ -203,11 +203,38 @@ describe("SkillEditModal", () => {
 		const cancel = [...target.querySelectorAll(".modal-footer button")][0] as HTMLButtonElement;
 		await dom.fire(cancel, "click");
 		expect(closed).toBe(1);
-		// Escape on the backdrop also closes.
-		await dom.fire(target.querySelector(".modal-backdrop") as HTMLElement, "keydown", {
+		// Escape closes even when focus is inside the panel (window listener).
+		await dom.fire(target.querySelector("#edit-desc") as HTMLElement, "keydown", {
 			key: "Escape",
+			bubbles: true,
 		});
 		expect(closed).toBe(2);
+	});
+
+	it("focuses the description on mount and ignores backdrop clicks once dirty", async () => {
+		const { target } = await mountModal();
+		const desc = target.querySelector("#edit-desc") as HTMLInputElement;
+		expect(dom.document.activeElement).toBe(desc);
+		await dom.type(desc, "Changed");
+		await dom.fire(target.querySelector(".modal-backdrop") as HTMLElement, "click");
+		expect(closed).toBe(0);
+	});
+
+	it("sends empty strings so cleared optional fields are cleared", async () => {
+		let body: Record<string, unknown> | null = null;
+		dom.route("PATCH", /\/api\/skills\/.+/, (req: { body: unknown }) => {
+			body = req.body as Record<string, unknown>;
+			return { skill: {} };
+		});
+		const { target } = await mountModal({ skill: { allowed_tools: "bash", compatibility: "x" } });
+		const inputs = [...target.querySelectorAll("input")] as HTMLInputElement[];
+		for (const i of inputs.filter((x) => x.id !== "edit-desc")) await dom.type(i, "");
+		const save = [...target.querySelectorAll(".modal-footer button")].at(-1) as HTMLButtonElement;
+		await dom.fire(save, "click");
+		await dom.settle();
+		const sent = dom.requests.find((r) => r.method === "PATCH")?.body as Record<string, unknown>;
+		expect(sent?.allowed_tools ?? body).toBe("");
+		expect(sent?.compatibility).toBe("");
 	});
 
 	it("closes when the backdrop is clicked but not when the panel is clicked", async () => {

@@ -332,12 +332,12 @@ describe("webhooks routes", () => {
 			const id = created.id as string;
 
 			// Update format
-			const patchBody = JSON.stringify({ format: "gitlab" });
+			const patchBody = JSON.stringify({ format: "slack" });
 			const patchResponse = await request(app, "PATCH", `/${id}`, patchBody);
 
 			expect(patchResponse.status).toBe(200);
 			const updated = (await patchResponse.json()) as Record<string, unknown>;
-			expect(updated.signature_format).toBe("gitlab");
+			expect(updated.signature_format).toBe("slack");
 		});
 	});
 

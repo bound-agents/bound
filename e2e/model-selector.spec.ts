@@ -139,33 +139,6 @@ test.describe("model selector", () => {
 		await expect(tip).toBeHidden();
 	});
 
-	test("Tab reaches route pins and pinning marks the trigger", async ({ page }) => {
-		await mountThread(page, { modelHint: "gpt-6-luna" });
-		await trigger(page).click();
-		await page.keyboard.press("Tab");
-		const auto = page.locator(".pin-choice", { hasText: "Auto" });
-		await expect(auto).toBeFocused();
-		await page.keyboard.press("Tab");
-		const first = page.locator(".pin-choice").nth(1);
-		await expect(first).toBeFocused();
-		await assertNotClipped(first);
-		await page.keyboard.press("Enter");
-		await expect(first).toHaveAttribute("aria-pressed", "true");
-		await expect(trigger(page)).toHaveClass(/pinned/);
-		await expect(page.locator(".pin-badge")).toBeVisible();
-	});
-
-	test("Escape from a focused route pin closes the popover", async ({ page }) => {
-		await mountThread(page, { modelHint: "gpt-6-luna" });
-		await trigger(page).click();
-		const pin = page.locator(".pin-choice").nth(1);
-		await pin.focus();
-		await expect(pin).toBeFocused();
-		await page.keyboard.press("Escape");
-		await expect(popover(page)).toHaveCount(0);
-		await expect(trigger(page)).toBeFocused();
-	});
-
 	test("top bar never overflows the desktop viewport", async ({ page, isMobile }) => {
 		test.skip(!!isMobile, "desktop widths only");
 		await mountThread(page, { modelHint: "gpt-6-luna" });

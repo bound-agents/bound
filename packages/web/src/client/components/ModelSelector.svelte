@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ClusterModelInfo, ModelRoutingInfo, RouteSupplyInfo } from "@bound/client";
-	import { Cpu, Pin } from "lucide-svelte";
+	import { Cpu } from "lucide-svelte";
 	import { onMount } from "svelte";
 	import { client } from "../lib/bound";
 	import {
@@ -25,12 +25,11 @@
 	}>();
 
 	// Selected logical model id (spec §9.1: the picker chooses a logical model by
-	// display name; concrete routes appear only in the popover's route-pin section).
+	// display name; concrete routes appear only in the status-dot route tooltip).
 	let selectedModel = $state("");
 	let models = $state<ClusterModelInfo[]>([]);
 	let options = $state<ModelOption[]>([]);
 	let routing = $state<ModelRoutingInfo[]>([]);
-	let pinnedRoute = $state("");
 	let hintApplied = $state(false);
 
 	let open = $state(false);
@@ -173,10 +172,6 @@
 		options.find((o) => o.id === selectedModel)?.label ?? selectedModel,
 	);
 	const selectedRoutes = $derived(routesFor(selectedModel));
-	const pinnedLabel = $derived.by(() => {
-		const r = selectedRoutes.find((x) => x.route_id === pinnedRoute);
-		return r ? routeLine(r) : null;
-	});
 
 	function showTip(): void {
 		if (!dotBtn || open || selectedRoutes.length === 0) return;
@@ -234,7 +229,7 @@
 		open = true;
 		void refreshRouting();
 		queueMicrotask(() => {
-			// Re-measure with the real height (listbox + pin section).
+			// Re-measure with the real height.
 			placePopover();
 			scrollActiveIntoView();
 		});
@@ -251,7 +246,6 @@
 	}
 
 	function choose(id: string): void {
-		if (id !== selectedModel) pinnedRoute = "";
 		userPicked = true;
 		selectedModel = id;
 		modelStore.setModel(id);
@@ -312,7 +306,7 @@
 				close(true);
 				return;
 			case "Tab":
-				// Let focus move into the pin section; focusout closes once it leaves.
+				// Tab leaves the popover; focusout closes it.
 				return;
 		}
 		if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -337,7 +331,7 @@
 	}}
 >
 	<span class="icon" aria-hidden="true"><Cpu size={14} /></span>
-	<span class="control" class:pinned={!!pinnedLabel} class:active={open}>
+	<span class="control" class:active={open}>
 		<button
 			type="button"
 			class="status-dot-btn"
@@ -358,7 +352,6 @@
 			id="model"
 			type="button"
 			class="trigger"
-			class:pinned={!!pinnedLabel}
 			bind:this={triggerEl}
 			role="combobox"
 			aria-label="Model"
@@ -367,14 +360,10 @@
 			aria-controls="model-listbox"
 			aria-activedescendant={open ? `model-opt-${activeIndex}` : undefined}
 			data-value={selectedModel}
-			title={pinnedLabel ? `Pinned to ${pinnedLabel}` : undefined}
 			onclick={() => (open ? close() : openList())}
 			onkeydown={onKeydown}
 		>
 			<span class="trigger-label">{selectedLabel || "\u2014"}</span>
-			{#if pinnedLabel}
-				<span class="pin-badge" aria-label="Route pinned"><Pin size={11} /></span>
-			{/if}
 			<span class="caret" aria-hidden="true">{open ? "\u25b4" : "\u25be"}</span>
 		</button>
 	</span>
@@ -403,7 +392,7 @@
 			bind:this={popEl}
 			role="presentation"
 			onkeydown={(e) => {
-				// Escape from anywhere in the popover (route-pin buttons included) closes it;
+				// Escape from anywhere in the popover closes it;
 				// option keydowns already handled it and called preventDefault.
 				if (e.key === "Escape" && !e.defaultPrevented) {
 					e.preventDefault();
@@ -439,28 +428,6 @@
 					</li>
 				{/each}
 			</ul>
-			{#if selectedRoutes.length > 0}
-				<div class="pin-section" role="group" aria-label="Route pin">
-					<div class="kicker">Route for {selectedLabel}</div>
-					<button
-						type="button"
-						class="pin-choice"
-						class:selected={pinnedRoute === ""}
-						aria-pressed={pinnedRoute === ""}
-						onclick={() => (pinnedRoute = "")}>Auto</button
-					>
-					{#each selectedRoutes as r (r.route_id)}
-						<button
-							type="button"
-							class="pin-choice mono"
-							class:selected={pinnedRoute === r.route_id}
-							aria-pressed={pinnedRoute === r.route_id}
-							disabled={r.drained}
-							onclick={() => (pinnedRoute = r.route_id)}>{routeLine(r)}</button
-						>
-					{/each}
-				</div>
-			{/if}
 		</div>
 	{/if}
 </div>
@@ -493,10 +460,6 @@
 		border-color: var(--ink);
 	}
 
-	.control.pinned {
-		border-style: dashed;
-	}
-
 	.status-dot-btn {
 		display: inline-flex;
 		align-items: center;
@@ -507,8 +470,7 @@
 	}
 
 	.status-dot-btn:focus-visible,
-	.trigger:focus-visible,
-	.pin-choice:focus-visible {
+	.trigger:focus-visible {
 		outline: 2px solid var(--accent);
 		outline-offset: 1px;
 	}
@@ -533,11 +495,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.pin-badge {
-		display: inline-flex;
-		color: var(--warn);
 	}
 
 	.caret {
@@ -639,48 +596,12 @@
 		color: var(--warn);
 	}
 
-	.pin-section {
-		display: flex;
-		flex-wrap: wrap;
-		flex-shrink: 0;
-		max-height: 45%;
-		overflow-y: auto;
-		gap: 4px;
-		padding: 8px 10px;
-		border-top: 1px solid var(--rule-soft);
-	}
-
 	.kicker {
 		width: 100%;
 		font-size: 10px;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--ink-4);
-	}
-
-	.pin-choice {
-		max-width: 100%;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		padding: 3px 8px;
-		border: 1px solid var(--rule-soft);
-		background: transparent;
-		color: var(--ink-2);
-		font-size: 11px;
-		cursor: pointer;
-		border-radius: 0;
-	}
-
-	.pin-choice.selected {
-		border-color: var(--ink);
-		color: var(--ink);
-		font-weight: 700;
-	}
-
-	.pin-choice:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
 	}
 
 	.mono {

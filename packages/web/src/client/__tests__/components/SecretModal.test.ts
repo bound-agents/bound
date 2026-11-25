@@ -56,7 +56,7 @@ describe("SecretModal", () => {
 		expect(closed).toBe(1);
 	});
 
-	it("calls onClose when the backdrop is clicked", async () => {
+	it("ignores backdrop clicks so the one-time secret is not lost", async () => {
 		let closed = 0;
 		const { target } = await mount({
 			secret: "s",
@@ -65,9 +65,10 @@ describe("SecretModal", () => {
 				closed++;
 			},
 		});
-		const backdrop = target.querySelector(".backdrop-close") as HTMLButtonElement;
+		const backdrop = target.querySelector(".modal-backdrop") as HTMLElement;
 		await dom?.fire(backdrop, "click");
-		expect(closed).toBe(1);
+		expect(closed).toBe(0);
+		expect(target.querySelector(".close-btn")?.getAttribute("aria-label")).toBe("Close");
 	});
 
 	it("closes on Escape keydown and restores focus to the previously focused element", async () => {
@@ -98,13 +99,13 @@ describe("SecretModal", () => {
 		expect(closed).toBe(0);
 	});
 
-	it("focuses the modal panel on mount (dialog receives focus)", async () => {
+	it("focuses the copy button on mount", async () => {
 		const { target } = await mount({
 			secret: "s",
 			webhookName: "wh",
 			onClose: () => {},
 		});
-		const panel = target.querySelector(".modal-panel") as HTMLElement;
-		expect(dom?.document.activeElement).toBe(panel);
+		const copy = target.querySelector(".copy-btn") as HTMLElement;
+		expect(dom?.document.activeElement).toBe(copy);
 	});
 });

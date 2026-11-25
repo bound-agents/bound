@@ -31,9 +31,12 @@ export function createPersonaRoutes(db: Database): Hono {
 		}
 	});
 
-	// POST /api/persona — set the persona. Body: { persona: string }.
+	// POST /api/persona — set the persona. Body: { persona: string,
+	// expected_modified_at?: string }. When expected_modified_at is supplied and
+	// the live row has moved on, the save is refused with 409 and the current
+	// row so the editor can reload instead of clobbering another write.
 	app.post("/", async (c) => {
-		let body: { persona?: unknown };
+		let body: { persona?: unknown; expected_modified_at?: unknown };
 		try {
 			body = await c.req.json();
 		} catch {
@@ -58,7 +61,29 @@ export function createPersonaRoutes(db: Database): Hono {
 			);
 		}
 
+		const expected = body.expected_modified_at;
+		if (expected !== undefined && expected !== null && typeof expected !== "string") {
+			return c.json({ error: "Field 'expected_modified_at' must be a string" }, 400);
+		}
+
 		try {
+			if (typeof expected === "string") {
+				const current = db
+					.query("SELECT value, modified_at FROM cluster_config WHERE key = ? AND deleted = 0")
+					.get(PERSONA_CLUSTER_CONFIG_KEY) as { value: string; modified_at: string } | null;
+				if (current && current.modified_at !== expected) {
+					return c.json(
+						{
+							error:
+								"Persona changed since you loaded it. Reload the latest version before saving.",
+							modified_at: current.modified_at,
+							content: current.value,
+						},
+						409,
+					);
+				}
+			}
+
 			const siteId = getSiteId(db);
 			// Probe ignoring `deleted`: a soft-deleted persona row still holds the
 			// `key` PK, so re-setting must UPDATE (un-tombstone) not INSERT.
@@ -88,7 +113,10 @@ export function createPersonaRoutes(db: Database): Hono {
 				);
 			}
 
-			return c.json({ ok: true, bytes: byteLength });
+			const saved = db
+				.query("SELECT modified_at FROM cluster_config WHERE key = ?")
+				.get(PERSONA_CLUSTER_CONFIG_KEY) as { modified_at: string } | null;
+			return c.json({ ok: true, bytes: byteLength, modified_at: saved?.modified_at ?? null });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
 			return c.json({ error: "Failed to set persona", details: message }, 500);

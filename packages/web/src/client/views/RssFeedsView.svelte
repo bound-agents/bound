@@ -147,8 +147,8 @@
 		try {
 			await client.updateRssFeed(id, {
 				url: editUrl || undefined,
-				description: editDescription || undefined,
-				prompt: editPrompt || undefined,
+				description: editDescription,
+				prompt: editPrompt,
 				poll_interval_seconds: editInterval,
 				model_hint: editModel || null,
 				no_history: editNoHistory,

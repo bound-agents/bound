@@ -140,4 +140,45 @@ describe("PersonaView", () => {
 		expect(save.disabled).toBe(true);
 		expect(dom?.requests.some((r) => r.method === "POST")).toBe(false);
 	});
+	it("sends expected_modified_at and adopts the server modified_at on save", async () => {
+		let sent: Record<string, unknown> | null = null;
+		const { target } = await mountWith(
+			() => okPersona({ persona: "orig" }),
+			() => ({ ok: true, bytes: 3, modified_at: "2026-11-25T12:00:00.000Z" }),
+		);
+		const editor = target.querySelector("textarea.editor") as HTMLTextAreaElement;
+		await dom?.type(editor, "new");
+		const save = [...target.querySelectorAll("button")].find((b) =>
+			b.textContent?.includes("Save"),
+		) as HTMLButtonElement;
+		await dom?.fire(save, "click");
+		await dom?.settle();
+		const req = dom?.requests.find((r) => r.method === "POST" && r.path === "/api/persona");
+		sent = (req?.body ?? null) as Record<string, unknown> | null;
+		if (typeof sent === "string") sent = JSON.parse(sent);
+		expect(sent?.expected_modified_at).toBe("2026-03-01T00:00:00.000Z");
+		expect(target.querySelector(".conflict")).toBeNull();
+		expect(target.querySelector(".ok")).not.toBeNull();
+	});
+
+	it("shows a conflict banner with Reload latest on 409", async () => {
+		const { target } = await mountWith(
+			() => okPersona({ persona: "orig" }),
+			() =>
+				new Response(JSON.stringify({ error: "changed", modified_at: "x", content: "theirs" }), {
+					status: 409,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const editor = target.querySelector("textarea.editor") as HTMLTextAreaElement;
+		await dom?.type(editor, "mine");
+		const save = [...target.querySelectorAll("button")].find((b) =>
+			b.textContent?.includes("Save"),
+		) as HTMLButtonElement;
+		await dom?.fire(save, "click");
+		await dom?.settle();
+		const banner = target.querySelector(".conflict");
+		expect(banner).not.toBeNull();
+		expect(banner?.textContent).toContain("Reload latest");
+	});
 });

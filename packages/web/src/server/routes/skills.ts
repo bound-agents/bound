@@ -8,6 +8,7 @@ import {
 } from "@bound/agent";
 import {
 	findFileContentByPathActive,
+	findFileIdContentByPathActive,
 	findSkillById,
 	findSkillByIdIncludingDeleted,
 	getHostMetaSiteId,
@@ -18,6 +19,37 @@ import {
 import type { Skill, SkillFileEntry } from "@bound/shared";
 import { unzipSync } from "fflate";
 import { Hono } from "hono";
+
+export const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
+
+/**
+ * Serialize a frontmatter scalar as a double-quoted YAML string. JSON string
+ * syntax is a subset of YAML double-quoted scalars, so newlines, colons, and
+ * quotes stay inside the value and cannot open a new key.
+ */
+export function yamlScalar(value: string): string {
+	return JSON.stringify(value);
+}
+
+export function buildSkillFrontmatter(fields: {
+	name?: string;
+	description?: string;
+	allowed_tools?: string;
+	compatibility?: string;
+}): string {
+	let frontmatter = "---\n";
+	if (fields.name) frontmatter += `name: ${yamlScalar(fields.name)}\n`;
+	if (fields.description) frontmatter += `description: ${yamlScalar(fields.description)}\n`;
+	if (fields.allowed_tools) frontmatter += `allowed_tools: ${yamlScalar(fields.allowed_tools)}\n`;
+	if (fields.compatibility) frontmatter += `compatibility: ${yamlScalar(fields.compatibility)}\n`;
+	return `${frontmatter}---\n`;
+}
+
+function descriptionTooLong(description: unknown): boolean {
+	return typeof description === "string" && description.length > MAX_SKILL_DESCRIPTION_LENGTH;
+}
+
+const DESCRIPTION_TOO_LONG_ERROR = `description must be at most ${MAX_SKILL_DESCRIPTION_LENGTH} characters`;
 
 export function createSkillsRoutes(db: Database): Hono {
 	const app = new Hono();
@@ -117,15 +149,12 @@ export function createSkillsRoutes(db: Database): Hono {
 					compatibility?: string;
 				};
 
-				// Assemble SKILL.md with YAML frontmatter
-				let frontmatter = "---\n";
-				if (body.name) frontmatter += `name: ${body.name}\n`;
-				if (body.description) frontmatter += `description: ${body.description}\n`;
-				if (body.allowed_tools) frontmatter += `allowed_tools: ${body.allowed_tools}\n`;
-				if (body.compatibility) frontmatter += `compatibility: ${body.compatibility}\n`;
-				frontmatter += "---\n";
+				if (descriptionTooLong(body.description)) {
+					return c.json({ error: DESCRIPTION_TOO_LONG_ERROR }, 400);
+				}
 
-				const skillContent = frontmatter + (body.body ?? "");
+				// Assemble SKILL.md with YAML frontmatter (scalars quoted)
+				const skillContent = buildSkillFrontmatter(body) + (body.body ?? "");
 				files = [{ path: "SKILL.md", content: skillContent }];
 			} else if (contentType.includes("multipart/form-data")) {
 				// Handle multipart upload
@@ -253,10 +282,16 @@ export function createSkillsRoutes(db: Database): Hono {
 				compatibility?: string;
 			};
 
+			if (descriptionTooLong(body.description)) {
+				return c.json({ error: DESCRIPTION_TOO_LONG_ERROR }, 400);
+			}
+
 			// Load existing SKILL.md to extract current body if not provided
 			const skillRoot = skill.skill_root ?? `skills/${skill.name}`;
 			const skillMdPath = `${skillRoot}/SKILL.md`;
-			const skillMdRow = findFileContentByPathActive(db, skillMdPath);
+			// files PK is `id`, not `path`: resolve the row id so the update
+			// lands on rows whose id differs from their path (seeded skills).
+			const skillMdRow = findFileIdContentByPathActive(db, skillMdPath);
 
 			const parsed = skillMdRow ? parseFrontmatter(skillMdRow.content ?? "") : null;
 			const currentBody = parsed?.body ?? "";
@@ -270,13 +305,13 @@ export function createSkillsRoutes(db: Database): Hono {
 			const newBody = body.body !== undefined ? body.body : currentBody;
 
 			// Reconstruct SKILL.md
-			let frontmatter = "---\n";
-			frontmatter += `name: ${skill.name}\n`;
-			frontmatter += `description: ${newDescription}\n`;
-			if (newAllowedTools) frontmatter += `allowed_tools: ${newAllowedTools}\n`;
-			if (newCompatibility) frontmatter += `compatibility: ${newCompatibility}\n`;
-			frontmatter += "---\n";
-			const newContent = frontmatter + newBody;
+			const newContent =
+				buildSkillFrontmatter({
+					name: skill.name,
+					description: newDescription,
+					allowed_tools: newAllowedTools,
+					compatibility: newCompatibility,
+				}) + newBody;
 
 			const contentHash = createHash("sha256").update(newContent).digest("hex");
 			const now = new Date().toISOString();
@@ -286,7 +321,7 @@ export function createSkillsRoutes(db: Database): Hono {
 				updateRow(
 					db,
 					"files",
-					skillMdPath,
+					skillMdRow.id,
 					{
 						content: newContent,
 						size_bytes: Buffer.byteLength(newContent, "utf8"),

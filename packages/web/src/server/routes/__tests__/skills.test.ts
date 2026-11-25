@@ -286,7 +286,7 @@ describe("skills routes", () => {
 				.query("SELECT content FROM files WHERE path = 'skills/alpha/SKILL.md'")
 				.get() as { content: string };
 			expect(file.content).toContain("new body");
-			expect(file.content).toContain("name: alpha");
+			expect(file.content).toContain('name: "alpha"');
 		});
 
 		it("merges allowed_tools and compatibility and preserves the existing body when omitted", async () => {
@@ -300,8 +300,8 @@ describe("skills routes", () => {
 			const file = db
 				.query("SELECT content FROM files WHERE path = 'skills/alpha/SKILL.md'")
 				.get() as { content: string };
-			expect(file.content).toContain("allowed_tools: read");
-			expect(file.content).toContain("compatibility: linux");
+			expect(file.content).toContain('allowed_tools: "read"');
+			expect(file.content).toContain('compatibility: "linux"');
 			// The seeded body survived.
 			expect(file.content).toContain("Body.");
 		});

@@ -192,10 +192,23 @@ export function parseFrontmatter(
 	for (const line of match[1].split(/\r?\n/)) {
 		const colonIndex = line.indexOf(":");
 		if (colonIndex > 0) {
-			data[line.slice(0, colonIndex).trim()] = line.slice(colonIndex + 1).trim();
+			data[line.slice(0, colonIndex).trim()] = unquoteScalar(line.slice(colonIndex + 1).trim());
 		}
 	}
 	return { data, body: match[2] ?? "" };
+}
+
+/** Decode a double-quoted YAML scalar (JSON-compatible); other values pass through. */
+function unquoteScalar(raw: string): string {
+	if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
+		try {
+			const decoded = JSON.parse(raw);
+			if (typeof decoded === "string") return decoded;
+		} catch {
+			// not JSON-compatible; keep the raw text
+		}
+	}
+	return raw;
 }
 
 // Validation constants

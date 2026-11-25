@@ -16,6 +16,7 @@
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 	let saved = $state(false);
+	let conflict = $state(false);
 
 	const byteLength = $derived(new TextEncoder().encode(persona).length);
 	const overCap = $derived(byteLength > maxBytes);
@@ -23,12 +24,21 @@
 
 	onMount(() => {
 		load();
+		const onBeforeUnload = (e: BeforeUnloadEvent) => {
+			if (persona !== original) {
+				e.preventDefault();
+				e.returnValue = "";
+			}
+		};
+		window.addEventListener("beforeunload", onBeforeUnload);
+		return () => window.removeEventListener("beforeunload", onBeforeUnload);
 	});
 
 	async function load(): Promise<void> {
 		try {
 			loading = true;
 			error = null;
+			conflict = false;
 			const res = await fetch("/api/persona");
 			if (!res.ok) throw new Error(`GET /api/persona failed: ${res.status}`);
 			const data = (await res.json()) as {
@@ -53,17 +63,25 @@
 			saving = true;
 			error = null;
 			saved = false;
+			conflict = false;
+			const payload: { persona: string; expected_modified_at?: string } = { persona };
+			if (modifiedAt) payload.expected_modified_at = modifiedAt;
 			const res = await fetch("/api/persona", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ persona }),
+				body: JSON.stringify(payload),
 			});
+			if (res.status === 409) {
+				conflict = true;
+				return;
+			}
 			if (!res.ok) {
 				const body = (await res.json().catch(() => ({}))) as { error?: string };
 				throw new Error(body.error ?? `POST /api/persona failed: ${res.status}`);
 			}
+			const result = (await res.json().catch(() => ({}))) as { modified_at?: string | null };
 			original = persona;
-			modifiedAt = new Date().toISOString();
+			modifiedAt = result.modified_at ?? modifiedAt;
 			saved = true;
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : "Failed to save persona.";
@@ -117,6 +135,12 @@
 
 		{#if overCap}
 			<div class="err">Over the {maxBytes.toLocaleString()}-byte cap. Trim before saving.</div>
+		{/if}
+		{#if conflict}
+			<div class="err conflict" role="alert">
+				Persona changed on another host since you loaded it. Your edits are not saved.
+				<Btn variant="default" size="sm" onclick={load}>Reload latest</Btn>
+			</div>
 		{/if}
 		{#if error}
 			<div class="err">{error}</div>

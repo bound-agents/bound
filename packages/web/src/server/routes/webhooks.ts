@@ -22,6 +22,17 @@ import type { SignatureFormat } from "@bound/shared";
 import { Hono } from "hono";
 import { buildWebhookUrls } from "../webhook-urls";
 
+const VALID_SIGNATURE_FORMATS: ReadonlySet<string> = new Set<SignatureFormat>([
+	"github",
+	"stripe",
+	"slack",
+	"raw",
+	"none",
+]);
+
+const UNAUTHENTICATED_DISABLED_ERROR =
+	"Unauthenticated webhooks (signature_format: 'none') are disabled. Enable them cluster-wide first (POST /api/webhooks/unauthenticated-switch or `boundctl webhook allow-unauthenticated`).";
+
 export interface WebhooksRoutesConfig {
 	/** Sync server bind host (process.env.BIND_HOST). */
 	syncBindHost?: string;
@@ -206,6 +217,10 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			// are stored as 0/1 on the task row; the response coerces back to bool.
 			const noHistory = body.no_history === true ? 1 : 0;
 
+			if (!VALID_SIGNATURE_FORMATS.has(format)) {
+				return c.json({ error: `Invalid format '${String(format)}'` }, 400);
+			}
+
 			// Validate name: /^[a-z0-9][a-z0-9_-]{0,63}$/
 			if (!name) {
 				return c.json({ error: "name is required" }, 400);
@@ -232,13 +247,7 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 					WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY,
 				);
 				if (allowUnauthenticated?.value !== "true") {
-					return c.json(
-						{
-							error:
-								"Unauthenticated webhooks (signature_format: 'none') are disabled. Enable them cluster-wide first (POST /api/webhooks/unauthenticated-switch or `boundctl webhook allow-unauthenticated`).",
-						},
-						403,
-					);
+					return c.json({ error: UNAUTHENTICATED_DISABLED_ERROR }, 403);
 				}
 			}
 
@@ -293,6 +302,17 @@ export function createWebhooksRoutes(db: Database, config: WebhooksRoutesConfig 
 			const description = body.description as string | undefined;
 			const prompt = body.prompt as string | undefined;
 			const format = body.format as SignatureFormat | undefined;
+			if (format !== undefined) {
+				if (typeof format !== "string" || !VALID_SIGNATURE_FORMATS.has(format)) {
+					return c.json({ error: `Invalid format '${String(format)}'` }, 400);
+				}
+				if (format === "none") {
+					const allow = findClusterConfigValueByKey(db, WEBHOOKS_ALLOW_UNAUTHENTICATED_KEY);
+					if (allow?.value !== "true") {
+						return c.json({ error: UNAUTHENTICATED_DISABLED_ERROR }, 403);
+					}
+				}
+			}
 			// model_hint three-state:
 			//   key absent          → leave alone
 			//   null / ""           → clear back to system default

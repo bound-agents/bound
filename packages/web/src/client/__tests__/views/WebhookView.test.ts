@@ -319,6 +319,16 @@ describe("WebhookView — detail", () => {
 		unmount();
 	});
 
+	it("does not rotate when the confirm dialog is declined", async () => {
+		globalThis.confirm = () => false;
+		const { target, unmount } = await openDetail();
+		const rotateBtn = findButton(target, (b) => b.textContent?.includes("Rotate Secret"));
+		await dom.fire(rotateBtn, "click");
+		await dom.settle();
+		expect(dom.requests.some((r) => /\/rotate$/.test(r.path))).toBe(false);
+		globalThis.confirm = () => true;
+		unmount();
+	});
 	it("deletes the webhook (confirmed) and returns to the list", async () => {
 		const { target, unmount } = await openDetail();
 		dom.route("DELETE", /\/api\/webhooks\/[^/]+$/, () => new Response(null, { status: 204 }));

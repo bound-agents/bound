@@ -198,9 +198,9 @@
 
 		try {
 			await client.updateWebhook(id, {
-				description: editDescription || undefined,
+				description: editDescription,
 				format: editFormat,
-				prompt: editPrompt || undefined,
+				prompt: editPrompt,
 				model_hint: editModel || null,
 				no_history: editNoHistory,
 			});
@@ -221,6 +221,15 @@
 	}
 
 	async function handleRotateSecret(id: string): Promise<void> {
+		const target = webhooks.find((w) => w.id === id);
+		const label = target ? `'${target.name}'` : "this webhook";
+		if (
+			!confirm(
+				`Rotate the secret for ${label}? The current secret stops working immediately; update the sender before the next delivery.`,
+			)
+		) {
+			return;
+		}
 		actionInProgress = `rotate:${id}`;
 
 		try {
@@ -405,10 +414,11 @@
 							id="name"
 							type="text"
 							bind:value={createName}
-							placeholder="e.g., GitHub Webhook"
+							placeholder="e.g., github-events"
 							disabled={actionInProgress === "create"}
 							required
 						/>
+						<p class="help-text">Lowercase letters, numbers, dashes, or underscores.</p>
 					</div>
 
 					<div class="form-group">

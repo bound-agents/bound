@@ -174,7 +174,7 @@ describe("ModelSelector", () => {
 		expect(modelStore.getModel()).toBe("ghost-model");
 	});
 
-	it("selects by click, sends the logical id, and pins a route from the popover", async () => {
+	it("selects by click and sends the logical id", async () => {
 		const { target, modelStore } = await mount(expanded, "kimi-k3", {}, expandedRouting);
 		const options = await openList(target);
 		(options[0] as HTMLElement).click();
@@ -182,17 +182,7 @@ describe("ModelSelector", () => {
 		expect(modelStore.getModel()).toBe("glm-5-3-flash");
 		expect(target.querySelector('[role="listbox"]')).toBeNull();
 		await openList(target);
-		const pins = [...target.querySelectorAll('[aria-label="Route pin"] .pin-choice')];
-		expect(pins.map((p) => p.textContent?.trim())).toEqual([
-			"Auto",
-			"zai:r1 on msi",
-			"copilot:r2 on mac",
-		]);
-		expect(pins[0]?.getAttribute("aria-pressed")).toBe("true");
-		(pins[2] as HTMLElement).click();
-		await dom?.settle();
-		expect(target.querySelector("#model")?.classList.contains("pinned")).toBe(true);
-		expect(target.querySelector("#model .pin-badge")).not.toBeNull();
+		expect(target.querySelector(".pin-section, .pin-choice, .pin-badge")).toBeNull();
 	});
 
 	it("navigates with the keyboard: arrows, Home/End, type-ahead, Enter, Escape", async () => {
@@ -280,32 +270,6 @@ describe("ModelSelector", () => {
 		await dom?.settle();
 		await openList(target);
 		expect(target.querySelector(".route-tip")).toBeNull();
-	});
-
-	it("keeps the popover open on Tab so the route pin buttons are keyboard-reachable", async () => {
-		const { target } = await mount(expanded, "glm-5-3-flash", {}, expandedRouting);
-		await openList(target);
-		key(target, "Tab");
-		await dom?.settle();
-		const pins = [...target.querySelectorAll(".pin-section .pin-choice")] as HTMLElement[];
-		expect(pins.length).toBe(3);
-		pins[1]?.focus();
-		await dom?.settle();
-		expect(target.querySelector('[role="listbox"]')).not.toBeNull();
-		pins[1]?.click();
-		await dom?.settle();
-		expect(pins[1]?.getAttribute("aria-pressed")).toBe("true");
-	});
-
-	it("closes on Escape from a focused route-pin button and refocuses the trigger", async () => {
-		const { target } = await mount(expanded, "glm-5-3-flash", {}, expandedRouting);
-		await openList(target);
-		const pins = [...target.querySelectorAll(".pin-section .pin-choice")] as HTMLElement[];
-		pins[1]?.focus();
-		pins[1]?.dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Escape", bubbles: true }));
-		await dom?.settle();
-		expect(target.querySelector('[role="listbox"]')).toBeNull();
-		expect(win().document.activeElement).toBe(target.querySelector("#model"));
 	});
 
 	it("prefills a hintless thread from its latest message model", async () => {

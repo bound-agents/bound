@@ -10,45 +10,73 @@
 	const { secret, webhookName, onClose }: Props = $props();
 
 	let modalRef: HTMLDivElement | undefined;
+	let copyButton: HTMLButtonElement | undefined = $state();
 	let copied = $state(false);
+	let copyFailed = $state(false);
 	let previouslyFocused: HTMLElement | null = null;
 
 	onMount(() => {
 		previouslyFocused = document.activeElement as HTMLElement;
-		modalRef?.focus();
+		(copyButton ?? modalRef)?.focus();
 	});
 
 	async function copyToClipboard(): Promise<void> {
-		await navigator.clipboard.writeText(secret);
-		copied = true;
-		setTimeout(() => {
+		copyFailed = false;
+		try {
+			if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+			await navigator.clipboard.writeText(secret);
+			copied = true;
+			setTimeout(() => {
+				copied = false;
+			}, 2000);
+		} catch {
 			copied = false;
-		}, 2000);
+			copyFailed = true;
+		}
+	}
+
+	function close(): void {
+		previouslyFocused?.focus();
+		onClose();
+	}
+
+	function focusables(): HTMLElement[] {
+		if (!modalRef) return [];
+		return Array.from(
+			modalRef.querySelectorAll<HTMLElement>(
+				'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+			),
+		);
 	}
 
 	function handleKeydown(e: KeyboardEvent): void {
 		if (e.key === "Escape") {
 			e.preventDefault();
-			previouslyFocused?.focus();
-			onClose();
+			close();
+			return;
 		}
-	}
-
-	function handleBackdropClick(): void {
-		previouslyFocused?.focus();
+		if (e.key === "Tab") {
+			const items = focusables();
+			if (items.length === 0) {
+				e.preventDefault();
+				return;
+			}
+			const first = items[0];
+			const last = items[items.length - 1];
+			const active = document.activeElement;
+			if (e.shiftKey && (active === first || !modalRef?.contains(active))) {
+				e.preventDefault();
+				last.focus();
+			} else if (!e.shiftKey && (active === last || !modalRef?.contains(active))) {
+				e.preventDefault();
+				first.focus();
+			}
+		}
 	}
 </script>
 
+<!-- Backdrop clicks are ignored: the one-time secret must not vanish on a stray click. -->
 <div class="modal-backdrop" onkeydown={handleKeydown} role="presentation">
-	<button
-		class="backdrop-close"
-		onclick={() => {
-			handleBackdropClick();
-			onClose();
-		}}
-		aria-label="Close"
-		tabindex={-1}
-	></button>
 	<div
 		class="modal-panel"
 		role="dialog"
@@ -59,27 +87,29 @@
 	>
 		<header class="modal-header">
 			<h2 class="modal-title">Secret for '{webhookName}'</h2>
-			<button
-				class="close-btn"
-				onclick={() => {
-					handleBackdropClick();
-					onClose();
-				}}>×</button
-			>
+			<button class="close-btn" aria-label="Close" onclick={close}>×</button>
 		</header>
 		<div class="modal-body">
 			<p class="warning">Save this secret now — it will not be shown again.</p>
 			<div class="secret-display">
 				<code class="secret-value">{secret}</code>
-				<button class="copy-btn" onclick={copyToClipboard}>
+				<button class="copy-btn" bind:this={copyButton} onclick={copyToClipboard}>
 					{copied ? "Copied!" : "Copy"}
 				</button>
 			</div>
+			{#if copyFailed}
+				<p class="copy-error" role="alert">Copy failed — select and copy manually.</p>
+			{/if}
 		</div>
 	</div>
 </div>
 
 <style>
+	.copy-error {
+		margin: 8px 0 0;
+		color: var(--err, #b3261e);
+		font-size: 12px;
+	}
 	.modal-backdrop {
 		position: fixed;
 		inset: 0;

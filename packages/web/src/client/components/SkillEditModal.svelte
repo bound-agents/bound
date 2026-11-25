@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Skill } from "@bound/shared";
-	import { untrack } from "svelte";
+	import { onMount, untrack } from "svelte";
 	import { client } from "../lib/bound";
 	import Btn from "./Btn.svelte";
 
@@ -42,8 +42,29 @@
 
 	const formValid = $derived(description.length > 0 && !descriptionError && body.length > 0);
 
+	const initial = untrack(() => ({ description, body, allowedTools, compatibility }));
+	const dirty = $derived(
+		description !== initial.description ||
+			body !== initial.body ||
+			allowedTools !== initial.allowedTools ||
+			compatibility !== initial.compatibility,
+	);
+
+	let descInput: HTMLInputElement | undefined = $state();
+	onMount(() => {
+		descInput?.focus();
+	});
+
 	function handleKeydown(e: KeyboardEvent): void {
-		if (e.key === "Escape") onClose();
+		if (e.key === "Escape") {
+			e.preventDefault();
+			onClose();
+		}
+	}
+
+	// A stray click outside the panel must not discard unsaved edits.
+	function handleBackdropClick(): void {
+		if (!dirty) onClose();
 	}
 
 	async function submitEdit(): Promise<void> {
@@ -54,8 +75,8 @@
 			await client.updateSkill(skill.id, {
 				description,
 				body,
-				allowed_tools: allowedTools || undefined,
-				compatibility: compatibility || undefined,
+				allowed_tools: allowedTools,
+				compatibility: compatibility,
 			});
 			onSaved();
 		} catch (error) {
@@ -66,7 +87,9 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="modal-backdrop" onclick={onClose} onkeydown={handleKeydown} role="presentation">
+<svelte:window onkeydown={handleKeydown} />
+
+<div class="modal-backdrop" onclick={handleBackdropClick} role="presentation">
 	<div
 		class="modal-panel"
 		role="dialog"
@@ -74,7 +97,6 @@
 		aria-label="Edit Skill"
 		tabindex="-1"
 		onclick={(e) => e.stopPropagation()}
-		onkeydown={(e) => e.stopPropagation()}
 	>
 		<header class="modal-header">
 			<h2>Edit Skill</h2>
@@ -86,6 +108,7 @@
 				<label for="edit-desc">Description</label>
 				<input
 					id="edit-desc"
+					bind:this={descInput}
 					type="text"
 					bind:value={description}
 					placeholder="What this skill does"
