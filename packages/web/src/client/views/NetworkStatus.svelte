@@ -200,11 +200,14 @@
 			<div class="state">
 				<p>Scanning network…</p>
 			</div>
-		{:else if error}
+		{:else if error && !networkData}
 			<div class="state err">
 				<p>{error}</p>
 			</div>
 		{:else if networkData}
+			{#if error}
+				<p class="poll-warning" role="alert">{error} — showing last known state.</p>
+			{/if}
 			<TopologyDiagram
 				hosts={networkData.hosts}
 				hub={networkData.hub}
@@ -215,7 +218,7 @@
 			<div class="host-grid">
 				{#each networkData.hosts as host, idx (host.site_id)}
 					{@const online = isOnline(host)}
-					{@const isHub = networkData.hub?.hostName === host.host_name}
+					{@const isHub = networkData.hub?.siteId === host.site_id}
 					{@const syncState = getSyncForPeer(host.site_id)}
 					{@const health = isLocal(host) ? "healthy" : computeSyncHealth(syncState, host)}
 					{@const models = parseModels(host.models)}
@@ -546,5 +549,11 @@
 		font-size: 13.5px;
 		font-weight: 500;
 		color: var(--ink);
+	}
+
+	.poll-warning {
+		margin: 0 0 12px;
+		font-size: 12px;
+		color: var(--warn);
 	}
 </style>

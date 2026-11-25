@@ -133,7 +133,7 @@ Skill authoring limits:
 | `POST /api/files/upload` | Upload a virtual file |
 | `GET /api/memory/graph` | Read the memory knowledge graph |
 | `GET /api/persona` | Read the cluster-wide persona |
-| `POST /api/persona` | Update the cluster-wide persona (up to 64 KB) |
+| `POST /api/persona` | Update the cluster-wide persona (up to 64 KB). Optional `expected_modified_at` enables optimistic concurrency: if it does not match the stored `modified_at`, the write is rejected with `409 Conflict` |
 | `GET /api/status` | Read host status |
 | `GET /api/status/network` | Read cluster network and sync status |
 | `GET /api/status/models` | List advertised models across the cluster |

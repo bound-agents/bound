@@ -85,8 +85,11 @@
 		// Only poll when range includes "now"
 		pollInterval = setInterval(() => {
 			if (dateRangeIncludesNow()) {
-				// Refresh 'to' to current time before fetching
-				to = new Date().toISOString();
+				// Slide the whole window forward so a preset keeps its duration.
+				const span = new Date(to).getTime() - new Date(from).getTime();
+				const now = Date.now();
+				to = new Date(now).toISOString();
+				from = new Date(now - span).toISOString();
 				loadMetrics();
 			}
 		}, 30000);

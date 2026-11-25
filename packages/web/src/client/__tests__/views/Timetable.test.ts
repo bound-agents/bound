@@ -149,6 +149,13 @@ describe("Timetable", () => {
 		const cancelBtn = target.querySelector("button.action-btn.cancel") as HTMLElement;
 		expect(cancelBtn?.textContent).toContain("Cancel");
 		await dom.fire(cancelBtn, "click");
+		await dom.settle();
+		// First click only arms the confirmation.
+		expect(cancelHits).toBe(0);
+		const confirmBtn = target.querySelector("button.action-btn.confirm") as HTMLElement;
+		expect(confirmBtn?.textContent).toContain("Confirm");
+		await dom.fire(confirmBtn, "click");
+		await dom.settle();
 		expect(cancelHits).toBe(1);
 		expect(dom.requests.some((r) => r.method === "POST" && r.path.includes("/cancel"))).toBe(true);
 	});
@@ -223,14 +230,15 @@ describe("Timetable", () => {
 		expect(target.textContent).toContain("Task ID");
 	});
 
-	it("keeps rendering after a failed load (loading resolves, empty state shown)", async () => {
+	it("shows an inline error with retry after a failed load", async () => {
 		dom = installDom();
 		dom.route("GET", "/api/tasks", () => new Response("nope", { status: 500 }));
 		const Timetable = (await import("../../views/Timetable.svelte")).default;
 		const { target } = await dom.mount(Timetable, {});
 		await dom.settle();
-		// load() swallows the error and clears loading; with no tasks it shows empty.
 		expect(target.textContent).not.toContain("Loading schedule…");
-		expect(target.textContent).toContain("No scheduled tasks.");
+		expect(target.textContent).toContain("Failed to load tasks");
+		expect(target.textContent).not.toContain("No scheduled tasks.");
+		expect(target.querySelector("button.retry")).not.toBeNull();
 	});
 });

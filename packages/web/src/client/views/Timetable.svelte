@@ -81,21 +81,37 @@
 		expandedTaskId = expandedTaskId === taskId ? null : taskId;
 	}
 
+	let loadError = $state<string | null>(null);
+	let actionError = $state<string | null>(null);
+	let cancellingId = $state<string | null>(null);
+	let confirmCancelId = $state<string | null>(null);
+
+	function errorText(error: unknown, fallback: string): string {
+		return error instanceof Error ? error.message : fallback;
+	}
+
 	async function loadTasks(): Promise<void> {
 		try {
 			allTasks = await client.listTasks();
+			loadError = null;
 		} catch (error) {
-			console.error("Failed to load tasks:", error);
+			loadError = errorText(error, "Failed to load tasks");
 		}
 		loading = false;
 	}
 
 	async function cancelTask(taskId: string): Promise<void> {
+		if (cancellingId) return;
+		cancellingId = taskId;
+		confirmCancelId = null;
+		actionError = null;
 		try {
 			await client.cancelTask(taskId);
 			await loadTasks();
 		} catch (error) {
-			console.error("Failed to cancel task:", error);
+			actionError = `Cancel failed: ${errorText(error, "unknown error")}`;
+		} finally {
+			cancellingId = null;
 		}
 	}
 
@@ -178,15 +194,26 @@
 			{/snippet}
 		</SectionHeader>
 
+		{#if actionError}
+			<div class="inline-error" role="alert">{actionError}</div>
+		{/if}
 		{#if loading}
 			<div class="state">
 				<p>Loading schedule…</p>
+			</div>
+		{:else if loadError && allTasks.length === 0}
+			<div class="state" role="alert">
+				<p class="inline-error">Failed to load tasks: {loadError}</p>
+				<button class="action-btn retry" onclick={() => loadTasks()}>Retry</button>
 			</div>
 		{:else if allTasks.length === 0}
 			<div class="state">
 				<p>No scheduled tasks.</p>
 			</div>
 		{:else}
+			{#if loadError}
+				<div class="inline-error" role="alert">Refresh failed: {loadError}</div>
+			{/if}
 			<DepartureBoard tasks={departureBoardData(filteredTasks)} />
 
 			<div class="task-list">
@@ -237,15 +264,38 @@
 						<span class="mono dim-value">{task.hostName ?? "—"}</span>
 						<span class="right">
 							{#if canCancel(task.status)}
-								<button
-									class="action-btn cancel"
-									onclick={(e) => {
-										e.stopPropagation();
-										cancelTask(task.id);
-									}}
-								>
-									Cancel
-								</button>
+								{#if confirmCancelId === task.id}
+									<button
+										class="action-btn cancel confirm"
+										disabled={cancellingId !== null}
+										onclick={(e) => {
+											e.stopPropagation();
+											cancelTask(task.id);
+										}}
+									>
+										Confirm
+									</button>
+									<button
+										class="action-btn keep"
+										onclick={(e) => {
+											e.stopPropagation();
+											confirmCancelId = null;
+										}}
+									>
+										Keep
+									</button>
+								{:else}
+									<button
+										class="action-btn cancel"
+										disabled={cancellingId === task.id}
+										onclick={(e) => {
+											e.stopPropagation();
+											confirmCancelId = task.id;
+										}}
+									>
+										{cancellingId === task.id ? "Cancelling…" : "Cancel"}
+									</button>
+								{/if}
 							{:else if task.status === "failed" && task.error}
 								<span class="err-badge" title={task.error}>ERR</span>
 							{/if}
@@ -315,23 +365,6 @@
 									{#if task.error}
 										<div class="kicker err-label">Last Error</div>
 										<pre class="err-box">{task.error}</pre>
-									{:else}
-										<div class="kicker">Recent History</div>
-										<div class="history">
-											{#each Array(24) as _, i}
-												{@const h = 10 + ((i * 41) % 34)}
-												{@const fail = (i * 7) % 23 === 0}
-												<span
-													class="history-bar"
-													style="height: {h}px; background: {fail
-														? 'var(--err)'
-														: getLineColor(lineIdx)}"
-												></span>
-											{/each}
-										</div>
-										<div class="history-legend mono">
-											LAST 24 RUNS · HEIGHT = DURATION · RED = FAILED
-										</div>
 									{/if}
 								</div>
 							</div>
@@ -579,24 +612,10 @@
 		word-break: break-word;
 	}
 
-	.history {
-		display: flex;
-		gap: 3px;
-		align-items: flex-end;
-		height: 44px;
-	}
-
-	.history-bar {
-		width: 8px;
-		opacity: 0.8;
-	}
-
-	.history-legend {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		color: var(--ink-4);
-		margin-top: 6px;
-		letter-spacing: 0.1em;
+	.inline-error {
+		color: var(--err);
+		font-size: 12px;
+		margin: 0 0 8px;
 	}
 
 	.detail-row {

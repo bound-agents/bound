@@ -79,6 +79,12 @@ describe("GET /api/memory/graph", () => {
 		it("returns 2 edges with sourceKey, targetKey, relation, modifiedAt", async () => {
 			const now = new Date().toISOString();
 
+			for (const k of ["key1", "key2", "key3"]) {
+				db.prepare(
+					"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+				).run(randomUUID(), k, k, "default", "agent", now, now);
+			}
+
 			// Insert 2 memory_edges rows
 			db.prepare(
 				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
@@ -137,6 +143,12 @@ describe("GET /api/memory/graph", () => {
 				"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
 			).run(randomUUID(), "deleted_mem", "val2", "default", "agent", now, now);
 
+			for (const k of ["key1", "key2", "key3"]) {
+				db.prepare(
+					"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+				).run(randomUUID(), k, k, "default", "agent", now, now);
+			}
+
 			// Insert 2 active and 1 deleted edge
 			db.prepare(
 				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
@@ -156,8 +168,7 @@ describe("GET /api/memory/graph", () => {
 			};
 
 			// Verify AC3.3: only active rows included
-			expect(body.nodes).toHaveLength(1);
-			expect(body.nodes[0].key).toBe("active1");
+			expect(body.nodes.map((n) => n.key).sort()).toEqual(["active1", "key1", "key2", "key3"]);
 
 			expect(body.edges).toHaveLength(1);
 			expect(body.edges[0].sourceKey).toBe("key1");
@@ -275,6 +286,38 @@ describe("GET /api/memory/graph", () => {
 			expect(body).toHaveProperty("edges");
 			expect(body.nodes).toEqual([]);
 			expect(body.edges).toEqual([]);
+		});
+	});
+
+	describe("namespace and dangling-edge filtering", () => {
+		it("excludes aux-agent memories/edges and edges to missing nodes", async () => {
+			const now = new Date().toISOString();
+			const ins = db.prepare(
+				"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, deleted, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+			);
+			ins.run(randomUUID(), "main:a", "a", "default", "agent", now, now, null);
+			ins.run(randomUUID(), "main:b", "b", "default", "agent", now, now, null);
+			ins.run(randomUUID(), "aux:x", "x", "default", "agent", now, now, "aux-1");
+			const edge = db.prepare(
+				"INSERT INTO memory_edges (id, source_key, target_key, relation, weight, created_at, modified_at, deleted, agent_id) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+			);
+			edge.run(randomUUID(), "main:a", "main:b", "related_to", 1, now, now, null);
+			edge.run(randomUUID(), "main:a", "gone", "related_to", 1, now, now, null);
+			edge.run(randomUUID(), "main:a", "main:b", "summarizes", 1, now, now, "aux-1");
+
+			const res = await app.fetch(new Request("http://localhost/graph"));
+			const body = (await res.json()) as {
+				nodes: Array<{ key: string }>;
+				edges: Array<{ sourceKey: string; targetKey: string; relation: string }>;
+			};
+			expect(body.nodes.map((n) => n.key).sort()).toEqual(["main:a", "main:b"]);
+			expect(body.edges).toEqual([
+				expect.objectContaining({
+					sourceKey: "main:a",
+					targetKey: "main:b",
+					relation: "related_to",
+				}),
+			]);
 		});
 	});
 });

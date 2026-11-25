@@ -6,8 +6,8 @@
 	interface Props {
 		data: Array<{
 			peer_site_id: string;
-			avg_latency_ms: number;
-			p95_latency_ms: number;
+			avg_latency_ms: number | null;
+			p95_latency_ms: number | null;
 			success_count: number;
 			failure_count: number;
 		}>;
@@ -27,25 +27,25 @@
 
 	// Sort data by avg latency descending
 	const sortedData = $derived.by(() => {
-		return [...data].sort((a, b) => b.avg_latency_ms - a.avg_latency_ms);
+		return [...data].sort((a, b) => (b.avg_latency_ms ?? -1) - (a.avg_latency_ms ?? -1));
 	});
 
 	// Get the maximum p95 latency across all hosts for x scale domain
 	const maxLatency = $derived.by(() => {
-		return Math.max(...sortedData.map((d) => d.p95_latency_ms), 1);
+		return Math.max(...sortedData.map((d) => d.p95_latency_ms ?? 0), 1);
 	});
 
-	// Latency-tier color (green / amber / red). The legend below shows these
-	// tiers separately so viewers can decode bar color independently of the
-	// avg/p95 distinction.
-	const LATENCY_OK = "rgb(0, 200, 100)";
-	const LATENCY_WARN = "rgb(255, 193, 7)";
-	const LATENCY_BAD = "rgb(244, 67, 54)";
+	// Latency-tier color from the theme. Avg bars render solid, P95 bars at
+	// reduced opacity (see legend).
+	const LATENCY_OK = "var(--ok)";
+	const LATENCY_WARN = "var(--warn)";
+	const LATENCY_BAD = "var(--err)";
+	const P95_OPACITY = 0.5;
 
-	const getColorForLatency = (latency: number, opacity = 1): string => {
-		if (latency < 500) return `rgba(0, 200, 100, ${opacity})`;
-		if (latency < 2000) return `rgba(255, 193, 7, ${opacity})`;
-		return `rgba(244, 67, 54, ${opacity})`;
+	const getColorForLatency = (latency: number): string => {
+		if (latency < 500) return LATENCY_OK;
+		if (latency < 2000) return LATENCY_WARN;
+		return LATENCY_BAD;
 	};
 
 	// Calculate dimensions
@@ -62,7 +62,7 @@
 			.nice();
 	});
 
-	const formatLatency = (ms: number): string => `${Math.round(ms)}ms`;
+	const formatLatency = (ms: number | null): string => (ms === null ? "—" : `${Math.round(ms)}ms`);
 
 	// Truncate site ID to last 8 chars for readability
 	const truncateSiteId = (id: string): string => {
@@ -73,8 +73,8 @@
 		event: MouseEvent,
 		d: {
 			peer_site_id: string;
-			avg_latency_ms: number;
-			p95_latency_ms: number;
+			avg_latency_ms: number | null;
+			p95_latency_ms: number | null;
 			success_count: number;
 			failure_count: number;
 		},
@@ -125,55 +125,67 @@
 				{truncateSiteId(d.peer_site_id)}
 			</text>
 
-			<!-- Average latency bar (solid) -->
-			<rect
-				x={padding.left}
-				y={padding.top + i * rowHeight + 6}
-				width={xScale(d.avg_latency_ms)}
-				height={rowHeight / 2 - 8}
-				fill={getColorForLatency(d.avg_latency_ms, 1)}
-				class="bar"
-				role="img"
-				aria-label="Average latency bar"
-				onmouseenter={(e) => showTooltip(e, d, "avg")}
-				onmousemove={(e) => showTooltip(e, d, "avg")}
-				onmouseleave={hideTooltip}
-			/>
+			{#if d.avg_latency_ms === null}
+				<text
+					x={padding.left}
+					y={padding.top + i * rowHeight + rowHeight / 2}
+					class="bar-label no-data"
+					dominant-baseline="middle"
+				>
+					— no latency samples
+				</text>
+			{:else}
+				<!-- Average latency bar (solid) -->
+				<rect
+					x={padding.left}
+					y={padding.top + i * rowHeight + 6}
+					width={xScale(d.avg_latency_ms)}
+					height={rowHeight / 2 - 8}
+					fill={getColorForLatency(d.avg_latency_ms)}
+					class="bar"
+					role="img"
+					aria-label="Average latency bar"
+					onmouseenter={(e) => showTooltip(e, d, "avg")}
+					onmousemove={(e) => showTooltip(e, d, "avg")}
+					onmouseleave={hideTooltip}
+				/>
 
-			<text
-				x={padding.left + xScale(d.avg_latency_ms) + 4}
-				y={padding.top + i * rowHeight + 6 + (rowHeight / 2 - 8) / 2}
-				class="bar-label"
-				dominant-baseline="middle"
-				fill="var(--ink)"
-			>
-				{formatLatency(d.avg_latency_ms)}
-			</text>
+				<text
+					x={padding.left + xScale(d.avg_latency_ms) + 4}
+					y={padding.top + i * rowHeight + 6 + (rowHeight / 2 - 8) / 2}
+					class="bar-label"
+					dominant-baseline="middle"
+					fill="var(--ink)"
+				>
+					{formatLatency(d.avg_latency_ms)}
+				</text>
 
-			<!-- P95 latency bar (semi-transparent) -->
-			<rect
-				x={padding.left}
-				y={padding.top + i * rowHeight + rowHeight / 2 + 2}
-				width={xScale(d.p95_latency_ms)}
-				height={rowHeight / 2 - 8}
-				fill={getColorForLatency(d.p95_latency_ms, 0.5)}
-				class="bar"
-				role="img"
-				aria-label="P95 latency bar"
-				onmouseenter={(e) => showTooltip(e, d, "p95")}
-				onmousemove={(e) => showTooltip(e, d, "p95")}
-				onmouseleave={hideTooltip}
-			/>
+				<!-- P95 latency bar (semi-transparent) -->
+				<rect
+					x={padding.left}
+					y={padding.top + i * rowHeight + rowHeight / 2 + 2}
+					width={xScale(d.p95_latency_ms ?? 0)}
+					height={rowHeight / 2 - 8}
+					fill={getColorForLatency(d.p95_latency_ms ?? 0)}
+					fill-opacity={P95_OPACITY}
+					class="bar"
+					role="img"
+					aria-label="P95 latency bar"
+					onmouseenter={(e) => showTooltip(e, d, "p95")}
+					onmousemove={(e) => showTooltip(e, d, "p95")}
+					onmouseleave={hideTooltip}
+				/>
 
-			<text
-				x={padding.left + xScale(d.p95_latency_ms) + 4}
-				y={padding.top + i * rowHeight + rowHeight / 2 + 2 + (rowHeight / 2 - 8) / 2}
-				class="bar-label"
-				dominant-baseline="middle"
-				fill="var(--ink)"
-			>
-				{formatLatency(d.p95_latency_ms)}
-			</text>
+				<text
+					x={padding.left + xScale(d.p95_latency_ms ?? 0) + 4}
+					y={padding.top + i * rowHeight + rowHeight / 2 + 2 + (rowHeight / 2 - 8) / 2}
+					class="bar-label"
+					dominant-baseline="middle"
+					fill="var(--ink)"
+				>
+					{formatLatency(d.p95_latency_ms)}
+				</text>
+			{/if}
 		{/each}
 	</svg>
 
@@ -181,12 +193,15 @@
 	<div class="legend">
 		<div class="legend-group">
 			<div class="legend-item">
-				<div class="legend-bar" style="background-color: var(--ink); opacity: 0.85"></div>
+				<div class="legend-bar" style="background-color: var(--ink-3)"></div>
 				<span>Avg (solid)</span>
 			</div>
 			<div class="legend-item">
-				<div class="legend-bar" style="background-color: var(--ink); opacity: 0.4"></div>
-				<span>P95 (faded)</span>
+				<div
+					class="legend-bar"
+					style="background-color: var(--ink-3); opacity: {P95_OPACITY}"
+				></div>
+				<span>P95 (50% opacity)</span>
 			</div>
 		</div>
 		<div class="legend-divider" aria-hidden="true"></div>
@@ -243,6 +258,10 @@
 	.bar {
 		cursor: pointer;
 		transition: opacity 0.15s ease;
+	}
+
+	.no-data {
+		fill: var(--ink-3);
 	}
 
 	.bar:hover {

@@ -152,6 +152,7 @@
 	}
 
 	let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let namesInterval: ReturnType<typeof setInterval> | null = null;
 
 	// Live MCP App renders for UI-bearing tool calls in this thread. The store is
 	// populated by the tool-call handler (createToolCallHandler) when the agent
@@ -247,19 +248,37 @@
 		}
 	});
 
+	let pollInFlight = false;
+	let destroyed = false;
+	let loadError = $state<string | null>(null);
+	let lastProvenanceKey = "";
+
+	/**
+	 * Merge a polled snapshot with the live list by id: the poll is authoritative
+	 * for the rows it returns, and any WS-appended row it does not yet include is
+	 * kept so a slow poll never erases a newer live message.
+	 */
+	function mergeMessages(current: LocalMessage[], latest: LocalMessage[]): LocalMessage[] {
+		const ids = new Set(latest.map((m) => m.id));
+		const extras = current.filter((m) => !ids.has(m.id));
+		return extras.length === 0 ? latest : [...latest, ...extras];
+	}
+
 	async function pollMessages(): Promise<void> {
+		if (pollInFlight) return;
+		pollInFlight = true;
 		try {
 			const latest = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+			if (destroyed) return;
+			const known = new Set(messages.map((m) => m.id));
+			const newMessages = latest.filter((m) => !known.has(m.id));
 			// If poll discovers new non-user messages, clear streaming text —
 			// the persisted content supersedes the streaming preview.
-			if ((streamingText || streamingReasoning) && latest.length > messages.length) {
-				const newMessages = latest.slice(messages.length);
-				if (newMessages.some((m) => m.role !== "user")) {
-					streamingText = "";
-					streamingReasoning = "";
-				}
+			if ((streamingText || streamingReasoning) && newMessages.some((m) => m.role !== "user")) {
+				streamingText = "";
+				streamingReasoning = "";
 			}
-			messages = latest;
+			messages = mergeMessages(messages, latest);
 			yardState = reconcileYardExecutions(yardState, messages);
 			scanForAppPanels();
 			if (
@@ -269,9 +288,20 @@
 			) {
 				waiting = false;
 			}
+			maybeLoadProvenance();
 		} catch (error) {
 			console.error("Failed to poll messages:", error);
+		} finally {
+			pollInFlight = false;
 		}
+	}
+
+	/** Re-fetch provenance only when the message count or processing state moved. */
+	function maybeLoadProvenance(): void {
+		const key = `${messages.length}:${agentActive}:${agentState ?? ""}`;
+		if (key === lastProvenanceKey) return;
+		lastProvenanceKey = key;
+		void loadProvenance();
 	}
 
 	// Re-poll the server-computed thread status on the same cadence as messages.
@@ -325,39 +355,51 @@
 		}
 	}
 
-	onMount(async () => {
-		client.on("yard:execution", onYardExecution);
+	async function loadInitial(): Promise<void> {
 		try {
-			thread = await client.getThread(threadId);
-			messages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+			const loadedThread = await client.getThread(threadId);
+			const loadedMessages = (await client.listMessages(threadId)) as unknown as LocalMessage[];
+			if (destroyed) return;
+			thread = loadedThread;
+			messages = mergeMessages(messages, loadedMessages);
+			loadError = null;
 			yardState = reconcileYardExecutions(yardState, messages);
 			scanForAppPanels();
-			void loadProvenance();
-			void loadModelDisplayNames();
-			connectWebSocket();
-			subscribeToThread(threadId);
+			maybeLoadProvenance();
 		} catch (error) {
-			console.error("Failed to load thread:", error);
+			if (destroyed) return;
+			loadError = error instanceof Error ? error.message : "Failed to load thread";
 		}
+	}
+
+	onMount(async () => {
+		client.on("yard:execution", onYardExecution);
+		client.on("thread:status", handleThreadStatus);
+		client.on("stream:chunk", handleStreamChunk);
+		connectWebSocket();
+		subscribeToThread(threadId);
+		void loadModelDisplayNames();
+
+		await loadInitial();
+		if (destroyed) return;
 
 		pollInterval = setInterval(() => {
 			void pollMessages();
 			void pollStatus();
-			void loadProvenance();
-			void loadModelDisplayNames();
 		}, 5000);
-		client.on("thread:status", handleThreadStatus);
-		client.on("stream:chunk", handleStreamChunk);
+		// Display names change only when the catalog does; refresh slowly.
+		namesInterval = setInterval(() => void loadModelDisplayNames(), 60_000);
 
 		try {
 			const data = await client.getThreadStatus(threadId);
-			handleThreadStatus(data);
+			if (!destroyed) handleThreadStatus(data);
 		} catch (error) {
 			console.error("Failed to load thread status:", error);
 		}
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		client.off("yard:execution", onYardExecution);
 		unsubscribeWs();
 		unsubscribeApps();
@@ -369,6 +411,7 @@
 		// client_sessions row server-side.
 		client.unsubscribe(threadId);
 		if (pollInterval !== null) clearInterval(pollInterval);
+		if (namesInterval !== null) clearInterval(namesInterval);
 		client.off("thread:status", handleThreadStatus);
 		client.off("stream:chunk", handleStreamChunk);
 	});
@@ -618,6 +661,12 @@
 </script>
 
 <div class="line-view" style="--line-color: {lineColor}">
+	{#if loadError}
+		<div class="load-error" role="alert">
+			<span>Failed to load thread: {loadError}</span>
+			<button type="button" onclick={() => void loadInitial()}>Retry</button>
+		</div>
+	{/if}
 	<!-- Header -->
 	<div class="line-header">
 		<button class="back-btn" onclick={handleBackClick}>
@@ -1312,5 +1361,14 @@
 		background: var(--paper-2);
 		color: var(--ink-2);
 		font-size: 0.78rem;
+	}
+
+	.load-error {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 8px 16px;
+		color: var(--err);
+		font-size: 13px;
 	}
 </style>

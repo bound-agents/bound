@@ -33,8 +33,9 @@
 	const category = $derived(getFileCategory(file.path.split("/").pop() || "", file.is_binary));
 
 	onMount(async () => {
-		await fetchContent();
+		// Trap focus first so Escape closes the preview while content loads.
 		setupFocusTrap();
+		await fetchContent();
 	});
 
 	onDestroy(() => {

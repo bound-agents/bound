@@ -65,8 +65,9 @@ export interface MetricsResponse {
 	relay: {
 		byHost: Array<{
 			peer_site_id: string;
-			avg_latency_ms: number;
-			p95_latency_ms: number;
+			/** `null` when the peer has no latency samples in the range. */
+			avg_latency_ms: number | null;
+			p95_latency_ms: number | null;
 			success_count: number;
 			failure_count: number;
 			expired_count: number;
@@ -108,9 +109,11 @@ export interface MetricsResponse {
 		};
 		timeline: Array<{
 			date: string;
-			cache_hit_rate: number;
+			/** `null` when the bucket has no cache denominator. */
+			cache_hit_rate: number | null;
 			budget_pressure_pct: number;
-			avg_context_utilization: number;
+			/** `null` when no turn in the bucket reported a context window. */
+			avg_context_utilization: number | null;
 		}>;
 	};
 }
@@ -346,17 +349,17 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				latenciesByHostMap.get(row.peer_site_id)?.push(row.latency_ms);
 			}
 
-			const computeP95 = (values: number[]): number => {
-				if (values.length === 0) return 0;
-				const sorted = values.sort((a, b) => a - b);
-				const index = Math.floor(sorted.length * 0.95);
-				return sorted[Math.max(0, index - 1)] ?? 0;
+			// Values arrive sorted ascending (ORDER BY latency_ms ASC). Nearest-rank P95.
+			const computeP95 = (sorted: number[]): number | null => {
+				const n = sorted.length;
+				if (n === 0) return null;
+				return sorted[Math.min(n - 1, Math.max(0, Math.ceil(0.95 * n) - 1))] ?? null;
 			};
 
 			// Build byHost with P95 values
 			const relayByHost = relayHostAggregatesRows.map((row) => ({
 				peer_site_id: row.peer_site_id,
-				avg_latency_ms: row.avg_latency_ms ?? 0,
+				avg_latency_ms: row.avg_latency_ms ?? null,
 				p95_latency_ms: computeP95(latenciesByHostMap.get(row.peer_site_id) ?? []),
 				success_count: row.success_count ?? 0,
 				failure_count: row.failure_count ?? 0,
@@ -589,9 +592,9 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 					},
 					timeline: contextTimelineRows.map((row) => ({
 						date: row.date,
-						cache_hit_rate: row.cache_hit_rate ?? 0,
+						cache_hit_rate: row.cache_hit_rate ?? null,
 						budget_pressure_pct: row.budget_pressure_pct ?? 0,
-						avg_context_utilization: row.avg_context_utilization ?? 0,
+						avg_context_utilization: row.avg_context_utilization ?? null,
 					})),
 				},
 			};

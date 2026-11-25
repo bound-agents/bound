@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { scaleLinear, scaleTime } from "d3-scale";
+	import { definedSegments, segmentsAreaPath, segmentsLinePath } from "../lib/chart-segments";
 	import {
 		type BucketPoint,
 		formatBucketAxisLabel,
@@ -12,7 +13,8 @@
 	interface Props {
 		data: Array<{
 			date: string;
-			cache_hit_rate: number;
+			/** `null` = no cache denominator in this bucket; breaks the line. */
+			cache_hit_rate: number | null;
 		}>;
 	}
 
@@ -69,32 +71,19 @@
 		return `${(value * 100).toFixed(0)}%`;
 	};
 
-	const pathData = $derived.by(() => {
-		return parsedData
-			.map((d, i) => {
-				const x = padding.left + xScale(d.dateObj);
-				const y = padding.top + yScale(d.cache_hit_rate);
-				return `${i === 0 ? "M" : "L"}${x},${y}`;
-			})
-			.join(" ");
-	});
-
-	const areaData = $derived.by(() => {
-		if (parsedData.length === 0) return "";
-
-		let path = pathData;
-		const lastData = parsedData[parsedData.length - 1];
-		if (lastData) {
-			const lastX = padding.left + xScale(lastData.dateObj);
-			path += ` L${lastX},${padding.top + innerHeight}`;
-		}
-		const firstData = parsedData[0];
-		if (firstData) {
-			const firstX = padding.left + xScale(firstData.dateObj);
-			path += ` L${firstX},${padding.top + innerHeight} Z`;
-		}
-		return path;
-	});
+	type DefinedPoint = (typeof parsedData)[number] & { cache_hit_rate: number };
+	const definedPoints = $derived(
+		parsedData.filter((d): d is DefinedPoint => d.cache_hit_rate !== null),
+	);
+	const segments = $derived(
+		definedSegments(parsedData, (d) => d.cache_hit_rate !== null) as DefinedPoint[][],
+	);
+	const pointXY = (d: DefinedPoint): [number, number] => [
+		padding.left + xScale(d.dateObj),
+		padding.top + yScale(d.cache_hit_rate),
+	];
+	const pathData = $derived(segmentsLinePath(segments, pointXY));
+	const areaData = $derived(segmentsAreaPath(segments, pointXY, padding.top + innerHeight));
 
 	const yTicks = [0, 0.25, 0.5, 0.75, 1];
 
@@ -180,7 +169,7 @@
 				stroke-linejoin="round"
 			/>
 
-			{#each parsedData as d}
+			{#each definedPoints as d}
 				<circle
 					cx={padding.left + xScale(d.dateObj)}
 					cy={padding.top + yScale(d.cache_hit_rate)}

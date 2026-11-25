@@ -743,9 +743,8 @@ describe("metrics routes", () => {
 
 			const hostEntry = byHost.find((h) => h.peer_site_id === "site-c");
 			expect(hostEntry).toBeDefined();
-			// P95 of [10..100] should be around 90
-			expect(hostEntry?.p95_latency_ms).toBeGreaterThanOrEqual(85);
-			expect(hostEntry?.p95_latency_ms).toBeLessThanOrEqual(95);
+			// Nearest-rank P95 of 10 samples is rank ceil(9.5) = 10 → 100.
+			expect(hostEntry?.p95_latency_ms).toBe(100);
 		});
 
 		it("maps success/expired INTEGER to boolean", async () => {

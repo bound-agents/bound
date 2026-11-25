@@ -5,6 +5,7 @@ import {
 	findFileByIdActive,
 	findFileByPathActive,
 	findFileIdByPathActive,
+	getHostMetaHostName,
 	getSiteId,
 	insertRow,
 	listFilesActiveByCreatedDesc,
@@ -136,7 +137,7 @@ export async function storeFile(
 	return fileId;
 }
 
-export function createFilesRoutes(db: Database): Hono {
+export function createFilesRoutes(db: Database, operatorUserId = "default_web_user"): Hono {
 	const app = new Hono();
 
 	app.get("/", (c) => {
@@ -287,8 +288,8 @@ export function createFilesRoutes(db: Database): Hono {
 				name: file.name,
 				mimeType: file.type || "application/octet-stream",
 				data: await file.arrayBuffer(),
-				createdBy: "default_web_user",
-				hostOrigin: "localhost:3000",
+				createdBy: operatorUserId,
+				hostOrigin: getHostMetaHostName(db) ?? siteId,
 			});
 
 			const result = findFileById(db, fileId) as AgentFile;

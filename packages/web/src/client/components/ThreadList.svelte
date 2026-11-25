@@ -43,6 +43,7 @@
 	let editingTitle = $state("");
 	let titleInput = $state<HTMLInputElement | undefined>();
 	let committingThreadId = $state<string | null>(null);
+	let renameError = $state<{ threadId: string; message: string } | null>(null);
 
 	async function startEditing(event: MouseEvent, thread: ThreadListEntry): Promise<void> {
 		event.preventDefault();
@@ -71,8 +72,15 @@
 			return;
 		}
 		committingThreadId = thread.id;
+		renameError = null;
 		try {
 			await onRenameThread?.(thread.id, title);
+			cancelEditing();
+		} catch (error) {
+			renameError = {
+				threadId: thread.id,
+				message: error instanceof Error ? error.message : "Rename failed",
+			};
 			cancelEditing();
 		} finally {
 			committingThreadId = null;
@@ -100,25 +108,6 @@
 			.replace(/\s+/g, " ")
 			.trim();
 		return clean || "Untitled";
-	}
-
-	// Seeded 24h activity sparkline — deterministic per thread id, weighted by
-	// messageCount and skewed toward the most recent hours so the sparkline feels
-	// "alive" for active threads and quiet for older ones.
-	function makeActivity(seed: string, messageCount: number): number[] {
-		let s = 0;
-		for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
-		const rand = () => {
-			s = (s * 9301 + 49297) >>> 0;
-			return (s % 233280) / 233280;
-		};
-		const peak = Math.max(2, Math.min(10, Math.ceil(messageCount / 6)));
-		const out: number[] = [];
-		for (let i = 0; i < 24; i++) {
-			const recencyWeight = 0.25 + (i / 23) * 0.75;
-			out.push(Math.round(rand() * peak * recencyWeight));
-		}
-		return out;
 	}
 
 	function getAttachedSessionHosts(thread: ThreadListEntry): string[] {
@@ -151,7 +140,7 @@
 
 	// Estimated heights — these don't have to be exact, they just need to be
 	// stable so the scrollbar doesn't jump as cards come in/out of the window.
-	// `with-summary` cards are ~170px (sparkline + 2-line summary clamp + meta);
+	// `with-summary` cards are ~150px (2-line summary clamp + meta);
 	// `no-summary` cards are ~134px. Picking a single 162px estimate for cards
 	// minimizes drift in the common case (most threads have summaries).
 	const HEADER_HEIGHT = 36;
@@ -283,9 +272,6 @@
 						{@const thread = item.thread}
 						{@const color = getLineColor(thread.color)}
 						{@const selected = selectedThreadId === thread.id}
-						{@const activity = makeActivity(thread.id, thread.messageCount ?? 0)}
-						{@const maxActivity = Math.max(1, ...activity)}
-						{@const totalActivity = activity.reduce((a, b) => a + b, 0)}
 						{@const isActive = threadStatuses.get(thread.id)?.active ?? false}
 						{@const attachedSessionHosts = getAttachedSessionHosts(thread)}
 						<a
@@ -356,24 +342,13 @@
 								</h3>
 							{/if}
 
+							{#if renameError?.threadId === thread.id}
+								<p class="rename-error" role="alert">Rename failed: {renameError.message}</p>
+							{/if}
+
 							{#if thread.summary}
 								<p class="summary">{thread.summary}</p>
 							{/if}
-
-							<div class="sparkline" title="{activity.length}h activity · {totalActivity} turns">
-								{#each activity as v, j}
-									{@const isRecent = j >= activity.length - 3}
-									{@const h = v === 0 ? 1 : Math.max(2, Math.round((v / maxActivity) * 26))}
-									<span
-										class="spark-bar"
-										style="
-											height: {h}px;
-											background: {v === 0 ? 'var(--rule-soft)' : isRecent ? color : 'var(--ink-3)'};
-											opacity: {v === 0 ? 0.4 : isRecent ? 0.95 : 0.55};
-										"
-									></span>
-								{/each}
-							</div>
 
 							<div class="meta">
 								<span>{thread.messageCount ?? 0} messages</span>
@@ -381,8 +356,6 @@
 									<span class="sep">·</span>
 									<span class="model mono">{thread.lastModel}</span>
 								{/if}
-								<div class="spacer"></div>
-								<span class="turn-count mono">{totalActivity} turns / 24h</span>
 							</div>
 						</a>
 					{/if}
@@ -615,21 +588,10 @@
 		overflow: hidden;
 	}
 
-	.sparkline {
-		display: flex;
-		align-items: flex-end;
-		gap: 2px;
-		height: 28px;
-		margin-top: 10px;
-		margin-left: 4px;
-		margin-right: 4px;
-		border-bottom: 1px solid var(--rule-faint);
-		padding-bottom: 1px;
-	}
-
-	.spark-bar {
-		flex: 1;
-		display: block;
+	.rename-error {
+		margin: 0;
+		font-size: var(--fs-small, 12px);
+		color: var(--err);
 	}
 
 	.meta {
@@ -648,12 +610,6 @@
 	.model {
 		font-family: var(--font-mono);
 		font-size: 11px;
-	}
-
-	.turn-count {
-		font-family: var(--font-mono);
-		font-size: 10.5px;
-		color: var(--ink-4);
 	}
 
 	.empty-state {

@@ -69,8 +69,16 @@
 				Healthy
 			</span>
 			<span class="leg-item">
+				<span class="leg-sq" style="background: var(--warn)"></span>
+				Degraded
+			</span>
+			<span class="leg-item">
 				<span class="leg-sq" style="background: var(--err)"></span>
 				Unreachable
+			</span>
+			<span class="leg-item">
+				<span class="leg-sq" style="background: var(--ink-3)"></span>
+				Unknown
 			</span>
 		</div>
 	</div>

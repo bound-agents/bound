@@ -136,7 +136,10 @@
 
 	const yScale = $derived.by(() => {
 		const maxCost = Math.max(...allPoints.map((p) => p.cost_usd), 0);
-		return scaleLinear().domain([0, maxCost]).range([innerHeight, 0]).nice();
+		return scaleLinear()
+			.domain([0, maxCost > 0 ? maxCost : 1])
+			.range([innerHeight, 0])
+			.nice();
 	});
 
 	const formatUSD = (value: number): string => `$${value.toFixed(4)}`;

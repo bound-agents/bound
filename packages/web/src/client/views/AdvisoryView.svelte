@@ -16,6 +16,10 @@
 	let expandedId = $state<string | null>(null);
 	let resolvedExpanded = $state(false);
 	let actionInProgress = $state<string | null>(null);
+	let pendingAction = $state<{ id: string; action: string } | null>(null);
+	let pendingNote = $state("");
+	let loadError = $state<string | null>(null);
+	let actionError = $state<{ id: string; message: string } | null>(null);
 	let hostNameMap = $state<Map<string, string>>(new Map());
 	let sort = $state<"modified-desc" | "modified-asc" | "posted-desc">("modified-desc");
 
@@ -39,8 +43,9 @@
 	async function loadAdvisories(): Promise<void> {
 		try {
 			advisories = await client.listAdvisories();
+			loadError = null;
 		} catch (error) {
-			console.error("Failed to load advisories:", error);
+			loadError = error instanceof Error ? error.message : "Failed to load advisories";
 		}
 		loading = false;
 	}
@@ -71,11 +76,23 @@
 		if (pollInterval !== null) clearInterval(pollInterval);
 	});
 
-	async function performAction(id: string, action: string): Promise<void> {
+	function requestAction(id: string, action: string): void {
+		pendingAction = { id, action };
+		pendingNote = "";
+		actionError = null;
+	}
+
+	function cancelPendingAction(): void {
+		pendingAction = null;
+		pendingNote = "";
+	}
+
+	async function performAction(id: string, action: string, rawNote: string): Promise<void> {
 		// #192: every state change carries a note recording why/what was done.
-		const note = window.prompt(`Add a note for "${action}" (required):`)?.trim();
-		if (!note) return;
-		actionInProgress = `${id}:${action}`;
+		const note = rawNote.trim();
+		if (!note || actionInProgress === id) return;
+		actionInProgress = id;
+		actionError = null;
 		try {
 			const actionMap: Record<string, (id: string, note: string) => Promise<unknown>> = {
 				approve: (id, note) => client.approveAdvisory(id, note),
@@ -86,10 +103,14 @@
 			const fn = actionMap[action];
 			if (fn) {
 				await fn(id, note);
+				cancelPendingAction();
 				await loadAdvisories();
 			}
 		} catch (error) {
-			console.error(`Failed to ${action} advisory:`, error);
+			actionError = {
+				id,
+				message: `${action} failed: ${error instanceof Error ? error.message : "unknown error"}`,
+			};
 		}
 		actionInProgress = null;
 	}
@@ -123,12 +144,14 @@
 		return new Date(b.proposed_at).getTime() - new Date(a.proposed_at).getTime();
 	}
 
+	const OPEN_STATUSES = ["proposed", "approved", "deferred"];
+
 	const unresolved = $derived(
-		advisories.filter((a) => ["proposed", "approved"].includes(a.status)).sort(sortFn),
+		advisories.filter((a) => OPEN_STATUSES.includes(a.status)).sort(sortFn),
 	);
 
 	const resolved = $derived(
-		advisories.filter((a) => !["proposed", "approved"].includes(a.status)).sort(sortFn),
+		advisories.filter((a) => !OPEN_STATUSES.includes(a.status)).sort(sortFn),
 	);
 
 	// Markdown-rendered advisory details, keyed by `${id}::${detail-length}`.
@@ -174,7 +197,17 @@
 			<div class="state">
 				<p>Loading advisories…</p>
 			</div>
+		{:else if loadError && advisories.length === 0}
+			<div class="state" role="alert">
+				<p class="inline-error">Failed to load advisories: {loadError}</p>
+				<Btn variant="default" size="sm" onclick={() => loadAdvisories()}>
+					{#snippet children()}Retry{/snippet}
+				</Btn>
+			</div>
 		{:else}
+			{#if loadError}
+				<p class="inline-error" role="alert">Refresh failed: {loadError}</p>
+			{/if}
 			<div class="sort-bar">
 				<h2 class="section-title">Open · {unresolved.length}</h2>
 				<div class="spacer"></div>
@@ -206,6 +239,12 @@
 									<span>from {hostLabel(adv)}</span>
 									<span class="sep">·</span>
 									<StatusChip status={adv.status as never} />
+									{#if adv.status === "deferred" && adv.defer_until}
+										<span class="sep">·</span>
+										<span class="defer-until"
+											>until {new Date(adv.defer_until).toLocaleString()}</span
+										>
+									{/if}
 								</div>
 							</div>
 							<span class="caret" class:open={expanded}>▼</span>
@@ -257,46 +296,84 @@
 									</div>
 								</div>
 
-								{#if ["proposed", "deferred", "approved"].includes(adv.status)}
-									<div class="action-bar">
-										{#if adv.status === "approved"}
+								{#if OPEN_STATUSES.includes(adv.status)}
+									{@const busy = actionInProgress === adv.id}
+									{#if actionError?.id === adv.id}
+										<p class="inline-error" role="alert">{actionError.message}</p>
+									{/if}
+									{#if pendingAction?.id === adv.id}
+										{@const pending = pendingAction}
+										<form
+											class="action-bar note-bar"
+											onsubmit={(e) => {
+												e.preventDefault();
+												void performAction(pending.id, pending.action, pendingNote);
+											}}
+										>
+											<label class="note-label">
+												<span class="kicker">Note for {pending.action} (required)</span>
+												<input
+													class="note-input"
+													bind:value={pendingNote}
+													disabled={busy}
+													aria-label={`Note for ${pending.action}`}
+												/>
+											</label>
 											<Btn
 												variant="accent"
 												size="sm"
-												disabled={actionInProgress === `${adv.id}:apply`}
-												onclick={() => performAction(adv.id, "apply")}
+												type="submit"
+												disabled={busy || !pendingNote.trim()}
 											>
-												{#snippet children()}Apply{/snippet}
+												{#snippet children()}Confirm {pending.action}{/snippet}
 											</Btn>
-										{:else}
-											<Btn
-												variant="primary"
-												size="sm"
-												disabled={actionInProgress === `${adv.id}:approve`}
-												onclick={() => performAction(adv.id, "approve")}
-											>
-												{#snippet children()}Approve{/snippet}
+											<Btn variant="ghost" size="sm" disabled={busy} onclick={cancelPendingAction}>
+												{#snippet children()}Cancel{/snippet}
 											</Btn>
-											<Btn
-												variant="default"
-												size="sm"
-												disabled={actionInProgress === `${adv.id}:defer`}
-												onclick={() => performAction(adv.id, "defer")}
-											>
-												{#snippet children()}Defer{/snippet}
-											</Btn>
-											<Btn
-												variant="ghost"
-												size="sm"
-												disabled={actionInProgress === `${adv.id}:dismiss`}
-												onclick={() => performAction(adv.id, "dismiss")}
-											>
-												{#snippet children()}Dismiss{/snippet}
-											</Btn>
-										{/if}
-										<div class="spacer"></div>
-										<span class="adv-id-stamp mono">ID · {adv.id.slice(0, 12)}</span>
-									</div>
+										</form>
+									{:else}
+										<div class="action-bar">
+											{#if adv.status === "approved"}
+												<Btn
+													variant="accent"
+													size="sm"
+													disabled={busy}
+													onclick={() => requestAction(adv.id, "apply")}
+												>
+													{#snippet children()}Apply{/snippet}
+												</Btn>
+											{:else}
+												<Btn
+													variant="primary"
+													size="sm"
+													disabled={busy}
+													onclick={() => requestAction(adv.id, "approve")}
+												>
+													{#snippet children()}Approve{/snippet}
+												</Btn>
+												{#if adv.status !== "deferred"}
+													<Btn
+														variant="default"
+														size="sm"
+														disabled={busy}
+														onclick={() => requestAction(adv.id, "defer")}
+													>
+														{#snippet children()}Defer{/snippet}
+													</Btn>
+												{/if}
+												<Btn
+													variant="ghost"
+													size="sm"
+													disabled={busy}
+													onclick={() => requestAction(adv.id, "dismiss")}
+												>
+													{#snippet children()}Dismiss{/snippet}
+												</Btn>
+											{/if}
+											<div class="spacer"></div>
+											<span class="adv-id-stamp mono">ID · {adv.id.slice(0, 12)}</span>
+										</div>
+									{/if}
 								{/if}
 							</div>
 						{/if}
@@ -339,7 +416,7 @@
 										</div>
 										<span class="caret" class:open={expanded}>▼</span>
 									</button>
-									{#if expanded && (adv.detail || adv.evidence)}
+									{#if expanded && (adv.detail || adv.evidence || adv.action || adv.impact)}
 										<div class="adv-body">
 											<div class="body-grid">
 												<div>
@@ -353,6 +430,18 @@
 															<p class="field-body">{adv.detail}</p>
 														{/if}
 													</div>
+													{#if adv.action}
+														<div class="field-block">
+															<div class="kicker">Recommended Action</div>
+															<p class="field-body">{adv.action}</p>
+														</div>
+													{/if}
+													{#if adv.impact}
+														<div class="field-block">
+															<div class="kicker">Impact</div>
+															<p class="field-body">{adv.impact}</p>
+														</div>
+													{/if}
 												</div>
 												<div>
 													{#if adv.evidence}
@@ -656,5 +745,31 @@
 
 	.resolved-list {
 		margin-top: 14px;
+	}
+
+	.inline-error {
+		color: var(--err);
+		font-size: 12px;
+		margin: 0 0 8px;
+	}
+
+	.note-label {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		flex: 1;
+	}
+
+	.note-input {
+		font: inherit;
+		padding: 4px 8px;
+		border: 1px solid var(--rule-soft);
+		border-radius: 4px;
+		background: var(--paper);
+		color: var(--ink);
+	}
+
+	.defer-until {
+		color: var(--ink-3);
 	}
 </style>

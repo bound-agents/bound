@@ -36,7 +36,7 @@ export function createMemoryRoutes(db: Database): Hono {
 					   t.title as source_thread_title, t.color as source_color
 				FROM semantic_memory sm
 				LEFT JOIN threads t ON sm.source = t.id AND t.deleted = 0
-				WHERE sm.deleted = 0
+				WHERE sm.deleted = 0 AND sm.agent_id IS NULL
 			`,
 				)
 				.all() as Array<{
@@ -56,7 +56,7 @@ export function createMemoryRoutes(db: Database): Hono {
 					`
 				SELECT source_key, target_key, relation, modified_at
 				FROM memory_edges
-				WHERE deleted = 0
+				WHERE deleted = 0 AND agent_id IS NULL
 			`,
 				)
 				.all() as Array<{
@@ -78,12 +78,16 @@ export function createMemoryRoutes(db: Database): Hono {
 			}));
 
 			// Build edges response
-			const edges: MemoryGraphEdge[] = edgeRows.map((row) => ({
-				sourceKey: row.source_key,
-				targetKey: row.target_key,
-				relation: row.relation,
-				modifiedAt: row.modified_at,
-			}));
+			// Drop edges whose endpoints are not live main-namespace nodes.
+			const nodeKeys = new Set(memoryRows.map((row) => row.key));
+			const edges: MemoryGraphEdge[] = edgeRows
+				.filter((row) => nodeKeys.has(row.source_key) && nodeKeys.has(row.target_key))
+				.map((row) => ({
+					sourceKey: row.source_key,
+					targetKey: row.target_key,
+					relation: row.relation,
+					modifiedAt: row.modified_at,
+				}));
 
 			const response: MemoryGraphResponse = {
 				nodes,

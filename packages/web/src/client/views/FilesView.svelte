@@ -37,19 +37,29 @@
 	const fileCount = $derived(currentDirectoryContents.filter((n) => n.type === "file").length);
 	const dirCount = $derived(currentDirectoryContents.filter((n) => n.type === "dir").length);
 
+	let loadSeq = 0;
+	let initialized = false;
+
 	async function loadFiles(): Promise<void> {
+		const seq = ++loadSeq;
 		try {
-			loading = true;
+			if (!initialized) loading = true;
 			error = null;
 			const files = (await client.listFiles()) as FileMetadata[];
+			// A newer reload started while this one was in flight — drop the stale result.
+			if (seq !== loadSeq) return;
 			tree = buildFileTree(files);
-			expandedPaths.clear();
-			for (const node of tree) expandAllRecursive(node);
-			selectedPath = "/";
+			if (!initialized) {
+				expandedPaths.clear();
+				for (const node of tree) expandAllRecursive(node);
+				initialized = true;
+			}
+			if (selectedPath !== "/" && !findNodeByPath(tree, selectedPath)) selectedPath = "/";
 		} catch (err) {
+			if (seq !== loadSeq) return;
 			error = err instanceof Error ? err.message : "Failed to load files";
 		} finally {
-			loading = false;
+			if (seq === loadSeq) loading = false;
 		}
 	}
 

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { scaleLinear, scaleTime } from "d3-scale";
+	import { definedSegments, segmentsAreaPath, segmentsLinePath } from "../lib/chart-segments";
 	import {
 		type BucketPoint,
 		formatBucketAxisLabel,
@@ -16,7 +17,8 @@
 		yMax?: number;
 		formatValue: (v: number) => string;
 		formatAxis?: (v: number) => string;
-		data: Array<{ date: string; value: number }>;
+		/** `null` values break the line rather than plotting as zero. */
+		data: Array<{ date: string; value: number | null }>;
 	}
 
 	let { title, color, yMin = 0, yMax, formatValue, formatAxis, data }: Props = $props();
@@ -38,6 +40,12 @@
 			.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
 	});
 
+	type DefinedPoint = (typeof parsedData)[number] & { value: number };
+	const definedPoints = $derived(parsedData.filter((p): p is DefinedPoint => p.value !== null));
+	const segments = $derived(
+		definedSegments(parsedData, (p) => p.value !== null) as DefinedPoint[][],
+	);
+
 	const hasData = $derived(parsedData.length > 0);
 
 	const width = $derived(Math.max(measuredWidth, 200));
@@ -55,7 +63,7 @@
 
 	const computedMax = $derived.by(() => {
 		if (yMax !== undefined) return yMax;
-		const m = Math.max(...parsedData.map((d) => d.value), 0);
+		const m = Math.max(...definedPoints.map((d) => d.value), 0);
 		return m === 0 ? 1 : m;
 	});
 
@@ -70,29 +78,14 @@
 
 	const formatTickLabel = (v: number): string => (formatAxis ?? formatValue)(v);
 
-	const pathData = $derived.by(() => {
-		return parsedData
-			.map((p, i) => {
-				const x = padding.left + xScale(p.dateObj);
-				const y = padding.top + yScale(p.value);
-				return `${i === 0 ? "M" : "L"}${x},${y}`;
-			})
-			.join(" ");
-	});
-
-	const areaData = $derived.by(() => {
-		if (!hasData) return "";
-		let path = pathData;
-		const last = parsedData[parsedData.length - 1];
-		const first = parsedData[0];
-		if (last) {
-			path += ` L${padding.left + xScale(last.dateObj)},${padding.top + innerHeight}`;
-		}
-		if (first) {
-			path += ` L${padding.left + xScale(first.dateObj)},${padding.top + innerHeight} Z`;
-		}
-		return path;
-	});
+	const pointXY = (p: DefinedPoint): [number, number] => [
+		padding.left + xScale(p.dateObj),
+		padding.top + yScale(p.value),
+	];
+	const pathData = $derived(segmentsLinePath(segments, pointXY));
+	const areaData = $derived(
+		hasData ? segmentsAreaPath(segments, pointXY, padding.top + innerHeight) : "",
+	);
 
 	const xTicks = $derived.by(() => {
 		if (parsedData.length <= 4) return parsedData;
@@ -161,7 +154,7 @@
 				stroke-linejoin="round"
 			/>
 
-			{#each parsedData as p}
+			{#each definedPoints as p}
 				<circle
 					cx={padding.left + xScale(p.dateObj)}
 					cy={padding.top + yScale(p.value)}

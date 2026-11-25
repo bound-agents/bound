@@ -5,6 +5,7 @@ import {
 	findRunningTaskIdForThread,
 	findThreadById,
 	getAttachedSessionHosts,
+	getHostMetaHostName,
 	getSiteId,
 	insertRow,
 	listContextDebugTurnsByThread,
@@ -189,7 +190,7 @@ export function createThreadsRoutes(
 					id: threadId,
 					user_id: webUserId,
 					interface: interfaceTag,
-					host_origin: "localhost:3000",
+					host_origin: getHostMetaHostName(db) ?? siteId,
 					color: nextColor,
 					title: "",
 					summary: null,
@@ -315,7 +316,7 @@ export function createThreadsRoutes(
 				state: forwarded?.status ?? (localLoopActive || runningTask ? "thinking" : null),
 				detail: forwarded?.detail ?? null,
 				tokens: forwarded?.tokens ?? 0,
-				model: defaultModel ?? null,
+				model: thread.model_hint ?? defaultModel ?? null,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

@@ -41,7 +41,7 @@ describe("LatencyBarChart", () => {
 		// Legend is always present (avg/p95 + three health tiers).
 		expect(target.querySelector(".legend")).not.toBeNull();
 		expect(target.textContent).toContain("Avg (solid)");
-		expect(target.textContent).toContain("P95 (faded)");
+		expect(target.textContent).toContain("P95 (50% opacity)");
 		expect(target.textContent).toContain("< 500ms");
 		expect(target.textContent).toContain("≥ 2000ms");
 		unmount();
@@ -89,12 +89,26 @@ describe("LatencyBarChart", () => {
 		const { target, unmount } = await mountChart(data);
 		await dom.settle();
 		const fills = [...target.querySelectorAll("rect.bar")].map((r) => r.getAttribute("fill"));
-		// Each tier's rgba appears (avg bars are opacity 1, p95 bars opacity 0.5).
-		expect(fills.some((f) => f === "rgba(0, 200, 100, 1)")).toBe(true);
-		expect(fills.some((f) => f === "rgba(255, 193, 7, 1)")).toBe(true);
-		expect(fills.some((f) => f === "rgba(244, 67, 54, 1)")).toBe(true);
-		// p95 bars are drawn at half opacity.
-		expect(fills.some((f) => f === "rgba(0, 200, 100, 0.5)")).toBe(true);
+		// Theme tier variables; p95 bars carry fill-opacity 0.5.
+		expect(fills).toContain("var(--ok)");
+		expect(fills).toContain("var(--warn)");
+		expect(fills).toContain("var(--err)");
+		const p95 = [...target.querySelectorAll("rect.bar")].filter(
+			(r) => r.getAttribute("fill-opacity") === "0.5",
+		);
+		expect(p95).toHaveLength(3);
+		unmount();
+	});
+
+	it("renders a no-data label instead of a 0ms bar for peers without samples", async () => {
+		const { target, unmount } = await mountChart([
+			row({ peer_site_id: "quiet", avg_latency_ms: null, p95_latency_ms: null }),
+		]);
+		await dom.settle();
+		expect(target.querySelectorAll("rect.bar")).toHaveLength(0);
+		expect(target.textContent).toContain("no latency samples");
+		const labels = [...target.querySelectorAll("text.bar-label")].map((n) => n.textContent?.trim());
+		expect(labels).toEqual(["— no latency samples"]);
 		unmount();
 	});
 

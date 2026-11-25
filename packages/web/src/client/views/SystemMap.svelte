@@ -32,6 +32,8 @@
 	let hoveredThreadId: string | null = $state(null);
 	let searchQuery = $state("");
 	let creating = $state(false);
+	let createError = $state<string | null>(null);
+	let destroyed = false;
 	let subscribedIds = new Set<string>();
 
 	const threads = $derived.by(() => {
@@ -168,11 +170,12 @@
 
 	async function newThread(): Promise<void> {
 		creating = true;
+		createError = null;
 		try {
 			const thread = await client.createThread();
 			navigateTo(`/line/${thread.id}`);
 		} catch (error) {
-			console.error("Failed to create thread:", error);
+			createError = error instanceof Error ? error.message : "Failed to create line";
 			creating = false;
 		}
 	}
@@ -195,11 +198,13 @@
 		connectWebSocket();
 		client.on("thread:status", handleThreadStatus);
 		await loadThreads();
+		if (destroyed) return;
 		// Re-fetch the head of the list less aggressively; status updates come via WS.
 		pollInterval = setInterval(loadThreads, 15000);
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		if (pollInterval !== null) clearInterval(pollInterval);
 		client.off("thread:status", handleThreadStatus);
 	});
@@ -236,6 +241,9 @@
 					<Search size={12} />
 				{/snippet}
 			</TextInput>
+			{#if createError}
+				<p class="create-error" role="alert">New line failed: {createError}</p>
+			{/if}
 		</div>
 
 		<div class="thread-scroll">
@@ -351,5 +359,11 @@
 		.thread-panel {
 			max-height: 45vh;
 		}
+	}
+
+	.create-error {
+		margin: 8px 0 0;
+		font-size: 12px;
+		color: var(--err);
 	}
 </style>

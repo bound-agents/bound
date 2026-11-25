@@ -14,6 +14,19 @@ afterAll(() => dom.teardown());
 // window.prompt is unimplemented in jsdom; override it per test.
 let promptReturn: string | null = "a note";
 (dom.window as unknown as { prompt: (msg?: string) => string | null }).prompt = () => promptReturn;
+// Actions take a required note through an inline input + Confirm button.
+async function submitNote(target: Element, note: string): Promise<void> {
+	const input = target.querySelector("input.note-input") as HTMLInputElement;
+	expect(input).not.toBeNull();
+	input.value = note;
+	await dom.fire(input, "input");
+	await dom.settle();
+	const confirm = Array.from(target.querySelectorAll("button")).find((b) =>
+		b.textContent?.trim().startsWith("Confirm"),
+	) as HTMLButtonElement;
+	await dom.fire(confirm, "click");
+	await dom.settle();
+}
 
 let AdvisoryView: typeof import("../../views/AdvisoryView.svelte").default;
 
@@ -135,7 +148,7 @@ describe("AdvisoryView", () => {
 		expect(body?.textContent).toContain("Users affected");
 	});
 
-	it("approves an advisory: prompts for a note and POSTs to the approve endpoint", async () => {
+	it("approves an advisory: takes an inline note and POSTs to the approve endpoint", async () => {
 		routeNetwork();
 		let listCalls = 0;
 		dom.route("GET", "/api/advisories", () => {
@@ -167,6 +180,7 @@ describe("AdvisoryView", () => {
 		expect(approveBtn).not.toBeUndefined();
 		await dom.fire(approveBtn, "click");
 		await dom.settle();
+		await submitNote(target, "a note");
 		expect(dom.requests.some((r) => r.method === "POST" && r.path.endsWith("/approve"))).toBe(true);
 		// After approve, the advisory reloads as approved and shows the Apply button.
 		const applyBtn = Array.from(target.querySelectorAll("button")).find(
@@ -175,7 +189,7 @@ describe("AdvisoryView", () => {
 		expect(applyBtn).not.toBeUndefined();
 	});
 
-	it("aborts an action when the note prompt is cancelled (no POST)", async () => {
+	it("aborts an action when the inline note is cancelled (no POST)", async () => {
 		routeNetwork();
 		dom.route("GET", "/api/advisories", () => [
 			adv({ id: "adv-cancel", title: "Cancel me", status: "proposed" }),
@@ -195,6 +209,12 @@ describe("AdvisoryView", () => {
 		const postsBefore = dom.requests.filter((r) => r.method === "POST").length;
 		await dom.fire(dismissBtn, "click");
 		await dom.settle();
+		const cancel = Array.from(target.querySelectorAll("button")).find(
+			(b) => b.textContent?.trim() === "Cancel",
+		) as HTMLButtonElement;
+		await dom.fire(cancel, "click");
+		await dom.settle();
+		expect(target.querySelector("input.note-input")).toBeNull();
 		const postsAfter = dom.requests.filter((r) => r.method === "POST").length;
 		expect(postsAfter).toBe(postsBefore);
 	});
@@ -288,9 +308,9 @@ describe("AdvisoryView", () => {
 		const Comp = await load();
 		const { target } = await dom.mount(Comp, {});
 		await dom.settle();
-		// loading clears even on error; the empty state shows.
-		expect(target.querySelector(".state")).toBeNull();
-		expect(target.querySelector(".empty")).not.toBeNull();
+		// A failed fetch shows an inline error, not the "Systems nominal" empty state.
+		expect(target.textContent).toContain("Failed to load advisories");
+		expect(target.querySelector(".empty")).toBeNull();
 	});
 
 	it("renders detail + evidence for an expanded resolved advisory", async () => {
@@ -350,6 +370,7 @@ describe("AdvisoryView", () => {
 		expect(applyBtn).not.toBeUndefined();
 		await dom.fire(applyBtn, "click");
 		await dom.settle();
+		await submitNote(target, "a note");
 		expect(dom.requests.some((r) => r.method === "POST" && r.path.endsWith("/apply"))).toBe(true);
 	});
 
@@ -374,6 +395,7 @@ describe("AdvisoryView", () => {
 		const postsBefore = dom.requests.filter((r) => r.method === "POST").length;
 		await dom.fire(deferBtn, "click");
 		await dom.settle();
+		await submitNote(target, "later please");
 		const deferPost = dom.requests
 			.slice(postsBefore)
 			.find((r) => r.method === "POST" && r.path.endsWith("/defer"));

@@ -602,8 +602,9 @@ describe("LineView — live WS events and polling", () => {
 			},
 		});
 		await dom?.settle();
-		// Message count incremented to 1 (the live assistant message appended).
-		expect(target.querySelector(".fields")?.textContent).toContain("1");
+		// The sent message and the live assistant message are both kept (merge by id).
+		expect(target.querySelector(".fields")?.textContent).toContain("Messages 2");
+		expect(target.querySelector(".wait-indicator, .waiting")).toBeNull();
 	});
 
 	// --- Thread model chip + per-turn provenance wiring (§9.1) ---

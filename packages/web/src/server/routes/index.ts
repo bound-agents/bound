@@ -153,7 +153,7 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 		oauthMcp: createOauthMcpRoutes(config.oauthMcpBridge ?? null),
 		mcpChallenges: createMcpChallengesRoutes(db, webBindHost, config.oauthMcpBridge ?? null),
 		connectors: createConnectorsRoutes(db),
-		files: createFilesRoutes(db),
+		files: createFilesRoutes(db, operatorUserId),
 		memory: createMemoryRoutes(db),
 		status: createStatusRoutes(
 			db,
