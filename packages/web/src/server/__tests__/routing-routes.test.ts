@@ -412,3 +412,37 @@ describe("PUT/DELETE /aliases/:providerKey", () => {
 		expect(row).toBeNull();
 	});
 });
+
+describe("GET /models — display-name disambiguation", () => {
+	it("appends the snapshot only when two logical models share a display name", async () => {
+		const e = (id: string, name: string) => ({
+			id,
+			route_id: `${siteId}:copilot:copilot-${id}`,
+			logical_model: id,
+			display_name: name,
+			provider_model_id: id,
+		});
+		seedHost(siteId, "hub", [
+			e("gpt-4o", "GPT-4o"),
+			e("gpt-4o-2024-08-06", "GPT-4o"),
+			e("gpt-4o-2024-11-20", "GPT-4o"),
+			e("gpt-4-o-preview", "GPT-4o"),
+			e("gpt-4o-mini", "GPT-4o mini"),
+			e("gpt-6-luna", "GPT-6 Luna"),
+		]);
+		const app = createRoutingRoutes(db, siteId, null);
+		const body = (await (await app.fetch(new Request("http://localhost/models"))).json()) as {
+			models: Array<{ logical_model: string; display_name: string }>;
+		};
+		const names = Object.fromEntries(body.models.map((m) => [m.logical_model, m.display_name]));
+		expect(names).toEqual({
+			"gpt-4o": "GPT-4o",
+			"gpt-4o-2024-08-06": "GPT-4o (2024-08-06)",
+			"gpt-4o-2024-11-20": "GPT-4o (2024-11-20)",
+			"gpt-4-o-preview": "GPT-4o (preview)",
+			"gpt-4o-mini": "GPT-4o mini",
+			"gpt-6-luna": "GPT-6 Luna",
+		});
+		expect(new Set(Object.values(names)).size).toBe(6);
+	});
+});

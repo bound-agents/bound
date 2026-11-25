@@ -29,6 +29,7 @@ const MODELS: RoutingModelsResponse = {
 					site_id: "site-hub",
 					host_name: "hub",
 					provider: "codex",
+					provider_model_id: "sol",
 					drained: false,
 					health: "healthy",
 					next_trial_at: null,
@@ -39,6 +40,7 @@ const MODELS: RoutingModelsResponse = {
 					site_id: "site-msi",
 					host_name: "MSI",
 					provider: "codex",
+					provider_model_id: "sol",
 					drained: true,
 					health: "unknown",
 					next_trial_at: null,
@@ -68,60 +70,95 @@ async function mount(
 	return mounted;
 }
 
+const click = (el: Element | null | undefined) =>
+	el?.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
+
 describe("SettingsModelsView", () => {
-	it("lists logical models with a health dot", async () => {
+	it("lists models by display name with a health dot and route/host counts, never a backend id", async () => {
 		const { target } = await mount();
-		expect(target.textContent).toContain("gpt-5.6-sol");
-		// A three-state health dot renders for the model.
-		expect(target.querySelector(".health-dot")).not.toBeNull();
+		const item = target.querySelector(".model-item");
+		expect(item?.textContent).toContain("GPT-5.6 Sol");
+		expect(item?.textContent).toContain("2 routes · 2 hosts");
+		expect(item?.querySelector(".health-dot")).not.toBeNull();
+	}, 30_000);
+
+	it("sorts case-insensitively across providers and filters by search", async () => {
+		const mk = (id: string, name: string) => ({
+			...(MODELS.models[0] as RoutingModelsResponse["models"][number]),
+			logical_model: id,
+			display_name: name,
+		});
+		const { target } = await mount({
+			models: [mk("z", "zeta"), mk("a", "Alpha"), mk("b", "beta")],
+		});
+		const names = () => [...target.querySelectorAll(".model-item .name")].map((n) => n.textContent);
+		expect(names()).toEqual(["Alpha", "beta", "zeta"]);
+		const search = target.querySelector(".search") as HTMLInputElement;
+		search.value = "ET";
+		search.dispatchEvent(new (globalThis as typeof window).Event("input", { bubbles: true }));
+		await dom?.settle();
+		expect(names()).toEqual(["beta", "zeta"]);
 	});
 
-	it("expands a model to show its route list with supply and health", async () => {
+	it("shows routes as provider:model on host with an Enabled toggle mapped to drains", async () => {
 		const { target } = await mount();
-		const head = target.querySelector(".model-head") as HTMLButtonElement;
-		head.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
+		const rows = [...target.querySelectorAll(".route-row:not(.stale)")];
+		expect(rows[0]?.textContent).toContain("codex:sol");
+		expect(rows[0]?.textContent).toContain("on hub");
+		expect(rows[0]?.textContent).toContain("Healthy");
+		const toggles = rows.map((r) => r.querySelector('input[role="switch"]') as HTMLInputElement);
+		expect(toggles.map((t) => t.checked)).toEqual([true, false]);
+		let drained = "";
+		let undrained = "";
+		dom?.route("POST", /\/api\/routing\/routes\/.*\/drain/, (req) => {
+			drained = decodeURIComponent(req.url);
+			return { ok: true };
+		});
+		dom?.route("DELETE", /\/api\/routing\/routes\/.*\/drain/, (req) => {
+			undrained = decodeURIComponent(req.url);
+			return { ok: true };
+		});
+		(toggles[0] as HTMLInputElement).checked = false;
+		toggles[0]?.dispatchEvent(new (globalThis as typeof window).Event("change", { bubbles: true }));
 		await dom?.settle();
-		const text = target.textContent ?? "";
-		expect(text).toContain("hub / codex");
-		expect(text).toContain("MSI / codex");
-		// The healthy route shows its state; the drained route is marked.
-		expect(text).toContain("healthy");
-		const drained = target.querySelector(".route-row.drained");
-		expect(drained).not.toBeNull();
+		expect(drained).toContain("site-hub:codex:sol");
+		(toggles[1] as HTMLInputElement).checked = true;
+		toggles[1]?.dispatchEvent(new (globalThis as typeof window).Event("change", { bubbles: true }));
+		await dom?.settle();
+		expect(undrained).toContain("site-msi:codex:sol");
+	});
+
+	it("shows backoff read-only as a retry countdown", async () => {
+		const m = structuredClone(MODELS);
+		const r = m.models[0]?.routes[0];
+		if (r) {
+			r.health = "backoff";
+			r.next_trial_at = Date.now() + 4 * 60_000;
+		}
+		const { target } = await mount(m);
+		expect(target.querySelector(".route-row")?.textContent).toContain(
+			"Backing off, retrying in 4m",
+		);
 	});
 
 	it("surfaces a stale route_order entry with a Remove action", async () => {
 		const { target } = await mount();
-		const head = target.querySelector(".model-head") as HTMLButtonElement;
-		head.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
-		await dom?.settle();
 		const stale = target.querySelector(".route-row.stale");
 		expect(stale?.textContent).toContain("old-host / codex");
 		expect(stale?.textContent).not.toContain("dead:codex:sol");
-		expect(stale?.textContent).toContain("stale");
-		const remove = [...target.querySelectorAll("button")].find((b) =>
-			b.textContent?.includes("Remove"),
-		);
-		expect(remove).toBeDefined();
+		expect(
+			[...target.querySelectorAll("button")].some((b) => b.textContent?.includes("Remove")),
+		).toBe(true);
 	});
 
 	it("reorders routes by sending the new route_order", async () => {
 		const { target } = await mount();
-		const head = target.querySelector(".model-head") as HTMLButtonElement;
-		head.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
-		await dom?.settle();
-		// Capture the PUT the move triggers.
 		let putBody: unknown = null;
 		dom?.route("PUT", /\/api\/routing\/models\/.*\/route-order/, (req) => {
 			putBody = req.body;
 			return { ok: true };
 		});
-		dom?.route("GET", "/api/routing/models", () => MODELS);
-		dom?.route("GET", "/api/routing/cluster-defaults", () => DEFAULTS);
-		// The second route's "move up" button swaps it ahead of the first.
-		const moveUps = [...target.querySelectorAll('button[aria-label="Move up"]')];
-		const second = moveUps[1] as HTMLButtonElement;
-		second.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
+		click(target.querySelectorAll('button[aria-label="Move up"]')[1]);
 		await dom?.settle();
 		expect((putBody as { route_order: string[] }).route_order).toEqual([
 			"site-msi:codex:sol",
@@ -129,11 +166,40 @@ describe("SettingsModelsView", () => {
 		]);
 	});
 
-	it("renders the cluster default fallback list and roles", async () => {
-		const { target } = await mount();
-		const text = target.textContent ?? "";
-		expect(text).toContain("opus-4.8, haiku");
-		expect(text).toContain("default: gpt-5.6-sol");
+	it("round-trips roles and custom aliases through PUT /cluster-defaults", async () => {
+		const { target } = await mount(MODELS, {
+			...DEFAULTS,
+			roles: { default: "gpt-5.6-sol", coder: "gpt-5.6-sol" },
+		});
+		const rows = [...target.querySelectorAll(".role-row")];
+		expect(
+			rows.map((r) => r.querySelector(".role-name, .role-name-input")?.textContent ?? ""),
+		).toHaveLength(4);
+		expect((rows[3]?.querySelector(".role-name-input") as HTMLInputElement).value).toBe("coder");
+		let putBody: unknown = null;
+		dom?.route("PUT", "/api/routing/cluster-defaults", (req) => {
+			putBody = req.body;
+			return { ok: true };
+		});
+		click([...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save"));
+		await dom?.settle();
+		expect((putBody as { roles: Record<string, string> }).roles).toEqual({
+			default: "gpt-5.6-sol",
+			coder: "gpt-5.6-sol",
+		});
+	});
+
+	it("rejects an alias that targets a model the cluster does not have", async () => {
+		const { target } = await mount(MODELS, { ...DEFAULTS, roles: { ghost: "nope" } });
+		let called = false;
+		dom?.route("PUT", "/api/routing/cluster-defaults", () => {
+			called = true;
+			return { ok: true };
+		});
+		click([...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save"));
+		await dom?.settle();
+		expect(called).toBe(false);
+		expect(target.querySelector(".roles [role=alert]")?.textContent).toContain("ghost");
 	});
 
 	it("shows an error message when the API fails", async () => {
@@ -141,8 +207,8 @@ describe("SettingsModelsView", () => {
 		dom.route("GET", "/api/routing/models", () => new Response("boom", { status: 500 }));
 		dom.route("GET", "/api/routing/cluster-defaults", () => DEFAULTS);
 		const SettingsModelsView = (await import("../../views/SettingsModelsView.svelte")).default;
-		await dom.mount(SettingsModelsView, {});
+		const { target } = await dom.mount(SettingsModelsView, {});
 		await dom.settle();
-		expect(document.body.textContent).toContain("");
+		expect(target.querySelector("[role=alert]")).not.toBeNull();
 	});
 });

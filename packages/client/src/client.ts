@@ -990,7 +990,8 @@ export class BoundClient {
 
 	async setClusterDefaults(payload: {
 		default_fallback_models?: string[];
-		roles?: { default?: string; heavy?: string; fast?: string };
+		/** Reserved roles (default/heavy/fast) and custom alias names → logical model. */
+		roles?: Record<string, string>;
 	}): Promise<{ ok: true }> {
 		return this.fetchJson("/api/routing/cluster-defaults", {
 			method: "PUT",

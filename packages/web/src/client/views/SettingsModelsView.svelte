@@ -11,31 +11,60 @@
 	import Page from "../components/Page.svelte";
 	import SectionHeader from "../components/SectionHeader.svelte";
 	import { client } from "../lib/bound";
+	import { buildModelLabels, compareLabels } from "../lib/model-labels";
 
 	// Settings › Models (2026-11-21-model-routing.md §9.3, 2026-11-21-model-catalog.md §9).
-	// One operator page managing synced cluster routing preferences against the
-	// read-only per-host route supply. Health is this host's router view; a remote
-	// route reports "unknown" rather than a guessed verdict.
+	// A searchable model list beside a detail pane. Routes render as
+	// `provider:model on host`; "Enabled" is the inverse of an operator drain.
+	// Automatic health states are read-only. Roles & aliases edit routing.model_roles.
+
+	const RESERVED_ROLES = ["default", "heavy", "fast"] as const;
 
 	let models = $state<ModelRoutingInfo[]>([]);
 	let defaults = $state<ClusterDefaultsResponse | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let busy = $state<string | null>(null);
-	// Which logical models are expanded to show their route list.
-	let expanded = $state<Set<string>>(new Set());
+	let query = $state("");
+	let selected = $state<string | null>(null);
+	let roles = $state<Array<{ name: string; model: string }>>([]);
+	let rolesError = $state<string | null>(null);
+	let rolesSaved = $state(false);
+	let now = $state(Date.now());
+
+	const labels = $derived(buildModelLabels(models));
+	const sorted = $derived(
+		[...models].sort((a, b) => compareLabels(a.display_name, b.display_name)),
+	);
+	const filtered = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		if (!q) return sorted;
+		return sorted.filter(
+			(m) => m.display_name.toLowerCase().includes(q) || m.logical_model.toLowerCase().includes(q),
+		);
+	});
+	const current = $derived(models.find((m) => m.logical_model === selected) ?? null);
 
 	onMount(() => {
 		void load();
+		const timer = setInterval(() => {
+			now = Date.now();
+		}, 30_000);
+		return () => clearInterval(timer);
 	});
 
 	async function load(): Promise<void> {
 		try {
-			loading = true;
 			error = null;
 			const [m, d] = await Promise.all([client.getRoutingModels(), client.getClusterDefaults()]);
 			models = m.models;
 			defaults = d;
+			roles = rolesFrom(d.roles);
+			if (!selected || !models.some((x) => x.logical_model === selected)) {
+				selected =
+					[...models].sort((a, b) => compareLabels(a.display_name, b.display_name))[0]
+						?.logical_model ?? null;
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : "Failed to load routing settings";
 		} finally {
@@ -43,15 +72,17 @@
 		}
 	}
 
-	function toggle(logical: string): void {
-		const next = new Set(expanded);
-		if (next.has(logical)) next.delete(logical);
-		else next.add(logical);
-		expanded = next;
+	function rolesFrom(raw: Record<string, string>): Array<{ name: string; model: string }> {
+		const out: Array<{ name: string; model: string }> = RESERVED_ROLES.map((name) => ({
+			name,
+			model: raw[name] ?? "",
+		}));
+		for (const [name, model] of Object.entries(raw).sort(([a], [b]) => compareLabels(a, b))) {
+			if (!(RESERVED_ROLES as readonly string[]).includes(name)) out.push({ name, model });
+		}
+		return out;
 	}
 
-	/** The model's three-state health: green if any route healthy, amber if only
-	 * fallbacks are serving, grey if no route can serve. */
 	function modelHealth(m: ModelRoutingInfo): "healthy" | "fallback" | "none" | "unknown" {
 		const live = m.routes.filter((r) => !r.drained);
 		if (live.length === 0) return "none";
@@ -60,80 +91,134 @@
 		return "unknown";
 	}
 
-	/** host / provider label for a route row. */
-	function routeLabel(r: RouteSupplyInfo): string {
-		return `${r.host_name} / ${r.provider ?? "?"}`;
+	function hostCount(m: ModelRoutingInfo): number {
+		return new Set(m.routes.map((r) => r.site_id)).size;
 	}
 
-	function healthText(r: RouteSupplyInfo): string {
-		if (r.health === "backoff" && r.next_trial_at) {
-			const secs = Math.max(0, Math.round((r.next_trial_at - Date.now()) / 1000));
-			return `backoff · retry in ${secs}s`;
+	function displayFor(logical: string): string {
+		return models.find((m) => m.logical_model === logical)?.display_name ?? logical;
+	}
+
+	/** Read-only automatic health text, e.g. "Backing off, retrying in 4m". */
+	function healthText(r: RouteSupplyInfo, at: number): string {
+		if (r.health === "backoff") {
+			if (!r.next_trial_at) return "Backing off";
+			const secs = Math.max(0, Math.round((r.next_trial_at - at) / 1000));
+			const span = secs >= 60 ? `${Math.round(secs / 60)}m` : `${secs}s`;
+			return `Backing off, retrying in ${span}`;
 		}
-		return r.health;
+		if (r.health === "half_open") return "Trying again";
+		if (r.health === "healthy") return "Healthy";
+		return "Health unknown from this host";
 	}
 
-	async function moveRoute(m: ModelRoutingInfo, index: number, dir: -1 | 1): Promise<void> {
+	async function run(key: string, fn: () => Promise<unknown>, failure: string): Promise<void> {
+		busy = key;
+		try {
+			await fn();
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : failure;
+		} finally {
+			busy = null;
+		}
+	}
+
+	function moveRoute(m: ModelRoutingInfo, index: number, dir: -1 | 1): void {
 		const order = m.routes.map((r) => r.route_id);
 		const target = index + dir;
 		if (target < 0 || target >= order.length) return;
-		[order[index], order[target]] = [order[target], order[index]];
-		busy = m.logical_model;
-		try {
-			await client.setRouteOrder(m.logical_model, order);
-			await load();
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Failed to set route order";
-		} finally {
-			busy = null;
-		}
+		[order[index], order[target]] = [order[target] as string, order[index] as string];
+		void run(
+			m.logical_model,
+			() => client.setRouteOrder(m.logical_model, order),
+			"Failed to reorder",
+		);
 	}
 
-	async function toggleDrain(routeId: string, drained: boolean): Promise<void> {
-		busy = routeId;
-		try {
-			if (drained) await client.undrainRoute(routeId);
-			else await client.drainRoute(routeId);
-			await load();
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Failed to toggle drain";
-		} finally {
-			busy = null;
-		}
+	/** Enabled = not drained. Turning a route off drains it; on un-drains it. */
+	function setEnabled(r: RouteSupplyInfo, enabled: boolean): void {
+		void run(
+			r.route_id,
+			() => (enabled ? client.undrainRoute(r.route_id) : client.drainRoute(r.route_id)),
+			"Failed to change route",
+		);
 	}
 
-	async function removeStale(m: ModelRoutingInfo, routeId: string): Promise<void> {
-		// Removing a stale route_order entry = rewrite route_order without it.
+	function removeStale(m: ModelRoutingInfo, routeId: string): void {
 		const order = (m.route_order ?? []).filter((id) => id !== routeId);
-		busy = routeId;
-		try {
-			await client.setRouteOrder(m.logical_model, order);
-			await load();
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Failed to remove stale route";
-		} finally {
-			busy = null;
-		}
+		void run(routeId, () => client.setRouteOrder(m.logical_model, order), "Failed to remove");
 	}
 
-	async function setFallback(m: ModelRoutingInfo, policy: FallbackPolicyInfo): Promise<void> {
-		busy = m.logical_model;
-		try {
-			await client.setFallbackPolicy(m.logical_model, policy);
-			await load();
-		} catch (e) {
-			error = e instanceof Error ? e.message : "Failed to set fallback policy";
-		} finally {
-			busy = null;
-		}
+	function setFallback(m: ModelRoutingInfo, policy: FallbackPolicyInfo): void {
+		void run(m.logical_model, () => client.setFallbackPolicy(m.logical_model, policy), "Failed");
 	}
 
 	function onFallbackMode(m: ModelRoutingInfo, mode: string): void {
-		if (mode === "auto") void setFallback(m, { mode: "auto" });
-		else if (mode === "never") void setFallback(m, { mode: "never" });
-		else if (mode === "custom") {
+		if (mode === "auto") setFallback(m, { mode: "auto" });
+		else if (mode === "never") setFallback(m, { mode: "never" });
+		else {
 			const existing = m.fallback_policy.mode === "custom" ? m.fallback_policy.models : [];
-			void setFallback(m, { mode: "custom", models: existing });
+			setFallback(m, { mode: "custom", models: existing });
+		}
+	}
+
+	function addFallbackModel(m: ModelRoutingInfo, logical: string): void {
+		if (!logical || m.fallback_policy.mode !== "custom") return;
+		if (m.fallback_policy.models.includes(logical)) return;
+		setFallback(m, { mode: "custom", models: [...m.fallback_policy.models, logical] });
+	}
+
+	function removeFallbackModel(m: ModelRoutingInfo, logical: string): void {
+		if (m.fallback_policy.mode !== "custom") return;
+		setFallback(m, {
+			mode: "custom",
+			models: m.fallback_policy.models.filter((x) => x !== logical),
+		});
+	}
+
+	function addAlias(): void {
+		roles = [...roles, { name: "", model: "" }];
+		rolesSaved = false;
+	}
+
+	function removeAlias(i: number): void {
+		roles = roles.filter((_, idx) => idx !== i);
+		rolesSaved = false;
+	}
+
+	async function saveRoles(): Promise<void> {
+		rolesError = null;
+		rolesSaved = false;
+		const known = new Set(models.map((m) => m.logical_model));
+		const out: Record<string, string> = {};
+		for (const r of roles) {
+			const name = r.name.trim();
+			if (!name && !r.model) continue;
+			if (!name || name.includes("@")) {
+				rolesError = "Alias names must be non-empty and contain no '@'.";
+				return;
+			}
+			if (out[name] !== undefined) {
+				rolesError = `"${name}" is defined twice.`;
+				return;
+			}
+			if (!r.model) continue;
+			if (!known.has(r.model)) {
+				rolesError = `"${name}" points at a model this cluster does not have.`;
+				return;
+			}
+			out[name] = r.model;
+		}
+		busy = "roles";
+		try {
+			await client.setClusterDefaults({ roles: out });
+			rolesSaved = true;
+			await load();
+		} catch (e) {
+			rolesError = e instanceof Error ? e.message : "Failed to save roles";
+		} finally {
+			busy = null;
 		}
 	}
 </script>
@@ -142,113 +227,200 @@
 	<SectionHeader
 		title="Models"
 		number="09"
-		subtitle="Cluster routing preferences and per-host supply"
+		subtitle="Which routes serve each model, in what order, and what stands in when it can't"
 	/>
 
 	{#if loading}
 		<p class="muted">Loading routing settings...</p>
-	{:else if error}
+	{:else if error && models.length === 0}
 		<p class="error" role="alert">{error}</p>
 	{:else}
-		<section class="models">
-			{#each models as m (m.logical_model)}
-				<div class="model-row">
-					<button type="button" class="model-head" onclick={() => toggle(m.logical_model)}>
-						<ModelHealthDot state={modelHealth(m)} />
-						<span class="logical">{m.display_name}</span>
-						<span class="count">{m.routes.length} route{m.routes.length === 1 ? "" : "s"}</span>
-						<span class="caret" aria-hidden="true">{expanded.has(m.logical_model) ? "▾" : "▸"}</span
-						>
-					</button>
-
-					{#if expanded.has(m.logical_model)}
-						<div class="routes">
-							{#each m.routes as r, i (r.route_id)}
-								<div class="route-row" class:drained={r.drained}>
-									<span class="r-order">
-										<button
-											type="button"
-											aria-label="Move up"
-											disabled={i === 0 || busy !== null}
-											onclick={() => moveRoute(m, i, -1)}>↑</button
-										>
-										<button
-											type="button"
-											aria-label="Move down"
-											disabled={i === m.routes.length - 1 || busy !== null}
-											onclick={() => moveRoute(m, i, 1)}>↓</button
-										>
-									</span>
-									<span class="r-route">{routeLabel(r)}</span>
-									<span class="r-health">{healthText(r)}</span>
-									<label class="r-drain">
-										<input
-											type="checkbox"
-											checked={r.drained}
-											disabled={busy !== null}
-											onchange={() => toggleDrain(r.route_id, r.drained)}
-										/>
-										Drain
-									</label>
-								</div>
-							{/each}
-
-							{#each m.stale_routes as s (s.route_id)}
-								<div class="route-row stale">
-									<span class="r-route">{s.host_name ?? "Unknown host"} / {s.provider ?? "?"}</span>
-									<span class="r-stale-tag">stale</span>
-									<Btn
-										size="sm"
-										variant="danger"
-										disabled={busy !== null}
-										onclick={() => removeStale(m, s.route_id)}>Remove</Btn
-									>
-								</div>
-							{/each}
-
-							<div class="fallback">
-								<span class="fb-label">Fallback</span>
-								<select
-									aria-label="Fallback policy for {m.logical_model}"
-									value={m.fallback_policy.mode}
-									disabled={busy !== null}
-									onchange={(e) => onFallbackMode(m, (e.currentTarget as HTMLSelectElement).value)}
+		{#if error}
+			<p class="error" role="alert">{error}</p>
+		{/if}
+		<div class="layout">
+			<aside class="list">
+				<input
+					class="search"
+					type="search"
+					placeholder="Search models"
+					aria-label="Search models"
+					bind:value={query}
+				/>
+				<ul class="model-list" role="listbox" aria-label="Models">
+					{#each filtered as m (m.logical_model)}
+						<li role="option" aria-selected={m.logical_model === selected}>
+							<button
+								type="button"
+								class="model-item"
+								class:active={m.logical_model === selected}
+								onclick={() => (selected = m.logical_model)}
+							>
+								<ModelHealthDot state={modelHealth(m)} />
+								<span class="name">{m.display_name}</span>
+								<span class="count"
+									>{m.routes.length} route{m.routes.length === 1 ? "" : "s"} · {hostCount(m)} host{hostCount(
+										m,
+									) === 1
+										? ""
+										: "s"}</span
 								>
-									<option value="auto">Automatic</option>
-									<option value="custom">Custom list</option>
-									<option value="never">Never substitute</option>
-								</select>
-								{#if m.fallback_policy.mode === "custom"}
-									<span class="fb-custom">{m.fallback_policy.models.join(", ") || "(empty)"}</span>
-								{/if}
-							</div>
-						</div>
+							</button>
+						</li>
+					{/each}
+					{#if filtered.length === 0}
+						<li class="muted empty">No models match.</li>
 					{/if}
-				</div>
-			{/each}
-			{#if models.length === 0}
-				<p class="muted">No logical models are advertised in the cluster yet.</p>
-			{/if}
-		</section>
+				</ul>
+			</aside>
+
+			<section class="detail" aria-label="Model detail">
+				{#if current}
+					{@const m = current}
+					<header class="detail-head">
+						<ModelHealthDot state={modelHealth(m)} />
+						<h3>{m.display_name}</h3>
+					</header>
+
+					<div class="kicker">Routes, in preference order</div>
+					<ol class="routes">
+						{#each m.routes as r, i (r.route_id)}
+							<li class="route-row" class:drained={r.drained}>
+								<span class="r-order">
+									<button
+										type="button"
+										aria-label="Move up"
+										disabled={i === 0 || busy !== null}
+										onclick={() => moveRoute(m, i, -1)}>↑</button
+									>
+									<button
+										type="button"
+										aria-label="Move down"
+										disabled={i === m.routes.length - 1 || busy !== null}
+										onclick={() => moveRoute(m, i, 1)}>↓</button
+									>
+								</span>
+								<span class="r-route mono">{labels.routeLabel(r.route_id)}</span>
+								<span class="r-host">on {r.host_name}</span>
+								<span class="r-health {r.health}">{healthText(r, now)}</span>
+								<label class="toggle">
+									<input
+										type="checkbox"
+										role="switch"
+										checked={!r.drained}
+										disabled={busy !== null}
+										aria-label="Enabled: {labels.routeLabel(r.route_id)} on {r.host_name}"
+										onchange={(e) => setEnabled(r, (e.currentTarget as HTMLInputElement).checked)}
+									/>
+									<span>Enabled</span>
+								</label>
+							</li>
+						{/each}
+						{#each m.stale_routes as s (s.route_id)}
+							<li class="route-row stale">
+								<span class="r-route">{s.host_name ?? "Unknown host"} / {s.provider ?? "?"}</span>
+								<span class="r-stale-tag">no longer offered</span>
+								<Btn
+									size="sm"
+									variant="danger"
+									disabled={busy !== null}
+									onclick={() => removeStale(m, s.route_id)}>Remove</Btn
+								>
+							</li>
+						{/each}
+					</ol>
+
+					<div class="kicker">When this model can't answer</div>
+					<div class="fallback">
+						<select
+							aria-label="Fallback policy for {m.display_name}"
+							value={m.fallback_policy.mode}
+							disabled={busy !== null}
+							onchange={(e) => onFallbackMode(m, (e.currentTarget as HTMLSelectElement).value)}
+						>
+							<option value="auto">Use the cluster fallback list</option>
+							<option value="custom">Use these models</option>
+							<option value="never">Never substitute</option>
+						</select>
+						{#if m.fallback_policy.mode === "custom"}
+							<ul class="chips">
+								{#each m.fallback_policy.models as fb (fb)}
+									<li class="chip">
+										{displayFor(fb)}
+										<button
+											type="button"
+											aria-label="Remove {displayFor(fb)}"
+											onclick={() => removeFallbackModel(m, fb)}>×</button
+										>
+									</li>
+								{/each}
+							</ul>
+							<select
+								aria-label="Add fallback model"
+								value=""
+								onchange={(e) => addFallbackModel(m, (e.currentTarget as HTMLSelectElement).value)}
+							>
+								<option value="">Add a model…</option>
+								{#each sorted.filter((x) => x.logical_model !== m.logical_model) as x (x.logical_model)}
+									<option value={x.logical_model}>{x.display_name}</option>
+								{/each}
+							</select>
+						{/if}
+					</div>
+				{:else}
+					<p class="muted">No logical models are advertised in the cluster yet.</p>
+				{/if}
+			</section>
+		</div>
 
 		{#if defaults}
-			<section class="cluster-defaults">
-				<h3>Cluster defaults</h3>
-				<div class="cd-row">
-					<span class="cd-label">Default fallback list</span>
-					<span class="cd-value">{defaults.default_fallback_models.join(", ") || "(none)"}</span>
+			<section class="roles" aria-label="Roles and aliases">
+				<h3>Roles &amp; aliases</h3>
+				<p class="muted">
+					Names that agents and tasks can ask for instead of a specific model. Default, heavy, and
+					fast are built in; add your own.
+				</p>
+				<div class="role-grid">
+					{#each roles as r, i (i)}
+						<div class="role-row">
+							{#if (RESERVED_ROLES as readonly string[]).includes(r.name) && i < RESERVED_ROLES.length}
+								<span class="role-name">{r.name}</span>
+							{:else}
+								<input
+									class="role-name-input"
+									aria-label="Alias name"
+									placeholder="alias name"
+									bind:value={r.name}
+								/>
+							{/if}
+							<select aria-label="Model for {r.name || 'alias'}" bind:value={r.model}>
+								<option value="">(unset)</option>
+								{#each sorted as x (x.logical_model)}
+									<option value={x.logical_model}>{x.display_name}</option>
+								{/each}
+							</select>
+							{#if i >= RESERVED_ROLES.length}
+								<button
+									type="button"
+									class="link"
+									aria-label="Remove alias"
+									onclick={() => removeAlias(i)}>Remove</button
+								>
+							{/if}
+						</div>
+					{/each}
+				</div>
+				<div class="role-actions">
+					<Btn size="sm" onclick={addAlias}>Add alias</Btn>
+					<Btn size="sm" disabled={busy !== null} onclick={() => void saveRoles()}>Save</Btn>
+					{#if rolesSaved}<span class="ok">Saved</span>{/if}
+					{#if rolesError}<span class="error" role="alert">{rolesError}</span>{/if}
 				</div>
 				<div class="cd-row">
-					<span class="cd-label">Roles &amp; aliases</span>
-					<span class="cd-value">
-						{#if Object.keys(defaults.roles).length === 0}
-							(none)
-						{:else}
-							{Object.entries(defaults.roles)
-								.map(([name, model]) => `${name}: ${model}`)
-								.join(", ")}
-						{/if}
-					</span>
+					<span class="cd-label">Cluster fallback list</span>
+					<span class="cd-value"
+						>{defaults.default_fallback_models.map(displayFor).join(", ") || "(none)"}</span
+					>
 				</div>
 			</section>
 		{/if}
@@ -264,120 +436,205 @@
 		color: var(--err);
 		font-size: var(--text-sm);
 	}
-	.models {
+	.ok {
+		color: var(--ok);
+		font-size: var(--text-sm);
+	}
+	.mono {
+		font-family: var(--font-mono);
+	}
+	.layout {
+		display: grid;
+		grid-template-columns: minmax(220px, 320px) 1fr;
+		gap: 16px;
+		margin-top: 12px;
+		align-items: start;
+	}
+	.list {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		margin-top: 12px;
-	}
-	.model-row {
+		gap: 8px;
 		border: 1px solid var(--rule-soft);
-		border-radius: var(--r-sm);
+		padding: 8px;
 	}
-	.model-head {
+	.search {
+		padding: 6px 8px;
+		border: 1px solid var(--rule-soft);
+		background: transparent;
+		color: var(--ink);
+		font-size: var(--text-sm);
+	}
+	.model-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		max-height: 60vh;
+		overflow-y: auto;
+	}
+	.model-item {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		column-gap: 8px;
+		align-items: center;
+		width: 100%;
+		padding: 6px 8px;
+		background: transparent;
+		border: none;
+		border-left: 3px solid transparent;
+		cursor: pointer;
+		text-align: left;
+		color: var(--ink-2);
+		font-size: var(--text-sm);
+	}
+	.model-item.active {
+		border-left-color: var(--ink);
+		background: var(--rule-soft);
+		color: var(--ink);
+	}
+	.model-item .count {
+		grid-column: 2;
+		font-size: 11px;
+		color: var(--ink-4);
+	}
+	.detail {
+		border: 1px solid var(--rule-soft);
+		padding: 12px 16px;
+	}
+	.detail-head {
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		width: 100%;
-		padding: 8px 12px;
-		background: transparent;
-		border: none;
-		cursor: pointer;
-		font-family: var(--font-mono);
-		font-size: var(--text-sm);
-		color: var(--ink);
-		text-align: left;
 	}
-	.logical {
-		font-weight: 500;
+	.detail-head h3 {
+		margin: 0;
+		font-family: var(--font-display);
 	}
-	.count {
-		color: var(--ink-3);
-		font-size: var(--text-xs);
-	}
-	.caret {
-		margin-left: auto;
+	.kicker {
+		margin: 16px 0 6px;
+		font-size: 10px;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
 		color: var(--ink-4);
 	}
 	.routes {
-		padding: 4px 12px 12px 34px;
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
 	}
 	.route-row {
-		display: flex;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+		gap: 10px;
 		align-items: center;
-		gap: 12px;
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		color: var(--ink-2);
+		padding: 6px 8px;
+		border: 1px solid var(--rule-soft);
+		font-size: var(--text-sm);
 	}
-	.route-row.drained .r-route {
-		text-decoration: line-through;
-		color: var(--ink-4);
+	.route-row.drained {
+		opacity: 0.6;
+	}
+	.route-row.stale {
+		grid-template-columns: 1fr auto auto;
+		border-style: dashed;
 	}
 	.r-order button {
-		border: 1px solid var(--rule-soft);
 		background: transparent;
+		border: 1px solid var(--rule-soft);
 		cursor: pointer;
-		padding: 0 4px;
 		color: var(--ink-2);
+		padding: 0 5px;
 	}
-	.r-order button:disabled {
-		opacity: 0.4;
-		cursor: default;
-	}
-	.r-health {
+	.r-host {
 		color: var(--ink-3);
 	}
-	.r-drain {
-		margin-left: auto;
+	.r-health {
+		font-size: 11px;
+		color: var(--ink-4);
+	}
+	.r-health.healthy {
+		color: var(--ok);
+	}
+	.r-health.backoff,
+	.r-health.half_open {
+		color: var(--warn);
+	}
+	.r-stale-tag {
+		font-size: 11px;
+		color: var(--warn);
+	}
+	.toggle {
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-	}
-	.route-row.stale .r-stale-tag {
-		color: var(--warn);
+		font-size: 12px;
 	}
 	.fallback {
 		display: flex;
-		align-items: center;
+		flex-wrap: wrap;
 		gap: 8px;
-		margin-top: 6px;
-		padding-top: 6px;
-		border-top: 1px solid var(--rule-faint);
+		align-items: center;
 	}
-	.fb-label {
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+	.chip {
+		border: 1px solid var(--rule-soft);
+		padding: 2px 6px;
+		font-size: 12px;
+	}
+	.chip button,
+	.link {
+		background: transparent;
+		border: none;
+		cursor: pointer;
 		color: var(--ink-3);
-		font-size: var(--text-xs);
 	}
-	.fb-custom {
-		color: var(--ink-3);
-		font-size: var(--text-xs);
-	}
-	.cluster-defaults {
+	.roles {
 		margin-top: 24px;
-		padding-top: 16px;
 		border-top: 1px solid var(--rule-soft);
+		padding-top: 12px;
 	}
-	.cluster-defaults h3 {
-		font-family: var(--font-header);
-		font-size: var(--text-base);
-		margin: 0 0 8px;
+	.role-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin: 8px 0;
+	}
+	.role-row {
+		display: grid;
+		grid-template-columns: 160px minmax(0, 280px) auto;
+		gap: 8px;
+		align-items: center;
+	}
+	.role-name {
+		font-family: var(--font-mono);
+		font-size: var(--text-sm);
+	}
+	.role-actions {
+		display: flex;
+		gap: 8px;
+		align-items: center;
 	}
 	.cd-row {
 		display: flex;
-		gap: 12px;
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		padding: 3px 0;
+		gap: 10px;
+		margin-top: 12px;
+		font-size: var(--text-sm);
 	}
 	.cd-label {
 		color: var(--ink-3);
-		min-width: 140px;
 	}
-	.cd-value {
-		color: var(--ink-2);
+	@media (max-width: 760px) {
+		.layout {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>

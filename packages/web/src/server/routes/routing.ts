@@ -128,6 +128,48 @@ function resolveModelDisplayName(logical: string, routes: RouteSupply[]): string
 	return best?.display_name ?? logical;
 }
 
+/**
+ * Disambiguate logical models that would otherwise share one display name
+ * (e.g. dated snapshots `gpt-4o-2024-08-06` and `gpt-4o-2024-11-20`, both
+ * "GPT-4o"). Only colliding names change: each gets its snapshot suffix — a
+ * `YYYY-MM-DD` date, a `preview` tag, else its provider model id. A model whose
+ * id carries no snapshot suffix keeps the bare name.
+ */
+export function disambiguateDisplayNames<
+	T extends {
+		logical_model: string;
+		display_name: string;
+		routes: Array<{ provider_model_id: string | null }>;
+	},
+>(models: T[]): void {
+	const groups = new Map<string, T[]>();
+	for (const m of models) {
+		const key = m.display_name.toLowerCase();
+		const list = groups.get(key) ?? [];
+		list.push(m);
+		groups.set(key, list);
+	}
+	for (const list of groups.values()) {
+		if (list.length < 2) continue;
+		for (const m of list) {
+			const ids = m.routes.map((r) => r.provider_model_id).filter((x): x is string => !!x);
+			const id = ids.sort()[0] ?? m.logical_model;
+			const date = /(\d{4}-\d{2}-\d{2})/.exec(id)?.[1];
+			const suffix = date ?? (/preview/i.test(id) ? "preview" : null);
+			if (suffix) m.display_name = `${m.display_name} (${suffix})`;
+		}
+		// Anything still colliding after snapshot suffixes falls back to its id.
+		const seen = new Map<string, number>();
+		for (const m of list) seen.set(m.display_name, (seen.get(m.display_name) ?? 0) + 1);
+		for (const m of list) {
+			if ((seen.get(m.display_name) ?? 0) < 2) continue;
+			const id = m.routes.map((r) => r.provider_model_id).find((x) => !!x) ?? m.logical_model;
+			if (m.display_name.toLowerCase() !== id.toLowerCase())
+				m.display_name = `${m.display_name} (${id})`;
+		}
+	}
+}
+
 function parseFallbackPolicy(raw: string | null): ModelFallbackPolicy {
 	if (!raw) return { mode: "auto" };
 	try {
@@ -301,6 +343,7 @@ export function createRoutingRoutes(
 					stale_routes: staleByModel.get(logical) ?? [],
 				});
 			}
+			disambiguateDisplayNames(out);
 			out.sort((a, b) => (a.logical_model < b.logical_model ? -1 : 1));
 			return c.json({ models: out });
 		} catch (error) {
