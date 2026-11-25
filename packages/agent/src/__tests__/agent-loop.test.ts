@@ -1066,6 +1066,44 @@ describe("MainAgentLoop", () => {
 		}
 	});
 
+	it("a non-retryable LLM error cleans up through ERROR_PERSIST → FS_PERSIST without an invalid-transition warning (#298)", async () => {
+		const { LLMError } = await import("@bound/llm");
+		const mockBackend = new MockLLMBackend();
+		mockBackend.pushResponse(() => {
+			// biome-ignore lint/correctness/useYield: throws before first yield
+			async function* boom(): AsyncGenerator<StreamChunk> {
+				throw new LLMError("malformed request", "test-provider", 400);
+			}
+			return boom();
+		});
+		const warnings: Array<{ msg: string; meta?: unknown }> = [];
+		const ctx = makeCtx();
+		ctx.logger = {
+			...ctx.logger,
+			warn: (msg: string, meta?: unknown) => {
+				warnings.push({ msg, meta });
+			},
+		} as AppContext["logger"];
+		let persistCalled = false;
+		const sandbox = {
+			exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			persistFs: async () => {
+				persistCalled = true;
+				return { changes: 0 };
+			},
+		};
+
+		const agentLoop = new MainAgentLoop(ctx, sandbox, createMockRouter(mockBackend), {
+			threadId,
+			userId: "test-user",
+		});
+		const result = await agentLoop.run();
+
+		expect(result.error).toContain("malformed request");
+		expect(persistCalled).toBe(true);
+		expect(warnings.filter((w) => w.msg.includes("Invalid state transition"))).toEqual([]);
+		expect(VALID_TRANSITIONS.ERROR_PERSIST).toContain("FS_PERSIST");
+	});
 	it("R-RT13: a 401 attempts token refresh FIRST; a successful refresh does NOT back off the route", async () => {
 		// A live 401 means the provider rejected the current token. The loop asks the
 		// driver's refreshAuth hook to rotate credentials before tripping backoff; a

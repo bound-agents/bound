@@ -93,7 +93,7 @@ IDLE
   -> ASSEMBLE_CONTEXT (8-stage pipeline + model resolution)
   -> LLM_CALL         (local: streams from LLMBackend)
      |                (remote: enters RELAY_STREAM, polls relay_inbox for chunks)
-     [on error] -> ERROR_PERSIST -> return with error field
+     [on error] -> ERROR_PERSIST -> FS_PERSIST -> return with error field
   -> PARSE_RESPONSE
   -> TOOL_EXECUTE     (local tools: sandbox dispatch)
      |                (remote MCP tools: enters RELAY_WAIT, polls relay_inbox for result)
@@ -109,7 +109,7 @@ During `LLM_CALL`, model resolution determines the execution path:
 
 If `this.aborted` is set during streaming, `RELAY_STREAM` writes a `cancel` outbox entry (with `ref_id` pointing to the original `inference` entry) and exits cleanly.
 
-If the LLM backend throws, the loop transitions to `ERROR_PERSIST`, writes an `alert`-role message to `messages` with the error text, and returns immediately with the error populated in the result.
+If the LLM backend throws, the loop transitions to `ERROR_PERSIST`, writes an `alert`-role message to `messages` with the error text, runs the `FS_PERSIST` workspace flush (`ERROR_PERSIST → FS_PERSIST` is a modeled transition), and returns with the error populated in the result.
 
 Any other unhandled error caught by the outer `try/catch` also transitions to `ERROR_PERSIST` and returns with the error field set.
 
