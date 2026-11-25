@@ -38,6 +38,7 @@ import {
 } from "./progressive-fidelity";
 import { substitutePurgedMessages } from "./purge-substitution";
 import {
+	STABLE_PREFIX_DRIFT_VERSION,
 	hashStableVolatileInputs,
 	hashSystemPromptString,
 	projectStableVolatileInputs,
@@ -1706,11 +1707,6 @@ Original output was too large for the context window. If you need the full conte
 	const systemPartCountBeforeSkill = systemParts.length;
 
 	let inactiveSkillRef: string | undefined;
-	// Determinant of the thread's pinned-skill set, folded into the input
-	// fingerprint below so a `deactivate` (which writes no stable-side row)
-	// is classified as benign `collect` drift rather than a spurious
-	// `compose` leak. Undefined when nothing is pinned. Issue #173.
-	let pinnedSkillsFingerprint: string | undefined;
 	// The skill injected via the task payload (if any), excluded from the
 	// thread-pinned block below so it is not duplicated.
 	let taskReferencedSkillName: string | undefined;
@@ -1770,7 +1766,6 @@ Original output was too large for the context window. If you need the full conte
 			const pinned = collectThreadPinnedSkills(db, threadId, taskReferencedSkillName);
 			if (pinned.block) {
 				systemParts.push(pinned.block);
-				pinnedSkillsFingerprint = pinned.fingerprint;
 			}
 		} catch (_error) {
 			// Non-fatal: skip pinned-skill injection on any error
@@ -1856,6 +1851,8 @@ Original output was too large for the context window. If you need the full conte
 	// and the no-history task path (inline below); left undefined on
 	// other paths where the stable subsection isn't built.
 	let stablePrefixInputFingerprint: string | undefined;
+	// Hash of the stable volatile subsection bytes the fingerprint describes.
+	let stableSubsectionHash: string | undefined;
 	if (!noHistory) {
 		// --- VARYING SUFFIX: per-thread content that busts the cache ---
 		// Extract latest user message for relevance-aware memory boosting
@@ -1895,17 +1892,22 @@ Original output was too large for the context window. If you need the full conte
 		// R-VC24 subsection. Scenario A's sibling-summary seed is a distinct,
 		// frozen per-thread snapshot, so send the freshly rendered stable content
 		// when present rather than dropping it behind the cache seam.
-		const stableContentForWire =
+		//
+		// The recorded fingerprint must describe the snapshot actually sent
+		// (#303): a cache hit returns the fingerprint captured when its bytes were
+		// rendered, never a fresh fingerprint of inputs that did not render them.
+		const cachedStable =
 			params.stableSubsectionCache && !volatileCtx.hasStableCrossThreadSummarySeed
-				? params.stableSubsectionCache
-						.get({
-							db,
-							threadId,
-							budgetPressure: false,
-							siteId,
-						})
-						.join("\n")
-				: volatileCtx.stableContent;
+				? params.stableSubsectionCache.getSnapshot({
+						db,
+						threadId,
+						budgetPressure: false,
+						siteId,
+					})
+				: undefined;
+		const stableContentForWire = cachedStable
+			? cachedStable.lines.join("\n")
+			: volatileCtx.stableContent;
 		if (stableContentForWire.length > 0) {
 			// `<volatile-context half="stable">` envelope (ask #3). Applied here,
 			// at the channel boundary, NOT inside the cached subsection: the inner
@@ -1922,17 +1924,14 @@ Original output was too large for the context window. If you need the full conte
 						: volatileCtx.stableTokenEstimate,
 			};
 		}
-		stablePrefixInputFingerprint = volatileCtx.stablePrefixInputFingerprint;
-		// Fold the thread-pinned skill determinant into the input fingerprint.
-		// A `deactivate` writes no stable-side row and doesn't move the skill
-		// index, so without this it would surface as a spurious `compose` leak
-		// (same fingerprint, different system-prompt bytes). Folding the
-		// determinant shifts the fingerprint instead, classifying the change as
-		// benign `collect` drift — the soft arm that already tolerates
-		// `last_accessed_at`-style uncovered shifts. Issue #173.
-		if (pinnedSkillsFingerprint && stablePrefixInputFingerprint) {
-			stablePrefixInputFingerprint = `${stablePrefixInputFingerprint}+skp:${pinnedSkillsFingerprint}`;
-		}
+		// Fingerprint and output hash share one scope: the stable volatile
+		// subsection. Static system parts (persona, command registry, pinned
+		// skills, suffix) sit outside both, so editing them can no longer pair an
+		// unchanged fingerprint with a changed hash (#303, superseding the #173
+		// pinned-skill fold).
+		stablePrefixInputFingerprint =
+			cachedStable?.inputFingerprint ?? volatileCtx.stablePrefixInputFingerprint;
+		stableSubsectionHash = hashSystemPromptString(stableContentForWire);
 		relevantMemoryDebug = volatileCtx.relevantMemory;
 
 		// VARYING TAIL: developer message after history. Bridge merges it into
@@ -2045,6 +2044,7 @@ Original output was too large for the context window. If you need the full conte
 			clusterModels: loadClusterModels(db, siteId),
 			stableCrossThreadSummaries: inputs.stableCrossThreadSummaries,
 		});
+		stableSubsectionHash = hashSystemPromptString(nhStable.join("\n"));
 
 		const varyingTailLines: string[] = [];
 
@@ -2128,6 +2128,26 @@ Original output was too large for the context window. If you need the full conte
 	// reuse the prefix across turns AND across threads (cron-task cache reuse).
 	if (params.systemPromptSuffix) systemParts.push(params.systemPromptSuffix);
 	const systemPrompt = systemParts.join("\n\n");
+	// Drift-detector provenance, recorded on every debug return site. The
+	// detector compares `stableSubsectionHash` against the fingerprint (same
+	// scope, same rendered snapshot); `stablePrefixHash` is the whole-prompt
+	// hash kept for cache diagnostics only (#303).
+	const driftDebug: Pick<
+		ContextDebugInfo,
+		| "stablePrefixHash"
+		| "stablePrefixInputFingerprint"
+		| "stableSubsectionHash"
+		| "stablePrefixDriftVersion"
+	> = {
+		stablePrefixHash: hashSystemPromptString(systemPrompt),
+		...(stablePrefixInputFingerprint !== undefined && stableSubsectionHash !== undefined
+			? {
+					stablePrefixInputFingerprint,
+					stableSubsectionHash,
+					stablePrefixDriftVersion: STABLE_PREFIX_DRIFT_VERSION,
+				}
+			: {}),
+	};
 
 	// Stage 7: BUDGET_VALIDATION
 	// Budget pressure check: reduce enrichment caps if headroom < 2,000 tokens.
@@ -2570,8 +2590,7 @@ Original output was too large for the context window. If you need the full conte
 					budgetPressure,
 					truncated: truncatedCount,
 					...(crossThreadSources ? { crossThreadSources } : {}),
-					stablePrefixHash: hashSystemPromptString(systemPrompt),
-					...(stablePrefixInputFingerprint !== undefined ? { stablePrefixInputFingerprint } : {}),
+					...driftDebug,
 					...(progressiveFidelity ? { progressiveFidelity } : {}),
 					...(relevantMemoryDebug ? { relevantMemory: relevantMemoryDebug } : {}),
 				},
@@ -2613,6 +2632,7 @@ Original output was too large for the context window. If you need the full conte
 			budgetPressure,
 			truncated: truncatedCount,
 			...(crossThreadSources ? { crossThreadSources } : {}),
+			...driftDebug,
 			...(relevantMemoryDebug ? { relevantMemory: relevantMemoryDebug } : {}),
 		},
 	};

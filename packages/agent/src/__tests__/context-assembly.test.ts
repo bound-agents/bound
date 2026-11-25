@@ -19,8 +19,11 @@ import {
 	computeSafetyMargin,
 	estimateContentLength,
 	formatTimestamp,
+	frozenClock,
 	rebuildWarmSections,
 } from "../context-assembly";
+import { StableSubsectionCache } from "../stable-prefix/cache";
+import { STABLE_PREFIX_DRIFT_VERSION } from "../stable-prefix/hash";
 
 describe("Context Assembly Pipeline", () => {
 	let tmpDir: string;
@@ -8681,5 +8684,97 @@ describe("applyActualUsageToContextDebug — defensive deep-clone semantics", ()
 		// snapshots reflect the original section breakdown.
 		expect(turn1.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
 		expect(turn2.sections.find((s) => s.name === "history")?.tokens).toBe(80000);
+	});
+});
+
+describe("stable-prefix drift provenance (#303)", () => {
+	let tmpDir: string;
+	let db: Database;
+	const threadId = randomUUID();
+	const userId = randomUUID();
+
+	beforeAll(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "drift-provenance-"));
+		db = createDatabase(join(tmpDir, "test.db"));
+		applySchema(db);
+		applyMetricsSchema(db);
+		const ts = "2026-05-25T11:00:00Z";
+		db.run(
+			"INSERT INTO users (id, display_name, first_seen_at, modified_at, deleted) VALUES (?, 'u', ?, ?, 0)",
+			[userId, ts, ts],
+		);
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, color, title, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'web', 'h', 0, 't', ?, ?, ?, 0)",
+			[threadId, userId, ts, ts, ts],
+		);
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin, deleted) VALUES (?, ?, 'user', 'hi', ?, ?, 'h', 0)",
+			[randomUUID(), threadId, ts, ts],
+		);
+		db.run(
+			"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, last_accessed_at, deleted) VALUES (?, 'pin-a', 'pinned body', 'pinned', 'test', ?, ?, ?, 0)",
+			[randomUUID(), ts, ts, ts],
+		);
+	});
+
+	afterAll(async () => {
+		db.close();
+		await cleanupTmpDir(tmpDir);
+	});
+
+	it("records a subsection hash that ignores static system-prompt inputs outside the fingerprint", () => {
+		const nowMs = Date.parse("2026-05-25T12:00:00Z");
+		const a = assembleContext({
+			db,
+			threadId,
+			userId,
+			systemPromptSuffix: "persona one",
+			clock: frozenClock(nowMs),
+		});
+		const b = assembleContext({
+			db,
+			threadId,
+			userId,
+			systemPromptSuffix: "persona two",
+			clock: frozenClock(nowMs),
+		});
+
+		expect(a.debug.stablePrefixHash).not.toBe(b.debug.stablePrefixHash);
+		expect(a.debug.stablePrefixInputFingerprint).toBeDefined();
+		expect(a.debug.stablePrefixInputFingerprint).toBe(b.debug.stablePrefixInputFingerprint);
+		expect(a.debug.stableSubsectionHash).toBeDefined();
+		expect(a.debug.stableSubsectionHash).toBe(b.debug.stableSubsectionHash);
+		expect(a.debug.stablePrefixDriftVersion).toBe(STABLE_PREFIX_DRIFT_VERSION);
+	});
+
+	it("pairs cached stable bytes with the fingerprint recorded when they were rendered", () => {
+		const nowMs = Date.parse("2026-05-25T12:00:00Z");
+		const cache = new StableSubsectionCache();
+		const first = assembleContext({
+			db,
+			threadId,
+			userId,
+			stableSubsectionCache: cache,
+			clock: frozenClock(nowMs),
+		});
+		const cachedFp = first.debug.stablePrefixInputFingerprint;
+
+		// A declared input changes; the cache keeps serving the old bytes.
+		const ts = "2026-05-25T11:30:00Z";
+		db.run(
+			"INSERT INTO semantic_memory (id, key, value, tier, source, created_at, modified_at, last_accessed_at, deleted) VALUES (?, 'pin-b', 'second body', 'pinned', 'test', ?, ?, ?, 0)",
+			[randomUUID(), ts, ts, ts],
+		);
+		const second = assembleContext({
+			db,
+			threadId,
+			userId,
+			stableSubsectionCache: cache,
+			clock: frozenClock(nowMs),
+		});
+
+		expect(second.debug.stableSubsectionHash).toBe(first.debug.stableSubsectionHash);
+		expect(second.debug.stablePrefixInputFingerprint).toBe(cachedFp);
+		expect(second.systemPrompt).not.toContain("second body");
 	});
 });

@@ -1,6 +1,7 @@
 import Database from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { applyMetricsSchema, applySchema } from "@bound/core";
+import { STABLE_PREFIX_DRIFT_VERSION } from "../../stable-prefix/hash";
 import {
 	runStablePrefixDriftValidation,
 	shouldRunStablePrefixDriftValidation,
@@ -15,11 +16,15 @@ function insertColdTurn(
 	createdAtIso: string,
 	hash: string | null,
 	inputFp: string | null,
+	opts: { version?: number | null; wholePromptHash?: string } = {},
 ): void {
+	const version = opts.version === undefined ? STABLE_PREFIX_DRIFT_VERSION : opts.version;
 	const debug = JSON.stringify({
 		cachePath: "cold",
-		stablePrefixHash: hash,
+		stablePrefixHash: opts.wholePromptHash ?? `whole-${hash}`,
+		stableSubsectionHash: hash,
 		stablePrefixInputFingerprint: inputFp,
+		...(version !== null ? { stablePrefixDriftVersion: version } : {}),
 	});
 	db.prepare(
 		`INSERT INTO turns (
@@ -149,6 +154,42 @@ describe("runStablePrefixDriftValidation (integration)", () => {
 
 		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
 		expect(report.pairsExamined).toBe(0);
+	});
+
+	it("#303: a static system-prompt change outside the subsection is not a compose leak", () => {
+		// Persona / command registry / suffix edits change the whole-prompt hash but
+		// not the stable volatile subsection, which is all the fingerprint covers.
+		const t0 = new Date(NOW - 30 * 60 * 1000).toISOString();
+		const t1 = new Date(NOW - 25 * 60 * 1000).toISOString();
+		insertColdTurn(db, "turn-1", "thread-A", t0, "sub-A", "fp-A", { wholePromptHash: "persona-1" });
+		insertColdTurn(db, "turn-2", "thread-A", t1, "sub-A", "fp-A", { wholePromptHash: "persona-2" });
+
+		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
+		expect(report.pairsExamined).toBe(1);
+		expect(report.composeDriftCount).toBe(0);
+		expect(report.collectDriftCount).toBe(0);
+	});
+
+	it("#303: old-generation records without a drift version are never compared", () => {
+		const t0 = new Date(NOW - 30 * 60 * 1000).toISOString();
+		const t1 = new Date(NOW - 25 * 60 * 1000).toISOString();
+		insertColdTurn(db, "turn-1", "thread-A", t0, "hash-old", "fp-A", { version: null });
+		insertColdTurn(db, "turn-2", "thread-A", t1, "hash-new", "fp-A", { version: null });
+
+		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
+		expect(report.pairsExamined).toBe(0);
+		expect(report.composeDriftCount).toBe(0);
+	});
+
+	it("#303: a pair straddling a drift-version change is not compared", () => {
+		const t0 = new Date(NOW - 30 * 60 * 1000).toISOString();
+		const t1 = new Date(NOW - 25 * 60 * 1000).toISOString();
+		insertColdTurn(db, "turn-1", "thread-A", t0, "hash-old", "fp-A", { version: null });
+		insertColdTurn(db, "turn-2", "thread-A", t1, "hash-new", "fp-A");
+
+		const report = runStablePrefixDriftValidation(db, SITE_ID, NOW);
+		expect(report.pairsExamined).toBe(0);
+		expect(report.composeDriftCount).toBe(0);
 	});
 
 	it("cadence gate fires once per hour", () => {

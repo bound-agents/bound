@@ -56,6 +56,7 @@ import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { STABLE_SUBSECTION_TTL_MS, StableSubsectionCache } from "../cache";
 import { collectStableVolatileInputs } from "../collect";
 import { composeStableVolatileSubsection } from "../compose";
+import { hashStableVolatileInputs } from "../hash";
 
 let tmpDir: string;
 let db: Database;
@@ -232,6 +233,32 @@ describe("StableSubsectionCache — invariant tests", () => {
 
 		expect(lines2).not.toBe(lines1);
 		expect(lines2).toContain('<entry key="inv-c"/>');
+	});
+
+	it("K8 (#303): snapshot pairs cached bytes with the fingerprint of the inputs that rendered them", () => {
+		clearMemory();
+		insertDetailEntry("snap-a", "2026-05-25T10:00:00Z");
+
+		const cache = new StableSubsectionCache();
+		const threadId = randomUUID();
+		const fpAtRender = hashStableVolatileInputs(collectStableVolatileInputs(db, false));
+		const first = cache.getSnapshot({ db, threadId, budgetPressure: false, nowMs: T_NOW });
+		expect(first.inputFingerprint).toBe(fpAtRender);
+		expect(first.lines).toEqual(cache.get({ db, threadId, budgetPressure: false, nowMs: T_NOW }));
+
+		// A declared input changes inside the TTL window: the cache keeps serving
+		// the old bytes, so it must keep reporting the OLD fingerprint with them.
+		insertDetailEntry("snap-b", "2026-05-25T11:00:00Z");
+		const freshFp = hashStableVolatileInputs(collectStableVolatileInputs(db, false));
+		expect(freshFp).not.toBe(fpAtRender);
+		const second = cache.getSnapshot({
+			db,
+			threadId,
+			budgetPressure: false,
+			nowMs: T_NOW + 1000,
+		});
+		expect(second.lines).toEqual(first.lines);
+		expect(second.inputFingerprint).toBe(fpAtRender);
 	});
 
 	it("STABLE_SUBSECTION_TTL_MS is 1h to align with Bedrock cache TTL", () => {

@@ -112,10 +112,9 @@ export interface ThreadPinnedSkills {
 	block: string;
 	/**
 	 * Determinant of the pinned set (sorted `name:content_hash` digest), or ""
-	 * when nothing is pinned. Folded into `stablePrefixInputFingerprint` so a
-	 * `deactivate` — which writes no stable-side row — shifts the input
-	 * fingerprint and is classified as benign `collect` drift rather than a
-	 * spurious `compose` leak. See run-stable-prefix-drift-validation.ts.
+	 * when nothing is pinned. Not part of the stable-prefix drift fingerprint:
+	 * the pinned block is a static system part outside the stable volatile
+	 * subsection that the drift detector hashes (#303).
 	 */
 	fingerprint: string;
 	/** Names actually pinned (globally active, content present), in render order. */

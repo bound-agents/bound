@@ -19,7 +19,11 @@ export {
 	projectStableVolatileInputs,
 } from "./collect";
 export { composeStableVolatileSubsection, renderSkillIndex } from "./compose";
-export { hashStableVolatileInputs, hashSystemPromptString } from "./hash";
+export {
+	STABLE_PREFIX_DRIFT_VERSION,
+	hashStableVolatileInputs,
+	hashSystemPromptString,
+} from "./hash";
 export {
 	STABLE_SUBSECTION_TTL_MS,
 	StableSubsectionCache,

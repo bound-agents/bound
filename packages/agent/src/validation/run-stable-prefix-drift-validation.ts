@@ -4,11 +4,18 @@
  * Scans recent cold rebuilds (the only path that recomputes the
  * stable prefix) and surfaces leaks where two consecutive rebuilds
  * on the same thread within the cache TTL window produced different
- * `stablePrefixHash` values.
+ * `stableSubsectionHash` values.
+ *
+ * The compared output is the stable volatile subsection, not the whole
+ * system prompt: `stablePrefixInputFingerprint` covers exactly the
+ * inputs that subsection depends on, and both values describe the same
+ * rendered snapshot (a cache hit records the fingerprint captured with
+ * the cached bytes). Only rows whose `stablePrefixDriftVersion` equals
+ * `STABLE_PREFIX_DRIFT_VERSION` are compared, so records from another
+ * renderer/fingerprint generation never pair.
  *
  * The validator distinguishes two flavors of drift based on the
- * `stablePrefixInputFingerprint` field also recorded on
- * `context_debug`:
+ * fingerprint:
  *
  *   - **Compose drift** (`compose:`): same input fingerprint,
  *     different output hash. By elimination, the renderer must be
@@ -44,6 +51,7 @@
 import type { Database } from "bun:sqlite";
 import { insertRow, updateRow } from "@bound/core";
 import { BOUND_NAMESPACE, deterministicUUID } from "@bound/shared";
+import { STABLE_PREFIX_DRIFT_VERSION } from "../stable-prefix/hash";
 
 /**
  * Cadence gate. One heartbeat cycle (1h) aligns with the cache TTL —
@@ -95,6 +103,7 @@ interface ColdTurnRow {
 	created_at: string;
 	hash: string | null;
 	input_fp: string | null;
+	drift_version: number | null;
 }
 
 /**
@@ -116,13 +125,14 @@ export function runStablePrefixDriftValidation(
 				thread_id,
 				id,
 				created_at,
-				json_extract(context_debug, '$.stablePrefixHash') AS hash,
-				json_extract(context_debug, '$.stablePrefixInputFingerprint') AS input_fp
+				json_extract(context_debug, '$.stableSubsectionHash') AS hash,
+				json_extract(context_debug, '$.stablePrefixInputFingerprint') AS input_fp,
+				json_extract(context_debug, '$.stablePrefixDriftVersion') AS drift_version
 			FROM turns
 			WHERE created_at >= ?
 				AND deleted = 0
 				AND json_extract(context_debug, '$.cachePath') = 'cold'
-				AND json_extract(context_debug, '$.stablePrefixHash') IS NOT NULL
+				AND json_extract(context_debug, '$.stableSubsectionHash') IS NOT NULL
 			ORDER BY thread_id ASC, created_at ASC`,
 		)
 		.all(cutoff) as ColdTurnRow[];
@@ -137,6 +147,17 @@ export function runStablePrefixDriftValidation(
 		const curr = rows[i];
 		// Only pair within the same thread.
 		if (prev.thread_id !== curr.thread_id) continue;
+		// Only compare records of the current renderer/fingerprint generation.
+		// Rows from another generation (including pre-#303 rows, which hashed
+		// the whole system prompt) measure a different scope, so any
+		// difference between them says nothing about a leak. The turn still
+		// acts as a pairing boundary: it is a cold rebuild between the two.
+		if (
+			prev.drift_version !== STABLE_PREFIX_DRIFT_VERSION ||
+			curr.drift_version !== STABLE_PREFIX_DRIFT_VERSION
+		) {
+			continue;
+		}
 
 		// Pair must fall within the cache TTL window. Across-TTL
 		// drift is expected (fresh cache write) and uninteresting.

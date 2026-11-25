@@ -4,11 +4,13 @@
  * Two separable hashes feed the validator at
  * `validation/run-stable-prefix-drift-validation.ts`:
  *
- *   1. **Output hash** — SHA-256/16-hex of the system-prompt byte
- *      string that actually rides the cache breakpoint. Two
- *      consecutive cold rebuilds within the same cache TTL window
- *      with byte-identical system params share the same hash and
- *      hit the provider's prefix cache.
+ *   1. **Output hash** — SHA-256/16-hex of the stable volatile
+ *      subsection bytes actually sent on this rebuild
+ *      (`stableSubsectionHash`). The fingerprint below covers exactly
+ *      the inputs those bytes depend on, so the two are comparable.
+ *      The whole-prompt hash (`stablePrefixHash`) is recorded too, but
+ *      persona, command registry, and suffix edits move it without
+ *      moving the fingerprint, so the detector does not compare it.
  *
  *   2. **Input fingerprint** — SHA-256/16-hex of a deterministic
  *      canonicalization of `StableVolatileInputs`. When two cold
@@ -31,6 +33,20 @@ import { compareBytewise } from "@bound/shared";
 import type { StableVolatileInputs } from "./types";
 
 /**
+ * Generation tag recorded as `ContextDebugInfo.stablePrefixDriftVersion`
+ * beside `stableSubsectionHash` and `stablePrefixInputFingerprint`. The
+ * drift detector compares only turns carrying the current value, so a
+ * change to the renderer, the fingerprint canonicalization, or the scope
+ * either one covers must bump this constant — otherwise records from two
+ * generations would be paired and any difference would read as a leak.
+ *
+ * Version 2: the compared output hash covers only the stable volatile
+ * subsection (not the whole system prompt), and cached bytes are paired
+ * with the fingerprint of the inputs that rendered them (#303).
+ */
+export const STABLE_PREFIX_DRIFT_VERSION = 2;
+
+/**
  * Length of the truncated hex digest stored on `context_debug`.
  * 16 chars = 64 bits.
  */
@@ -38,8 +54,8 @@ const HASH_HEX_LENGTH = 16;
 
 /**
  * Compute the SHA-256/16-hex hash of an arbitrary string. Used by
- * the agent loop's cold path to fingerprint the final `systemPrompt`
- * byte string post-`systemParts.join("\n\n")`.
+ * the agent loop's cold path to hash the final `systemPrompt` and the
+ * stable volatile subsection bytes.
  */
 export function hashSystemPromptString(systemPrompt: string): string {
 	const hasher = new Bun.CryptoHasher("sha256");

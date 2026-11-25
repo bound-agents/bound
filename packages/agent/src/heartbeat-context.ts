@@ -81,7 +81,7 @@ export function buildHeartbeatContext(
 
 	// Run stable-prefix drift validation hourly. Surfaces leaks where
 	// two consecutive cold rebuilds within the same cache TTL window
-	// produced different `stablePrefixHash` values — i.e. the bytes
+	// produced different `stableSubsectionHash` values — i.e. the bytes
 	// the provider's prefix cache locks on shifted without anything
 	// the renderer declares as relevant having changed. See
 	// `validation/run-stable-prefix-drift-validation.ts` for the

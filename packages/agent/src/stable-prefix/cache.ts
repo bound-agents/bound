@@ -43,13 +43,27 @@
 import type { Database } from "bun:sqlite";
 import { collectStableVolatileInputs } from "./collect";
 import { composeStableVolatileSubsection } from "./compose";
+import { hashStableVolatileInputs } from "./hash";
 
 /** TTL window matching the Bedrock 1h prompt cache TTL. */
 export const STABLE_SUBSECTION_TTL_MS = 60 * 60 * 1000;
 
 interface CachedEntry {
 	lines: string[];
+	/** Fingerprint of the inputs that rendered `lines` (not of current DB state). */
+	inputFingerprint: string;
 	createdAtMs: number;
+}
+
+/**
+ * Rendered stable subsection plus the fingerprint of the exact inputs that
+ * produced it. A cache hit returns the fingerprint captured at render time,
+ * so the drift detector never pairs cached bytes with a fresh fingerprint of
+ * inputs that did not render them (#303).
+ */
+export interface StableSubsectionSnapshot {
+	lines: string[];
+	inputFingerprint: string;
 }
 
 export interface GetStableSubsectionParams {
@@ -89,6 +103,11 @@ export class StableSubsectionCache {
 	 * renders, stores in cache, and returns.
 	 */
 	get(params: GetStableSubsectionParams): string[] {
+		return this.getSnapshot(params).lines;
+	}
+
+	/** Same as {@link get}, also returning the fingerprint of the rendering inputs. */
+	getSnapshot(params: GetStableSubsectionParams): StableSubsectionSnapshot {
 		const ttlMs = params.ttlMs ?? STABLE_SUBSECTION_TTL_MS;
 		const nowMs = params.nowMs ?? Date.now();
 
@@ -100,13 +119,14 @@ export class StableSubsectionCache {
 
 		const cached = this.entries.get(params.threadId);
 		if (cached && nowMs - cached.createdAtMs < ttlMs) {
-			return cached.lines;
+			return { lines: cached.lines, inputFingerprint: cached.inputFingerprint };
 		}
 
 		const inputs = collectStableVolatileInputs(params.db, params.budgetPressure, params.siteId);
 		const lines = composeStableVolatileSubsection(inputs);
-		this.entries.set(params.threadId, { lines, createdAtMs: nowMs });
-		return lines;
+		const inputFingerprint = hashStableVolatileInputs(inputs);
+		this.entries.set(params.threadId, { lines, inputFingerprint, createdAtMs: nowMs });
+		return { lines, inputFingerprint };
 	}
 
 	/**
