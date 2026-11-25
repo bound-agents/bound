@@ -583,22 +583,23 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		// A stale host row means the requested remote model is known but its relay
 		// is reconnecting. Wait here, at inference dispatch only: resolveModel()
 		// itself remains synchronous for startup, model listing, and validation.
-		if (this.config.modelId !== undefined) {
-			this.lastModelResolution = await waitForModelResolution({
-				initial: this.lastModelResolution,
-				resolve: () =>
-					resolveModel(
-						hintedModel,
-						this.modelRouter,
-						this.ctx.db,
-						this.ctx.siteId,
-						this.requirements,
-						resolvePrefs,
-					),
-				timeoutMs: Math.min(this.inferenceTimeoutMs, MAX_MODEL_RECONNECT_WAIT_MS),
-				signal: this.config.abortSignal,
-			});
-		}
+		// A hintless loop waits too: an omitted hint resolves the default afresh on
+		// every poll, so a self-configuring namespace placeholder that is still
+		// warming up resolves to the default its discovery selects (#296).
+		this.lastModelResolution = await waitForModelResolution({
+			initial: this.lastModelResolution,
+			resolve: () =>
+				resolveModel(
+					hintedModel,
+					this.modelRouter,
+					this.ctx.db,
+					this.ctx.siteId,
+					this.requirements,
+					resolvePrefs,
+				),
+			timeoutMs: Math.min(this.inferenceTimeoutMs, MAX_MODEL_RECONNECT_WAIT_MS),
+			signal: this.config.abortSignal,
+		});
 
 		if (this.lastModelResolution.kind === "error" && this.config.modelId !== undefined) {
 			// No same-tier (or any-model) substitution: under the routing redesign

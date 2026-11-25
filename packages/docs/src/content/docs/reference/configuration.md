@@ -468,8 +468,10 @@ a concrete `bedrock-mantle` entry. Display names, limits, and pricing for every 
 An `opencode-go` entry with no `model` is a self-configuring namespace for its API key: at
 startup it fetches `GET <base_url>/models` (default `https://opencode.ai/zen/go/v1/models`) and
 expands into one backend per routable chat model. An expanded backend's id is
-`<entry-id>-<provider-model-id>`. `default` may name an expanded id; until the lineup lands,
-omitted-model turns report that model as warming up rather than routing elsewhere. If the lineup
+`<entry-id>-<provider-model-id>`. `default` may name an expanded id. An omitted-model turn that
+starts before the lineup lands waits up to two minutes for it, then runs on the default the lineup
+selects; if the lineup is still pending, the turn reports that model as warming up rather than
+routing elsewhere. If the lineup
 does not carry the named model, the namespace's first model becomes the default and the fallback is
 logged.
 
