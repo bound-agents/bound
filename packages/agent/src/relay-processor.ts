@@ -2445,31 +2445,46 @@ export class RelayProcessor {
 		// arrive). Mirrors the prior executeProcess concurrency control.
 		if (this.threadExecutor) {
 			enqueueMessage(this.db, req.messageId, req.threadId);
-			await this.threadExecutor.execute(
+			const needsRetrigger = await this.threadExecutor.execute(
 				req.threadId,
-				async (shouldYield) => {
+				async (shouldYield, abortSignal) => {
 					const claimed = claimPending(this.db, req.threadId, this.siteId);
 					if (claimed.length === 0) return {};
 					const claimedIds = claimed.map((e) => e.message_id);
 					try {
-						const result = await this.runLocalLoop(req, localCtx, shouldYield);
+						const result = await this.runLocalLoop(req, localCtx, shouldYield, abortSignal);
+						if (abortSignal.aborted) return {};
 						if (result.yielded) return { yielded: true };
 						acknowledgeBatch(this.db, claimed);
 						return result;
 					} catch (error) {
-						try {
-							acknowledgeBatch(this.db, claimed);
-						} catch (ackError) {
-							this.logger.warn("Failed to acknowledge batch after error", {
-								claimedIds: claimedIds.length,
-								error: ackError instanceof Error ? ackError.message : String(ackError),
-							});
+						if (!abortSignal.aborted) {
+							try {
+								acknowledgeBatch(this.db, claimed);
+							} catch (ackError) {
+								this.logger.warn("Failed to acknowledge batch after error", {
+									claimedIds: claimedIds.length,
+									error: ackError instanceof Error ? ackError.message : String(ackError),
+								});
+							}
 						}
 						throw error;
 					}
 				},
 				async () => {},
 			);
+			if (needsRetrigger) {
+				setTimeout(
+					() =>
+						this.runLocalThreadLoop(req).catch((error) =>
+							this.logger.warn("[relay] Local intake re-trigger failed", {
+								threadId: req.threadId,
+								error: error instanceof Error ? error.message : String(error),
+							}),
+						),
+					0,
+				);
+			}
 			return;
 		}
 
@@ -2486,6 +2501,7 @@ export class RelayProcessor {
 		req: { threadId: string; messageId: string; userId: string; platform: string | null },
 		localCtx: AppContext,
 		shouldYield?: () => boolean,
+		abortSignal?: AbortSignal,
 	): Promise<Record<string, unknown>> {
 		const entryId = req.messageId;
 		// Resolve thread's preferred model from the authoritative threads.model_hint column.
@@ -2521,6 +2537,7 @@ export class RelayProcessor {
 			noHistory: owningTask?.no_history === 1,
 			systemPromptAddition: owningTask?.system_prompt_addition ?? undefined,
 			shouldYield,
+			abortSignal,
 		};
 
 		if (req.platform) {

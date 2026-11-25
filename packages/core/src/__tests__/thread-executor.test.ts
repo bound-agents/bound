@@ -279,7 +279,7 @@ describe("ThreadExecutor", () => {
 	});
 
 	describe("runFn timeout", () => {
-		it("returns at the configured deadline when runFn remains pending", async () => {
+		it("requests cancellation at the configured deadline when runFn remains pending", async () => {
 			const threadId = randomUUID();
 			enqueueMessage(db, randomUUID(), threadId);
 
@@ -293,23 +293,29 @@ describe("ThreadExecutor", () => {
 			const timeoutExecutor = new ThreadExecutor(db, errorLogger, {
 				runTimeoutMs: 100,
 			});
-			let resolveRun: ((result: ExecutorRunResult) => void) | undefined;
+			let aborted = false;
 
 			const startedAt = performance.now();
 			await timeoutExecutor.execute(
 				threadId,
-				() =>
+				(_shouldYield, abortSignal) =>
 					new Promise<ExecutorRunResult>((resolve) => {
-						resolveRun = resolve;
+						abortSignal.addEventListener(
+							"abort",
+							() => {
+								aborted = true;
+								resolve({});
+							},
+							{ once: true },
+						);
 					}),
 			);
 			const elapsedMs = performance.now() - startedAt;
 
 			expect(errorLogged).toBe(true);
+			expect(aborted).toBe(true);
 			expect(elapsedMs).toBeGreaterThanOrEqual(90);
-			expect(elapsedMs).toBeLessThan(500);
 			expect(timeoutExecutor.isActive(threadId)).toBe(false);
-			resolveRun?.({});
 		});
 
 		it("resets processing entries on timeout so they can be re-claimed", async () => {
@@ -320,15 +326,13 @@ describe("ThreadExecutor", () => {
 			const timeoutExecutor = new ThreadExecutor(db, noopLogger, {
 				runTimeoutMs: 100,
 			});
-			let resolveRun: ((result: ExecutorRunResult) => void) | undefined;
-
 			await timeoutExecutor.execute(
 				threadId,
-				() =>
+				(_shouldYield, abortSignal) =>
 					new Promise<ExecutorRunResult>((resolve) => {
 						// Claim the message (sets it to processing) before remaining pending.
 						claimPending(db, threadId, siteId);
-						resolveRun = resolve;
+						abortSignal.addEventListener("abort", () => resolve({}), { once: true });
 					}),
 			);
 
@@ -339,7 +343,60 @@ describe("ThreadExecutor", () => {
 				)
 				.get(msgId) as { claim_state: string };
 			expect(row.claim_state).toBe("pending");
-			resolveRun?.({});
+		});
+
+		it("keeps the lock until a timed-out callback settles", async () => {
+			const threadId = randomUUID();
+			enqueueMessage(db, randomUUID(), threadId);
+
+			let started!: () => void;
+			const startedPromise = new Promise<void>((resolve) => {
+				started = resolve;
+			});
+			let releaseCallback!: () => void;
+			let abortObserved = false;
+			let replacementRan = false;
+			const timeoutExecutor = new ThreadExecutor(db, noopLogger, { runTimeoutMs: 25 });
+
+			const firstRun = timeoutExecutor.execute(threadId, async (_shouldYield, abortSignal) => {
+				claimPending(db, threadId, siteId);
+				started();
+				await new Promise<void>((resolve) => {
+					releaseCallback = resolve;
+					abortSignal.addEventListener(
+						"abort",
+						() => {
+							abortObserved = true;
+						},
+						{ once: true },
+					);
+				});
+				return {};
+			});
+
+			await startedPromise;
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			expect(abortObserved).toBe(true);
+			expect(timeoutExecutor.isActive(threadId)).toBe(true);
+
+			const replacementResult = await timeoutExecutor.execute(threadId, async () => {
+				replacementRan = true;
+				return {};
+			});
+			expect(replacementResult).toBe(false);
+			expect(replacementRan).toBe(false);
+
+			releaseCallback();
+			await firstRun;
+			expect(timeoutExecutor.isActive(threadId)).toBe(false);
+
+			enqueueMessage(db, randomUUID(), threadId);
+			await timeoutExecutor.execute(threadId, async () => {
+				replacementRan = true;
+				drainOnce(threadId);
+				return {};
+			});
+			expect(replacementRan).toBe(true);
 		});
 	});
 });

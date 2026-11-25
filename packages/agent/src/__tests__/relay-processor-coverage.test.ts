@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { applySchema, insertRow } from "@bound/core";
+import { ThreadExecutor, applySchema, hasPending, insertRow } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import type { Logger, TypedEventEmitter } from "@bound/shared";
@@ -894,6 +894,59 @@ describe("RelayProcessor - runLocalThreadLoop", () => {
 		});
 		expect(ran).toBe(true);
 		expect(result).toBeUndefined();
+	});
+
+	it("retries claimed intake after an executor timeout without acknowledging the late result", async () => {
+		const threadId = "thread-timeout-retry";
+		insertThread(db, threadId);
+		let runCount = 0;
+		const processor = makeProcessorWithFactory({
+			appCtx: { siteId: SITE, config: { modelBackends: { backends: [] } } },
+			factory: (rawConfig) => {
+				const config = rawConfig as { abortSignal?: AbortSignal };
+				return {
+					run: async () => {
+						runCount++;
+						if (runCount === 1) {
+							const signal = config.abortSignal;
+							if (!signal) throw new Error("executor abort signal was not propagated");
+							await new Promise<void>((resolve) => {
+								if (signal.aborted) {
+									resolve();
+								} else {
+									signal.addEventListener("abort", resolve, { once: true });
+								}
+							});
+						}
+						return { yielded: false, messagesCreated: 1 };
+					},
+				};
+			},
+		});
+		const executor = new ThreadExecutor(db, createMockLogger(), { runTimeoutMs: 25 });
+		processor.setThreadExecutor(executor);
+
+		await (
+			processor as unknown as {
+				runLocalThreadLoop: (r: unknown) => Promise<void>;
+			}
+		).runLocalThreadLoop({
+			threadId,
+			messageId: randomUUID(),
+			userId: "platform:web",
+			platform: "web",
+		});
+
+		for (
+			let i = 0;
+			i < 100 && (runCount < 2 || hasPending(db, threadId) || executor.isActive(threadId));
+			i++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+
+		expect(runCount).toBe(2);
+		expect(hasPending(db, threadId)).toBe(false);
 	});
 
 	it("bails without running when the thread row does not exist", async () => {

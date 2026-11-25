@@ -66,6 +66,45 @@ describe("runLocalAgentLoop — agent:cancel propagation", () => {
 		expect(capturedSignals[0]).toBeInstanceOf(AbortSignal);
 	});
 
+	it("propagates executor cancellation to the running agent loop", async () => {
+		const eventBus = makeEventBus();
+		const threadId = randomUUID();
+		const parentController = new AbortController();
+		let capturedSignal: AbortSignal | undefined;
+		const reason = new Error("executor timed out");
+		const agentLoopFactory = (config: AgentLoopConfig): MainAgentLoop => {
+			capturedSignal = config.abortSignal;
+			return {
+				run: () =>
+					new Promise<AgentLoopResult>((_resolve, reject) => {
+						const signal = config.abortSignal;
+						if (!signal) {
+							reject(new Error("agent loop abort signal was not propagated"));
+							return;
+						}
+						signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+					}),
+			} as MainAgentLoop;
+		};
+
+		const run = runLocalAgentLoop({
+			eventBus,
+			threadId,
+			userId: "u1",
+			modelId: "mock",
+			activeLoopAbortControllers: controllers,
+			abortSignal: parentController.signal,
+			agentLoopFactory,
+		});
+
+		parentController.abort(reason);
+
+		await expect(run).rejects.toBe(reason);
+		expect(capturedSignal?.aborted).toBe(true);
+		expect(capturedSignal?.reason).toBe(reason);
+		expect(controllers.has(threadId)).toBe(false);
+	});
+
 	it("aborts the running loop when agent:cancel fires for the thread", async () => {
 		const eventBus = makeEventBus();
 		const threadId = randomUUID();
