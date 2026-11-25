@@ -6,17 +6,60 @@ import type { Logger } from "./logger.js";
 import type { SerializedSpan } from "./trace-collector.js";
 
 interface ExportFailureState {
+	errorClass: string;
 	suppressedFailures: number;
 }
 
 const exportFailureStates = new WeakMap<SpanExporter, Map<string, ExportFailureState>>();
 
-function errorClass(error: unknown): string {
-	return error instanceof Error ? error.name : typeof error;
+/** Error names are class identifiers; anything else (spaces, URLs, overlong) is dropped. */
+const SAFE_ERROR_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+/** Symbolic error codes such as ECONNREFUSED or ERR_SOCKET_CLOSED. */
+const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,31}$/;
+const MAX_ERROR_CODES = 4;
+const MAX_ERROR_DEPTH = 3;
+const MAX_ERRORS_VISITED = 32;
+
+function safeErrorName(error: Error): string {
+	return SAFE_ERROR_NAME.test(error.name) ? error.name : "Error";
 }
 
-function failureKey(result: { code: number; error?: Error }): string {
-	return `${result.code}:${errorClass(result.error)}`;
+function safeErrorCode(code: unknown): string | undefined {
+	if (typeof code === "string") return SAFE_ERROR_CODE.test(code) ? code : undefined;
+	if (typeof code === "number" && Number.isInteger(code) && code >= 100 && code <= 599) {
+		return String(code);
+	}
+	return undefined;
+}
+
+/**
+ * Collect allowlisted codes (symbolic errno-style strings or HTTP statuses) from an
+ * error, its AggregateError members, and its cause chain. Messages, endpoints,
+ * headers, and payloads are never read.
+ */
+function collectErrorCodes(error: Error): string[] {
+	const codes: string[] = [];
+	let visited = 0;
+	const visit = (value: unknown, depth: number) => {
+		if (!(value instanceof Error) || depth > MAX_ERROR_DEPTH) return;
+		if (visited++ >= MAX_ERRORS_VISITED || codes.length >= MAX_ERROR_CODES) return;
+		const code = safeErrorCode((value as { code?: unknown }).code);
+		if (code && !codes.includes(code)) codes.push(code);
+		const nested = (value as { errors?: unknown }).errors;
+		if (Array.isArray(nested)) {
+			for (const member of nested) visit(member, depth + 1);
+		}
+		visit((value as { cause?: unknown }).cause, depth + 1);
+	};
+	visit(error, 0);
+	return codes.slice(0, MAX_ERROR_CODES);
+}
+
+function errorClass(error: unknown): string {
+	if (!(error instanceof Error)) return typeof error;
+	const codes = collectErrorCodes(error);
+	const name = safeErrorName(error);
+	return codes.length > 0 ? `${name}[${codes.join(",")}]` : name;
 }
 
 /**
@@ -76,30 +119,31 @@ export function reExportSpans(
 		exportFailureStates.set(exporter, states);
 
 		if (result.code === 0) {
-			for (const [key, state] of states) {
-				if (state.suppressedFailures > 0) {
-					logger?.warn("Remote span re-export recovered", {
-						error_class: key.split(":")[1],
-						suppressed_failures: state.suppressedFailures,
-					});
-				}
+			// Every open failure episode — including a single failed batch — ends
+			// with exactly one recovery warning.
+			for (const state of states.values()) {
+				logger?.warn("Remote span re-export recovered", {
+					error_class: state.errorClass,
+					suppressed_failures: state.suppressedFailures,
+				});
 			}
 			states.clear();
 			return;
 		}
 
-		const key = failureKey(result);
+		const failureClass = errorClass(result.error);
+		const key = `${result.code}:${failureClass}`;
 		const state = states.get(key);
 		if (state) {
 			state.suppressedFailures++;
 			return;
 		}
 
-		states.set(key, { suppressedFailures: 0 });
+		states.set(key, { errorClass: failureClass, suppressedFailures: 0 });
 		logger?.warn("Remote span re-export failed", {
 			span_count: spans.length,
 			result_code: result.code,
-			error_class: errorClass(result.error),
+			error_class: failureClass,
 		});
 	});
 }
