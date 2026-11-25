@@ -1084,3 +1084,151 @@ describe("createRelayStream$ — 4D-D durable chunk union", () => {
 		expect(chunks.map((c) => (c as { text: string }).text)).toEqual(["a"]);
 	});
 });
+
+describe("createRelayStream$ — remote error settlement (#310)", () => {
+	let db: Database;
+	let tmpDir: string;
+
+	afterEach(async () => {
+		await cleanup(db, tmpDir);
+	});
+
+	function rowState(database: Database, id: string) {
+		return database
+			.prepare("SELECT claim_state, consumed_at, claim_token FROM durable_work WHERE id = ?")
+			.get(id) as { claim_state: string; consumed_at: string | null; claim_token: string | null };
+	}
+
+	it("propagates the original remote error AND acknowledges the claimed error response", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 20 },
+		);
+
+		let error: Error | null = null;
+		// Observe the error row's state at the moment the error reaches the subscriber:
+		// delivery must precede the ack (claim → deliver → ack).
+		let stateAtDelivery: string | null = null;
+		const done = new Promise<void>((resolve) => {
+			stream$.subscribe({
+				error: (err) => {
+					error = err;
+					stateAtDelivery = rowState(db, "error-entry").claim_state;
+					resolve();
+				},
+				complete: () => resolve(),
+			});
+		});
+
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+		insertRelayInboxEntry(db, {
+			id: "error-entry",
+			sourceSiteId: remoteHost,
+			kind: "error",
+			streamId,
+			payload: JSON.stringify({ error: "synthetic remote error", retriable: true }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "error" as const });
+
+		await done;
+
+		expect((error as Error | null)?.message).toBe("synthetic remote error");
+		expect(stateAtDelivery as string | null).toBe("processing");
+		const row = rowState(db, "error-entry");
+		expect(row.claim_state).toBe("consumed");
+		expect(row.consumed_at).not.toBeNull();
+		expect(row.claim_token).toBeNull();
+	});
+
+	it("an aborted stream does not acknowledge an error response it never delivered", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 20 },
+		);
+
+		let error: unknown = null;
+		const done = lastValueFrom(stream$, { defaultValue: undefined }).catch((err) => {
+			error = err;
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		aborted$.next();
+		await done;
+
+		insertRelayInboxEntry(db, {
+			id: "late-error",
+			sourceSiteId: remoteHost,
+			kind: "error",
+			streamId,
+			payload: JSON.stringify({ error: "cancelled by requester", retriable: false }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "error" as const });
+		await new Promise((r) => setTimeout(r, 80));
+
+		expect(error).toBeNull();
+		const row = rowState(db, "late-error");
+		expect(row.claim_state).toBe("pending");
+		expect(row.consumed_at).toBeNull();
+	});
+
+	it("an unsubscribed stream does not acknowledge an error response it never delivered", async () => {
+		({ db, tmpDir } = createTestDb());
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const remoteHost = "spoke-1";
+
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 20 },
+		);
+
+		let error: unknown = null;
+		const subscription = stream$.subscribe({
+			error: (err) => {
+				error = err;
+			},
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+		subscription.unsubscribe();
+
+		insertRelayInboxEntry(db, {
+			id: "orphan-error",
+			sourceSiteId: remoteHost,
+			kind: "error",
+			streamId,
+			payload: JSON.stringify({ error: "nobody is listening", retriable: true }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "error" as const });
+		await new Promise((r) => setTimeout(r, 80));
+
+		expect(error).toBeNull();
+		const row = rowState(db, "orphan-error");
+		expect(row.claim_state).toBe("pending");
+		expect(row.consumed_at).toBeNull();
+	});
+});

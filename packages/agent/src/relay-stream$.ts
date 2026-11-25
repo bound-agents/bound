@@ -20,6 +20,7 @@ import {
 import type { Logger } from "@bound/shared";
 import {
 	EMPTY,
+	Observable,
 	type SchedulerLike,
 	TimeoutError,
 	catchError,
@@ -36,11 +37,9 @@ import {
 	takeUntil,
 	takeWhile,
 	tap,
-	throwError,
 	throwIfEmpty,
 	timeout,
 } from "rxjs";
-import type { Observable } from "rxjs";
 import { splitInferenceRequest } from "./inference-request-parts";
 import { type EligibleHost, routeRelayRequest } from "./relay-router";
 import { fromEventBus } from "./rx-utils";
@@ -100,6 +99,20 @@ interface ScanOutput {
 	activity: boolean;
 	done: boolean;
 	error: string | null;
+}
+
+/**
+ * Deliver a remote error downstream, then run the error row's settle callbacks.
+ * `subscriber.error()` propagates synchronously through the operator chain to
+ * the consumer, so the token-fenced ack lands strictly after delivery. When the
+ * consumer has already gone away this inner observable is never subscribed, so
+ * an undelivered error is never acknowledged.
+ */
+function errorThenSettle(message: string, settles: Array<() => void>): Observable<never> {
+	return new Observable<never>((subscriber) => {
+		subscriber.error(new Error(message));
+		for (const settle of settles) settle();
+	});
 }
 
 const RELAY_ACTIVITY = Symbol("relay-activity");
@@ -401,16 +414,11 @@ export function createRelayStream$(
 					const err = s.error;
 					const settles = s.settlesToRun;
 					if (err) {
-						// CRITICAL ORDER (claim → deliver → ack): run the error row's settle only
-						// AFTER the error has been thrown downstream. defer() ensures the ack
-						// fires on subscription to the tail, after the throwError emission.
-						return concat(
-							throwError(() => new Error(err)),
-							defer(() => {
-								for (const settle of settles) settle();
-								return EMPTY;
-							}),
-						);
+						// CRITICAL ORDER (claim → deliver → ack): deliver the error downstream,
+						// then settle the error row. concat() cannot do this — it advances on
+						// completion, never on error — so the error is delivered synchronously
+						// through the subscriber and the token-fenced ack runs after it returns.
+						return errorThenSettle(err, settles);
 					}
 					const emissions: RelayEmission[] = s.activity
 						? [RELAY_ACTIVITY, ...s.chunksToEmit]
