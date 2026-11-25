@@ -91,6 +91,11 @@ unowned and remain reachable, so single-user deployments are unaffected. This pr
 user's thread from injecting content or triggering inference in another user's thread on
 multi-user deployments.
 
+`notify` to an aux thread reaches only an aux loop that is running on the host where `notify`
+runs. That loop injects the notification as a developer message before its next model call,
+including after an answer it was about to finish with. When no aux loop is running for the
+target there, `notify` returns an error and queues nothing.
+
 ## Tool sources
 
 A thread can receive tools from Bound, configured servers, a connected client, or an API

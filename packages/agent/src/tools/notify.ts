@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { findLiveThreadById } from "@bound/core";
+import { findLiveThreadById, findThreadAgentIdById } from "@bound/core";
 import { z } from "zod";
+import { isAuxLoopRunning } from "../aux-agent-loop.js";
 import { clientSessionWakeupWarning } from "../delegation.js";
 import type { RegisteredTool, ToolContext } from "../types";
 import { routeNotificationWakeup } from "../wakeup-routing.js";
@@ -48,6 +49,15 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 					return "Error: Cannot notify a thread owned by a different user.";
 				}
 
+				// An aux thread is owned by its nested loop; the dispatcher never claims
+				// for it (#294). Only a loop running here drains the queue between
+				// turns, so anything else would strand the row while this tool
+				// reported success.
+				const isAuxTarget = Boolean(findThreadAgentIdById(ctx.db, thread.id)?.agent_id);
+				if (isAuxTarget && !isAuxLoopRunning(thread.id)) {
+					return `Error: aux thread ${thread_id} has no loop running on this host, so nothing would deliver the notification. Not enqueued.`;
+				}
+
 				// Route the wakeup to the host holding the thread's live WS session
 				// (#91 under unified delegation): a local enqueue on THIS host would
 				// mint a second, detached loop when the session lives elsewhere.
@@ -65,8 +75,9 @@ export function createNotifyTool(ctx: ToolContext): RegisteredTool {
 					ctx.topologyRole,
 				);
 				const warning = clientSessionWakeupWarning(ctx.db, thread.id);
-				const confirmation =
-					routed.delivery === "relayed"
+				const confirmation = isAuxTarget
+					? `Notification queued for running aux thread ${thread_id}; its loop injects it before its next model call.`
+					: routed.delivery === "relayed"
 						? `Notification enqueued for thread ${thread_id} (routed to session host ${routed.targetHostName}).`
 						: `Notification enqueued for thread ${thread_id}.`;
 				return warning ? `${confirmation}\n${warning}` : confirmation;

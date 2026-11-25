@@ -362,6 +362,94 @@ export function claimPending(db: Database, threadId: string, claimedBy: string):
 }
 
 /**
+ * Claim ONLY the pending `notification` entries for a thread (both stores).
+ *
+ * A nested aux loop owns its thread for the whole invocation, so the main
+ * dispatcher refuses to claim for it (#294). The nested loop drains its own
+ * notifications between turns through this narrower claim: `tool_result`
+ * re-wakes, user messages, and client-tool calls stay untouched because the
+ * inline client-tool resolver and the dispatcher own those.
+ */
+export function claimPendingNotifications(
+	db: Database,
+	threadId: string,
+	claimedBy: string,
+): DispatchEntry[] {
+	const now = new Date().toISOString();
+	db.exec("BEGIN IMMEDIATE");
+	try {
+		const durable = db
+			.query(
+				`SELECT * FROM durable_work WHERE target_site_id = ? AND kind = 'dispatch_message' AND claim_state = 'pending' AND json_extract(payload, '$.thread_id') = ? AND json_extract(payload, '$.event_type') = 'notification' ORDER BY created_at`,
+			)
+			.all(LOCAL_WORK_TARGET, threadId) as Array<{
+			id: string;
+			payload: string;
+			created_at: string;
+		}>;
+		const entries: DispatchEntry[] = [];
+		for (const row of durable) {
+			const token = randomUUID();
+			db.prepare(
+				"UPDATE durable_work SET claim_state = 'processing', claim_token = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE id = ? AND claim_state = 'pending'",
+			).run(token, now, row.id);
+			const payload = JSON.parse(row.payload) as Pick<
+				DispatchEntry,
+				"message_id" | "thread_id" | "event_type" | "event_payload"
+			>;
+			entries.push({
+				...payload,
+				status: "processing",
+				claimed_by: claimedBy,
+				created_at: row.created_at,
+				modified_at: now,
+				durable_work_id: row.id,
+				durable_claim_token: token,
+			});
+		}
+		const pending = db
+			.prepare(
+				`SELECT * FROM dispatch_queue WHERE thread_id = ? AND status = 'pending' AND event_type = 'notification' ORDER BY created_at ASC`,
+			)
+			.all(threadId) as DispatchEntry[];
+		// Same bridge fence as claimPending: a legacy twin of any durable row is
+		// suppressed, never delivered a second time.
+		const fenced = new Set(
+			(
+				db
+					.query(
+						`SELECT json_extract(payload, '$.message_id') AS message_id FROM durable_work
+						 WHERE target_site_id = ? AND kind = 'dispatch_message'
+						   AND json_extract(payload, '$.thread_id') = ?`,
+					)
+					.all(LOCAL_WORK_TARGET, threadId) as Array<{ message_id: string | null }>
+			).map((row) => row.message_id),
+		);
+		const legacy = pending.filter((entry) => !fenced.has(entry.message_id));
+		const suppressed = pending.filter((entry) => fenced.has(entry.message_id));
+		if (suppressed.length) {
+			const ids = suppressed.map((row) => row.message_id);
+			db.prepare(
+				`UPDATE dispatch_queue SET status = 'acknowledged', modified_at = ? WHERE message_id IN (${ids.map(() => "?").join(",")})`,
+			).run(now, ...ids);
+		}
+		if (legacy.length) {
+			const ids = legacy.map((r) => r.message_id);
+			db.prepare(
+				`UPDATE dispatch_queue SET status = 'processing', claimed_by = ?, modified_at = ? WHERE message_id IN (${ids.map(() => "?").join(",")})`,
+			).run(claimedBy, now, ...ids);
+		}
+		db.exec("COMMIT");
+		return [...entries, ...legacy];
+	} catch (error) {
+		try {
+			db.exec("ROLLBACK");
+		} catch {}
+		throw error;
+	}
+}
+
+/**
  * Mark a batch of message IDs as acknowledged (dispatch complete).
  */
 export function acknowledgeBatch(db: Database, entries: DispatchEntry[] | string[]): void {

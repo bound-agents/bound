@@ -91,6 +91,7 @@ export {
 	acknowledgeClientToolCall,
 	acknowledgeToolResultForCall,
 	claimPending,
+	claimPendingNotifications,
 	acknowledgeBatch,
 	resetProcessing,
 	resetProcessingForThread,

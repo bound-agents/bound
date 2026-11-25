@@ -95,6 +95,8 @@ export {
 	WARM_POKE_MAX_OUTPUT_TOKENS,
 	type WarmPokeSelectionOptions,
 } from "./cache-warm-poke";
+export { formatNotification, injectNotificationMessage } from "./notification-injection";
+export { isAuxLoopRunning } from "./aux-agent-loop";
 
 // Export scheduler
 export { Scheduler } from "./scheduler";

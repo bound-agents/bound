@@ -1,5 +1,7 @@
 import {
+	acknowledgeBatch,
 	acknowledgeToolResultForCall,
+	claimPendingNotifications,
 	enqueueClientToolCall,
 	findToolResultByThreadAndCallId,
 } from "@bound/core";
@@ -13,13 +15,108 @@ import { BoundAgentLoop, type BoundPreparedFrame } from "./bound-agent-loop";
 import { buildCacheMarkers, coldPathPlaceCacheMarker } from "./cache-marker";
 import { selectCacheTtl } from "./cache-prediction";
 import { assembleContext, computeBaseTruncationTarget, realTimeClock } from "./context-assembly";
+import { injectNotificationMessage } from "./notification-injection";
 import { sharedStableSubsectionCache } from "./stable-prefix";
+import type { AgentLoopResult } from "./types";
 
 /** Poll cadence and ceiling for the inline client-tool wait. */
 const CLIENT_TOOL_POLL_MS = 150;
 const CLIENT_TOOL_TIMEOUT_MS = 300_000;
 
+/**
+ * Aux threads with a nested loop running in THIS process. The dispatcher never
+ * claims for an aux thread (its nested loop owns it), so `notify` uses this to
+ * tell a deliverable target from one whose notification would strand (#294).
+ */
+const runningAuxLoops = new Map<string, number>();
+
+export function isAuxLoopRunning(threadId: string): boolean {
+	return (runningAuxLoops.get(threadId) ?? 0) > 0;
+}
+
+/** Mark a nested aux loop live on `threadId`; the returned function releases it. */
+export function registerRunningAuxLoop(threadId: string): () => void {
+	runningAuxLoops.set(threadId, (runningAuxLoops.get(threadId) ?? 0) + 1);
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		const remaining = (runningAuxLoops.get(threadId) ?? 1) - 1;
+		if (remaining > 0) runningAuxLoops.set(threadId, remaining);
+		else runningAuxLoops.delete(threadId);
+	};
+}
+
 export class AuxAgentLoop extends BoundAgentLoop {
+	override async run(): Promise<AgentLoopResult> {
+		const release = registerRunningAuxLoop(this.config.threadId);
+		try {
+			return await super.run();
+		} finally {
+			release();
+		}
+	}
+
+	/**
+	 * Inject this thread's pending notifications as `developer` rows and ack
+	 * them. Claims notification entries ONLY: tool_result re-wakes belong to the
+	 * inline client-tool resolver and must never be consumed here. Returns the
+	 * number delivered.
+	 */
+	protected drainPendingNotifications(): number {
+		const threadId = this.config.threadId;
+		const claimed = claimPendingNotifications(this.ctx.db, threadId, this.ctx.siteId);
+		if (claimed.length === 0) return 0;
+		let delivered = 0;
+		for (const entry of claimed) {
+			try {
+				if (
+					injectNotificationMessage(
+						this.ctx.db,
+						this.ctx.siteId,
+						this.ctx.hostName,
+						threadId,
+						entry,
+					)
+				) {
+					delivered++;
+				}
+			} catch (error) {
+				this.ctx.logger.error("[aux-agent-loop] Failed to inject notification", {
+					threadId,
+					messageId: entry.message_id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		acknowledgeBatch(this.ctx.db, claimed);
+		this.ctx.logger.info("[aux-agent-loop] Delivered notifications between turns", {
+			threadId,
+			count: delivered,
+		});
+		return delivered;
+	}
+
+	/**
+	 * A notification that lands while the model writes its final answer would
+	 * strand once the loop exits. Deliver it and run one more turn instead of
+	 * completing.
+	 */
+	protected override async runTurn(
+		input: Parameters<BoundAgentLoop["runTurn"]>[0],
+	): ReturnType<BoundAgentLoop["runTurn"]> {
+		const outcome = await super.runTurn(input);
+		if (
+			outcome.action === "return" &&
+			outcome.result.outcome === "completed" &&
+			!this.aborted &&
+			this.drainPendingNotifications() > 0
+		) {
+			return { action: "retry", rebuildFrame: true };
+		}
+		return outcome;
+	}
+
 	protected prepareAuxCacheMarker(
 		messages: import("@bound/llm").LLMMessage[],
 		cacheMarkerCaps: BoundPreparedFrame["cacheMarkerCaps"],
@@ -37,6 +134,9 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		resolution: BoundPreparedFrame["resolution"];
 	}): Promise<Omit<BoundPreparedFrame, "resolution">> {
 		const resolution = input.resolution;
+		// Between-turn steering (#294): every frame build (start + each
+		// rebuildFrame retry) delivers queued notifications before assembly.
+		this.drainPendingNotifications();
 		const {
 			relayInfo,
 			resolvedCaps,

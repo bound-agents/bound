@@ -13,6 +13,7 @@ import {
 	acknowledgeToolResultForCall,
 	cancelClientToolCalls,
 	claimPending,
+	claimPendingNotifications,
 	enqueueClientToolCall,
 	enqueueMessage,
 	enqueueNotification,
@@ -1741,5 +1742,55 @@ console.log(JSON.stringify({ legacy: db.query("SELECT COUNT(*) AS c FROM dispatc
 			)
 			.get() as { c: number };
 		expect(pending.c).toBe(0);
+	});
+});
+
+describe("claimPendingNotifications (#294)", () => {
+	it("claims only notification entries and leaves tool_result and user rows pending", () => {
+		const threadId = randomUUID();
+		const userMsg = randomUUID();
+		enqueueMessage(db, userMsg, threadId);
+		enqueueToolResult(db, threadId, "call-1");
+		const notifId = enqueueNotification(db, threadId, { type: "proactive", content: "steer" });
+
+		const claimed = claimPendingNotifications(db, threadId, "host-1");
+
+		expect(claimed.map((e) => e.message_id)).toEqual([notifId]);
+		const rows = db
+			.query("SELECT message_id, event_type, status FROM dispatch_queue WHERE thread_id = ?")
+			.all(threadId) as Array<{ message_id: string; event_type: string | null; status: string }>;
+		for (const row of rows) {
+			expect(row.status).toBe(row.message_id === notifId ? "processing" : "pending");
+		}
+	});
+
+	it("claims durable notification rows without touching durable tool_result wakeups", () => {
+		setDurableDispatchEnqueueEnabledForTesting(true);
+		try {
+			const threadId = randomUUID();
+			enqueueToolResult(db, threadId, "call-1");
+			enqueueNotification(db, threadId, { type: "proactive", content: "steer" });
+
+			const claimed = claimPendingNotifications(db, threadId, "host-1");
+			expect(claimed).toHaveLength(1);
+			expect(claimed[0].event_type).toBe("notification");
+			expect(claimed[0].durable_work_id).toBeTruthy();
+
+			const states = db
+				.query(
+					"SELECT json_extract(payload, '$.event_type') AS event_type, claim_state FROM durable_work WHERE json_extract(payload, '$.thread_id') = ? ORDER BY event_type",
+				)
+				.all(threadId) as Array<{ event_type: string; claim_state: string }>;
+			expect(states).toEqual([
+				{ event_type: "notification", claim_state: "processing" },
+				{ event_type: "tool_result", claim_state: "pending" },
+			]);
+
+			acknowledgeBatch(db, claimed);
+			expect(claimPendingNotifications(db, threadId, "host-1")).toHaveLength(0);
+		} finally {
+			// Leave the production default behind: bun shares module state across files.
+			setDurableDispatchEnqueueEnabledForTesting(true);
+		}
 	});
 });
