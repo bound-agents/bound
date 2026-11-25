@@ -44,7 +44,16 @@ export interface YardInferenceRequest {
 	input?: JsonValue;
 	schema?: JsonValue;
 	max_tokens?: number;
+	/**
+	 * Bounded schema-repair re-asks after a JSON-parse or schema violation
+	 * (only meaningful with `schema`). Default 1; 0 opts out. Capped at
+	 * MAX_SCHEMA_RETRIES.
+	 */
+	schema_retries?: number;
 }
+
+/** Ceiling on `infer()` schema-repair re-asks per effect. */
+export const MAX_SCHEMA_RETRIES = 2;
 
 /**
  * The dispatch seam. The wiring slice implements this over the unified tool
@@ -308,6 +317,16 @@ const BOOTSTRAP_SOURCE = `(() => {
 		}
 		if (typeof request.prompt !== "string") {
 			throw new TypeError("infer() request requires a prompt string");
+		}
+		if (
+			request.schema_retries !== undefined &&
+			!(
+				Number.isInteger(request.schema_retries) &&
+				request.schema_retries >= 0 &&
+				request.schema_retries <= ${MAX_SCHEMA_RETRIES}
+			)
+		) {
+			throw new TypeError("infer() schema_retries must be an integer from 0 to ${MAX_SCHEMA_RETRIES}");
 		}
 		assertJsonCompatible(request, "infer() request");
 		return brand({ kind: "inference", model: model, request: detach(request) });

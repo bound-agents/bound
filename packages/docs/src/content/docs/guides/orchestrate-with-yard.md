@@ -87,6 +87,12 @@ Time limits, unavailable tools, failed work, missing evidence, or external block
 part of a request incomplete. Review catches gaps and triggers targeted correction against the
 available evidence.
 
+A synthesis step that asks a model for structured output re-asks once by default when the reply
+is not valid JSON or does not match the requested shape. The re-ask carries the error and an
+excerpt of the bad reply. Each miss is recorded in the run's trace, and the extra tokens count
+toward the run's usage. If the repaired reply still misses, that step fails with the error and
+the excerpt.
+
 ## What the result should report
 
 The final response should identify:

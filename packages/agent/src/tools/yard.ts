@@ -181,9 +181,9 @@ async function raceDeadline<T>(
 
 /**
  * Minimal JSON Schema subset validator for `infer()` results: `type`,
- * `properties`, `required`, `items`, `enum`. Yard performs no hidden
- * schema-repair inference (design decision) — a violation fails the effect
- * and the guest program decides whether to retry. The subset matches what
+ * `properties`, `required`, `items`, `enum`. A violation triggers the
+ * effect's bounded, traced repair re-ask (`schema_retries`, default 1) and
+ * fails the effect once those attempts are spent. The subset matches what
  * classification/extraction programs actually send; unknown keywords are
  * ignored rather than rejected so standard schemas remain usable.
  */
@@ -337,7 +337,7 @@ The \`program\` must define \`function* main(input) { ... }\` and return a JSON-
 
 - \`input\` — deeply frozen JSON-compatible \`input\` from this tool call.
 - \`tool(name, args)\` — create an effect for an ordinary Bound tool in your current effective toolset. Use the tool's normal argument schema.
-- \`infer(modelId, { prompt, input?, schema?, max_tokens? })\` — create an ephemeral inference effect using the required explicit model ID. Returns a string without \`schema\`, or validated JSON with \`schema\`. No hidden schema repair: a violation fails the effect; retry explicitly if needed.
+- \`infer(modelId, { prompt, input?, schema?, max_tokens?, schema_retries? })\` — create an ephemeral inference effect using the required explicit model ID. Returns a string without \`schema\`, or validated JSON with \`schema\`. A reply that is not JSON or violates the schema gets a bounded repair re-ask: the original request is re-sent with the parse error or violation list and an excerpt of the bad reply. \`schema_retries\` sets the re-ask count (default 1, max 2, 0 opts out). Every miss is recorded on the effect's trace span and every attempt's tokens count toward usage. Once the re-asks are spent the effect fails with the last error and a raw-output excerpt; catch it in the program if the stage is retryable.
 - \`aux(name, instructions, options?)\` — shorthand for \`tool("aux", { action: "invoke", name, instructions, ...options })\`. Invocations are synchronous only: \`background: true\` is rejected at dispatch (deferred results have no resolution path inside a Yard run). For concurrent aux work, yield several aux effects through \`all()\` instead.
 - \`all(effects, { concurrency?, errors? }?)\` — create a parallel compound effect. \`errors\` is "fail-fast" by default or "settled" (input-ordered \`{ status, value | reason }\` entries); results preserve input order.
 - \`sequence(effects)\` — create an ordered, fail-fast compound effect.
@@ -497,6 +497,38 @@ async function withEffectSpan<T>(
 	} finally {
 		span.end();
 	}
+}
+
+/** Bound on the raw reply text carried into errors, traces, and re-asks. */
+const RAW_EXCERPT_CHARS = 400;
+
+function rawExcerpt(text: string): string {
+	return text.length <= RAW_EXCERPT_CHARS ? text : `${text.slice(0, RAW_EXCERPT_CHARS)}…`;
+}
+
+/** Parse and validate one `infer()` reply against the requested schema. */
+function checkSchemaReply(
+	text: string,
+	schema: Record<string, unknown>,
+	model: string,
+): { ok: true; value: unknown } | { ok: false; error: string } {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stripCodeFence(text));
+	} catch {
+		return {
+			ok: false,
+			error: `inference output is not valid JSON for the requested schema (model "${model}")`,
+		};
+	}
+	const violations = validateAgainstSchema(parsed, schema, "");
+	if (violations.length > 0) {
+		return {
+			ok: false,
+			error: `inference output violates the requested schema: ${violations.join("; ")}`,
+		};
+	}
+	return { ok: true, value: parsed };
 }
 
 /** Build the YardHost that dispatches effects through Bound's dispatch paths. */
@@ -687,13 +719,18 @@ function createYardHost(
 							? Math.min(requested, resolution.maxOutputTokens)
 							: requested;
 
+					const prompt = parts.join("\n\n");
+					const retries = request.schema === undefined ? 0 : (request.schema_retries ?? 1);
+					const maxAttempts = 1 + retries;
+					const effectSpan = trace.getActiveSpan();
+
 					await scope.semaphore.acquire();
 					try {
-						const consume = async (): Promise<string> => {
+						const consume = async (content: string): Promise<string> => {
 							const chunks: string[] = [];
 							for await (const chunk of backend.chat({
 								threadId: ctx.threadId ?? scope.runId ?? scope.traceId,
-								messages: [{ role: "user", content: parts.join("\n\n") }],
+								messages: [{ role: "user", content }],
 								max_tokens: maxTokens,
 								signal: scope.abort.signal,
 							})) {
@@ -704,29 +741,45 @@ function createYardHost(
 							}
 							return chunks.join("").trim();
 						};
-						const text = await raceDeadline(consume(), scope, `inference on "${model}"`);
 
-						if (request.schema === undefined) return text;
+						let content = prompt;
+						for (let attempt = 1; ; attempt++) {
+							const text = await raceDeadline(consume(content), scope, `inference on "${model}"`);
+							if (request.schema === undefined) return text;
 
-						let parsed: unknown;
-						try {
-							parsed = JSON.parse(stripCodeFence(text));
-						} catch {
-							throw new Error(
-								`inference output is not valid JSON for the requested schema (model "${model}")`,
+							const outcome = checkSchemaReply(
+								text,
+								request.schema as Record<string, unknown>,
+								model,
 							);
+							effectSpan?.setAttribute("yard.effect.schema_attempts", attempt);
+							if (outcome.ok) return outcome.value;
+
+							// Every miss is recorded on the effect span and in the log, so
+							// a repaired reply is never a hidden one and a final failure
+							// stays diagnosable after the fact.
+							const excerpt = rawExcerpt(text);
+							const willRetry = attempt < maxAttempts;
+							effectSpan?.addEvent("yard.infer.schema_miss", {
+								"yard.infer.attempt": attempt,
+								"yard.infer.error": outcome.error,
+								"yard.infer.raw_excerpt": excerpt,
+								"yard.infer.will_retry": willRetry,
+							});
+							ctx.logger.warn("[yard] infer() reply failed its schema", {
+								model,
+								attempt,
+								maxAttempts,
+								error: outcome.error,
+								rawExcerpt: excerpt,
+							});
+							if (!willRetry) {
+								throw new Error(
+									`${outcome.error} after ${attempt} attempt${attempt === 1 ? "" : "s"}; raw output excerpt: ${JSON.stringify(excerpt)}`,
+								);
+							}
+							content = `${prompt}\n\nYour previous reply failed: ${outcome.error}.\nPrevious reply (excerpt):\n${excerpt}\n\nReply with ONLY a JSON value that conforms to the schema above — no prose, no code fence.`;
 						}
-						const violations = validateAgainstSchema(
-							parsed,
-							request.schema as Record<string, unknown>,
-							"",
-						);
-						if (violations.length > 0) {
-							throw new Error(
-								`inference output violates the requested schema: ${violations.join("; ")}`,
-							);
-						}
-						return parsed;
 					} finally {
 						scope.semaphore.release();
 					}

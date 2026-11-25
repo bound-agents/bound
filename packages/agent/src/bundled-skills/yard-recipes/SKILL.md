@@ -23,7 +23,10 @@ The unit of substantive work is an **agent**, not a raw tool call.
   invoked model has NO tools, no filesystem, and sees nothing beyond your
   prompt and input. Asking it to "inspect the repo" or "apply edits" fails
   structurally. Use it to structure and synthesize data already in hand —
-  always with a `schema` when the result feeds another stage.
+  always with a `schema` when the result feeds another stage. A reply that
+  misses the schema gets `schema_retries` repair re-asks (default 1, max 2,
+  0 opts out) carrying the error and a raw excerpt; each miss lands on the
+  effect's trace span and its tokens count toward usage.
 - `tool(name, args)` — glue. Enumeration up front (a listing, a search),
   verification at the end (a test run). If a program's core work is a chain
   of raw `tool()` calls, that work belongs inside an `aux()` errand instead.
@@ -240,9 +243,10 @@ function* main(input) {
     // PLAN: the dispatcher decides the next round from actual results.
     // infer() has no tools — it plans purely from the data handed to it,
     // which is exactly the discipline a dispatcher should have. This step
-    // is also the run's single point of failure: one malformed planner
-    // output gets one explicit retry instead of ending the whole run
-    // (live run: a 250s invocation died whole on one schema violation).
+    // is also the run's single point of failure. infer()'s built-in
+    // schema_retries re-ask covers a malformed reply; this outer loop covers
+    // the effect failing outright (live run: a 250s invocation died whole on
+    // one schema violation, before the re-ask existed).
     let plan;
     for (let attempt = 0; ; attempt++) {
       try {
@@ -329,8 +333,11 @@ Two notes that make this shape safe at migration scale:
   20-minute serial `tool()` grind.
 - **Nested `tool("yard", ...)` with a `budget`** — rejected. Nested runs
   inherit the root deadline and concurrency unchanged.
-- **Schema violation from `infer()`** — fails the effect; there is no hidden
-  repair. Catch and retry explicitly if the stage is retryable.
+- **Schema violation from `infer()`** — the effect re-asks `schema_retries`
+  times (default 1) with the violation and a raw excerpt, then fails with
+  the last error and the excerpt. The repairs are visible in the trace, not
+  hidden. A gather step at the end of hours of aux work should still catch
+  the failure and return the partition results rather than dying whole.
 - **A reviewer errand told to "fix it directly" or own the release.** That is
   role-forcing: the reviewer judges; repairs go to an implementer
   re-dispatched with the reviewer's specific objections. Observed live: a

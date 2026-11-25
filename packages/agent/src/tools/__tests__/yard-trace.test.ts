@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { applySchema } from "@bound/core";
+import type { LLMBackend, StreamChunk } from "@bound/llm";
+import { ModelRouter } from "@bound/llm";
 import { context, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
@@ -185,5 +187,52 @@ describe("yard execution-tree trace", () => {
 		// And the child run span sits inside the parent's dispatching effect
 		// span, so the OTEL tree mirrors the yard tree.
 		expect(child.spanContext().traceId).toBe(root.spanContext().traceId);
+	});
+
+	it("records each schema repair attempt on the inference effect span", async () => {
+		let calls = 0;
+		const backend: LLMBackend = {
+			async *chat(): AsyncIterable<StreamChunk> {
+				calls++;
+				yield { type: "text", content: calls === 1 ? "prose, not json" : '{"ok": true}' };
+				yield {
+					type: "done",
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
+			},
+			capabilities: () => ({
+				streaming: true,
+				tool_use: false,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				extended_thinking: false,
+				max_context: 100_000,
+			}),
+		};
+		ctx.modelRouter = new ModelRouter(new Map([["test-model", backend]]), "test-model");
+		const raw = await invoke({
+			program: `function* main() {
+				return yield infer("test-model", { prompt: "p", schema: { type: "object" } });
+			}`,
+		});
+		expect(JSON.parse(raw).result).toEqual({ ok: true });
+
+		const effect = exporter.getFinishedSpans().find((s) => s.name === "yard.effect");
+		if (!effect) throw new Error("no effect span");
+		expect(effect.attributes["yard.effect.status"]).toBe("ok");
+		expect(effect.attributes["yard.effect.schema_attempts"]).toBe(2);
+		const misses = effect.events.filter((e) => e.name === "yard.infer.schema_miss");
+		expect(misses).toHaveLength(1);
+		expect(misses[0]?.attributes?.["yard.infer.attempt"]).toBe(1);
+		expect(String(misses[0]?.attributes?.["yard.infer.error"])).toContain("not valid JSON");
+		expect(misses[0]?.attributes?.["yard.infer.raw_excerpt"]).toBe("prose, not json");
+		expect(misses[0]?.attributes?.["yard.infer.will_retry"]).toBe(true);
 	});
 });

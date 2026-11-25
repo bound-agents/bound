@@ -309,9 +309,15 @@ describe("createYardTool", () => {
 		expect(JSON.parse(raw).result).toEqual({ label: "bug", confidence: 0.9 });
 	});
 
-	it("fails the infer() effect when output violates the schema (no hidden repair)", async () => {
+	it("fails the infer() effect once schema repair attempts are exhausted, with a raw excerpt", async () => {
+		const prompts: string[] = [];
 		ctx.modelRouter = makeRouter(
-			{ "test-model": textBackend('{"confidence": 0.9}') },
+			{
+				"test-model": textBackend((params) => {
+					prompts.push(String(params.messages[0]?.content));
+					return '{"confidence": 0.9}';
+				}),
+			},
 			"test-model",
 		);
 		const raw = await invoke({
@@ -327,7 +333,142 @@ describe("createYardTool", () => {
 				}
 			}`,
 		});
-		expect(JSON.parse(raw).result).toMatch(/caught:.*schema/i);
+		const out = JSON.parse(raw);
+		// Default schema_retries is 1: the original attempt plus one re-ask.
+		expect(prompts).toHaveLength(2);
+		expect(out.result).toMatch(/caught:.*violates the requested schema/i);
+		expect(out.result).toMatch(/after 2 attempts/);
+		expect(out.result).toContain('{\\"confidence\\": 0.9}');
+		// Both attempts' tokens are counted (15 per textBackend reply).
+		expect(out.usage.inference_tokens).toBe(30);
+		expect(out.usage.inference_calls).toBe(1);
+	});
+
+	it("re-asks once with the validation error and raw excerpt, then returns the repaired JSON", async () => {
+		const prompts: string[] = [];
+		ctx.modelRouter = makeRouter(
+			{
+				"test-model": textBackend((params) => {
+					prompts.push(String(params.messages[0]?.content));
+					return prompts.length === 1 ? "Sure! Here is the label: bug" : '{"label": "bug"}';
+				}),
+			},
+			"test-model",
+		);
+		const raw = await invoke({
+			program: `function* main() {
+				return yield infer("test-model", {
+					prompt: "Classify the issue.",
+					schema: { type: "object", properties: { label: { type: "string" } }, required: ["label"] },
+				});
+			}`,
+		});
+		const out = JSON.parse(raw);
+		expect(out.result).toEqual({ label: "bug" });
+		expect(prompts).toHaveLength(2);
+		const reask = prompts[1] ?? "";
+		// The re-ask re-sends the original request...
+		expect(reask).toContain("Classify the issue.");
+		expect(reask).toContain("JSON Schema");
+		// ...plus why the previous reply failed and what it said.
+		expect(reask).toContain("Your previous reply failed:");
+		expect(reask).toContain("not valid JSON");
+		expect(reask).toContain("Sure! Here is the label: bug");
+		expect(reask).toMatch(/reply with ONLY a JSON value/i);
+		expect(out.usage.inference_tokens).toBe(30);
+	});
+
+	it("passes the validator's violations into the re-ask", async () => {
+		const prompts: string[] = [];
+		ctx.modelRouter = makeRouter(
+			{
+				"test-model": textBackend((params) => {
+					prompts.push(String(params.messages[0]?.content));
+					return prompts.length === 1 ? '{"confidence": 0.9}' : '{"label": "bug"}';
+				}),
+			},
+			"test-model",
+		);
+		const raw = await invoke({
+			program: `function* main() {
+				return yield infer("test-model", {
+					prompt: "Classify.",
+					schema: { type: "object", properties: { label: { type: "string" } }, required: ["label"] },
+				});
+			}`,
+		});
+		expect(JSON.parse(raw).result).toEqual({ label: "bug" });
+		expect(prompts[1]).toContain("violates the requested schema");
+		expect(prompts[1]).toContain("label");
+	});
+
+	it("makes a single attempt when schema_retries is 0", async () => {
+		let calls = 0;
+		ctx.modelRouter = makeRouter(
+			{
+				"test-model": textBackend(() => {
+					calls++;
+					return "not json";
+				}),
+			},
+			"test-model",
+		);
+		const raw = await invoke({
+			program: `function* main() {
+				try {
+					yield infer("test-model", { prompt: "p", schema: { type: "object" }, schema_retries: 0 });
+					return "unreachable";
+				} catch (e) {
+					return "caught: " + e.message;
+				}
+			}`,
+		});
+		const out = JSON.parse(raw);
+		expect(calls).toBe(1);
+		expect(out.result).toMatch(/caught:.*not valid JSON.*after 1 attempt\b/);
+		expect(out.result).toContain("not json");
+	});
+
+	it("honors schema_retries: 2 and ignores it without a schema", async () => {
+		let calls = 0;
+		ctx.modelRouter = makeRouter(
+			{
+				"test-model": textBackend(() => {
+					calls++;
+					return "not json";
+				}),
+			},
+			"test-model",
+		);
+		const raw = await invoke({
+			program: `function* main() {
+				const text = yield infer("test-model", { prompt: "p", schema_retries: 2 });
+				try {
+					yield infer("test-model", { prompt: "p", schema: { type: "object" }, schema_retries: 2 });
+				} catch (e) {
+					return text + " | " + e.message;
+				}
+			}`,
+		});
+		expect(calls).toBe(4);
+		expect(JSON.parse(raw).result).toMatch(/^not json \| .*after 3 attempts/);
+	});
+
+	it("rejects an out-of-range schema_retries at construction", async () => {
+		const raw = await invoke({
+			program: `function* main() {
+				const errors = [];
+				for (const n of [3, -1, 1.5, "1"]) {
+					try { infer("test-model", { prompt: "p", schema: {}, schema_retries: n }); errors.push("ok"); }
+					catch (e) { errors.push(e.message); }
+				}
+				return errors;
+			}`,
+		});
+		const result = JSON.parse(raw).result as string[];
+		expect(result).toHaveLength(4);
+		for (const message of result)
+			expect(message).toMatch(/schema_retries must be an integer from 0 to 2/);
 	});
 
 	it("fails an infer() naming an unknown model", async () => {
