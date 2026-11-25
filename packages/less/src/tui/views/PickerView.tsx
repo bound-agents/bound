@@ -1,4 +1,4 @@
-import { type BoundClient, sortClusterModelsById } from "@bound/client";
+import type { BoundClient } from "@bound/client";
 import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
@@ -68,15 +68,19 @@ export function PickerView({
 					);
 				} else if (mode === "model") {
 					const response = await client.listModels();
-					setItems(
-						sortClusterModelsById(response.models).map((m) => ({
-							// Select the logical model (spec §9.1); older servers omit it.
-							id: m.logical_model ?? m.id,
-							// Show the user-facing display name (spec §2.1), never the internal id.
-							// Older servers omit display_name; fall back to the model id.
-							label: m.display_name ?? m.id,
-						})),
+					const seen = new Set<string>();
+					const modelItems: PickerItem[] = [];
+					for (const m of response.models) {
+						const id = m.logical_model ?? m.id;
+						if (seen.has(id)) continue;
+						seen.add(id);
+						modelItems.push({ id, label: m.display_name ?? m.id });
+					}
+					// Alphabetical by display name, case-insensitive; never trust server order.
+					modelItems.sort((a, b) =>
+						a.label.localeCompare(b.label, undefined, { sensitivity: "base" }),
 					);
+					setItems(modelItems);
 				}
 			} catch (err) {
 				setError(err instanceof Error ? err.message : "Failed to load items");

@@ -181,7 +181,7 @@ describe("PickerView thread labels", () => {
 });
 
 describe("PickerView model order", () => {
-	it("renders model IDs in ACP's descending lexical order", async () => {
+	it("renders models alphabetically by display name, case-insensitive", async () => {
 		const mockClient = {
 			listThreads: vi.fn(),
 			listModels: vi.fn().mockResolvedValue({
@@ -196,7 +196,7 @@ describe("PickerView model order", () => {
 					},
 					{
 						id: "gpt-5.6",
-						display_name: "gpt-5.6",
+						display_name: "GPT-5.6",
 						host: "local",
 						provider: "x",
 						via: "local",
@@ -204,7 +204,7 @@ describe("PickerView model order", () => {
 					},
 					{
 						id: "fable",
-						display_name: "fable",
+						display_name: "Fable",
 						host: "local",
 						provider: "x",
 						via: "local",
@@ -224,7 +224,8 @@ describe("PickerView model order", () => {
 		);
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		const frame = lastFrame() ?? "";
-		expect(frame.indexOf("gpt-5.6")).toBeLessThan(frame.indexOf("fable"));
+		expect(frame.indexOf("claude-opus")).toBeLessThan(frame.indexOf("Fable"));
+		expect(frame.indexOf("Fable")).toBeLessThan(frame.indexOf("GPT-5.6"));
 		expect(frame.indexOf("fable")).toBeLessThan(frame.indexOf("claude-opus"));
 	});
 });

@@ -1,6 +1,7 @@
-import { Box, Text, useInput, useStdout } from "ink";
+import { Box, Text, useInput } from "ink";
 import type React from "react";
 import { useState } from "react";
+import { useTerminalSize } from "../hooks/useTerminalSize";
 import { tokens } from "../theme";
 
 export interface SelectListProps<T> {
@@ -41,9 +42,11 @@ export function SelectList<T>({
 	pageSize,
 	reservedRows = DEFAULT_RESERVED_ROWS,
 }: SelectListProps<T>): React.ReactElement {
-	const [selectedIndex, setSelectedIndex] = useState(0);
-	const { stdout } = useStdout();
-	const terminalRows = stdout?.rows ?? 24;
+	const [rawIndex, setSelectedIndex] = useState(0);
+	// Clamp after the list shrinks so the cursor always stays visible.
+	const selectedIndex = Math.min(rawIndex, Math.max(0, items.length - 1));
+	// Re-renders on terminal resize so the window tracks the new height.
+	const { rows: terminalRows } = useTerminalSize();
 
 	// Auto-size to terminal if no explicit pageSize given. Reserve rows for
 	// chrome, clamp to [MIN, MAX], and account for the ↑/↓ "more" indicators
@@ -83,10 +86,15 @@ export function SelectList<T>({
 
 	const hasMoreAbove = start > 0;
 	const hasMoreBelow = end < total;
+	// A windowed list always reserves both indicator rows so its height never
+	// changes while navigating (a changing height reflows the whole screen).
+	const windowed = total > windowSize;
 
 	return (
 		<Box flexDirection="column">
-			{hasMoreAbove && <Text color={tokens.scrollIndicator}>↑ {start} more above</Text>}
+			{windowed && (
+				<Text color={tokens.scrollIndicator}>{hasMoreAbove ? `↑ ${start} more` : " "}</Text>
+			)}
 			{visible.map((item, i) => {
 				const absoluteIndex = start + i;
 				const rendered = renderItem(item, absoluteIndex === selectedIndex);
@@ -102,7 +110,9 @@ export function SelectList<T>({
 					</Box>
 				);
 			})}
-			{hasMoreBelow && <Text color={tokens.scrollIndicator}>↓ {total - end} more below</Text>}
+			{windowed && (
+				<Text color={tokens.scrollIndicator}>{hasMoreBelow ? `↓ ${total - end} more` : " "}</Text>
+			)}
 		</Box>
 	);
 }
