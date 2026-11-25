@@ -101,7 +101,7 @@ describe("TreeNode", () => {
 		expect(target.querySelector(".node")?.classList.contains("selected")).toBe(true);
 	});
 
-	it("clicking a dir with subfolders selects it and toggles expansion", async () => {
+	it("clicking an unselected dir with subfolders selects it without toggling", async () => {
 		const node = dir("src", "src", [dir("lib", "src/lib")]);
 		const selected: string[] = [];
 		const toggled: string[] = [];
@@ -110,6 +110,23 @@ describe("TreeNode", () => {
 			expandedPaths: new SvelteSet<string>(),
 			toggleExpanded: (p: string) => toggled.push(p),
 			selectedPath: "",
+			onSelectDirectory: (p: string) => selected.push(p),
+		});
+		const el = target.querySelector(".node") as HTMLElement;
+		await dom?.fire(el, "click");
+		expect(selected).toEqual(["src"]);
+		expect(toggled).toEqual([]);
+	});
+
+	it("clicking the selected dir with subfolders toggles expansion", async () => {
+		const node = dir("src", "src", [dir("lib", "src/lib")]);
+		const selected: string[] = [];
+		const toggled: string[] = [];
+		const { target } = await mount({
+			node,
+			expandedPaths: new SvelteSet<string>(["src"]),
+			toggleExpanded: (p: string) => toggled.push(p),
+			selectedPath: "src",
 			onSelectDirectory: (p: string) => selected.push(p),
 		});
 		const el = target.querySelector(".node") as HTMLElement;

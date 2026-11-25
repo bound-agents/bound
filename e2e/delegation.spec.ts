@@ -1,262 +1,75 @@
-import { expect, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
+import { json } from "./helpers/mocks";
 
-// Skip E2E tests if SKIP_E2E env var is set
-const skipE2E = process.env.SKIP_E2E === "1";
+// The thread header's status chip, "Thinking…" label, and Cancel button are
+// driven by GET /api/threads/:id/status, which reflects work running on any
+// host (a delegated turn shows as active here). Mock that endpoint so the
+// tests are deterministic.
 
-test.describe.configure({ mode: skipE2E ? "skip" : "default" });
+interface Status {
+	active: boolean;
+	state: string | null;
+	model: string;
+}
 
-test.describe("Delegation Status and Cancel", () => {
-	test("7a: status indicator shows remote processing (AC6.3)", async ({ page }) => {
-		// Navigate to the chat page
-		await page.goto("/");
+async function createThread(page: Page): Promise<string> {
+	const res = await page.request.post("/api/threads", { data: {} });
+	expect(res.ok()).toBeTruthy();
+	const body = (await res.json()) as { id: string };
+	return body.id;
+}
 
-		// Create a thread via API for testing
-		const createResponse = await page.evaluate(() =>
-			fetch("/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			})
-				.then((res) => res.json())
-				.catch(() => null),
-		);
+async function mockStatus(page: Page, threadId: string, status: () => Status): Promise<void> {
+	await page.route(`**/api/threads/${threadId}/status`, (route) =>
+		json(route, { ...status(), detail: null, tokens: 0 }),
+	);
+}
 
-		if (!createResponse?.id) {
-			throw new Error("Failed to create thread for testing");
-		}
+test.describe("Delegation status and cancel", () => {
+	test("7a: header shows the agent working while a remote turn runs (AC6.3)", async ({ page }) => {
+		const threadId = await createThread(page);
+		let current: Status = { active: true, state: "thinking", model: "remote-model" };
+		await mockStatus(page, threadId, () => current);
 
-		const threadId = createResponse.id;
+		await page.goto(`/#/line/${threadId}`);
+		await expect(page.getByText("On duty").first()).toBeVisible();
+		await expect(page.getByText("Thinking…")).toBeVisible();
 
-		// Intercept /api/threads/{id}/status to return delegated processing status
-		let statusCallCount = 0;
-		await page.route(`**/api/threads/${threadId}/status`, async (route) => {
-			statusCallCount++;
-
-			// First call: return thinking status (delegation in progress)
-			if (statusCallCount === 1) {
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify({
-						active: true,
-						state: "thinking",
-						detail: null,
-						tokens: 0,
-						model: "remote-model",
-					}),
-				});
-			} else {
-				// Subsequent calls: return idle status (delegation complete)
-				await route.fulfill({
-					status: 200,
-					contentType: "application/json",
-					body: JSON.stringify({
-						active: false,
-						state: "idle",
-						detail: null,
-						tokens: 0,
-						model: "remote-model",
-					}),
-				});
-			}
-		});
-
-		// Navigate to the thread
-		await page.goto(`/line/${threadId}`);
-
-		// Wait for initial load
-		await page.waitForLoadState("networkidle");
-
-		// Send a message to trigger delegation
-		const messageInput = page
-			.locator("input[placeholder*='message'], textarea[placeholder*='message']")
-			.first();
-
-		if ((await messageInput.count()) > 0) {
-			await messageInput.fill("Test delegation");
-			const sendButton = page
-				.locator("button:has-text('Send'), button[aria-label*='send']")
-				.first();
-			if ((await sendButton.count()) > 0) {
-				await sendButton.click();
-			}
-		}
-
-		// Wait a bit for the status to be requested
-		await page.waitForTimeout(500);
-
-		// Verify that the status endpoint was called with thinking status
-		expect(statusCallCount).toBeGreaterThanOrEqual(1);
-
-		// Check for thinking/live indicator in the UI
-		// This could be a badge, spinner, or status text
-		const thinkingIndicators = page.locator(
-			"text=/LIVE|thinking|processing|remote/i, [aria-label*='thinking'], [data-testid*='status']",
-		);
-
-		// Wait a bit and verify idle status appears
-		await page.waitForTimeout(500);
-
-		// The status should eventually show as idle/complete
-		// (or the thinking indicator should disappear)
-		await expect(thinkingIndicators.first())
-			.toBeVisible({ timeout: 2000 })
-			.catch(() => {
-				// It's OK if the indicator is not visible — the test validates that status calls were made
-			});
+		// The remote turn finishes; the next status poll returns the thread to idle.
+		current = { active: false, state: "idle", model: "remote-model" };
+		await expect(page.getByText("Idle", { exact: true }).first()).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByText("Thinking…")).toHaveCount(0);
 	});
 
-	test("7b: cancel button sends cancel to delegated host (AC6.4)", async ({ page }) => {
-		// Navigate to the chat page
-		await page.goto("/");
+	test("7b: cancel button posts a cancel for the thread (AC6.4)", async ({ page }) => {
+		const threadId = await createThread(page);
+		await mockStatus(page, threadId, () => ({
+			active: true,
+			state: "thinking",
+			model: "remote-model",
+		}));
 
-		// Create a thread via API
-		const createResponse = await page.evaluate(() =>
-			fetch("/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			})
-				.then((res) => res.json())
-				.catch(() => null),
-		);
-
-		if (!createResponse?.id) {
-			throw new Error("Failed to create thread for testing");
-		}
-
-		const threadId = createResponse.id;
-
-		// Intercept status calls to return active delegation
-		await page.route(`**/api/threads/${threadId}/status`, async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({
-					active: true,
-					state: "thinking",
-					detail: null,
-					tokens: 0,
-					model: "remote-model",
-				}),
-			});
+		let cancelledId: string | null = null;
+		await page.route("**/api/status/cancel/**", (route) => {
+			cancelledId = route.request().url().split("/").pop() ?? null;
+			return json(route, { cancelled: true });
 		});
 
-		// Track cancel requests
-		let cancelCalled = false;
-		let cancelThreadId: string | null = null;
-
-		await page.route("**/api/status/cancel/**", async (route) => {
-			cancelCalled = true;
-			cancelThreadId = route.request().url().split("/").pop() || null;
-			await route.fulfill({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({ cancelled: true }),
-			});
-		});
-
-		// Navigate to the thread
-		await page.goto(`/line/${threadId}`);
-
-		// Wait for the page to load
-		await page.waitForLoadState("networkidle");
-
-		// Find and click the cancel button
-		const cancelButton = page
-			.locator(
-				"button:has-text('Cancel'), button[aria-label*='cancel'], button[data-testid*='cancel']",
-			)
-			.first();
-
-		if ((await cancelButton.count()) > 0) {
-			await cancelButton.click();
-
-			// Wait for the cancel request to be made
-			await page.waitForTimeout(500);
-
-			// Verify cancel endpoint was called
-			expect(cancelCalled).toBeTruthy();
-			expect(cancelThreadId).toBe(threadId);
-		} else {
-			// If no cancel button is visible, try to trigger it via keyboard shortcut
-			// or verify the endpoint exists
-			const cancelEndpointExists = await page.evaluate(() =>
-				fetch(`/api/status/cancel/${threadId}`, { method: "POST" })
-					.then((res) => res.status === 200)
-					.catch(() => false),
-			);
-
-			expect(cancelEndpointExists).toBeTruthy();
-		}
+		await page.goto(`/#/line/${threadId}`);
+		const cancel = page.getByRole("button", { name: "Cancel" });
+		await expect(cancel).toBeVisible();
+		await cancel.click();
+		await expect.poll(() => cancelledId).toBe(threadId);
 	});
 
-	test("7c: no delegation when conditions unmet (AC6.5)", async ({ page }) => {
-		// Navigate to the chat page
-		await page.goto("/");
+	test("7c: idle local thread shows no working state or error (AC6.5)", async ({ page }) => {
+		const threadId = await createThread(page);
+		await mockStatus(page, threadId, () => ({ active: false, state: "idle", model: "local" }));
 
-		// Create a thread via API
-		const createResponse = await page.evaluate(() =>
-			fetch("/api/threads", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({}),
-			})
-				.then((res) => res.json())
-				.catch(() => null),
-		);
-
-		if (!createResponse?.id) {
-			throw new Error("Failed to create thread for testing");
-		}
-
-		const threadId = createResponse.id;
-
-		// Intercept status calls to return non-delegated local processing
-		await page.route(`**/api/threads/${threadId}/status`, async (route) => {
-			await route.fulfill({
-				status: 200,
-				contentType: "application/json",
-				body: JSON.stringify({
-					active: false,
-					state: "idle",
-					detail: null,
-					tokens: 0,
-					model: "local-model",
-				}),
-			});
-		});
-
-		// Navigate to the thread
-		await page.goto(`/line/${threadId}`);
-
-		// Wait for the page to load
-		await page.waitForLoadState("networkidle");
-
-		// Send a message with local model (no delegation expected)
-		const messageInput = page
-			.locator("input[placeholder*='message'], textarea[placeholder*='message']")
-			.first();
-
-		if ((await messageInput.count()) > 0) {
-			await messageInput.fill("Test local processing");
-			const sendButton = page
-				.locator("button:has-text('Send'), button[aria-label*='send']")
-				.first();
-			if ((await sendButton.count()) > 0) {
-				await sendButton.click();
-			}
-		}
-
-		// Wait for response
-		await page.waitForTimeout(1000);
-
-		// Verify the response appears normally (no delegation failure)
-		// Check for message in the thread or lack of error state
-		const errorIndicators = page.locator("text=/error|failed|delegation/i, [role='alert']");
-
-		// The error indicators should not be present (or should be minimal)
-		const errorCount = await errorIndicators.count();
-		expect(errorCount).toBeLessThanOrEqual(0);
+		await page.goto(`/#/line/${threadId}`);
+		await expect(page.getByText("Idle", { exact: true }).first()).toBeVisible();
+		await expect(page.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+		await expect(page.getByText("Thinking…")).toHaveCount(0);
+		await expect(page.getByRole("alert")).toHaveCount(0);
 	});
 });

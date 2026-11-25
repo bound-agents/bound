@@ -166,7 +166,7 @@
 					<div class="breadcrumbs">
 						<button class="crumb" onclick={() => navigateToDirectory("/")}>/</button>
 						{#each breadcrumbSegments as seg, i}
-							{@const path = "/" + breadcrumbSegments.slice(0, i + 1).join("/")}
+							{@const path = breadcrumbSegments.slice(0, i + 1).join("/")}
 							{@const last = i === breadcrumbSegments.length - 1}
 							<button class="crumb" class:last onclick={() => navigateToDirectory(path)}>
 								{seg}

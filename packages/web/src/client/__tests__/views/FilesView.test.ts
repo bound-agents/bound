@@ -233,6 +233,10 @@ describe("FilesView", () => {
 		expect(outerNode).toBeDefined();
 		// Expanded on load (expandAllRecursive) — arrow shows ▼.
 		expect(outerNode.querySelector(".arrow")?.textContent?.trim()).toBe("\u25bc");
+		// First click selects the directory and keeps it expanded.
+		await dom.fire(outerNode, "click");
+		expect(outerNode.querySelector(".arrow")?.textContent?.trim()).toBe("\u25bc");
+		// Clicking the already-selected directory collapses it.
 		await dom.fire(outerNode, "click");
 		// toggleExpanded removed the path → arrow flips to ▶.
 		const outerAfter = Array.from(sidebar.querySelectorAll(".node")).find(

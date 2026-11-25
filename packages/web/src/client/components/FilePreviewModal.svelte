@@ -6,6 +6,14 @@
 	import type { FileMetadata } from "../lib/file-tree";
 	import { mermaid } from "../lib/mermaid";
 
+	// Re-parent to the app root so the modal escapes Page's stacking context
+	// (z-index 2, below the top bar) while staying inside Svelte's event root.
+	function portal(node: HTMLElement) {
+		const root = document.getElementById("app");
+		if (root) root.appendChild(node);
+		return { destroy: () => node.remove() };
+	}
+
 	interface Props {
 		file: FileMetadata;
 		onClose: () => void;
@@ -140,7 +148,7 @@
 	}
 </script>
 
-<div class="modal-backdrop">
+<div class="modal-backdrop" use:portal>
 	<button class="backdrop-close" onclick={onClose} aria-label="Close file preview" tabindex={-1}
 	></button>
 	<div

@@ -47,8 +47,8 @@ jobs:
       - name: Build web
         run: bun run --cwd packages/web build
 
-      - name: Playwright geometry/UI specs
-        run: bun run test:e2e -- e2e/model-selector.spec.ts e2e/settings-models.spec.ts e2e/metrics-charts.spec.ts
+      - name: Playwright E2E suite
+        run: bun run test:e2e
 
       - name: Upload Playwright traces and screenshots
         if: failure()

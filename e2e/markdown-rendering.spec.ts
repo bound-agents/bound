@@ -130,10 +130,10 @@ test.describe("Markdown rendering in MessageBubble", () => {
 		});
 
 		await page.goto(`/#/line/${threadId}`);
-		await page.waitForSelector(".tool_call", { timeout: 10000 });
-
-		// Must NOT have a .md-content div for tool_call
-		await expect(page.locator(".tool_call .md-content")).toHaveCount(0);
+		// Tool calls render through ToolCallCard; non-tool_use content falls back to a raw <pre>.
+		const card = page.locator(".tool-call-card");
+		await expect(card.locator("pre.raw-fallback")).toContainText("read_file");
+		await expect(card.locator(".md-content")).toHaveCount(0);
 	});
 
 	// AC1.6 — system message is NOT markdown-rendered
@@ -282,17 +282,20 @@ test.describe("Markdown rendering in MessageBubble", () => {
 				body: makeMessageFixture(
 					threadId,
 					"assistant",
-					"<thinking>reasoning here</thinking>Answer text",
+					JSON.stringify([
+						{ type: "thinking", thinking: "reasoning here" },
+						{ type: "text", text: "Answer text" },
+					]),
 				),
 			});
 		});
 
 		await page.goto(`/#/line/${threadId}`);
-		await page.waitForSelector(".md-content .thinking-block", {
-			timeout: 10000,
-		});
-
-		const borderWidth = await page.locator(".md-content .thinking-block").evaluate((el) => {
+		// Structured thinking blocks render as a collapsible ReasoningBlock.
+		await page.locator(".reasoning-toggle").click();
+		const body = page.locator(".reasoning-body");
+		await expect(body).toContainText("reasoning here");
+		const borderWidth = await body.evaluate((el) => {
 			return Number.parseFloat(window.getComputedStyle(el).borderLeftWidth);
 		});
 
@@ -313,15 +316,38 @@ test.describe("Markdown rendering in MessageBubble", () => {
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
-				body: makeMessageFixture(threadId, "tool_result", "**not rendered** as markdown", null),
+				// tool_result rows surface inline under their originating tool_use in ToolCallCard.
+				body: JSON.stringify([
+					{
+						id: "msg-call",
+						role: "tool_call",
+						content: JSON.stringify([
+							{ type: "tool_use", id: "tu-1", name: "read_file", input: { path: "/x" } },
+						]),
+						model_id: "test-model",
+						thread_id: threadId,
+						created_at: new Date().toISOString(),
+						tool_name: null,
+					},
+					{
+						id: "msg-result",
+						role: "tool_result",
+						content: "**not rendered** as markdown",
+						model_id: null,
+						thread_id: threadId,
+						created_at: new Date().toISOString(),
+						tool_name: "tu-1",
+					},
+				]),
 			});
 		});
 
 		await page.goto(`/#/line/${threadId}`);
-		await page.waitForSelector(".tool_result", { timeout: 10000 });
-
-		// Must NOT have a .md-content div for tool_result
-		await expect(page.locator(".tool_result .md-content")).toHaveCount(0);
+		const card = page.locator(".tool-call-card");
+		await card.locator(".tg-header").click();
+		await card.locator(".tool-row-header").first().click();
+		await expect(card.getByText("**not rendered** as markdown")).toBeVisible();
+		await expect(card.locator("strong", { hasText: "not rendered" })).toHaveCount(0);
 	});
 
 	// AC1.5 — alert is NOT markdown-rendered

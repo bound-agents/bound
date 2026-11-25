@@ -32,8 +32,11 @@
 
 	function handleClick(): void {
 		if (isDir) {
+			// Selecting a directory expands it (navigation expands its ancestors and
+			// itself); only a click on the already-selected directory collapses it.
+			const wasSelected = isSelected;
 			onSelectDirectory(node.fullPath);
-			if (hasSubfolders) toggleExpanded(node.fullPath);
+			if (hasSubfolders && wasSelected) toggleExpanded(node.fullPath);
 		}
 	}
 </script>

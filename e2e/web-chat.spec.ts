@@ -14,7 +14,9 @@ test.describe("Web Chat E2E", () => {
 		await expect(body).toBeDefined();
 
 		// Just check that the page loads without error
-		expect(page.url()).toContain("localhost:3000");
+		expect(new URL(page.url()).origin).toBe(
+			new URL(test.info().project.use.baseURL ?? page.url()).origin,
+		);
 	});
 
 	test("should create a new thread", async ({ page }) => {
@@ -36,7 +38,9 @@ test.describe("Web Chat E2E", () => {
 		}
 
 		// Verify we're still on the app
-		expect(page.url()).toContain("localhost:3000");
+		expect(new URL(page.url()).origin).toBe(
+			new URL(test.info().project.use.baseURL ?? page.url()).origin,
+		);
 	});
 
 	test("should navigate between views", async ({ page }) => {
