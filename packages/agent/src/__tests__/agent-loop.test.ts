@@ -1108,13 +1108,26 @@ describe("MainAgentLoop", () => {
 	it("R-RT13: a 401 attempts token refresh FIRST; a successful refresh does NOT back off the route", async () => {
 		// A live 401 means the provider rejected the current token. The loop asks the
 		// driver's refreshAuth hook to rotate credentials before tripping backoff; a
-		// successful rotation leaves the route healthy so a retry re-sends.
+		// successful rotation leaves the route healthy and the turn re-sends on the
+		// same route with the rotated token (#265).
 		const { LLMError } = await import("@bound/llm");
 		let refreshCalls = 0;
+		let chatCalls = 0;
 		const backend: LLMBackend = {
-			// biome-ignore lint/correctness/useYield: throws before first yield
 			async *chat() {
-				throw new LLMError("unauthorized", "test-provider", 401);
+				chatCalls++;
+				if (chatCalls === 1) throw new LLMError("unauthorized", "test-provider", 401);
+				yield { type: "text" as const, content: "after refresh" };
+				yield {
+					type: "done" as const,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				};
 			},
 			capabilities: () => ({
 				streaming: true,
@@ -1135,9 +1148,11 @@ describe("MainAgentLoop", () => {
 			threadId,
 			userId: "test-user",
 		});
-		await agentLoop.run();
+		const result = await agentLoop.run();
 
 		expect(refreshCalls).toBe(1); // refresh attempted before backoff
+		expect(chatCalls).toBe(2); // the same route re-sent with the rotated token
+		expect(result.error).toBeUndefined();
 		// Refresh succeeded → route NOT backed off, and no auth advisory raised.
 		expect(router.getRouteHealthState("claude-opus").status).toBe("healthy");
 		const advisories = db

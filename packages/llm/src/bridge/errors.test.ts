@@ -174,3 +174,114 @@ describe("mapError — Gemini Interactions API safety blocks (R-RT15)", () => {
 		expect(mapped).not.toBeInstanceOf(LLMRefusalError);
 	});
 });
+
+describe("mapError usage-limit reset times (#265)", () => {
+	const NOW = Date.parse("2026-11-25T12:00:00Z");
+	const realNow = Date.now;
+	function withNow<T>(fn: () => T): T {
+		Date.now = () => NOW;
+		try {
+			return fn();
+		} finally {
+			Date.now = realNow;
+		}
+	}
+
+	it("surfaces a Codex usage_limit_reached resets_at body as resetsAt + retryAfterMs", () => {
+		const resetsAt = Math.floor(NOW / 1000) + 3600;
+		const mapped = withNow(() =>
+			mapError(
+				apiCallError({
+					message: "Too Many Requests",
+					statusCode: 429,
+					responseBody: JSON.stringify({
+						error: {
+							type: "usage_limit_reached",
+							message: "The usage limit has been reached",
+							resets_at: resetsAt,
+						},
+					}),
+				}),
+				"chatgpt-oauth",
+			),
+		);
+		expect(mapped.resetsAt).toBe(resetsAt * 1000);
+		expect(mapped.retryAfterMs).toBe(3_600_000);
+		expect(mapped.message).toContain("resets at 2026-11-25T13:00:00.000Z");
+	});
+
+	it("reads resets_in_seconds when no absolute reset is present", () => {
+		const mapped = withNow(() =>
+			mapError(
+				apiCallError({
+					message: "Too Many Requests",
+					statusCode: 429,
+					responseBody: JSON.stringify({ error: { resets_in_seconds: 120 } }),
+				}),
+				"chatgpt-oauth",
+			),
+		);
+		expect(mapped.resetsAt).toBe(NOW + 120_000);
+		expect(mapped.retryAfterMs).toBe(120_000);
+	});
+
+	it("reads an anthropic-ratelimit-*-reset header", () => {
+		const mapped = withNow(() =>
+			mapError(
+				apiCallError({
+					message: "rate_limit_error",
+					statusCode: 429,
+					responseHeaders: { "anthropic-ratelimit-requests-reset": "2026-11-25T12:05:00Z" },
+				}),
+				"anthropic",
+			),
+		);
+		expect(mapped.resetsAt).toBe(Date.parse("2026-11-25T12:05:00Z"));
+		expect(mapped.retryAfterMs).toBe(300_000);
+	});
+
+	it("parses a z.AI-style 'reset at <timestamp>' quota message", () => {
+		const mapped = withNow(() =>
+			mapError(
+				apiCallError({
+					message: "Too Many Requests",
+					statusCode: 429,
+					responseBody: JSON.stringify({
+						error: {
+							code: "1308",
+							message:
+								"Usage limit reached for 5 hour. Your limit will reset at 2026-11-25 14:30:00",
+						},
+					}),
+				}),
+				"zai",
+			),
+		);
+		expect(mapped.resetsAt).toBeDefined();
+		expect(mapped.retryAfterMs).toBeGreaterThan(0);
+	});
+
+	it("keeps an explicit Retry-After over a parsed reset time", () => {
+		const mapped = withNow(() =>
+			mapError(
+				apiCallError({
+					message: "Too Many Requests",
+					statusCode: 429,
+					responseHeaders: { "retry-after": "30" },
+					responseBody: JSON.stringify({ error: { resets_in_seconds: 9000 } }),
+				}),
+				"chatgpt-oauth",
+			),
+		);
+		expect(mapped.retryAfterMs).toBe(30_000);
+		expect(mapped.resetsAt).toBe(NOW + 9_000_000);
+	});
+
+	it("leaves resetsAt undefined when the provider sends nothing", () => {
+		const mapped = mapError(
+			apiCallError({ message: "Internal Server Error", statusCode: 500 }),
+			"zai",
+		);
+		expect(mapped.resetsAt).toBeUndefined();
+	});
+});

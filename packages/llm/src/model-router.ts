@@ -433,7 +433,15 @@ export class ModelRouter {
 			if (hintMatchesLogicalModel(hint, logical, normalizeModelKey)) matches.push(id);
 		}
 		if (matches.length === 0) return null;
-		matches.sort();
+		// Deterministic lexical tie-break, but a route in backoff ranks behind every
+		// available route for the same logical model, so a failed route hands the
+		// model to its next local sibling instead of masking it (§5.1/§7.1, #265).
+		// With every route healthy the order is the plain lexical one.
+		matches.sort((a, b) => {
+			const cooledA = this.isRateLimited(a) ? 1 : 0;
+			const cooledB = this.isRateLimited(b) ? 1 : 0;
+			return cooledA - cooledB || (a < b ? -1 : a > b ? 1 : 0);
+		});
 		return matches[0];
 	}
 

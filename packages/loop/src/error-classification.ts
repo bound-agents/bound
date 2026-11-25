@@ -1,4 +1,4 @@
-import { LLMError } from "@bound/llm";
+import { LLMError, LLMRefusalError } from "@bound/llm";
 
 /**
  * Determines whether an LLM error is a transient transport issue worth retrying.
@@ -118,4 +118,15 @@ export function classifyRouteError(error: unknown): RouteErrorClassification {
 	// A 4xx other than 400/401/403/402/429 (e.g. 404/422) is a hard client error;
 	// classify as driver_bug so it backs off and advises rather than looping.
 	return "driver_bug";
+}
+
+/**
+ * Whether an error is a route failure that warrants same-model failover
+ * (spec §7.1): every classified kind — rate limit, 402/quota, auth, 5xx,
+ * driver-bug 400, transport. A model refusal (R-RT15) is NOT a route failure:
+ * the request reached the model and a safety classifier declined it, so it
+ * never backs a route off or fails over.
+ */
+export function isRouteFailure(error: unknown): boolean {
+	return !(error instanceof LLMRefusalError);
 }

@@ -14,7 +14,7 @@ import { MainAgentLoop } from "../agent-loop";
  *     no-session error, remote relay),
  *   - relayDeferredClientTool's request-write failure and timeout branches,
  *   - onModelErrorTerminal's partial-response salvage,
- *   - onRateLimitError's same-tier fallback.
+ *   - onRouteFailure same-model failover.
  * All paths run through run() against a real DB, real event bus, and a mock
  * backend. No loop method body is stubbed.
  */
@@ -295,7 +295,7 @@ describe("MainAgentLoop.relayDeferredClientTool (remote session host)", () => {
 	});
 });
 
-describe("MainAgentLoop.onRateLimitError (no cross-model substitution)", () => {
+describe("MainAgentLoop.onRouteFailure (no cross-model substitution)", () => {
 	it("does NOT substitute a different model when the hinted model is absent (R-RT7/R-RT8)", async () => {
 		// Under the routing redesign a route failure only fails over to other
 		// routes for the SAME logical model; a model whose routes are all down

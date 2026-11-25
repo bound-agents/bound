@@ -231,7 +231,19 @@ trial when a route's backoff expires. A route is in one of three states:
 and waits before trying again. The wait starts at 30 seconds and doubles on each further
 failure — 30 seconds, one minute, two minutes, and so on — up to a ceiling of four hours.
 When a rate-limited provider sends a `Retry-After`, the host waits exactly that long
-instead of the doubling schedule.
+instead of the doubling schedule. When a provider reports when a usage limit resets
+(reset headers, a `resets_at` field, or a "will reset at" message, as ChatGPT, z.AI,
+and OpenCode Go send), the route backs off until that moment and the error text
+carries the reset time.
+
+Every route failure backs the failed route off and moves the turn to the next ranked
+route for the same model within that turn: rate limits (`429`/`529`), payment or quota
+exhaustion (`402` or a quota message), authentication failures (`401`/`403`), server
+errors (`5xx`), malformed-request `400`s that are not refusals, and transport errors.
+Server and transport errors first retry the same route a few times, so a brief blip
+keeps the thread's prompt cache. A route that already failed in the current turn is
+never retried in it. When every route fails, the surfaced error lists each route and
+its own cause in order. A model refusal is not a route failure and never fails over.
 
 **Half-open** is the recovery probe. When the wait expires, the route becomes a candidate
 again, but only for a real turn from a new or cold-cache thread — never a warm thread that

@@ -37,7 +37,15 @@ export function mapError(err: unknown, provider: string): LLMError {
 	const statusCode = e?.statusCode ?? e?.status ?? e?.$metadata?.httpStatusCode;
 	const retryAfterHeader =
 		e?.responseHeaders?.["retry-after"] ?? e?.responseHeaders?.["Retry-After"];
-	const retryAfterMs = retryAfterHeader ? parseRetryAfter(retryAfterHeader) : undefined;
+	const explicitRetryAfterMs = retryAfterHeader ? parseRetryAfter(retryAfterHeader) : undefined;
+	// Usage-limit reset time (#265): providers report when a cap lifts through
+	// reset headers or the error body. It backs the route off until the cap
+	// lifts when no Retry-After was sent, and is surfaced in the message.
+	const now = Date.now();
+	const resetsAt =
+		parseResetHeaders(e?.responseHeaders, now) ?? parseResetFromBody(e?.responseBody, now);
+	const retryAfterMs =
+		explicitRetryAfterMs ?? (resetsAt !== undefined ? Math.max(0, resetsAt - now) : undefined);
 	// The AI SDK's APICallError sets `.message` to the bare HTTP status text
 	// ("Bad Request") and stashes the provider's actual explanation in
 	// `.responseBody` — e.g. the Codex backend's `{"detail":"Store must be set
@@ -58,16 +66,21 @@ export function mapError(err: unknown, provider: string): LLMError {
 	}
 	const responseDetail = formatResponseBody(e?.responseBody);
 	const baseMessage = formatError(err);
-	const message =
+	const detailedMessage =
 		responseDetail && !baseMessage.includes(responseDetail)
 			? `${provider} request failed: ${baseMessage} — ${responseDetail}`
 			: `${provider} request failed: ${baseMessage}`;
+	const message =
+		resetsAt !== undefined
+			? `${detailedMessage} (usage limit resets at ${new Date(resetsAt).toISOString()})`
+			: detailedMessage;
 	return new LLMError(
 		message,
 		provider,
 		statusCode,
 		err instanceof Error ? err : new Error(String(err)),
 		retryAfterMs,
+		resetsAt,
 	);
 }
 
@@ -88,6 +101,118 @@ function formatResponseBody(body: unknown): string | undefined {
 	}
 	const trimmed = body.trim();
 	return trimmed.length > 0 ? trimmed.slice(0, 500) : undefined;
+}
+
+/**
+ * Reset headers that report when a rate or usage window lifts. OpenAI-style
+ * `x-ratelimit-reset-*` carry a duration ("6m0s", "20ms", "1.5s") or epoch
+ * seconds; Anthropic's `anthropic-ratelimit-*-reset` carry an RFC 3339 instant.
+ * The LATEST reset across the reported windows wins, since the route stays
+ * capped until every exhausted window lifts.
+ */
+function parseResetHeaders(
+	headers: Record<string, string> | undefined,
+	now: number,
+): number | undefined {
+	if (!headers) return undefined;
+	let latest: number | undefined;
+	for (const [rawName, value] of Object.entries(headers)) {
+		const name = rawName.toLowerCase();
+		const isReset =
+			name.startsWith("x-ratelimit-reset") ||
+			(name.startsWith("anthropic-ratelimit-") && name.endsWith("-reset"));
+		if (!isReset || typeof value !== "string") continue;
+		const at = parseResetValue(value.trim(), now);
+		if (at !== undefined && (latest === undefined || at > latest)) latest = at;
+	}
+	return latest;
+}
+
+function parseResetValue(value: string, now: number): number | undefined {
+	if (value.length === 0) return undefined;
+	const durationMs = parseGoDuration(value);
+	if (durationMs !== undefined) return now + durationMs;
+	const n = Number(value);
+	if (!Number.isNaN(n)) return epochToMs(n, now);
+	const ts = Date.parse(value);
+	return Number.isNaN(ts) ? undefined : ts;
+}
+
+/** "6m0s" / "1h2m3.5s" / "20ms" → ms; undefined when not a duration string. */
+function parseGoDuration(value: string): number | undefined {
+	if (!/^(\d+(\.\d+)?(h|ms|m|s))+$/.test(value)) return undefined;
+	const units: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
+	let total = 0;
+	for (const match of value.matchAll(/(\d+(?:\.\d+)?)(h|ms|m|s)/g)) {
+		total += Number(match[1]) * (units[match[2] ?? ""] ?? 0);
+	}
+	return total;
+}
+
+/**
+ * A bare number is epoch seconds when it lands in a plausible absolute range,
+ * else a relative seconds count (OpenAI sends relative values, some proxies
+ * send absolute epochs).
+ */
+function epochToMs(n: number, now: number): number {
+	if (n > 1e12) return n; // already epoch-ms
+	if (n > 1e9) return n * 1000; // epoch seconds
+	return now + n * 1000;
+}
+
+/**
+ * Structured or textual reset in an error body: Codex `usage_limit_reached`
+ * sends `resets_at` (epoch s) / `resets_in_seconds`; z.AI and OpenCode Go
+ * phrase it as "... will reset at 2026-11-25 14:30:00".
+ */
+function parseResetFromBody(body: unknown, now: number): number | undefined {
+	if (typeof body !== "string" || body.length === 0) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(body);
+		const found = findResetField(parsed, now, 0);
+		if (found !== undefined) return found;
+	} catch {
+		// Not JSON — fall through to the textual pattern.
+	}
+	return parseResetFromText(body);
+}
+
+function findResetField(value: unknown, now: number, depth: number): number | undefined {
+	if (depth > 3 || typeof value !== "object" || value === null) return undefined;
+	const record = value as Record<string, unknown>;
+	for (const key of ["resets_at", "reset_at", "resetsAt", "resetAt"]) {
+		const v = record[key];
+		if (typeof v === "number" && Number.isFinite(v)) return epochToMs(v, now);
+		if (typeof v === "string") {
+			const at = parseResetValue(v, now);
+			if (at !== undefined) return at;
+		}
+	}
+	for (const key of ["resets_in_seconds", "reset_in_seconds", "resetsInSeconds"]) {
+		const v = record[key];
+		if (typeof v === "number" && Number.isFinite(v)) return now + v * 1000;
+	}
+	for (const nested of Object.values(record)) {
+		if (typeof nested === "object" && nested !== null) {
+			const found = findResetField(nested, now, depth + 1);
+			if (found !== undefined) return found;
+		}
+		if (typeof nested === "string") {
+			const found = parseResetFromText(nested);
+			if (found !== undefined) return found;
+		}
+	}
+	return undefined;
+}
+
+function parseResetFromText(text: string): number | undefined {
+	const match =
+		/\breset(?:s)?\s+(?:at|on)\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/i.exec(
+			text,
+		);
+	if (!match?.[1]) return undefined;
+	const ts = Date.parse(match[1].replace(" ", "T"));
+	return Number.isNaN(ts) ? undefined : ts;
 }
 
 function parseRetryAfter(header: string): number | undefined {

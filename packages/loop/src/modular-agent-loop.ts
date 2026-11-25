@@ -1,7 +1,12 @@
 import type { ContentBlock, LLMMessage, StreamChunk, ToolDefinition } from "@bound/llm";
 import { counter, histogram, upDownCounter } from "@bound/shared";
 import { type Span, SpanStatusCode, context, trace } from "@opentelemetry/api";
-import { getLlmStatusCode, isRateLimitStatus, isTransientLLMError } from "./error-classification";
+import {
+	getLlmStatusCode,
+	isRateLimitStatus,
+	isRouteFailure,
+	isTransientLLMError,
+} from "./error-classification";
 import type {
 	LoopContextAssemblyResult,
 	LoopModelResolution,
@@ -901,9 +906,12 @@ export abstract class ModularAgentLoop {
 	/**
 	 * Generic model-error recovery. First retries transient transport faults with
 	 * exponential backoff (5xx) or no backoff (timeouts), bounded by
-	 * maxTransientRetries. On a rate-limit/quota condition, delegates to the
-	 * overridable onRateLimitError hook (host model-router fallback policy).
-	 * Everything else is terminal via onModelErrorTerminal.
+	 * maxTransientRetries, on the SAME route so a blip keeps its prompt cache.
+	 * Once that budget is spent — or immediately for a non-transient route
+	 * failure (rate limit, quota, auth, driver-bug 400) — delegates to the
+	 * overridable onRouteFailure hook (host route-failover policy, spec §7.1).
+	 * A model refusal is not a route failure and never reaches the hook.
+	 * Everything unrecovered is terminal via onModelErrorTerminal.
 	 *
 	 * Returning { action: "continue" } means "I did not handle this" — the base
 	 * turn loop then rethrows the original error so it surfaces as a turn failure.
@@ -934,11 +942,10 @@ export abstract class ModularAgentLoop {
 			return { action: "retry" };
 		}
 
-		const message = error instanceof Error ? error.message : String(error);
-		if (isRateLimitStatus(getLlmStatusCode(error), message)) {
-			const rateLimitDecision = await this.onRateLimitError(error, frame);
-			if (rateLimitDecision) {
-				return rateLimitDecision;
+		if (!this.aborted && isRouteFailure(error)) {
+			const failoverDecision = await this.onRouteFailure(error, frame);
+			if (failoverDecision) {
+				return failoverDecision;
 			}
 		}
 
@@ -946,12 +953,13 @@ export abstract class ModularAgentLoop {
 	}
 
 	/**
-	 * Host hook for rate-limit / quota / payment errors. Return a decision
-	 * (typically { action: "retry" } after swapping to a fallback backend) to
-	 * recover, or null to fall through to terminal handling. Default: no
-	 * fallback available.
+	 * Host hook for a classified route failure (spec §7.1): rate limit, quota,
+	 * 5xx, auth, driver-bug 400, or transport. Return a decision (typically
+	 * { action: "retry" } after switching to the next route for the same model)
+	 * to recover, or null to fall through to terminal handling. Default: no
+	 * failover available.
 	 */
-	protected onRateLimitError(
+	protected onRouteFailure(
 		_error: unknown,
 		_frame: PreparedLoopFrame,
 	): Promise<LoopTurnDecision | null> | LoopTurnDecision | null {

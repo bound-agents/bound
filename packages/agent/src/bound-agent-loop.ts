@@ -922,18 +922,18 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 
 	/**
-	 * Bound route-failure policy (#285, spec §6.1, R-RT11–R-RT13). The base loop
-	 * already handled transient transport retries and detected the
-	 * rate-limit/quota condition; this hook fires once that recovery is exhausted
-	 * for a rate-limit-shaped error. It records the failure against the local
-	 * route's health (moving it to `backoff`) and fails over to the NEXT ranked
-	 * route for the SAME logical model — local or remote (R-RT7/R-RT8, §7.1). There
-	 * is no cross-model same-tier substitution: switching to a different model
-	 * happens only on a model refusal (slice 5). Returns a retry decision when
-	 * another route is found, or null to fall through to terminal handling, where
-	 * {@link recordTerminalRouteFailure} records non-rate-limit kinds.
+	 * Bound route-failure policy (#265/#285, spec §6.1/§7.1, R-RT11–R-RT13). The
+	 * base loop already spent its same-route transient retry budget; this hook
+	 * fires for EVERY classified route failure — rate limit, 402/quota, auth, 5xx,
+	 * driver-bug 400, transport. It records the failure against the local route's
+	 * health (moving it to `backoff`) and fails over to the NEXT ranked route for
+	 * the SAME logical model — local or remote (R-RT7/R-RT8). There is no
+	 * cross-model substitution: switching models happens only on a refusal.
+	 * Returns a retry decision when another route is found (or when an auth
+	 * refresh left the route healthy), or null to fall through to terminal
+	 * handling, which reports the accumulated failover chain.
 	 */
-	protected override async onRateLimitError(
+	protected override async onRouteFailure(
 		error: unknown,
 		frame: BoundPreparedFrame,
 	): Promise<LoopTurnDecision | null> {
@@ -942,32 +942,67 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		if (!backendId) {
 			return null;
 		}
+		this.routeFailureChain.push({
+			routeId: this.modelRouter.getRouteId(backendId) ?? backendId,
+			error: formatError(error),
+		});
+		this.routeFailureRecordedFor = error;
+		this.failedOverBackends.add(backendId);
 		// Record the failure against route health with the classified kind so the
-		// backoff schedule (and R-RT13 advisory handling) react to the real error,
-		// not just a 429. A supplied Retry-After is honored verbatim for rate limits.
-		await this.recordRouteFailure(backendId, error);
+		// backoff schedule (and R-RT13 advisory handling) react to the real error.
+		// A supplied Retry-After / usage-limit reset is honored for rate limits.
+		const backedOff = await this.recordRouteFailure(backendId, error);
+		if (!backedOff) {
+			// An auth refresh rotated the credentials and left the route healthy:
+			// retry the same route once with the new token. The refresh is
+			// single-shot per backend, so a second 401 backs off and fails over.
+			this.failedOverBackends.delete(backendId);
+			this.transportRetries = 0;
+			return { action: "retry" };
+		}
 		// Re-resolve the SAME logical model: the unified candidate pool (§5.1) now
 		// excludes the cooled route and returns the next ranked route for this
 		// model (another local route or a remote host). Cross-route failover strips
 		// route-bound state at the boundary via the driver's reasoning_origin check.
-		const statusCode = getLlmStatusCode(error);
-		if (statusCode === 429 || statusCode === 529) {
-			const newResolution = resolveModel(
-				this.config.modelId,
-				this.modelRouter,
-				this.ctx.db,
-				this.ctx.siteId,
-				this.requirements,
-			);
-			if (newResolution.kind !== "error") {
-				this.lastModelResolution = newResolution;
-				frame.resolution = newResolution;
-				this.transportRetries = 0;
-				return { action: "retry" };
-			}
+		const newResolution = resolveModel(
+			this.config.modelId,
+			this.modelRouter,
+			this.ctx.db,
+			this.ctx.siteId,
+			this.requirements,
+		);
+		if (newResolution.kind === "error") {
+			return null;
 		}
-		return null;
+		// Never re-enter a route that already failed this turn — an exhausted
+		// chain ends in terminal handling instead of cycling.
+		if (newResolution.kind === "local" && this.failedOverBackends.has(newResolution.modelId)) {
+			return null;
+		}
+		this.ctx.logger.warn("[agent-loop] Route failure, failing over to next route", {
+			from: backendId,
+			to: newResolution.kind === "local" ? newResolution.modelId : "remote",
+			errorKind: classifyRouteError(error),
+		});
+		this.lastModelResolution = newResolution;
+		frame.resolution = newResolution;
+		this.transportRetries = 0;
+		return { action: "retry" };
 	}
+
+	/**
+	 * Routes that failed within the current model call's failover chain, in
+	 * order, with their error text. Reported in the terminal error so the
+	 * operator sees every route's cause, not only the last one (#265). Cleared
+	 * on a successful turn.
+	 */
+	private routeFailureChain: Array<{ routeId: string; error: string }> = [];
+
+	/** Local backends already failed over away from in the current chain. */
+	private failedOverBackends = new Set<string>();
+
+	/** The error onRouteFailure last recorded, so terminal handling never double-records it. */
+	private routeFailureRecordedFor: unknown = undefined;
 
 	/**
 	 * Advisory-dedup set: driver-bug `400` and auth-refresh-failure advisories are
@@ -1111,30 +1146,27 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		chunks: StreamChunk[],
 	): Promise<LoopTurnDecision> {
 		// Record the route failure against health before surfacing the error (#285,
-		// R-RT11/R-RT13). This is the live seam for EVERY non-rate-limit terminal
-		// error — 5xx, transport, 401 auth, driver-bug 400 — that base retries and the
-		// rate-limit failover did not resolve. Rate-limit-shaped errors already
-		// recorded in onRateLimitError and short-circuited to this terminal only when
-		// no failover route existed; recording again there is a harmless re-backoff on
-		// the already-cooled route, but we only reach here for the non-rate-limit
-		// kinds because the rate-limit path returns a decision. A local resolution is
-		// required to know which backend to cool.
-		if (this.lastModelResolution?.kind === "local") {
+		// R-RT11/R-RT13). onRouteFailure already recorded every route failure it saw
+		// (and fell through here only when no further route existed), so record only
+		// errors that bypassed it — never double-increment the same failure's backoff.
+		// A local resolution is required to know which backend to cool.
+		if (
+			this.lastModelResolution?.kind === "local" &&
+			this.routeFailureRecordedFor !== error &&
+			!this.aborted
+		) {
 			const backendId = this.lastModelResolution.modelId;
-			const errorKind = classifyRouteError(error);
-			// Skip rate-limit kinds here: onRateLimitError already recorded them. Record
-			// every other classified kind so non-429 failures actually trip backoff.
-			if (errorKind !== "rate_limit") {
-				try {
-					await this.recordRouteFailure(backendId, error);
-				} catch (recordError) {
-					this.ctx.logger.warn("[agent-loop] Failed to record terminal route failure", {
-						backendId,
-						error: recordError instanceof Error ? recordError.message : String(recordError),
-					});
-				}
+			try {
+				await this.recordRouteFailure(backendId, error);
+			} catch (recordError) {
+				this.ctx.logger.warn("[agent-loop] Failed to record terminal route failure", {
+					backendId,
+					error: recordError instanceof Error ? recordError.message : String(recordError),
+				});
 			}
 		}
+		const failureChain = this.routeFailureChain;
+		this.resetRouteFailureChain();
 		const errMsg = error instanceof Error ? error.message : String(error);
 		if (chunks.length > 0) {
 			try {
@@ -1171,8 +1203,16 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			statusCode: getLlmStatusCode(error) ?? null,
 			model: getResolvedModelId(this.lastModelResolution, this.config.modelId || "unknown"),
 		});
-		this.emitAlert(`Error: ${formatError(error)}`);
-		return { action: "error", error: formatError(error) };
+		const finalError = formatRouteFailureChain(formatError(error), failureChain);
+		this.emitAlert(`Error: ${finalError}`);
+		return { action: "error", error: finalError };
+	}
+
+	/** Start a fresh failover chain (after a served turn or a surfaced terminal error). */
+	private resetRouteFailureChain(): void {
+		this.routeFailureChain = [];
+		this.failedOverBackends.clear();
+		this.routeFailureRecordedFor = undefined;
 	}
 
 	protected override afterParse(
@@ -1393,6 +1433,9 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			// only tracks health for its local routes.
 			if (metrics.status === "success" && this.lastModelResolution?.kind === "local") {
 				this.modelRouter.recordRouteSuccess(this.lastModelResolution.modelId);
+			}
+			if (metrics.status === "success") {
+				this.resetRouteFailureChain();
 			}
 			return turnId;
 		} catch (error) {
@@ -2777,3 +2820,18 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 	}
 }
 export { SILENCE_HEARTBEAT_INTERVAL_MS, withSilenceTimeout } from "@bound/loop";
+
+/**
+ * Compose the terminal error for a failed failover chain (#265): the final
+ * error first (unchanged when only one route was tried), then every route that
+ * failed in order with its own cause, so a usage cap on one provider and an
+ * expired key on the next are both visible in the surfaced error.
+ */
+export function formatRouteFailureChain(
+	finalError: string,
+	chain: ReadonlyArray<{ routeId: string; error: string }>,
+): string {
+	if (chain.length < 2) return finalError;
+	const steps = chain.map((step, i) => `${i + 1}. ${step.routeId}: ${step.error}`).join("; ");
+	return `${finalError} [all ${chain.length} routes failed: ${steps}]`;
+}

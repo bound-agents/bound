@@ -611,6 +611,12 @@ export class LLMError extends Error {
 		public statusCode?: number,
 		public originalError?: Error,
 		public retryAfterMs?: number,
+		/**
+		 * Absolute epoch-ms when a provider-reported usage limit resets (#265),
+		 * parsed from reset headers, a structured `resets_at`/`resets_in_seconds`
+		 * body, or a "reset at <time>" quota message. Undefined when not sent.
+		 */
+		public resetsAt?: number,
 	) {
 		super(message);
 		this.name = "LLMError";

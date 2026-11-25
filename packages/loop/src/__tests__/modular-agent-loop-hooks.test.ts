@@ -12,7 +12,7 @@ import type { AgentLoopConfig, AgentLoopState } from "../types";
  * Behavioral coverage for the protected lifecycle hooks the ModularAgentLoop
  * exposes for host specialization: cancel(), the phase state-machine
  * (setPhase / enterPhaseOverlay / restorePhase), the default no-op observer
- * hooks (onPhaseChange / onInvalidPhaseTransition), the default onRateLimitError
+ * hooks (onPhaseChange / onInvalidPhaseTransition), the default onRouteFailure
  * (no fallback), and the construction-time abort check. These are reached
  * through a thin test subclass that promotes the protected members and records
  * the observable effects — phase transitions, abort state, and run outcomes.
@@ -91,11 +91,11 @@ class HookProbeLoop extends ModularAgentLoop {
 	callRestorePhase(previous: AgentLoopState): void {
 		this.restorePhase(previous);
 	}
-	async callOnRateLimit(
+	async callOnRouteFailure(
 		error: unknown,
 		frame: PreparedLoopFrame,
 	): Promise<LoopTurnDecision | null> {
-		return this.onRateLimitError(error, frame);
+		return this.onRouteFailure(error, frame);
 	}
 }
 
@@ -186,11 +186,11 @@ describe("ModularAgentLoop phase overlay", () => {
 	});
 });
 
-describe("ModularAgentLoop.onRateLimitError default", () => {
+describe("ModularAgentLoop.onRouteFailure default", () => {
 	it("returns null, signaling no host-provided fallback", async () => {
 		const loop = makeProbe();
 		const frame = { resolution: { modelId: "mock" } } as unknown as PreparedLoopFrame;
-		const decision = await loop.callOnRateLimit(new Error("429 rate limited"), frame);
+		const decision = await loop.callOnRouteFailure(new Error("429 rate limited"), frame);
 		expect(decision).toBeNull();
 	});
 });
