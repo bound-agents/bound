@@ -10,6 +10,7 @@ import {
 	insertRow,
 	listDrainedRouteIds,
 	listHostSiteIdNameAndModels,
+	listHostsWithLiveness,
 	listModelAliases,
 	listModelRoutingRules,
 	softDelete,
@@ -21,6 +22,7 @@ import {
 	type ModelFallbackPolicy,
 	ROUTING_DEFAULT_FALLBACK_MODELS_KEY,
 	ROUTING_MODEL_ROLES_KEY,
+	type RouteHealthSnapshot,
 	hostModelsSchema,
 	isValidModelRoleName,
 	parseJsonSafe,
@@ -35,11 +37,16 @@ import { Hono } from "hono";
  * list + roles, and alias overrides — against the read-only per-host route
  * SUPPLY advertised in `hosts.models`.
  *
- * Health is per-host and NOT synced: it lives in the local {@link ModelRouter}'s
- * in-memory `RouteHealth` registry. The assembly folds in the local router's
- * snapshot for routes it serves; a route advertised only by a remote host
- * reports health `"unknown"` because this host cannot observe it. That is a
- * genuine host-boundary limit, surfaced honestly rather than guessed.
+ * Health is per-host and NOT synced: each host's {@link ModelRouter} keeps its
+ * own in-memory `RouteHealth` registry. The assembly reads the local router for
+ * routes this host serves, and asks every other live host for ITS snapshot over
+ * the authenticated `route_health` durable-work kind ({@link RelayRouteHealth}).
+ * Remote snapshots are observational only: they are cached in memory here for
+ * display, never written to the circuit breaker, routing preferences, or
+ * `hosts.models`. A route reports `"unknown"` when no fresh observation exists —
+ * the peer is not live, did not answer in time, does not report that route, or
+ * its last answer is older than the snapshot age limit. A fresh heartbeat never
+ * stands in for an observation.
  *
  * All preference writes go through the change-log outbox (invariant #1): the
  * three tables are synced LWW, so an edit on any host propagates cluster-wide.
@@ -58,10 +65,14 @@ interface RouteSupply {
 	/** Which metadata source the display name came from, for the per-model consistency rule. */
 	display_name_source: DisplayNameSource;
 	drained: boolean;
-	/** `healthy` | `backoff` | `half_open` from the local router, else `unknown` (remote). */
+	/** `healthy` | `backoff` | `half_open` as observed by the serving host, else `unknown`. */
 	health: "healthy" | "backoff" | "half_open" | "unknown";
 	/** Epoch-ms of the next half-open trial when `health === "backoff"`, else null. */
 	next_trial_at: number | null;
+	/** Where `health` came from: this host's router, the serving peer's snapshot, or none. */
+	health_source: "local" | "remote" | null;
+	/** Epoch-ms (this host's clock) when the health observation was taken, or null. */
+	health_observed_at: number | null;
 }
 
 /**
@@ -244,6 +255,8 @@ function collectSupply(db: Database): Map<string, RouteSupply[]> {
 				drained: false,
 				health: "unknown",
 				next_trial_at: null,
+				health_source: null,
+				health_observed_at: null,
 			});
 			byModel.set(logical, list);
 		}
@@ -271,21 +284,187 @@ function localHealth(
 	return { health: "unknown", next_trial_at: null };
 }
 
+/**
+ * Ask `targetSiteId` for its own route-health snapshot, bounded by `timeoutMs`.
+ * Wired from the CLI start path over the `route_health` durable-work kind.
+ * Throws on any failure; the caller reports the peer's routes as `unknown`.
+ */
+export type RelayRouteHealth = (
+	targetSiteId: string,
+	timeoutMs: number,
+) => Promise<RouteHealthSnapshot>;
+
+export interface RoutingRoutesOptions {
+	/** Peer snapshot reader. Absent → every remote route reports `unknown`. */
+	relayRouteHealth?: RelayRouteHealth;
+	/** Injectable clock for tests. */
+	clock?: () => number;
+	/** Per-peer request bound. */
+	remoteTimeoutMs?: number;
+	/** A snapshot younger than this is reused instead of asking the peer again. */
+	snapshotReuseMs?: number;
+	/** A snapshot older than this is discarded; its routes report `unknown`. */
+	snapshotMaxAgeMs?: number;
+	/** Peers whose heartbeat is older than this are not asked (they cannot answer). */
+	hostLivenessMs?: number;
+}
+
+/** Default per-peer request bound for a routing snapshot. */
+export const REMOTE_HEALTH_TIMEOUT_MS = 4_000;
+/** Default reuse window for a peer snapshot. */
+export const REMOTE_HEALTH_REUSE_MS = 15_000;
+/** Default maximum age of a peer snapshot before its routes read `unknown`. */
+export const REMOTE_HEALTH_MAX_AGE_MS = 60_000;
+/** Matches the relay router's liveness threshold (spec R-RT8). */
+export const REMOTE_HEALTH_HOST_LIVENESS_MS = 5 * 60_000;
+
+interface ObservedRouteHealth {
+	health: "healthy" | "backoff" | "half_open";
+	next_trial_at: number | null;
+}
+
+interface PeerObservation {
+	/** Receipt time on THIS host's clock. */
+	observedAt: number;
+	routes: Map<string, ObservedRouteHealth>;
+}
+
+/**
+ * In-memory, display-only cache of peer route-health snapshots. One request per
+ * peer is in flight at a time; concurrent page loads share it. A peer is asked
+ * at most once per `reuseMs`, measured from the last attempt whether it
+ * succeeded, failed, or timed out, so an unreachable peer costs one relay per
+ * window rather than one per page load. Failures keep the previous observation,
+ * which still ages out at `maxAgeMs`.
+ */
+class PeerHealthCache {
+	private observations = new Map<string, PeerObservation>();
+	private lastAttemptAt = new Map<string, number>();
+	private inflight = new Map<string, Promise<void>>();
+
+	constructor(
+		private relay: RelayRouteHealth,
+		private clock: () => number,
+		private timeoutMs: number,
+		private reuseMs: number,
+		private maxAgeMs: number,
+	) {}
+
+	async collect(siteIds: Iterable<string>): Promise<Map<string, PeerObservation>> {
+		const ids = [...siteIds];
+		const pending: Promise<void>[] = [];
+		for (const id of ids) {
+			const existing = this.inflight.get(id);
+			if (existing) {
+				pending.push(existing);
+				continue;
+			}
+			const attemptedAt = this.lastAttemptAt.get(id);
+			if (attemptedAt !== undefined && this.clock() - attemptedAt < this.reuseMs) continue;
+			pending.push(this.refresh(id));
+		}
+		await Promise.all(pending);
+		const now = this.clock();
+		const out = new Map<string, PeerObservation>();
+		for (const id of ids) {
+			const obs = this.observations.get(id);
+			if (obs && now - obs.observedAt <= this.maxAgeMs) out.set(id, obs);
+		}
+		return out;
+	}
+
+	private refresh(siteId: string): Promise<void> {
+		const existing = this.inflight.get(siteId);
+		if (existing) return existing;
+		this.lastAttemptAt.set(siteId, this.clock());
+		const run = (async () => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				const snapshot = await Promise.race([
+					this.relay(siteId, this.timeoutMs),
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(
+							() => reject(new Error("route_health timeout")),
+							this.timeoutMs + 250,
+						);
+					}),
+				]);
+				const observedAt = this.clock();
+				const routes = new Map<string, ObservedRouteHealth>();
+				for (const r of snapshot.routes) {
+					routes.set(r.route_id, {
+						health: r.status,
+						next_trial_at:
+							r.status === "backoff" && r.next_trial_in_ms !== null
+								? observedAt + r.next_trial_in_ms
+								: null,
+					});
+				}
+				this.observations.set(siteId, { observedAt, routes });
+			} catch {
+				// Unavailable peer: keep the previous observation; it ages out on its own.
+			} finally {
+				if (timer) clearTimeout(timer);
+				this.inflight.delete(siteId);
+			}
+		})();
+		this.inflight.set(siteId, run);
+		return run;
+	}
+}
+
+function isHostLive(onlineAt: string | null, now: number, livenessMs: number): boolean {
+	if (!onlineAt) return false;
+	const t = Date.parse(onlineAt);
+	return Number.isFinite(t) && now - t <= livenessMs;
+}
+
 export function createRoutingRoutes(
 	db: Database,
 	siteId: string,
 	modelRouter: ModelRouter | null,
+	options: RoutingRoutesOptions = {},
 ): Hono {
 	const app = new Hono();
+	const clock = options.clock ?? Date.now;
+	const hostLivenessMs = options.hostLivenessMs ?? REMOTE_HEALTH_HOST_LIVENESS_MS;
+	const peerHealth = options.relayRouteHealth
+		? new PeerHealthCache(
+				options.relayRouteHealth,
+				clock,
+				options.remoteTimeoutMs ?? REMOTE_HEALTH_TIMEOUT_MS,
+				options.snapshotReuseMs ?? REMOTE_HEALTH_REUSE_MS,
+				options.snapshotMaxAgeMs ?? REMOTE_HEALTH_MAX_AGE_MS,
+			)
+		: null;
+
+	/** Fresh peer observations for every live remote host that advertises routes. */
+	async function collectPeerHealth(
+		supply: Map<string, RouteSupply[]>,
+	): Promise<Map<string, PeerObservation>> {
+		if (!peerHealth) return new Map();
+		const localSite = resolveSiteId();
+		const advertising = new Set<string>();
+		for (const routes of supply.values()) {
+			for (const r of routes) if (r.site_id !== localSite) advertising.add(r.site_id);
+		}
+		const now = clock();
+		const live = listHostsWithLiveness(db)
+			.filter((h) => advertising.has(h.site_id) && isHostLive(h.online_at, now, hostLivenessMs))
+			.map((h) => h.site_id);
+		return peerHealth.collect(live);
+	}
 
 	function resolveSiteId(): string {
 		return siteId || getSiteId(db);
 	}
 
 	// GET /models — the full Settings › Models assembly.
-	app.get("/models", (c) => {
+	app.get("/models", async (c) => {
 		try {
 			const supply = collectSupply(db);
+			const peers = await collectPeerHealth(supply);
+			const localSite = resolveSiteId();
 			const drained = new Set(listDrainedRouteIds(db));
 			const rules = new Map(listModelRoutingRules(db).map((r) => [r.logical_model, r]));
 			const report = analyzeModelReferences(db, normalizeModelKey);
@@ -310,13 +489,27 @@ export function createRoutingRoutes(
 			for (const logical of models) {
 				const rule = rules.get(logical);
 				const routeOrder = parseRouteOrder(rule?.route_order ?? null);
-				const routes = (supply.get(logical) ?? []).map((r) => {
-					const health = localHealth(modelRouter, r.route_id);
+				const routes = (supply.get(logical) ?? []).map((r): RouteSupply => {
+					const base = { ...r, drained: drained.has(r.route_id) };
+					if (r.site_id === localSite) {
+						const health = localHealth(modelRouter, r.route_id);
+						return {
+							...base,
+							health: health.health,
+							next_trial_at: health.next_trial_at,
+							health_source: health.health === "unknown" ? null : "local",
+							health_observed_at: health.health === "unknown" ? null : clock(),
+						};
+					}
+					const peer = peers.get(r.site_id);
+					const observed = peer?.routes.get(r.route_id);
+					if (!peer || !observed) return base;
 					return {
-						...r,
-						drained: drained.has(r.route_id),
-						health: health.health,
-						next_trial_at: health.next_trial_at,
+						...base,
+						health: observed.health,
+						next_trial_at: observed.next_trial_at,
+						health_source: "remote",
+						health_observed_at: peer.observedAt,
 					};
 				});
 				// Order routes by the model's declared route_order; unordered routes

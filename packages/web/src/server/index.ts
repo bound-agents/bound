@@ -118,6 +118,12 @@ export interface WebAppConfig {
 	 * MCP-Apps proxy's relay to a peer-owned app-bearing server.
 	 */
 	relayMcpAppProxy?: import("./routes/mcp-apps").RelayMcpAppProxy;
+	/**
+	 * Peer route-health snapshot reader for Settings › Models and the model picker.
+	 * Asks a peer for its own RouteHealth over the authenticated `route_health`
+	 * durable-work kind. Absent → remote routes report `unknown`.
+	 */
+	relayRouteHealth?: import("./routes/routing").RelayRouteHealth;
 }
 
 export interface SyncAppConfig {
@@ -193,6 +199,7 @@ export async function createWebApp(
 		webBindHost: config.webBindHost,
 		getMcpAppAccessToken: config.getMcpAppAccessToken,
 		relayMcpAppProxy: config.relayMcpAppProxy,
+		relayRouteHealth: config.relayRouteHealth,
 	};
 
 	const app = new Hono();

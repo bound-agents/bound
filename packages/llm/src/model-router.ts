@@ -537,6 +537,38 @@ export class ModelRouter {
 	}
 
 	/**
+	 * Read-only snapshot of this host's route health, one entry per ready backend
+	 * that has a `RouteId`. This is what the host reports to a peer asking over the
+	 * `route_health` relay kind and what its own Settings › Models assembly reads.
+	 * `next_trial_in_ms` is relative to `now` so a peer converts it against its own
+	 * clock. Reading does not claim a half-open trial.
+	 */
+	getRouteHealthSnapshot(): Array<{
+		route_id: RouteId;
+		status: "healthy" | "backoff" | "half_open";
+		next_trial_in_ms: number | null;
+	}> {
+		const now = this.clock();
+		const out: Array<{
+			route_id: RouteId;
+			status: "healthy" | "backoff" | "half_open";
+			next_trial_in_ms: number | null;
+		}> = [];
+		for (const backend of this.listBackends()) {
+			const routeId = this.getRouteId(backend.id);
+			if (!routeId) continue;
+			const state = this.routeHealth.getState(backend.id);
+			out.push({
+				route_id: routeId,
+				status: state.status,
+				next_trial_in_ms:
+					state.status === "backoff" ? Math.max(0, state.next_trial_at - now) : null,
+			});
+		}
+		return out;
+	}
+
+	/**
 	 * Returns true if the backend is NOT currently selectable for routing — i.e.
 	 * its route is in `backoff` (#285). A `half_open` route returns false here
 	 * because it accepts one real trial turn per host; `healthy` returns false.

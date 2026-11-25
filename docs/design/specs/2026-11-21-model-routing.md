@@ -188,6 +188,10 @@ Route availability separates system-managed health from operator-managed drains.
 
 Route health is tracked per `RouteId` **locally per host** (not synced through `change_log`, avoiding ephemeral failure chatter consistent with Invariant #3), updated from observed local and relayed dispatch outcomes:
 
+The host that executes an inference against its provider records that outcome in its own registry, whether the request came from its own loop or arrived over the inference relay. On a relayed request the executor records a completed stream as success and a classified provider failure (§7.1) as a route failure. It records nothing for a requester cancellation, a refusal (R-RT15), or a transport-class error that carries no provider status.
+
+Health display is cluster-wide and observational. A host serving Settings › Models or the model picker reads its own registry for local routes and asks each live peer for that peer's snapshot over the `route_health` durable-work kind. The snapshot reports `RouteId`, state, and time-to-next-trial relative to the peer's clock. Answers are held in memory for display only. They never feed the requester's circuit breaker, routing preferences, or `hosts.models`. A route with no fresh answer renders `unknown`, and heartbeat freshness never stands in for an answer.
+
 ```ts
 type RouteHealthState =
   | { status: "healthy" }

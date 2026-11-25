@@ -446,3 +446,256 @@ describe("GET /models — display-name disambiguation", () => {
 		expect(new Set(Object.values(names)).size).toBe(6);
 	});
 });
+
+describe("GET /models — cluster-wide route health from peer snapshots", () => {
+	type Body = {
+		models: Array<{
+			logical_model: string;
+			routes: Array<{
+				route_id: string;
+				health: string;
+				next_trial_at: number | null;
+				health_source: string | null;
+				health_observed_at: number | null;
+			}>;
+		}>;
+	};
+	const MSI_ROUTE = "site-msi:bedrock:opus";
+
+	function seedMsi(onlineAt: string = new Date().toISOString()): void {
+		db.prepare(
+			"INSERT INTO hosts (site_id, host_name, models, online_at, modified_at, deleted, work_spool_capable) VALUES (?, ?, ?, ?, ?, 0, 1)",
+		).run(
+			"site-msi",
+			"MSI",
+			JSON.stringify([{ id: "opus", route_id: MSI_ROUTE, logical_model: "opus" }]),
+			onlineAt,
+			onlineAt,
+		);
+	}
+
+	async function msiRoute(app: ReturnType<typeof createRoutingRoutes>) {
+		const res = await app.fetch(new Request("http://localhost/models"));
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Body;
+		return body.models.find((m) => m.logical_model === "opus")?.routes[0];
+	}
+
+	it("reports a remote route healthy from the serving host's snapshot", async () => {
+		seedMsi();
+		const asked: Array<{ site: string; timeout: number }> = [];
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => 1_000_000,
+			relayRouteHealth: async (site, timeout) => {
+				asked.push({ site, timeout });
+				return { routes: [{ route_id: MSI_ROUTE, status: "healthy", next_trial_in_ms: null }] };
+			},
+		});
+		const route = await msiRoute(app);
+		expect(asked).toEqual([{ site: "site-msi", timeout: 4_000 }]);
+		expect(route?.health).toBe("healthy");
+		expect(route?.health_source).toBe("remote");
+		expect(route?.health_observed_at).toBe(1_000_000);
+	});
+
+	it("converts a remote backoff to this host's clock", async () => {
+		seedMsi();
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => 5_000,
+			relayRouteHealth: async () => ({
+				routes: [{ route_id: MSI_ROUTE, status: "backoff", next_trial_in_ms: 30_000 }],
+			}),
+		});
+		const route = await msiRoute(app);
+		expect(route?.health).toBe("backoff");
+		expect(route?.next_trial_at).toBe(35_000);
+	});
+
+	it("keeps a route unknown when the peer does not answer", async () => {
+		seedMsi();
+		const app = createRoutingRoutes(db, siteId, null, {
+			relayRouteHealth: async () => {
+				throw new Error("Timeout waiting for platform_request response from site-msi");
+			},
+		});
+		const route = await msiRoute(app);
+		expect(route?.health).toBe("unknown");
+		expect(route?.health_source).toBeNull();
+	});
+
+	it("keeps a route unknown when the peer's snapshot omits it", async () => {
+		seedMsi();
+		const app = createRoutingRoutes(db, siteId, null, {
+			relayRouteHealth: async () => ({ routes: [] }),
+		});
+		expect((await msiRoute(app))?.health).toBe("unknown");
+	});
+
+	it("never asks, and never infers health from, a stale heartbeat", async () => {
+		seedMsi(new Date(Date.now() - 10 * 60_000).toISOString());
+		let asked = 0;
+		const app = createRoutingRoutes(db, siteId, null, {
+			relayRouteHealth: async () => {
+				asked++;
+				return { routes: [{ route_id: MSI_ROUTE, status: "healthy", next_trial_in_ms: null }] };
+			},
+		});
+		expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(asked).toBe(0);
+	});
+
+	it("reuses a fresh snapshot, then ages a failed peer out to unknown", async () => {
+		seedMsi();
+		let now = 0;
+		let calls = 0;
+		let fail = false;
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => now,
+			snapshotReuseMs: 15_000,
+			snapshotMaxAgeMs: 60_000,
+			hostLivenessMs: Number.POSITIVE_INFINITY,
+			relayRouteHealth: async () => {
+				calls++;
+				if (fail) throw new Error("unreachable");
+				return { routes: [{ route_id: MSI_ROUTE, status: "healthy", next_trial_in_ms: null }] };
+			},
+		});
+		expect((await msiRoute(app))?.health).toBe("healthy");
+		now = 10_000;
+		expect((await msiRoute(app))?.health).toBe("healthy");
+		expect(calls).toBe(1);
+		fail = true;
+		now = 30_000;
+		// Refresh fails; the 30s-old observation is still within the age limit.
+		expect((await msiRoute(app))?.health).toBe("healthy");
+		expect(calls).toBe(2);
+		now = 61_000;
+		expect((await msiRoute(app))?.health).toBe("unknown");
+	});
+
+	it("asks a failing peer once per retry window, starting at clock zero", async () => {
+		seedMsi();
+		let now = 0;
+		let calls = 0;
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => now,
+			snapshotReuseMs: 15_000,
+			snapshotMaxAgeMs: 60_000,
+			hostLivenessMs: Number.POSITIVE_INFINITY,
+			relayRouteHealth: async () => {
+				calls++;
+				throw new Error("no handler for route_health");
+			},
+		});
+		for (let i = 0; i < 5; i++) expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(calls).toBe(1);
+		now = 14_999;
+		expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(calls).toBe(1);
+		now = 15_000;
+		expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(calls).toBe(2);
+		for (let i = 0; i < 3; i++) await msiRoute(app);
+		expect(calls).toBe(2);
+	});
+
+	it("gates a timed-out peer the same way and shares the in-flight attempt", async () => {
+		seedMsi();
+		let now = 0;
+		let calls = 0;
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => now,
+			remoteTimeoutMs: 0,
+			snapshotReuseMs: 15_000,
+			hostLivenessMs: Number.POSITIVE_INFINITY,
+			relayRouteHealth: () => {
+				calls++;
+				return new Promise(() => {});
+			},
+		});
+		const concurrent = await Promise.all([msiRoute(app), msiRoute(app)]);
+		expect(concurrent.map((r) => r?.health)).toEqual(["unknown", "unknown"]);
+		expect(calls).toBe(1);
+		now = 10_000;
+		expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(calls).toBe(1);
+		now = 15_000;
+		expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(calls).toBe(2);
+	});
+
+	it("keeps an expired observation unknown while retries stay gated", async () => {
+		seedMsi();
+		let now = 0;
+		let calls = 0;
+		let fail = false;
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => now,
+			snapshotReuseMs: 15_000,
+			snapshotMaxAgeMs: 60_000,
+			hostLivenessMs: Number.POSITIVE_INFINITY,
+			relayRouteHealth: async () => {
+				calls++;
+				if (fail) throw new Error("unreachable");
+				return { routes: [{ route_id: MSI_ROUTE, status: "healthy", next_trial_in_ms: null }] };
+			},
+		});
+		expect((await msiRoute(app))?.health).toBe("healthy");
+		fail = true;
+		now = 61_000;
+		expect((await msiRoute(app))?.health).toBe("unknown");
+		expect(calls).toBe(2);
+		now = 70_000;
+		const route = await msiRoute(app);
+		expect(route?.health).toBe("unknown");
+		expect(route?.health_source).toBeNull();
+		expect(calls).toBe(2);
+	});
+
+	it("tracks a peer's recovery across reads (backoff, then healthy)", async () => {
+		seedMsi();
+		let now = 0;
+		let status: "backoff" | "healthy" = "backoff";
+		const app = createRoutingRoutes(db, siteId, null, {
+			clock: () => now,
+			hostLivenessMs: Number.POSITIVE_INFINITY,
+			relayRouteHealth: async () => ({
+				routes: [
+					{
+						route_id: MSI_ROUTE,
+						status,
+						next_trial_in_ms: status === "backoff" ? 20_000 : null,
+					},
+				],
+			}),
+		});
+		expect((await msiRoute(app))?.health).toBe("backoff");
+		status = "healthy";
+		now = 20_000;
+		const route = await msiRoute(app);
+		expect(route?.health).toBe("healthy");
+		expect(route?.next_trial_at).toBeNull();
+	});
+
+	it("does not ask peers for local routes and marks local health as local", async () => {
+		seedHost(siteId, "hub", [
+			{ id: "opus", route_id: `${siteId}:anthropic:opus`, logical_model: "opus" },
+		]);
+		const router = new ModelRouter(new Map(), "opus");
+		router.addDynamicBackend("opus", { capabilities: () => CAPS } as never, CAPS, undefined, {
+			routeId: `${siteId}:anthropic:opus`,
+			reasoningOrigin: `${siteId}:anthropic`,
+		});
+		let asked = 0;
+		const app = createRoutingRoutes(db, siteId, router, {
+			relayRouteHealth: async () => {
+				asked++;
+				return { routes: [] };
+			},
+		});
+		const route = await msiRoute(app);
+		expect(route?.health).toBe("healthy");
+		expect(route?.health_source).toBe("local");
+		expect(asked).toBe(0);
+	});
+});

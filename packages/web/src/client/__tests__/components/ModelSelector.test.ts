@@ -318,6 +318,34 @@ describe("ModelSelector", () => {
 		// The popover is the only added child and is absolutely positioned (CSS).
 		expect(root.querySelectorAll(":scope > :not(.popover)").length).toBe(before);
 	});
+	it("re-reads route health on open so a mounted picker tracks the serving host", async () => {
+		let health = "unknown";
+		const { target } = await mount(expanded, "kimi-k3", {}, [
+			{
+				logical_model: "kimi-k3",
+				display_name: "Kimi K3",
+				routes: [route("r3", "msi", "opencode-go")],
+			},
+		]);
+		dom?.route("GET", "/api/routing/models", () => ({
+			models: [
+				{
+					logical_model: "kimi-k3",
+					display_name: "Kimi K3",
+					routes: [{ ...route("r3", "msi", "opencode-go"), health }],
+				},
+			],
+		}));
+		const before = dom?.requests.filter((r) => r.path === "/api/routing/models").length ?? 0;
+		health = "backoff";
+		await openList(target);
+		await dom?.settle();
+		const after = dom?.requests.filter((r) => r.path === "/api/routing/models").length ?? 0;
+		expect(after).toBe(before + 1);
+		const dot = target.querySelector("#model .health-dot") ?? target.querySelector(".health-dot");
+		expect(dot?.classList.contains("fallback")).toBe(true);
+	});
+
 	it("surfaces no options and leaves the store untouched when the API fails", async () => {
 		dom = installDom();
 		dom.route("GET", "/api/status/models", () => new Response("boom", { status: 500 }));

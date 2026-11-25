@@ -775,6 +775,14 @@ export const RELAY_KIND_REGISTRY = {
 	// body over the `response:<requestId>` awaiter, same as platform_request.
 	mcp_app_proxy: { dispatch: "async" },
 
+	// `route_health` asks a peer for a read-only snapshot of ITS OWN provider-route
+	// health (RouteHealth, model-routing spec §6.1). The snapshot is observational:
+	// the requester renders it in Settings › Models and the model picker and never
+	// folds it into its own circuit-breaker state, routing preferences, or
+	// `hosts.models`. async: the owner answers over the `response:<requestId>`
+	// awaiter like platform_request, and the requester bounds the wait.
+	route_health: { dispatch: "async" },
+
 	// Passive kinds — durable mailbox rows owned by a non-relay-processor
 	// consumer. The relay-processor must NOT markProcessed these.
 	//

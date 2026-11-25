@@ -18,7 +18,8 @@ import {
 	releaseDurableWorkClaim,
 } from "@bound/core";
 import type { InferenceRequestPayload, StreamChunk, StreamChunkPayload } from "@bound/llm";
-import { LLMError, type ModelRouter } from "@bound/llm";
+import { LLMError, LLMRefusalError, type ModelRouter } from "@bound/llm";
+import { classifyRouteError, getLlmRetryAfterMs } from "@bound/loop";
 import type { PlatformMcpRegistry } from "@bound/platforms";
 import type {
 	ClientResultPayload,
@@ -54,6 +55,7 @@ import {
 	notifyWakeupPayloadSchema,
 	parseJsonSafe,
 	parseJsonUntyped,
+	routeHealthRequestPayloadSchema,
 } from "@bound/shared";
 import type { Tool } from "@modelcontextprotocol/server";
 import { SpanStatusCode, context, trace } from "@opentelemetry/api";
@@ -277,6 +279,7 @@ export class RelayProcessor {
 		client_tool: (entry) => this.handleClientTool(entry),
 		mcp_auth_handoff: (entry) => this.handleMcpAuthHandoff(entry),
 		mcp_app_proxy: (entry) => this.handleMcpAppProxy(entry),
+		route_health: (entry) => this.handleRouteHealth(entry),
 	};
 
 	constructor(
@@ -1181,6 +1184,90 @@ export class RelayProcessor {
 		}
 		await this.mcpAuthHandoffConsumer(payloadResult.value as Record<string, unknown>);
 		return null;
+	}
+
+	/**
+	 * Answer a peer's `route_health` request with this host's own RouteHealth
+	 * snapshot (model-routing spec §6.1). The snapshot is read-only: building it
+	 * never claims a half-open trial and the requester only displays it. A host
+	 * without a model router serves no routes and answers with an empty list, so
+	 * the requester leaves those routes `unknown`. The snapshot rides the
+	 * `platform_request` result envelope (JSON in `stdout`) so the requester reuses
+	 * the existing bounded response awaiter. Returns null: the handler writes its
+	 * own response.
+	 */
+	private async handleRouteHealth(entry: RelayInboxEntry): Promise<null> {
+		const started = Date.now();
+		const payloadResult = parseJsonSafe(routeHealthRequestPayloadSchema, entry.payload, entry.kind);
+		if (!payloadResult.ok) {
+			this.writeResponse(
+				entry,
+				"error",
+				JSON.stringify({ error: `Invalid payload: ${payloadResult.error}`, retriable: false }),
+			);
+			throw new PayloadParseError();
+		}
+		const routes = this.modelRouter?.getRouteHealthSnapshot() ?? [];
+		const result: ResultPayload = {
+			stdout: JSON.stringify({ routes }),
+			stderr: "",
+			exit_code: 0,
+			execution_ms: Date.now() - started,
+		};
+		this.writeResponse(entry, "result", JSON.stringify(result));
+		return null;
+	}
+
+	/**
+	 * Record the outcome of an inference this host executed for a peer against its
+	 * OWN route health (model-routing spec §6.1: health updates from observed local
+	 * AND relayed outcomes). The executor is the only host that sees the provider's
+	 * answer, so it is the only host that can record it truthfully.
+	 *
+	 * Recorded: a completed stream (success) and classified provider failures
+	 * (rate limit, auth, driver bug, server). NOT recorded: a requester
+	 * cancellation, a model refusal (R-RT15 — the provider answered), and a
+	 * transport-class error (no provider status; the fault may sit anywhere on the
+	 * path and is not evidence about the provider route). A 401/403 first tries
+	 * the backend's token refresh; a successful refresh leaves the route healthy.
+	 */
+	private async recordExecutorOutcome(
+		backendId: string,
+		outcome: { ok: true } | { ok: false; error: unknown },
+	): Promise<void> {
+		const router = this.modelRouter;
+		if (!router) return;
+		try {
+			if (outcome.ok) {
+				router.recordRouteSuccess(backendId);
+				return;
+			}
+			const error = outcome.error;
+			if (error instanceof LLMRefusalError) return;
+			const errorKind = classifyRouteError(error);
+			if (errorKind === "transport") return;
+			if (errorKind === "auth") {
+				const backend = router.tryGetBackend(backendId);
+				if (backend?.refreshAuth) {
+					let refreshed = false;
+					try {
+						refreshed = await backend.refreshAuth();
+					} catch {
+						refreshed = false;
+					}
+					if (refreshed) return;
+				}
+			}
+			router.recordRouteFailure(backendId, {
+				errorKind,
+				retryAfterMs: getLlmRetryAfterMs(error),
+			});
+		} catch (recordError) {
+			this.logger.warn("[relay] Failed to record executor route health", {
+				backendId,
+				error: recordError instanceof Error ? recordError.message : String(recordError),
+			});
+		}
 	}
 
 	/**
@@ -2207,6 +2294,7 @@ export class RelayProcessor {
 			} else {
 				// Normal completion — final flush as stream_end (AC3.3)
 				flush(true);
+				await this.recordExecutorOutcome(resolvedModelId, { ok: true });
 			}
 		};
 
@@ -2251,6 +2339,11 @@ export class RelayProcessor {
 				await runInferenceWithTracing();
 			}
 		} catch (err) {
+			// A requester cancel aborts the provider stream; the resulting error says
+			// nothing about the provider route, so it never touches route health.
+			if (!abortController.signal.aborted) {
+				await this.recordExecutorOutcome(resolvedModelId, { ok: false, error: err });
+			}
 			this.logger.error("[relay] Inference failed", {
 				model: payload.model,
 				source: entry.source_site_id,

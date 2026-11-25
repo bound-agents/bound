@@ -143,10 +143,18 @@ export interface RouteSupplyInfo {
 	/** The raw provider model id (e.g. `anthropic.claude-opus-5-5`), or null when unadvertised. */
 	provider_model_id: string | null;
 	drained: boolean;
-	/** `healthy` | `backoff` | `half_open` from the local router, else `unknown` (remote routes). */
+	/**
+	 * `healthy` | `backoff` | `half_open` as observed by the host that serves the
+	 * route, else `unknown` (no fresh observation: the host is not live, did not
+	 * answer in time, or its last snapshot aged out).
+	 */
 	health: "healthy" | "backoff" | "half_open" | "unknown";
 	/** Epoch-ms of the next half-open trial when `health === "backoff"`, else null. */
 	next_trial_at: number | null;
+	/** `local` (this host's router), `remote` (the serving host's snapshot), or null. Absent on older servers. */
+	health_source?: "local" | "remote" | null;
+	/** Epoch-ms when the observation was taken, on the answering server's clock. Absent on older servers. */
+	health_observed_at?: number | null;
 }
 
 /** A dormant `route_order` entry whose RouteId is advertised nowhere. */

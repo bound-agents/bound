@@ -202,6 +202,34 @@ describe("SettingsModelsView", () => {
 		expect(target.querySelector(".roles [role=alert]")?.textContent).toContain("ghost");
 	});
 
+	it("re-reads route health on its refresh tick, not only the countdown clock", async () => {
+		const ticks: Array<() => void> = [];
+		const realSetInterval = globalThis.setInterval;
+		globalThis.setInterval = ((fn: () => void, ms?: number) => {
+			if (ms === 30_000) ticks.push(fn);
+			return realSetInterval(() => {}, 1 << 30);
+		}) as typeof setInterval;
+		try {
+			const { target } = await mount();
+			const msiText = () =>
+				[...target.querySelectorAll(".route-row")]
+					.find((row) => row.textContent?.includes("on MSI"))
+					?.querySelector(".r-health")?.textContent;
+			expect(msiText()).toBe("Health not reported");
+			const recovered = structuredClone(MODELS);
+			const msi = recovered.models[0].routes[1];
+			msi.health = "healthy";
+			msi.health_source = "remote";
+			dom?.route("GET", "/api/routing/models", () => recovered);
+			expect(ticks.length).toBe(1);
+			ticks[0]();
+			await dom?.settle();
+			expect(msiText()).toBe("Healthy");
+		} finally {
+			globalThis.setInterval = realSetInterval;
+		}
+	});
+
 	it("shows an error message when the API fails", async () => {
 		dom = installDom();
 		dom.route("GET", "/api/routing/models", () => new Response("boom", { status: 500 }));

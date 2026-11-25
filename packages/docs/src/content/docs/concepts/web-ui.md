@@ -157,8 +157,8 @@ route and host counts, and a health dot. Display names come from the provider ca
 `models.dev`, then the raw provider model ID, with the highest-precedence source winning when routes
 disagree. Models that would share a name append their snapshot suffix in parentheses, such as
 `GPT-4o (2024-08-06)`. The health dot is green when a preferred route is healthy, amber when the
-model is serving through a fallback route, and gray when no route is available or status is unknown
-on this host.
+model is serving through a fallback route, and gray when no route is available or no host has
+reported the route's health.
 
 Selecting a model opens a detail pane listing its routes in preference order as
 `provider:model on host` (for example, `zai:glm-5.3-flash on MSI`). Each route shows its read-only
@@ -171,10 +171,18 @@ list**, or **Never fall back**.
 The **Roles & aliases** section maps the built-in `default`, `heavy`, and `fast` roles and custom
 alias names to available cluster models.
 
-Route health is per-host and is read from the local router. A route served only by a remote host
-reports its status as unknown on this host because the local router observes only its own outcomes.
-Route order, enabled routes, fallback policies, and alias mappings are cluster-synced, so an edit on
-any host applies everywhere.
+Route health belongs to the host that serves the route. That host records the outcome of every
+call it makes to the provider, including calls it runs for other hosts, and the page shows that
+host's view. For a route on another host, the host serving the page asks it over the cluster's
+authenticated sync connection, with a 4-second limit per host. It reuses an answer for 15 seconds
+and discards it after 60 seconds. A route reads `Health not reported` when its host has not sent a
+heartbeat in 5 minutes, did not answer in time, does not list the route, or last answered more
+than 60 seconds ago. A recent heartbeat on its own never marks a route healthy, and a missing
+answer never marks it failed. The page re-reads health every 30 seconds while open, and the model
+picker re-reads it each time it opens and every minute. These reports only drive the display:
+they never change how this host routes requests, and they are not synced. Route order, enabled
+routes, fallback policies, and alias mappings are cluster-synced, so an edit on any host applies
+everywhere.
 
 **Related documentation:** [Inference and model routing](/bound/concepts/inference/) explains
 route ranking, health recovery, drains, stickiness, and refusal fallback. [State, consistency,

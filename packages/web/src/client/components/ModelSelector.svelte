@@ -86,13 +86,32 @@
 		document.addEventListener("mousedown", onDocDown);
 		window.addEventListener("scroll", hideTip, true);
 		window.addEventListener("resize", hideTip);
+		const healthTimer = setInterval(() => void refreshRouting(), ROUTING_REFRESH_MS);
 		return () => {
 			document.removeEventListener("mousedown", onDocDown);
 			window.removeEventListener("scroll", hideTip, true);
 			window.removeEventListener("resize", hideTip);
+			clearInterval(healthTimer);
 			if (typeaheadTimer) clearTimeout(typeaheadTimer);
 		};
 	});
+
+	// Route health is reported by each serving host and changes over time; keep the
+	// dots current while the picker stays mounted, and re-read on every open.
+	const ROUTING_REFRESH_MS = 60_000;
+	let routingRefreshInFlight = false;
+
+	async function refreshRouting(): Promise<void> {
+		if (routingRefreshInFlight) return;
+		routingRefreshInFlight = true;
+		try {
+			routing = (await client.getRoutingModels()).models;
+		} catch {
+			// Keep the last snapshot.
+		} finally {
+			routingRefreshInFlight = false;
+		}
+	}
 
 	// Late hint: LineView may deliver the thread's model_hint after models load.
 	$effect(() => {
@@ -171,6 +190,7 @@
 			openUp = below < POPOVER_ESTIMATE && rect.top > below;
 		}
 		open = true;
+		void refreshRouting();
 		queueMicrotask(() => {
 			scrollActiveIntoView();
 			// Re-measure with the real height (listbox + pin section).

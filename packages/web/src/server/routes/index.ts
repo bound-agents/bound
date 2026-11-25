@@ -106,6 +106,12 @@ export interface RoutesConfig {
 	 * awaits the response. Absent when this host cannot relay.
 	 */
 	relayMcpAppProxy?: import("./mcp-apps").RelayMcpAppProxy;
+	/**
+	 * Peer route-health snapshot reader for Settings › Models and the model picker.
+	 * Asks a peer for its own RouteHealth over the authenticated `route_health`
+	 * durable-work kind. Absent → remote routes report `unknown`.
+	 */
+	relayRouteHealth?: import("./routing").RelayRouteHealth;
 }
 
 export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config: RoutesConfig) {
@@ -190,6 +196,8 @@ export function registerRoutes(db: Database, eventBus: TypedEventEmitter, config
 			undefined,
 			topologyRole,
 		),
-		routing: createRoutingRoutes(db, siteId, modelRouter ?? null),
+		routing: createRoutingRoutes(db, siteId, modelRouter ?? null, {
+			relayRouteHealth: config.relayRouteHealth,
+		}),
 	};
 }

@@ -59,7 +59,13 @@ import {
 } from "@bound/platforms";
 import type { ClusterFsResult } from "@bound/sandbox";
 import { parseDurationMs } from "@bound/shared";
-import type { KeyringConfig, Logger, McpConfig, StatusForwardPayload } from "@bound/shared";
+import type {
+	KeyringConfig,
+	Logger,
+	McpConfig,
+	RouteHealthSnapshot,
+	StatusForwardPayload,
+} from "@bound/shared";
 import {
 	BOUND_NAMESPACE,
 	DEFAULT_WARM_POKE_ACTIVE_WINDOW_MS,
@@ -69,6 +75,7 @@ import {
 	formatError,
 	injectTraceContext,
 	isUserFacingInterface,
+	routeHealthSnapshotSchema,
 } from "@bound/shared";
 import type { KeyManager } from "@bound/sync";
 import { createSyncServer, createWebServer } from "@bound/web";
@@ -206,6 +213,43 @@ export function createMcpAppProxyRelay(
 			{ deadline: Date.now() + timeoutMs, targetSiteId: ownerSiteId },
 		)) as { status: number; headers: Record<string, string>; body_base64: string };
 		return result;
+	};
+}
+
+/**
+ * Build the cross-host route-health snapshot reader for Settings › Models and
+ * the model picker. Asks `targetSiteId` for its own RouteHealth snapshot over the
+ * `route_health` durable-work kind (Ed25519-authenticated sync transport; no
+ * HTTP fetch to a peer URL) and awaits the `response:<requestId>` result within
+ * `timeoutMs`. Throws on a routing error (target not `work_spool_capable`),
+ * a remote error, a malformed snapshot, or expiry — the caller maps every throw
+ * to `unknown`, never to a provider failure.
+ */
+export function createRouteHealthRelay(
+	deps: Pick<AppContext, "db" | "siteId" | "optionalConfig">,
+): (targetSiteId: string, timeoutMs: number) => Promise<RouteHealthSnapshot> {
+	return async (targetSiteId, timeoutMs) => {
+		const routed = routeRelayRequest(deps.db, {
+			targetSiteId,
+			sourceSiteId: deps.siteId,
+			kind: "route_health",
+			payload: JSON.stringify({}),
+			timeoutMs,
+			topologyRole: resolveTopologyRole(deps.optionalConfig),
+		});
+		if (routed.path === "error") throw new Error(routed.reason);
+		const raw = await awaitPlatformRequestResponse(
+			{ db: deps.db, siteId: deps.siteId },
+			routed.id,
+			{ deadline: Date.now() + timeoutMs, targetSiteId, pollIntervalMs: 50 },
+		);
+		const parsed = routeHealthSnapshotSchema.safeParse(raw);
+		if (!parsed.success) {
+			throw new Error(
+				`Invalid route_health snapshot from ${targetSiteId}: ${parsed.error.message}`,
+			);
+		}
+		return parsed.data;
 	};
 }
 
@@ -604,6 +648,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			getMcpAppAccessToken: getMcpAppAccessToken ?? undefined,
 			// R-MO27b LEG B: relay a browser MCP-App proxy request to the owning host.
 			relayMcpAppProxy: createMcpAppProxyRelay(appContext),
+			// Settings › Models / model picker: read peers' own route-health snapshots.
+			relayRouteHealth: createRouteHealthRelay(appContext),
 		});
 		await webServer.start();
 

@@ -97,6 +97,8 @@ export interface WebServerConfig {
 	 * MCP-Apps proxy can relay to a peer-owned app-bearing server over the spool.
 	 */
 	relayMcpAppProxy?: import("./routes/mcp-apps").RelayMcpAppProxy;
+	/** Peer route-health snapshot reader for Settings › Models and the model picker. */
+	relayRouteHealth?: import("./routes/routing").RelayRouteHealth;
 }
 
 export interface SyncServerConfig extends SyncAppConfig {
@@ -201,6 +203,7 @@ export async function createWebServer(
 		oauthMcpBridge: config.oauthMcpBridge ?? null,
 		getMcpAppAccessToken: config.getMcpAppAccessToken,
 		relayMcpAppProxy: config.relayMcpAppProxy,
+		relayRouteHealth: config.relayRouteHealth,
 	};
 
 	const app = await createWebApp(db, eventBus, webAppConfig);

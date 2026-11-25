@@ -50,13 +50,33 @@
 	});
 	const current = $derived(models.find((m) => m.logical_model === selected) ?? null);
 
+	// Health comes from each serving host's own router; re-read it on the same
+	// cadence as the countdown so a mounted page tracks recovery and backoff.
+	const HEALTH_REFRESH_MS = 30_000;
+
 	onMount(() => {
 		void load();
 		const timer = setInterval(() => {
 			now = Date.now();
-		}, 30_000);
+			void refreshHealth();
+		}, HEALTH_REFRESH_MS);
 		return () => clearInterval(timer);
 	});
+
+	/**
+	 * Re-read routes (health included) without touching role edits or the error
+	 * banner. Skipped while an edit is in flight; that edit reloads on its own.
+	 */
+	async function refreshHealth(): Promise<void> {
+		if (busy !== null || loading) return;
+		try {
+			const m = await client.getRoutingModels();
+			if (busy !== null) return;
+			models = m.models;
+		} catch {
+			// Keep the last view; the next tick tries again.
+		}
+	}
 
 	async function load(): Promise<void> {
 		try {
@@ -120,7 +140,7 @@
 		}
 		if (r.health === "half_open") return "Trying again";
 		if (r.health === "healthy") return "Healthy";
-		return "Status unknown on this host";
+		return "Health not reported";
 	}
 
 	async function run(key: string, fn: () => Promise<unknown>, failure: string): Promise<void> {

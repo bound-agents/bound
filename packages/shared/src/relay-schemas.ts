@@ -128,6 +128,36 @@ export const mcpAppProxyResponsePayloadSchema = z.object({
 	headers: z.record(z.string(), z.string()),
 	body_base64: z.string(),
 });
+/**
+ * `route_health` request payload. Empty: the owner reports every route it serves.
+ * Strict so an unexpected field from a newer requester fails loudly rather than
+ * being silently ignored.
+ */
+export const routeHealthRequestPayloadSchema = z.object({}).strict();
+
+/**
+ * One route in a `route_health` snapshot. `next_trial_in_ms` is RELATIVE to the
+ * moment the owner built the snapshot, so the requester converts it against its
+ * own receipt clock instead of trusting a peer's wall clock (clock skew between
+ * hosts would otherwise shift the backoff countdown).
+ */
+export const routeHealthEntrySchema = z.object({
+	route_id: z.string().min(1),
+	status: z.enum(["healthy", "backoff", "half_open"]),
+	next_trial_in_ms: z.number().nonnegative().nullable(),
+});
+
+/**
+ * `route_health` response snapshot, carried as the JSON `stdout` of a `result`
+ * response (the same envelope `platform_request` uses).
+ */
+export const routeHealthSnapshotSchema = z.object({
+	routes: z.array(routeHealthEntrySchema),
+});
+
+export type RouteHealthEntry = z.infer<typeof routeHealthEntrySchema>;
+export type RouteHealthSnapshot = z.infer<typeof routeHealthSnapshotSchema>;
+
 export const clientResultPayloadSchema = z.object({
 	call_id: z.string().min(1),
 	content: z.string(),

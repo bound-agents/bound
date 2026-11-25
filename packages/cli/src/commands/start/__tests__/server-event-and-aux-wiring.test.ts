@@ -50,6 +50,7 @@ import { initServer } from "../server.js";
 import {
 	createMcpAppProxyRelay,
 	createRemotePlatformRequest,
+	createRouteHealthRelay,
 	formatNotification,
 } from "../server.js";
 
@@ -1641,6 +1642,46 @@ describe("createMcpAppProxyRelay", () => {
 				body_base64: "",
 			}),
 		).rejects.toThrow();
+	});
+});
+
+describe("createRouteHealthRelay", () => {
+	let tmpDir: string;
+	let db: Database;
+	let siteId: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "server-routehealth-"));
+		db = createDatabase(join(tmpDir, "t.db"));
+		applySchema(db);
+		siteId = randomUUID();
+	});
+
+	afterEach(() => {
+		db.close();
+		cleanupTmpDir(tmpDir);
+	});
+
+	it("throws (caller reports unknown) when the peer cannot be routed to", async () => {
+		const fn = createRouteHealthRelay({ db, siteId, optionalConfig: {} } as any);
+		await expect(fn(randomUUID(), 200)).rejects.toThrow();
+	});
+
+	it("throws when a routable peer does not answer within the bound", async () => {
+		const peer = randomUUID();
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO hosts (site_id, host_name, online_at, modified_at, deleted, work_spool_capable) VALUES (?, 'peer', ?, ?, 0, 1)",
+			[peer, now, now],
+		);
+		const fn = createRouteHealthRelay({ db, siteId, optionalConfig: {} } as any);
+		const started = Date.now();
+		await expect(fn(peer, 150)).rejects.toThrow(/Timeout/);
+		expect(Date.now() - started).toBeLessThan(2_000);
+		const row = db
+			.query("SELECT kind, target_site_id FROM durable_work WHERE kind = 'route_health'")
+			.get() as { kind: string; target_site_id: string } | null;
+		expect(row?.target_site_id).toBe(peer);
 	});
 });
 
