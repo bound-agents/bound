@@ -121,6 +121,7 @@ The close-condition probe lives on the tracker as `maybeCloseTurnIfIdle(db, thre
 - Spoke injects W3C traceparent into relay outbox entries via `injectTraceContext()` from `@bound/shared`.
 - Hub extracts parent context via `extractTraceContext()`, creates a `ScopedTraceCollector` (in-memory provider, NOT global), runs inference spans under it, flushes serialized spans as `trace_data` relay response (relay kind, dispatch: `"response"`).
 - Spoke receives `trace_data`, calls `reExportSpans()` to feed `SerializedSpan[]` into the local OTLP exporter via `getTraceExporter()`.
+- The hub publishes `trace_data` from its `finally`, after the terminal `stream_end` or `error` row, so the spoke's stream poller has usually stopped when it lands. A batch that lands in the same poll tick as the terminal row (including an `error` row) is re-exported and acked in that tick. After a remote terminal whose tick did not consume a batch, the spoke starts a detached drain (`startLateTraceDrain` in `relay-stream$.ts`) that keeps polling for that stream's `trace_data` for `lateTraceDrainMs` (default 60 s), claims and re-exports the batch, and acks it under its claim token. The drain ends at the first consumed batch and never delays the stream's completion. Cancelled and timed-out streams start no drain; their late batches expire unconsumed.
 
 ## Client tool trace propagation (WS protocol)
 

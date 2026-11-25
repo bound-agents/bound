@@ -1,5 +1,5 @@
 import Database from "bun:sqlite";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { tap } from "rxjs/operators";
 
 import { applySchema, insertDurableWork } from "@bound/core";
 import type { StreamChunk } from "@bound/llm";
-import { TypedEventEmitter } from "@bound/shared";
+import { TypedEventEmitter, setTraceExporter } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { createRelayStream$ } from "../relay-stream$";
 
@@ -1230,5 +1230,235 @@ describe("createRelayStream$ — remote error settlement (#310)", () => {
 		const row = rowState(db, "orphan-error");
 		expect(row.claim_state).toBe("pending");
 		expect(row.consumed_at).toBeNull();
+	});
+});
+
+describe("createRelayStream$ — late trace_data drain (#309)", () => {
+	let db: Database;
+	let tmpDir: string;
+	let exported: string[];
+
+	beforeEach(() => {
+		exported = [];
+		setTraceExporter({
+			export: (spans: Array<{ name: string }>, cb: (r: { code: number }) => void) => {
+				for (const span of spans) exported.push(span.name);
+				cb({ code: 0 });
+			},
+			shutdown: async () => {},
+		} as never);
+	});
+
+	afterEach(async () => {
+		setTraceExporter(null);
+		await cleanup(db, tmpDir);
+	});
+
+	const remoteHost = "spoke-1";
+
+	function spanFixture(name: string) {
+		return {
+			traceId: "0af7651916cd43dd8448eb211c80319c",
+			spanId: "b7ad6b7169203331",
+			parentSpanId: undefined,
+			name,
+			kind: 0,
+			startTimeUnixNano: "1000000000",
+			endTimeUnixNano: "2000000000",
+			attributes: {},
+			status: { code: 0 },
+			events: [],
+		};
+	}
+
+	function rowState(database: Database, id: string) {
+		return database
+			.prepare("SELECT claim_state, consumed_at, claim_token FROM durable_work WHERE id = ?")
+			.get(id) as { claim_state: string; consumed_at: string | null; claim_token: string | null };
+	}
+
+	function startStream(lateTraceDrainMs: number) {
+		const eventBus = new TypedEventEmitter();
+		const aborted$ = new Subject<void>();
+		const stream$ = createRelayStream$(
+			{ db, eventBus, siteId: "hub", logger: mockLogger },
+			payloadFixture as any,
+			[eligibleHostFixture(remoteHost, "spoke-1.local")] as any,
+			aborted$,
+			undefined,
+			{ perHostTimeoutMs: 5000, pollIntervalMs: 20, lateTraceDrainMs },
+		);
+		return { eventBus, aborted$, stream$ };
+	}
+
+	function insertTrace(streamId: string, id: string, spans: unknown[]) {
+		insertRelayInboxEntry(db, {
+			id,
+			sourceSiteId: remoteHost,
+			kind: "trace_data",
+			streamId,
+			payload: JSON.stringify(spans),
+		});
+	}
+
+	function insertEnd(streamId: string) {
+		insertRelayInboxEntry(db, {
+			id: "end",
+			sourceSiteId: remoteHost,
+			kind: "stream_end",
+			streamId,
+			payload: JSON.stringify({ seq: 0, chunks: [{ type: "text", content: "hi" }] }),
+		});
+	}
+
+	it("re-exports a trace batch that arrives before the terminal row", async () => {
+		({ db, tmpDir } = createTestDb());
+		const { eventBus, stream$ } = startStream(5_000);
+		const done = lastValueFrom(stream$, { defaultValue: undefined });
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		insertTrace(streamId, "trace-early", [spanFixture("relay.early")]);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "trace_data" as const });
+		await pollUntil(() => rowState(db, "trace-early").claim_state === "consumed", {
+			timeoutMs: 2000,
+			intervalMs: 10,
+		});
+		insertEnd(streamId);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_end" as const });
+		await done;
+
+		expect(exported).toEqual(["relay.early"]);
+		expect(rowState(db, "end").claim_state).toBe("consumed");
+	});
+
+	it("consumes and re-exports a trace batch published after stream_end without delaying completion", async () => {
+		({ db, tmpDir } = createTestDb());
+		const { eventBus, stream$ } = startStream(5_000);
+		const done = lastValueFrom(stream$, { defaultValue: undefined });
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		const started = Date.now();
+		insertEnd(streamId);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_end" as const });
+		await done;
+		// Completion is not held open for the 5s drain window.
+		expect(Date.now() - started).toBeLessThan(1_000);
+
+		insertTrace(streamId, "trace-late", [spanFixture("relay.late")]);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "trace_data" as const });
+		await pollUntil(() => rowState(db, "trace-late").claim_state === "consumed", {
+			timeoutMs: 2000,
+			intervalMs: 10,
+		});
+
+		const row = rowState(db, "trace-late");
+		expect(row.consumed_at).not.toBeNull();
+		expect(row.claim_token).toBeNull();
+		expect(exported).toEqual(["relay.late"]);
+	});
+
+	it("stops draining after the bounded window when no trace batch arrives", async () => {
+		({ db, tmpDir } = createTestDb());
+		const { eventBus, stream$ } = startStream(60);
+		const done = lastValueFrom(stream$, { defaultValue: undefined });
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		insertEnd(streamId);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "stream_end" as const });
+		await done;
+		await new Promise((r) => setTimeout(r, 150));
+
+		// Past the window: a straggler is left for expiry, not claimed.
+		insertTrace(streamId, "trace-too-late", [spanFixture("relay.too-late")]);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "trace_data" as const });
+		await new Promise((r) => setTimeout(r, 80));
+
+		expect(rowState(db, "trace-too-late").claim_state).toBe("pending");
+		expect(exported).toEqual([]);
+	});
+
+	it("drains a trace batch published after a remote error", async () => {
+		({ db, tmpDir } = createTestDb());
+		const { eventBus, stream$ } = startStream(5_000);
+		let error: Error | null = null;
+		const done = lastValueFrom(stream$, { defaultValue: undefined }).catch((err) => {
+			error = err;
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		insertRelayInboxEntry(db, {
+			id: "error-entry",
+			sourceSiteId: remoteHost,
+			kind: "error",
+			streamId,
+			payload: JSON.stringify({ error: "provider exploded", retriable: true }),
+		});
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "error" as const });
+		await done;
+		expect((error as Error | null)?.message).toBe("provider exploded");
+
+		insertTrace(streamId, "trace-after-error", [spanFixture("relay.after-error")]);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "trace_data" as const });
+		await pollUntil(() => rowState(db, "trace-after-error").claim_state === "consumed", {
+			timeoutMs: 2000,
+			intervalMs: 10,
+		});
+		expect(exported).toEqual(["relay.after-error"]);
+	});
+
+	it("re-exports and consumes a trace batch claimed in the same tick as a remote error", async () => {
+		({ db, tmpDir } = createTestDb());
+		const { eventBus, stream$ } = startStream(5_000);
+		let error: Error | null = null;
+		const done = lastValueFrom(stream$, { defaultValue: undefined }).catch((err) => {
+			error = err;
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		// Both rows land before one poll tick, so a single tick claims both.
+		insertRelayInboxEntry(db, {
+			id: "error-entry",
+			sourceSiteId: remoteHost,
+			kind: "error",
+			streamId,
+			payload: JSON.stringify({ error: "provider exploded", retriable: true }),
+		});
+		insertTrace(streamId, "trace-same-tick", [spanFixture("relay.same-tick")]);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "error" as const });
+		await done;
+		expect((error as Error | null)?.message).toBe("provider exploded");
+
+		await pollUntil(() => rowState(db, "trace-same-tick").claim_state === "consumed", {
+			timeoutMs: 2000,
+			intervalMs: 10,
+		});
+		const row = rowState(db, "trace-same-tick");
+		expect(row.consumed_at).not.toBeNull();
+		expect(row.claim_token).toBeNull();
+		expect(rowState(db, "error-entry").claim_state).toBe("consumed");
+		expect(exported).toEqual(["relay.same-tick"]);
+	});
+
+	it("does not drain trace batches for a cancelled stream", async () => {
+		({ db, tmpDir } = createTestDb());
+		const { eventBus, aborted$, stream$ } = startStream(5_000);
+		const done = lastValueFrom(stream$, { defaultValue: undefined });
+		await new Promise((r) => setTimeout(r, 20));
+		const streamId = getStreamIdFromOutbox(db);
+
+		aborted$.next();
+		await done;
+
+		insertTrace(streamId, "trace-cancelled", [spanFixture("relay.cancelled")]);
+		eventBus.emit("relay:inbox", { stream_id: streamId, kind: "trace_data" as const });
+		await new Promise((r) => setTimeout(r, 100));
+
+		expect(rowState(db, "trace-cancelled").claim_state).toBe("pending");
+		expect(exported).toEqual([]);
 	});
 });

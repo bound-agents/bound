@@ -34,11 +34,13 @@ import {
 	merge,
 	mergeMap,
 	scan,
+	startWith,
 	takeUntil,
 	takeWhile,
 	tap,
 	throwIfEmpty,
 	timeout,
+	timer,
 } from "rxjs";
 import { splitInferenceRequest } from "./inference-request-parts";
 import { type EligibleHost, routeRelayRequest } from "./relay-router";
@@ -69,10 +71,17 @@ export interface RelayStreamOptions {
 	 * deadline, so a live backend that makes no progress fails over promptly.
 	 */
 	firstTokenTimeoutMs?: number;
+	/**
+	 * How long a detached drain keeps polling for a `trace_data` batch the
+	 * remote publishes after the stream's terminal row. Bounded and detached:
+	 * it never delays user-visible completion.
+	 */
+	lateTraceDrainMs?: number;
 	scheduler?: SchedulerLike;
 }
 
 const POLL_INTERVAL_MS = 500;
+const LATE_TRACE_DRAIN_MS = 60_000;
 const MAX_GAP_CYCLES = 6;
 
 interface BufferedChunk {
@@ -97,6 +106,7 @@ interface ScanOutput {
 	// invoked by the pipeline AFTER the tick's chunks are emitted downstream.
 	settlesToRun: Array<() => void>;
 	activity: boolean;
+	traceConsumed: boolean;
 	done: boolean;
 	error: string | null;
 }
@@ -113,6 +123,66 @@ function errorThenSettle(message: string, settles: Array<() => void>): Observabl
 		subscriber.error(new Error(message));
 		for (const settle of settles) settle();
 	});
+}
+
+/** Re-export a claimed trace_data payload; unparseable payloads are retired unexported. */
+function reExportTracePayload(deps: RelayStreamDeps, payload: string, kind: string): void {
+	const spanResult = parseJsonUntyped(payload, kind);
+	if (spanResult.ok) {
+		reExportSpans(spanResult.value as SerializedSpan[], getTraceExporter(), deps.logger);
+	}
+}
+
+/**
+ * Claim, re-export, and token-fenced-ack any pending trace_data rows for the
+ * stream. Returns true when at least one batch was consumed.
+ */
+function drainTraceRowsOnce(deps: RelayStreamDeps, streamId: string): boolean {
+	const traceIds = readDurableResponsesByStreamId(deps.db, streamId, deps.siteId)
+		.filter((row) => row.kind === "trace_data")
+		.map((row) => row.id);
+	let consumed = false;
+	for (const claimed of claimDurableWorkByIds(deps.db, traceIds, deps.siteId)) {
+		if (!claimed.claim_token) continue;
+		reExportTracePayload(deps, claimed.payload, claimed.kind);
+		acknowledgeDurableWork(deps.db, claimed.id, claimed.claim_token);
+		consumed = true;
+	}
+	return consumed;
+}
+
+/**
+ * The remote publishes trace_data from its `finally`, after the terminal
+ * stream_end/error row, so the stream's own poller has usually stopped by the
+ * time it lands. Poll for it on a detached subscription — bounded by
+ * `windowMs`, ended by the first consumed batch (one trace_data per request) —
+ * so optional telemetry never holds user-visible completion open.
+ */
+function startLateTraceDrain(
+	deps: RelayStreamDeps,
+	streamId: string,
+	pollIntervalMs: number,
+	windowMs: number,
+	scheduler?: SchedulerLike,
+): void {
+	merge(
+		interval(pollIntervalMs, scheduler),
+		fromEventBus(deps.eventBus, "relay:inbox").pipe(
+			filter((event) => (event as Record<string, unknown>).stream_id === streamId),
+		),
+	)
+		.pipe(
+			startWith(0),
+			takeUntil(timer(windowMs, scheduler)),
+			takeWhile(() => !drainTraceRowsOnce(deps, streamId)),
+		)
+		.subscribe({
+			error: (error) =>
+				deps.logger.warn("RELAY_STREAM: late trace drain failed", {
+					streamId,
+					error: error instanceof Error ? error.message : String(error),
+				}),
+		});
 }
 
 const RELAY_ACTIVITY = Symbol("relay-activity");
@@ -159,6 +229,20 @@ function createStreamReducer(
 			});
 		}
 
+		// Handle trace_data responses (AC5.4) BEFORE the error branch: every row for
+		// this stream was claimed above, and the late-trace drain only reads pending
+		// rows, so a trace claimed in the error tick must be consumed here or it is
+		// stranded and dead-lettered. A batch landing after the terminal row is
+		// picked up by startLateTraceDrain instead.
+		const traceDataEntry = unionEntries.find((e) => e.kind === "trace_data");
+		if (traceDataEntry) {
+			reExportTracePayload(deps, traceDataEntry.payload, traceDataEntry.kind);
+			next.traceConsumed = true;
+			// trace_data is fire-and-forget (no downstream chunk emission); its re-export
+			// happens here, so settling it this tick keeps claim → deliver → ack order.
+			next.settlesToRun.push(traceDataEntry.settle);
+		}
+
 		const errorEntry = unionEntries.find((e) => e.kind === "error");
 		if (errorEntry) {
 			const errResult = parseJsonSafe(errorPayloadSchema, errorEntry.payload, errorEntry.kind);
@@ -169,21 +253,6 @@ function createStreamReducer(
 				? `Remote inference error: ${errorEntry.payload}`
 				: (errResult.value.error ?? "Remote inference error");
 			return next;
-		}
-
-		// Handle trace_data responses (AC5.4)
-		// Handle trace_data responses (AC5.4)
-		const traceDataEntry = unionEntries.find((e) => e.kind === "trace_data");
-		if (traceDataEntry) {
-			const spanResult = parseJsonUntyped(traceDataEntry.payload, traceDataEntry.kind);
-			if (spanResult.ok) {
-				const spans = spanResult.value as SerializedSpan[];
-				reExportSpans(spans, getTraceExporter(), deps.logger);
-			}
-			// trace_data is fire-and-forget (no downstream chunk emission); its re-export
-			// happens here, so settling it this tick keeps claim → deliver → ack order.
-			next.settlesToRun.push(traceDataEntry.settle);
-			// continue processing other entries
 		}
 
 		const streamEndEntry = unionEntries.find((e) => e.kind === "stream_end");
@@ -395,6 +464,7 @@ export function createRelayStream$(
 				chunksToEmit: [],
 				settlesToRun: [],
 				activity: false,
+				traceConsumed: false,
 				done: false,
 				error: null,
 			};
@@ -409,6 +479,18 @@ export function createRelayStream$(
 				takeWhile((s) => !s.done && !s.error, true),
 				tap((s) => {
 					if (s.done) hostSucceeded = true;
+					// A remote terminal (stream_end or error) means the remote's `finally`
+					// may still publish trace_data. Cancelled/timed-out streams never reach
+					// here, so they start no drain.
+					if ((s.done || s.error) && !s.traceConsumed) {
+						startLateTraceDrain(
+							deps,
+							streamId,
+							pollIntervalMs,
+							options?.lateTraceDrainMs ?? LATE_TRACE_DRAIN_MS,
+							options?.scheduler,
+						);
+					}
 				}),
 				mergeMap((s): Observable<RelayEmission> => {
 					const err = s.error;
