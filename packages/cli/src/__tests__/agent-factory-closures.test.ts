@@ -22,7 +22,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import { applyMetricsSchema, applySchema } from "@bound/core";
-import type { LLMBackend, StreamChunk } from "@bound/llm";
+import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { createClusterFs, loopContextStorage } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
@@ -935,4 +935,247 @@ describe("createAgentLoopFactory — aux dispatch needs a bindable client sessio
 		expect(result.rejected).toBeUndefined();
 		expect(result.summary).toContain("researched");
 	}, 30_000);
+});
+
+describe("createAgentLoopFactory — Yard aux() from a parent whose session is on another host (#295)", () => {
+	const usage = {
+		input_tokens: 10,
+		output_tokens: 5,
+		cache_write_tokens: null,
+		cache_read_tokens: null,
+		estimated: false,
+	};
+
+	/**
+	 * One backend serving both loops. The aux toolset structurally excludes
+	 * `aux`, so a tool-bearing request without it is the aux loop. The parent's first turn
+	 * runs a Yard that defines and invokes an aux; the aux's first turn runs a
+	 * Yard that calls the client tool `boundless_read`.
+	 */
+	class ParentAndAuxBackend implements LLMBackend {
+		mainCalls = 0;
+		auxCalls = 0;
+		auxToolNames: string[] = [];
+		constructor(private readonly parentProgram: string) {}
+		async *chat(params: ChatParams): AsyncGenerator<StreamChunk> {
+			const names = (params.tools ?? []).map((t) => t.function.name);
+			// Tool-less requests are utility calls (titles, summaries), not a loop turn.
+			if (names.length === 0) {
+				yield { type: "text" as const, content: "utility" };
+				yield { type: "done" as const, usage };
+				return;
+			}
+			const isAux = !names.includes("aux");
+			if (isAux) {
+				this.auxCalls++;
+				this.auxToolNames = names;
+				if (this.auxCalls === 1) {
+					// Runs inside the parent's Yard tree, so it inherits the root
+					// budget and must not declare its own.
+					yield* this.yardCall(
+						"aux_yard_1",
+						`function* main() { return yield tool("boundless_read", { file_path: "README.md" }); }`,
+						false,
+					);
+					return;
+				}
+				yield { type: "text" as const, content: "aux report: read README" };
+				yield { type: "done" as const, usage };
+				return;
+			}
+			this.mainCalls++;
+			if (this.mainCalls === 1) {
+				yield* this.yardCall("main_yard_1", this.parentProgram);
+				return;
+			}
+			yield { type: "text" as const, content: "parent done" };
+			yield { type: "done" as const, usage };
+		}
+		private *yardCall(id: string, program: string, root = true): Generator<StreamChunk> {
+			yield { type: "tool_use_start" as const, id, name: "yard" };
+			yield {
+				type: "tool_use_args" as const,
+				id,
+				partial_json: JSON.stringify(
+					root ? { program, budget: { timeout_seconds: 20, concurrency: 2 } } : { program },
+				),
+			};
+			yield { type: "tool_use_end" as const, id };
+			yield { type: "done" as const, usage };
+		}
+		capabilities() {
+			return {
+				streaming: true,
+				tool_use: true,
+				system_prompt: true,
+				prompt_caching: false,
+				vision: false,
+				max_context: 8000,
+			};
+		}
+	}
+
+	const parentProgram = `function* main() {
+		yield tool("aux", { action: "define", name: "scout", persona: "reads files" });
+		return yield aux("scout", "read README.md");
+	}`;
+
+	const clientTools = new Map([
+		[
+			"boundless_read",
+			{
+				type: "function" as const,
+				function: { name: "boundless_read", description: "read a file", parameters: {} },
+			},
+		],
+	]);
+
+	/** A boundless parent thread whose session lives on `remote-site`. */
+	function seedParent(db: Database, userId: string, remoteHostLive: boolean): string {
+		const now = new Date().toISOString();
+		const parentThreadId = randomUUID();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'boundless', 'test-site-id', ?, ?, ?, 0)",
+			[parentThreadId, userId, now, now, now],
+		);
+		db.run(
+			"INSERT INTO messages (id, thread_id, role, content, created_at, host_origin, deleted) VALUES (?, ?, 'user', 'fan out a reader', ?, 'test-site-id', 0)",
+			[randomUUID(), parentThreadId, now],
+		);
+		db.run(
+			"INSERT INTO client_sessions (id, connection_id, thread_id, site_id, created_at, deleted, modified_at) VALUES (?, 'remote-conn', ?, 'remote-site', ?, 0, ?)",
+			[randomUUID(), parentThreadId, now, now],
+		);
+		if (remoteHostLive) {
+			db.run(
+				"INSERT INTO hosts (site_id, host_name, sync_url, online_at, modified_at, deleted, work_spool_capable) VALUES ('remote-site', 'remote-host', NULL, ?, ?, 0, 1)",
+				[now, now],
+			);
+		}
+		return parentThreadId;
+	}
+
+	/** Plays the session host: answers every relayed client_tool with a client_result. */
+	function answerRelayedClientTools(db: Database, appContext: AppContext): () => void {
+		const answered = new Set<string>();
+		const timer = setInterval(() => {
+			const rows = db
+				.prepare("SELECT id, payload FROM durable_work WHERE kind = 'client_tool'")
+				.all() as Array<{ id: string; payload: string }>;
+			for (const row of rows) {
+				if (answered.has(row.id)) continue;
+				answered.add(row.id);
+				const request = JSON.parse(row.payload) as { call_id: string };
+				const now = new Date().toISOString();
+				db.prepare(
+					`INSERT INTO durable_work (id, target_site_id, source_site, kind, ref_id, idempotency_key, stream_id, payload, expires_at, received_at, claim_state, attempt_count, created_at)
+					 VALUES (?, 'test-site-id', 'remote-site', 'client_result', ?, ?, NULL, ?, ?, ?, 'pending', 0, ?)`,
+				).run(
+					randomUUID(),
+					row.id,
+					`response:${row.id}`,
+					JSON.stringify({ call_id: request.call_id, content: '"remote readme"', is_error: false }),
+					new Date(Date.now() + 60_000).toISOString(),
+					now,
+					now,
+				);
+				appContext.eventBus.emit("relay:inbox", { ref_id: row.id, kind: "client_result" });
+			}
+		}, 10);
+		return () => clearInterval(timer);
+	}
+
+	function parentToolResults(db: Database, parentThreadId: string): string {
+		const rows = db
+			.prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+			.all(parentThreadId) as Array<{ content: string }>;
+		return rows.map((r) => r.content).join("\n");
+	}
+
+	it("attached: the aux gets the client tools and its Yard relays them through the parent's session host", async () => {
+		const db = makeDb();
+		const appContext = makeAppContext(db);
+		const backend = new ParentAndAuxBackend(parentProgram);
+		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
+		const factory = createAgentLoopFactory(
+			appContext,
+			makeRouter(backend),
+			undefined,
+			clusterFsObj,
+		);
+		const userId = seedUser(db);
+		const parentThreadId = seedParent(db, userId, true);
+		const stop = answerRelayedClientTools(db, appContext);
+		try {
+			// No connectionId: the parent's loop runs here, its session elsewhere.
+			const loop = factory({
+				threadId: parentThreadId,
+				userId,
+				modelId: "mock-model",
+				clientTools,
+				platform: "boundless",
+			} as never);
+			await loop.run();
+		} finally {
+			stop();
+		}
+
+		expect(backend.auxToolNames).toContain("boundless_read");
+		const outbox = db
+			.prepare("SELECT target_site_id, payload FROM durable_work WHERE kind = 'client_tool'")
+			.all() as Array<{ target_site_id: string; payload: string }>;
+		expect(outbox).toHaveLength(1);
+		expect(outbox[0]?.target_site_id).toBe("remote-site");
+		// The call belongs to the aux thread; only the session lookup used the parent's.
+		const payload = JSON.parse(outbox[0]?.payload ?? "{}") as {
+			thread_id: string;
+			tool_name: string;
+		};
+		const auxThread = db
+			.prepare("SELECT parent_thread_id, agent_id FROM threads WHERE id = ?")
+			.get(payload.thread_id) as { parent_thread_id: string; agent_id: string } | null;
+		expect(auxThread?.parent_thread_id).toBe(parentThreadId);
+		expect(auxThread?.agent_id).toBeTruthy();
+		const auxResults = db
+			.prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+			.all(payload.thread_id) as Array<{ content: string }>;
+		expect(auxResults.map((r) => r.content).join("\n")).toContain("remote readme");
+		expect(parentToolResults(db, parentThreadId)).toContain("aux report: read README");
+	}, 60_000);
+
+	it("detached: the aux() effect rejects and the aux loop never runs", async () => {
+		const db = makeDb();
+		const appContext = makeAppContext(db);
+		const backend = new ParentAndAuxBackend(parentProgram);
+		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
+		const factory = createAgentLoopFactory(
+			appContext,
+			makeRouter(backend),
+			undefined,
+			clusterFsObj,
+		);
+		const userId = seedUser(db);
+		// Session row survives but its host is gone: attached, not bindable.
+		const parentThreadId = seedParent(db, userId, false);
+		const loop = factory({
+			threadId: parentThreadId,
+			userId,
+			modelId: "mock-model",
+			clientTools,
+			platform: "boundless",
+		} as never);
+		await loop.run();
+
+		expect(backend.auxCalls).toBe(0);
+		const results = parentToolResults(db, parentThreadId);
+		expect(results).toContain("Error:");
+		expect(results).toContain("client session unavailable for aux dispatch");
+		expect(
+			(
+				db.prepare("SELECT COUNT(*) AS n FROM durable_work WHERE kind = 'client_tool'").get() as {
+					n: number;
+				}
+			).n,
+		).toBe(0);
+	}, 60_000);
 });
