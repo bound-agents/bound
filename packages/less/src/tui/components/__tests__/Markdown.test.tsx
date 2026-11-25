@@ -94,3 +94,51 @@ describe("Markdown — formatting tweaks", () => {
 		expect(frame).toBe("Only para.");
 	});
 });
+
+describe("Markdown — tables honor the width budget (#275)", () => {
+	const visibleLines = (frame: string): string[] =>
+		stripSgr(frame)
+			.split("\n")
+			.map((l) => l.replace(/\s+$/, ""));
+
+	const narrowTable = [
+		"| Name | Description |",
+		"| --- | --- |",
+		"| alpha | the first entry has a long description that must wrap inside its cell |",
+		"| beta | short |",
+	].join("\n");
+
+	it("keeps every row and the separator within a narrow width, wrapping cells", () => {
+		const { lastFrame } = render(React.createElement(Markdown, { text: narrowTable, width: 30 }));
+		const lines = visibleLines(lastFrame() ?? "");
+		for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(30);
+		// Wrapped cell text survives in full, across several lines.
+		const joined = lines.join(" ").replace(/\s+/g, " ");
+		for (const word of "the first entry has a long description that must wrap inside its cell".split(
+			" ",
+		)) {
+			expect(joined).toContain(word);
+		}
+		// The long cell wraps, so the table spans more rows than header+sep+2 bodies.
+		expect(lines.filter((l) => l.trim().length > 0).length).toBeGreaterThan(4);
+		// The short column keeps its own text intact on one line.
+		expect(lines.some((l) => l.includes("alpha"))).toBe(true);
+		const sep = lines.find((l) => l.includes("\u2500")) ?? "";
+		expect(Bun.stringWidth(sep)).toBeGreaterThan(0);
+		expect(Bun.stringWidth(sep)).toBeLessThanOrEqual(30);
+	});
+
+	it("renders a table that fits at its natural width, one line per row", () => {
+		const text = ["| A | B |", "| --- | --- |", "| one | two |", "| three | four |"].join("\n");
+		const { lastFrame } = render(React.createElement(Markdown, { text, width: 80 }));
+		const lines = visibleLines(lastFrame() ?? "").filter((l) => l.trim().length > 0);
+		expect(lines).toHaveLength(4);
+		// Column 1 is 5 wide ("three") plus the 3-col gutter, so column 2 starts at 9;
+		// cells without an alignment marker are left-aligned.
+		expect(lines[0]).toMatch(/^ A {7}B$/);
+		expect(lines[2]).toMatch(/^ one {5}two$/);
+		expect(lines[3]).toMatch(/^ three {3}four$/);
+		// Separator spans the natural table width, not the full 80 columns.
+		expect(Bun.stringWidth(lines[1])).toBeLessThan(20);
+	});
+});

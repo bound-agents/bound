@@ -747,10 +747,11 @@ export function MessageBlock({
 	// Inner content renders at `stripeWidth - 2` (1 col stripe border +
 	// 1 col paddingLeft) — that's the effective wrap column.
 	const stripeWidth = Math.max(20, terminalColumns - 1);
+	const contentWidth = Math.max(10, stripeWidth - 2);
 	// Helper to render content with markdown support
 	const renderContent = (content: string | ContentBlock[]): React.ReactElement => {
 		if (typeof content === "string") {
-			return <Markdown text={stripTerminalControlSequences(content)} />;
+			return <Markdown text={stripTerminalControlSequences(content)} width={contentWidth} />;
 		}
 
 		// ContentBlock array — render text and image blocks in order. Image
@@ -766,7 +767,7 @@ export function MessageBlock({
 		let key = 0;
 		const flushText = () => {
 			if (textRun.length === 0) return;
-			parts.push(<Markdown key={`t-${key++}`} text={textRun.join("\n\n")} />);
+			parts.push(<Markdown key={`t-${key++}`} text={textRun.join("\n\n")} width={contentWidth} />);
 			textRun = [];
 		};
 		for (const block of content) {
@@ -885,7 +886,7 @@ export function MessageBlock({
 							<Text bold color={tokens.agentStripe}>
 								agent
 							</Text>
-							<Markdown text={inlineText} />
+							<Markdown text={inlineText} width={contentWidth} />
 						</Box>
 					)}
 					{toolUseBlocks.map((block, idx) => (
@@ -924,7 +925,7 @@ export function MessageBlock({
 							</Text>
 							<Text dimColor> aux</Text>
 						</Text>
-						<Markdown text={clipped.text} />
+						<Markdown text={clipped.text} width={Math.max(10, contentWidth - 2)} />
 					</Box>
 				</StripeBox>
 			);

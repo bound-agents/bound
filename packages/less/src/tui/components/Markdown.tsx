@@ -250,6 +250,42 @@ function headingColor(level: number): string {
 }
 
 /**
+ * Per-column cell gutter: one leading space plus two trailing columns between
+ * cells. A column of content width `w` occupies `w + TABLE_CELL_GUTTER`.
+ */
+const TABLE_CELL_GUTTER = 3;
+
+/**
+ * Fit table columns into `width` (issue #275). Columns that fit their fair
+ * share keep their natural width; the remaining budget is split evenly among
+ * the wider columns, whose cells then wrap. With no width (or a table that
+ * already fits) the natural widths are returned unchanged. Every column keeps
+ * at least one content column, so a pathologically narrow budget overflows
+ * rather than producing zero-width cells.
+ */
+function allocateColumnWidths(natural: number[], width: number | undefined): number[] {
+	const total = natural.reduce((sum, w) => sum + w + TABLE_CELL_GUTTER, 0);
+	if (!width || width <= 0 || total <= width) return natural;
+	const out = new Array<number>(natural.length).fill(0);
+	let remaining = Math.max(natural.length, width - natural.length * TABLE_CELL_GUTTER);
+	let open = natural.map((_, c) => c).sort((a, b) => natural[a] - natural[b]);
+	// Water-fill: settle every column narrower than the current fair share.
+	while (open.length > 0 && natural[open[0]] <= Math.floor(remaining / open.length)) {
+		const c = open[0];
+		out[c] = natural[c];
+		remaining -= natural[c];
+		open = open.slice(1);
+	}
+	const share = Math.floor(remaining / Math.max(1, open.length));
+	let extra = remaining - share * open.length;
+	for (const c of open.sort((a, b) => a - b)) {
+		out[c] = Math.max(1, share + (extra > 0 ? 1 : 0));
+		if (extra > 0) extra--;
+	}
+	return out;
+}
+
+/**
  * Renders a single block-level element as an Ink element. `width`, when set, is
  * the content column budget used to pre-wrap prose (issue #130); it is narrowed
  * for nested blocks (list-item text, blockquote inner) before recursion.
@@ -376,24 +412,22 @@ function renderBlock(el: MdElement, index: number, width?: number): React.ReactE
 				return typeof a === "string" ? a : null;
 			};
 
-			const colWidths: number[] = new Array(colCount).fill(0);
-			for (let c = 0; c < colCount; c++) {
-				colWidths[c] = Math.max(colWidths[c], cellText(headerCells[c]).length);
-				for (const row of bodyRows) {
-					colWidths[c] = Math.max(colWidths[c], cellText(row[c]).length);
-				}
-			}
+			// Natural column widths in display columns (wide glyphs count double).
+			const natural: number[] = Array.from({ length: colCount }, (_, c) =>
+				Math.max(
+					1,
+					Bun.stringWidth(cellText(headerCells[c])),
+					...bodyRows.map((row) => Bun.stringWidth(cellText(row[c]))),
+				),
+			);
+			const colWidths = allocateColumnWidths(natural, width);
 
-			// Pad a plain string to a given width respecting alignment
-			const pad = (text: string, w: number, align: string | null): string => {
-				const diff = w - text.length;
-				if (diff <= 0) return text;
-				if (align === "right") return " ".repeat(diff) + text;
-				if (align === "center") {
-					const left = Math.floor(diff / 2);
-					return " ".repeat(left) + text + " ".repeat(diff - left);
-				}
-				return text + " ".repeat(diff);
+			// Leading pad for one visual line of a cell, by the column's alignment.
+			// Cells without an alignment marker are left-aligned.
+			const leadPad = (slack: number, align: string | null): number => {
+				if (align === "right") return slack;
+				if (align === "center") return Math.floor(slack / 2);
+				return 0;
 			};
 
 			const renderRow = (
@@ -404,20 +438,29 @@ function renderBlock(el: MdElement, index: number, width?: number): React.ReactE
 				<Box key={rowKey}>
 					{Array.from({ length: colCount }, (_, c) => {
 						const cell = cells[c];
-						const text = cellText(cell);
 						const runs = elementsToRuns(
 							cell?.props?.children ?? null,
 							isHeader ? { bold: true } : {},
 						);
-						const slack = Math.max(0, colWidths[c] - text.length);
+						// Wrap the cell to its column so the row grows downward instead of
+						// overflowing the card; each visual line is aligned independently.
+						const lines = splitRunsOnNewlines(runs).flatMap((logical) =>
+							wrapStyledRuns(logical, colWidths[c]),
+						);
+						const align = isHeader ? null : alignOf(cell);
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: table cells are immutable parse output
-							<Box key={`${rowKey}-c${c}`} width={colWidths[c] + 3}>
+							<Box key={`${rowKey}-c${c}`} width={colWidths[c] + 3} flexShrink={0}>
 								<Text>
-									{" "}
-									{isHeader ? "" : pad("", slack, alignOf(cell))}
-									{runs.map((run, ri) => renderRun(run, `${rowKey}-c${c}-r${ri}`))}
-									{isHeader ? " ".repeat(slack) : ""}
+									{lines.flatMap((line, li) => {
+										const used = Bun.stringWidth(line.map((r) => r.text).join(""));
+										const pad = leadPad(Math.max(0, colWidths[c] - used), align);
+										return [
+											...(li > 0 ? ["\n"] : []),
+											" ".repeat(1 + pad),
+											...line.map((run, ri) => renderRun(run, `${rowKey}-c${c}-l${li}-r${ri}`)),
+										];
+									})}
 								</Text>
 							</Box>
 						);
@@ -425,7 +468,10 @@ function renderBlock(el: MdElement, index: number, width?: number): React.ReactE
 				</Box>
 			);
 
-			const separatorStr = colWidths.map((w) => "\u2500".repeat(w + 2)).join("\u2500");
+			const naturalSeparator = colWidths.reduce((sum, w) => sum + w + 3, 0) - 1;
+			const separatorWidth =
+				width && width > 0 ? Math.min(width, naturalSeparator) : naturalSeparator;
+			const separatorStr = "\u2500".repeat(Math.max(1, separatorWidth));
 			return (
 				<Box key={key} flexDirection="column">
 					{headerCells.length > 0 && renderRow(headerCells, true, `th-${index}`)}
