@@ -66,6 +66,15 @@ export function listDrainedRouteIds(db: Database): string[] {
 	return rows.map((r) => r.route_id);
 }
 
+/** Every live drain with its operator reason and timestamp. */
+export function listRouteDrains(
+	db: Database,
+): Array<{ route_id: string; drained_at: string; reason: string | null }> {
+	return db
+		.query("SELECT route_id, drained_at, reason FROM route_drains WHERE deleted = 0")
+		.all() as Array<{ route_id: string; drained_at: string; reason: string | null }>;
+}
+
 /** Live alias override for a provider_key (`${provider}:${provider_model_id}`), or null. */
 export function findModelAlias(db: Database, providerKey: string): ModelAliasRow | null {
 	return db

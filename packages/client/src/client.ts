@@ -32,6 +32,7 @@ import type {
 	HostStatus,
 	MemoryGraphResponse,
 	MetricsTokenTotals,
+	ModelReferenceReportInfo,
 	ModelsResponse,
 	NetworkStatus,
 	RedactMessageResult,
@@ -939,6 +940,10 @@ export class BoundClient {
 
 	async getClusterDefaults(): Promise<ClusterDefaultsResponse> {
 		return this.fetchJson("/api/routing/cluster-defaults");
+	}
+
+	async getModelReferences(): Promise<ModelReferenceReportInfo> {
+		return this.fetchJson("/api/routing/references");
 	}
 
 	async setRouteOrder(logicalModel: string, routeOrder: string[]): Promise<{ ok: true }> {

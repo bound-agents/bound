@@ -12,6 +12,7 @@
 		viaHost = null,
 		viaProvider = null,
 		pinned = false,
+		kind = null,
 	} = $props<{
 		model: string;
 		/** Friendly host name of the serving route when off-preferred, else null. */
@@ -20,10 +21,19 @@
 		viaProvider?: string | null;
 		/** True when the thread is hard-pinned to a specific RouteId. */
 		pinned?: boolean;
+		/** Why the turn ran off-preferred: a model swap or a same-model route failover. */
+		kind?: "substitution" | "failover" | null;
 	}>();
 
 	const offPreferred = $derived(viaHost !== null || viaProvider !== null);
 	const viaLabel = $derived(offPreferred ? `${viaHost ?? "?"} / ${viaProvider ?? "?"}` : "");
+	const viaTitle = $derived(
+		kind === "substitution"
+			? "Model substituted after a refusal"
+			: kind === "failover"
+				? "Same model, served by a backup route after a route error"
+				: "Served off the preferred route",
+	);
 </script>
 
 <span class="chip" class:pinned title={pinned ? `Pinned route: ${viaLabel || model}` : undefined}>
@@ -32,7 +42,7 @@
 	{/if}
 	<span class="name">{model}</span>
 	{#if offPreferred}
-		<span class="via" title="Using a fallback route">
+		<span class="via" title={viaTitle}>
 			· via {viaLabel}
 		</span>
 	{/if}

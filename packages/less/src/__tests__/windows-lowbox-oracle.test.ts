@@ -403,6 +403,16 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 					cleanup = JSON.parse(cleanupProbe.stdout);
 					if (!cleanup.Journal && !cleanup.Profile && cleanup.LowboxAces === 0) {
 						cleanupObservedAt = Date.now();
+						// Re-probe after cleanup is observed: the child may have died while
+						// inspect-cleanup ran, leaving the pre-probe value stale.
+						if (childAlive) {
+							try {
+								kill(childPid, 0);
+							} catch {
+								childAlive = false;
+								if (childDeadAt === 0) childDeadAt = cleanupObservedAt;
+							}
+						}
 						expect(childAlive, "failure cleanup completed while the lowbox child was alive").toBe(
 							false,
 						);

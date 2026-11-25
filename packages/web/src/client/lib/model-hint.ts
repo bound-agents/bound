@@ -1,3 +1,5 @@
+import { compareLabels, parseRouteId } from "./model-labels";
+
 interface ModelEntry {
 	id: string;
 	logical_model?: string;
@@ -45,7 +47,7 @@ export function buildModelOptions(models: ModelEntry[], routing: RoutingEntry[])
 			push(logical, name);
 		}
 	}
-	return options.sort((a, b) => a.label.localeCompare(b.label));
+	return options.sort((a, b) => compareLabels(a.label, b.label));
 }
 
 /**
@@ -66,7 +68,7 @@ export function logicalModelFor(
 	if (logical && options.some((o) => o.id === logical)) return logical;
 	for (const entry of routing) {
 		for (const r of entry.routes ?? []) {
-			if (r.route_id.split(":").slice(2).join(":") !== modelId) continue;
+			if (parseRouteId(r.route_id)?.backendId !== modelId) continue;
 			if (options.some((o) => o.id === entry.logical_model)) return entry.logical_model;
 		}
 	}

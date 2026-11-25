@@ -102,6 +102,7 @@ describe("SettingsModelsView", () => {
 
 	it("shows routes as provider:model on host with an Enabled toggle mapped to drains", async () => {
 		const { target } = await mount();
+		(globalThis as unknown as { window: { prompt: () => string } }).window.prompt = () => "";
 		const rows = [...target.querySelectorAll(".route-row:not(.stale)")];
 		expect(rows[0]?.textContent).toContain("codex:sol");
 		expect(rows[0]?.textContent).toContain("on hub");
@@ -189,17 +190,19 @@ describe("SettingsModelsView", () => {
 		});
 	});
 
-	it("rejects an alias that targets a model the cluster does not have", async () => {
+	it("marks a dangling role unavailable with a Clear action, and saves after clearing", async () => {
 		const { target } = await mount(MODELS, { ...DEFAULTS, roles: { ghost: "nope" } });
-		let called = false;
-		dom?.route("PUT", "/api/routing/cluster-defaults", () => {
-			called = true;
+		let putBody: unknown = null;
+		dom?.route("PUT", "/api/routing/cluster-defaults", (req) => {
+			putBody = req.body;
 			return { ok: true };
 		});
+		expect(target.querySelector(".roles")?.textContent).toContain("nope (unavailable)");
+		click([...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Clear"));
+		await dom?.settle();
 		click([...target.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save"));
 		await dom?.settle();
-		expect(called).toBe(false);
-		expect(target.querySelector(".roles [role=alert]")?.textContent).toContain("ghost");
+		expect(JSON.stringify(putBody)).not.toContain("nope");
 	});
 
 	it("re-reads route health on its refresh tick, not only the countdown clock", async () => {
@@ -210,13 +213,15 @@ describe("SettingsModelsView", () => {
 			return realSetInterval(() => {}, 1 << 30);
 		}) as typeof setInterval;
 		try {
-			const { target } = await mount();
+			const live = structuredClone(MODELS);
+			live.models[0].routes[1].drained = false;
+			const { target } = await mount(live);
 			const msiText = () =>
 				[...target.querySelectorAll(".route-row")]
 					.find((row) => row.textContent?.includes("on MSI"))
 					?.querySelector(".r-health")?.textContent;
-			expect(msiText()).toBe("Health not reported");
-			const recovered = structuredClone(MODELS);
+			expect(msiText()).toBe("Unknown");
+			const recovered = structuredClone(live);
 			const msi = recovered.models[0].routes[1];
 			msi.health = "healthy";
 			msi.health_source = "remote";

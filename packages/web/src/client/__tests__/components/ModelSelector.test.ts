@@ -318,7 +318,7 @@ describe("ModelSelector", () => {
 		const after = dom?.requests.filter((r) => r.path === "/api/routing/models").length ?? 0;
 		expect(after).toBe(before + 1);
 		const dot = target.querySelector("#model .health-dot") ?? target.querySelector(".health-dot");
-		expect(dot?.classList.contains("fallback")).toBe(true);
+		expect(dot?.classList.contains("degraded")).toBe(true);
 	});
 
 	it("surfaces no options and leaves the store untouched when the API fails", async () => {
@@ -331,5 +331,36 @@ describe("ModelSelector", () => {
 		await dom.settle();
 		expect(target.querySelectorAll('[role="option"]').length).toBe(0);
 		expect(modelStore.getModel()).toBe("");
+	});
+});
+
+describe("ModelSelector search", () => {
+	it("filters by display name or logical id and selects with Enter", async () => {
+		const models: Model[] = [
+			{ id: "a", logical_model: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5", host: "h" },
+			{ id: "b", logical_model: "gpt-6-sol", display_name: "GPT-6 Sol", host: "h" },
+			{ id: "c", logical_model: "kimi-k3", display_name: "Kimi K3", host: "h" },
+		];
+		const { target, modelStore } = await mount(models, "gpt-6-sol");
+		const trigger = target.querySelector("#model") as HTMLButtonElement;
+		trigger.dispatchEvent(new (globalThis as typeof window).Event("click", { bubbles: true }));
+		await dom?.settle();
+		const search = target.querySelector(".popover .search") as HTMLInputElement;
+		expect(search).not.toBeNull();
+		search.value = "SONNET";
+		search.dispatchEvent(new (globalThis as typeof window).Event("input", { bubbles: true }));
+		await dom?.settle();
+		const labels = [...target.querySelectorAll(".option .option-label")].map((n) => n.textContent);
+		expect(labels).toEqual(["Claude Sonnet 5.5"]);
+		search.dispatchEvent(
+			new (globalThis as typeof window).KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+		);
+		await dom?.settle();
+		expect(target.querySelector(".popover")).toBeNull();
+		let current = "";
+		modelStore.subscribe((s: unknown) => {
+			current = typeof s === "string" ? s : JSON.stringify(s);
+		})();
+		expect(current).toContain("claude-sonnet-5-5");
 	});
 });

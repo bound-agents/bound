@@ -143,6 +143,10 @@ export interface RouteSupplyInfo {
 	/** The raw provider model id (e.g. `anthropic.claude-opus-5-5`), or null when unadvertised. */
 	provider_model_id: string | null;
 	drained: boolean;
+	/** Operator reason recorded with the drain. Absent on older servers. */
+	drain_reason?: string | null;
+	/** ISO time the route was drained. Absent on older servers. */
+	drained_at?: string | null;
 	/**
 	 * `healthy` | `backoff` | `half_open` as observed by the host that serves the
 	 * route, else `unknown` (no fresh observation: the host is not live, did not
@@ -194,6 +198,17 @@ export interface ClusterDefaultsResponse {
 	 */
 	roles: { default?: string; heavy?: string; fast?: string; [name: string]: string | undefined };
 	aliases: Array<{ provider_key: string; logical_model: string | null }>;
+}
+
+/** Stale/dangling routing reference report (`GET /api/routing/references`). */
+export interface ModelReferenceReportInfo {
+	staleRouteOrderEntries: Array<{ logicalModel: string; routeId: string }>;
+	staleRouteDrains: string[];
+	staleModelAliases: Array<{ providerKey: string; logicalModel: string }>;
+	staleFallbackModels: string[];
+	danglingRoles: Array<{ role: string; logicalModel: string }>;
+	danglingAgents: Array<{ agentName: string; logicalModel: string }>;
+	danglingTasks: Array<{ taskId: string; logicalModel: string }>;
 }
 
 /** One recorded inference attempt within a turn (per-turn provenance footer). */

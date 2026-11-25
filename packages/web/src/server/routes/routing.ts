@@ -4,15 +4,16 @@ import {
 	findClusterConfigKeyByKey,
 	findClusterConfigValueByKey,
 	findModelAliasIncludingDeleted,
+	findModelRoutingRule,
 	findModelRoutingRuleIncludingDeleted,
 	findRouteDrainIncludingDeleted,
 	getSiteId,
 	insertRow,
-	listDrainedRouteIds,
 	listHostSiteIdNameAndModels,
 	listHostsWithLiveness,
 	listModelAliases,
 	listModelRoutingRules,
+	listRouteDrains,
 	softDelete,
 	updateRow,
 } from "@bound/core";
@@ -65,6 +66,10 @@ interface RouteSupply {
 	/** Which metadata source the display name came from, for the per-model consistency rule. */
 	display_name_source: DisplayNameSource;
 	drained: boolean;
+	/** Operator reason recorded with the drain, or null. */
+	drain_reason?: string | null;
+	/** ISO time the route was drained, or null. */
+	drained_at?: string | null;
 	/** `healthy` | `backoff` | `half_open` as observed by the serving host, else `unknown`. */
 	health: "healthy" | "backoff" | "half_open" | "unknown";
 	/** Epoch-ms of the next half-open trial when `health === "backoff"`, else null. */
@@ -118,9 +123,14 @@ interface ModelSettings {
  * host-independent (never keyed on RouteId or site id, which are internal). When
  * no route advertises a name, fall back to the logical model id itself.
  */
-function resolveModelDisplayName(logical: string, routes: RouteSupply[]): string {
+export function resolveModelDisplayName(
+	logical: string,
+	routes: Array<
+		Pick<RouteSupply, "display_name" | "display_name_source" | "provider_model_id" | "route_id">
+	>,
+): string {
 	const rank = (s: DisplayNameSource): number => (s === "named" ? 0 : s === "id-fallback" ? 1 : 2);
-	let best: RouteSupply | null = null;
+	let best: (typeof routes)[number] | null = null;
 	for (const r of routes) {
 		if (r.display_name === null) continue;
 		if (best === null) {
@@ -225,7 +235,7 @@ function validateFallbackPolicy(body: unknown): ModelFallbackPolicy | null {
  * (`${siteId}:${provider}:${backendId}`) when present, else the entry's own
  * provider hint, else null.
  */
-function collectSupply(db: Database): Map<string, RouteSupply[]> {
+export function collectSupply(db: Database): Map<string, RouteSupply[]> {
 	const byModel = new Map<string, RouteSupply[]>();
 	for (const host of listHostSiteIdNameAndModels(db)) {
 		if (host.models === null) continue;
@@ -465,7 +475,7 @@ export function createRoutingRoutes(
 			const supply = collectSupply(db);
 			const peers = await collectPeerHealth(supply);
 			const localSite = resolveSiteId();
-			const drained = new Set(listDrainedRouteIds(db));
+			const drainRows = new Map(listRouteDrains(db).map((d) => [d.route_id, d]));
 			const rules = new Map(listModelRoutingRules(db).map((r) => [r.logical_model, r]));
 			const report = analyzeModelReferences(db, normalizeModelKey);
 			const staleByModel = new Map<string, StaleRoute[]>();
@@ -490,7 +500,13 @@ export function createRoutingRoutes(
 				const rule = rules.get(logical);
 				const routeOrder = parseRouteOrder(rule?.route_order ?? null);
 				const routes = (supply.get(logical) ?? []).map((r): RouteSupply => {
-					const base = { ...r, drained: drained.has(r.route_id) };
+					const d = drainRows.get(r.route_id);
+					const base = {
+						...r,
+						drained: d !== undefined,
+						drain_reason: d?.reason ?? null,
+						drained_at: d?.drained_at ?? null,
+					};
 					if (r.site_id === localSite) {
 						const health = localHealth(modelRouter, r.route_id);
 						return {
@@ -522,8 +538,8 @@ export function createRoutingRoutes(
 					const rb = rank.get(b.route_id) ?? Number.POSITIVE_INFINITY;
 					if (ra !== rb) return ra - rb;
 					// Tie-break: local (this host's siteId) before remote, then by RouteId.
-					const aLocal = a.site_id === siteId ? 0 : 1;
-					const bLocal = b.site_id === siteId ? 0 : 1;
+					const aLocal = a.site_id === localSite ? 0 : 1;
+					const bLocal = b.site_id === localSite ? 0 : 1;
 					if (aLocal !== bLocal) return aLocal - bLocal;
 					return a.route_id < b.route_id ? -1 : a.route_id > b.route_id ? 1 : 0;
 				});
@@ -537,7 +553,11 @@ export function createRoutingRoutes(
 				});
 			}
 			disambiguateDisplayNames(out);
-			out.sort((a, b) => (a.logical_model < b.logical_model ? -1 : 1));
+			out.sort(
+				(a, b) =>
+					a.display_name.localeCompare(b.display_name, undefined, { sensitivity: "base" }) ||
+					(a.logical_model < b.logical_model ? -1 : a.logical_model > b.logical_model ? 1 : 0),
+			);
 			return c.json({ models: out });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
@@ -593,6 +613,13 @@ export function createRoutingRoutes(
 		if (!Array.isArray(order) || !order.every((x) => typeof x === "string")) {
 			return c.json({ error: "route_order must be an array of RouteId strings" }, 400);
 		}
+		const advertised = new Set((collectSupply(db).get(logical) ?? []).map((r) => r.route_id));
+		const existingOrder = parseRouteOrder(findModelRoutingRule(db, logical)?.route_order ?? null);
+		const known = new Set([...advertised, ...(existingOrder ?? [])]);
+		const unknown = (order as string[]).find((id) => !known.has(id));
+		if (unknown !== undefined) {
+			return c.json({ error: `Unknown route "${unknown}" for model "${logical}"` }, 422);
+		}
 		try {
 			upsertRule(logical, { route_order: JSON.stringify(order) });
 			return c.json({ ok: true });
@@ -611,9 +638,22 @@ export function createRoutingRoutes(
 		} catch {
 			return c.json({ error: "Invalid JSON body" }, 400);
 		}
-		const policy = validateFallbackPolicy(body);
+		let policy = validateFallbackPolicy(body);
 		if (!policy) {
 			return c.json({ error: "Invalid fallback policy" }, 400);
+		}
+		if (policy.mode === "custom") {
+			if (policy.models.includes(logical)) {
+				return c.json({ error: `Model "${logical}" cannot fall back to itself` }, 422);
+			}
+			const prior = parseFallbackPolicy(findModelRoutingRule(db, logical)?.fallback_policy ?? null);
+			const priorModels = new Set(prior.mode === "custom" ? prior.models : []);
+			const supplied = collectSupply(db);
+			const unknown = policy.models.find((m) => !supplied.has(m) && !priorModels.has(m));
+			if (unknown !== undefined) {
+				return c.json({ error: `Unknown fallback model "${unknown}"` }, 422);
+			}
+			if (policy.models.length === 0) policy = { mode: "never" };
 		}
 		try {
 			upsertRule(logical, { fallback_policy: JSON.stringify(policy) });
@@ -627,10 +667,17 @@ export function createRoutingRoutes(
 	// POST /routes/:routeId/drain — drain a route (exclude from candidates).
 	app.post("/routes/:routeId/drain", async (c) => {
 		const routeId = c.req.param("routeId");
+		const advertised = [...collectSupply(db).values()].some((routes) =>
+			routes.some((r) => r.route_id === routeId),
+		);
+		if (!advertised) {
+			return c.json({ error: `Unknown route "${routeId}"` }, 422);
+		}
 		let reason: string | null = null;
 		try {
 			const body = (await c.req.json()) as { reason?: unknown };
-			if (typeof body.reason === "string") reason = body.reason;
+			if (typeof body.reason === "string" && body.reason.trim())
+				reason = body.reason.trim().slice(0, 200);
 		} catch {
 			// No body is fine — drain with a null reason.
 		}
@@ -779,6 +826,32 @@ export function createRoutingRoutes(
 				}
 				if (typeof target !== "string") {
 					return c.json({ error: `Role/alias "${name}" must map to a string logical model` }, 400);
+				}
+			}
+		}
+		if (fallback !== undefined || roles !== undefined) {
+			const supplied = collectSupply(db);
+			const parseStored = (key: string): unknown => {
+				try {
+					const raw = findClusterConfigValueByKey(db, key)?.value;
+					return raw ? JSON.parse(raw) : null;
+				} catch {
+					return null;
+				}
+			};
+			if (roles !== undefined) {
+				const stored = (parseStored(ROUTING_MODEL_ROLES_KEY) ?? {}) as Record<string, unknown>;
+				for (const [name, target] of Object.entries(roles as Record<string, string>)) {
+					if (target === "" || supplied.has(target) || stored[name] === target) continue;
+					return c.json({ error: `Role/alias "${name}" targets unknown model "${target}"` }, 422);
+				}
+			}
+			if (fallback !== undefined) {
+				const stored = parseStored(ROUTING_DEFAULT_FALLBACK_MODELS_KEY);
+				const prior = new Set(Array.isArray(stored) ? stored : []);
+				const unknown = (fallback as string[]).find((m) => !supplied.has(m) && !prior.has(m));
+				if (unknown !== undefined) {
+					return c.json({ error: `Unknown default fallback model "${unknown}"` }, 422);
 				}
 			}
 		}

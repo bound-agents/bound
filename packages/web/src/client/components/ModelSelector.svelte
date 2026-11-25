@@ -3,13 +3,14 @@
 	import { Cpu } from "lucide-svelte";
 	import { onMount } from "svelte";
 	import { client } from "../lib/bound";
+	import { type ModelHealthState, modelHealthState, routeHealthLabel } from "../lib/model-health";
 	import {
 		type ModelOption,
 		buildModelOptions,
 		logicalModelFor,
 		resolveInitialModel,
 	} from "../lib/model-hint";
-	import { buildModelLabels } from "../lib/model-labels";
+	import { buildModelLabels, compareLabels } from "../lib/model-labels";
 	import { modelStore } from "../lib/modelStore";
 	import ModelHealthDot from "./ModelHealthDot.svelte";
 
@@ -46,6 +47,16 @@
 	let tipUp = $state(false);
 	let typeahead = "";
 	let typeaheadTimer: ReturnType<typeof setTimeout> | null = null;
+	let query = $state("");
+	let searchEl: HTMLInputElement | undefined = $state(undefined);
+	// Case-insensitive substring filter over display name and logical id.
+	const filtered = $derived.by(() => {
+		const q = query.trim().toLowerCase();
+		const list = q
+			? options.filter((o) => o.label.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
+			: options;
+		return [...list].sort((a, b) => compareLabels(a.label, b.label));
+	});
 	const TIP_WIDTH = 320;
 	const TIP_GAP = 6;
 	const POPOVER_ESTIMATE = 360;
@@ -144,24 +155,12 @@
 		return routing.find((m) => m.logical_model === modelId)?.routes ?? [];
 	}
 
-	// Three-state health: green if any live route is healthy, amber if only a
-	// backoff/half-open route can serve, grey if none or unobservable (§9.1).
-	function healthFor(modelId: string): "healthy" | "fallback" | "none" | "unknown" {
-		const entry = routing.find((m) => m.logical_model === modelId);
-		if (!entry) return "unknown";
-		const live = entry.routes.filter((r) => !r.drained);
-		if (live.length === 0) return "none";
-		if (live.some((r) => r.health === "healthy")) return "healthy";
-		if (live.some((r) => r.health === "backoff" || r.health === "half_open")) return "fallback";
-		return "unknown";
+	function healthFor(modelId: string): ModelHealthState {
+		return modelHealthState(routing.find((m) => m.logical_model === modelId)?.routes);
 	}
 
 	function healthText(r: RouteSupplyInfo): string {
-		if (r.drained) return "Disabled";
-		if (r.health === "half_open") return "Retrying";
-		if (r.health === "backoff") return "Backing off";
-		if (r.health === "healthy") return "Healthy";
-		return "Unknown";
+		return routeHealthLabel(r);
 	}
 
 	function routeLine(r: RouteSupplyInfo): string {
@@ -221,6 +220,7 @@
 	function openList(): void {
 		if (options.length === 0) return;
 		tipVisible = false;
+		query = "";
 		activeIndex = Math.max(
 			0,
 			options.findIndex((o) => o.id === selectedModel),
@@ -232,6 +232,7 @@
 			// Re-measure with the real height.
 			placePopover();
 			scrollActiveIntoView();
+			searchEl?.focus({ preventScroll: true });
 		});
 	}
 
@@ -266,9 +267,14 @@
 	}
 
 	function move(to: number): void {
-		if (options.length === 0) return;
-		activeIndex = Math.min(options.length - 1, Math.max(0, to));
+		if (filtered.length === 0) return;
+		activeIndex = Math.min(filtered.length - 1, Math.max(0, to));
 		scrollActiveIntoView();
+	}
+
+	function onSearchKeydown(e: KeyboardEvent): void {
+		if (e.key === " ") return; // a space is part of the query
+		if (["ArrowDown", "ArrowUp", "Enter", "Escape", "Tab"].includes(e.key)) onKeydown(e);
 	}
 
 	function onKeydown(e: KeyboardEvent): void {
@@ -294,12 +300,12 @@
 				return;
 			case "End":
 				e.preventDefault();
-				move(options.length - 1);
+				move(filtered.length - 1);
 				return;
 			case "Enter":
 			case " ":
 				e.preventDefault();
-				if (options[activeIndex]) choose(options[activeIndex].id);
+				if (filtered[activeIndex]) choose(filtered[activeIndex].id);
 				return;
 			case "Escape":
 				e.preventDefault();
@@ -310,13 +316,11 @@
 				return;
 		}
 		if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-			typeahead += e.key.toLowerCase();
-			if (typeaheadTimer) clearTimeout(typeaheadTimer);
-			typeaheadTimer = setTimeout(() => {
-				typeahead = "";
-			}, 600);
-			const idx = options.findIndex((o) => o.label.toLowerCase().startsWith(typeahead));
-			if (idx >= 0) move(idx);
+			// Typing anywhere in the popover lands in the search box.
+			e.preventDefault();
+			query += e.key;
+			activeIndex = 0;
+			searchEl?.focus({ preventScroll: true });
 		}
 	}
 </script>
@@ -401,6 +405,20 @@
 			}}
 			style={popMaxHeight ? `max-height: ${popMaxHeight}px` : undefined}
 		>
+			<input
+				class="search"
+				type="text"
+				bind:this={searchEl}
+				bind:value={query}
+				oninput={() => (activeIndex = 0)}
+				onkeydown={onSearchKeydown}
+				placeholder="Search models"
+				aria-label="Search models"
+				aria-controls="model-listbox"
+				aria-activedescendant={filtered.length > 0 ? `model-opt-${activeIndex}` : undefined}
+				autocomplete="off"
+				spellcheck="false"
+			/>
 			<ul
 				id="model-listbox"
 				class="listbox"
@@ -409,7 +427,10 @@
 				tabindex="-1"
 				bind:this={listEl}
 			>
-				{#each options as option, i (option.id)}
+				{#if filtered.length === 0}
+					<li class="empty" role="presentation">No matching models</li>
+				{/if}
+				{#each filtered as option, i (option.id)}
 					<li
 						id="model-opt-{i}"
 						class="option"
@@ -520,6 +541,27 @@
 	.popover.up {
 		top: auto;
 		bottom: calc(100% + 4px);
+	}
+
+	.search {
+		flex: none;
+		margin: 6px 8px 2px;
+		padding: 4px 8px;
+		min-width: 0;
+		font: inherit;
+		font-size: 12px;
+		color: var(--ink);
+		background: transparent;
+		border: 1px solid var(--rule-soft);
+	}
+	.search:focus {
+		outline: none;
+		border-color: var(--ink);
+	}
+	.empty {
+		padding: 5px 10px;
+		font-size: 12px;
+		color: var(--ink-3, var(--ink-2));
 	}
 
 	.listbox {

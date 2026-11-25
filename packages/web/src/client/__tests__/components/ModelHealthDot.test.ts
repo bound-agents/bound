@@ -22,10 +22,10 @@ describe("ModelHealthDot", () => {
 	});
 
 	it("renders amber and pulses for a fallback route", async () => {
-		const { target } = await mountDot({ state: "fallback" });
+		const { target } = await mountDot({ state: "degraded" });
 		const dot = target.querySelector(".health-dot") as HTMLElement;
 		expect(dot.getAttribute("style")).toContain("--dot: var(--warn)");
-		expect(dot.className).toContain("fallback");
+		expect(dot.className).toContain("degraded");
 	});
 
 	it("renders grey for no eligible route", async () => {
@@ -39,7 +39,7 @@ describe("ModelHealthDot", () => {
 		const { target } = await mountDot({});
 		const dot = target.querySelector(".health-dot") as HTMLElement;
 		expect(dot.getAttribute("style")).toContain("--dot: var(--idle)");
-		expect(dot.getAttribute("aria-label")).toBe("Health not reported");
+		expect(dot.getAttribute("aria-label")).toBe("Unknown");
 	});
 
 	it("prefers an explicit title over the mapped label", async () => {

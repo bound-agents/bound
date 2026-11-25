@@ -137,7 +137,7 @@
 				if (!m.display_name) continue;
 				names.set(m.logical_model, m.display_name);
 				for (const r of m.routes) {
-					const backendId = r.route_id.split(":").slice(2).join(":");
+					const backendId = parseRouteId(r.route_id)?.backendId;
 					if (backendId && !names.has(backendId)) names.set(backendId, m.display_name);
 				}
 			}
@@ -559,18 +559,25 @@
 	});
 
 	function routeParts(routeId: string | null): { host: string | null; provider: string | null } {
-		if (!routeId) return { host: null, provider: null };
-		const parts = routeId.split(":");
-		if (parts.length < 3) return { host: null, provider: null };
-		return { host: hostBySite.get(parts[0]) ?? null, provider: parts[1] };
+		const parsed = routeId ? parseRouteId(routeId) : null;
+		if (!parsed) return { host: null, provider: null };
+		return { host: hostBySite.get(parsed.siteId) ?? null, provider: parsed.provider };
 	}
 
-	// Off-preferred when the latest turn substituted its model/route. The chip
-	// suffix names the serving route; a hard pin would set `pinned` (not yet
-	// surfaced through the provenance payload, so false until a pin signal exists).
+	// Substitution = the model itself was swapped (refusal); failover = same
+	// model served by a later route after a route error. They read differently.
+	const chipKind = $derived.by((): "substitution" | "failover" | null => {
+		const t = latestTurn;
+		if (!t) return null;
+		if (t.substituted_from && t.substituted_from !== t.model_id) return "substitution";
+		if (t.substituted_from || t.attempts?.some((a) => a.outcome === "route-error"))
+			return "failover";
+		return null;
+	});
+
 	const chipVia = $derived.by((): { host: string | null; provider: string | null } => {
 		const t = latestTurn;
-		if (!t || !t.substituted_from) return { host: null, provider: null };
+		if (!t || !chipKind) return { host: null, provider: null };
 		return routeParts(t.route_id);
 	});
 
@@ -690,6 +697,7 @@
 					model={modelDisplay(activeModel)}
 					viaHost={chipVia.host}
 					viaProvider={chipVia.provider}
+					kind={chipKind}
 				/>
 				{@const attachedSessionHosts = getAttachedSessionHosts()}
 				{#if attachedSessionHosts.length > 0}

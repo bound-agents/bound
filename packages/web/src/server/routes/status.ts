@@ -10,6 +10,7 @@ import {
 	getPendingClientToolCalls,
 	getSiteId,
 	insertRow,
+	listDrainedRouteIds,
 	listHostSiteIdNameAndModels,
 	listHostsOrderedByName,
 	listRemoteHostModelLiveness,
@@ -25,6 +26,7 @@ import {
 	parseJsonSafe,
 } from "@bound/shared";
 import { Hono } from "hono";
+import { collectSupply, disambiguateDisplayNames, resolveModelDisplayName } from "./routing";
 
 export interface ModelInfo {
 	id: string;
@@ -41,6 +43,8 @@ export interface ClusterModelInfo {
 	host: string;
 	via: "local" | "relay";
 	status: "local" | "online" | "offline?";
+	/** True when every advertised route of this logical model is drained by an operator. */
+	drained: boolean;
 }
 
 export interface ModelsConfig {
@@ -132,11 +136,9 @@ export function createStatusRoutes(
 		// discovery endpoint) or a static snapshot — resolve per request.
 		const resolved = typeof modelsConfig === "function" ? modelsConfig() : modelsConfig;
 
-		// Backend id / logical model id → logical model and user-facing display name
-		// (spec §2.1), harvested from every host's hosts.models advertisement
-		// (including this host's own row, which carries the logical model of each
-		// local expanded backend). First advertised value per key wins.
-		const displayNameByModelId = new Map<string, string>();
+		// Backend id → logical model, harvested from every host's hosts.models
+		// advertisement. Display names come from the same ranked resolution the
+		// Settings › Models page uses, so every picker shows one name per model.
 		const logicalByModelId = new Map<string, string>();
 		for (const host of listHostSiteIdNameAndModels(db)) {
 			if (host.models === null) continue;
@@ -146,18 +148,25 @@ export function createStatusRoutes(
 				if (typeof raw === "string") continue;
 				const logical = raw.logical_model ?? raw.id;
 				if (!logicalByModelId.has(raw.id)) logicalByModelId.set(raw.id, logical);
-				if (!raw.display_name) continue;
-				for (const key of new Set([logical, raw.id])) {
-					if (!displayNameByModelId.has(key)) displayNameByModelId.set(key, raw.display_name);
-				}
 			}
 		}
+		const supply = collectSupply(db);
+		const drainedIds = new Set(listDrainedRouteIds(db));
+		const named = [...supply].map(([logical, routes]) => ({
+			logical_model: logical,
+			display_name: resolveModelDisplayName(logical, routes),
+			routes,
+		}));
+		disambiguateDisplayNames(named);
+		const nameByLogical = new Map(named.map((n) => [n.logical_model, n.display_name]));
 		const logicalFor = (modelId: string): string => logicalByModelId.get(modelId) ?? modelId;
-		// Never a backend id when a logical model is known: logical name, then the
-		// backend's own advertised name, then the logical id.
 		const displayNameFor = (modelId: string): string => {
 			const logical = logicalFor(modelId);
-			return displayNameByModelId.get(logical) ?? displayNameByModelId.get(modelId) ?? logical;
+			return nameByLogical.get(logical) ?? logical;
+		};
+		const isDrained = (modelId: string): boolean => {
+			const routes = supply.get(logicalFor(modelId)) ?? [];
+			return routes.length > 0 && routes.every((r) => drainedIds.has(r.route_id));
 		};
 
 		const localModels: ClusterModelInfo[] = (resolved?.models ?? []).map((m) => ({
@@ -168,6 +177,7 @@ export function createStatusRoutes(
 			host: hostName,
 			via: "local" as const,
 			status: "local" as const,
+			drained: isDrained(m.id),
 		}));
 
 		// AC5.1: Query remote models from hosts table
@@ -206,6 +216,7 @@ export function createStatusRoutes(
 					host: host.host_name,
 					via: "relay" as const,
 					status: isStale ? ("offline?" as const) : ("online" as const),
+					drained: isDrained(modelId),
 				});
 			}
 		}
@@ -222,6 +233,9 @@ export function createStatusRoutes(
 			seenModelIds.add(model.logical_model);
 			deduped.push(model);
 		}
+		deduped.sort((a, b) =>
+			a.display_name.localeCompare(b.display_name, undefined, { sensitivity: "base" }),
+		);
 
 		return c.json({
 			models: deduped,

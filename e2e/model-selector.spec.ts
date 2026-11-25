@@ -81,6 +81,26 @@ const trigger = (page: Page) => page.locator("#model");
 const popover = (page: Page) => page.locator(".model-selector .popover");
 
 test.describe("model selector", () => {
+	test("search filters the popover and Enter selects the match", async ({ page }) => {
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		const wrap = page.locator(".input-wrap");
+		await assertNoLayoutShift(wrap, async () => {
+			await trigger(page).click();
+			await expect(popover(page)).toBeVisible();
+		});
+		const search = popover(page).locator(".search");
+		await expect(search).toBeFocused();
+		await page.keyboard.type("sonnet");
+		const labels = await page.locator(".option-label").allTextContents();
+		expect(labels.length).toBeGreaterThan(0);
+		for (const l of labels) expect(l.toLowerCase()).toContain("sonnet");
+		await assertInViewport(popover(page));
+		await assertNotClipped(popover(page));
+		await page.keyboard.press("Escape");
+		await expect(popover(page)).toBeHidden();
+		await expect(trigger(page)).toBeFocused();
+	});
+
 	test("lists logical models alphabetically", async ({ page }) => {
 		await mountThread(page, { modelHint: "gpt-6-luna" });
 		await trigger(page).click();
@@ -101,14 +121,15 @@ test.describe("model selector", () => {
 		});
 		await assertInViewport(popover(page));
 		await assertNotClipped(popover(page));
-		for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "End", "Home", "g"]) {
-			await assertNoLayoutShift(wrap, () => trigger(page).press(key));
+		for (const key of ["ArrowDown", "ArrowDown", "ArrowUp", "End", "Home"]) {
+			await assertNoLayoutShift(wrap, () => page.keyboard.press(key));
 		}
-		// Type-ahead lands on the first label starting with "g".
-		await expect(page.locator(".option.active .option-label")).toHaveText(/^g/i);
+		// Typing filters through the search box; the first match is active.
+		await assertNoLayoutShift(wrap, () => page.keyboard.press("g"));
+		await expect(page.locator(".option.active .option-label")).toHaveText(/g/i);
 		await page.keyboard.press("End");
 		await expect(page.locator(".option.active")).toBeInViewport();
-		await assertNoLayoutShift(wrap, () => trigger(page).press("Escape"));
+		await assertNoLayoutShift(wrap, () => page.keyboard.press("Escape"));
 		await expect(popover(page)).toBeHidden();
 		await expect(trigger(page)).toBeFocused();
 	});

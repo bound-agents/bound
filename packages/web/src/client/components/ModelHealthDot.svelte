@@ -1,12 +1,12 @@
 <script lang="ts">
-	// Three-state route-health dot for the model picker and Settings route list
-	// (2026-11-21-model-routing.md §9.1): green when the preferred route is
-	// healthy, amber when the model is serving via a fallback route, grey when it
-	// has no eligible route. A route whose health this host cannot observe
-	// (remote-only) renders grey with an "unknown" tooltip rather than implying a
-	// verdict the host did not make.
+	import { HEALTH_STATE_LABELS, type ModelHealthState } from "../lib/model-health";
 
-	type State = "healthy" | "fallback" | "none" | "unknown";
+	// Route-health dot for the model picker and Settings route list
+	// (2026-11-21-model-routing.md §9.1): green when a route is healthy, amber
+	// ("degraded") when only backing-off/retrying routes can serve, grey when
+	// every route is disabled or health is unknown.
+
+	type State = ModelHealthState;
 
 	const {
 		state = "unknown",
@@ -21,22 +21,17 @@
 
 	const COLORS: Record<State, string> = {
 		healthy: "var(--ok)",
-		fallback: "var(--warn)",
+		degraded: "var(--warn)",
 		none: "var(--idle)",
 		unknown: "var(--idle)",
 	};
 
-	const LABELS: Record<State, string> = {
-		healthy: "Healthy",
-		fallback: "Using fallback route",
-		none: "No route available",
-		unknown: "Health not reported",
-	};
+	const LABELS = HEALTH_STATE_LABELS;
 </script>
 
 <span
 	class="health-dot"
-	class:fallback={state === "fallback"}
+	class:degraded={state === "degraded"}
 	style="--dot: {COLORS[state as State]}"
 	title={showTitle ? (title ?? LABELS[state as State]) : undefined}
 	role="img"
@@ -52,8 +47,8 @@
 		background: var(--dot);
 		flex: none;
 	}
-	/* Amber "fallback" pulses so a forgotten non-preferred route stands out. */
-	.fallback {
+	/* Amber "degraded" pulses so a struggling model stands out. */
+	.degraded {
 		animation: health-pulse 2s ease-in-out infinite;
 	}
 	@keyframes health-pulse {
@@ -66,7 +61,7 @@
 		}
 	}
 	@media (prefers-reduced-motion: reduce) {
-		.fallback {
+		.degraded {
 			animation: none;
 		}
 	}

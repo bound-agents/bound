@@ -101,7 +101,7 @@ test.describe("settings › models", () => {
 		await roles.getByRole("button", { name: "Add alias" }).click();
 		const name = roles.getByLabel("Alias name").last();
 		await name.fill("bad@name");
-		await roles.locator("select").last().selectOption("kimi-k3");
+		await roles.locator(".role-row select").last().selectOption("kimi-k3");
 		await roles.getByRole("button", { name: "Save" }).click();
 		await expect(roles.getByRole("alert")).toContainText("without '@'");
 		expect(calls.defaults).toHaveLength(0);

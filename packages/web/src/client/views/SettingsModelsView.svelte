@@ -2,6 +2,7 @@
 	import type {
 		ClusterDefaultsResponse,
 		FallbackPolicyInfo,
+		ModelReferenceReportInfo,
 		ModelRoutingInfo,
 		RouteSupplyInfo,
 	} from "@bound/client";
@@ -11,6 +12,7 @@
 	import Page from "../components/Page.svelte";
 	import SectionHeader from "../components/SectionHeader.svelte";
 	import { client } from "../lib/bound";
+	import { type ModelHealthState, modelHealthState, routeHealthLabel } from "../lib/model-health";
 	import { buildModelLabels, compareLabels } from "../lib/model-labels";
 
 	// Settings › Models (2026-11-21-model-routing.md §9.3, 2026-11-21-model-catalog.md §9).
@@ -36,6 +38,17 @@
 	let rolesError = $state<string | null>(null);
 	let rolesSaved = $state(false);
 	let now = $state(Date.now());
+	let refs = $state<ModelReferenceReportInfo | null>(null);
+	const knownModels = $derived(new Set(models.map((m) => m.logical_model)));
+	const attention = $derived.by(() => {
+		if (!refs) return [] as string[];
+		return [
+			...refs.danglingRoles.map((r) => `Role "${r.role}" points to ${r.logicalModel}`),
+			...refs.staleFallbackModels.map((m) => `Fallback list names ${m}`),
+			...refs.danglingAgents.map((a) => `Agent "${a.agentName}" uses ${a.logicalModel}`),
+			...refs.danglingTasks.map((t) => `Task ${t.taskId.slice(0, 8)} uses ${t.logicalModel}`),
+		];
+	});
 
 	const labels = $derived(buildModelLabels(models));
 	const sorted = $derived(
@@ -84,6 +97,7 @@
 			const [m, d] = await Promise.all([client.getRoutingModels(), client.getClusterDefaults()]);
 			models = m.models;
 			defaults = d;
+			refs = await client.getModelReferences().catch(() => null);
 			const dirty = loadedRoles !== "" && roleSnapshot(roles) !== loadedRoles;
 			if (!dirty) {
 				roles = rolesFrom(d.roles);
@@ -114,12 +128,8 @@
 		return out;
 	}
 
-	function modelHealth(m: ModelRoutingInfo): "healthy" | "fallback" | "none" | "unknown" {
-		const live = m.routes.filter((r) => !r.drained);
-		if (live.length === 0) return "none";
-		if (live.some((r) => r.health === "healthy")) return "healthy";
-		if (live.some((r) => r.health === "backoff" || r.health === "half_open")) return "fallback";
-		return "unknown";
+	function modelHealth(m: ModelRoutingInfo): ModelHealthState {
+		return modelHealthState(m.routes);
 	}
 
 	function hostCount(m: ModelRoutingInfo): number {
@@ -132,15 +142,7 @@
 
 	/** Read-only automatic health text, e.g. "Backing off, retrying in 4m". */
 	function healthText(r: RouteSupplyInfo, at: number): string {
-		if (r.health === "backoff") {
-			if (!r.next_trial_at) return "Backing off";
-			const secs = Math.max(0, Math.round((r.next_trial_at - at) / 1000));
-			const span = secs >= 60 ? `${Math.round(secs / 60)}m` : `${secs}s`;
-			return `Backing off, retrying in ${span}`;
-		}
-		if (r.health === "half_open") return "Trying again";
-		if (r.health === "healthy") return "Healthy";
-		return "Health not reported";
+		return routeHealthLabel({ ...r, drained: false }, at);
 	}
 
 	async function run(key: string, fn: () => Promise<unknown>, failure: string): Promise<void> {
@@ -167,13 +169,43 @@
 		);
 	}
 
-	/** Enabled = not drained. Turning a route off drains it; on un-drains it. */
-	function setEnabled(r: RouteSupplyInfo, enabled: boolean): void {
+	/** Enabled = not drained. Turning off the last enabled route asks first. */
+	function setEnabled(r: RouteSupplyInfo, enabled: boolean, m?: ModelRoutingInfo): void {
+		let reason: string | undefined;
+		if (!enabled && m && m.routes.filter((x) => !x.drained).length === 1) {
+			const answer = window.prompt(
+				`Disable the last route for ${m.display_name}? It will stop serving. Optional reason:`,
+				"",
+			);
+			if (answer === null) {
+				models = [...models];
+				return;
+			}
+			reason = answer.trim() || undefined;
+		}
 		void run(
 			r.route_id,
-			() => (enabled ? client.undrainRoute(r.route_id) : client.drainRoute(r.route_id)),
+			() => (enabled ? client.undrainRoute(r.route_id) : client.drainRoute(r.route_id, reason)),
 			"Failed to change route",
 		);
+	}
+
+	function resetOrder(m: ModelRoutingInfo): void {
+		void run(m.logical_model, () => client.setRouteOrder(m.logical_model, []), "Failed to reset");
+	}
+
+	function setDefaultFallbacks(list: string[]): void {
+		void run(
+			"defaults",
+			() => client.setClusterDefaults({ default_fallback_models: list }),
+			"Failed to update cluster fallback list",
+		);
+	}
+
+	function clearRole(i: number): void {
+		const row = roles[i];
+		if (row) row.model = "";
+		rolesSaved = false;
 	}
 
 	function removeStale(m: ModelRoutingInfo, routeId: string): void {
@@ -239,7 +271,7 @@
 				return;
 			}
 			if (!r.model) continue;
-			if (!known.has(r.model)) {
+			if (!known.has(r.model) && !(defaults && defaults.roles[name] === r.model)) {
 				rolesError = `"${name}" points to a model not available in this cluster.`;
 				return;
 			}
@@ -319,7 +351,20 @@
 						<h3>{m.display_name}</h3>
 					</header>
 
-					<div class="kicker">Route order</div>
+					<div class="kicker">
+						Route order
+						<span class="order-mode"
+							>{m.route_order && m.route_order.length > 0 ? "Custom order" : "Default order"}</span
+						>
+						{#if m.route_order && m.route_order.length > 0}
+							<button
+								type="button"
+								class="link"
+								disabled={busy !== null}
+								onclick={() => resetOrder(m)}>Reset to default</button
+							>
+						{/if}
+					</div>
 					<ol class="routes">
 						{#each m.routes as r, i (r.route_id)}
 							<li class="route-row" class:drained={r.drained}>
@@ -341,7 +386,15 @@
 									>{labels.routeLabel(r.route_id)}</span
 								>
 								<span class="r-host">on {r.host_name}</span>
-								<span class="r-health {r.health}">{healthText(r, now)}</span>
+								{#if r.drained}
+									<span class="r-health" title={r.drained_at ?? undefined}
+										>Disabled{r.drain_reason ? `: ${r.drain_reason}` : ""}{r.drained_at
+											? ` · ${new Date(r.drained_at).toLocaleString()}`
+											: ""}</span
+									>
+								{:else}
+									<span class="r-health {r.health}">{healthText(r, now)}</span>
+								{/if}
 								<label class="toggle">
 									<input
 										type="checkbox"
@@ -349,7 +402,8 @@
 										checked={!r.drained}
 										disabled={busy !== null}
 										aria-label="Enabled: {labels.routeLabel(r.route_id)} on {r.host_name}"
-										onchange={(e) => setEnabled(r, (e.currentTarget as HTMLInputElement).checked)}
+										onchange={(e) =>
+											setEnabled(r, (e.currentTarget as HTMLInputElement).checked, m)}
 									/>
 									<span>Enabled</span>
 								</label>
@@ -383,6 +437,12 @@
 							<option value="custom">Custom list</option>
 							<option value="never">Never fall back</option>
 						</select>
+						{#if m.fallback_policy.mode === "auto"}
+							<span class="muted"
+								>Uses: {defaults?.default_fallback_models.map(displayFor).join(", ") ||
+									"None"}</span
+							>
+						{/if}
 						{#if m.fallback_policy.mode === "custom"}
 							<ul class="chips">
 								{#each m.fallback_policy.models as fb (fb)}
@@ -391,6 +451,7 @@
 										<button
 											type="button"
 											aria-label="Remove {displayFor(fb)}"
+											disabled={busy !== null}
 											onclick={() => removeFallbackModel(m, fb)}>×</button
 										>
 									</li>
@@ -398,6 +459,7 @@
 							</ul>
 							<select
 								aria-label="Add fallback model"
+								disabled={busy !== null}
 								value=""
 								onchange={(e) => addFallbackModel(m, (e.currentTarget as HTMLSelectElement).value)}
 							>
@@ -421,6 +483,14 @@
 					Reusable names for models. Agents and tasks can reference a role or alias instead of a
 					specific model.
 				</p>
+				{#if attention.length > 0}
+					<div class="attention" role="status">
+						<strong>Needs attention</strong>
+						<ul>
+							{#each attention as item (item)}<li>{item}</li>{/each}
+						</ul>
+					</div>
+				{/if}
 				<div class="role-grid">
 					{#each roles as r, i (r.key)}
 						<div class="role-row">
@@ -436,10 +506,21 @@
 							{/if}
 							<select aria-label="Model for {r.name || 'alias'}" bind:value={r.model}>
 								<option value="">Not set</option>
+								{#if r.model && !knownModels.has(r.model)}
+									<option value={r.model} disabled>⚠ {r.model} (unavailable)</option>
+								{/if}
 								{#each sorted as x (x.logical_model)}
 									<option value={x.logical_model}>{x.display_name}</option>
 								{/each}
 							</select>
+							{#if r.model && !knownModels.has(r.model)}
+								<button
+									type="button"
+									class="link"
+									aria-label="Clear {r.name || 'alias'}"
+									onclick={() => clearRole(i)}>Clear</button
+								>
+							{/if}
 							{#if i >= RESERVED_ROLES.length}
 								<button
 									type="button"
@@ -459,9 +540,37 @@
 				</div>
 				<div class="cd-row">
 					<span class="cd-label">Cluster fallback list</span>
-					<span class="cd-value"
-						>{defaults.default_fallback_models.map(displayFor).join(", ") || "None"}</span
+					<ul class="chips">
+						{#each defaults.default_fallback_models as fb (fb)}
+							<li class="chip">
+								{displayFor(fb)}
+								<button
+									type="button"
+									aria-label="Remove {displayFor(fb)} from cluster fallback list"
+									disabled={busy !== null}
+									onclick={() =>
+										defaults &&
+										setDefaultFallbacks(defaults.default_fallback_models.filter((x) => x !== fb))}
+									>×</button
+								>
+							</li>
+						{/each}
+					</ul>
+					<select
+						aria-label="Add cluster fallback model"
+						value=""
+						disabled={busy !== null}
+						onchange={(e) => {
+							const v = (e.currentTarget as HTMLSelectElement).value;
+							if (v && defaults && !defaults.default_fallback_models.includes(v))
+								setDefaultFallbacks([...defaults.default_fallback_models, v]);
+						}}
 					>
+						<option value="">Add a model…</option>
+						{#each sorted as x (x.logical_model)}
+							<option value={x.logical_model}>{x.display_name}</option>
+						{/each}
+					</select>
 				</div>
 			</section>
 		{/if}
@@ -469,6 +578,21 @@
 </Page>
 
 <style>
+	.attention {
+		margin: 8px 0;
+		padding: 6px 10px;
+		border: 1px solid var(--warn);
+		font-size: var(--text-sm);
+	}
+	.attention ul {
+		margin: 4px 0 0;
+		padding-left: 16px;
+	}
+	.order-mode {
+		margin-left: 8px;
+		color: var(--ink-3);
+		text-transform: none;
+	}
 	.muted {
 		color: var(--ink-3);
 		font-size: var(--text-sm);

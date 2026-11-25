@@ -136,6 +136,11 @@ Skill authoring limits:
 | `POST /api/persona` | Update the cluster-wide persona (up to 64 KB). Optional `expected_modified_at` enables optimistic concurrency: if it does not match the stored `modified_at`, the write is rejected with `409 Conflict` |
 | `GET /api/status` | Read host status |
 | `GET /api/status/network` | Read cluster network and sync status |
-| `GET /api/status/models` | List advertised models across the cluster |
+| `GET /api/status/models` | List advertised models across the cluster, one row per logical model, sorted by display name; `drained` is true when every route is disabled |
+| `GET /api/routing/models` | Settings › Models assembly, sorted by display name; drained routes carry `drain_reason` and `drained_at` |
+| `PUT /api/routing/models/:logical/route-order` | Set route order; `[]` resets to the default order; `422` for a RouteId neither advertised nor already listed |
+| `PUT /api/routing/models/:logical/fallback-policy` | Set refusal fallback; `422` for self-fallback or an unadvertised target; an empty custom list is stored as `never` |
+| `PUT /api/routing/cluster-defaults` | Set roles, aliases, and the cluster fallback list; `422` when a new target is not advertised (empty clears; unchanged dangling targets are kept) |
+| `POST /api/routing/routes/:routeId/drain` | Disable a route with an optional `reason`; `422` for an unadvertised route |
 | `POST /api/status/cancel/:threadId` | Cancel an active turn on a thread |
 | `GET /api/metrics` | Query inference cost, token, cache, latency, and relay metrics |

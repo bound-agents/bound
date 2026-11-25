@@ -29,6 +29,7 @@ export type {
 	RouteSupplyInfo,
 	StaleRouteInfo,
 	FallbackPolicyInfo,
+	ModelReferenceReportInfo,
 	ModelRoutingInfo,
 	RoutingModelsResponse,
 	ClusterDefaultsResponse,

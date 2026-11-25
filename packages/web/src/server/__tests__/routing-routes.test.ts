@@ -169,7 +169,20 @@ describe("GET /models — Settings › Models assembly", () => {
 	});
 });
 
+/** Advertise every model/route the preference-write tests reference. */
+function seedSupply(): void {
+	seedHost(siteId, "hub", [
+		{ id: "opus", route_id: `${siteId}:anthropic:opus`, logical_model: "opus" },
+		{ id: "opus-x", route_id: "a:x:1", logical_model: "opus" },
+		{ id: "opus-y", route_id: "b:y:2", logical_model: "opus" },
+		{ id: "haiku", route_id: `${siteId}:anthropic:haiku`, logical_model: "haiku" },
+		{ id: "glm-5", route_id: `${siteId}:zai:glm-5`, logical_model: "glm-5" },
+		{ id: "gpt-5.6-sol", route_id: `${siteId}:codex:sol`, logical_model: "gpt-5.6-sol" },
+	]);
+}
+
 describe("PUT /models/:logical/route-order", () => {
+	beforeEach(seedSupply);
 	it("writes route_order through the outbox and round-trips", async () => {
 		const app = createRoutingRoutes(db, siteId, null);
 		const res = await app.fetch(
@@ -207,6 +220,7 @@ describe("PUT /models/:logical/route-order", () => {
 });
 
 describe("POST/DELETE /routes/:routeId/drain", () => {
+	beforeEach(seedSupply);
 	it("drains then un-drains a route", async () => {
 		const app = createRoutingRoutes(db, siteId, null);
 		const routeId = `${siteId}:anthropic:opus`;
@@ -237,6 +251,7 @@ describe("POST/DELETE /routes/:routeId/drain", () => {
 });
 
 describe("PUT /models/:logical/fallback-policy", () => {
+	beforeEach(seedSupply);
 	it("stores a custom fallback list", async () => {
 		const app = createRoutingRoutes(db, siteId, null);
 		const res = await app.fetch(
@@ -272,6 +287,7 @@ describe("PUT /models/:logical/fallback-policy", () => {
 });
 
 describe("PUT /cluster-defaults", () => {
+	beforeEach(seedSupply);
 	it("stores the default fallback list and model roles as cluster_config", async () => {
 		const app = createRoutingRoutes(db, siteId, null);
 		const res = await app.fetch(
@@ -697,5 +713,115 @@ describe("GET /models — cluster-wide route health from peer snapshots", () => 
 		expect(route?.health).toBe("healthy");
 		expect(route?.health_source).toBe("local");
 		expect(asked).toBe(0);
+	});
+});
+
+describe("Wave 3 validation (422)", () => {
+	beforeEach(seedSupply);
+	const put = (app: ReturnType<typeof createRoutingRoutes>, path: string, body: unknown) =>
+		app.fetch(
+			new Request(`http://localhost${path}`, {
+				method: "PUT",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			}),
+		);
+
+	it("rejects an unknown RouteId in route_order", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await put(app, "/models/opus/route-order", { route_order: ["ghost:x:1"] });
+		expect(res.status).toBe(422);
+		expect(((await res.json()) as { error: string }).error).toContain("ghost:x:1");
+	});
+
+	it("allows removing a stale RouteId already in route_order", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		insertRow(
+			db,
+			"model_routing_rules",
+			{
+				logical_model: "opus",
+				route_order: JSON.stringify(["dead:a:b", "a:x:1"]),
+				fallback_policy: null,
+				deleted: 0,
+				modified_at: "2026-01-01T00:00:00.000Z",
+			},
+			siteId,
+		);
+		const res = await put(app, "/models/opus/route-order", { route_order: ["dead:a:b"] });
+		expect(res.status).toBe(200);
+	});
+
+	it("rejects self-fallback and unknown fallback targets", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const self = await put(app, "/models/opus/fallback-policy", {
+			mode: "custom",
+			models: ["opus"],
+		});
+		expect(self.status).toBe(422);
+		const ghost = await put(app, "/models/opus/fallback-policy", {
+			mode: "custom",
+			models: ["ghost"],
+		});
+		expect(ghost.status).toBe(422);
+		expect(((await ghost.json()) as { error: string }).error).toContain("ghost");
+	});
+
+	it("normalizes an empty custom fallback list to never", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await put(app, "/models/opus/fallback-policy", { mode: "custom", models: [] });
+		expect(res.status).toBe(200);
+		const row = db
+			.prepare("SELECT fallback_policy FROM model_routing_rules WHERE logical_model = 'opus'")
+			.get() as { fallback_policy: string };
+		expect(JSON.parse(row.fallback_policy)).toEqual({ mode: "never" });
+	});
+
+	it("rejects a role targeting an unadvertised model but allows clearing and unchanged dangling roles", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const bad = await put(app, "/cluster-defaults", { roles: { default: "ghost" } });
+		expect(bad.status).toBe(422);
+		expect(((await bad.json()) as { error: string }).error).toContain("ghost");
+		insertRow(
+			db,
+			"cluster_config",
+			{
+				key: "routing.model_roles",
+				value: JSON.stringify({ heavy: "gone" }),
+				modified_at: "2026-01-01T00:00:00.000Z",
+				deleted: 0,
+			},
+			siteId,
+		);
+		const keep = await put(app, "/cluster-defaults", { roles: { heavy: "gone", fast: "haiku" } });
+		expect(keep.status).toBe(200);
+		const clear = await put(app, "/cluster-defaults", { roles: { fast: "haiku" } });
+		expect(clear.status).toBe(200);
+	});
+
+	it("rejects an unknown default fallback model", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await put(app, "/cluster-defaults", { default_fallback_models: ["ghost"] });
+		expect(res.status).toBe(422);
+	});
+
+	it("rejects draining an unadvertised route", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(
+			new Request(`http://localhost/routes/${encodeURIComponent("ghost:x:1")}/drain`, {
+				method: "POST",
+			}),
+		);
+		expect(res.status).toBe(422);
+	});
+
+	it("sorts GET /models by display name case-insensitively", async () => {
+		const app = createRoutingRoutes(db, siteId, null);
+		const res = await app.fetch(new Request("http://localhost/models"));
+		const body = (await res.json()) as { models: Array<{ display_name: string }> };
+		const names = body.models.map((m) => m.display_name);
+		expect(names).toEqual(
+			[...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" })),
+		);
 	});
 });
