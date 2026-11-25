@@ -173,7 +173,7 @@ describe("ConnectorBindingsView", () => {
 		const { target } = await mountView([sampleBinding({ task_id: null })]);
 		const row = target.querySelector(".data-row");
 		await dom.fire(row as Element, "click");
-		expect(target.textContent).toContain("No backing task, so no model can be set");
+		expect(target.textContent).toContain("No associated task; model cannot be set.");
 		// No model <select> is rendered without a task.
 		expect(target.querySelector("#binding-model")).toBeNull();
 	});

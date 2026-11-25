@@ -170,7 +170,7 @@
 			{/if}
 			{#if data.tokens.totals.turn_count === 0 && data.relay.totals.total_cycles === 0}
 				<div class="state">
-					<p>No data recorded in the selected range. Try expanding the date range.</p>
+					<p>No data in the selected range.</p>
 				</div>
 			{:else}
 				<SectionHeader number={1} subtitle="Cost observability" title="Tokens" />

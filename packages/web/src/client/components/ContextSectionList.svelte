@@ -21,20 +21,19 @@
 		system:
 			"Stable system prefix: persona, orientation, DB schema, skill body. Cached across threads.",
 		"volatile-prefix":
-			"Stable volatile half: Working Knowledge, Discoverable Archive titles, skill index. Rides the system cache breakpoint.",
+			"Working Knowledge, archive index, and skill list. Cached with the system prefix.",
 		"ancient-marker": "Oldest history, shed to a fixed-size summary marker plus drop count.",
 		"middle-digest":
 			"Older tool cycles folded to a one-line action log. Recall preserved; no LLM summary.",
-		history: "Recent messages at full resolution — the working set this turn.",
-		"volatile-tail":
-			"Varying volatile half: Live State, memory deltas, per-turn injectables. Developer-role tail.",
+		history: "Recent messages at full resolution.",
+		"volatile-tail": "Live state, memory updates, and per-turn context.",
 		tools: "Tool-definition JSON schemas, sent at the request level.",
 		"free space": "Unused budget below the context window.",
 		user: "User-role messages in the recent window.",
 		assistant: "Assistant and tool-call messages in the recent window.",
 		tool_result: "Tool-result messages in the recent window.",
 		memory: "Semantic-memory entries in the volatile tail.",
-		"volatile-other": "Live State, digests, per-turn injectables in the volatile tail.",
+		"volatile-other": "Live state, digests, and per-turn context.",
 		"task-digest": "Cross-thread task digest lines.",
 	};
 
@@ -127,7 +126,7 @@
 				<span class="dot drift-dot"></span>
 				<InfoPopover
 					placement="top"
-					label="Actual wire total minus the summed section estimates. The cl100k_base estimator under-counts non-uniformly (thinking-heavy history most), so this gap can't be attributed to one section."
+					label="Difference between provider token count and summed section estimates."
 				>
 					{#snippet trigger()}<span class="name">estimator drift</span>{/snippet}
 				</InfoPopover>

@@ -12,14 +12,14 @@
 
 	/** Human-readable explanation for each cache-path reason code. */
 	const CACHE_REASON_LABEL: Record<string, string> = {
-		"no-stored-state": "first turn on this thread, or the warm cache was evicted",
-		"cache-expired": "the prompt-cache TTL elapsed since the last turn",
-		"tool-change": "the available tool set changed, invalidating the cached prefix",
-		"orphaned-tool-call": "an unanswered tool call forced a structural rebuild",
-		"purge-message": "a purge instruction forced full history substitution",
-		"budget-exceeded": "the estimate exceeded the budget even after in-place compaction",
-		"no-history": "no-history task threads always cold-assemble",
-		"warm-eligible": "the warm path completed within budget — cached prefix reused",
+		"no-stored-state": "first turn or cache evicted",
+		"cache-expired": "cache TTL expired",
+		"tool-change": "tool set changed",
+		"orphaned-tool-call": "unanswered tool call",
+		"purge-message": "history purged",
+		"budget-exceeded": "exceeded budget after compaction",
+		"no-history": "history disabled on this task",
+		"warm-eligible": "within budget",
 	};
 
 	interface Props {
@@ -215,8 +215,8 @@
 					<InfoPopover
 						placement="bottom"
 						label={headlineSource === "actual"
-							? "Driver-reported input tokens (raw + cache read + cache write). Provider tokenizer, not the local estimate."
-							: "Pre-LLM cl100k_base estimate. Actual count arrives after the response."}
+							? "Provider-reported input tokens (uncached + cache read + cache write)."
+							: "Local token estimate. Actual count updates after the response."}
 					>
 						{#snippet trigger()}<span
 								class="total-num mono tnum"
@@ -235,7 +235,7 @@
 					<div class="summary-row summary-row-estimate">
 						<InfoPopover
 							placement="bottom"
-							label="Local estimate vs. driver actual. ×ratio is this turn's drift; the running mean drives the adaptive budget."
+							label="Local estimate vs. provider count (×ratio = drift)."
 						>
 							{#snippet trigger()}<span class="estimate-kicker">Pre-LLM est</span>{/snippet}
 						</InfoPopover>
@@ -266,7 +266,7 @@
 						<span class="cache-kicker">Cache</span>
 						{#if cachePath}
 							<InfoPopover
-								label={`${cachePath === "warm" ? "Warm: cached prefix reused, only the volatile tail rebuilt." : "Cold: full assembly ran, seeded a fresh prefix."}${cacheReason ? ` ${CACHE_REASON_LABEL[cacheReason] ?? cacheReason}.` : ""}`}
+								label={`${cachePath === "warm" ? "Warm: cached prefix reused." : "Cold: full context rebuilt."}${cacheReason ? ` ${CACHE_REASON_LABEL[cacheReason] ?? cacheReason}.` : ""}`}
 							>
 								{#snippet trigger()}<span
 										class="cache-kicker"
@@ -279,7 +279,7 @@
 					{#if capabilityOff}
 						<span class="cache-group">
 							<span class="cache-state cache-disabled mono">disabled</span>
-							<span class="cache-detail">backend lacks prompt_caching</span>
+							<span class="cache-detail">prompt caching unsupported</span>
 						</span>
 					{:else}
 						<!-- Group 2: the read/write figures. -->
@@ -309,9 +309,7 @@
 				{@const inflation = selectedTurn.context_debug.measuredInflation}
 				{@const tightened = inflation !== null && inflation !== undefined && inflation > 1.0}
 				<div class="adaptive-row">
-					<InfoPopover
-						label="Cold-assembly budget target = (contextWindow − maxOutputTokens) ÷ inflation EMA. Lower telescopes sooner, compensating for estimator under-count."
-					>
+					<InfoPopover label="Target context budget adjusted for estimator drift.">
 						{#snippet trigger()}<span class="cache-kicker">Adaptive</span>{/snippet}
 					</InfoPopover>
 					<span class="adaptive-num mono tnum" class:adaptive-tight={tightened}>
@@ -320,7 +318,7 @@
 					{#if inflation !== null && inflation !== undefined}
 						<span class="cache-sep">·</span>
 						<InfoPopover
-							label="Running mean of actual ÷ estimated tokens. > 1.0 = estimator under-counts the real prompt."
+							label="Running ratio of actual to estimated tokens (> 1.0 means under-counted)."
 						>
 							{#snippet trigger()}<span
 									class="adaptive-num mono tnum"
@@ -375,8 +373,7 @@
 					</div>
 					{#if heavyDrop}
 						<div class="telescope-note">
-							A single turn's history exceeds the window: the oldest turns are shed to the summary
-							marker. This is expected on very long autonomous runs.
+							History exceeded the context window; oldest turns were replaced with a summary marker.
 						</div>
 					{/if}
 				</div>
@@ -389,7 +386,7 @@
 							{truncated.toLocaleString()} earlier message{truncated === 1 ? "" : "s"} dropped to fit
 							the window.
 						{:else}
-							Context is near the budget gate.
+							Context is near the token limit.
 						{/if}
 					</div>
 				</div>

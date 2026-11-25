@@ -77,7 +77,7 @@
 			webhooks = await client.listWebhooks();
 		} catch (err: unknown) {
 			console.error("Failed to load webhooks:", err);
-			error = err instanceof Error ? err.message : "Failed to load webhooks. Please try again.";
+			error = err instanceof Error ? err.message : "Failed to load webhooks.";
 		} finally {
 			loading = false;
 		}
@@ -166,8 +166,7 @@
 			}, 500);
 		} catch (err: unknown) {
 			console.error("Failed to create webhook:", err);
-			createError =
-				err instanceof Error ? err.message : "Failed to create webhook. Please try again.";
+			createError = err instanceof Error ? err.message : "Failed to create webhook.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -187,7 +186,7 @@
 			selectedWebhook = null;
 		} catch (err: unknown) {
 			console.error("Failed to delete webhook:", err);
-			error = err instanceof Error ? err.message : "Failed to delete webhook. Please try again.";
+			error = err instanceof Error ? err.message : "Failed to delete webhook.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -215,8 +214,7 @@
 			}
 		} catch (err: unknown) {
 			console.error("Failed to update webhook:", err);
-			editError =
-				err instanceof Error ? err.message : "Failed to update webhook. Please try again.";
+			editError = err instanceof Error ? err.message : "Failed to update webhook.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -238,7 +236,7 @@
 			}
 		} catch (err: unknown) {
 			console.error("Failed to rotate webhook secret:", err);
-			editError = err instanceof Error ? err.message : "Failed to rotate secret. Please try again.";
+			editError = err instanceof Error ? err.message : "Failed to rotate secret.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -348,7 +346,7 @@
 					<div class="spacer"></div>
 					<label
 						class="unauth-toggle"
-						title="When on, webhooks with signature format 'none' can be created and will receive deliveries. Off by default: unsigned inbound is blocked cluster-wide."
+						title="Allow creating and receiving unsigned ('none') webhooks cluster-wide."
 					>
 						<input
 							type="checkbox"
@@ -471,13 +469,9 @@
 								bind:checked={createNoHistory}
 								disabled={actionInProgress === "create"}
 							/>
-							Disable history (no_history)
+							Disable history
 						</label>
-						<p class="help-text">
-							When enabled, each delivery starts from a clean context window. Saves tokens for
-							stateless handlers and helps avoid the retrieve_task spin pattern on repeated webhook
-							fires.
-						</p>
+						<p class="help-text">Start each delivery with an empty context.</p>
 					</div>
 
 					<div class="form-actions">
@@ -547,9 +541,8 @@
 								{/each}
 							</ul>
 							<p class="muted url-hint">
-								Webhook ingestion is on the sync server. Pick the URL whose host is reachable from
-								the service that will deliver events — public for external services, local for
-								testing.
+								Use a URL reachable from the sender (public for external services, local for
+								testing).
 							</p>
 						{/if}
 					</div>
@@ -630,11 +623,9 @@
 									bind:checked={editNoHistory}
 									disabled={actionInProgress !== null}
 								/>
-								Disable history (no_history)
+								Disable history
 							</label>
-							<p class="help-text">
-								When enabled, each delivery starts from a clean context window.
-							</p>
+							<p class="help-text">Start each delivery with an empty context.</p>
 						</div>
 
 						<div class="form-actions">

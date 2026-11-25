@@ -121,7 +121,7 @@ describe("DateRangeBar", () => {
 		await dom.type(inputs[1] as HTMLInputElement, "2026-03-01T00:00"); // to < from
 		await new Promise((r) => setTimeout(r, 350));
 		await dom.settle();
-		expect(target.textContent).toContain("Invalid range: from must be before to");
+		expect(target.textContent).toContain("Start date must be before end date.");
 		expect(target.querySelector(".custom-inputs")?.classList.contains("error")).toBe(true);
 		expect(changes.length).toBe(0);
 		unmount();
@@ -136,7 +136,7 @@ describe("DateRangeBar", () => {
 		await dom.type(inputs[1] as HTMLInputElement, "");
 		await new Promise((r) => setTimeout(r, 350));
 		await dom.settle();
-		expect(target.textContent).toContain("Invalid range");
+		expect(target.textContent).toContain("Start date must be before end date.");
 		expect(changes.length).toBe(0);
 		unmount();
 	});

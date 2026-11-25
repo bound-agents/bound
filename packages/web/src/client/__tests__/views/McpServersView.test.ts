@@ -266,7 +266,7 @@ describe("McpServersView", () => {
 		expect(target.textContent).toContain("current");
 		expect(target.textContent).toContain("old");
 		expect(target.textContent).toContain("partial inventory");
-		expect(target.textContent).toContain("partial inventory”");
+		expect(target.textContent).toContain("Hosts with partial inventory run an older build");
 		const partialChip = target.querySelector(".host-chip.partial");
 		expect(partialChip).toBeTruthy();
 		expect(partialChip?.getAttribute("title")).toBe("never seen");
@@ -287,7 +287,7 @@ describe("McpServersView", () => {
 		await dom?.fire(rows[0] as Element, "click");
 		expect(target.textContent).toContain("This server exposes no tools.");
 		await dom?.fire(rows[1] as Element, "click");
-		expect(target.textContent).toContain("No capability data captured for this server");
+		expect(target.textContent).toContain("No capability data available");
 	});
 
 	it("surfaces a pending authorization badge and CLI affordance when not resolvable", async () => {

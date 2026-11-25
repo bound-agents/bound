@@ -184,7 +184,7 @@
 	</div>
 
 	{#if validationError}
-		<div class="error-hint">Invalid range: from must be before to</div>
+		<div class="error-hint">Start date must be before end date.</div>
 	{/if}
 </div>
 

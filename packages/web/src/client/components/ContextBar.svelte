@@ -108,7 +108,7 @@
 				`offset: ${m.positionTokens.toLocaleString()} tokens (${pct.toFixed(1)}%)`,
 				`ttl: ${m.ttl}`,
 			];
-			if (state === "disabled") tooltipParts.push("backend prompt-caching disabled");
+			if (state === "disabled") tooltipParts.push("prompt caching disabled");
 			else if (state === "hit")
 				tooltipParts.push(`cache read: ${cacheRead.toLocaleString()} tokens`);
 			else if (state === "write")
@@ -139,9 +139,7 @@
 				style="flex-basis: {driftPct}%;"
 				title="Estimator drift: {Math.round(
 					driftTokens,
-				).toLocaleString()} tokens ({driftPct.toFixed(
-					1,
-				)}%) — the real prompt exceeds the cl100k_base estimate (mostly thinking-heavy history)."
+				).toLocaleString()} tokens ({driftPct.toFixed(1)}%). Actual prompt exceeded local estimate."
 			></div>
 		{/if}
 		{#if freePct > 0}
@@ -151,7 +149,7 @@
 				title="Free space: {Math.round(
 					contextWindow - usedTokens,
 				).toLocaleString()} tokens ({freePct.toFixed(1)}%){actualTotalTokens != null
-					? ' — vs. the actual wire total'
+					? ' (actual)'
 					: ''}"
 			></div>
 		{/if}

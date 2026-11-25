@@ -255,7 +255,7 @@ describe("ContextDebugPanel", () => {
 		const { target } = await mountPanel();
 		const disabled = target.querySelector(".cache-disabled");
 		expect(disabled?.textContent).toBe("disabled");
-		expect(target.querySelector(".cache-detail")?.textContent).toBe("backend lacks prompt_caching");
+		expect(target.querySelector(".cache-detail")?.textContent).toBe("prompt caching unsupported");
 		// The read/write figures are suppressed in the disabled branch.
 		expect(target.querySelector(".cache-read")).toBeNull();
 	});

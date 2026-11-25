@@ -193,7 +193,7 @@
 					</div>
 				{/each}
 			{:else if selected.data.summary}<p>{selected.data.summary}</p>{:else}<p>
-					This region is dynamic or has no additional static detail.
+					No additional details.
 				</p>{/if}
 		</aside>
 	{/if}

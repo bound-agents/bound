@@ -174,9 +174,7 @@ describe("MetricsView", () => {
 
 	it("shows the no-data state when every section is empty", async () => {
 		const { target } = await mountMetrics(() => emptyMetrics());
-		expect(target.textContent?.replace(/\s+/g, " ")).toContain(
-			"No data recorded in the selected range",
-		);
+		expect(target.textContent?.replace(/\s+/g, " ")).toContain("No data in the selected range.");
 	});
 
 	it("renders the DateRangeBar with preset buttons", async () => {

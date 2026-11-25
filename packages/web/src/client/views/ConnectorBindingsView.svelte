@@ -103,7 +103,7 @@
 	}
 
 	async function handleDetach(id: string): Promise<void> {
-		if (!confirm("Detach this connector binding? The backing event task will be removed.")) {
+		if (!confirm("Detach this connector binding? Its associated task will also be removed.")) {
 			return;
 		}
 
@@ -259,7 +259,7 @@
 					{:else}
 						<div class="detail-section">
 							<div class="section-label">Associated Task</div>
-							<p class="muted">No backing task recorded.</p>
+							<p class="muted">No associated task.</p>
 						</div>
 					{/if}
 
@@ -298,7 +298,7 @@
 								</Btn>
 							</div>
 						{:else}
-							<p class="muted">No backing task, so no model can be set for this binding.</p>
+							<p class="muted">No associated task; model cannot be set.</p>
 						{/if}
 					</div>
 

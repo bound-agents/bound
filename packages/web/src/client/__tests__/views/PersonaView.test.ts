@@ -98,7 +98,7 @@ describe("PersonaView", () => {
 		expect((post?.body as { persona: string }).persona).toBe("new voice");
 		expect(saved).toBe(true);
 		// After save, the editor is clean again and the ok banner shows.
-		expect(target.querySelector(".ok")?.textContent).toContain("propagating to cluster");
+		expect(target.querySelector(".ok")?.textContent).toContain("Syncing to cluster.");
 	});
 
 	it("surfaces a save error returned by the API", async () => {

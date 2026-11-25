@@ -92,11 +92,7 @@
 		{/snippet}
 	</SectionHeader>
 
-	<p class="blurb">
-		The persona is a single synced row, read live when context is assembled. A save propagates to
-		every host on the next sync and takes effect on the following turn — including turns relayed to
-		another host for inference.
-	</p>
+	<p class="blurb">Synced across all hosts. Changes take effect on the next turn.</p>
 
 	{#if loading}
 		<div class="state">Loading…</div>
@@ -115,7 +111,7 @@
 				<span class="meta">last set {new Date(modifiedAt).toLocaleString()}</span>
 			{/if}
 			{#if saved && !dirty}
-				<span class="ok">Saved — propagating to cluster</span>
+				<span class="ok">Saved. Syncing to cluster.</span>
 			{/if}
 		</div>
 

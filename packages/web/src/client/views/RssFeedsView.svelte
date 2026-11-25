@@ -60,7 +60,7 @@
 			feeds = await client.listRssFeeds();
 		} catch (err: unknown) {
 			console.error("Failed to load RSS feeds:", err);
-			error = err instanceof Error ? err.message : "Failed to load RSS feeds. Please try again.";
+			error = err instanceof Error ? err.message : "Failed to load RSS feeds.";
 		} finally {
 			loading = false;
 		}
@@ -114,8 +114,7 @@
 			view = "list";
 		} catch (err: unknown) {
 			console.error("Failed to create RSS feed:", err);
-			createError =
-				err instanceof Error ? err.message : "Failed to create RSS feed. Please try again.";
+			createError = err instanceof Error ? err.message : "Failed to create RSS feed.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -135,7 +134,7 @@
 			selectedFeed = null;
 		} catch (err: unknown) {
 			console.error("Failed to delete RSS feed:", err);
-			error = err instanceof Error ? err.message : "Failed to delete RSS feed. Please try again.";
+			error = err instanceof Error ? err.message : "Failed to delete RSS feed.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -163,8 +162,7 @@
 			}
 		} catch (err: unknown) {
 			console.error("Failed to update RSS feed:", err);
-			editError =
-				err instanceof Error ? err.message : "Failed to update RSS feed. Please try again.";
+			editError = err instanceof Error ? err.message : "Failed to update RSS feed.";
 		} finally {
 			actionInProgress = null;
 		}
@@ -305,10 +303,7 @@
 							disabled={actionInProgress === "create"}
 							required
 						/>
-						<p class="help-text">
-							Lowercase identifier (a-z, 0-9, dashes, underscores). Used as the routing key for the
-							feed's event task.
-						</p>
+						<p class="help-text">Lowercase letters, numbers, dashes, or underscores.</p>
 					</div>
 
 					<div class="form-group">
@@ -383,12 +378,9 @@
 								bind:checked={createNoHistory}
 								disabled={actionInProgress === "create"}
 							/>
-							Disable history (no_history)
+							Disable history
 						</label>
-						<p class="help-text">
-							When enabled, each delivery starts from a clean context window. Saves tokens for
-							stateless handlers.
-						</p>
+						<p class="help-text">Start each delivery with an empty context.</p>
 					</div>
 
 					<div class="form-actions">
@@ -467,8 +459,8 @@
 								disabled={actionInProgress !== null}
 							/>
 							<p class="help-text">
-								Changing the URL resets the feed's seen-items cursor — the next poll seeds from the
-								new feed without delivering its backlog.
+								Changing the URL resets seen items; existing items in the new feed will not be
+								delivered.
 							</p>
 						</div>
 
@@ -527,11 +519,9 @@
 									bind:checked={editNoHistory}
 									disabled={actionInProgress !== null}
 								/>
-								Disable history (no_history)
+								Disable history
 							</label>
-							<p class="help-text">
-								When enabled, each delivery starts from a clean context window.
-							</p>
+							<p class="help-text">Start each delivery with an empty context.</p>
 						</div>
 
 						<div class="form-actions">

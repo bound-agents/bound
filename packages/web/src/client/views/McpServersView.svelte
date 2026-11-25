@@ -323,8 +323,8 @@
 								</div>
 								{#if server.hosts.some((h) => !h.has_capability_data)}
 									<p class="detail-note">
-										Hosts marked “partial inventory” are running an older build that only records
-										annotation hints; they're excluded from divergence comparison.
+										Hosts with partial inventory run an older build and are excluded from divergence
+										checks.
 									</p>
 								{/if}
 
@@ -370,8 +370,7 @@
 										<p class="detail-empty">This server exposes no tools.</p>
 									{:else}
 										<p class="detail-empty">
-											No capability data captured for this server — every host carrying it may be
-											running an older build that only records annotation hints.
+											No capability data available (hosts may be on an older build).
 										</p>
 									{/if}
 								{:else}

@@ -395,7 +395,7 @@
 				</div>
 			{:else if !graph || graph.nodes.length === 0}
 				<div class="center-state">
-					<p>No memories yet — they will appear here as the agent learns.</p>
+					<p>No memories yet.</p>
 				</div>
 			{:else}
 				<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -410,7 +410,7 @@
 					onmouseleave={handleMouseUp}
 					onwheel={handleWheel}
 					style="cursor: {zoom > 1 ? (dragState ? 'grabbing' : 'grab') : 'default'}"
-					aria-label="Memory graph — stratified by tier"
+					aria-label="Memory graph by tier"
 				>
 					<defs>
 						<pattern id="gridpat" width="40" height="40" patternUnits="userSpaceOnUse">
