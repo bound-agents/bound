@@ -70,17 +70,63 @@ export const SANDBOX_NOTICE_MS = 8_000;
 
 export const CHAT_SLASH_COMPLETIONS = [
 	{ value: "/help", description: "Show available commands" },
-	{ value: "/model", description: "Switch model (picker without a name)", takesArgs: true },
+	{
+		value: "/model",
+		usage: "/model [name]",
+		description: "Switch model (picker without a name)",
+		takesArgs: true,
+	},
 	{ value: "/attach", description: "Switch to a different thread" },
 	{ value: "/mcp", description: "MCP server configuration" },
 	{ value: "/inspect", description: "Browse the transcript at full fidelity" },
 	{
 		value: "/sandbox",
+		usage: "/sandbox [off|on|allow <path>]",
 		description: "Show or override this thread's filesystem sandbox",
 		takesArgs: true,
 	},
 	{ value: "/clear", description: "Start a new thread" },
 ];
+
+/** `/help` rows, derived from CHAT_SLASH_COMPLETIONS so the two cannot drift. */
+export const CHAT_HELP_ROWS: ReadonlyArray<readonly [string, string]> = CHAT_SLASH_COMPLETIONS.map(
+	(c) => [("usage" in c && c.usage) || c.value, c.description] as const,
+);
+/** Left-column width of the `/help` table: longest usage plus a 2-col gutter. */
+export const CHAT_HELP_COLUMN_WIDTH = Math.max(...CHAT_HELP_ROWS.map(([cmd]) => cmd.length)) + 2;
+
+function editDistance(a: string, b: string): number {
+	const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+	for (let i = 1; i <= a.length; i++) {
+		let prev = row[0];
+		row[0] = i;
+		for (let j = 1; j <= b.length; j++) {
+			const tmp = row[j];
+			row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+			prev = tmp;
+		}
+	}
+	return row[b.length];
+}
+
+/** Closest known slash command to an unknown one (prefix first, then edit distance <= 2). */
+export function suggestSlashCommand(command: string): string | null {
+	const lower = command.toLowerCase();
+	if (!lower) return null;
+	const names = CHAT_SLASH_COMPLETIONS.map((c) => c.value.slice(1));
+	const prefix = names.find((n) => n.startsWith(lower) || lower.startsWith(n));
+	if (prefix) return `/${prefix}`;
+	let best: string | null = null;
+	let bestDist = 3;
+	for (const n of names) {
+		const d = editDistance(lower, n);
+		if (d < bestDist) {
+			bestDist = d;
+			best = n;
+		}
+	}
+	return best ? `/${best}` : null;
+}
 
 /**
  * Per-tool_result metadata derived from its originating tool_call:
@@ -840,7 +886,20 @@ export function ChatView({
 				return;
 			}
 
-			setCommandError(`Unknown command: /${command}`);
+			const suggestion = suggestSlashCommand(command);
+			setCommandError(
+				suggestion
+					? `Unknown command: /${command}. Did you mean ${suggestion}?`
+					: `Unknown command: /${command}. Type /help for commands.`,
+			);
+			return;
+		}
+
+		// Keep the draft editable through reconnect flaps; just refuse the send.
+		if (connectionState !== "connected") {
+			setCommandError(
+				"Not connected - message not sent. Your text is kept; press Enter again once reconnected.",
+			);
 			return;
 		}
 
@@ -1025,20 +1084,9 @@ export function ChatView({
 					{showHelp && (
 						<Box flexDirection="column" marginBottom={1}>
 							<Text bold>Available commands:</Text>
-							{[
-								["/help", "Show this help message"],
-								["/model [name]", "Switch model (opens picker if no name)"],
-								["/attach", "Switch to a different thread"],
-								["/mcp", "MCP server configuration"],
-								["/inspect", "Browse the transcript at full fidelity"],
-								[
-									"/sandbox [off|on|allow <path>]",
-									"Show or override this thread's filesystem sandbox",
-								],
-								["/clear", "Start a new thread"],
-							].map(([cmd, desc]) => (
+							{CHAT_HELP_ROWS.map(([cmd, desc]) => (
 								<Box key={cmd}>
-									<Box width={18}>
+									<Box width={CHAT_HELP_COLUMN_WIDTH} flexShrink={0}>
 										<Text color={tokens.commandHighlight}>{cmd}</Text>
 									</Box>
 									<Text>{desc}</Text>
@@ -1144,7 +1192,6 @@ export function ChatView({
 							<TextInput
 								placeholder="Enter message or /help"
 								onSubmit={handleSubmit}
-								disabled={connectionState !== "connected"}
 								columns={inputColumns}
 								hasFocus={!overlayCapturingInput}
 								history={inputHistory}
@@ -1167,9 +1214,9 @@ export function ChatView({
 					/>
 					<ActionBar
 						actions={[
+							{ keys: "/help", label: "more" },
 							{ keys: "/model", label: "switch model" },
 							{ keys: "/attach", label: "switch thread" },
-							{ keys: "/mcp", label: "MCP config" },
 							{ keys: "Esc", label: "clear input" },
 							{ keys: "Ctrl-C", label: "exit" },
 						]}

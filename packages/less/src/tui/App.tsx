@@ -3,7 +3,7 @@ import type { ContentBlock } from "@bound/llm";
 import type { Message } from "@bound/shared";
 import { Box } from "ink";
 import type React from "react";
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { McpServerConfig } from "../config";
 import type { AppLogger } from "../logging";
 import type { McpServerManager } from "../mcp/manager";
@@ -18,11 +18,12 @@ import { useConnectionState } from "./hooks/useConnectionState";
 import { useMcpServers } from "./hooks/useMcpServers";
 import { useMessages } from "./hooks/useMessages";
 import { useToolCalls } from "./hooks/useToolCalls";
+import { type ModelCandidate, resolveModelName } from "./util/resolve-model";
 import { TerminalTitleController, formatThreadTitleForTerminal } from "./util/terminal-title";
 import { ChatView } from "./views/ChatView";
 import { InspectorView } from "./views/InspectorView";
 import { McpView } from "./views/McpView";
-import { PickerView } from "./views/PickerView";
+import { PickerView, truncateLabel } from "./views/PickerView";
 const NULL_TERMINAL_TITLE = new TerminalTitleController(
 	{ isTTY: false, write: () => undefined },
 	{ TERM: "dumb" },
@@ -141,6 +142,12 @@ export function App({
 		bannerType: null,
 	});
 
+	// The viewed thread, read by event handlers that must drop other threads'
+	// traffic (aux threads, a thread we just left). Updated during render so a
+	// handler never sees a stale id after a switch commits.
+	const viewedThreadRef = useRef(state.threadId);
+	viewedThreadRef.current = state.threadId;
+
 	// Wire in React hooks for state management
 	const {
 		messages,
@@ -148,7 +155,7 @@ export function App({
 		replaceMessages,
 		appendPendingUserMessage,
 		clearPendingUserMessage,
-	} = useMessages(client, initialMessages);
+	} = useMessages(client, initialMessages, viewedThreadRef);
 	const { inFlightTools, abortAll } = useToolCalls(
 		client,
 		toolHandlers,
@@ -161,6 +168,7 @@ export function App({
 		// time and cannot mutate it (see sandbox-override.ts). Rebuilt when the
 		// viewed thread changes so /attach and /clear see the right thread's state.
 		useMemo(() => sandboxOverrides.resolverFor(state.threadId), [sandboxOverrides, state.threadId]),
+		state.threadId,
 	);
 	const { runningCount: mcpServerCount } = useMcpServers(mcpManager);
 	const connectionState = useConnectionState(client);
@@ -176,10 +184,21 @@ export function App({
 		return false;
 	}, [state.view]);
 
+	const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const showHint = useCallback((message: string) => {
 		setCtrlCHint(message);
-		setTimeout(() => setCtrlCHint(null), 2000);
+		if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+		hintTimerRef.current = setTimeout(() => {
+			hintTimerRef.current = null;
+			setCtrlCHint(null);
+		}, 2000);
 	}, []);
+	useEffect(
+		() => () => {
+			if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+		},
+		[],
+	);
 
 	// Ctrl-C handling via CancelStateMachine
 	const { stateMachine } = useCancelHandler({
@@ -190,12 +209,17 @@ export function App({
 		showHint,
 	});
 
-	// Keep modal state in sync
-	stateMachine.modalOpen = state.view !== "chat";
+	// Keep modal state in sync (an effect, not a render-time mutation)
+	useEffect(() => {
+		stateMachine.modalOpen = state.view !== "chat";
+	}, [stateMachine, state.view]);
 
 	// Track whether the agent loop is processing (for thinking indicator)
 	const [isProcessing, setIsProcessing] = useState(false);
 	useEffect(() => {
+		// A new thread starts idle: a spinner from the thread we left (whose
+		// inactive status we will never receive now) must not carry over.
+		setIsProcessing(false);
 		if (!client) return;
 		const handler = (data: { thread_id: string; active: boolean }) => {
 			if (data.thread_id === state.threadId) {
@@ -281,7 +305,14 @@ export function App({
 			cancelled = true;
 		};
 	}, [client]);
-	const modelDisplay = state.model ? (modelDisplayNames.get(state.model) ?? state.model) : null;
+	const displayModel = useCallback(
+		(id: string) => modelDisplayNames.get(id) ?? id,
+		[modelDisplayNames],
+	);
+	const modelDisplay = state.model ? displayModel(state.model) : null;
+	// Banners stay one line: a long display name must not grow the frame past
+	// stdout.rows (Ink then full-clears the terminal).
+	const bannerModel = (id: string) => truncateLabel(displayModel(id), 40);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -317,11 +348,27 @@ export function App({
 		dispatch({ type: "SET_VIEW", view, pickerMode });
 	};
 
-	const handleSetThread = useCallback(
-		async (threadId: string) => {
-			if (!client) return;
-			if (threadId === state.threadId) return;
+	const transitionInFlightRef = useRef(false);
+	const handleSetThread = async (threadId: string) => {
+		if (!client) return;
+		// Re-selecting the current thread just closes the picker.
+		if (threadId === state.threadId) {
+			dispatch({ type: "SET_VIEW", view: "chat" });
+			return;
+		}
+		// A second Enter during a slow attach must not race a second transition.
+		if (transitionInFlightRef.current) return;
+		transitionInFlightRef.current = true;
+		try {
+			await runSetThread(threadId);
+		} finally {
+			transitionInFlightRef.current = false;
+		}
+	};
 
+	const runSetThread = async (threadId: string) => {
+		if (!client) return;
+		{
 			// Adapt the InFlightTool map to the AbortController map that
 			// transitionThread expects for its drain step.
 			const abortMap = new Map(Array.from(inFlightTools, ([id, t]) => [id, t.controller]));
@@ -344,6 +391,8 @@ export function App({
 			});
 
 			if (!result.ok) {
+				// Close the picker so the error banner in ChatView is visible.
+				dispatch({ type: "SET_VIEW", view: "chat" });
 				dispatch({
 					type: "SET_BANNER",
 					message: result.degraded
@@ -374,31 +423,43 @@ export function App({
 				dispatch({ type: "SET_MODEL", model: inheritedModel });
 				dispatch({
 					type: "SET_BANNER",
-					message: `Model set to ${inheritedModel} (last used in this thread)`,
+					message: `Model set to ${bannerModel(inheritedModel)} (last used in this thread)`,
 					bannerType: "info",
 				});
 			}
-		},
-		[
-			client,
-			state.threadId,
-			state.model,
-			configDir,
-			cwd,
-			hostname,
-			mcpManager,
-			mcpConfigs,
-			logger,
-			inFlightTools,
-			replaceMessages,
-			contextFiles,
-			shell,
-			sandbox,
-		],
-	);
+		}
+	};
 
 	const handleSetModel = (model: string) => {
 		dispatch({ type: "SET_MODEL", model });
+	};
+
+	// `/model <name>`: resolve against the available models so a typo is an
+	// error, not a silently-accepted unknown id.
+	const handleModelByName = async (name: string) => {
+		if (!client) return;
+		try {
+			const res = await client.listModels();
+			const candidates: ModelCandidate[] = res.models.map((m) => ({
+				id: m.logical_model ?? m.id,
+				aliases: [
+					m.id,
+					m.logical_model ?? null,
+					m.display_name ?? null,
+					modelDisplayNames.get(m.id) ?? null,
+				],
+			}));
+			const match = resolveModelName(name, candidates);
+			if (!match) {
+				handleSetBanner(`Unknown model: ${name}. Run /model to pick from the list.`, "error");
+				return;
+			}
+			handleSetModel(match);
+			handleSetBanner(`Model switched to ${bannerModel(match)}`, "info");
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			handleSetBanner(`Could not load models: ${errorMsg}`, "error");
+		}
 	};
 
 	const handleSetBanner = (message: string | null, bannerType: "error" | "info" | null) => {
@@ -411,6 +472,7 @@ export function App({
 
 	const handleClear = useCallback(async () => {
 		if (!client) return;
+		setIsProcessing(false);
 
 		const abortMap = new Map(Array.from(inFlightTools, ([id, t]) => [id, t.controller]));
 
@@ -511,7 +573,7 @@ export function App({
 				bannerType={state.bannerType}
 				ctrlCHint={ctrlCHint}
 				isProcessing={isProcessing}
-				onModelChange={handleSetModel}
+				onModelChange={(name) => void handleModelByName(name)}
 				onModelPicker={() => handleSetView("picker", "model")}
 				onAttachThread={() => handleSetView("picker", "thread")}
 				onMcpView={() => handleSetView("mcp")}
@@ -548,7 +610,7 @@ export function App({
 						} else if (state.pickerMode === "model") {
 							handleSetModel(value);
 							handleSetView("chat");
-							handleSetBanner(`Model switched to ${value}`, "info");
+							handleSetBanner(`Model switched to ${bannerModel(value)}`, "info");
 						}
 					}}
 					onCancel={() => handleSetView("chat")}

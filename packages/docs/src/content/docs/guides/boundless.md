@@ -37,6 +37,10 @@ responds.
 
 Copy the full thread ID to resume this thread later.
 
+Type `/help` for the command list. An unknown command suggests the closest match. `/model <name>` accepts a model ID or display name, case-insensitively; an unknown name shows an error and leaves the current model in place. If the connection drops, the input box stays editable and keeps your draft. Enter refuses to send until the connection returns.
+
+Press Esc or Ctrl-C once to close a picker. While a turn is running, Ctrl-C cancels it. Pressing Ctrl-C twice within two seconds exits.
+
 ## Work with local files and commands
 
 While connected, `boundless` exposes file, search, and shell tools scoped to your working

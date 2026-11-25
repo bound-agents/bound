@@ -1,5 +1,5 @@
 import type { BoundClient, ToolCallRequest, ToolCallResult, ToolCancelEvent } from "@bound/client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { bashToolWithStreaming } from "../../tools/bash";
 import type { ResolvedSandboxConfig } from "../../tools/sandbox";
 import type { SandboxResolver } from "../../tools/sandbox-override";
@@ -56,8 +56,32 @@ export function useToolCalls(
 	 * is read-only: a function base→effective with no mutation surface.
 	 */
 	sandboxResolver?: SandboxResolver,
+	/**
+	 * The viewed thread. Aux cards are dropped when it changes (and on WS
+	 * reconnect) so a missed `aux:completed` can't strand a card forever.
+	 */
+	viewedThreadId?: string,
 ): UseToolCallsResult {
 	const [inFlightTools, setInFlightTools] = useState<Map<string, InFlightTool>>(new Map());
+	// Live controllers, aborted OUTSIDE setState updaters (updaters must be pure;
+	// StrictMode/concurrent React may run them twice).
+	const controllersRef = useRef(new Map<string, AbortController>());
+
+	useEffect(() => {
+		void viewedThreadId;
+		setInFlightTools((prev) => dropAuxEntries(prev));
+	}, [viewedThreadId]);
+
+	useEffect(() => {
+		if (!client) return;
+		const onState = (state: string) => {
+			if (state === "connected") setInFlightTools((prev) => dropAuxEntries(prev));
+		};
+		client.on("connection:state", onState);
+		return () => {
+			client.off("connection:state", onState);
+		};
+	}, [client]);
 
 	useEffect(() => {
 		if (!client) return;
@@ -69,6 +93,7 @@ export function useToolCalls(
 			// Create AbortController for this tool call
 			const controller = new AbortController();
 			const startTime = Date.now();
+			controllersRef.current.set(callId, controller);
 
 			// Track in-flight tool
 			setInFlightTools((prev) => {
@@ -156,6 +181,7 @@ export function useToolCalls(
 				};
 			} finally {
 				// Remove from in-flight
+				controllersRef.current.delete(callId);
 				setInFlightTools((prev) => {
 					const updated = new Map(prev);
 					updated.delete(callId);
@@ -166,17 +192,15 @@ export function useToolCalls(
 
 		const handleToolCancel = (event: ToolCancelEvent) => {
 			const { callId } = event;
+			const controller = controllersRef.current.get(callId);
+			if (!controller) return;
+			controller.abort();
+			controllersRef.current.delete(callId);
 			setInFlightTools((prev) => {
-				const tool = prev.get(callId);
-				if (tool) {
-					// Abort the tool
-					tool.controller.abort();
-					// Remove from in-flight
-					const updated = new Map(prev);
-					updated.delete(callId);
-					return updated;
-				}
-				return prev;
+				if (!prev.has(callId)) return prev;
+				const updated = new Map(prev);
+				updated.delete(callId);
+				return updated;
 			});
 		};
 
@@ -217,16 +241,24 @@ export function useToolCalls(
 	}, [client, handlers, hostname, cwd, shell, sandbox, sandboxResolver]);
 
 	const abortAll = () => {
-		setInFlightTools((prev) => {
-			for (const tool of prev.values()) {
-				tool.controller.abort();
-			}
-			return new Map();
-		});
+		for (const controller of controllersRef.current.values()) controller.abort();
+		controllersRef.current.clear();
+		setInFlightTools(new Map());
 	};
 
 	return {
 		inFlightTools,
 		abortAll,
 	};
+}
+
+/** Remove every aux card (keys `aux:<thread>`); returns `prev` when there are none. */
+export function dropAuxEntries(prev: Map<string, InFlightTool>): Map<string, InFlightTool> {
+	let next: Map<string, InFlightTool> | null = null;
+	for (const key of prev.keys()) {
+		if (!key.startsWith("aux:")) continue;
+		next ??= new Map(prev);
+		next.delete(key);
+	}
+	return next ?? prev;
 }

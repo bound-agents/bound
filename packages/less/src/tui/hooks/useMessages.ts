@@ -41,6 +41,12 @@ export interface UseMessagesResult {
 export function useMessages(
 	client: BoundClient | null,
 	initialMessages: Message[] = [],
+	/**
+	 * The thread currently on screen. `message:created` events for any other
+	 * thread (aux threads, a thread we just left) are dropped so they can't
+	 * leak into this transcript or reconcile away the pending placeholder.
+	 */
+	viewedThreadRef?: { readonly current: string },
 ): UseMessagesResult {
 	const [messages, setMessages] = useState<Message[]>(initialMessages);
 
@@ -48,6 +54,8 @@ export function useMessages(
 		if (!client) return;
 
 		const handleMessageCreated = (msg: Message) => {
+			const viewed = viewedThreadRef?.current;
+			if (msg.thread_id && viewed && msg.thread_id !== viewed) return;
 			setMessages((prev) => {
 				// Deduplicate: skip if a message with this ID is already present.
 				// The server may broadcast the same message twice (once from the
@@ -93,7 +101,7 @@ export function useMessages(
 		return () => {
 			client.off("message:created", handleMessageCreated);
 		};
-	}, [client]);
+	}, [client, viewedThreadRef]);
 
 	const appendMessage = (message: Message) => {
 		setMessages((prev) => [...prev, message]);

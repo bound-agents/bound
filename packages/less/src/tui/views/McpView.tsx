@@ -42,6 +42,7 @@ export function McpView({
 								// TODO: implement selection action (toggle/edit)
 							}}
 							onCancel={onCancel}
+							handleCancelKeys={false}
 							renderItem={(item) => (
 								<Box>
 									<Text>{item.config.name}</Text>

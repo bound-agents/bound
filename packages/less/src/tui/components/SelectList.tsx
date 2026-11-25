@@ -35,6 +35,13 @@ export interface SelectListProps<T> {
 	 * + ActionBar 1 = 8 chrome rows, + 1 spare row.
 	 */
 	reservedRows?: number;
+	/**
+	 * When false, Esc and Ctrl-C are NOT handled here. Set inside a
+	 * ModalOverlay: the overlay owns Esc and the app's cancel handler owns
+	 * Ctrl-C, so a second handler would fire `onCancel` twice (or arm the
+	 * double-Ctrl-C exit). Defaults to true for standalone lists.
+	 */
+	handleCancelKeys?: boolean;
 }
 
 // Hard safety cap to avoid Yoga choking on huge lists.
@@ -56,6 +63,7 @@ export function SelectList<T>({
 	renderItem,
 	pageSize,
 	reservedRows = DEFAULT_RESERVED_ROWS,
+	handleCancelKeys = true,
 }: SelectListProps<T>): React.ReactElement {
 	const [rawIndex, setSelectedIndex] = useState(0);
 	// Clamp after the list shrinks so the cursor always stays visible.
@@ -83,9 +91,9 @@ export function SelectList<T>({
 			setSelectedIndex((prev) => Math.min(items.length - 1, prev + effectivePageSize));
 		} else if (key.return) {
 			onSelect(items[selectedIndex]);
-		} else if (input === "c" && key.ctrl) {
+		} else if (handleCancelKeys && input === "c" && key.ctrl) {
 			onCancel?.();
-		} else if (key.escape) {
+		} else if (handleCancelKeys && key.escape) {
 			onCancel?.();
 		}
 	});

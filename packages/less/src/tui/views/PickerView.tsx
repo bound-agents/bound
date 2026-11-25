@@ -33,7 +33,10 @@ export function truncateLabel(label: string, max: number): string {
 
 interface PickerItem {
 	id: string;
+	/** Model display name; for threads, the raw title (labels are computed at render). */
 	label: string;
+	/** Thread title (thread mode). Kept raw so a resize re-truncates without re-fetching. */
+	title?: string | null;
 }
 
 /**
@@ -72,10 +75,7 @@ export function PickerView({
 						// the row stays a single line. The full thread id is
 						// kept whenever possible so users can still copy it
 						// for `--attach`.
-						threads.map((t) => ({
-							id: t.id,
-							label: formatThreadPickerLabel(t.title, t.id, labelColumns),
-						})),
+						threads.map((t) => ({ id: t.id, label: t.title ?? t.id, title: t.title })),
 					);
 				} else if (mode === "model") {
 					const response = await client.listModels();
@@ -107,7 +107,7 @@ export function PickerView({
 		};
 
 		loadItems();
-	}, [client, mode, labelColumns]);
+	}, [client, mode]);
 
 	const title = mode === "thread" ? "Select Thread" : "Select Model";
 
@@ -135,6 +135,7 @@ export function PickerView({
 							items={items}
 							onSelect={(item) => onSelect(item.id)}
 							onCancel={onCancel}
+							handleCancelKeys={false}
 							reservedRows={MODAL_LIST_RESERVED_ROWS}
 							renderItem={(item, selected) => {
 								const active = mode === "model" && item.id === currentValue;
@@ -142,7 +143,9 @@ export function PickerView({
 								return (
 									<Text wrap="truncate-end">
 										<Text color={tokens.selectionCaret}>{selected ? "› " : "  "}</Text>
-										{mode === "model" ? truncateLabel(item.label, budget) : item.label}
+										{mode === "model"
+											? truncateLabel(item.label, budget)
+											: formatThreadPickerLabel(item.title ?? null, item.id, labelColumns)}
 										{active && (
 											<Text color={tokens.successIndicator} dimColor>
 												{ACTIVE_SUFFIX}
