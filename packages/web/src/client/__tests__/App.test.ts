@@ -85,6 +85,7 @@ function installRoutes() {
 		tokens: {
 			byModel: [],
 			costByModelTimeline: [],
+			byProvider: [],
 			totals: {
 				tokens_in: 0,
 				tokens_out: 0,

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { MetricsResponse } from "../../../server/routes/metrics";
-import { MetricsStore } from "../metrics-store";
+import { MetricsStore, providerRows } from "../metrics-store";
 import type { FetchFn } from "../metrics-store";
 
 function makeMetricsResponse(overrides?: Partial<MetricsResponse>): MetricsResponse {
@@ -32,6 +32,7 @@ function makeMetricsResponse(overrides?: Partial<MetricsResponse>): MetricsRespo
 					cache_write: 200,
 				},
 			],
+			byProvider: [],
 			totals: {
 				tokens_in: 1000,
 				tokens_out: 500,
@@ -393,5 +394,42 @@ describe("out-of-order response handling", () => {
 		// The stale failure must not surface an error over the fresh success.
 		expect(store.state.error).toBeNull();
 		expect(store.state.data).not.toBeNull();
+	});
+});
+
+describe("providerRows", () => {
+	const p = (provider: string | null, turn_count: number, cost_usd = 0) => ({
+		provider,
+		tokens_in: 10,
+		tokens_out: 5,
+		cache_read: 2,
+		cache_write: 1,
+		cost_usd,
+		turn_count,
+		error_count: 0,
+	});
+
+	it("labels the null bucket unattributed and computes turn and cost shares", () => {
+		const rows = providerRows([p("copilot", 3, 0.75), p(null, 1, 0.25)]);
+		expect(rows).toEqual([
+			expect.objectContaining({
+				provider: "copilot",
+				tokens: 18,
+				turn_share: 0.75,
+				cost_share: 0.75,
+			}),
+			expect.objectContaining({
+				provider: "unattributed",
+				tokens: 18,
+				turn_share: 0.25,
+				cost_share: 0.25,
+			}),
+		]);
+	});
+
+	it("reports zero shares instead of NaN when nothing was spent", () => {
+		const [row] = providerRows([p("copilot", 0, 0)]);
+		expect(row?.turn_share).toBe(0);
+		expect(row?.cost_share).toBe(0);
 	});
 });

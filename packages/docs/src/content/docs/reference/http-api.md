@@ -143,4 +143,4 @@ Skill authoring limits:
 | `PUT /api/routing/cluster-defaults` | Set roles, aliases, and the cluster fallback list; `422` when a new target is not advertised (empty clears; unchanged dangling targets are kept) |
 | `POST /api/routing/routes/:routeId/drain` | Disable a route with an optional `reason`; `422` for an unadvertised route |
 | `POST /api/status/cancel/:threadId` | Cancel an active turn on a thread |
-| `GET /api/metrics` | Query inference cost, token, cache, latency, and relay metrics |
+| `GET /api/metrics` | Query inference cost, token, cache, latency, and relay metrics, including per-provider usage (`tokens.byProvider`) |

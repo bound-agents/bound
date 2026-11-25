@@ -1,4 +1,4 @@
-import type { MetricsResponse } from "../../server/routes/metrics";
+import type { MetricsResponse, ProviderMetrics } from "../../server/routes/metrics";
 
 export interface MetricsState {
 	/** Non-null once the first successful load completes. */
@@ -105,4 +105,36 @@ export class MetricsStore {
 			};
 		}
 	}
+}
+
+export interface ProviderRow {
+	/** Provider id, or `"unattributed"` for the server's `provider: null` bucket. */
+	provider: string;
+	turns: number;
+	tokens: number;
+	cost_usd: number;
+	errors: number;
+	/** Fraction of all turns in range (0 when there are none). */
+	turn_share: number;
+	/** Fraction of total cost in range (0 when nothing was spent). */
+	cost_share: number;
+}
+
+/** Project `tokens.byProvider` into table rows with turn and cost shares. */
+export function providerRows(byProvider: ProviderMetrics[]): ProviderRow[] {
+	let totalTurns = 0;
+	let totalCost = 0;
+	for (const p of byProvider) {
+		totalTurns += p.turn_count;
+		totalCost += p.cost_usd;
+	}
+	return byProvider.map((p) => ({
+		provider: p.provider ?? "unattributed",
+		turns: p.turn_count,
+		tokens: p.tokens_in + p.tokens_out + p.cache_read + p.cache_write,
+		cost_usd: p.cost_usd,
+		errors: p.error_count,
+		turn_share: totalTurns > 0 ? p.turn_count / totalTurns : 0,
+		cost_share: totalCost > 0 ? p.cost_usd / totalCost : 0,
+	}));
 }

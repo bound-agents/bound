@@ -43,6 +43,28 @@ function sampleMetrics() {
 					cache_write: 100,
 				},
 			],
+			byProvider: [
+				{
+					provider: "bedrock-main",
+					tokens_in: 900,
+					tokens_out: 400,
+					cache_read: 200,
+					cache_write: 100,
+					cost_usd: 1.0,
+					turn_count: 8,
+					error_count: 1,
+				},
+				{
+					provider: null,
+					tokens_in: 100,
+					tokens_out: 100,
+					cache_read: 0,
+					cache_write: 0,
+					cost_usd: 0.2345,
+					turn_count: 2,
+					error_count: 0,
+				},
+			] as Array<Record<string, unknown>>,
 			totals: {
 				tokens_in: 1000,
 				tokens_out: 500,
@@ -138,6 +160,30 @@ describe("MetricsView", () => {
 		expect(target.textContent?.replace(/\s+/g, " ")).toContain("$1.2345");
 		// Turn count.
 		expect(target.textContent?.replace(/\s+/g, " ")).toContain("Turn Count");
+	});
+
+	it("renders the provider table with turn shares and an unattributed bucket", async () => {
+		const { target } = await mountMetrics(() => sampleMetrics());
+		const table = target.querySelector(".provider-table");
+		expect(table).not.toBeNull();
+		const text = table?.textContent?.replace(/\s+/g, " ") ?? "";
+		expect(text).toContain("bedrock-main");
+		expect(text).toContain("unattributed");
+		// 8 of 10 turns → 80.0%; 1,600 tokens; $1.0000.
+		expect(text).toContain("80.0%");
+		expect(text).toContain("1,600");
+		expect(text).toContain("$1.0000");
+		expect(text).toContain("20.0%");
+	});
+
+	it("omits the provider table when the server sends no byProvider", async () => {
+		const { target } = await mountMetrics(() => {
+			const m = sampleMetrics();
+			const { byProvider: _omitted, ...tokens } = m.tokens;
+			return { ...m, tokens };
+		});
+		expect(target.querySelector(".provider-table")).toBeNull();
+		expect(target.textContent).toContain("Turn Count");
 	});
 
 	it("renders the relay performance section with success rate and latency", async () => {

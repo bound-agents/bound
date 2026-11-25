@@ -122,6 +122,10 @@ selected time range.
 - **Cost timeline:** Spending over time by model, split into input, output, cache-read, and
   cache-write components.
 - **Token charts:** Input, output, cache-read, and cache-write tokens.
+- **Providers:** Turns, tokens, cost, and errors per configured provider, with each
+  provider's share of turns and cost. The provider comes from the turn's route
+  (`site:provider:backend`), summed across hosts and backends. Turns recorded without a
+  route are counted under `unattributed`.
 - **Cache hit timeline:** Prompt-cache hit rate over time.
 - **Latency:** Response latency by model.
 - **Relay cycles:** Cross-host relay timing and success rates.

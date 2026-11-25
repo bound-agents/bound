@@ -13,7 +13,7 @@
 	import TokenBarChart from "../components/TokenBarChart.svelte";
 	import { client } from "../lib/bound";
 	import { formatRelativeTime } from "../lib/format-time";
-	import { MetricsStore } from "../lib/metrics-store";
+	import { MetricsStore, providerRows } from "../lib/metrics-store";
 	import { type ModelLabels, buildModelLabels } from "../lib/model-labels";
 
 	const store = new MetricsStore();
@@ -130,6 +130,47 @@
 		},
 	];
 
+	const pct = (v: unknown): string => `${(Number(v) * 100).toFixed(1)}%`;
+	const providerColumns = [
+		{ key: "provider", label: "Provider", width: "1fr", mono: true, sortable: true },
+		{
+			key: "turns",
+			label: "Turns",
+			width: "90px",
+			mono: true,
+			sortable: true,
+			format: (v: unknown) => Number(v).toLocaleString(),
+		},
+		{ key: "turn_share", label: "Turn %", width: "80px", mono: true, sortable: true, format: pct },
+		{
+			key: "tokens",
+			label: "Tokens",
+			width: "120px",
+			mono: true,
+			sortable: true,
+			format: (v: unknown) => Number(v).toLocaleString(),
+		},
+		{
+			key: "cost_usd",
+			label: "Cost",
+			width: "100px",
+			mono: true,
+			sortable: true,
+			format: (v: unknown) => `$${Number(v).toFixed(4)}`,
+		},
+		{ key: "cost_share", label: "Cost %", width: "80px", mono: true, sortable: true, format: pct },
+		{ key: "errors", label: "Errors", width: "70px", mono: true, sortable: true },
+	];
+
+	// Older servers omit `byProvider`; the table is hidden rather than empty.
+	const providerTableRows = $derived(
+		providerRows(data?.tokens.byProvider ?? []) as unknown as Record<string, unknown>[],
+	);
+
+	function providerRowAccent(row: Record<string, unknown>): string | null {
+		return Number(row.errors) > 0 ? "var(--warn)" : null;
+	}
+
 	const relayCycleRows = $derived(
 		(data?.relay.recentCycles ?? []) as unknown as Record<string, unknown>[],
 	);
@@ -227,6 +268,18 @@
 
 					<TokenBarChart data={data.tokens.byModel} labelFor={routeLabel} />
 					<CostTimeline data={data.tokens.costByModelTimeline} labelFor={routeLabel} />
+
+					{#if providerTableRows.length > 0}
+						<div class="table-caption">By provider</div>
+						<div class="provider-table">
+							<DataTable
+								columns={providerColumns}
+								rows={providerTableRows}
+								sortable={true}
+								rowAccent={providerRowAccent}
+							/>
+						</div>
+					{/if}
 				{/if}
 
 				<SectionHeader number={2} subtitle="This host only" title="Relay Performance" />
@@ -501,6 +554,7 @@
 		min-width: 0; /* allow shrink within grid track */
 	}
 
+	.table-caption,
 	.relay-table-caption {
 		font-size: 11px;
 		color: var(--ink-3);
@@ -509,6 +563,7 @@
 		margin: 12px 0 6px;
 	}
 
+	.provider-table,
 	.relay-table-scroll {
 		max-height: 400px;
 		overflow-y: auto;

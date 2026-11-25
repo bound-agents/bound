@@ -16,6 +16,32 @@ export interface BackendPricing {
 	price_per_m_cache_write_1h?: number;
 }
 
+export interface ProviderMetrics {
+	/** Configured provider id, or `null` for turns without a parseable `route_id`. */
+	provider: string | null;
+	tokens_in: number;
+	tokens_out: number;
+	cache_read: number;
+	cache_write: number;
+	cost_usd: number;
+	turn_count: number;
+	error_count: number;
+}
+
+/**
+ * Provider segment of a `RouteId` (`${siteId}:${provider}:${backendId}`), or
+ * `null` when the id is absent or lacks three non-empty segments. Backend ids
+ * may themselves contain `:`, so only the first two separators delimit.
+ */
+export function providerFromRouteId(routeId: string | null | undefined): string | null {
+	if (!routeId) return null;
+	const first = routeId.indexOf(":");
+	if (first <= 0) return null;
+	const second = routeId.indexOf(":", first + 1);
+	if (second <= first + 1 || second === routeId.length - 1) return null;
+	return routeId.slice(first + 1, second);
+}
+
 export interface MetricsResponse {
 	tokens: {
 		byModel: Array<{
@@ -52,6 +78,14 @@ export interface MetricsResponse {
 			cache_read: number;
 			cache_write: number;
 		}>;
+		/**
+		 * Usage grouped by the provider segment of `turns.route_id`
+		 * (`${siteId}:${provider}:${backendId}`), summed across hosts and
+		 * backends. `provider: null` is the unattributed bucket: turns with a
+		 * NULL or malformed `route_id`. Attributed providers sort by turn count
+		 * descending (ties by name); the unattributed bucket is always last.
+		 */
+		byProvider: ProviderMetrics[];
 		totals: {
 			tokens_in: number;
 			tokens_out: number;
@@ -303,6 +337,58 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				turn_count: number | null;
 				error_count: number | null;
 			};
+
+			// Per-route sums, folded into per-provider buckets in JS so the
+			// RouteId parse (backend ids may contain ':') lives in one place.
+			const byRouteRows = _db
+				.prepare(
+					`SELECT
+					route_id,
+					SUM(tokens_in) as tokens_in,
+					SUM(tokens_out) as tokens_out,
+					SUM(COALESCE(tokens_cache_read, 0)) as cache_read,
+					SUM(COALESCE(tokens_cache_write, 0)) as cache_write,
+					SUM(COALESCE(cost_usd, 0)) as cost_usd,
+					COUNT(*) as turn_count,
+					SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+				FROM turns
+				WHERE created_at BETWEEN ? AND ? AND deleted = 0
+				GROUP BY route_id`,
+				)
+				.all(fromISO, toISO) as Array<
+				Omit<ProviderMetrics, "provider"> & { route_id: string | null }
+			>;
+
+			const providerBuckets = new Map<string | null, ProviderMetrics>();
+			for (const row of byRouteRows) {
+				const provider = providerFromRouteId(row.route_id);
+				let bucket = providerBuckets.get(provider);
+				if (!bucket) {
+					bucket = {
+						provider,
+						tokens_in: 0,
+						tokens_out: 0,
+						cache_read: 0,
+						cache_write: 0,
+						cost_usd: 0,
+						turn_count: 0,
+						error_count: 0,
+					};
+					providerBuckets.set(provider, bucket);
+				}
+				bucket.tokens_in += row.tokens_in ?? 0;
+				bucket.tokens_out += row.tokens_out ?? 0;
+				bucket.cache_read += row.cache_read ?? 0;
+				bucket.cache_write += row.cache_write ?? 0;
+				bucket.cost_usd += row.cost_usd ?? 0;
+				bucket.turn_count += row.turn_count ?? 0;
+				bucket.error_count += row.error_count ?? 0;
+			}
+			const byProvider = [...providerBuckets.values()].sort((a, b) => {
+				if (a.provider === null) return 1;
+				if (b.provider === null) return -1;
+				return b.turn_count - a.turn_count || a.provider.localeCompare(b.provider);
+			});
 
 			// Query relay metrics (including aggregates for all cycles, not just those with latencies)
 			const relayHostAggregatesRows = _db
@@ -560,6 +646,7 @@ export function createMetricsRoutes(_db: Database, backends?: BackendPricing[]):
 				tokens: {
 					byModel: byModelRows || [],
 					costByModelTimeline: costByModelTimelineWithComponents,
+					byProvider,
 					totals: {
 						tokens_in: totalsRow?.tokens_in ?? 0,
 						tokens_out: totalsRow?.tokens_out ?? 0,
