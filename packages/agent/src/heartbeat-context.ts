@@ -89,9 +89,11 @@ export function buildHeartbeatContext(
 	if (options?.siteId && shouldRunStablePrefixDriftValidation(db, Date.now())) {
 		try {
 			const report = runStablePrefixDriftValidation(db, options.siteId, Date.now());
-			if (report.composeDriftCount > 0 || report.collectDriftCount > 0) {
+			if (report.composeDriftCount > 0 || report.collectDriftCount > 0 || report.unknownCount > 0) {
+				// Unknown pairs (cross-host producers, pruned change_log history)
+				// are counted, not warned: they carry no leak evidence (#304).
 				options.logger?.info(
-					`[heartbeat] Stable-prefix drift: ${report.composeDriftCount} compose, ${report.collectDriftCount} collect leaks detected over ${report.pairsExamined} pairs`,
+					`[heartbeat] Stable-prefix drift: ${report.composeDriftCount} compose, ${report.collectDriftCount} collect leaks detected over ${report.pairsExamined} pairs (${report.unknownCount} unclassifiable)`,
 				);
 				// One structured record per leak. This is the durable home
 				// for drift findings (they used to be written to

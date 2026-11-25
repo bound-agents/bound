@@ -26,13 +26,20 @@
  *     between renders).
  *
  *   - **Collect drift** (`collect:`): different input fingerprint,
- *     no `change_log` row covering `semantic_memory | skills |
- *     files | advisories` between the two cold
- *     rebuilds. Either the input collector is reading something
+ *     no `change_log` row covering `semantic_memory | skills | hosts`
+ *     or a sibling thread's `threads.summary` change between the two
+ *     cold rebuilds, and the local
+ *     `change_log` provably retains that whole window. Either the input collector is reading something
  *     that doesn't go through the outbox (a documented narrow
  *     exception, e.g., `last_accessed_at` bumps) and that something
  *     leaked into the fingerprint, OR the collector is reading
  *     undeclared signals.
+ *
+ * Pairs that cannot be classified are reported as `unknown`, not as
+ * leaks (#304): turns from different producer hosts (`host_origin`),
+ * and uncovered fingerprint shifts where pruning may have removed the
+ * covering `change_log` row. Missing history is not evidence that no
+ * declared input changed.
  *
  * Drift findings are returned in the report's `leaks` array; the
  * caller (`heartbeat-context.ts`) emits one structured `logger.warn`
@@ -86,10 +93,33 @@ export interface StablePrefixDriftLeak {
 	curr_input_fp: string | null;
 }
 
+/**
+ * A drifted pair the detector cannot attribute (#304). Not a leak: the
+ * evidence needed to classify it is unavailable.
+ *
+ *   - `cross-host`: the two turns were produced by different hosts, whose
+ *     host-local inputs (the `local` model flags, access-time hints,
+ *     replica lag) legitimately differ.
+ *   - `incomplete-history`: the local `change_log` no longer retains rows
+ *     back to the earlier turn (sync pruning removes peer-confirmed
+ *     entries), so the absence of a covering row proves nothing.
+ */
+export interface StablePrefixDriftUnknown {
+	reason: "cross-host" | "incomplete-history";
+	thread_id: string;
+	prev_turn_id: string;
+	curr_turn_id: string;
+	prev_host: string | null;
+	curr_host: string | null;
+}
+
 export interface StablePrefixDriftReport {
 	pairsExamined: number;
 	composeDriftCount: number;
 	collectDriftCount: number;
+	/** Drifted pairs that could not be classified; see {@link StablePrefixDriftUnknown}. */
+	unknownCount: number;
+	unknown: StablePrefixDriftUnknown[];
 	/**
 	 * One record per detected leak, in scan order. The caller logs
 	 * these; they are NOT persisted to `semantic_memory`.
@@ -104,6 +134,7 @@ interface ColdTurnRow {
 	hash: string | null;
 	input_fp: string | null;
 	drift_version: number | null;
+	host_origin: string | null;
 }
 
 /**
@@ -127,7 +158,8 @@ export function runStablePrefixDriftValidation(
 				created_at,
 				json_extract(context_debug, '$.stableSubsectionHash') AS hash,
 				json_extract(context_debug, '$.stablePrefixInputFingerprint') AS input_fp,
-				json_extract(context_debug, '$.stablePrefixDriftVersion') AS drift_version
+				json_extract(context_debug, '$.stablePrefixDriftVersion') AS drift_version,
+				host_origin
 			FROM turns
 			WHERE created_at >= ?
 				AND deleted = 0
@@ -141,6 +173,21 @@ export function runStablePrefixDriftValidation(
 	let composeDriftCount = 0;
 	let collectDriftCount = 0;
 	const leaks: StablePrefixDriftLeak[] = [];
+	const unknown: StablePrefixDriftUnknown[] = [];
+	const markUnknown = (
+		reason: StablePrefixDriftUnknown["reason"],
+		curr: ColdTurnRow,
+		prev: ColdTurnRow,
+	): void => {
+		unknown.push({
+			reason,
+			thread_id: curr.thread_id,
+			prev_turn_id: prev.id,
+			curr_turn_id: curr.id,
+			prev_host: prev.host_origin,
+			curr_host: curr.host_origin,
+		});
+	};
 
 	for (let i = 1; i < rows.length; i++) {
 		const prev = rows[i - 1];
@@ -170,6 +217,13 @@ export function runStablePrefixDriftValidation(
 
 		if (curr.hash === prev.hash) continue; // No drift.
 
+		// Different producers render from different host-local inputs and
+		// different replicas; neither flavor can be attributed (#304).
+		if (prev.host_origin !== curr.host_origin) {
+			markUnknown("cross-host", curr, prev);
+			continue;
+		}
+
 		// Same input fingerprint, different output hash → compose leak.
 		if (curr.input_fp !== null && prev.input_fp !== null && curr.input_fp === prev.input_fp) {
 			composeDriftCount++;
@@ -184,11 +238,23 @@ export function runStablePrefixDriftValidation(
 		// declared write — the collector is reading something it
 		// shouldn't.
 		if (curr.input_fp !== prev.input_fp) {
-			const hasCoveringChange = changeLogTouchedStableSources(db, prev.created_at, curr.created_at);
-			if (!hasCoveringChange) {
-				collectDriftCount++;
-				leaks.push(buildLeak("collect", curr, prev));
+			const coverage = changeLogTouchedStableSources(
+				db,
+				curr.thread_id,
+				prev.created_at,
+				curr.created_at,
+			);
+			if (coverage === "covered") continue;
+			// An uncovered shift is only evidence of a collector leak when the
+			// local change_log provably still holds every row in the window, and
+			// every sibling `threads` write in it can be compared against that
+			// sibling's previous logged row.
+			if (coverage === "unprovable" || !changeLogRetainedSince(db, prev.created_at)) {
+				markUnknown("incomplete-history", curr, prev);
+				continue;
 			}
+			collectDriftCount++;
+			leaks.push(buildLeak("collect", curr, prev));
 		}
 	}
 
@@ -196,6 +262,8 @@ export function runStablePrefixDriftValidation(
 		pairsExamined,
 		composeDriftCount,
 		collectDriftCount,
+		unknownCount: unknown.length,
+		unknown,
 		leaks,
 	};
 }
@@ -286,6 +354,18 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  *     but does not move the fingerprint, so it never triggers a
  *     finding.
  *
+ *   - `threads`: cross-thread summaries (`threads.summary`) seed the
+ *     stable channel and are folded into the input fingerprint, so a
+ *     sibling thread's summary update is a covering write. Only that
+ *     write covers: every loop turn bumps its own thread's
+ *     `last_message_at`, and active siblings bump theirs, so treating
+ *     any `threads` row as coverage would mask every collect leak. A
+ *     `threads` row covers only when it belongs to another thread and
+ *     its `summary` differs from that thread's previous logged row. A
+ *     sibling row with no earlier logged row proves nothing either way
+ *     (pruning may have dropped its predecessor), so it leaves the pair
+ *     unclassifiable rather than covered.
+ *
  *   - `advisories`, `files`: NOT consulted by the
  *     stable-side renderer. Listed here only so future additions
  *     to the stable-side input set don't silently fail to update
@@ -294,8 +374,29 @@ function updateLastRun(db: Database, siteId: string, nowMs: number): void {
  */
 const STABLE_SIDE_TABLES = ["semantic_memory", "skills", "hosts"] as const;
 
-/** True if any change_log row for a {@link STABLE_SIDE_TABLES} table lands in `(fromIso, toIso]` — the "did the stable prefix's own inputs actually change" check the drift detector uses to rule out a benign, expected fingerprint shift. */
-function changeLogTouchedStableSources(db: Database, fromIso: string, toIso: string): boolean {
+/**
+ * Coverage verdict for one drifted pair's window:
+ *
+ *   - `covered`: a declared input provably changed, so the shift is benign.
+ *   - `unprovable`: no proven change, but a sibling `threads` write in the
+ *     window has no earlier logged row to compare its summary against.
+ *   - `uncovered`: nothing in the window could have moved the fingerprint.
+ */
+type StableSourceCoverage = "covered" | "unprovable" | "uncovered";
+
+/**
+ * Classifies the window `(fromIso, toIso]` against the change_log rows that
+ * could legitimately move the stable-side input fingerprint of `threadId`: any
+ * {@link STABLE_SIDE_TABLES} row, or a sibling thread's summary change. This
+ * is the "did the stable prefix's own inputs actually change" check the drift
+ * detector uses to rule out a benign, expected fingerprint shift.
+ */
+function changeLogTouchedStableSources(
+	db: Database,
+	threadId: string,
+	fromIso: string,
+	toIso: string,
+): StableSourceCoverage {
 	const placeholders = STABLE_SIDE_TABLES.map(() => "?").join(",");
 	// `change_log.timestamp` is the wall-clock anchor (HLC encodes
 	// causal order; timestamp is the literal ISO instant of the
@@ -310,6 +411,69 @@ function changeLogTouchedStableSources(db: Database, fromIso: string, toIso: str
 			LIMIT 1`,
 		)
 		.get(...STABLE_SIDE_TABLES, fromIso, toIso) as { hit: number } | null;
+	if (row !== null) return "covered";
+	return siblingSummaryCoverage(db, threadId, fromIso, toIso);
+}
+
+/**
+ * Classifies sibling `threads` writes inside `(fromIso, toIso]`. `row_data`
+ * carries the full post-write row, so a summary change is a row whose summary
+ * differs from the same thread's previous logged row (`covered`). A sibling
+ * row with no earlier logged row cannot be compared: pruning removes an HLC
+ * prefix, so its predecessor may be gone and an unchanged summary would look
+ * new. Such a row makes the window `unprovable` unless another row proves a
+ * change. Writes to `threadId` itself never count: its own `last_message_at`
+ * advances on every turn, and its summary is not part of its own stable
+ * prefix.
+ */
+function siblingSummaryCoverage(
+	db: Database,
+	threadId: string,
+	fromIso: string,
+	toIso: string,
+): StableSourceCoverage {
+	const row = db
+		.prepare(
+			`SELECT
+				MAX(prev_hlc IS NOT NULL AND summary IS NOT prev_summary) AS changed,
+				MAX(prev_hlc IS NULL) AS orphaned
+			FROM (
+				SELECT
+					json_extract(c.row_data, '$.summary') AS summary,
+					p.hlc AS prev_hlc,
+					json_extract(p.row_data, '$.summary') AS prev_summary
+				FROM change_log c
+				LEFT JOIN change_log p ON p.hlc = (
+					SELECT q.hlc FROM change_log q
+					WHERE q.table_name = 'threads'
+						AND q.row_id = c.row_id
+						AND q.hlc < c.hlc
+					ORDER BY q.hlc DESC
+					LIMIT 1
+				)
+				WHERE c.table_name = 'threads'
+					AND c.row_id != ?
+					AND c.timestamp > ?
+					AND c.timestamp <= ?
+			)`,
+		)
+		.get(threadId, fromIso, toIso) as { changed: number | null; orphaned: number | null } | null;
+	if (row?.changed === 1) return "covered";
+	if (row?.orphaned === 1) return "unprovable";
+	return "uncovered";
+}
+
+/**
+ * True when the local `change_log` provably retains every row written after
+ * `fromIso`. Pruning deletes a prefix (`hlc <= cutoff`), so a surviving row
+ * stamped at or before `fromIso` shows nothing later was pruned. An empty log,
+ * or one whose oldest row is newer than `fromIso`, may have lost rows inside
+ * the window, and the caller must treat missing coverage as unknown (#304).
+ */
+function changeLogRetainedSince(db: Database, fromIso: string): boolean {
+	const row = db
+		.prepare("SELECT 1 AS hit FROM change_log WHERE timestamp <= ? LIMIT 1")
+		.get(fromIso) as { hit: number } | null;
 	return row !== null;
 }
 
