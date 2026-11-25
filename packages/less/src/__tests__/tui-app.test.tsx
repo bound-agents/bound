@@ -4,6 +4,14 @@ import { render } from "ink-testing-library";
 import React from "react";
 import type { McpServerManager } from "../mcp/manager";
 import { App } from "../tui/App";
+import {
+	CLEAR_TERMINAL,
+	ERASE_LINE,
+	frameLines,
+	inkInCi,
+	mountTerminal,
+	stripAnsi,
+} from "./ink-terminal-harness";
 
 describe("App Component", () => {
 	let mockClient: BoundClient;
@@ -448,5 +456,74 @@ describe("App Component", () => {
 			// Banner must confirm the model switch
 			expect(output).toContain("Model switched to");
 		});
+	});
+
+	describe("model picker exit leaves no residue", () => {
+		const tick = () => new Promise((resolve) => setTimeout(resolve, 150));
+
+		it.skipIf(inkInCi)(
+			"erases every picker row when a model is selected on a small terminal",
+			async () => {
+				mockClient.listModels = vi.fn().mockResolvedValue({
+					models: Array.from({ length: 50 }, (_, i) => ({
+						id: `model-${String(i).padStart(2, "0")}`,
+						display_name: `model-${String(i).padStart(2, "0")}-${"y".repeat(100)}`,
+					})),
+					default: "",
+				});
+				const rows = 16;
+				const t = mountTerminal(
+					React.createElement(App, {
+						client: mockClient,
+						threadId: "thread-residue",
+						configDir: "/tmp",
+						cwd: "/home/user",
+						hostname: "localhost",
+						mcpManager: mockMcpManager,
+						mcpConfigs: [],
+						// biome-ignore lint/suspicious/noExplicitAny: test setup pattern
+						logger: mockLogger as any,
+						initialMessages: [],
+						model: "gpt-4",
+						toolHandlers: new Map(),
+					}),
+					{ rows, columns: 60, debug: false },
+				);
+				await tick();
+				t.stdin.write("/model");
+				await tick();
+				t.stdin.write("\r");
+				await tick();
+				for (let i = 0; i < 5; i++) {
+					t.stdin.write("\u001B[B");
+					await tick();
+				}
+				const pickerWrite = t.stdout.writes.at(-1) ?? "";
+				expect(stripAnsi(pickerWrite)).toContain("Select Model");
+				// log-update terminates each frame with "\n"; that is not a rendered row.
+				const pickerHeight = frameLines(
+					pickerWrite.split(ERASE_LINE).at(-1)?.replace(/\n$/, ""),
+				).length;
+				expect(pickerHeight).toBeLessThanOrEqual(rows - 1);
+				const before = t.stdout.writes.length;
+
+				t.stdin.write("\r");
+				await tick();
+
+				const after = t.stdout.writes.slice(before).join("");
+				const all = t.stdout.writes.join("");
+				expect(all).not.toContain(CLEAR_TERMINAL);
+				// log-update erases the previous frame line-by-line before drawing chat.
+				expect(after.split(ERASE_LINE).length - 1).toBeGreaterThanOrEqual(pickerHeight);
+				const finalFrame = stripAnsi((t.stdout.writes.at(-1) ?? "").split(ERASE_LINE).at(-1) ?? "");
+				expect(finalFrame).not.toContain("Select Model");
+				// Picker chrome must be gone (the status bar legitimately names the new model).
+				expect(finalFrame).not.toContain("Return select");
+				expect(finalFrame).not.toMatch(/[↑↓] \d+ more/);
+				expect(finalFrame).not.toContain("model-04");
+				expect(finalFrame).toContain("Model switched to");
+				t.unmount();
+			},
+		);
 	});
 });

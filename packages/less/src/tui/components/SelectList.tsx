@@ -20,10 +20,19 @@ export interface SelectListProps<T> {
 	 */
 	pageSize?: number;
 	/**
-	 * Vertical rows reserved for chrome outside the list (modal borders,
-	 * header, action bar, padding). Subtracted from terminal height when
-	 * auto-sizing. Defaults to 8 which matches PickerView's layout
-	 * (borders=2, paddingY=2, title=1, ActionBar=1, marginTop gaps=2).
+	 * Vertical rows reserved outside the list's own rows and its two
+	 * indicator rows: every row of surrounding chrome PLUS one spare row.
+	 * The spare row keeps the dynamic frame strictly shorter than
+	 * `stdout.rows`; Ink clears and redraws the whole terminal (instead of
+	 * line-diffing) when output height reaches `stdout.rows`, which makes
+	 * navigation jitter and leaves stale rows behind when the view closes.
+	 *
+	 * Rendered height = items + 2 indicators + (reservedRows - 1) chrome
+	 *                 = rows - 1 whenever the list is windowed.
+	 *
+	 * Defaults to MODAL_LIST_RESERVED_ROWS (9), matching PickerView/McpView:
+	 * border 2 + paddingY 2 + title 1 + list marginTop 1 + ActionBar marginTop 1
+	 * + ActionBar 1 = 8 chrome rows, + 1 spare row.
 	 */
 	reservedRows?: number;
 }
@@ -31,8 +40,14 @@ export interface SelectListProps<T> {
 // Hard safety cap to avoid Yoga choking on huge lists.
 const MAX_PAGE_SIZE = 50;
 // Floor so the list is always usable even in tiny terminals.
-const MIN_PAGE_SIZE = 3;
-const DEFAULT_RESERVED_ROWS = 8;
+// One row: a larger floor would push tiny terminals past `rows - 1`.
+const MIN_PAGE_SIZE = 1;
+/** Chrome rows of a ModalOverlay list view (see `reservedRows`). */
+export const MODAL_LIST_CHROME_ROWS = 8;
+/** Rows kept free below `stdout.rows` so Ink never takes its full-clear path. */
+export const INK_SPARE_ROWS = 1;
+export const MODAL_LIST_RESERVED_ROWS = MODAL_LIST_CHROME_ROWS + INK_SPARE_ROWS;
+const DEFAULT_RESERVED_ROWS = MODAL_LIST_RESERVED_ROWS;
 
 export function SelectList<T>({
 	items,

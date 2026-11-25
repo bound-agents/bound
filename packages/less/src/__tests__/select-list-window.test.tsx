@@ -43,9 +43,9 @@ describe("SelectList windowing", () => {
 	it("keeps a fixed frame height while navigating and keeps the cursor visible", async () => {
 		const { lastFrame, stdin } = await mount(16);
 		const first = height(lastFrame());
-		// rows(16) - reserved(8) - indicators(2) = 6 items + 2 indicator rows.
-		expect(first).toBe(8);
-		expect(lastFrame()).toContain("↓ 34 more");
+		// rows(16) - reserved(9) - indicators(2) = 5 items + 2 indicator rows.
+		expect(first).toBe(7);
+		expect(lastFrame()).toContain("↓ 35 more");
 		for (let i = 0; i < 25; i++) {
 			stdin.write(DOWN);
 			await tick();
@@ -57,13 +57,21 @@ describe("SelectList windowing", () => {
 
 	it("re-derives the window height on resize", async () => {
 		const { lastFrame, stdout } = await mount(16);
-		expect(height(lastFrame())).toBe(8);
+		expect(height(lastFrame())).toBe(7);
 		resize(stdout, 20);
 		await tick();
-		expect(height(lastFrame())).toBe(12);
+		expect(height(lastFrame())).toBe(11);
 		resize(stdout, 4);
 		await tick();
-		// Sane minimum: three items plus indicators.
-		expect(height(lastFrame())).toBe(5);
+		// Floor: one item plus indicators, so tiny terminals stay under rows.
+		expect(height(lastFrame())).toBe(3);
+	});
+});
+
+describe("SelectList reserved-rows contract", () => {
+	it("documents a reservedRows default that equals modal chrome plus Ink's spare row", async () => {
+		const mod = await import("../tui/components/SelectList");
+		expect(mod.MODAL_LIST_RESERVED_ROWS).toBe(mod.MODAL_LIST_CHROME_ROWS + mod.INK_SPARE_ROWS);
+		expect(mod.INK_SPARE_ROWS).toBeGreaterThanOrEqual(1);
 	});
 });

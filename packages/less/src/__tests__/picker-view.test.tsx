@@ -2,8 +2,18 @@ import { describe, expect, it, vi } from "bun:test";
 import type { BoundClient } from "@bound/client";
 import { render } from "ink-testing-library";
 import React from "react";
+import { INK_SPARE_ROWS, MODAL_LIST_CHROME_ROWS } from "../tui/components/SelectList";
 import { PickerView } from "../tui/views/PickerView";
 import { formatThreadPickerLabel } from "../tui/views/picker-label";
+import {
+	CLEAR_TERMINAL,
+	frameLines,
+	inkInCi,
+	mountTerminal,
+	stripAnsi,
+	tick,
+	visibleWidth,
+} from "./ink-terminal-harness";
 
 describe("formatThreadPickerLabel", () => {
 	it("collapses newlines in titles so each label is a single line", () => {
@@ -227,5 +237,104 @@ describe("PickerView model order", () => {
 		expect(frame.indexOf("claude-opus")).toBeLessThan(frame.indexOf("Fable"));
 		expect(frame.indexOf("Fable")).toBeLessThan(frame.indexOf("GPT-5.6"));
 		expect(frame.indexOf("fable")).toBeLessThan(frame.indexOf("claude-opus"));
+	});
+});
+
+describe("PickerView terminal layout invariants", () => {
+	const DOWN = "\u001B[B";
+	const UP = "\u001B[A";
+	const PAGE_DOWN = "\u001B[6~";
+	const LONG = `Long-${"x".repeat(115)}`;
+
+	function client(models: { id: string; display_name?: string }[]) {
+		return {
+			listThreads: vi.fn(),
+			listModels: vi.fn().mockResolvedValue({ models, default: "" }),
+		} as unknown as BoundClient;
+	}
+	const sixty = Array.from({ length: 60 }, (_, i) => ({
+		id: `m-${String(i).padStart(2, "0")}`,
+	}));
+
+	function mount(
+		rows: number,
+		columns: number,
+		models: { id: string; display_name?: string }[],
+		opts: { debug?: boolean; currentValue?: string } = {},
+	) {
+		return mountTerminal(
+			React.createElement(PickerView, {
+				mode: "model",
+				client: client(models),
+				onSelect: vi.fn(),
+				onCancel: vi.fn(),
+				currentValue: opts.currentValue,
+			}),
+			{ rows, columns, debug: opts.debug ?? true },
+		);
+	}
+
+	for (const rows of [12, 16, 24, 40]) {
+		it(`stays strictly under ${rows} rows with zero jitter while navigating`, async () => {
+			const t = mount(rows, 80, sixty);
+			await tick();
+			t.stdout.resize(rows);
+			await tick();
+			const h = frameLines(t.stdout.lastFrame()).length;
+			expect(h).toBeLessThanOrEqual(rows - 1);
+			for (const key of [DOWN, DOWN, PAGE_DOWN, DOWN, PAGE_DOWN, UP, UP, PAGE_DOWN]) {
+				t.stdin.write(key);
+				await tick();
+				expect(frameLines(t.stdout.lastFrame()).length).toBe(h);
+			}
+			t.unmount();
+		});
+	}
+
+	it("matches the documented chrome budget exactly when windowed", async () => {
+		const t = mount(24, 80, sixty);
+		await tick();
+		// items + 2 indicators + chrome == rows - spare.
+		const lines = frameLines(t.stdout.lastFrame());
+		const items = lines.filter((l) => /m-\d\d/.test(l)).length;
+		expect(lines.length - items - 2).toBe(MODAL_LIST_CHROME_ROWS);
+		expect(lines.length).toBe(24 - INK_SPARE_ROWS);
+		t.unmount();
+	});
+
+	it("never wraps a long model name, active or not, at 40 columns", async () => {
+		const models = [
+			...Array.from({ length: 30 }, (_, i) => ({ id: `a-${String(i).padStart(2, "0")}` })),
+			{ id: "long", display_name: LONG },
+			{ id: "long2", display_name: `${LONG}-two` },
+		];
+		const t = mount(16, 40, models, { currentValue: "long" });
+		await tick();
+		const h = frameLines(t.stdout.lastFrame()).length;
+		let sawLong = false;
+		for (let i = 0; i < 34; i++) {
+			const lines = frameLines(t.stdout.lastFrame());
+			expect(lines.length).toBe(h);
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+			if (lines.some((l) => l.includes("Long-x"))) sawLong = true;
+			t.stdin.write(DOWN);
+			await tick();
+		}
+		expect(sawLong).toBe(true);
+		expect(stripAnsi(t.stdout.writes.join(""))).toContain("(active)");
+		t.unmount();
+	});
+
+	it.skipIf(inkInCi)("never emits a full-terminal clear while scrolling", async () => {
+		const t = mount(12, 40, [...sixty, { id: "long", display_name: LONG }], { debug: false });
+		await tick();
+		for (let i = 0; i < 70; i++) {
+			t.stdin.write(i % 10 === 9 ? PAGE_DOWN : DOWN);
+			await tick(5);
+		}
+		await tick(80);
+		expect(t.stdout.writes.length).toBeGreaterThan(1);
+		expect(t.stdout.writes.join("")).not.toContain(CLEAR_TERMINAL);
+		t.unmount();
 	});
 });

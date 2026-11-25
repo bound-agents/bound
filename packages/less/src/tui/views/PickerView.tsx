@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type React from "react";
 import { useEffect, useState } from "react";
 import { ActionBar, ModalOverlay, SelectList, Spinner } from "../components";
+import { MODAL_LIST_RESERVED_ROWS } from "../components/SelectList";
 import { useTerminalSize } from "../hooks/useTerminalSize";
 import { tokens } from "../theme";
 import { formatThreadPickerLabel } from "./picker-label";
@@ -18,6 +19,16 @@ export interface PickerViewProps {
 	 *  mode === "model", the matching list item is annotated with "(active)"
 	 *  so the user can see which model is currently in use at a glance. */
 	currentValue?: string;
+}
+
+const ACTIVE_SUFFIX = " (active)";
+
+/** Truncate to `max` columns with a trailing ellipsis. */
+export function truncateLabel(label: string, max: number): string {
+	const flat = label.replace(/\s+/g, " ").trim();
+	if (max <= 0) return "";
+	if (flat.length <= max) return flat;
+	return max === 1 ? "…" : `${flat.slice(0, max - 1)}…`;
 }
 
 interface PickerItem {
@@ -103,7 +114,9 @@ export function PickerView({
 	return (
 		<ModalOverlay onDismiss={onCancel}>
 			<Box flexDirection="column">
-				<Text bold>{title}</Text>
+				<Text bold wrap="truncate-end">
+					{title}
+				</Text>
 				{loading && (
 					<Box marginTop={1}>
 						<Spinner />
@@ -122,17 +135,22 @@ export function PickerView({
 							items={items}
 							onSelect={(item) => onSelect(item.id)}
 							onCancel={onCancel}
-							renderItem={(item, selected) => (
-								<Text>
-									<Text color={tokens.selectionCaret}>{selected ? "› " : "  "}</Text>
-									{item.label}
-									{mode === "model" && item.id === currentValue && (
-										<Text color={tokens.successIndicator} dimColor>
-											{" (active)"}
-										</Text>
-									)}
-								</Text>
-							)}
+							reservedRows={MODAL_LIST_RESERVED_ROWS}
+							renderItem={(item, selected) => {
+								const active = mode === "model" && item.id === currentValue;
+								const budget = labelColumns - (active ? ACTIVE_SUFFIX.length : 0);
+								return (
+									<Text wrap="truncate-end">
+										<Text color={tokens.selectionCaret}>{selected ? "› " : "  "}</Text>
+										{mode === "model" ? truncateLabel(item.label, budget) : item.label}
+										{active && (
+											<Text color={tokens.successIndicator} dimColor>
+												{ACTIVE_SUFFIX}
+											</Text>
+										)}
+									</Text>
+								);
+							}}
 						/>
 					</Box>
 				)}
