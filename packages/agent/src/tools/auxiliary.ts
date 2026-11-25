@@ -61,7 +61,9 @@ const auxSchema = z.object({
 	model_hint: z
 		.string()
 		.optional()
-		.describe("Default model for this identity (for define / update)"),
+		.describe(
+			"Default model for this identity (for define / update). Use a logical model name or a cluster role/alias as listed in <stable-context> (e.g. `gpt-6-astra`, `opus`) — it routes across every host and provider serving that model. A provider-specific backend id pins one route and loses failover; use one only when debugging that route.",
+		),
 	instructions: z
 		.string()
 		.optional()
@@ -71,7 +73,9 @@ const auxSchema = z.object({
 	model: z
 		.string()
 		.optional()
-		.describe("Override the definition's model_hint for this invocation only. (for invoke)"),
+		.describe(
+			"Override the definition's model_hint for this invocation only (for invoke). Same rule: a logical model name or role/alias, not a provider-specific backend id.",
+		),
 	background: z
 		.boolean()
 		.optional()

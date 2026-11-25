@@ -106,7 +106,7 @@ export function renderClusterModels(
 	// capability fields from the synced `hosts.models` JSON, which carries no
 	// pricing, so a price legend would be a promise the data path cannot keep.
 	const lines: string[] = [
-		'<stable-context note="role is the model\'s cluster assignment (default/heavy/fast); context and max_output are token counts; prefer explicit metadata and role over model-name vibes when picking aux/infer() models">',
+		'<stable-context note="name is the logical model (or alias) to pass as aux model / model_hint / infer() model — it routes across every host and provider serving it; role is the model\'s cluster assignment (default/heavy/fast); context and max_output are token counts; prefer explicit metadata and role over model-name vibes when picking aux/infer() models">',
 	];
 	for (const m of models) {
 		let attrs =

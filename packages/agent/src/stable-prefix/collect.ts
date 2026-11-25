@@ -215,11 +215,21 @@ export function loadClusterModels(db: Database, siteId?: string): ClusterModelVi
 		}
 		if (!Array.isArray(parsed)) continue;
 		for (const entry of parsed) {
+			// Key by the LOGICAL model, not the backend id: this list is what the
+			// agent copies into aux `model` / `model_hint` / `infer()` model ids. A
+			// backend id (`bedrock-main-openai.gpt-6-astra`) pins one route and
+			// forfeits failover and pooling; the logical id (`gpt-6-astra`) routes
+			// across every host and provider that serves it, so it must be the name
+			// the agent sees. Entries without a `logical_model` (legacy string
+			// aliases, unassigned backends) keep their id.
 			const name =
 				typeof entry === "string"
 					? entry
 					: entry && typeof entry === "object" && "id" in entry
-						? String((entry as { id: unknown }).id)
+						? typeof (entry as { logical_model?: unknown }).logical_model === "string" &&
+							(entry as { logical_model: string }).logical_model.length > 0
+							? (entry as { logical_model: string }).logical_model
+							: String((entry as { id: unknown }).id)
 						: null;
 			if (!name) continue;
 			const set = hostsByModel.get(name) ?? new Set<string>();
