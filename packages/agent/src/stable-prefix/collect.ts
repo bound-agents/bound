@@ -99,6 +99,9 @@ export interface LoadedStableInputs {
  *     (`staleChildKeysInWorkingKnowledge`) — the renderer only
  *     needs membership, not per-summary grouping.
  *   - `activeSkills` keeps `name` and `description`.
+ *   - `clusterModels` keeps every rendered field: name, hosts, local,
+ *     and the decision metadata (context window, max output, vision,
+ *     thinking, role).
  *   - `budgetPressure` and `tunables` pass through.
  */
 export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableVolatileInputs {
@@ -122,10 +125,19 @@ export function projectStableVolatileInputs(loaded: LoadedStableInputs): StableV
 		budgetPressure: loaded.budgetPressure,
 		tunables: { n: loaded.tunables.n, m: loaded.tunables.m },
 		skillIndex: loaded.activeSkills.map((s) => ({ name: s.name, description: s.description })),
+		// Every field `renderClusterModels` emits must survive projection (#302):
+		// the cache-miss render consumes this output and the input fingerprint
+		// hashes it, so a dropped field would vanish from the cached bytes AND
+		// leave the fingerprint blind to a metadata-driven rerender.
 		clusterModels: loaded.clusterModels.map((m) => ({
 			name: m.name,
 			hosts: [...m.hosts],
 			local: m.local,
+			contextWindow: m.contextWindow,
+			maxOutput: m.maxOutput,
+			vision: m.vision,
+			thinking: m.thinking,
+			role: m.role,
 		})),
 	};
 }

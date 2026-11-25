@@ -39,6 +39,7 @@ import { describe, expect, it } from "bun:test";
 import { applySchema, insertRow } from "@bound/core";
 import fc from "fast-check";
 import type { StageEntry, Vc15Tunables } from "../../summary-extraction";
+import { StableSubsectionCache } from "../cache";
 import {
 	type LoadedStableInputs,
 	collectStableVolatileInputs,
@@ -278,10 +279,9 @@ describe("collectStableVolatileInputs — integration tests", () => {
 			SITE_ID,
 		);
 
-		// Render via the PRODUCTION path (context-assembly.ts:1152 folds the
-		// cluster block in as `renderClusterModels(loadClusterModels(...))`, NOT
-		// through the metadata-stripping R-VC25 projector), so this exercises the
-		// exact bytes a cold rebuild emits.
+		// Render via the PRODUCTION path (context-assembly.ts folds the cluster
+		// block in as `renderClusterModels(loadClusterModels(...))`), so this
+		// exercises the exact bytes a cold rebuild emits.
 		const rendered = renderClusterModels(loadClusterModels(db, SITE_ID)).join("\n");
 
 		// The honest capability signal still rides through.
@@ -293,6 +293,97 @@ describe("collectStableVolatileInputs — integration tests", () => {
 		expect(rendered).not.toContain("price_out");
 		expect(rendered).not.toContain("USD per million");
 		expect(rendered).not.toContain("2.5");
+		db.close();
+	});
+});
+
+describe("projectStableVolatileInputs — rendered model metadata (#302)", () => {
+	const baseModel = {
+		name: "gpt-6-astra",
+		hosts: ["host-a"],
+		local: true,
+		contextWindow: 700000,
+		maxOutput: 64000,
+		vision: true,
+		thinking: false,
+		role: "default" as const,
+	};
+	const baseLoaded = (clusterModels: LoadedStableInputs["clusterModels"]): LoadedStableInputs => ({
+		pinned: [],
+		summaries: [],
+		detailEntries: [],
+		parentSummaryMap: new Map(),
+		staleChildrenMap: new Map(),
+		budgetPressure: false,
+		activeSkills: [],
+		tunables,
+		clusterModels,
+	});
+
+	it("K9: preserves every field renderClusterModels consumes", () => {
+		const projected = projectStableVolatileInputs(baseLoaded([baseModel]));
+		expect(projected.clusterModels).toEqual([baseModel]);
+		expect(renderClusterModels(projected.clusterModels)).toEqual(renderClusterModels([baseModel]));
+	});
+
+	it("K10: changing any rendered metadata field changes both the render and the fingerprint", () => {
+		const variants: Array<Partial<typeof baseModel> | Record<string, unknown>> = [
+			{ contextWindow: 200000 },
+			{ maxOutput: 8192 },
+			{ vision: false },
+			{ thinking: true },
+			{ role: "heavy" },
+			{ role: undefined },
+			{ contextWindow: undefined },
+		];
+		const baseFp = hashStableVolatileInputs(projectStableVolatileInputs(baseLoaded([baseModel])));
+		const baseRender = renderClusterModels([baseModel]).join("\n");
+		for (const patch of variants) {
+			const changed = { ...baseModel, ...patch } as typeof baseModel;
+			expect(renderClusterModels([changed]).join("\n")).not.toBe(baseRender);
+			const fp = hashStableVolatileInputs(projectStableVolatileInputs(baseLoaded([changed])));
+			expect(fp).not.toBe(baseFp);
+		}
+	});
+
+	it("K11: DB collector and cache-miss render keep populated capability metadata", () => {
+		const db = freshDb();
+		const ts = "2026-05-25T11:00:00Z";
+		insertRow(
+			db,
+			"hosts",
+			{
+				site_id: SITE_ID,
+				host_name: "host-a",
+				models: JSON.stringify([
+					{
+						id: "gpt-6-astra",
+						max_output_tokens: 64000,
+						capabilities: { max_context: 700000, vision: true, extended_thinking: false },
+					},
+				]),
+				online_at: ts,
+				modified_at: ts,
+				deleted: 0,
+				work_spool_capable: 0,
+			},
+			SITE_ID,
+		);
+		const collected = collectStableVolatileInputs(db, false, SITE_ID);
+		expect(collected.clusterModels).toEqual(
+			loadClusterModels(db, SITE_ID).map((m) => ({ ...m, hosts: [...m.hosts] })),
+		);
+		expect(collected.clusterModels[0]).toMatchObject({
+			contextWindow: 700000,
+			maxOutput: 64000,
+			vision: true,
+			thinking: false,
+		});
+		const rendered = new StableSubsectionCache()
+			.get({ db, threadId: "t", budgetPressure: false, siteId: SITE_ID })
+			.join("\n");
+		expect(rendered).toContain(renderClusterModels(loadClusterModels(db, SITE_ID)).join("\n"));
+		expect(rendered).toContain('context="700000"');
 		db.close();
 	});
 });
