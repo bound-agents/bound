@@ -111,8 +111,12 @@ describe("consistency serving telemetry", () => {
 				"consistency.serve.page_count": 1,
 				"consistency.serve.frame_count": 1,
 				"consistency.serve.terminal": "all_done",
-				"consistency.serve.cache_miss_count": 1,
-				"consistency.serve.cache_hit_count": 0,
+				// #248: the digest comparison runs first and takes the cold miss; the
+				// mismatched table's row page then reads the warmed cache.
+				"consistency.serve.digest_mismatch_count": 1,
+				"consistency.serve.digest_cache_miss_count": 1,
+				"consistency.serve.cache_miss_count": 0,
+				"consistency.serve.cache_hit_count": 1,
 			});
 			await context.with(
 				trace.setSpan(context.active(), trace.getTracer("test").startSpan("sync.consistency.warm")),
@@ -122,6 +126,8 @@ describe("consistency serving telemetry", () => {
 				attributes: Record<string, unknown>;
 			}>;
 			expect(warm[0]?.attributes).toMatchObject({
+				"consistency.serve.digest_cache_hit_count": 1,
+				"consistency.serve.digest_cache_miss_count": 0,
 				"consistency.serve.cache_hit_count": 1,
 				"consistency.serve.cache_miss_count": 0,
 			});

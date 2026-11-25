@@ -20,11 +20,13 @@ import {
 } from "@bound/core";
 import {
 	type ConsistencyEntry,
+	computeTableStateDigest,
 	createChangeLogEntry,
 	getBackfillableEntriesSorted,
 	getBackfillablePksSorted,
 	getCachedRowStateHashes,
 	getPkColumn as getPkColumnTyped,
+	isTableStateDigest,
 	mergeDiffEntries,
 	mergeDiffPks,
 	syncableWhereClause,
@@ -271,17 +273,35 @@ interface SnapshotState {
 	pendingIsLastBatch?: boolean;
 }
 
+/**
+ * One table's accumulated consistency advertisement on the requesting side.
+ * `digestMatch` marks a table the responder short-circuited with a verified
+ * equal state digest (#248): it carries no rows and must not be diffed.
+ * `digestRejected` marks a short-circuit claim that failed verification; the
+ * table carries no rows either, so it is skipped for this cycle rather than
+ * diffed against an empty advertisement.
+ */
+type ConsistencyTableData = {
+	count: number;
+	pks: string[];
+	entries?: ConsistencyEntry[];
+	digestMatch?: boolean;
+	digestRejected?: boolean;
+};
+
 interface ConsistencyObserver {
 	requestSent(details: {
 		resumeUsed: boolean;
 		resumeTableIndex: number;
 		resumeOffset: number;
+		digestCount?: number;
 	}): void;
 	response(details: {
 		tableIndex: number;
 		nextOffset: number;
 		rowCount: number;
 		observedAt?: number;
+		digestMatch?: boolean;
 	}): void;
 	complete(reason: "all_done" | "table_count_match", observedAt?: number): void;
 	timeout(cursor: { tableIndex: number; offset: number }): void;
@@ -1906,6 +1926,7 @@ export class WsTransport {
 			resume_table_index?: number;
 			resume_offset?: number;
 			trace_context?: { traceparent: string; tracestate?: string };
+			table_digests?: unknown;
 		},
 	): void {
 		if (!this.config.isHub) return;
@@ -1942,6 +1963,7 @@ export class WsTransport {
 
 		const resumeTable = payload.resume_table_index ?? 0;
 		const resumeOffset = payload.resume_offset ?? 0;
+		const remoteDigests = WsTransport.parseTableDigests(payload.table_digests, tables);
 		if (resumeTable > 0 || resumeOffset > 0) {
 			this.config.logger?.debug("[consistency] Resuming from cursor", {
 				peerSiteId,
@@ -1976,11 +1998,31 @@ export class WsTransport {
 				payload.request_id,
 				serving,
 				new Map(),
+				remoteDigests,
 			);
 		} catch (error) {
 			this.failConsistencyServing(peerSiteId, payload.request_id, serving, error);
 			throw error;
 		}
+	}
+
+	/**
+	 * Keep only well-formed digests for tables in this exchange (#248). Anything
+	 * else — an older requester's absent field, a non-object, a malformed or
+	 * unknown-table entry — is dropped, which keeps that table's row stream.
+	 */
+	private static parseTableDigests(
+		value: unknown,
+		tables: readonly SyncedTableName[],
+	): Map<string, string> {
+		const digests = new Map<string, string>();
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return digests;
+		const record = value as Record<string, unknown>;
+		for (const table of tables) {
+			const digest = Object.hasOwn(record, table) ? record[table] : undefined;
+			if (isTableStateDigest(digest)) digests.set(table, digest);
+		}
+		return digests;
 	}
 
 	private failConsistencyServing(
@@ -2023,6 +2065,7 @@ export class WsTransport {
 			serving: ConsistencyServingSpan;
 			backpressureStartedAt?: number;
 			counts: Map<number, number>;
+			remoteDigests: Map<string, string>;
 		}
 	>();
 
@@ -2035,6 +2078,7 @@ export class WsTransport {
 		requestId?: string,
 		serving?: ConsistencyServingSpan,
 		counts: Map<number, number> = new Map(),
+		remoteDigests: Map<string, string> = new Map(),
 	): void {
 		const peer = this.peerConnections.get(peerSiteId);
 		if (!peer) {
@@ -2055,8 +2099,28 @@ export class WsTransport {
 		// `syncableWhereClause` so the two sides cannot drift apart again.
 		const whereClause = syncableWhereClause(table);
 
+		// #248 short-circuit: at the start of a table, compare the requester's
+		// state digest with ours. Equal digests answer the table with one
+		// row-free frame; a mismatch falls through to the row advertisement.
+		// A table resumed mid-stream (offset/cursor set) always keeps streaming.
+		const remoteDigest =
+			offset === 0 && cursor === undefined ? remoteDigests.get(table) : undefined;
+		let digestMatch: { digest: string; rowCount: number } | undefined;
+		if (remoteDigest !== undefined) {
+			const digestStartedAt = performance.now();
+			const local = computeTableStateDigest(this.config.db, table);
+			const matched = local.digest === remoteDigest;
+			serving?.digest?.({
+				matched,
+				durationMs: performance.now() - digestStartedAt,
+				cacheHitCount: local.cacheHitCount,
+				cacheMissCount: local.cacheMissCount,
+			});
+			if (matched) digestMatch = { digest: local.digest, rowCount: local.rowCount };
+		}
+
 		const countStartedAt = performance.now();
-		let count = counts.get(tableIndex);
+		let count = digestMatch?.rowCount ?? counts.get(tableIndex);
 		if (count === undefined) {
 			const countRow = this.config.db
 				.query(`SELECT COUNT(*) AS c FROM ${table}${whereClause}`)
@@ -2068,8 +2132,9 @@ export class WsTransport {
 
 		// Metadata paging remains narrow; only cache misses read full rows.
 		const selectStartedAt = performance.now();
-		const rows =
-			cursor === undefined && offset > 0
+		const rows: Array<Record<string, unknown>> = digestMatch
+			? []
+			: cursor === undefined && offset > 0
 				? (this.config.db
 						.query(
 							`SELECT ${pkCol}, modified_at FROM ${table}${whereClause} ORDER BY ${pkCol} ASC LIMIT ? OFFSET ?`,
@@ -2118,6 +2183,7 @@ export class WsTransport {
 				next_table_index: allDone ? undefined : nextTableIndex,
 				next_offset: allDone ? undefined : nextOffset,
 				trace_data: undefined,
+				...(digestMatch ? { digest_match: true, digest: digestMatch.digest } : {}),
 			},
 			peer.symmetricKey,
 		);
@@ -2150,6 +2216,7 @@ export class WsTransport {
 					all_done: true,
 					request_id: requestId,
 					trace_data: serving?.getTraceData?.(),
+					...(digestMatch ? { digest_match: true, digest: digestMatch.digest } : {}),
 				},
 				peer.symmetricKey,
 			);
@@ -2168,6 +2235,7 @@ export class WsTransport {
 				serving: serving ?? startConsistencyServing(),
 				backpressureStartedAt: performance.now(),
 				counts,
+				remoteDigests,
 			});
 			return;
 		}
@@ -2188,6 +2256,7 @@ export class WsTransport {
 					requestId,
 					serving,
 					counts,
+					remoteDigests,
 				);
 			} catch (error) {
 				if (serving) this.failConsistencyServing(peerSiteId, requestId, serving, error);
@@ -2228,6 +2297,7 @@ export class WsTransport {
 					state.requestId,
 					state.serving,
 					state.counts,
+					state.remoteDigests,
 				);
 			} catch (error) {
 				this.failConsistencyServing(peerSiteId, state.requestId, state.serving, error);
@@ -2246,22 +2316,22 @@ export class WsTransport {
 	 */
 	private consistencyResumeState: {
 		cursor: { tableIndex: number; offset: number };
-		data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
+		data: Map<string, ConsistencyTableData>;
 	} | null = null;
 
 	private pendingConsistencyRequests = new Map<
 		string,
 		{
-			resolve: (
-				data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>,
-			) => void;
+			resolve: (data: Map<string, ConsistencyTableData>) => void;
 			reject: (err: Error) => void;
-			data: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
+			data: Map<string, ConsistencyTableData>;
 			timer: Timer;
 			cursor: { tableIndex: number; offset: number };
 			observer?: ConsistencyObserver;
 			/** Connection the request was sent on; responses can only arrive over it. */
 			peer: PeerConnection;
+			/** Table digests sent with this request; a `digest_match` must echo one. */
+			sentDigests: Map<string, string>;
 		}
 	>();
 
@@ -2293,7 +2363,7 @@ export class WsTransport {
 	requestConsistency(
 		tables: string[],
 		observer?: ConsistencyObserver,
-	): Promise<Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>> {
+	): Promise<Map<string, ConsistencyTableData>> {
 		const hubPeer = this.peerConnections.values().next().value as PeerConnection | undefined;
 		if (!hubPeer) {
 			observer?.sendFailed();
@@ -2312,7 +2382,10 @@ export class WsTransport {
 			resume_table_index?: number;
 			resume_offset?: number;
 			trace_context?: { traceparent: string; tracestate?: string };
+			table_digests?: Record<string, string>;
 		} = { tables, request_id: requestId, trace_context: injectConsistencyTraceCarrier() };
+		const sentDigests = this.computeLocalTableDigests(tables);
+		if (sentDigests.size > 0) framePayload.table_digests = Object.fromEntries(sentDigests);
 		if (resumeTableIndex > 0 || resumeOffset > 0) {
 			framePayload.resume_table_index = resumeTableIndex;
 			framePayload.resume_offset = resumeOffset;
@@ -2330,6 +2403,7 @@ export class WsTransport {
 			resumeUsed: resume !== null,
 			resumeTableIndex,
 			resumeOffset,
+			digestCount: sentDigests.size,
 		});
 
 		this.config.logger?.debug("[consistency] Request sent", {
@@ -2359,8 +2433,31 @@ export class WsTransport {
 				cursor: { tableIndex: resumeTableIndex, offset: resumeOffset },
 				observer,
 				peer: hubPeer,
+				sentDigests,
 			});
 		});
+	}
+
+	/**
+	 * Local state digests for the requested tables (#248). A table whose digest
+	 * cannot be computed (e.g. absent from this schema) is simply omitted, which
+	 * keeps its full row advertisement.
+	 */
+	private computeLocalTableDigests(tables: readonly string[]): Map<string, string> {
+		const digests = new Map<string, string>();
+		const wanted = tables.length > 0 ? new Set(tables) : undefined;
+		for (const table of WsTransport.SYNCED_TABLES) {
+			if (wanted && !wanted.has(table)) continue;
+			try {
+				digests.set(table, computeTableStateDigest(this.config.db, table).digest);
+			} catch (error) {
+				this.config.logger?.debug("[consistency] Table digest unavailable; streaming rows", {
+					table,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return digests;
 	}
 
 	handleConsistencyResponse(payload: {
@@ -2376,6 +2473,8 @@ export class WsTransport {
 		next_table_index?: number;
 		next_offset?: number;
 		trace_data?: string;
+		digest_match?: boolean;
+		digest?: string;
 	}): void {
 		const rid = payload.request_id;
 		if (!rid) return;
@@ -2390,10 +2489,28 @@ export class WsTransport {
 			tableIndex: req.cursor.tableIndex,
 			nextOffset: req.cursor.offset,
 			rowCount: payload.pks.length,
+			digestMatch: payload.digest_match === true,
 		});
 
 		const existing = req.data.get(payload.table);
-		if (existing) {
+		if (payload.digest_match === true) {
+			// #248: the hub answered this table with a row-free frame. Trust it only
+			// when it echoes the digest we sent; either way the table carries no rows,
+			// so it must never reach the diff as an empty advertisement.
+			const verified =
+				isTableStateDigest(payload.digest) && req.sentDigests.get(payload.table) === payload.digest;
+			if (!verified) {
+				this.config.logger?.warn("[consistency] Unverifiable digest match; skipping table", {
+					table: payload.table,
+				});
+			}
+			req.data.set(payload.table, {
+				count: payload.count,
+				pks: [],
+				entries: [],
+				...(verified ? { digestMatch: true } : { digestRejected: true }),
+			});
+		} else if (existing) {
 			existing.pks.push(...payload.pks);
 			if (payload.entries) {
 				existing.entries = (existing.entries ?? []).concat(payload.entries);
@@ -2448,7 +2565,7 @@ export class WsTransport {
 	}
 
 	private async requestConsistencyWithTimeout(observer?: ConsistencyObserver): Promise<{
-		tables: Map<string, { count: number; pks: string[]; entries?: ConsistencyEntry[] }>;
+		tables: Map<string, ConsistencyTableData>;
 	}> {
 		const tables = await this.requestConsistency([], observer);
 		return { tables };
@@ -2562,6 +2679,9 @@ export class WsTransport {
 		let lastResponseAt: number | undefined;
 		let maxGapMs = 0;
 		let resumeUsed = false;
+		let digestSentCount = 0;
+		let digestMatchFrameCount = 0;
+		let rowAdvertisementCount = 0;
 		let resumeTableIndex = 0;
 		let resumeOffset = 0;
 		let lastTableIndex = 0;
@@ -2573,6 +2693,7 @@ export class WsTransport {
 				resumeUsed = details.resumeUsed;
 				resumeTableIndex = details.resumeTableIndex;
 				resumeOffset = details.resumeOffset;
+				digestSentCount = details.digestCount ?? 0;
 				consistency?.addEvent("sync.consistency.request_sent", {
 					resume_used: resumeUsed,
 					resume_table_index: resumeTableIndex,
@@ -2582,6 +2703,8 @@ export class WsTransport {
 			response(details) {
 				const observedAt = details.observedAt ?? now();
 				frameCount++;
+				rowAdvertisementCount += details.rowCount;
+				if (details.digestMatch) digestMatchFrameCount++;
 				tableCount = Math.max(tableCount, details.tableIndex + 1);
 				lastTableIndex = details.tableIndex;
 				lastOffset = details.nextOffset;
@@ -2639,6 +2762,9 @@ export class WsTransport {
 				lastResponseAt === undefined ? -1 : now() - lastResponseAt,
 			"consistency.last_table_index": lastTableIndex,
 			"consistency.last_offset": lastOffset,
+			"consistency.digest_sent_count": digestSentCount,
+			"consistency.digest_match_count": digestMatchFrameCount,
+			"consistency.row_advertisement_count": rowAdvertisementCount,
 		});
 		let consistencyResult: Awaited<ReturnType<WsTransport["requestConsistencyWithTimeout"]>>;
 		try {
@@ -2666,6 +2792,10 @@ export class WsTransport {
 		for (const table of allSyncedTables) {
 			const remote = remoteTables.get(table);
 			if (!remote) continue;
+			// #248: a verified digest match means both sides hold identical state;
+			// an unverifiable claim carries no rows. Neither may be diffed — an empty
+			// advertisement would classify every local row as localOnly and push it.
+			if (remote.digestMatch || remote.digestRejected) continue;
 
 			const pkCol = getPkColumnTyped(table);
 

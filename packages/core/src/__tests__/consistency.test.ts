@@ -1,18 +1,22 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import type { SyncedTableName } from "@bound/shared";
 import {
 	type ConsistencyEntry,
 	compareAllTables,
+	computeTableStateDigest,
 	countUnsyncableLocalOnly,
 	getBackfillableEntriesSorted,
 	getBackfillablePksSorted,
 	getLocalPksSorted,
 	hashRow,
+	isTableStateDigest,
 	mergeDiffEntries,
 	mergeDiffPks,
 	syncableRowPredicate,
 	syncableWhereClause,
 } from "../consistency.js";
+import { createCoreTestDb } from "./test-database.js";
 
 describe("hashRow", () => {
 	test("produces deterministic hashes regardless of key insertion order", () => {
@@ -535,5 +539,136 @@ describe("compareAllTables", () => {
 			expect(d.localCount).toBe(0);
 			expect(d.remoteCount).toBe(0);
 		}
+	});
+});
+
+describe("computeTableStateDigest (#248 table digest short-circuit)", () => {
+	function memoryDb(): Database {
+		const db = createCoreTestDb();
+		db.run(
+			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at, deleted) VALUES ('m1', 'k1', 'v1', 'c', '2026-01-01T00:00:00Z', 0), ('m2', 'k2', 'v2', 'c', '2026-01-02T00:00:00Z', 0), ('m3', 'k3', 'v3', 'c', '2026-01-03T00:00:00Z', 0)",
+		);
+		return db;
+	}
+
+	function drift(local: Database, remote: Database, table: SyncedTableName): number {
+		const diff = mergeDiffEntries(
+			getBackfillableEntriesSorted(local, table),
+			getBackfillableEntriesSorted(remote, table),
+		);
+		return (
+			diff.localOnly.length +
+			diff.remoteOnly.length +
+			diff.localNewerMismatch.length +
+			diff.remoteNewerMismatch.length
+		);
+	}
+
+	function digestsEqual(local: Database, remote: Database, table: SyncedTableName): boolean {
+		return (
+			computeTableStateDigest(local, table).digest === computeTableStateDigest(remote, table).digest
+		);
+	}
+
+	test("emits a versioned digest the wire validator accepts and rejects malformed values", () => {
+		const db = memoryDb();
+		const { digest, rowCount } = computeTableStateDigest(db, "semantic_memory");
+		expect(isTableStateDigest(digest)).toBe(true);
+		expect(rowCount).toBe(3);
+		for (const bad of [
+			undefined,
+			null,
+			7,
+			"",
+			"v1:abc",
+			`v2:${"0".repeat(64)}`,
+			`v1:${"G".repeat(64)}`,
+		])
+			expect(isTableStateDigest(bad)).toBe(false);
+	});
+
+	test("digest equality agrees with the state-aware row comparison", () => {
+		const local = memoryDb();
+		const remote = memoryDb();
+		expect(drift(local, remote, "semantic_memory")).toBe(0);
+		expect(digestsEqual(local, remote, "semantic_memory")).toBe(true);
+
+		const mutations = [
+			"UPDATE semantic_memory SET value = 'changed' WHERE id = 'm2'",
+			"UPDATE semantic_memory SET deleted = 1 WHERE id = 'm2'",
+			"INSERT INTO semantic_memory (id, key, value, created_at, modified_at) VALUES ('m4', 'k4', 'v4', 'c', 'now')",
+			"DELETE FROM semantic_memory WHERE id = 'm1'",
+		];
+		for (const mutation of mutations) {
+			const changed = memoryDb();
+			changed.run(mutation);
+			expect(drift(local, changed, "semantic_memory")).toBeGreaterThan(0);
+			expect(digestsEqual(local, changed, "semantic_memory")).toBe(false);
+		}
+	});
+
+	test("modified_at-only differences keep digests equal, matching the row hash", () => {
+		const local = memoryDb();
+		const remote = memoryDb();
+		remote.run("UPDATE semantic_memory SET modified_at = '2099-01-01T00:00:00Z' WHERE id = 'm1'");
+		expect(drift(local, remote, "semantic_memory")).toBe(0);
+		expect(digestsEqual(local, remote, "semantic_memory")).toBe(true);
+	});
+
+	test("applies the role='system' message filter like the row comparison", () => {
+		const insert = (db: Database, id: string, role: string) =>
+			db.run(
+				"INSERT INTO messages (id, thread_id, role, content, created_at, modified_at, host_origin) VALUES (?, 't', ?, 'c', 'c', 'm', 'h')",
+				[id, role],
+			);
+		const local = createCoreTestDb();
+		const remote = createCoreTestDb();
+		insert(local, "a", "user");
+		insert(remote, "a", "user");
+		insert(local, "sys", "system");
+		expect(drift(local, remote, "messages")).toBe(0);
+		expect(digestsEqual(local, remote, "messages")).toBe(true);
+		expect(computeTableStateDigest(local, "messages").rowCount).toBe(1);
+	});
+
+	test("supports non-id primary keys", () => {
+		const local = createCoreTestDb();
+		const remote = createCoreTestDb();
+		for (const db of [local, remote])
+			db.run(
+				"INSERT INTO cluster_config (key, value, modified_at) VALUES ('a', '1', 'm'), ('b', '2', 'm')",
+			);
+		expect(digestsEqual(local, remote, "cluster_config")).toBe(true);
+		remote.run("UPDATE cluster_config SET value = '3' WHERE key = 'b'");
+		expect(drift(local, remote, "cluster_config")).toBe(1);
+		expect(digestsEqual(local, remote, "cluster_config")).toBe(false);
+	});
+
+	test("cold-cache recovery reproduces the warm digest and repopulates the cache", () => {
+		const db = memoryDb();
+		const warm = computeTableStateDigest(db, "semantic_memory");
+		expect(warm.cacheMissCount).toBe(3);
+		const again = computeTableStateDigest(db, "semantic_memory");
+		expect(again.cacheHitCount).toBe(3);
+		expect(again.cacheMissCount).toBe(0);
+		db.run("DELETE FROM row_state_hashes");
+		const cold = computeTableStateDigest(db, "semantic_memory");
+		expect(cold.digest).toBe(warm.digest);
+		expect(cold.cacheMissCount).toBe(3);
+	});
+
+	test("cache invalidation on write changes the digest", () => {
+		const db = memoryDb();
+		const before = computeTableStateDigest(db, "semantic_memory").digest;
+		db.run("UPDATE semantic_memory SET value = 'new' WHERE id = 'm3'");
+		expect(computeTableStateDigest(db, "semantic_memory").digest).not.toBe(before);
+	});
+
+	test("is independent of page size and empty tables digest equal", () => {
+		const db = memoryDb();
+		expect(computeTableStateDigest(db, "semantic_memory", 1).digest).toBe(
+			computeTableStateDigest(db, "semantic_memory").digest,
+		);
+		expect(digestsEqual(createCoreTestDb(), createCoreTestDb(), "users")).toBe(true);
 	});
 });

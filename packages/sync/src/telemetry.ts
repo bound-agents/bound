@@ -404,6 +404,13 @@ export interface ConsistencyServingSpan {
 		cacheMissCount?: number;
 		tableIndex: number;
 	}): void;
+	/** A table-digest comparison ran for one table (#248). */
+	digest?(details: {
+		matched: boolean;
+		durationMs: number;
+		cacheHitCount?: number;
+		cacheMissCount?: number;
+	}): void;
 	backpressured(): void;
 	resumed(delayMs: number): void;
 	complete(terminal: "all_done"): void;
@@ -448,6 +455,11 @@ export function startConsistencyServing(
 	let cacheMissCount = 0;
 	let backpressureMs = 0;
 	let drainResumeCount = 0;
+	let digestMatchCount = 0;
+	let digestMismatchCount = 0;
+	let digestMs = 0;
+	let digestCacheHitCount = 0;
+	let digestCacheMissCount = 0;
 	let firstPage = true;
 	let pressureStartedAt: number | undefined;
 	let ended = false;
@@ -479,6 +491,11 @@ export function startConsistencyServing(
 		span.setAttribute?.("consistency.serve.cache_miss_count", cacheMissCount);
 		span.setAttribute?.("consistency.serve.backpressure_duration_ms", backpressureMs);
 		span.setAttribute?.("consistency.serve.drain_resume_count", drainResumeCount);
+		span.setAttribute?.("consistency.serve.digest_match_count", digestMatchCount);
+		span.setAttribute?.("consistency.serve.digest_mismatch_count", digestMismatchCount);
+		span.setAttribute?.("consistency.serve.digest_duration_ms", digestMs);
+		span.setAttribute?.("consistency.serve.digest_cache_hit_count", digestCacheHitCount);
+		span.setAttribute?.("consistency.serve.digest_cache_miss_count", digestCacheMissCount);
 		span.setAttribute?.("consistency.serve.terminal", terminal);
 		if (error !== undefined) span.recordException(errorValue(error));
 		span.addEvent(`sync.consistency.serve.${terminal}`);
@@ -526,6 +543,13 @@ export function startConsistencyServing(
 			span.setAttribute?.("consistency.serve.table_count", tableIndexes.size);
 			cacheHitCount += details.cacheHitCount ?? 0;
 			cacheMissCount += details.cacheMissCount ?? 0;
+		},
+		digest(details) {
+			if (details.matched) digestMatchCount++;
+			else digestMismatchCount++;
+			digestMs += details.durationMs;
+			digestCacheHitCount += details.cacheHitCount ?? 0;
+			digestCacheMissCount += details.cacheMissCount ?? 0;
 		},
 		backpressured() {
 			if (pressureStartedAt === undefined) {

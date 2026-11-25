@@ -204,6 +204,14 @@ export type ConsistencyRequestPayload = {
 	resume_offset?: number;
 	/** Optional W3C parent context for hub-side serving telemetry. */
 	trace_context?: W3CTraceCarrier;
+	/**
+	 * Requester's per-table state digests (`v1:<sha256 hex>`), keyed by table
+	 * name. A responder whose own digest for a table is equal answers that table
+	 * with a single `digest_match` frame instead of its row advertisement.
+	 * Optional: older responders ignore it, and an absent or malformed digest
+	 * keeps the full row stream for that table.
+	 */
+	table_digests?: Record<string, string>;
 };
 
 export type ConsistencyResponsePayload = {
@@ -228,6 +236,14 @@ export type ConsistencyResponsePayload = {
 	request_id?: string;
 	/** Serialized hub-side serving spans, present only on the terminal frame. */
 	trace_data?: string;
+	/**
+	 * The responder's digest for `table` equals the requester's `table_digests`
+	 * entry, so this frame carries no rows (`pks`/`entries` are empty) and the
+	 * requester skips the table's diff. Optional for backward compatibility.
+	 */
+	digest_match?: boolean;
+	/** The responder's table digest, echoed so the requester can verify a match. */
+	digest?: string;
 };
 
 export type RowPullRequestPayload = {

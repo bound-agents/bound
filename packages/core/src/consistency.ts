@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { SyncedTableName } from "@bound/shared";
-import { getPkColumn } from "./change-log.js";
+import { CryptoHasher } from "bun";
+import { getPkColumn, validateColumnName } from "./change-log.js";
 import { computeRowStateHash, getCachedRowStateHashes } from "./row-hash-cache.js";
 
 export interface TableDiff {
@@ -286,4 +287,69 @@ export function mergeDiffEntries(
 	}
 
 	return { localOnly, remoteOnly, localNewerMismatch, remoteNewerMismatch, matching };
+}
+
+// ── #248: per-table state digests for the consistency short-circuit ─────────
+
+/** Wire format of a table state digest: version tag plus a hex SHA-256. */
+const TABLE_STATE_DIGEST_PATTERN = /^v1:[0-9a-f]{64}$/;
+const TABLE_STATE_DIGEST_PAGE_SIZE = 5000;
+
+export interface TableStateDigest {
+	digest: string;
+	rowCount: number;
+	cacheHitCount: number;
+	cacheMissCount: number;
+}
+
+/** True only for a well-formed digest; anything else falls back to the row stream. */
+export function isTableStateDigest(value: unknown): value is string {
+	return typeof value === "string" && TABLE_STATE_DIGEST_PATTERN.test(value);
+}
+
+/**
+ * Deterministic digest over the `(pk, row state hash)` pairs that
+ * `getBackfillableEntriesSorted` would produce, in SQLite's binary PK order.
+ * Two tables digest equal exactly when the state-aware row comparison would
+ * find no drift (modulo SHA-256 collisions). It applies the same syncable-row
+ * filter, reads only PKs plus the `row_state_hashes` cache, and hashes full
+ * rows only for cache misses, which it populates.
+ */
+export function computeTableStateDigest(
+	db: Database,
+	table: SyncedTableName,
+	pageSize = TABLE_STATE_DIGEST_PAGE_SIZE,
+): TableStateDigest {
+	const pkCol = getPkColumn(table);
+	validateColumnName(pkCol);
+	const predicate = syncableRowPredicate(table);
+	const hasher = new CryptoHasher("sha256");
+	let rowCount = 0;
+	let cacheHitCount = 0;
+	let cacheMissCount = 0;
+	let cursor: string | undefined;
+	for (;;) {
+		const conditions = [predicate, cursor === undefined ? null : `${pkCol} > ?`].filter(
+			(condition): condition is string => condition !== null,
+		);
+		const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+		const params = cursor === undefined ? [pageSize] : [cursor, pageSize];
+		const rows = db
+			.query(`SELECT ${pkCol} AS pk FROM ${table}${where} ORDER BY ${pkCol} ASC LIMIT ?`)
+			.all(...params) as Array<{ pk: unknown }>;
+		if (rows.length === 0) break;
+		const pks = rows.map((row) => String(row.pk));
+		const cached = getCachedRowStateHashes(db, table, pks);
+		cacheHitCount += cached.cacheHitCount;
+		cacheMissCount += cached.cacheMissCount;
+		for (const pk of pks) {
+			const hash = cached.hashes.get(pk);
+			if (!hash) continue;
+			hasher.update(`${JSON.stringify([pk, hash])}\n`);
+			rowCount++;
+		}
+		if (rows.length < pageSize) break;
+		cursor = pks[pks.length - 1];
+	}
+	return { digest: `v1:${hasher.digest("hex")}`, rowCount, cacheHitCount, cacheMissCount };
 }
