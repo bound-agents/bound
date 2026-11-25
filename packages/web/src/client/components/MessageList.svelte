@@ -15,7 +15,6 @@
 	import ModelSubstitutionNotice from "./ModelSubstitutionNotice.svelte";
 	import ReasoningBlock from "./ReasoningBlock.svelte";
 	import RouteFailoverNotice from "./RouteFailoverNotice.svelte";
-	import ThreadModelChip from "./ThreadModelChip.svelte";
 	import ToolCallCard from "./ToolCallCard.svelte";
 	import YardExecutionPanel from "./YardExecutionPanel.svelte";
 
@@ -471,14 +470,15 @@
 								{modelDisplay}
 							/>
 						{:else}
+							{@const note = noteForItem(item)}
 							<MessageBubble
 								role={item.msg.role as
 									"user" | "assistant" | "system" | "alert" | "tool_call" | "tool_result"}
 								content={item.msg.content}
 								toolName={item.msg.tool_name}
 								modelId={item.msg.model_id ? modelDisplay(item.msg.model_id) : null}
-								modelNote={noteForItem(item)?.text ?? null}
-								modelNoteTitle={noteForItem(item)?.title ?? null}
+								modelNote={note?.text ?? null}
+								modelNoteTitle={note?.title ?? null}
 								exitCode={item.msg.exit_code}
 								{threadColor}
 							/>

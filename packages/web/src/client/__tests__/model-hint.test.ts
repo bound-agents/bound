@@ -59,4 +59,49 @@ describe("resolveInitialModel", () => {
 	it("logicalModelFor returns undefined for unknown ids", () => {
 		expect(logicalModelFor("nope", options, models)).toBeUndefined();
 	});
+
+	const routing = [
+		{ logical_model: "claude-opus-5-5", display_name: "Claude Opus 5.5", routes: [] },
+		{
+			logical_model: "gpt-6-astra",
+			display_name: "GPT-6 Astra",
+			routes: [{ route_id: "site-hub:openai:bedrock-main-openai.gpt-6-astra" }],
+		},
+		{ logical_model: "deepseek-v4-1-flash", display_name: "DeepSeek", routes: [] },
+	];
+	const rOptions = buildModelOptions([], routing);
+
+	it("maps a remote backend id to its logical model through routing routes", () => {
+		expect(logicalModelFor("bedrock-main-openai.gpt-6-astra", rOptions, [], routing)).toBe(
+			"gpt-6-astra",
+		);
+	});
+
+	it("prefills a hintless thread from its latest message model before any default", () => {
+		expect(
+			resolveInitialModel(rOptions, [], "deepseek-v4-1-flash", null, {
+				fallbackModel: "bedrock-main-openai.gpt-6-astra",
+				clusterDefault: "claude-opus-5-5",
+				routing,
+			}).modelId,
+		).toBe("gpt-6-astra");
+	});
+
+	it("uses the cluster default role over the host default when the thread has no model", () => {
+		expect(
+			resolveInitialModel(rOptions, [], "deepseek-v4-1-flash", null, {
+				clusterDefault: "claude-opus-5-5",
+				routing,
+			}).modelId,
+		).toBe("claude-opus-5-5");
+	});
+
+	it("the thread hint still wins over the latest message model", () => {
+		expect(
+			resolveInitialModel(rOptions, [], "deepseek-v4-1-flash", "claude-opus-5-5", {
+				fallbackModel: "gpt-6-astra",
+				routing,
+			}).modelId,
+		).toBe("claude-opus-5-5");
+	});
 });

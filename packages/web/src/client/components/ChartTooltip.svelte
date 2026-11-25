@@ -11,10 +11,34 @@
 	// Offset the tooltip slightly from cursor to avoid flicker
 	const offsetX = 12;
 	const offsetY = -8;
+
+	let el: HTMLDivElement | undefined = $state(undefined);
+	let width = $state(0);
+	let height = $state(0);
+
+	// Clamp inside the positioned container so right-edge and top-edge hovers
+	// never clip; flip to the cursor's left when there is no room on the right.
+	const pos = $derived.by(() => {
+		const box = el?.offsetParent as HTMLElement | null | undefined;
+		const maxW =
+			box?.clientWidth ??
+			(typeof window !== "undefined" ? window.innerWidth : Number.POSITIVE_INFINITY);
+		let left = x + offsetX;
+		if (left + width > maxW - 4) left = Math.max(4, x - offsetX - width);
+		// translateY(-100%) lifts the box by its height; keep its top >= 4.
+		const top = Math.max(y + offsetY, height + 4);
+		return { left, top };
+	});
 </script>
 
 {#if visible && lines.length > 0}
-	<div class="chart-tooltip" style="left: {x + offsetX}px; top: {y + offsetY}px;">
+	<div
+		class="chart-tooltip"
+		bind:this={el}
+		bind:offsetWidth={width}
+		bind:offsetHeight={height}
+		style="left: {pos.left}px; top: {pos.top}px;"
+	>
 		{#each lines as line}
 			<span class="tooltip-line">{line}</span>
 		{/each}

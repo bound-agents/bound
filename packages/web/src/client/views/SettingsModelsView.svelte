@@ -27,7 +27,12 @@
 	let busy = $state<string | null>(null);
 	let query = $state("");
 	let selected = $state<string | null>(null);
-	let roles = $state<Array<{ name: string; model: string }>>([]);
+	type RoleRow = { key: number; name: string; model: string };
+	let roles = $state<RoleRow[]>([]);
+	let roleKey = 0;
+	// The roles as last loaded; a refresh never clobbers unsaved edits.
+	let loadedRoles = "";
+	const roleSnapshot = (rows: RoleRow[]) => JSON.stringify(rows.map((r) => [r.name, r.model]));
 	let rolesError = $state<string | null>(null);
 	let rolesSaved = $state(false);
 	let now = $state(Date.now());
@@ -59,7 +64,11 @@
 			const [m, d] = await Promise.all([client.getRoutingModels(), client.getClusterDefaults()]);
 			models = m.models;
 			defaults = d;
-			roles = rolesFrom(d.roles);
+			const dirty = loadedRoles !== "" && roleSnapshot(roles) !== loadedRoles;
+			if (!dirty) {
+				roles = rolesFrom(d.roles);
+				loadedRoles = roleSnapshot(roles);
+			}
 			if (!selected || !models.some((x) => x.logical_model === selected)) {
 				selected =
 					[...models].sort((a, b) => compareLabels(a.display_name, b.display_name))[0]
@@ -72,13 +81,15 @@
 		}
 	}
 
-	function rolesFrom(raw: Record<string, string>): Array<{ name: string; model: string }> {
-		const out: Array<{ name: string; model: string }> = RESERVED_ROLES.map((name) => ({
+	function rolesFrom(raw: Record<string, string>): RoleRow[] {
+		const out: RoleRow[] = RESERVED_ROLES.map((name) => ({
+			key: roleKey++,
 			name,
 			model: raw[name] ?? "",
 		}));
 		for (const [name, model] of Object.entries(raw).sort(([a], [b]) => compareLabels(a, b))) {
-			if (!(RESERVED_ROLES as readonly string[]).includes(name)) out.push({ name, model });
+			if (!(RESERVED_ROLES as readonly string[]).includes(name))
+				out.push({ key: roleKey++, name, model });
 		}
 		return out;
 	}
@@ -182,7 +193,7 @@
 	}
 
 	function addAlias(): void {
-		roles = [...roles, { name: "", model: "" }];
+		roles = [...roles, { key: roleKey++, name: "", model: "" }];
 		rolesSaved = false;
 	}
 
@@ -218,6 +229,7 @@
 		try {
 			await client.setClusterDefaults({ roles: out });
 			rolesSaved = true;
+			loadedRoles = "";
 			await load();
 		} catch (e) {
 			rolesError = e instanceof Error ? e.message : "Failed to save roles";
@@ -251,12 +263,13 @@
 					aria-label="Search models"
 					bind:value={query}
 				/>
-				<ul class="model-list" role="listbox" aria-label="Models">
+				<ul class="model-list" aria-label="Models">
 					{#each filtered as m (m.logical_model)}
-						<li role="option" aria-selected={m.logical_model === selected}>
+						<li>
 							<button
 								type="button"
 								class="model-item"
+								aria-current={m.logical_model === selected ? "true" : undefined}
 								class:active={m.logical_model === selected}
 								onclick={() => (selected = m.logical_model)}
 							>
@@ -385,7 +398,7 @@
 					specific model.
 				</p>
 				<div class="role-grid">
-					{#each roles as r, i (i)}
+					{#each roles as r, i (r.key)}
 						<div class="role-row">
 							{#if (RESERVED_ROLES as readonly string[]).includes(r.name) && i < RESERVED_ROLES.length}
 								<span class="role-name">{r.name}</span>
@@ -490,7 +503,8 @@
 		color: var(--ink-2);
 		font-size: var(--text-sm);
 	}
-	.model-item.active {
+	.model-item.active,
+	.model-item[aria-current="true"] {
 		border-left-color: var(--ink);
 		background: var(--rule-soft);
 		color: var(--ink);
@@ -636,9 +650,30 @@
 	.cd-label {
 		color: var(--ink-3);
 	}
+	.r-route {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.model-item:focus-visible,
+	button:focus-visible,
+	select:focus-visible,
+	input:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
 	@media (max-width: 760px) {
 		.layout {
 			grid-template-columns: 1fr;
+		}
+		.route-row {
+			grid-template-columns: auto minmax(0, 1fr) auto;
+		}
+		.role-row {
+			grid-template-columns: minmax(0, 1fr);
 		}
 	}
 </style>

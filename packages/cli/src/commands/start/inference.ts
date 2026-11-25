@@ -544,8 +544,14 @@ export function wireBackendReadiness(
 				// leave the process on its old routing config. Fall back to the
 				// lineup's first id; reaching this branch means the operator named a
 				// namespace-expanded default the lineup did not produce.
+				// Another namespace whose placeholder is still pending may be the one
+				// that produces the default; a lineup landing first must not steal it.
+				const otherNamespacePending = sharedConfig.backends.some(
+					(b) => !(b as { model?: string }).model,
+				);
 				if (
 					preferredId &&
+					!otherNamespacePending &&
 					sharedConfig.default !== "" &&
 					!sharedConfig.backends.some((b) => b.id === sharedConfig.default)
 				) {

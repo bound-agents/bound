@@ -127,8 +127,10 @@
 		const times = allPoints.map((p) => p.dateObj.getTime());
 		const min = Math.min(...times);
 		const max = Math.max(...times);
+		// A single timestamp would collapse the domain; pad it by an hour each side.
+		const pad = min === max ? 3_600_000 : 0;
 		return scaleTime()
-			.domain([new Date(min), new Date(max)])
+			.domain([new Date(min - pad), new Date(max + pad)])
 			.range([0, innerWidth]);
 	});
 

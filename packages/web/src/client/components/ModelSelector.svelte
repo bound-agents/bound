@@ -13,7 +13,16 @@
 	import { modelStore } from "../lib/modelStore";
 	import ModelHealthDot from "./ModelHealthDot.svelte";
 
-	const { modelHint = undefined } = $props<{ modelHint?: string | null }>();
+	const {
+		modelHint = undefined,
+		fallbackModel = undefined,
+		onselect = undefined,
+	} = $props<{
+		modelHint?: string | null;
+		fallbackModel?: string | null;
+		/** Fires only on an explicit operator pick, never on the initial prefill. */
+		onselect?: (modelId: string) => void;
+	}>();
 
 	// Selected logical model id (spec §9.1: the picker chooses a logical model by
 	// display name; concrete routes appear only in the popover's route-pin section).
@@ -27,30 +36,43 @@
 	let open = $state(false);
 	let openUp = $state(false);
 	let activeIndex = $state(0);
-	let hoverModel = $state<string | null>(null);
 	let rootEl: HTMLDivElement | undefined = $state(undefined);
 	let triggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let listEl: HTMLUListElement | undefined = $state(undefined);
+	let popEl: HTMLDivElement | undefined = $state(undefined);
+	let dotBtn: HTMLButtonElement | undefined = $state(undefined);
+	let tipVisible = $state(false);
+	let tipLeft = $state(0);
+	let tipTop = $state(0);
+	let tipUp = $state(false);
 	let typeahead = "";
 	let typeaheadTimer: ReturnType<typeof setTimeout> | null = null;
+	const TIP_WIDTH = 320;
+	const TIP_GAP = 6;
+	const POPOVER_ESTIMATE = 360;
 
 	const labels = $derived(buildModelLabels(routing));
 
 	onMount(() => {
 		void (async () => {
 			try {
-				const [data, routingData] = await Promise.all([
+				const [data, routingData, defaults] = await Promise.all([
 					client.listModels(),
 					// Best-effort: an older server without the routing API leaves dots grey.
 					client.getRoutingModels().catch(() => ({ models: [] })),
+					client.getClusterDefaults().catch(() => null),
 				]);
 				models = data.models;
 				routing = routingData.models;
 				options = buildModelOptions(models, routing);
-				const resolved = resolveInitialModel(options, models, data.default, modelHint);
+				const resolved = resolveInitialModel(options, models, data.default, modelHint, {
+					fallbackModel,
+					clusterDefault: defaults?.roles?.default ?? null,
+					routing,
+				});
 				selectedModel = resolved.selectedModel;
 				modelStore.setModel(resolved.modelId);
-				if (modelHint && logicalModelFor(modelHint, options, models)) hintApplied = true;
+				if (modelHint && logicalModelFor(modelHint, options, models, routing)) hintApplied = true;
 			} catch (error) {
 				console.error("Failed to load models:", error);
 			}
@@ -58,14 +80,24 @@
 		const onDocDown = (e: MouseEvent) => {
 			if (open && rootEl && !rootEl.contains(e.target as Node)) open = false;
 		};
+		const hideTip = () => {
+			tipVisible = false;
+		};
 		document.addEventListener("mousedown", onDocDown);
-		return () => document.removeEventListener("mousedown", onDocDown);
+		window.addEventListener("scroll", hideTip, true);
+		window.addEventListener("resize", hideTip);
+		return () => {
+			document.removeEventListener("mousedown", onDocDown);
+			window.removeEventListener("scroll", hideTip, true);
+			window.removeEventListener("resize", hideTip);
+			if (typeaheadTimer) clearTimeout(typeaheadTimer);
+		};
 	});
 
 	// Late hint: LineView may deliver the thread's model_hint after models load.
 	$effect(() => {
 		if (modelHint && options.length > 0 && !hintApplied) {
-			const logical = logicalModelFor(modelHint, options, models);
+			const logical = logicalModelFor(modelHint, options, models, routing);
 			if (logical) {
 				selectedModel = logical;
 				modelStore.setModel(logical);
@@ -111,8 +143,24 @@
 		return r ? routeLine(r) : null;
 	});
 
+	function showTip(): void {
+		if (!dotBtn || open || selectedRoutes.length === 0) return;
+		const r = dotBtn.getBoundingClientRect();
+		const estimate = 24 + selectedRoutes.length * 18;
+		const below = window.innerHeight - r.bottom;
+		tipUp = below < estimate + TIP_GAP && r.top > below;
+		tipLeft = Math.min(Math.max(8, r.left), window.innerWidth - TIP_WIDTH - 8);
+		tipTop = tipUp ? r.top - TIP_GAP : r.bottom + TIP_GAP;
+		tipVisible = true;
+	}
+
+	function hideTip(): void {
+		tipVisible = false;
+	}
+
 	function openList(): void {
 		if (options.length === 0) return;
+		tipVisible = false;
 		activeIndex = Math.max(
 			0,
 			options.findIndex((o) => o.id === selectedModel),
@@ -120,22 +168,36 @@
 		if (triggerEl && typeof window !== "undefined") {
 			const rect = triggerEl.getBoundingClientRect();
 			const below = window.innerHeight - rect.bottom;
-			openUp = below < 320 && rect.top > below;
+			openUp = below < POPOVER_ESTIMATE && rect.top > below;
 		}
 		open = true;
-		queueMicrotask(() => scrollActiveIntoView());
+		queueMicrotask(() => {
+			scrollActiveIntoView();
+			// Re-measure with the real height (listbox + pin section).
+			if (popEl && triggerEl && typeof window !== "undefined") {
+				const h = popEl.getBoundingClientRect().height;
+				const rect = triggerEl.getBoundingClientRect();
+				const below = window.innerHeight - rect.bottom;
+				if (h > 0) openUp = below < h + 4 && rect.top > below;
+			}
+		});
 	}
 
 	function close(focusTrigger = true): void {
 		open = false;
-		hoverModel = null;
 		if (focusTrigger) triggerEl?.focus();
+	}
+
+	function onRootFocusOut(e: FocusEvent): void {
+		const next = e.relatedTarget as Node | null;
+		if (open && next && rootEl && !rootEl.contains(next)) close(false);
 	}
 
 	function choose(id: string): void {
 		if (id !== selectedModel) pinnedRoute = "";
 		selectedModel = id;
 		modelStore.setModel(id);
+		onselect?.(id);
 		close();
 	}
 
@@ -181,9 +243,11 @@
 				if (options[activeIndex]) choose(options[activeIndex].id);
 				return;
 			case "Escape":
+				e.preventDefault();
+				close(true);
+				return;
 			case "Tab":
-				if (e.key === "Escape") e.preventDefault();
-				close(e.key === "Escape");
+				// Let focus move into the pin section; focusout closes once it leaves.
 				return;
 		}
 		if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -198,35 +262,77 @@
 	}
 </script>
 
-<div class="model-selector" bind:this={rootEl}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="model-selector"
+	bind:this={rootEl}
+	onfocusout={onRootFocusOut}
+	onkeydown={(e) => {
+		if (e.key === "Escape" && tipVisible) hideTip();
+	}}
+>
 	<span class="icon" aria-hidden="true"><Cpu size={14} /></span>
-	<button
-		id="model"
-		type="button"
-		class="trigger"
-		class:pinned={!!pinnedLabel}
-		bind:this={triggerEl}
-		role="combobox"
-		aria-label="Model"
-		aria-haspopup="listbox"
-		aria-expanded={open}
-		aria-controls="model-listbox"
-		aria-activedescendant={open ? `model-opt-${activeIndex}` : undefined}
-		data-value={selectedModel}
-		title={pinnedLabel ? `Pinned to ${pinnedLabel}` : undefined}
-		onclick={() => (open ? close() : openList())}
-		onkeydown={onKeydown}
-	>
-		<ModelHealthDot state={healthFor(selectedModel)} />
-		<span class="trigger-label">{selectedLabel || "\u2014"}</span>
-		{#if pinnedLabel}
-			<span class="pin-badge" aria-label="Route pinned"><Pin size={11} /></span>
-		{/if}
-		<span class="caret" aria-hidden="true">{open ? "\u25b4" : "\u25be"}</span>
-	</button>
+	<span class="control" class:pinned={!!pinnedLabel} class:active={open}>
+		<button
+			type="button"
+			class="status-dot-btn"
+			bind:this={dotBtn}
+			aria-label="Routes for {selectedLabel || 'model'}"
+			aria-describedby={tipVisible ? "model-routes-tip" : undefined}
+			onmouseenter={showTip}
+			onmouseleave={hideTip}
+			onfocus={showTip}
+			onblur={hideTip}
+			onkeydown={(e) => {
+				if (e.key === "Escape") hideTip();
+			}}
+		>
+			<ModelHealthDot state={healthFor(selectedModel)} showTitle={false} />
+		</button>
+		<button
+			id="model"
+			type="button"
+			class="trigger"
+			class:pinned={!!pinnedLabel}
+			bind:this={triggerEl}
+			role="combobox"
+			aria-label="Model"
+			aria-haspopup="listbox"
+			aria-expanded={open}
+			aria-controls="model-listbox"
+			aria-activedescendant={open ? `model-opt-${activeIndex}` : undefined}
+			data-value={selectedModel}
+			title={pinnedLabel ? `Pinned to ${pinnedLabel}` : undefined}
+			onclick={() => (open ? close() : openList())}
+			onkeydown={onKeydown}
+		>
+			<span class="trigger-label">{selectedLabel || "\u2014"}</span>
+			{#if pinnedLabel}
+				<span class="pin-badge" aria-label="Route pinned"><Pin size={11} /></span>
+			{/if}
+			<span class="caret" aria-hidden="true">{open ? "\u25b4" : "\u25be"}</span>
+		</button>
+	</span>
+
+	{#if tipVisible && !open}
+		<span
+			id="model-routes-tip"
+			class="route-tip"
+			class:up={tipUp}
+			role="tooltip"
+			style="left: {tipLeft}px; top: {tipTop}px; max-width: {TIP_WIDTH}px;"
+		>
+			{#each selectedRoutes as r (r.route_id)}
+				<span class="route-line" class:disabled={r.drained}>
+					<span class="mono">{routeLine(r)}</span>
+					<span class="route-health {r.drained ? 'drained' : r.health}">{healthText(r)}</span>
+				</span>
+			{/each}
+		</span>
+	{/if}
 
 	{#if open}
-		<div class="popover" class:up={openUp}>
+		<div class="popover" class:up={openUp} bind:this={popEl}>
 			<ul id="model-listbox" class="listbox" role="listbox" aria-label="Models" bind:this={listEl}>
 				{#each options as option, i (option.id)}
 					<li
@@ -242,26 +348,7 @@
 						onmousemove={() => (activeIndex = i)}
 						onkeydown={onKeydown}
 					>
-						<span
-							class="dot-wrap"
-							role="presentation"
-							onmouseenter={() => (hoverModel = option.id)}
-							onmouseleave={() => (hoverModel = null)}
-						>
-							<ModelHealthDot state={healthFor(option.id)} />
-							{#if hoverModel === option.id && routesFor(option.id).length > 0}
-								<span class="route-tip" role="tooltip">
-									{#each routesFor(option.id) as r (r.route_id)}
-										<span class="route-line" class:disabled={r.drained}>
-											<span class="mono">{routeLine(r)}</span>
-											<span class="route-health {r.drained ? 'drained' : r.health}"
-												>{healthText(r)}</span
-											>
-										</span>
-									{/each}
-								</span>
-							{/if}
-						</span>
+						<ModelHealthDot state={healthFor(option.id)} />
 						<span class="option-label">{option.label}</span>
 					</li>
 				{/each}
@@ -306,12 +393,47 @@
 		color: var(--ok);
 	}
 
+	.control {
+		display: inline-flex;
+		align-items: center;
+		border: 1px solid var(--rule-soft);
+		max-width: 300px;
+		transition: border-color 0.2s ease;
+	}
+
+	.control:hover,
+	.control:focus-within,
+	.control.active {
+		border-color: var(--ink);
+	}
+
+	.control.pinned {
+		border-style: dashed;
+	}
+
+	.status-dot-btn {
+		display: inline-flex;
+		align-items: center;
+		padding: 5px 2px 5px 10px;
+		border: 0;
+		background: transparent;
+		cursor: help;
+	}
+
+	.status-dot-btn:focus-visible,
+	.trigger:focus-visible,
+	.pin-choice:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
 	.trigger {
 		display: inline-flex;
 		align-items: center;
 		gap: 8px;
-		padding: 5px 10px;
-		border: 1px solid var(--rule-soft);
+		min-width: 0;
+		padding: 5px 10px 5px 6px;
+		border: 0;
 		background: transparent;
 		color: var(--ink-2);
 		font-family: var(--font-display);
@@ -319,19 +441,6 @@
 		font-weight: 500;
 		cursor: pointer;
 		border-radius: 0;
-		max-width: 280px;
-		transition: border-color 0.2s ease;
-	}
-
-	.trigger:hover,
-	.trigger:focus-visible,
-	.trigger[aria-expanded="true"] {
-		outline: none;
-		border-color: var(--ink);
-	}
-
-	.trigger.pinned {
-		border-style: dashed;
 	}
 
 	.trigger-label {
@@ -396,16 +505,9 @@
 		font-weight: 700;
 	}
 
-	.dot-wrap {
-		position: relative;
-		display: inline-flex;
-	}
-
 	.route-tip {
-		position: absolute;
-		left: 14px;
-		top: -4px;
-		z-index: 41;
+		position: fixed;
+		z-index: 1000;
 		display: flex;
 		flex-direction: column;
 		gap: 3px;
@@ -413,6 +515,16 @@
 		background: var(--ink);
 		color: var(--paper, #fff);
 		font-size: 11px;
+		pointer-events: none;
+	}
+
+	.route-tip.up {
+		transform: translateY(-100%);
+	}
+
+	.route-tip .mono {
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 

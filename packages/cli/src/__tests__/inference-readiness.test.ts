@@ -444,6 +444,36 @@ describe("wireBackendReadiness expansion (AC.3 / AC.4)", () => {
 		expect(router.getDefaultId()).toBe("umans-coder");
 		expect(shared.default).toBe("umans-coder");
 	});
+
+	it("does not steal a default owned by another namespace that has not expanded yet", async () => {
+		const metadataFetch = async () => ({ ok: true as const, value: lineup() });
+		const usageFetch = async () => ({
+			ok: true as const,
+			value: { concurrencyLimit: 4 } satisfies UmansUsage,
+		});
+		const never = () => new Promise<never>(() => {});
+		const shared = {
+			backends: [
+				{ id: "umans", provider: "umans", api_key: "sk-test" },
+				{ id: "zai", provider: "umans", api_key: "sk-test" },
+			],
+			default: "zai-glm-flash",
+		};
+		const routerConfig = toRouterConfig(shared as never);
+		routerConfig.backends[0].metadataFetch = metadataFetch;
+		routerConfig.backends[0].usageFetch = usageFetch;
+		routerConfig.backends[1].metadataFetch = never;
+		routerConfig.backends[1].usageFetch = never;
+		const router = createModelRouter(routerConfig);
+		const appContext = makeAppContext(shared);
+
+		wireBackendReadiness(appContext, router);
+		await new Promise((r) => setTimeout(r, 50));
+
+		// umans expanded first; the default still belongs to the pending zai namespace.
+		expect(router.getDefaultId()).toBe("zai");
+		expect(shared.default).toBe("zai-glm-flash");
+	});
 });
 
 describe("reload re-gating + no duplicate rows (AC.7)", () => {

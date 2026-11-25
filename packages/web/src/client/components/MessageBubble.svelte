@@ -195,6 +195,7 @@
 
 	.role-row {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 10px;
 		margin-bottom: 6px;
@@ -452,7 +453,8 @@
 	}
 	.model-note {
 		font-size: var(--text-xs, 11px);
-		color: var(--text-muted);
+		font-family: var(--font-mono);
+		color: var(--ink-3);
 		opacity: 0.8;
 	}
 </style>

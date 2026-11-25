@@ -234,7 +234,7 @@ describe("ModelSelector", () => {
 		expect(modelStore.getModel()).toBe("alpha");
 	});
 
-	it("lists a model's routes with health when hovering its health dot", async () => {
+	it("lists the selected model's routes in a fixed popover from the control's status dot", async () => {
 		const routing: Routing[] = [
 			{
 				logical_model: "glm-5-3-flash",
@@ -252,18 +252,59 @@ describe("ModelSelector", () => {
 				],
 			},
 		];
-		const { target } = await mount(expanded, "kimi-k3", {}, routing);
+		const { target } = await mount(expanded, "glm-5-3-flash", {}, routing);
+		// Option rows carry only the health dot; no per-option route tip.
 		const options = await openList(target);
-		const dot = options[0]?.querySelector(".dot-wrap") as HTMLElement;
+		expect(options[0]?.querySelector(".route-tip")).toBeNull();
+		(target.querySelector("#model") as HTMLButtonElement).click();
+		await dom?.settle();
+		const dot = target.querySelector(".control > .status-dot-btn") as HTMLButtonElement;
+		expect(dot.tagName).toBe("BUTTON");
+		expect(dot.closest("#model")).toBeNull();
 		dot.dispatchEvent(new (win().MouseEvent)("mouseenter"));
 		await dom?.settle();
-		const lines = [...target.querySelectorAll(".route-tip .route-line")].map((l) =>
+		const tip = target.querySelector(".route-tip") as HTMLElement;
+		expect(tip.closest(".popover")).toBeNull();
+		expect(tip.getAttribute("style")).toContain("left:");
+		const lines = [...tip.querySelectorAll(".route-line")].map((l) =>
 			l.textContent?.replace(/\s+/g, " ").trim(),
 		);
 		expect(lines).toEqual([
 			"zai:glm-5.3-flash on msi Healthy",
 			"copilot:glm-5.3-flash on mac Disabled",
 		]);
+		dot.dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Escape", bubbles: true }));
+		await dom?.settle();
+		expect(target.querySelector(".route-tip")).toBeNull();
+		dot.dispatchEvent(new (win().MouseEvent)("mouseenter"));
+		await dom?.settle();
+		await openList(target);
+		expect(target.querySelector(".route-tip")).toBeNull();
+	});
+
+	it("keeps the popover open on Tab so the route pin buttons are keyboard-reachable", async () => {
+		const { target } = await mount(expanded, "glm-5-3-flash", {}, expandedRouting);
+		await openList(target);
+		key(target, "Tab");
+		await dom?.settle();
+		const pins = [...target.querySelectorAll(".pin-section .pin-choice")] as HTMLElement[];
+		expect(pins.length).toBe(3);
+		pins[1]?.focus();
+		await dom?.settle();
+		expect(target.querySelector('[role="listbox"]')).not.toBeNull();
+		pins[1]?.click();
+		await dom?.settle();
+		expect(pins[1]?.getAttribute("aria-pressed")).toBe("true");
+	});
+
+	it("prefills a hintless thread from its latest message model", async () => {
+		const { target } = await mount(
+			expanded,
+			"zai-glm-5.3-flash",
+			{ fallbackModel: "opencode-go-kimi-k3" },
+			expandedRouting,
+		);
+		expect(selectedValue(target)).toBe("kimi-k3");
 	});
 
 	it("renders the popover out of flow so opening never resizes the input wrapper", async () => {

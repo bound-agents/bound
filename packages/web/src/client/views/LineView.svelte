@@ -94,6 +94,13 @@
 
 	let routeLabels = $state<ModelLabels>(buildModelLabels([]));
 	let hostBySite = $state<Map<string, string>>(new Map());
+	let liveModel = $state<string | null>(null);
+	let pickedModel = $state<string | null>(null);
+	let storeModel = $state(modelStore.getModel());
+	const unsubscribeModelStore = modelStore.subscribe((m) => {
+		storeModel = m;
+	});
+	onDestroy(unsubscribeModelStore);
 
 	function describeRoute(routeId: string | null): { label: string; host: string | null } {
 		const parsed = routeId ? parseRouteId(routeId) : null;
@@ -283,12 +290,18 @@
 	}
 
 	function handleThreadStatus(data: unknown): void {
-		const status = data as { thread_id?: string; active?: boolean; state?: string | null };
+		const status = data as {
+			thread_id?: string;
+			active?: boolean;
+			state?: string | null;
+			model?: string | null;
+		};
 		// `thread:status` is a global event — filter to events for this thread only,
 		// otherwise activity in any sibling thread flips this view's indicator on.
 		if (status.thread_id && status.thread_id !== threadId) return;
 		agentActive = status.active ?? false;
 		agentState = status.state ?? null;
+		liveModel = status.active ? (status.model ?? null) : null;
 		if (waiting && !status.active) waiting = false;
 		// Clear streaming text when the agent goes idle — defense-in-depth for
 		// cases where message:created arrives late or is dropped entirely.
@@ -471,17 +484,25 @@
 	const allToolCalls = $derived(messages.filter((m) => m.role === "tool_call").length);
 	const firstMessageAt = $derived(messages[0]?.created_at ?? null);
 
-	// Thread's active model: prefer the most recent assistant/tool_call message's
-	// model_id (reflects any operator model switch mid-thread), falling back to
-	// the global modelStore's selection.
-	const activeModel = $derived.by((): string => {
+	// The latest message's serving model (a backend id); also the selector's
+	// prefill when the thread has no model_hint.
+	const latestMessageModel = $derived.by((): string | null => {
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const mid = messages[i].model_id;
 			if (mid) return mid;
 		}
-		return modelStore.getModel() || "—";
+		return null;
 	});
 
+	// Thread's active model. An explicit pick in ModelSelector, the thread's
+	// model_hint, or a running turn's live model wins immediately; otherwise the
+	// latest message's model, then the picker's store value.
+	const activeModel = $derived.by((): string => {
+		if (pickedModel) return pickedModel;
+		if (thread?.model_hint) return thread.model_hint;
+		if (agentActive && liveModel) return liveModel;
+		return latestMessageModel ?? (storeModel || "\u2014");
+	});
 	// Thread header chip + off-preferred / pin styling (§9.1). The latest turn's
 	// route_id tells us the serving host/provider; when it differs from the
 	// model's preferred route the chip shows a `· via host / provider` suffix.
@@ -498,7 +519,7 @@
 		if (!routeId) return { host: null, provider: null };
 		const parts = routeId.split(":");
 		if (parts.length < 3) return { host: null, provider: null };
-		return { host: parts[0], provider: parts[1] };
+		return { host: hostBySite.get(parts[0]) ?? null, provider: parts[1] };
 	}
 
 	// Off-preferred when the latest turn substituted its model/route. The chip
@@ -685,7 +706,13 @@
 					</button>
 				</div>
 				<div class="input-meta">
-					<ModelSelector modelHint={thread?.model_hint} />
+					<ModelSelector
+						modelHint={thread?.model_hint}
+						fallbackModel={latestMessageModel}
+						onselect={(id) => {
+							pickedModel = id;
+						}}
+					/>
 					<label class="attach">
 						<Paperclip size={11} />
 						Attach
@@ -855,6 +882,7 @@
 		flex: 1;
 		padding: 16px 22px;
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 14px;
 		min-width: 0;
@@ -1002,6 +1030,7 @@
 
 	.input-meta {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 10px;
 		margin-top: 10px;

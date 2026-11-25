@@ -53,6 +53,11 @@
 	// so absolute font-sizes in CSS render at their true sizes.
 	const rowHeight = 32;
 	const padding = { top: 12, right: 16, bottom: 12, left: 140 };
+	// ~6.5px per char at the label size; keep labels inside the left gutter.
+	const LABEL_MAX_CHARS = Math.floor((padding.left - 12) / 6.5);
+	function truncateLabel(s: string): string {
+		return s.length > LABEL_MAX_CHARS ? `${s.slice(0, LABEL_MAX_CHARS - 1)}\u2026` : s;
+	}
 	const contentWidth = $derived(Math.max(measuredWidth, 320));
 	const containerHeight = $derived(sortedData.length * rowHeight + padding.top + padding.bottom);
 
@@ -106,7 +111,8 @@
 	class="token-bar-chart"
 	bind:this={containerEl}
 	use:observeWidth={(w) => {
-		measuredWidth = w;
+		// The container pads 16px on each side; the SVG gets the content box.
+		measuredWidth = Math.max(0, w - 32);
 	}}
 >
 	<svg
@@ -118,15 +124,18 @@
 	>
 		<!-- Model labels + 4-segment stacked bars -->
 		{#each sortedData as d, i}
-			<text
-				x={padding.left - 8}
-				y={padding.top + i * rowHeight + rowHeight / 2}
-				class="model-label"
-				text-anchor="end"
-				dominant-baseline="middle"
-			>
-				{labelFor(d.model_id)}
-			</text>
+			<g>
+				<title>{labelFor(d.model_id)}</title>
+				<text
+					x={padding.left - 8}
+					y={padding.top + i * rowHeight + rowHeight / 2}
+					class="model-label"
+					text-anchor="end"
+					dominant-baseline="middle"
+				>
+					{truncateLabel(labelFor(d.model_id))}
+				</text>
+			</g>
 
 			<!-- Input - blue -->
 			<rect

@@ -8,9 +8,15 @@
 
 	type State = "healthy" | "fallback" | "none" | "unknown";
 
-	const { state = "unknown", title = undefined } = $props<{
+	const {
+		state = "unknown",
+		title = undefined,
+		showTitle = true,
+	} = $props<{
 		state?: State;
 		title?: string;
+		/** Off when a custom popover explains the dot, so `title` never double-renders. */
+		showTitle?: boolean;
 	}>();
 
 	const COLORS: Record<State, string> = {
@@ -32,7 +38,7 @@
 	class="health-dot"
 	class:fallback={state === "fallback"}
 	style="--dot: {COLORS[state as State]}"
-	title={title ?? LABELS[state as State]}
+	title={showTitle ? (title ?? LABELS[state as State]) : undefined}
 	role="img"
 	aria-label={LABELS[state as State]}
 ></span>
@@ -57,6 +63,11 @@
 		}
 		50% {
 			opacity: 0.4;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.fallback {
+			animation: none;
 		}
 	}
 </style>

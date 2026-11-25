@@ -54,6 +54,7 @@
 		if (r.startsWith("/connections")) return "07 Connections";
 		if (r === "/metrics") return "08 Metrics";
 		if (r === "/persona") return "09 Persona";
+		if (r === "/settings/models") return "10 Settings · Models";
 		return "00 Unknown";
 	}
 </script>

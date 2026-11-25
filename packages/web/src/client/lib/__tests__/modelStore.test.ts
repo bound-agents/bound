@@ -31,4 +31,15 @@ describe("ModelStore", () => {
 			modelStore.setModel(prior);
 		}
 	});
+
+	it("notifies subscribers immediately and on every change until unsubscribed", () => {
+		const store = new ModelStore();
+		const seen: string[] = [];
+		const off = store.subscribe((m) => seen.push(m));
+		store.setModel("gpt-6-astra");
+		store.setModel("gpt-6-astra");
+		off();
+		store.setModel("glm-5");
+		expect(seen).toEqual(["", "gpt-6-astra"]);
+	});
 });

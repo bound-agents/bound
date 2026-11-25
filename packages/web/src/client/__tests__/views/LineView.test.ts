@@ -149,6 +149,38 @@ describe("LineView", () => {
 		expect(target.textContent).toContain("Hello there");
 	});
 
+	it("shows the thread's model_hint in the header over an older message model", async () => {
+		const { target } = await mountView({
+			thread: thread({ model_hint: "gpt-6-astra" }),
+			messages: [
+				{
+					id: "m1",
+					role: "assistant",
+					content: "hi",
+					model_id: "opus",
+					created_at: "2026-11-19T01:00:05.000Z",
+				},
+			],
+		});
+		expect(target.querySelector(".fields")?.textContent).toContain("gpt-6-astra");
+	});
+
+	it("shows a running turn's live model in the header", async () => {
+		const { target } = await mountView({
+			status: status({ active: true, state: "thinking", model: "glm-5-3-flash" }),
+			messages: [
+				{
+					id: "m1",
+					role: "assistant",
+					content: "hi",
+					model_id: "opus",
+					created_at: "2026-11-19T01:00:05.000Z",
+				},
+			],
+		});
+		expect(target.querySelector(".fields")?.textContent).toContain("glm-5-3-flash");
+	});
+
 	it("shows the loading placeholder until the thread resolves", async () => {
 		dom = installDom();
 		let release: (() => void) | null = null;

@@ -7,6 +7,7 @@ interface ModelEntry {
 interface RoutingEntry {
 	logical_model: string;
 	display_name?: string | null;
+	routes?: Array<{ route_id: string }>;
 }
 
 /** One selector option: a logical model labelled by its display name (spec §9.1). */
@@ -47,22 +48,43 @@ export function buildModelOptions(models: ModelEntry[], routing: RoutingEntry[])
 	return options.sort((a, b) => a.label.localeCompare(b.label));
 }
 
-/** Maps a backend id or logical id to the logical option it selects, if any. */
+/**
+ * Maps a backend id or logical id to the logical option it selects, if any.
+ * Checks `/models` rows and every routing route's backend id: a remote
+ * backend (e.g. `bedrock-main-openai.gpt-6-astra`) may not be the deduped
+ * `/models` id. RouteId is `${siteId}:${provider}:${backendId}`.
+ */
 export function logicalModelFor(
 	modelId: string,
 	options: ModelOption[],
 	models: ModelEntry[],
+	routing: RoutingEntry[] = [],
 ): string | undefined {
 	if (options.some((o) => o.id === modelId)) return modelId;
 	const row = models.find((m) => m.id === modelId);
 	const logical = row?.logical_model;
 	if (logical && options.some((o) => o.id === logical)) return logical;
+	for (const entry of routing) {
+		for (const r of entry.routes ?? []) {
+			if (r.route_id.split(":").slice(2).join(":") !== modelId) continue;
+			if (options.some((o) => o.id === entry.logical_model)) return entry.logical_model;
+		}
+	}
 	return undefined;
 }
 
+export interface InitialModelSources {
+	/** The thread's latest message `model_id` (backend or logical id). */
+	fallbackModel?: string | null;
+	/** Cluster `default` role (`getClusterDefaults().roles.default`). */
+	clusterDefault?: string | null;
+	routing?: RoutingEntry[];
+}
+
 /**
- * Resolves the initial selection: a thread hint first, then the cluster
- * default. Either may be a backend id or a logical id; both resolve to the
+ * Resolves the initial selection in priority order: the thread's hint, the
+ * thread's latest message model, the cluster `default` role, then the host
+ * default. Each may be a backend id or a logical id; all resolve to the
  * logical option (#38).
  */
 export function resolveInitialModel(
@@ -70,12 +92,13 @@ export function resolveInitialModel(
 	models: ModelEntry[],
 	defaultModel: string,
 	hint?: string | null,
+	sources: InitialModelSources = {},
 ): ResolvedModel {
-	if (hint) {
-		const logical = logicalModelFor(hint, options, models);
+	const routing = sources.routing ?? [];
+	for (const candidate of [hint, sources.fallbackModel, sources.clusterDefault, defaultModel]) {
+		if (!candidate) continue;
+		const logical = logicalModelFor(candidate, options, models, routing);
 		if (logical) return { selectedModel: logical, modelId: logical };
 	}
-	const logical = logicalModelFor(defaultModel, options, models);
-	if (logical) return { selectedModel: logical, modelId: logical };
 	return { selectedModel: defaultModel, modelId: defaultModel };
 }

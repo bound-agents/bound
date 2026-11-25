@@ -388,6 +388,9 @@
 		font-weight: 600;
 		letter-spacing: -0.01em;
 		color: var(--ink);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.site-id {
@@ -459,6 +462,12 @@
 	}
 
 	.pill {
+		display: inline-block;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		vertical-align: middle;
 		padding: 3px 7px;
 		background: var(--paper-3);
 		font-family: var(--font-mono);
