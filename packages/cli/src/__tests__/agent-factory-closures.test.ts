@@ -26,6 +26,7 @@ import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { createClusterFs, loopContextStorage } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
+import { Bash } from "just-bash";
 import { createAgentLoopFactory } from "../commands/start/agent-factory";
 
 /**
@@ -690,4 +691,144 @@ describe("createAgentLoopFactory — aux runner sandbox + persist", () => {
 		});
 		expect(result.summary).toContain("aux done");
 	}, 30_000);
+});
+
+/**
+ * #308: just-bash normalizes scripts by `trimStart()`-ing every non-heredoc
+ * line, including lines that sit inside a quoted multiline argument. The
+ * factory's exec wrappers must pass `rawScript: true` so main, aux, and Yard
+ * dispatch hand the command to the interpreter byte-for-byte. These drive a
+ * REAL just-bash instance through each path and compare stdout exactly.
+ */
+describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#308)", () => {
+	const SCRIPT = [
+		"printf '%s\\n' 'for x in [1]:",
+		"    print(x)",
+		"\ttabbed'",
+		"printf '%s\\n' \"  two spaces",
+		'\t\ttwo tabs"',
+		"cat <<EOF",
+		"  heredoc indented",
+		"\theredoc tab",
+		"EOF",
+		"X='  lit  '; echo \"[$X]\"",
+		"if true; then",
+		"    echo inside-block",
+		"fi",
+	].join("\n");
+	const EXPECTED = [
+		"for x in [1]:",
+		"    print(x)",
+		"\ttabbed",
+		"  two spaces",
+		"\t\ttwo tabs",
+		"  heredoc indented",
+		"\theredoc tab",
+		"[  lit  ]",
+		"inside-block",
+		"",
+	].join("\n");
+
+	function makeRealSandbox() {
+		const bash = new Bash();
+		const calls: Array<{
+			cmd: string;
+			opts?: Record<string, unknown>;
+			result: { stdout: string; exitCode: number };
+		}> = [];
+		return {
+			calls,
+			bash: {
+				exec: async (cmd: string, opts?: Record<string, unknown>) => {
+					const result = await bash.exec(cmd, opts as never);
+					calls.push({ cmd, opts, result });
+					return result;
+				},
+			},
+			checkMemoryThreshold: () => ({ overThreshold: false }),
+		};
+	}
+
+	function expectPreserved(sandbox: ReturnType<typeof makeRealSandbox>) {
+		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
+		expect(call).toBeDefined();
+		expect(call?.opts?.rawScript).toBe(true);
+		expect(call?.result.exitCode).toBe(0);
+		expect(call?.result.stdout).toBe(EXPECTED);
+	}
+
+	async function runAux(sandbox: ReturnType<typeof makeRealSandbox>, backend: LLMBackend) {
+		const db = makeDb();
+		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
+		const factory = createAgentLoopFactory(
+			makeAppContext(db),
+			makeRouter(backend),
+			sandbox,
+			clusterFsObj,
+		);
+		const userId = seedUser(db);
+		const { threadId, agentId } = seedAuxThread(db, userId);
+		const runner = factory.createAuxLoopRunner({ platform: "web" });
+		return runner({
+			threadId,
+			agentId,
+			persona: "whitespace aux",
+			modelHint: "mock-model",
+			allowlistedTools: null,
+			instructions: "run the script",
+			userId,
+			parentThreadId: randomUUID(),
+		});
+	}
+
+	async function runMain(sandbox: ReturnType<typeof makeRealSandbox>, backend: LLMBackend) {
+		const db = makeDb();
+		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
+		const factory = createAgentLoopFactory(
+			makeAppContext(db),
+			makeRouter(backend),
+			sandbox,
+			clusterFsObj,
+		);
+		const userId = seedUser(db);
+		const threadId = seedWebThread(db, userId);
+		await factory({ threadId, userId, modelId: "mock-model" } as never).run();
+	}
+
+	const yardProgram = `function* main() {
+		return yield tool("bms_bash", { command: ${JSON.stringify(SCRIPT)}, cwd: "/tmp", timeout: 5000 });
+	}`;
+
+	it("main loop: direct bms_bash keeps quoted indentation, heredocs, and literals", async () => {
+		const sandbox = makeRealSandbox();
+		await runMain(sandbox, new ToolThenTextBackend(SCRIPT, "done"));
+		expectPreserved(sandbox);
+		// The loop's own signal still reaches just-bash next to rawScript.
+		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
+		expect(call?.opts?.signal).toBeInstanceOf(AbortSignal);
+	}, 30_000);
+
+	it("aux loop: direct bms_bash keeps quoted indentation, heredocs, and literals", async () => {
+		const sandbox = makeRealSandbox();
+		await runAux(sandbox, new ToolThenTextBackend(SCRIPT, "aux done"));
+		expectPreserved(sandbox);
+	}, 30_000);
+
+	it("main loop: Yard bms_bash keeps whitespace and forwards cwd/timeout unchanged", async () => {
+		const sandbox = makeRealSandbox();
+		await runMain(sandbox, new YardThenTextBackend(yardProgram, "yard done"));
+		expectPreserved(sandbox);
+		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
+		expect(call?.opts?.cwd).toBe("/tmp");
+		expect(call?.opts?.timeout).toBe(5000);
+	}, 60_000);
+
+	it("aux loop: Yard bms_bash keeps whitespace and forwards cwd/timeout unchanged", async () => {
+		const sandbox = makeRealSandbox();
+		await runAux(sandbox, new YardThenTextBackend(yardProgram, "aux yard done"));
+		expectPreserved(sandbox);
+		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
+		expect(call?.opts?.cwd).toBe("/tmp");
+		expect(call?.opts?.timeout).toBe(5000);
+	}, 60_000);
 });

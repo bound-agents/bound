@@ -164,6 +164,18 @@ export function createToolRegistry(
 	return registry;
 }
 
+/**
+ * just-bash's default script normalization `trimStart()`s every non-heredoc
+ * line without tracking quotes, so indentation inside a quoted multiline
+ * argument is silently dropped (#308). Every sandbox exec — main, aux, and the
+ * Yard executor that reuses them — passes `rawScript: true` so the command
+ * reaches the interpreter byte-for-byte. All other options (signal, cwd,
+ * timeout) pass through untouched.
+ */
+function withRawScript(opts?: Record<string, unknown>): Record<string, unknown> {
+	return { ...opts, rawScript: true };
+}
+
 export function createAgentLoopFactory(
 	appContext: AppContext,
 	modelRouter: ModelRouter,
@@ -220,7 +232,7 @@ export function createAgentLoopFactory(
 								mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
 							};
 							const result = await loopContextStorage.run(store, () =>
-								sandbox.bash.exec(cmd, opts),
+								sandbox.bash.exec(cmd, withRawScript(opts)),
 							);
 							if (store.relayRequest && isRelayRequest(store.relayRequest)) {
 								const req = store.relayRequest;
@@ -446,7 +458,9 @@ export function createAgentLoopFactory(
 							relayRequest: undefined as unknown | undefined,
 							mcpApp: undefined as import("@bound/sandbox").McpAppBinding | undefined,
 						};
-						const result = await loopContextStorage.run(store, () => sandbox.bash.exec(cmd, opts));
+						const result = await loopContextStorage.run(store, () =>
+							sandbox.bash.exec(cmd, withRawScript(opts)),
+						);
 						if (store.relayRequest && isRelayRequest(store.relayRequest)) {
 							const req = store.relayRequest;
 							store.relayRequest = undefined;
