@@ -31,3 +31,51 @@ describe("resolveEffectiveModelHint", () => {
 		db.close();
 	});
 });
+
+describe("resolveEffectiveModelHint with thread and task liveness", () => {
+	it("keeps the task hint when the associated thread is soft-deleted", () => {
+		const db = setup();
+		db.run("UPDATE threads SET deleted = 1 WHERE id = 'th'");
+		expect(resolveEffectiveModelHint(db, "th", "default", "task")).toBe("task-model");
+		db.close();
+	});
+
+	it("keeps the task hint when the associated thread row does not exist yet", () => {
+		const db = setup();
+		db.run("UPDATE tasks SET thread_id = 'not-yet-created' WHERE id = 'task'");
+		expect(resolveEffectiveModelHint(db, "not-yet-created", "default", "task")).toBe("task-model");
+		db.close();
+	});
+
+	it("never falls back to a soft-deleted thread's hint", () => {
+		const db = setup();
+		db.run("UPDATE tasks SET model_hint = NULL WHERE id = 'task'");
+		db.run("UPDATE threads SET deleted = 1 WHERE id = 'th'");
+		expect(resolveEffectiveModelHint(db, "th", "default", "task")).toBe("default");
+		expect(resolveEffectiveModelHint(db, "th", "default")).toBe("default");
+		db.close();
+	});
+
+	it("ignores a soft-deleted task and falls back to the live thread hint", () => {
+		const db = setup();
+		db.run("UPDATE tasks SET deleted = 1 WHERE id = 'task'");
+		expect(resolveEffectiveModelHint(db, "th", "default", "task")).toBe("thread-model");
+		db.close();
+	});
+
+	it("ignores a task bound to a different thread", () => {
+		const db = setup();
+		db.run("UPDATE tasks SET thread_id = 'other-thread' WHERE id = 'task'");
+		expect(resolveEffectiveModelHint(db, "th", "default", "task")).toBe("thread-model");
+		db.run("UPDATE threads SET deleted = 1 WHERE id = 'th'");
+		expect(resolveEffectiveModelHint(db, "th", "default", "task")).toBe("default");
+		db.close();
+	});
+
+	it("uses the live thread hint when no task id is given", () => {
+		const db = setup();
+		expect(resolveEffectiveModelHint(db, "th", "default")).toBe("thread-model");
+		expect(resolveEffectiveModelHint(db, "missing", "default")).toBe("default");
+		db.close();
+	});
+});

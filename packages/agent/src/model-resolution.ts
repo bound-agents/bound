@@ -566,29 +566,31 @@ function isModelRegisteredInCluster(
 }
 
 /**
- * Resolve the backend id for an omitted/"default" request (§5.1, R-RT9/R-RT14).
- * Order: synced cluster role `routing.model_roles.default` (when it names a
- * backend this router actually holds), else the local `model_backends.default`
- * bootstrap fallback. An unresolvable cluster role never wins over a working
- * local default — the role is a preference, the local default is the floor.
+ * Resolve the model hint for an omitted/"default" request (R-RT7, R-MC10).
+ * A configured synced cluster role `routing.model_roles.default` is
+ * authoritative: its target is returned as-is and resolved downstream through
+ * the same literal-id → logical-model → cross-host route machinery as any
+ * explicit hint, so a hub with no local backends reaches the remote routes for
+ * that model, and an unavailable configured default surfaces as a resolution
+ * error instead of silently switching to another model. The local
+ * `model_backends.default` bootstrap applies only when the role is unset —
+ * no roles row, malformed JSON, a non-object value, or a missing/empty/
+ * non-string `default`.
  */
-function resolveDefaultModelId(db: Database, modelRouter: ModelRouter): string {
-	const localDefault = modelRouter.getDefaultId();
+export function resolveDefaultModelId(db: Database, modelRouter: ModelRouter): string {
 	const row = findClusterConfigValueByKey(db, ROUTING_MODEL_ROLES_KEY);
 	if (row) {
 		try {
-			const roles = JSON.parse(row.value) as ClusterModelRoles;
-			const roleDefault = roles.default;
-			// Use the cluster role only when it names a backend this host can serve
-			// locally; otherwise a role pointing at a remote-only model would shadow a
-			// perfectly good local default on every omitted-model turn. Remote-only
-			// role defaults are a later slice's concern; the bootstrap floor is local.
-			if (roleDefault && modelRouter.tryGetBackend(roleDefault)) return roleDefault;
+			const roles: unknown = JSON.parse(row.value);
+			if (roles && typeof roles === "object" && !Array.isArray(roles)) {
+				const target = resolveModelRoleTarget(roles as ClusterModelRoles, "default");
+				if (target !== null) return target;
+			}
 		} catch {
-			// Malformed roles JSON — fall through to the local bootstrap default.
+			// Malformed roles JSON — the role is unset; use the local bootstrap.
 		}
 	}
-	return localDefault;
+	return modelRouter.getDefaultId();
 }
 
 /**

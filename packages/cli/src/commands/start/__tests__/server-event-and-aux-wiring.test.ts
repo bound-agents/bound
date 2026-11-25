@@ -953,7 +953,9 @@ describe("initServer — handleThread main dispatch (non-background turn)", () =
 
 		expect(loopRan).toBe(true);
 		expect(seenThreadId).toBe(threadId);
-		expect(seenModelId).toBe("fake");
+		// A hintless web thread carries the symbolic default, never the router's
+		// local backend id, so resolveModel applies the cluster default role.
+		expect(seenModelId).toBe("default");
 
 		// The claimed user_message was acknowledged: no pending dispatch entry
 		// remains for this thread.

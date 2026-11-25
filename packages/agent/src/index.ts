@@ -39,6 +39,7 @@ export {
 // Export model resolution
 export {
 	MAX_MODEL_RECONNECT_WAIT_MS,
+	resolveDefaultModelId,
 	resolveModel,
 	waitForModelResolution,
 } from "./model-resolution";

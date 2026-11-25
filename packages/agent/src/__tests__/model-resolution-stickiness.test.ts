@@ -103,23 +103,155 @@ describe("resolveModel — default-model resolution (§5.1, R-RT9/R-RT14)", () =
 		if (res.kind === "local") expect(res.modelId).toBe("sonnet");
 	});
 
-	it("ignores a cluster role default that names no locally-held backend (bootstrap floor wins)", () => {
+	it("errors when the configured cluster default is unavailable, never switching to the local bootstrap", () => {
 		const router = routerWithOpus();
-		insertRow(
-			db,
-			"cluster_config",
-			{
-				key: ROUTING_MODEL_ROLES_KEY,
-				value: JSON.stringify({ default: "some-remote-only-model" }),
-				deleted: 0,
-				modified_at: "2026-01-01T00:00:00.000Z",
-			},
-			SITE,
+		setDefaultRoles(db, { default: "some-remote-only-model" });
+		for (const request of ["default", undefined]) {
+			const res = resolveModel(request, router, db, SITE);
+			expect(res.kind).toBe("error");
+			if (res.kind === "error") {
+				expect(res.error).toContain("some-remote-only-model");
+				expect(res.reason).toBe("unknown-model");
+			}
+		}
+	});
+});
+
+/** Write `routing.model_roles` through the outbox, as the operator surfaces do. */
+function setDefaultRoles(db: Database, roles: unknown, raw = false): void {
+	insertRow(
+		db,
+		"cluster_config",
+		{
+			key: ROUTING_MODEL_ROLES_KEY,
+			value: raw ? String(roles) : JSON.stringify(roles),
+			deleted: 0,
+			modified_at: "2026-01-01T00:00:00.000Z",
+		},
+		SITE,
+	);
+}
+
+/** Insert a live remote host advertising `models`. */
+function addRemoteHost(db: Database, siteId: string, models: unknown[]): void {
+	const now = new Date().toISOString();
+	db.run(
+		`INSERT INTO hosts (site_id, host_name, sync_url, models, deleted, online_at, modified_at)
+		 VALUES (?, ?, ?, ?, 0, ?, ?)`,
+		[siteId, siteId, `https://${siteId}.example`, JSON.stringify(models), now, now],
+	);
+}
+
+const NOVA_ENTRY = {
+	id: "bedrock-main-amazon.nova-2-lite-v1:0",
+	logical_model: "nova-2-lite",
+	route_id: "site-spoke:bedrock:bedrock-main-amazon.nova-2-lite-v1:0",
+	capabilities: { max_context: 1000000 },
+};
+const OPUS_ENTRY = {
+	id: "bedrock-main-anthropic.claude-opus-5-5",
+	logical_model: "claude-opus-5-5",
+	route_id: "site-spoke:bedrock:bedrock-main-anthropic.claude-opus-5-5",
+	capabilities: { max_context: 1000000 },
+};
+
+describe("resolveModel — configured cluster default is authoritative (R-RT7, R-MC10)", () => {
+	let db: Database;
+	afterEach(() => db.close());
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("routes a backend-less hub to the remote host serving the configured default, not any-remote", () => {
+		// Hub: no local backends, empty bootstrap default. The spoke advertises Nova
+		// (lexically first) and Opus; the cluster default names Opus's logical model.
+		const hub = new ModelRouter(new Map(), "");
+		addRemoteHost(db, "site-spoke", [NOVA_ENTRY, OPUS_ENTRY]);
+		setDefaultRoles(db, { default: "claude-opus-5-5" });
+		for (const request of ["default", undefined, ""]) {
+			const res = resolveModel(request, hub, db, "site-hub");
+			expect(res.kind).toBe("remote");
+			if (res.kind === "remote") {
+				expect(res.modelId).toBe("claude-opus-5-5");
+				expect(res.hosts.map((h) => h.routeId)).toEqual([OPUS_ENTRY.route_id]);
+			}
+		}
+	});
+
+	it("resolves the configured logical default to a local expanded backend", () => {
+		const expandedId = "bedrock-main-anthropic.claude-opus-5-5";
+		const backends = new Map<string, LLMBackend>([
+			["local-bootstrap", stubBackend()],
+			[expandedId, stubBackend()],
+		]);
+		const configs = new Map([
+			["local-bootstrap", { id: "local-bootstrap", provider: "ollama", model: "llama3" }],
+			[expandedId, { id: expandedId, provider: "bedrock", model: "anthropic.claude-opus-5-5" }],
+		]);
+		const router = new ModelRouter(
+			backends,
+			"local-bootstrap",
+			new Map([
+				["local-bootstrap", caps()],
+				[expandedId, caps()],
+			]),
+			configs as unknown as ConstructorParameters<typeof ModelRouter>[3],
 		);
+		setDefaultRoles(db, { default: "claude-opus-5-5" });
 		const res = resolveModel("default", router, db, SITE);
 		expect(res.kind).toBe("local");
-		if (res.kind === "local") expect(res.modelId).toBe("opus");
+		if (res.kind === "local") expect(res.modelId).toBe(expandedId);
 	});
+
+	it("errors on a backend-less hub when the configured default has no route, even with Nova available", () => {
+		const hub = new ModelRouter(new Map(), "");
+		addRemoteHost(db, "site-spoke", [NOVA_ENTRY]);
+		setDefaultRoles(db, { default: "claude-opus-5-5" });
+		for (const request of ["default", undefined]) {
+			const res = resolveModel(request, hub, db, "site-hub");
+			expect(res.kind).toBe("error");
+			if (res.kind === "error") expect(res.error).toContain("claude-opus-5-5");
+		}
+	});
+
+	it("keeps the configured default transient when its only host is stale", () => {
+		const hub = new ModelRouter(new Map(), "");
+		addRemoteHost(db, "site-spoke", [NOVA_ENTRY]);
+		const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+		db.run(
+			`INSERT INTO hosts (site_id, host_name, sync_url, models, deleted, online_at, modified_at)
+			 VALUES (?, ?, ?, ?, 0, ?, ?)`,
+			["site-stale", "stale", null, JSON.stringify([OPUS_ENTRY]), stale, stale],
+		);
+		setDefaultRoles(db, { default: "claude-opus-5-5" });
+		const res = resolveModel(undefined, hub, db, "site-hub");
+		expect(res.kind).toBe("error");
+		if (res.kind === "error") expect(res.reason).toBe("transient-unavailable");
+	});
+
+	it("keeps hub bootstrap discovery when roles carry no default", () => {
+		const hub = new ModelRouter(new Map(), "");
+		addRemoteHost(db, "site-spoke", [NOVA_ENTRY]);
+		setDefaultRoles(db, { heavy: "claude-opus-5-5" });
+		const res = resolveModel(undefined, hub, db, "site-hub");
+		expect(res.kind).toBe("remote");
+		if (res.kind === "remote") expect(res.modelId).toBe(NOVA_ENTRY.id);
+	});
+
+	for (const [label, roles, raw] of [
+		["malformed JSON", "{not json", true],
+		["a non-object value", "null", true],
+		["an empty default", { default: "" }, false],
+		["a non-string default", { default: 42 }, false],
+	] as const) {
+		it(`falls back to the local bootstrap default on ${label}`, () => {
+			const router = routerWithOpus();
+			setDefaultRoles(db, roles, raw);
+			const res = resolveModel("default", router, db, SITE);
+			expect(res.kind).toBe("local");
+			if (res.kind === "local") expect(res.modelId).toBe("opus");
+		});
+	}
 });
 
 describe("resolveModel — role/alias resolution (§2.1, #281)", () => {

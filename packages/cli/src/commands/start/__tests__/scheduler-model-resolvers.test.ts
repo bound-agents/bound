@@ -37,10 +37,18 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentLoopConfig, MainAgentLoop } from "@bound/agent";
-import { type AppContext, createAppContext, insertRow } from "@bound/core";
+import { Scheduler, resolveModel } from "@bound/agent";
+import {
+	type AppContext,
+	DEFAULT_MODEL_HINT,
+	createAppContext,
+	insertRow,
+	resolveEffectiveModelHint,
+} from "@bound/core";
 import type { LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
 import { PlatformMcpRegistry } from "@bound/platforms";
+import { ROUTING_MODEL_ROLES_KEY } from "@bound/shared";
 import { cleanupTmpDir } from "@bound/shared/test-utils";
 import { runInit } from "../../init.js";
 import { initScheduler } from "../scheduler.js";
@@ -210,11 +218,12 @@ describe("initScheduler — modelRouter-gated resolver closures", () => {
 		expect(row?.status).toBe("pending");
 	});
 
-	it("exposes the default resolver that reflects the live router (168)", () => {
+	it("supplies no concrete default model to the scheduler", () => {
 		const { resolvers } = boot();
 		expect(resolvers).not.toBeNull();
-		// modelDefaultResolver returns the router's live default id.
-		expect(resolvers?.modelDefaultResolver?.()).toBe(MODEL_ID);
+		// Hintless tasks carry the symbolic default to resolveModel, which applies
+		// the cluster default role; a local backend id here would bypass it.
+		expect(resolvers && "modelDefaultResolver" in resolvers).toBe(false);
 	});
 
 	it("generateTitle writes a real title via generateThreadTitle (173-185)", async () => {
@@ -398,5 +407,163 @@ describe("initScheduler — platform resolver closures and scheduler-start catch
 		schedulerHandle = result?.schedulerHandle ?? null;
 		expect(threw).toBe(false);
 		expect(result).not.toBeNull();
+	});
+});
+
+describe("initScheduler — hintless tasks follow the configured cluster default", () => {
+	let tempDir: string;
+	let appContext: AppContext;
+	let router: ModelRouter;
+	const stops: Array<{ stop: () => void } | null> = [];
+
+	beforeEach(async () => {
+		tempDir = mkdtempSync(join(tmpdir(), "bound-sched-cluster-default-"));
+		const configDir = join(tempDir, "config");
+		await runInit({ ollama: true, name: "sched-cluster-default-operator", configDir });
+		appContext = await createAppContext(configDir, ":memory:");
+		// Nova is this host's bootstrap default; Opus is also served locally.
+		router = new ModelRouter(
+			new Map<string, LLMBackend>([
+				["nova", new MockBackend("nova title")],
+				["opus", new MockBackend("opus title")],
+			]),
+			"nova",
+		);
+	});
+
+	afterEach(async () => {
+		for (const handle of stops.splice(0)) handle?.stop();
+		await cleanupTmpDir(tempDir);
+	});
+
+	function setClusterDefault(target: string): void {
+		insertRow(
+			appContext.db,
+			"cluster_config",
+			{
+				key: ROUTING_MODEL_ROLES_KEY,
+				value: JSON.stringify({ default: target }),
+				deleted: 0,
+				modified_at: new Date().toISOString(),
+			},
+			appContext.siteId,
+		);
+	}
+
+	function seed(opts: { taskHint: string | null; threadHint: string | null; withThread: boolean }) {
+		const now = new Date().toISOString();
+		const threadId = crypto.randomUUID();
+		const taskId = crypto.randomUUID();
+		if (opts.withThread) {
+			insertRow(
+				appContext.db,
+				"threads",
+				{
+					id: threadId,
+					user_id: crypto.randomUUID(),
+					interface: "scheduler",
+					host_origin: appContext.siteId,
+					color: 0,
+					title: "seeded",
+					summary: null,
+					summary_through: null,
+					summary_model_id: null,
+					extracted_through: null,
+					created_at: now,
+					last_message_at: now,
+					modified_at: now,
+					deleted: 0,
+					model_hint: opts.threadHint,
+				},
+				appContext.siteId,
+			);
+		}
+		insertRow(
+			appContext.db,
+			"tasks",
+			{
+				id: taskId,
+				type: "deferred",
+				status: "pending",
+				trigger_spec: '{"type":"deferred"}',
+				payload: "do the thing",
+				created_at: now,
+				modified_at: now,
+				created_by: "system",
+				thread_id: threadId,
+				model_hint: opts.taskHint,
+				next_run_at: new Date(Date.now() - 60_000).toISOString(),
+				run_count: 0,
+			},
+			appContext.siteId,
+		);
+		return { threadId, taskId };
+	}
+
+	/** Run one task through a Scheduler built from the production resolver set. */
+	async function runWithProductionResolvers(): Promise<AgentLoopConfig> {
+		const configs: AgentLoopConfig[] = [];
+		const result = initScheduler(
+			appContext,
+			makeAgentLoopFactory(),
+			router,
+			{ bash: undefined },
+			null,
+		);
+		stops.push(result.schedulerHandle);
+		const scheduler = new Scheduler(
+			appContext,
+			(config: AgentLoopConfig) =>
+				({
+					run: async () => {
+						configs.push(config);
+						return { messagesCreated: 0, toolCallsMade: 0, filesChanged: 0 };
+					},
+				}) as unknown as MainAgentLoop,
+			result.resolvers ?? {},
+		);
+		stops.push(scheduler.start(10));
+		const deadline = Date.now() + 5000;
+		while (configs.length === 0 && Date.now() < deadline) await Bun.sleep(10);
+		expect(configs).toHaveLength(1);
+		return configs[0] as AgentLoopConfig;
+	}
+
+	function resolvedModel(config: AgentLoopConfig): string {
+		const res = resolveModel(config.modelId, router, appContext.db, appContext.siteId);
+		expect(res.kind).toBe("local");
+		return res.kind === "local" ? res.modelId : "";
+	}
+
+	for (const withThread of [true, false]) {
+		it(`runs a hintless task on the cluster default, not the local backend default (thread row ${withThread ? "present" : "absent"})`, async () => {
+			setClusterDefault("opus");
+			const { threadId } = seed({ taskHint: null, threadHint: null, withThread });
+			const config = await runWithProductionResolvers();
+			expect(resolvedModel(config)).toBe("opus");
+			// The turn-boundary refresh re-reads with the same symbolic fallback, so a
+			// hintless task sees no hint change and keeps its cached turn state.
+			expect(
+				resolveEffectiveModelHint(appContext.db, threadId, DEFAULT_MODEL_HINT, config.taskId),
+			).toBe(config.modelId ?? DEFAULT_MODEL_HINT);
+			expect(resolvedModel(config)).toBe("opus");
+		});
+	}
+
+	it("keeps an explicit task hint over the cluster default", async () => {
+		setClusterDefault("opus");
+		seed({ taskHint: "nova", threadHint: "opus", withThread: true });
+		expect(resolvedModel(await runWithProductionResolvers())).toBe("nova");
+	});
+
+	it("keeps an explicit thread hint over the cluster default", async () => {
+		setClusterDefault("opus");
+		seed({ taskHint: null, threadHint: "nova", withThread: true });
+		expect(resolvedModel(await runWithProductionResolvers())).toBe("nova");
+	});
+
+	it("uses the local bootstrap default when no cluster default is set", async () => {
+		seed({ taskHint: null, threadHint: null, withThread: true });
+		expect(resolvedModel(await runWithProductionResolvers())).toBe("nova");
 	});
 });

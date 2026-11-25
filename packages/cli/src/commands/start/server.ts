@@ -18,10 +18,11 @@ import {
 	selectWarmPokeTargets,
 	serializeRelayTraceCarrier,
 } from "@bound/agent";
-import { awaitPlatformRequestResponse } from "@bound/agent";
+import { awaitPlatformRequestResponse, resolveDefaultModelId } from "@bound/agent";
 import type { ClientToolResolver } from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import {
+	DEFAULT_MODEL_HINT,
 	type DispatchEntry,
 	ThreadExecutor,
 	acknowledgeBatch,
@@ -985,12 +986,13 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						});
 
 						const taskBinding = findLatestTaskSettingsForThread(appContext.db, thread_id);
-						// Use the same task > thread > live node-default precedence as
-						// scheduler wakeups.
+						// Use the same task > thread > default precedence as scheduler
+						// wakeups. The symbolic default lets resolveModel apply the
+						// cluster default role; a local backend id would bypass it.
 						const activeModelId = resolveThreadModel(
 							appContext.db,
 							thread_id,
-							modelRouter.getDefaultId(),
+							DEFAULT_MODEL_HINT,
 							taskBinding?.id,
 						);
 
@@ -1459,10 +1461,12 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			// the dramatically different break-even economics between providers
 			// (cap 0 = never warm threads on that backend).
 			const resolvePokePolicy = (threadId: string): { ttlMs: number; maxPokes: number } | null => {
-				// Live router default, not routerConfig.default — the startup
-				// snapshot can still name a retired dynamic-provider namespace
-				// id (see activeModelId above).
-				const modelId = resolveThreadModel(appContext.db, threadId, modelRouter.getDefaultId());
+				// Warm the model the thread's next turn would run on: a hintless
+				// thread follows the cluster default role, and the host's
+				// bootstrap backend applies only when that role is unset.
+				const hint = resolveThreadModel(appContext.db, threadId, DEFAULT_MODEL_HINT);
+				const modelId =
+					hint === DEFAULT_MODEL_HINT ? resolveDefaultModelId(appContext.db, modelRouter) : hint;
 				const warmCfg = modelRouter.getCacheWarmConfig(modelId);
 				if (!warmCfg?.enabled) return null;
 				const ttl = modelRouter.getCacheTtl(modelId);

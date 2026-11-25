@@ -49,6 +49,16 @@ External events enter through integrations such as [webhooks](/bound/guides/webh
 [RSS feeds](/bound/guides/rss-feeds/), and platform connectors. Connectors can also
 contribute scoped tools appropriate to the receiving thread.
 
+A task runs on its own model hint first, then its thread's hint, then the cluster default model. The
+task hint applies even before the scheduler creates the task's thread. A deleted thread never
+contributes its hint.
+
+A task whose thread was deleted does not run. The scheduler parks it as `failed` with an error
+naming the task and thread, writes nothing to the deleted thread, and leaves the thread's
+unconsumed webhook, RSS, and connector intake pending. A parked task never resumes: cancel it
+and schedule a replacement on a live thread. A task with no thread row yet still gets a new
+scheduler thread.
+
 Task dependencies, scheduling, claiming, interruption, and recovery are lifecycle concerns
 rather than parts of the model's decision cycle. See the [work
 lifecycle](/bound/concepts/work-lifecycle/) for those boundaries and guarantees.

@@ -1,6 +1,21 @@
 import { describe, expect, it } from "bun:test";
 import { refreshModelHintAtTurnBoundary } from "../agent-loop-utils";
 
+it("treats an omitted model and the symbolic default as the same hint (no reset)", () => {
+	const config: { modelId?: string } = {};
+	let invalidations = 0;
+	for (let turn = 0; turn < 3; turn++) {
+		expect(
+			refreshModelHintAtTurnBoundary(
+				config,
+				() => "default",
+				() => invalidations++,
+			),
+		).toBe(false);
+	}
+	expect(invalidations).toBe(0);
+	expect(config.modelId).toBeUndefined();
+});
 describe("refreshModelHintAtTurnBoundary", () => {
 	it("picks up a changed task hint and does not churn an unchanged hint", () => {
 		const config = { modelId: "old" };

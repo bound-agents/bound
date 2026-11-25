@@ -39,7 +39,7 @@ The endpoint accepts the subset of the Responses schema that maps to Bound model
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `model` | string | router default | Model id to resolve. `"default"` and omitted both use the default local backend. A model held by another host relays over the cluster transport. |
+| `model` | string | router default | Model id to resolve. `"default"` and omitted both use the cluster default role, or the host's bootstrap default when no role is set. A model held by another host relays over the cluster transport. |
 | `input` | string \| item[] | — | A string is one user turn. An item array carries the complete conversation. |
 | `instructions` | string | — | Maps to the system prompt. |
 | `tools` | tool[] | — | Responses-flat function tools: `{ type: "function", name, description?, parameters }`. |
@@ -167,7 +167,7 @@ first. If another host serves the requested model, inference streams over the re
 transport. Local and relayed inference have the same response shape, so the client cannot
 tell from the response which host served the request.
 
-For `model`, `"default"` and omission both select the default local backend. The [Errors](#errors)
+For `model`, `"default"` and omission both select `routing.model_roles.default`, falling back to the host's `model_backends` default only when that role is unset. The [Errors](#errors)
 table lists failures for unknown or unavailable models.
 
 ## Client configuration

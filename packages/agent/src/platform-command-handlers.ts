@@ -3,7 +3,7 @@ import { findTaskById, findThreadById, listConnectorHandlesByServer, updateRow }
 import type { ModelRouter } from "@bound/llm";
 import type { PlatformCommandInvocation, PlatformCommandSpec } from "@bound/platforms";
 import type { Logger } from "@bound/shared";
-import { resolveModel } from "./model-resolution.js";
+import { resolveDefaultModelId, resolveModel } from "./model-resolution.js";
 
 /**
  * Bound-side handlers for platform-native commands (see
@@ -87,7 +87,7 @@ export function createModelCommandSpec(deps: PlatformCommandHandlerDeps): Platfo
 				if (hint) {
 					return `Current model hint: ${hint}`;
 				}
-				return `No hint set — using cluster default: ${deps.modelRouter.getDefaultId()}`;
+				return `No hint set — using cluster default: ${resolveDefaultModelId(db, deps.modelRouter)}`;
 			}
 
 			const requestedStr = String(requested);
@@ -100,7 +100,7 @@ export function createModelCommandSpec(deps: PlatformCommandHandlerDeps): Platfo
 					taskId: task.id,
 					threadId,
 				});
-				return `Model hint cleared — using cluster default: ${deps.modelRouter.getDefaultId()}`;
+				return `Model hint cleared — using cluster default: ${resolveDefaultModelId(db, deps.modelRouter)}`;
 			}
 
 			// Set mode: validate before writing. resolveModel checks the

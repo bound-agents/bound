@@ -19,8 +19,10 @@ against it.
 
 The decision has three broad questions:
 
-1. **What did the turn request?** An omitted model and `"default"` use the configured default
-   route. A hint that names a [role or alias](/bound/reference/configuration/#routingmodel_roles)
+1. **What did the turn request?** An omitted model and `"default"` use the cluster
+   `default` role, resolved like any named logical model across hosts; an unavailable configured
+   default fails the turn rather than switching models. The host's bootstrap default applies only
+   when that role is unset. A hint that names a [role or alias](/bound/reference/configuration/#routingmodel_roles)
    follows that mapping to a logical model (an exact backend id always beats an alias of the same
    name); otherwise a named model narrows the eligible inventory directly.
 2. **Which backends are eligible?** Eligibility depends on the advertised model, provider

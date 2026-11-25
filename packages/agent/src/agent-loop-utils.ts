@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import {
+	DEFAULT_MODEL_HINT,
 	findFileContentByIdActive,
 	findFirstLiveUserMessageByThreadSince,
 	findLatestLiveAssistantMessageCreatedAtByThread,
@@ -29,7 +30,9 @@ export function refreshModelHintAtTurnBoundary(
 	onChange: () => void,
 ): boolean {
 	const nextModelId = readEffectiveModelHint();
-	if (nextModelId === config.modelId) return false;
+	// An omitted model and the symbolic default are the same request; treating
+	// them as a change would reset cached turn state on every hintless turn.
+	if (nextModelId === (config.modelId ?? DEFAULT_MODEL_HINT)) return false;
 	config.modelId = nextModelId;
 	onChange();
 	return true;

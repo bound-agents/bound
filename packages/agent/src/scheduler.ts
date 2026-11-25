@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { AppContext } from "@bound/core";
 import {
+	DEFAULT_MODEL_HINT,
 	HOST_HEARTBEAT_INTERVAL,
 	acknowledgeDurableWork,
 	claimLocalDurableWork,
 	countPendingIntakeDurableWork,
 	createChangeLogEntry,
 	deadLetterClaimedDurableWork,
+	findThreadById,
+	findThreadIdById,
 	insertDurableWork,
 	insertRow,
 	listHostsWithLiveness,
@@ -374,6 +377,7 @@ function parkTask(
 	errorMsg: string,
 	siteId: string,
 	expectedLease: string | null,
+	reason = "model unresolvable cluster-wide",
 ): void {
 	if (expectedLease === null) {
 		// No lease to guard against; refuse to park rather than risk clobbering an
@@ -394,7 +398,7 @@ function parkTask(
 			claimed_by: null,
 			claimed_at: null,
 			lease_id: null,
-			error: `parked (model unresolvable cluster-wide): ${errorMsg}`,
+			error: `parked (${reason}): ${errorMsg}`,
 		},
 		siteId,
 	);
@@ -405,10 +409,11 @@ function parkTask(
 		});
 		return;
 	}
-	logger.warn("[scheduler] parked task: model unresolvable cluster-wide", {
+	logger.warn(`[scheduler] parked task: ${reason}`, {
 		taskId: task.id,
 		type: task.type,
 		modelHint: task.model_hint,
+		threadId: task.thread_id,
 		error: errorMsg,
 	});
 }
@@ -918,8 +923,6 @@ interface SchedulerConfig {
 	modelValidator?: (
 		modelId: string,
 	) => { ok: true } | { ok: false; error: string; permanent?: boolean };
-	/** Live node default used after task and thread model hints. */
-	modelDefaultResolver?: () => string;
 	/**
 	 * Optional callback to generate a thread title after a task's agent loop completes.
 	 * Called with the thread ID; fire-and-forget (errors are logged, not propagated).
@@ -1901,6 +1904,31 @@ export class Scheduler {
 			}
 
 			try {
+				// A task bound to a thread the user soft-deleted must not run:
+				// writing wakeup rows into the tombstone or recreating/rebinding the
+				// thread would override the deletion. Park the task (terminal
+				// `failed`, claim + next_run_at cleared, so neither the pending sweep,
+				// onEvent, nor healStuckTasks re-claims it) with an actionable error.
+				// This runs BEFORE the event fold, so durable intake for the thread
+				// is never claimed and stays `pending` for an operator decision.
+				if (task.thread_id) {
+					const boundThread = findThreadById(this.ctx.db, task.thread_id);
+					if (boundThread && boundThread.deleted === 1) {
+						parkTask(
+							this.ctx.db,
+							task,
+							this.ctx.logger,
+							`task ${task.id} is bound to thread ${task.thread_id}, which was deleted; the task will not run against a deleted thread. Deleted threads are not restored and parked tasks do not resume: cancel this task and schedule a replacement on a live thread.`,
+							this.ctx.siteId,
+							leaseId,
+							"associated thread deleted",
+						);
+						schedulerOutcome = "parked_deleted_thread";
+						this.runningTasks.delete(task.id);
+						return;
+					}
+				}
+
 				let threadId = task.thread_id || randomUUID();
 				const taskNow = new Date().toISOString();
 
@@ -1932,9 +1960,7 @@ export class Scheduler {
 
 				// Bug #4: Ensure a thread row exists for the threadId.
 				// The thread may not exist if this is a system task with no pre-created thread.
-				const existingThread = this.ctx.db
-					.query("SELECT id FROM threads WHERE id = ?")
-					.get(threadId) as { id: string } | null;
+				const existingThread = findThreadIdById(this.ctx.db, threadId);
 
 				if (!existingThread) {
 					insertRow(
@@ -2309,7 +2335,7 @@ export class Scheduler {
 				const modelId = resolveEffectiveModelHint(
 					this.ctx.db,
 					threadId,
-					this.config.modelDefaultResolver?.() ?? "default",
+					DEFAULT_MODEL_HINT,
 					task.id,
 				);
 				const loopConfig: AgentLoopConfig = {

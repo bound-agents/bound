@@ -1,4 +1,5 @@
 import {
+	DEFAULT_MODEL_HINT,
 	findLatestLiveMessageCreatedAtByThread,
 	listLiveMessageDeltaByThreadSince,
 	resolveEffectiveModelHint,
@@ -660,7 +661,7 @@ export class MainAgentLoop extends BoundAgentLoop {
 					resolveEffectiveModelHint(
 						this.ctx.db,
 						this.config.threadId,
-						this.modelRouter.getDefaultId(),
+						DEFAULT_MODEL_HINT,
 						this.config.taskId,
 					),
 				() => this.clearCachedTurnState(),

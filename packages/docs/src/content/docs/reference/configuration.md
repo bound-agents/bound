@@ -456,7 +456,7 @@ protocol is derived from the join). Its lineup comes from the Mantle `GET /v1/mo
 with `ListFoundationModels` on the exact model id; a Mantle id with no protocol-bearing
 foundation-model join (versioned snapshots, Anthropic Messages ids) is excluded and never guessed.
 Because GPT and Claude are served on `bedrock-runtime` per AWS's recommendation, a `bedrock-mantle`
-namespace is only needed for a model that is genuinely Mantle-only.
+namespace is only needed for a model served only on Mantle.
 
 **Explicit (model-bearing) entries still work unchanged.** A `bedrock` or `bedrock-mantle` entry
 with a `model` is a single concrete backend; `provider_mode` is still required on
@@ -702,9 +702,11 @@ the web UI's **Persona** view, or the corresponding API.
 It holds two kinds of name, differing only in intent:
 
 - The three **reserved roles** `default`, `heavy`, and `fast` carry documented semantics. A turn that
-  requests no model, or the literal `"default"`, resolves to `routing.model_roles.default` first; the
-  per-host [`model_backends` `default`](#model_backendsjs--model_backendsjson) is only a bootstrap
-  fallback used when the cluster role is unset or names a model the host cannot serve locally.
+  requests no model, or the literal `"default"`, resolves to `routing.model_roles.default` and routes
+  to any host serving that logical model, local or remote. When no host can serve it, the turn fails
+  with a resolution error; Bound never switches to a different model. The per-host
+  [`model_backends` `default`](#model_backendsjs--model_backendsjson) is only a bootstrap fallback
+  used when the cluster role is unset.
 - Any other name is an **alias**: a stable second name for a logical model. A hint naming the alias
   follows the mapping to its target, an aux agent or scheduled task targeting it follows the alias
   instead of parking, and an alias pointing at a model no host serves raises the same dangling-reference

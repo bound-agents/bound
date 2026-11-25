@@ -52,7 +52,6 @@ export interface SchedulerResult {
 		modelValidator?: (
 			modelId: string,
 		) => { ok: true } | { ok: false; error: string; permanent?: boolean };
-		modelDefaultResolver?: () => string;
 		generateTitle?: (threadId: string) => Promise<void>;
 		platformToolResolver?: (threadId: string) => PlatformRegisteredTool[];
 		platformInstructionsResolver?: (threadId: string) => string | undefined;
@@ -180,7 +179,6 @@ export function initScheduler(
 						return { ok: true as const };
 					}
 				: undefined,
-			modelDefaultResolver: modelRouter ? () => modelRouter.getDefaultId() : undefined,
 			generateTitle:
 				modelRouter && modelRouter.listBackends().length > 0
 					? async (threadId: string) => {
@@ -209,7 +207,6 @@ export function initScheduler(
 			agentLoopFactory,
 			{
 				modelValidator: resolvers.modelValidator,
-				modelDefaultResolver: resolvers.modelDefaultResolver,
 				generateTitle: resolvers.generateTitle,
 				platformToolResolver: resolvers.platformToolResolver,
 				platformInstructionsResolver: resolvers.platformInstructionsResolver,
