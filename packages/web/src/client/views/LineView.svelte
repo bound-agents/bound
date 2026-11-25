@@ -516,7 +516,10 @@
 
 	async function startRename(): Promise<void> {
 		if (!thread) return;
-		titleDraft = viewTitle();
+		// Seed from the stored title, never the placeholder viewTitle() shows for
+		// an untitled thread: a placeholder draft would compare as a change and a
+		// stray blur would save it, which also blocks the generated title for good.
+		titleDraft = thread.title?.trim() ?? "";
 		renameError = null;
 		editingTitle = true;
 		await tick();
@@ -749,6 +752,7 @@
 						bind:value={titleDraft}
 						maxlength={MAX_THREAD_TITLE_LENGTH}
 						disabled={committingTitle}
+						placeholder={viewTitle()}
 						aria-label="Thread title"
 						onkeydown={onTitleKeydown}
 						onblur={() => void commitRename()}

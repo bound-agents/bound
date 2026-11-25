@@ -753,6 +753,25 @@ describe("LineView — inline rename", () => {
 		expect(target.querySelector("h1.title")?.textContent).toBe("Same");
 	});
 
+	it("opens an untitled thread's rename empty and sends no PATCH on blur", async () => {
+		const { target } = await mountView({
+			thread: thread({ title: null }),
+			messages: [{ id: "m1", role: "user", content: "hello" }],
+		});
+		const dom = requireDom();
+		await dom.settle();
+		expect(target.querySelector("h1.title")?.textContent).toBe("Conversation");
+		await dom.fire(target.querySelector(".rename-button") as Element, "click");
+		const input = target.querySelector("input.title-input") as HTMLInputElement;
+		expect(input.value).toBe("");
+		expect(input.placeholder).toBe("Conversation");
+		await dom.fire(input, "blur");
+		await dom.settle();
+		expect(patches()).toEqual([]);
+		expect(target.querySelector("input.title-input")).toBeNull();
+		expect(target.querySelector("h1.title")?.textContent).toBe("Conversation");
+	});
+
 	it("keeps the old title and reports the error when the rename fails", async () => {
 		const { target } = await mountView({ thread: thread({ title: "Original" }) });
 		const dom = requireDom();
