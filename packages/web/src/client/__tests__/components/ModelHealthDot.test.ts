@@ -39,7 +39,7 @@ describe("ModelHealthDot", () => {
 		const { target } = await mountDot({});
 		const dot = target.querySelector(".health-dot") as HTMLElement;
 		expect(dot.getAttribute("style")).toContain("--dot: var(--idle)");
-		expect(dot.getAttribute("aria-label")).toBe("Status unknown on this host");
+		expect(dot.getAttribute("aria-label")).toBe("Health not reported");
 	});
 
 	it("prefers an explicit title over the mapped label", async () => {

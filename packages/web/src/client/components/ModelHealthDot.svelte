@@ -30,7 +30,7 @@
 		healthy: "Healthy",
 		fallback: "Using fallback route",
 		none: "No route available",
-		unknown: "Status unknown on this host",
+		unknown: "Health not reported",
 	};
 </script>
 
