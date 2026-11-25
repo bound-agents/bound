@@ -9,6 +9,27 @@ import { createBashTool } from "../tools/bash";
 import type { ResolvedSandboxConfig } from "../tools/sandbox-policy";
 import { resolveShell } from "../tools/shell";
 
+/**
+ * The lowbox helper under test. CI builds it fresh and points
+ * BOUND_LOWBOX_HELPER at it; a local run falls back to the repo's own build
+ * output (`bun run scripts/build-lowbox-helper.ts` writes dist/bound-lowbox.exe)
+ * so the suite runs on a developer machine without extra setup. With neither,
+ * the suite still fails: it is a mandatory oracle, not an optional one.
+ */
+function lowboxHelperPath(): string | undefined {
+	const fromEnv = process.env.BOUND_LOWBOX_HELPER;
+	if (fromEnv) return fromEnv;
+	const built = resolve(import.meta.dir, "../../../../dist/bound-lowbox.exe");
+	if (!existsSync(built)) return undefined;
+	// The production resolver (lowbox-runtime.ts) reads the same env var, so the
+	// bash-tool cases spawn this helper too, not a missing execPath sibling.
+	process.env.BOUND_LOWBOX_HELPER = built;
+	return built;
+}
+
+const LOWBOX_HELPER_MISSING =
+	"lowbox helper not found: set BOUND_LOWBOX_HELPER or run `bun run scripts/build-lowbox-helper.ts`";
+
 async function waitForClose(child: ChildProcess | undefined, timeoutMs = 10_000): Promise<void> {
 	if (!child) return;
 	if (child.exitCode === null && child.signalCode === null) {
@@ -202,8 +223,8 @@ function waitForProcessExit(
  */
 describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracle", () => {
 	it("round-trips and rejects malformed Recoverable authority journals", () => {
-		const helper = process.env.BOUND_LOWBOX_HELPER;
-		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 		const probe = spawnSync(helper as string, ["self-test-authority-journal"], {
@@ -216,8 +237,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 
 	describe("normal completion", () => {
 		it("observes child death before authority cleanup", async () => {
-			const helper = process.env.BOUND_LOWBOX_HELPER;
-			expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+			const helper = lowboxHelperPath();
+			expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 			expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 			const runId = randomBytes(8).toString("hex");
@@ -310,8 +331,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 
 	describe("post-materialization failure", () => {
 		it("keeps authority until the suspended child is dead", async () => {
-			const helper = process.env.BOUND_LOWBOX_HELPER;
-			expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+			const helper = lowboxHelperPath();
+			expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 			expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 			const runId = randomBytes(8).toString("hex");
@@ -407,8 +428,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 
 	describe("watcher startup failure", () => {
 		it("times out an unarmed watcher and leaves Transferring authority fail-closed", async () => {
-			const helper = process.env.BOUND_LOWBOX_HELPER;
-			expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+			const helper = lowboxHelperPath();
+			expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 			expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 			const runId = randomBytes(8).toString("hex");
@@ -496,8 +517,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 	});
 
 	it("uses the helper protocol, preserves streams, and recovers after helper death", async () => {
-		const helper = process.env.BOUND_LOWBOX_HELPER;
-		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 		const runId = randomBytes(8).toString("hex");
@@ -650,8 +671,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 	});
 
 	it("confines writes to explicit roots and preserves protected git control surfaces", async () => {
-		const helper = process.env.BOUND_LOWBOX_HELPER;
-		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 		const runId = randomBytes(8).toString("hex");
@@ -840,8 +861,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 	});
 
 	it("rejects a hooks-root junction before traversing its target", async () => {
-		const helper = process.env.BOUND_LOWBOX_HELPER;
-		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 
 		const runId = randomBytes(8).toString("hex");
@@ -894,8 +915,8 @@ describe.skipIf(process.platform !== "win32")("Windows AppContainer lowbox oracl
 	});
 
 	it("cancellation kills the complete job tree before delayed descendant output", async () => {
-		const helper = process.env.BOUND_LOWBOX_HELPER;
-		expect(helper, "CI must provide the freshly built lowbox helper").toBeTruthy();
+		const helper = lowboxHelperPath();
+		expect(helper, LOWBOX_HELPER_MISSING).toBeTruthy();
 		expect(existsSync(helper as string), "freshly built lowbox helper is missing").toBe(true);
 		const runId = randomBytes(8).toString("hex");
 		const cwd = join(tmpdir(), `bound-lowbox-cancel-tree-${runId}`);
