@@ -4,6 +4,7 @@ import { HLC_ZERO, TypedEventEmitter } from "@bound/shared";
 import { getConfirmedSyncWatermark, getPeerCursor } from "../peer-cursor.js";
 import type { ChangelogPushPayload } from "../ws-frames.js";
 import { WsMessageType, decodeFrame } from "../ws-frames.js";
+import { WsConnectionManager, createWsHandlers } from "../ws-server.js";
 import { WsTransport } from "../ws-transport.js";
 
 /**
@@ -173,5 +174,129 @@ describe("changelog backpressure ordering (#305)", () => {
 		transport.resumeChangelogDrain(PEER);
 		expect(delivered).toEqual(before);
 		expect(frameIndex).toBe(framesBefore);
+	});
+});
+
+/**
+ * #305 on the hub: a `ws.send` that throws queues nothing, so Bun never fires
+ * `drain()` for it. The hub must leave the refused state on its own and
+ * re-drain in HLC order without a reconnect.
+ */
+describe("hub send throw recovery (#305)", () => {
+	const key = new Uint8Array(32).fill(7);
+	const PEER = "spoke-1";
+	let db: Database;
+	let eventBus: TypedEventEmitter;
+	let transport: WsTransport;
+
+	function hlc(n: number): string {
+		return `2026-11-25T11:00:00.000Z_${String(n).padStart(4, "0")}_hub`;
+	}
+
+	async function writeLive(n: number): Promise<string> {
+		const h = hlc(n);
+		db.run(
+			`INSERT INTO change_log (hlc, table_name, row_id, site_id, timestamp, row_data)
+			VALUES (?, 'semantic_memory', ?, 'hub', ?, '{}')`,
+			[h, `mem-${n}`, new Date().toISOString()],
+		);
+		eventBus.emit("changelog:written", { hlc: h, tableName: "semantic_memory", siteId: "hub" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		return h;
+	}
+
+	beforeEach(() => {
+		db = new Database(":memory:");
+		db.run(`
+			CREATE TABLE change_log (
+				hlc TEXT PRIMARY KEY,
+				table_name TEXT NOT NULL,
+				row_id TEXT NOT NULL,
+				site_id TEXT NOT NULL,
+				timestamp TEXT NOT NULL,
+				row_data TEXT NOT NULL
+			)
+		`);
+		db.run(`
+			CREATE TABLE sync_state (
+				peer_site_id TEXT PRIMARY KEY,
+				last_received TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_sent TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				last_confirmed TEXT NOT NULL DEFAULT '${HLC_ZERO}',
+				sync_errors INTEGER DEFAULT 0,
+				last_sync_at TEXT
+			)
+		`);
+		eventBus = new TypedEventEmitter();
+		transport = new WsTransport({ db, siteId: "hub", eventBus });
+		transport.start();
+	});
+
+	afterEach(() => {
+		transport.stop();
+		db.close();
+	});
+
+	it("a thrown send followed by a later write resumes in order without a reconnect", async () => {
+		// Real transport for the changelog path; snapshot seeding and the
+		// durable-work spool need tables this hermetic DB does not carry.
+		const wsTransport = {
+			addPeer: transport.addPeer.bind(transport),
+			removePeer: transport.removePeer.bind(transport),
+			handleChangelogAck: transport.handleChangelogAck.bind(transport),
+			drainChangelog: transport.drainChangelog.bind(transport),
+			resumeChangelogDrain: transport.resumeChangelogDrain.bind(transport),
+			seedNewPeer: () => {},
+			drainDurableWorkSpool: () => {},
+			continueSnapshotSeed: () => {},
+			continueRowPull: () => {},
+			continueConsistencyStream: () => {},
+		} as any;
+		const handlers = createWsHandlers({
+			connectionManager: new WsConnectionManager(),
+			keyring: { hosts: {} },
+			keyManager: {} as any,
+			wsTransport,
+			sendRetryMs: 5,
+		});
+
+		const delivered: string[] = [];
+		let throwNext = false;
+		const ws = {
+			data: { siteId: PEER, symmetricKey: key, fingerprint: "fp", sendState: "ready" },
+			send: (frame: Uint8Array) => {
+				if (throwNext) {
+					throwNext = false;
+					throw new Error("socket write failed");
+				}
+				const decoded = decodeFrame(frame, key);
+				if (decoded.ok && decoded.value.type === WsMessageType.CHANGELOG_PUSH) {
+					for (const entry of (decoded.value.payload as ChangelogPushPayload).entries) {
+						delivered.push(entry.hlc);
+					}
+				}
+				return 1;
+			},
+			close: () => {},
+			ping: () => {},
+		} as any;
+		handlers.websocket.open(ws);
+
+		throwNext = true;
+		const a = await writeLive(1);
+		expect(delivered).toEqual([]);
+		const b = await writeLive(2);
+		// B is held behind the refused A; an ACK for it must not skip A.
+		expect(delivered).not.toContain(b);
+		transport.handleChangelogAck(PEER, { cursor: b });
+		expect(getConfirmedSyncWatermark(db, PEER) < a).toBe(true);
+
+		// No drain() arrives for a thrown send; the hub's own retry recovers.
+		await new Promise((resolve) => setTimeout(resolve, 40));
+		expect(delivered).toEqual([a, b]);
+		expect(getPeerCursor(db, PEER)?.last_sent).toBe(b);
+
+		const c = await writeLive(3);
+		expect(delivered).toEqual([a, b, c]);
 	});
 });

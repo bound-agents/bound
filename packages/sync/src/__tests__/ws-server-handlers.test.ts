@@ -96,7 +96,7 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 	// Exercise the open() sendFrame closure's result-code branches directly by
 	// driving the handlers with a fake ServerWebSocket whose send() returns the
 	// values Bun's WS reports: >=1 success, -1 backpressure, 0 closed.
-	function makeHandlers() {
+	function makeHandlers(sendRetryMs?: number) {
 		const manager = new WsConnectionManager();
 		const addPeerCalls: Array<{ peerSiteId: string }> = [];
 		const resumedChangelogDrains: string[] = [];
@@ -133,6 +133,7 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 			keyring: { hosts: {} },
 			keyManager: {} as any,
 			wsTransport,
+			sendRetryMs,
 		});
 		return { handlers, manager, addPeerCalls, capturedSendFrames, resumedChangelogDrains };
 	}
@@ -217,6 +218,36 @@ describe("createWsHandlers — server sendFrame result handling", () => {
 		handlers.websocket.drain(ws);
 		expect(data.sendState).toBe("ready");
 		expect(resumedChangelogDrains).toEqual(["fake-peer"]);
+	});
+
+	it("a throwing ws.send() latches pressured and the hub retries on its own timer (#305)", async () => {
+		const { handlers, capturedSendFrames, resumedChangelogDrains } = makeHandlers(5);
+		const { ws, data } = makeFakeWs(1);
+		ws.send = () => {
+			throw new Error("send failed");
+		};
+		handlers.websocket.open(ws);
+		const sendFrame = capturedSendFrames[0];
+		expect(sendFrame(new Uint8Array([WsMessageType.CHANGELOG_PUSH]))).toBe(false);
+		expect(data.sendState).toBe("pressured");
+		// No drain() will ever arrive: nothing was queued.
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(data.sendState).toBe("ready");
+		expect(resumedChangelogDrains).toEqual(["fake-peer"]);
+	});
+
+	it("a pending send retry does not fire after the connection closes", async () => {
+		const { handlers, capturedSendFrames, resumedChangelogDrains } = makeHandlers(5);
+		const { ws, data } = makeFakeWs(1);
+		ws.send = () => {
+			throw new Error("send failed");
+		};
+		handlers.websocket.open(ws);
+		expect(capturedSendFrames[0](new Uint8Array([WsMessageType.CHANGELOG_PUSH]))).toBe(false);
+		handlers.websocket.close(ws, 1006, "gone");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(data.sendState).toBe("pressured");
+		expect(resumedChangelogDrains).toEqual([]);
 	});
 
 	it("close() removes the connection from the manager", () => {

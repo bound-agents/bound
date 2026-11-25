@@ -238,6 +238,11 @@ export interface WsServerConfig {
 		continueRowPull: (peerSiteId: string) => void;
 		continueConsistencyStream: (peerSiteId: string) => void;
 	};
+	/**
+	 * Delay before the hub retries a connection whose `ws.send` threw. A throw
+	 * queues nothing, so Bun's drain event never fires for it. Default 1000ms.
+	 */
+	sendRetryMs?: number;
 	logger?: Logger;
 	idleTimeout?: number; // seconds, default 120
 	backpressureLimit?: number; // bytes, default 2097152 (2MB)
@@ -262,6 +267,47 @@ export function createWsHandlers(config: WsServerConfig): {
 	} = config;
 	const sendFailureWarnings = new Map<string, number>();
 	const SEND_FAILURE_WARNING_INTERVAL_MS = 60_000;
+	const sendRetryMs = config.sendRetryMs ?? 1_000;
+	// A send that throws queued nothing, so Bun never fires drain() for it; this
+	// per-connection timer is the hub's own way back out of "pressured" (#305).
+	const sendRetryTimers = new Map<
+		ServerWebSocket<WsConnectionData>,
+		ReturnType<typeof setTimeout>
+	>();
+
+	const clearSendRetry = (ws: ServerWebSocket<WsConnectionData>): void => {
+		const timer = sendRetryTimers.get(ws);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			sendRetryTimers.delete(ws);
+		}
+	};
+
+	/** The socket accepts writes again: resume every stream a refused send paused. */
+	const resumeWrites = (ws: ServerWebSocket<WsConnectionData>): void => {
+		clearSendRetry(ws);
+		ws.data.sendState = "ready";
+		if (config.wsTransport) {
+			config.wsTransport.continueSnapshotSeed(ws.data.siteId);
+			config.wsTransport.continueRowPull(ws.data.siteId);
+			config.wsTransport.continueConsistencyStream(ws.data.siteId);
+			// A changelog push refused while pressured left an ordered gap after
+			// last_sent; re-drain it now that the socket accepts writes (#305).
+			config.wsTransport.resumeChangelogDrain?.(ws.data.siteId);
+		}
+	};
+
+	const scheduleSendRetry = (ws: ServerWebSocket<WsConnectionData>): void => {
+		if (sendRetryTimers.has(ws)) return;
+		const timer = setTimeout(() => {
+			sendRetryTimers.delete(ws);
+			// A replaced or closed connection must not resume on the stale socket.
+			if (connectionManager.get(ws.data.siteId) !== ws) return;
+			resumeWrites(ws);
+		}, sendRetryMs);
+		(timer as { unref?: () => void }).unref?.();
+		sendRetryTimers.set(ws, timer);
+	};
 
 	const handleUpgrade = async (
 		req: Request,
@@ -327,6 +373,10 @@ export function createWsHandlers(config: WsServerConfig): {
 								frame_size: frame.length,
 							});
 						}
+						// Nothing was queued, so drain() will never fire for this
+						// refusal. Hold further sends and retry on our own timer.
+						ws.data.sendState = "pressured";
+						scheduleSendRetry(ws);
 						return false;
 					}
 				};
@@ -492,6 +542,8 @@ export function createWsHandlers(config: WsServerConfig): {
 				reason,
 			});
 
+			clearSendRetry(ws);
+
 			// Remove WsTransport peer
 			if (config.wsTransport) {
 				config.wsTransport.removePeer(ws.data.siteId);
@@ -501,16 +553,8 @@ export function createWsHandlers(config: WsServerConfig): {
 		},
 
 		drain(ws) {
-			ws.data.sendState = "ready";
 			// Resume any paused stream on backpressure clear.
-			if (config.wsTransport) {
-				config.wsTransport.continueSnapshotSeed(ws.data.siteId);
-				config.wsTransport.continueRowPull(ws.data.siteId);
-				config.wsTransport.continueConsistencyStream(ws.data.siteId);
-				// A changelog push refused while pressured left an ordered gap after
-				// last_sent; re-drain it now that the socket accepts writes (#305).
-				config.wsTransport.resumeChangelogDrain?.(ws.data.siteId);
-			}
+			resumeWrites(ws);
 		},
 
 		idleTimeout,
