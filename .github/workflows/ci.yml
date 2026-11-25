@@ -9,7 +9,8 @@ on:
 jobs:
   e2e:
     name: E2E (Playwright)
-    runs-on: ubuntu-latest
+    # Playwright 1.58.2 does not support ubuntu-26.04 (ubuntu-latest); pin 24.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
