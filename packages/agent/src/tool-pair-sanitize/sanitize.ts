@@ -202,6 +202,11 @@ function repairPass(messages: ReadonlyArray<Message>, threadId: string, nowIso: 
 	let lastToolUseIds: string[] = [];
 	let prevSanitizedRole: string | null = null;
 	let lastSyntheticToolCall: Message | null = null;
+	// tool_use ids of the latest real tool_call that already have a result.
+	// A second result for one of them (an aux timeout racing the real client
+	// return, #278) is dropped: the first persisted result wins, and providers
+	// reject a tool_use id with two tool_result blocks.
+	const answeredIds = new Set<string>();
 
 	const makeSyntheticResults = (
 		prefix: string,
@@ -258,6 +263,7 @@ function repairPass(messages: ReadonlyArray<Message>, threadId: string, nowIso: 
 			lastToolId = msg.id;
 			lastToolUseIds = extractToolUseIds(msg.content);
 			activePendingIds.clear();
+			answeredIds.clear();
 			for (const id of lastToolUseIds) activePendingIds.add(id);
 			lastSyntheticToolCall = null;
 			sanitized.push(msg);
@@ -266,8 +272,12 @@ function repairPass(messages: ReadonlyArray<Message>, threadId: string, nowIso: 
 		}
 
 		if (msg.role === "tool_result") {
+			if (msg.tool_name && answeredIds.has(msg.tool_name)) continue;
 			if (activePendingIds.size > 0 || inActiveToolCall) {
-				if (msg.tool_name) activePendingIds.delete(msg.tool_name);
+				if (msg.tool_name) {
+					activePendingIds.delete(msg.tool_name);
+					if (lastToolUseIds.includes(msg.tool_name)) answeredIds.add(msg.tool_name);
+				}
 				inActiveToolCall = false;
 				sanitized.push(msg);
 				prevSanitizedRole = "tool_result";

@@ -35,6 +35,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { registerRunningAuxLoop } from "@bound/agent";
 import {
 	applyMetricsSchema,
 	applySchema,
@@ -1357,6 +1358,67 @@ describe("initServer — client-tool expiry scan", () => {
 			.get(threadId) as { status: string } | null;
 		// Still pending: the live session shielded it from the TTL reap.
 		expect(row?.status).toBe("pending");
+	});
+
+	/**
+	 * #278: a running aux loop owns its client-tool wait, sized from the call's
+	 * own timeout. Its thread has no client session, so only the running-aux
+	 * exclusion keeps the 5-minute TTL sweep from reaping a call the aux is
+	 * still waiting on. Releasing the aux re-arms the sweep, which proves the
+	 * scan was firing the whole time.
+	 */
+	it("does not expire a running aux loop's call older than the TTL", async () => {
+		const threadId = randomUUID();
+		seedThread(db, siteId, threadId, "web", "operator");
+
+		const staleAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+		db.prepare(
+			`INSERT INTO dispatch_queue (message_id, thread_id, status, event_type, event_payload, claimed_by, created_at, modified_at)
+			 VALUES (?, ?, 'pending', 'client_tool_call', ?, ?, ?, ?)`,
+		).run(
+			randomUUID(),
+			threadId,
+			JSON.stringify({ call_id: "c-aux", tool_name: "boundless_bash", arguments: {} }),
+			"some-connection",
+			staleAt,
+			staleAt,
+		);
+
+		const release = registerRunningAuxLoop(threadId);
+		try {
+			const agentLoopFactory: any = () => ({
+				run: async () => ({ messagesCreated: 0, toolCallsMade: 0, yielded: false }),
+			});
+			agentLoopFactory.createAuxLoopRunner = () => undefined;
+
+			const appContext = makeAppContext(db, siteId);
+			result = await initServer({
+				...makeDeps(appContext, agentLoopFactory, makeRelayProcessor()),
+				scanIntervals: { expiryScanIntervalMs: 20 },
+			});
+
+			await new Promise((r) => setTimeout(r, 200));
+			const spared = db
+				.query(
+					"SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = 'client_tool_call'",
+				)
+				.get(threadId) as { status: string } | null;
+			expect(spared?.status).toBe("pending");
+		} finally {
+			release();
+		}
+
+		let row: { status: string } | null = null;
+		for (let i = 0; i < 60; i++) {
+			await new Promise((r) => setTimeout(r, 25));
+			row = db
+				.query(
+					"SELECT status FROM dispatch_queue WHERE thread_id = ? AND event_type = 'client_tool_call'",
+				)
+				.get(threadId) as { status: string } | null;
+			if (row?.status === "expired") break;
+		}
+		expect(row?.status).toBe("expired");
 	});
 });
 

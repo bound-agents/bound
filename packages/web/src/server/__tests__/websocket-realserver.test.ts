@@ -4,8 +4,10 @@ import {
 	applyMetricsSchema,
 	applySchema,
 	enqueueClientToolCall,
+	expireClientToolCallIfInFlight,
 	getPendingClientToolCalls,
 	insertRow,
+	setChangelogEventBus,
 } from "@bound/core";
 import { TypedEventEmitter } from "@bound/shared";
 import { MAX_TOOL_RESULT_BYTES } from "@bound/shared/strings";
@@ -390,6 +392,42 @@ describe("websocket real-server protocol", () => {
 		expect(stillPending).toBe(false);
 	});
 
+	it("emits the tool result's changelog:written only after the persist transaction commits", async () => {
+		seedThread(srv.db, "thread-commit");
+		const c = await connect();
+		c.send({ type: "thread:subscribe", thread_id: "thread-commit" });
+		await Bun.sleep(10);
+		enqueueClientToolCall(
+			srv.db,
+			"thread-commit",
+			{ call_id: "call-commit", tool_name: "my_tool", arguments: {} },
+			"conn",
+		);
+
+		// Invariant #6: a changelog:written listener must never observe an open
+		// transaction. A plain db.transaction() around insertRow demotes its inner
+		// transaction to a savepoint and fires the event before the outer COMMIT.
+		const inTxAtEmit: boolean[] = [];
+		const onWritten = () => inTxAtEmit.push(srv.db.inTransaction);
+		srv.eventBus.on("changelog:written", onWritten);
+		setChangelogEventBus(srv.eventBus);
+		try {
+			c.send({
+				type: "tool:result",
+				call_id: "call-commit",
+				thread_id: "thread-commit",
+				content: "ok",
+			});
+			await c.waitFor((f) => f.type === "message:created", "resumed message:created");
+		} finally {
+			setChangelogEventBus(null);
+			srv.eventBus.off("changelog:written", onWritten);
+		}
+
+		expect(inTxAtEmit.length).toBeGreaterThan(0);
+		expect(inTxAtEmit.every((open) => open === false)).toBe(true);
+	});
+
 	it("marks an is_error tool:result with exit_code 1 and an Error-prefixed body", async () => {
 		seedThread(srv.db, "thread-err");
 		const c = await connect();
@@ -473,6 +511,78 @@ describe("websocket real-server protocol", () => {
 			.query("SELECT id FROM messages WHERE thread_id = ? AND role = 'tool_result'")
 			.all("thread-expired") as unknown[];
 		expect(rows).toHaveLength(0);
+	});
+
+	it("keeps the aux's single result when the call expires between lookup and persist (#278)", async () => {
+		seedThread(srv.db, "thread-race");
+		const c = await connect();
+		c.send({ type: "thread:subscribe", thread_id: "thread-race" });
+		await Bun.sleep(10);
+		const entryId = enqueueClientToolCall(
+			srv.db,
+			"thread-race",
+			{ call_id: "call-race", tool_name: "my_tool", arguments: {} },
+			"conn",
+		);
+
+		// The handler finds the entry in flight, then an aux loop gives up on the
+		// call before the persist transaction opens: the aux wins the expiry and
+		// writes the call's one result. The late client result must not add a
+		// second tool_result row for the same call.
+		const db = srv.db;
+		const originalTransaction = db.transaction.bind(db);
+		let raced = false;
+		db.transaction = ((fn: Parameters<Database["transaction"]>[0]) => {
+			if (!raced) {
+				raced = true;
+				db.transaction = originalTransaction;
+				expect(expireClientToolCallIfInFlight(db, entryId)).toBe(true);
+				const now = new Date().toISOString();
+				insertRow(
+					db,
+					"messages",
+					{
+						id: crypto.randomUUID(),
+						thread_id: "thread-race",
+						role: "tool_result",
+						content: JSON.stringify([{ type: "text", text: "Error: aux gave up" }]),
+						model_id: null,
+						tool_name: "call-race",
+						created_at: now,
+						modified_at: now,
+						host_origin: "localhost:3000",
+						deleted: 0,
+						exit_code: 1,
+						metadata: null,
+					},
+					SITE_ID,
+				);
+			}
+			return originalTransaction(fn);
+		}) as Database["transaction"];
+
+		try {
+			c.send({
+				type: "tool:result",
+				call_id: "call-race",
+				thread_id: "thread-race",
+				content: "real result, too late",
+			});
+			await c.expectQuiet("an error frame for the late result");
+		} finally {
+			db.transaction = originalTransaction;
+		}
+
+		expect(raced).toBe(true);
+		const rows = db
+			.query("SELECT content FROM messages WHERE thread_id = ? AND role = 'tool_result'")
+			.all("thread-race") as Array<{ content: string }>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.content).toContain("aux gave up");
+		const status = db
+			.query("SELECT status FROM dispatch_queue WHERE message_id = ?")
+			.get(entryId) as { status: string } | null;
+		expect(status?.status).toBe("expired");
 	});
 
 	it("cleans up connection state on client disconnect", async () => {

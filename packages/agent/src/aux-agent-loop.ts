@@ -3,7 +3,9 @@ import {
 	acknowledgeToolResultForCall,
 	claimPendingNotifications,
 	enqueueClientToolCall,
+	expireClientToolCallIfInFlight,
 	findToolResultByThreadAndCallId,
+	getClientToolCallStatus,
 } from "@bound/core";
 import type { LoopToolExecutionBatch, LoopTurnDecision, ParsedResponse } from "@bound/loop";
 import { countTokens, injectTraceContext } from "@bound/shared";
@@ -19,9 +21,57 @@ import { injectNotificationMessage } from "./notification-injection";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 import type { AgentLoopResult } from "./types";
 
-/** Poll cadence and ceiling for the inline client-tool wait. */
+/** Poll cadence for the inline client-tool wait. */
 const CLIENT_TOOL_POLL_MS = 150;
-const CLIENT_TOOL_TIMEOUT_MS = 300_000;
+/** Wait floor when the call names no timeout of its own. */
+export const CLIENT_TOOL_TIMEOUT_MS = 300_000;
+/** Headroom past the call's own timeout for the client's kill grace and the result's trip back. */
+export const CLIENT_TOOL_TIMEOUT_GRACE_MS = 30_000;
+
+type ClientToolWaitOutcome =
+	| { kind: "result"; content: string; isError: boolean }
+	| { kind: "timeout" }
+	| { kind: "aborted" }
+	| { kind: "dropped" };
+
+function requestedClientToolTimeoutMs(input: Record<string, unknown>): number | null {
+	const timeout = input.timeout;
+	return typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0 ? timeout : null;
+}
+
+/**
+ * How long the aux waits on one client tool call (#278): the call's own
+ * `timeout` (ms, as boundless tools take it) plus a grace margin, never less
+ * than {@link CLIENT_TOOL_TIMEOUT_MS}.
+ */
+export function clientToolWaitMs(input: Record<string, unknown>): number {
+	const requested = requestedClientToolTimeoutMs(input);
+	return Math.max(
+		CLIENT_TOOL_TIMEOUT_MS,
+		requested === null ? 0 : requested + CLIENT_TOOL_TIMEOUT_GRACE_MS,
+	);
+}
+
+/** The result text for a call the aux stopped waiting on, naming the real reason. */
+export function describeClientToolGiveUp(
+	toolName: string,
+	reason: "timeout" | "aborted" | "dropped",
+	waitMs: number,
+	input: Record<string, unknown>,
+): string {
+	if (reason === "aborted") {
+		return `Error: client tool "${toolName}" was cancelled because the aux loop was aborted before it returned`;
+	}
+	if (reason === "dropped") {
+		return `Error: client tool "${toolName}" lost its client session before returning a result`;
+	}
+	const requested = requestedClientToolTimeoutMs(input);
+	const budget =
+		requested === null
+			? `the ${Math.round(waitMs / 1000)}s default wait`
+			: `its ${Math.round(requested / 1000)}s timeout plus ${Math.round(CLIENT_TOOL_TIMEOUT_GRACE_MS / 1000)}s grace`;
+	return `Error: client tool "${toolName}" exceeded ${budget} with the session still connected; the call was cancelled on the client`;
+}
 
 /**
  * Aux threads with a nested loop running in THIS process. The dispatcher never
@@ -32,6 +82,11 @@ const runningAuxLoops = new Map<string, number>();
 
 export function isAuxLoopRunning(threadId: string): boolean {
 	return (runningAuxLoops.get(threadId) ?? 0) > 0;
+}
+
+/** Thread ids with a nested aux loop running in this process. */
+export function listRunningAuxLoopThreadIds(): string[] {
+	return [...runningAuxLoops.keys()];
 }
 
 /** Mark a nested aux loop live on `threadId`; the returned function releases it. */
@@ -291,17 +346,49 @@ export class AuxAgentLoop extends BoundAgentLoop {
 				traceContext: context.with(context.active(), () => injectTraceContext()),
 			});
 
-			const resolved = await this.awaitClientToolResultInline(toolCall.id);
-			let content: string;
-			let isError: boolean;
-			if (resolved) {
-				content = resolved.content;
-				isError = resolved.isError;
-			} else {
-				content = `Error: client tool "${toolCall.name}" timed out or the session dropped before returning a result`;
-				isError = true;
-				this.persistRelayedClientToolResult(toolCall.id, content, isError);
+			const waitMs = clientToolWaitMs(toolCall.input);
+			const outcome = await this.awaitClientToolResultInline(toolCall.id, entryId, waitMs);
+			let resolved: { content: string; isError: boolean } | null =
+				outcome.kind === "result" ? outcome : null;
+			let giveUpReason: string | null = null;
+			if (outcome.kind !== "result") {
+				// Timeout-vs-real-return arbitration (#278): whoever moves the entry
+				// out of flight owns the call's single result. Winning the expiry means
+				// the WS handler will discard a late client result; losing it means
+				// the real result was acknowledged first and is already persisted.
+				const won =
+					outcome.kind !== "dropped" && expireClientToolCallIfInFlight(this.ctx.db, entryId);
+				if (won) {
+					giveUpReason = describeClientToolGiveUp(
+						toolCall.name,
+						outcome.kind,
+						waitMs,
+						toolCall.input,
+					);
+					this.persistRelayedClientToolResult(toolCall.id, giveUpReason, true);
+					this.ctx.eventBus.emit("client_tool_call:cancel", {
+						threadId: this.config.threadId,
+						entryId,
+						callId: toolCall.id,
+						reason: outcome.kind === "aborted" ? "aborted" : "timeout",
+					});
+				} else {
+					resolved = this.readClientToolResult(toolCall.id);
+					if (!resolved) {
+						// Someone else (connection-close or TTL reaper) expired the entry
+						// without a result row: the session is gone.
+						giveUpReason = describeClientToolGiveUp(
+							toolCall.name,
+							"dropped",
+							waitMs,
+							toolCall.input,
+						);
+						this.persistRelayedClientToolResult(toolCall.id, giveUpReason, true);
+					}
+				}
 			}
+			const content = resolved ? resolved.content : (giveUpReason ?? "");
+			const isError = resolved ? resolved.isError : true;
 
 			// Pair the result into the IN-MEMORY frame, not just the DB.
 			//
@@ -345,9 +432,17 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		return { action: "retry", rebuildFrame: true };
 	}
 
+	private readClientToolResult(callId: string): { content: string; isError: boolean } | null {
+		const row = findToolResultByThreadAndCallId(this.ctx.db, this.config.threadId, callId);
+		if (!row) return null;
+		return { content: row.content, isError: (row.exit_code ?? 0) !== 0 };
+	}
+
 	/**
 	 * Block until the WS layer persists this call's `tool_result` row (it writes
-	 * `role='tool_result'`, `tool_name=call_id`), or the ceiling elapses.
+	 * `role='tool_result'`, `tool_name=call_id`), the wait budget elapses, the
+	 * loop aborts, or the dispatch entry leaves flight without a result (the
+	 * session dropped and a reaper expired it).
 	 *
 	 * Event-driven with a polling backstop, mirroring
 	 * `RelayProcessor.awaitClientResult`: the event alone would be enough in the
@@ -356,19 +451,25 @@ export class AuxAgentLoop extends BoundAgentLoop {
 	 */
 	private async awaitClientToolResultInline(
 		callId: string,
-	): Promise<{ content: string; isError: boolean } | null> {
-		const read = (): { content: string; isError: boolean } | null => {
-			const row = findToolResultByThreadAndCallId(this.ctx.db, this.config.threadId, callId);
-			if (!row) return null;
-			return { content: row.content, isError: (row.exit_code ?? 0) !== 0 };
+		entryId: string,
+		waitMs: number,
+	): Promise<ClientToolWaitOutcome> {
+		const settledOutcome = (): ClientToolWaitOutcome | null => {
+			const found = this.readClientToolResult(callId);
+			if (found) return { kind: "result", ...found };
+			const status = getClientToolCallStatus(this.ctx.db, entryId);
+			if (status !== "pending" && status !== "processing" && status !== "acknowledged") {
+				return { kind: "dropped" };
+			}
+			return null;
 		};
 
-		const existing = read();
+		const existing = settledOutcome();
 		if (existing) return existing;
 
 		return new Promise((resolve) => {
 			let settled = false;
-			const finish = (value: { content: string; isError: boolean } | null): void => {
+			const finish = (value: ClientToolWaitOutcome): void => {
 				if (settled) return;
 				settled = true;
 				this.ctx.eventBus.off("message:created", onMessage);
@@ -378,11 +479,11 @@ export class AuxAgentLoop extends BoundAgentLoop {
 			};
 			const check = (): void => {
 				if (this.aborted) {
-					finish(null);
+					finish({ kind: "aborted" });
 					return;
 				}
-				const found = read();
-				if (found) finish(found);
+				const outcome = settledOutcome();
+				if (outcome) finish(outcome);
 			};
 			const onMessage = (event: { thread_id: string }): void => {
 				if (event.thread_id === this.config.threadId) check();
@@ -390,7 +491,7 @@ export class AuxAgentLoop extends BoundAgentLoop {
 
 			this.ctx.eventBus.on("message:created", onMessage);
 			const poll = setInterval(check, CLIENT_TOOL_POLL_MS);
-			const timer = setTimeout(() => finish(null), CLIENT_TOOL_TIMEOUT_MS);
+			const timer = setTimeout(() => finish({ kind: "timeout" }), waitMs);
 			check();
 		});
 	}

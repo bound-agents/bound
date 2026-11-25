@@ -252,6 +252,39 @@ export function resolveDeferredToolResult(
 	}
 }
 
+/** One client tool call entry by id, or null when it is gone. */
+export function findClientToolCallEntry(db: Database, entryId: string): DispatchEntry | null {
+	return db
+		.query("SELECT * FROM dispatch_queue WHERE message_id = ? AND event_type = ?")
+		.get(entryId, CLIENT_TOOL_CALL) as DispatchEntry | null;
+}
+
+/** Current status of one client tool call entry, or null when it is gone. */
+export function getClientToolCallStatus(db: Database, entryId: string): string | null {
+	const row = db
+		.query("SELECT status FROM dispatch_queue WHERE message_id = ? AND event_type = ?")
+		.get(entryId, CLIENT_TOOL_CALL) as { status: string } | null;
+	return row?.status ?? null;
+}
+
+/**
+ * Expire one client tool call entry if it is still in flight. Returns true when
+ * this call moved it to `expired`, false when a result already acknowledged it
+ * (or someone else expired it). The caller that wins this transition owns the
+ * call's single result row (#278): the WS result handler discards a late result
+ * for an expired entry, and refuses to persist one for an entry it cannot ack.
+ */
+export function expireClientToolCallIfInFlight(db: Database, entryId: string): boolean {
+	const now = new Date().toISOString();
+	const result = db
+		.prepare(
+			`UPDATE dispatch_queue SET status = 'expired', modified_at = ?
+			 WHERE message_id = ? AND event_type = ? AND status IN ('pending', 'processing')`,
+		)
+		.run(now, entryId, CLIENT_TOOL_CALL);
+	return result.changes > 0;
+}
+
 /**
  * Mark a single client tool call entry as acknowledged.
  */

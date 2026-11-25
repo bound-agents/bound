@@ -11,6 +11,7 @@ import {
 	getClientSessions,
 	injectNotificationMessage,
 	isWarmPokeNotificationPayload,
+	listRunningAuxLoopThreadIds,
 	resolveTopologyRole,
 	routeNotificationWakeup,
 	routeRelayRequest,
@@ -1311,9 +1312,15 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 				// starts at enqueue and never resets, so without this it would reap
 				// healthy calls. Exclude threads whose client is still connected;
 				// a dead connection has no live session and expires as before.
-				const liveThreadIds = getClientSessions(appContext.db)
-					.filter((s) => s.live)
-					.map((s) => s.threadId);
+				// A running aux loop owns its own client-tool wait, sized from each
+				// call's timeout (#278); its sessionless thread must not be reaped
+				// at the 5-minute TTL out from under it.
+				const liveThreadIds = [
+					...getClientSessions(appContext.db)
+						.filter((s) => s.live)
+						.map((s) => s.threadId),
+					...listRunningAuxLoopThreadIds(),
+				];
 				const expired = expireClientToolCalls(
 					appContext.db,
 					CLIENT_TOOL_CALL_TTL_MS,

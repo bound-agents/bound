@@ -63,6 +63,12 @@ host access still follows the [sandbox and filesystem model](/bound/concepts/san
 [Security boundaries](/bound/concepts/security-boundaries/) places these identity and
 capability limits in the broader trust model.
 
+An auxiliary agent waits on each inherited client tool for the call's own `timeout` plus 30
+seconds, and never less than 300 seconds. If the wait runs out or the invocation is aborted,
+the agent records one error result, sends `tool:cancel` to the client, and discards any later
+result for that call. The error states the cause: an exceeded timeout while the session was
+still connected, a dropped client session, or an aborted invocation.
+
 ## Child threads and focused results
 
 Each invocation creates a child thread associated with the parent and the auxiliary

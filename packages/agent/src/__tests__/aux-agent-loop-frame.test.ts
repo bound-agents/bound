@@ -1,6 +1,6 @@
 import Database from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import { applySchema, findToolResultByThreadAndCallId } from "@bound/core";
+import { applySchema, enqueueClientToolCall, findToolResultByThreadAndCallId } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { ModelRouter } from "@bound/llm";
 import type { LLMBackend } from "@bound/llm";
@@ -81,13 +81,22 @@ class ProbeAuxLoop extends AuxAgentLoop {
 	}
 
 	awaitInline(callId: string) {
+		// The wait also watches the call's dispatch entry, so park a live one.
+		const entryId = enqueueClientToolCall(
+			this.ctx.db,
+			this.config.threadId,
+			{ call_id: callId, tool_name: "boundless_read", arguments: {} },
+			this.config.connectionId ?? "conn",
+		);
 		return (
 			this as unknown as {
 				awaitClientToolResultInline: (
 					id: string,
-				) => Promise<{ content: string; isError: boolean } | null>;
+					entryId: string,
+					waitMs: number,
+				) => Promise<{ kind: string; content?: string; isError?: boolean }>;
 			}
-		).awaitClientToolResultInline(callId);
+		).awaitClientToolResultInline(callId, entryId, 300_000);
 	}
 
 	forceAbort() {
@@ -274,7 +283,7 @@ describe("AuxAgentLoop.afterToolPersistence (deferred client tools)", () => {
 		expect(paired?.role).toBe("tool_result");
 	});
 
-	it("persists a timeout failure result when the inline wait is aborted before a result lands", async () => {
+	it("persists an aborted failure result when the inline wait is aborted before a result lands", async () => {
 		const db = makeDb();
 		const threadId = "aux-abort";
 		const { loop } = makeLoop(db, { threadId, connectionId: "conn-abort" });
@@ -294,7 +303,7 @@ describe("AuxAgentLoop.afterToolPersistence (deferred client tools)", () => {
 		expect(decision).toEqual({ action: "retry", rebuildFrame: true });
 
 		const row = findToolResultByThreadAndCallId(db, threadId, "c-abort");
-		expect(row?.content).toContain("timed out or the session dropped");
+		expect(row?.content).toContain("aux loop was aborted");
 		expect(row?.exit_code).toBe(1);
 		expect((frame.messages as Array<{ tool_use_id: string }>)[0]?.tool_use_id).toBe("c-abort");
 	});
@@ -319,7 +328,7 @@ describe("AuxAgentLoop.awaitClientToolResultInline", () => {
 		);
 
 		const resolved = await loop.awaitInline("c-existing");
-		expect(resolved).toEqual({ content: "already here", isError: false });
+		expect(resolved).toEqual({ kind: "result", content: "already here", isError: false });
 	});
 
 	it("surfaces a non-zero exit_code as an error result", async () => {
@@ -333,7 +342,7 @@ describe("AuxAgentLoop.awaitClientToolResultInline", () => {
 		);
 
 		const resolved = await loop.awaitInline("c-err");
-		expect(resolved).toEqual({ content: "boom", isError: true });
+		expect(resolved).toEqual({ kind: "result", content: "boom", isError: true });
 	});
 
 	it("resolves via the message:created event when the result lands after subscription", async () => {
@@ -358,7 +367,7 @@ describe("AuxAgentLoop.awaitClientToolResultInline", () => {
 		bus.emit("message:created", { thread_id: threadId });
 
 		const resolved = await pending;
-		expect(resolved).toEqual({ content: "woke up", isError: false });
+		expect(resolved).toEqual({ kind: "result", content: "woke up", isError: false });
 	});
 
 	it("ignores message:created events for other threads", async () => {
@@ -387,10 +396,10 @@ describe("AuxAgentLoop.awaitClientToolResultInline", () => {
 		);
 		bus.emit("message:created", { thread_id: threadId });
 
-		expect(await pending).toEqual({ content: "scoped result", isError: false });
+		expect(await pending).toEqual({ kind: "result", content: "scoped result", isError: false });
 	});
 
-	it("resolves null when the loop aborts before any result lands", async () => {
+	it("resolves aborted when the loop aborts before any result lands", async () => {
 		const db = makeDb();
 		const threadId = "aux-aborted-wait";
 		const { loop } = makeLoop(db, { threadId, connectionId: "conn-a" });
@@ -399,6 +408,6 @@ describe("AuxAgentLoop.awaitClientToolResultInline", () => {
 		await new Promise((r) => setTimeout(r, 20));
 		loop.forceAbort();
 
-		expect(await pending).toBeNull();
+		expect(await pending).toEqual({ kind: "aborted" });
 	});
 });

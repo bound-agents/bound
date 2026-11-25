@@ -96,7 +96,11 @@ export {
 	type WarmPokeSelectionOptions,
 } from "./cache-warm-poke";
 export { formatNotification, injectNotificationMessage } from "./notification-injection";
-export { isAuxLoopRunning } from "./aux-agent-loop";
+export {
+	isAuxLoopRunning,
+	listRunningAuxLoopThreadIds,
+	registerRunningAuxLoop,
+} from "./aux-agent-loop";
 
 // Export scheduler
 export { Scheduler } from "./scheduler";

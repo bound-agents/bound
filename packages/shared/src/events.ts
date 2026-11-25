@@ -79,6 +79,17 @@ export interface EventMap {
 		 */
 		traceContext?: Record<string, string> | null;
 	};
+	/**
+	 * A nested aux loop gave up waiting on a client tool call it already
+	 * expired (#278). The WS layer sends `tool:cancel` to the executing client;
+	 * the aux loop has written the call's single result itself.
+	 */
+	"client_tool_call:cancel": {
+		threadId: string;
+		entryId: string;
+		callId: string;
+		reason: "timeout" | "aborted";
+	};
 	"stream:chunk": { thread_id: string; chunk: WsStreamChunk };
 	/** An aux invocation created its child thread and is now executing. */
 	"aux:started": { thread_id: string; parent_thread_id: string; agent_name: string };

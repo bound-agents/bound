@@ -7,6 +7,7 @@ import {
 	enqueueToolResult,
 	expireClientToolCallsForConnection,
 	findClientSessionIdById,
+	findClientToolCallEntry,
 	findFileByIdActive,
 	findLatestTurnCacheStateByThread,
 	findLiveClientSessionIdById,
@@ -15,6 +16,7 @@ import {
 	findMessageById,
 	findThreadParentIdById,
 	findUserDisplayNameById,
+	getClientToolCallStatus,
 	getPendingClientToolCalls,
 	hasInFlightClientToolCallsForConnection,
 	insertRow,
@@ -23,6 +25,7 @@ import {
 	softDelete,
 	updateClaimedBy,
 	updateRow,
+	withTx,
 } from "@bound/core";
 import type { YardExecutionEvent } from "@bound/shared";
 import {
@@ -1173,31 +1176,40 @@ export function createWebSocketHandler(
 			persistedContent = appendToolDuration(persistedContent, elapsedMs);
 			persistedContent = capToolResultContent(persistedContent);
 
-			insertRow(
-				db,
-				"messages",
-				{
-					id: messageId,
-					thread_id: msg.thread_id,
-					role: "tool_result",
-					content: persistedContent,
-					model_id: null,
-					tool_name: msg.call_id,
-					created_at: now,
-					modified_at: now,
-					host_origin: hostOrigin,
-					deleted: 0,
-					exit_code: msg.is_error ? 1 : 0,
-					metadata: null,
-				},
-				siteId,
-			);
-
-			// Acknowledge the dispatch entry
-			acknowledgeClientToolCall(db, matchingEntry.message_id);
-
-			// Enqueue tool result trigger to resume agent loop
-			enqueueToolResult(db, msg.thread_id, msg.call_id);
+			// Persist, ack, and re-wake as one unit, and only while the entry is
+			// still in flight (#278). A nested aux loop that gave up on this call
+			// expired the entry and wrote the call's single result itself; a
+			// result landing after that is discarded like any canceled call
+			// (AC3.4). A crash between the insert and the ack can no longer leave
+			// a persisted result behind an entry a reaper would answer again.
+			const entryId = matchingEntry.message_id;
+			const persisted = withTx(db, (): boolean => {
+				const status = getClientToolCallStatus(db, entryId);
+				if (status !== "pending" && status !== "processing") return false;
+				insertRow(
+					db,
+					"messages",
+					{
+						id: messageId,
+						thread_id: msg.thread_id,
+						role: "tool_result",
+						content: persistedContent,
+						model_id: null,
+						tool_name: msg.call_id,
+						created_at: now,
+						modified_at: now,
+						host_origin: hostOrigin,
+						deleted: 0,
+						exit_code: msg.is_error ? 1 : 0,
+						metadata: null,
+					},
+					siteId,
+				);
+				acknowledgeClientToolCall(db, entryId);
+				enqueueToolResult(db, msg.thread_id, msg.call_id);
+				return true;
+			});
+			if (!persisted) return;
 
 			// Re-export client trace_data spans if present (AC6.3)
 			if (msg.trace_data) {
@@ -1411,7 +1423,7 @@ export function createWebSocketHandler(
 	function emitToolCancel(
 		entries: Array<{ event_payload: string | null; claimed_by: string | null; message_id: string }>,
 		threadId: string,
-		reason: "thread_canceled" | "dispatch_expired" | "session_reset",
+		reason: "thread_canceled" | "dispatch_expired" | "session_reset" | "timeout" | "aborted",
 		claimedByConnectionId?: string,
 	): void {
 		for (const entry of entries) {
@@ -1588,6 +1600,19 @@ export function createWebSocketHandler(
 	eventBus.on("alert:created", handleAlertCreated);
 	eventBus.on("context:debug", handleContextDebug);
 	eventBus.on("client_tool_call:created", handleClientToolCallCreated);
+	// A nested aux loop that stopped waiting on a client tool (#278) already
+	// expired the entry and wrote its result; only the client still needs to
+	// stop the command. Neither reason synthesizes another result row.
+	const handleClientToolCallCancel = (event: {
+		threadId: string;
+		entryId: string;
+		reason: "timeout" | "aborted";
+	}): void => {
+		if (!db) return;
+		const entry = findClientToolCallEntry(db, event.entryId);
+		if (entry) emitToolCancel([entry], event.threadId, event.reason);
+	};
+	eventBus.on("client_tool_call:cancel", handleClientToolCallCancel);
 	eventBus.on("status:forward", handleStatusForward);
 	eventBus.on("stream:chunk", handleStreamChunk);
 	for (const type of ["aux:started", "aux:completed"] as const) {
@@ -1751,6 +1776,7 @@ export function createWebSocketHandler(
 			eventBus.off("alert:created", handleAlertCreated);
 			eventBus.off("context:debug", handleContextDebug);
 			eventBus.off("client_tool_call:created", handleClientToolCallCreated);
+			eventBus.off("client_tool_call:cancel", handleClientToolCallCancel);
 			eventBus.off("status:forward", handleStatusForward);
 			eventBus.off("stream:chunk", handleStreamChunk);
 			eventBus.off("yard:execution", handleYardExecution);

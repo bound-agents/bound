@@ -847,8 +847,10 @@ describe("ClientConnection type and WS message schemas", () => {
 					}
 					return { changes: 1 };
 				},
-				query: (_sql: string) => ({
-					get: () => null,
+				query: (sql: string) => ({
+					// The handler re-reads the entry status inside its persist transaction.
+					get: () =>
+						sql.includes("SELECT status FROM dispatch_queue") ? { status: "pending" } : null,
 				}),
 				exec: () => {},
 			} as unknown as Database;
@@ -932,8 +934,10 @@ describe("ClientConnection type and WS message schemas", () => {
 					}
 					return { changes: 1 };
 				},
-				query: (_sql: string) => ({
-					get: () => null,
+				query: (sql: string) => ({
+					// The handler re-reads the entry status inside its persist transaction.
+					get: () =>
+						sql.includes("SELECT status FROM dispatch_queue") ? { status: "pending" } : null,
 				}),
 				exec: () => {},
 			} as unknown as Database;
@@ -1007,8 +1011,10 @@ describe("ClientConnection type and WS message schemas", () => {
 					}
 					return { changes: 1 };
 				},
-				query: (_sql: string) => ({
-					get: () => null,
+				query: (sql: string) => ({
+					// The handler re-reads the entry status inside its persist transaction.
+					get: () =>
+						sql.includes("SELECT status FROM dispatch_queue") ? { status: "pending" } : null,
 				}),
 				exec: () => {},
 			} as unknown as Database;
