@@ -308,6 +308,27 @@ describe("Native Aux Tool (invoke slice)", () => {
 			expect(res.metadata.aux_thread).toMatch(/^[0-9a-f-]{36}$/);
 		});
 
+		it("returns an Error: result when the runner rejects the dispatch (#295)", async () => {
+			const exec = getExecute(
+				createAuxTool({
+					...ctx,
+					auxLoopRunner: async () => ({
+						summary: "Error: client session unavailable for aux dispatch",
+						error: "client session unavailable for aux dispatch",
+						rejected: true,
+					}),
+				}),
+			);
+			await exec({ action: "define", name: "tama", persona: "test" });
+
+			const out = await exec({ action: "invoke", name: "tama", instructions: "edit" });
+
+			const res = out as { content: string };
+			// Yard fails an effect whose content starts with "Error:".
+			expect(res.content).toStartWith("Error: auxiliary agent 'tama' was not started:");
+			expect(res.content).toContain("client session unavailable for aux dispatch");
+		});
+
 		it("returns error summary when loop runner errors", async () => {
 			const exec = getExecute(
 				createAuxTool({

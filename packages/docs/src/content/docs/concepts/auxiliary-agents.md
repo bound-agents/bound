@@ -63,6 +63,14 @@ host access still follows the [sandbox and filesystem model](/bound/concepts/san
 [Security boundaries](/bound/concepts/security-boundaries/) places these identity and
 capability limits in the broader trust model.
 
+Client tools reach an auxiliary agent even when its loop runs on a different host from the
+parent's client session: each call relays to the session host. When the parent thread is
+attached to a client session, the errand needs client tools, and no live session can serve
+them, the invocation fails before the errand starts with `client session unavailable for aux
+dispatch`. An errand needs client tools when its identity has no allowlist or its allowlist
+names a tool that no server-side source provides. In a Yard program, that failure fails the
+`aux()` effect.
+
 An auxiliary agent waits on each inherited client tool for the call's own `timeout` plus 30
 seconds, and never less than 300 seconds. If the wait runs out or the invocation is aborted,
 the agent records one error result, sends `tool:cancel` to the client, and discards any later

@@ -11,10 +11,12 @@ import {
 	createBuiltInTools,
 	dispatchAwaitableClientTool,
 	extractAssistantText,
+	resolveClientSessionHost,
 } from "@bound/agent";
 import type { AgentLoopConfig, RegisteredTool, ToolContext } from "@bound/agent";
 import { isRelayRequest } from "@bound/agent";
 import type { BuiltInTool } from "@bound/agent";
+import { listClientSessionSiteIdsByThreadId } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import type { ModelRouter, ToolDefinition } from "@bound/llm";
 import type { PlatformRegisteredTool } from "@bound/platforms";
@@ -318,6 +320,8 @@ export function createAgentLoopFactory(
 						toolName: name,
 						args,
 						connectionId: parent.connectionId,
+						// No session of its own: relay through the parent's (#295).
+						sessionThreadId: params.parentThreadId,
 						timeoutMs,
 						signal,
 						topologyRole,
@@ -330,7 +334,8 @@ export function createAgentLoopFactory(
 
 			// Capability boundary — always excluded from aux toolset
 			const EXCLUDED_TOOLS = new Set(["aux", "task", "cancel", "notify", "introspect"]);
-			let filteredAgentTools = createAgentTools(auxToolCtx).filter(
+			const allAgentTools = createAgentTools(auxToolCtx);
+			let filteredAgentTools = allAgentTools.filter(
 				(t) => !EXCLUDED_TOOLS.has(t.toolDefinition.function.name),
 			);
 			if (params.allowlistedTools) {
@@ -358,6 +363,39 @@ export function createAgentLoopFactory(
 				return scoped.size > 0 ? scoped : undefined;
 			})();
 			const auxClientToolDefs = auxClientTools ? Array.from(auxClientTools.values()) : [];
+
+			// Fail at dispatch rather than run an errand that cannot do its job
+			// (#295): the parent is attached to a client session, the aux needs
+			// client tools (no allowlist, or an allowlist naming a tool no server
+			// path provides), and no session can serve them — no client tools
+			// reached this loop, or there is neither a local connection nor a live
+			// remote session host to relay to (invariant #21).
+			const serverToolNames = new Set([
+				sandboxTool.function.name,
+				...builtInToolDefs.map((def) => def.function.name),
+				...allAgentTools.map((t) => t.toolDefinition.function.name),
+			]);
+			const needsClientTools =
+				!params.allowlistedTools ||
+				params.allowlistedTools.some((name) => !serverToolNames.has(name));
+			if (
+				needsClientTools &&
+				listClientSessionSiteIdsByThreadId(appContext.db, params.parentThreadId).length > 0
+			) {
+				const bindable =
+					auxClientTools !== undefined &&
+					(parent.connectionId !== undefined ||
+						resolveClientSessionHost(appContext.db, params.parentThreadId, appContext.siteId) !==
+							null);
+				if (!bindable) {
+					const reason = `client session unavailable for aux dispatch: parent thread ${params.parentThreadId} is attached to a client session, but no live session can serve this errand's client tools`;
+					appContext.logger.warn("[aux] Rejected dispatch without a bindable client session", {
+						threadId: params.threadId,
+						parentThreadId: params.parentThreadId,
+					});
+					return { summary: `Error: ${reason}`, error: reason, rejected: true };
+				}
+			}
 
 			const auxToolDefs = filteredAgentTools.map((t) => t.toolDefinition);
 			auxToolRegistry = createToolRegistry(

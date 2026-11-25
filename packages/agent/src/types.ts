@@ -67,7 +67,12 @@ export interface ToolContext {
 		instructions: string;
 		userId: string;
 		parentThreadId: string;
-	}) => Promise<{ summary: string; error?: string }>;
+	}) => Promise<{
+		summary: string;
+		error?: string;
+		/** The runner refused to start the errand (e.g. no bindable client session, #295). */
+		rejected?: boolean;
+	}>;
 	/**
 	 * Yard: lazy accessor for the unified tool registry the current loop
 	 * dispatches through. Set by agent-factory AFTER the registry is

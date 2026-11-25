@@ -27,6 +27,12 @@ export interface AwaitableClientToolDeps {
 	args: Record<string, unknown>;
 	/** Local WS connection, when this process holds the thread's session. */
 	connectionId?: string;
+	/**
+	 * Thread whose client session serves this call, when it differs from
+	 * `threadId`. An aux thread has no session of its own; its calls relay to
+	 * the parent's session host (#295).
+	 */
+	sessionThreadId?: string;
 	timeoutMs: number;
 	signal?: AbortSignal;
 	/** Cluster role, for the durable-relay spoke hub-hop capability gate. */
@@ -218,7 +224,11 @@ export async function dispatchAwaitableClientTool(
 		return result;
 	}
 
-	const sessionHost = resolveClientSessionHost(deps.db, deps.threadId, deps.siteId);
+	const sessionHost = resolveClientSessionHost(
+		deps.db,
+		deps.sessionThreadId ?? deps.threadId,
+		deps.siteId,
+	);
 	if (!sessionHost) return null;
 	const payload: ClientToolPayload = {
 		thread_id: deps.threadId,

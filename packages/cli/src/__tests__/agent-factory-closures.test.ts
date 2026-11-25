@@ -832,3 +832,107 @@ describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#
 		expect(call?.opts?.timeout).toBe(5000);
 	}, 60_000);
 });
+
+describe("createAgentLoopFactory — aux dispatch needs a bindable client session (#295)", () => {
+	function seedAttachedParent(db: Database, userId: string): string {
+		const now = new Date().toISOString();
+		const parentThreadId = randomUUID();
+		db.run(
+			"INSERT INTO threads (id, user_id, interface, host_origin, created_at, last_message_at, modified_at, deleted) VALUES (?, ?, 'boundless', 'test-site-id', ?, ?, ?, 0)",
+			[parentThreadId, userId, now, now, now],
+		);
+		// Session row on a host with no hosts entry: attached, but nothing can serve it.
+		db.run(
+			"INSERT INTO client_sessions (id, connection_id, thread_id, site_id, created_at, deleted, modified_at) VALUES (?, 'conn-gone', ?, 'gone-host', ?, 0, ?)",
+			[randomUUID(), parentThreadId, now, now],
+		);
+		return parentThreadId;
+	}
+
+	function makeRunner(db: Database, backend: LLMBackend) {
+		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
+		const factory = createAgentLoopFactory(
+			makeAppContext(db),
+			makeRouter(backend),
+			undefined,
+			clusterFsObj,
+		);
+		return factory.createAuxLoopRunner({ platform: "boundless" });
+	}
+
+	it("rejects an errand that needs client tools when the attached parent's session cannot be bound", async () => {
+		const db = makeDb();
+		const backend = new TextBackend("did nothing");
+		const userId = seedUser(db);
+		const parentThreadId = seedAttachedParent(db, userId);
+		const { threadId, agentId } = seedAuxThread(db, userId);
+
+		const result = await makeRunner(
+			db,
+			backend,
+		)({
+			threadId,
+			agentId,
+			persona: "implementer",
+			modelHint: "mock-model",
+			allowlistedTools: null,
+			instructions: "edit the repo",
+			userId,
+			parentThreadId,
+		});
+
+		expect(result.rejected).toBe(true);
+		expect(result.error).toContain("client session unavailable for aux dispatch");
+		expect(result.summary).toStartWith("Error:");
+		expect(backend.callCount).toBe(0);
+	}, 30_000);
+
+	it("rejects when the allowlist names a client tool", async () => {
+		const db = makeDb();
+		const backend = new TextBackend("did nothing");
+		const userId = seedUser(db);
+		const parentThreadId = seedAttachedParent(db, userId);
+		const { threadId, agentId } = seedAuxThread(db, userId);
+
+		const result = await makeRunner(
+			db,
+			backend,
+		)({
+			threadId,
+			agentId,
+			persona: "implementer",
+			modelHint: "mock-model",
+			allowlistedTools: ["memory", "boundless_edit"],
+			instructions: "edit the repo",
+			userId,
+			parentThreadId,
+		});
+
+		expect(result.rejected).toBe(true);
+	}, 30_000);
+
+	it("runs an errand whose allowlist names only server-side tools", async () => {
+		const db = makeDb();
+		const backend = new TextBackend("researched");
+		const userId = seedUser(db);
+		const parentThreadId = seedAttachedParent(db, userId);
+		const { threadId, agentId } = seedAuxThread(db, userId);
+
+		const result = await makeRunner(
+			db,
+			backend,
+		)({
+			threadId,
+			agentId,
+			persona: "researcher",
+			modelHint: "mock-model",
+			allowlistedTools: ["memory", "bms_bash"],
+			instructions: "look something up",
+			userId,
+			parentThreadId,
+		});
+
+		expect(result.rejected).toBeUndefined();
+		expect(result.summary).toContain("researched");
+	}, 30_000);
+});

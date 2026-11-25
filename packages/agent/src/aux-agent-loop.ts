@@ -4,6 +4,7 @@ import {
 	claimPendingNotifications,
 	enqueueClientToolCall,
 	expireClientToolCallIfInFlight,
+	findThreadParentIdById,
 	findToolResultByThreadAndCallId,
 	getClientToolCallStatus,
 } from "@bound/core";
@@ -17,6 +18,7 @@ import { BoundAgentLoop, type BoundPreparedFrame } from "./bound-agent-loop";
 import { buildCacheMarkers, coldPathPlaceCacheMarker } from "./cache-marker";
 import { selectCacheTtl } from "./cache-prediction";
 import { assembleContext, computeBaseTruncationTarget, realTimeClock } from "./context-assembly";
+import { resolveClientSessionHost } from "./delegation";
 import { injectNotificationMessage } from "./notification-injection";
 import { sharedStableSubsectionCache } from "./stable-prefix";
 import type { AgentLoopResult } from "./types";
@@ -319,8 +321,30 @@ export class AuxAgentLoop extends BoundAgentLoop {
 		for (const { toolCall } of batch.deferred) {
 			const connectionId = this.config.connectionId;
 			if (!connectionId) {
-				// No inherited WS connection: the aux was dispatched from a surface
-				// with no client session, so this tool can never execute. Persist the
+				// No local WS connection. The parent's session may live on another
+				// host (#295): relay the call there (invariant #21). The session
+				// host's WS layer routes an aux thread's call to the parent's
+				// subscriptions, so the aux thread id rides the payload unchanged.
+				const parentThreadId = findThreadParentIdById(
+					this.ctx.db,
+					this.config.threadId,
+				)?.parent_thread_id;
+				const sessionHost = parentThreadId
+					? resolveClientSessionHost(this.ctx.db, parentThreadId, this.ctx.siteId)
+					: null;
+				if (sessionHost) {
+					const relayed = await this.relayDeferredClientTool(toolCall, sessionHost);
+					const isError = relayed.exitCode !== 0;
+					this.persistRelayedClientToolResult(toolCall.id, relayed.content, isError);
+					frame.messages.push({
+						role: "tool_result",
+						content: parseContentBlocks(relayed.content),
+						tool_use_id: toolCall.id,
+					});
+					acknowledgeToolResultForCall(this.ctx.db, this.config.threadId, toolCall.id);
+					continue;
+				}
+				// No session anywhere: this tool can never execute. Persist the
 				// failure as the result so the model reacts instead of stalling.
 				this.persistRelayedClientToolResult(
 					toolCall.id,

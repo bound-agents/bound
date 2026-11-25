@@ -442,6 +442,14 @@ async function handleInvoke(
 			// thread (which is excluded from the thread directory, so that card is
 			// its only door). Metadata, not a content trailer: the LLM-visible
 			// content stays the summary alone.
+			if (result.rejected) {
+				// Starts with "Error:" so a Yard aux() effect fails instead of
+				// resolving with a report that nothing was done (#295).
+				return {
+					content: `Error: auxiliary agent '${input.name}' was not started: ${result.error ?? result.summary}`,
+					metadata: { aux_thread: threadId },
+				};
+			}
 			if (result.error) {
 				return {
 					content: `Auxiliary agent '${input.name}' completed with error: ${result.error}`,
