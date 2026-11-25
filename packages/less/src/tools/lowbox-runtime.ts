@@ -123,7 +123,18 @@ export function buildLowboxArgs(
 		"--network",
 		cfg.network,
 		...(testNamespace ? ["--test-namespace", testNamespace] : []),
-		...[policyCwd, cwd, tempRoot, ...cfg.writablePaths].flatMap((root) => ["--writable", root]),
+		// Linked worktrees keep index/refs/logs under external gitdir/commondir;
+		// grant them like computeWritableRoots does on POSIX. The config/hooks
+		// --git-protected DACLs below still apply after these grants.
+		...[
+			policyCwd,
+			cwd,
+			tempRoot,
+			...(cfg.gitWorktreeMetadata
+				? [cfg.gitWorktreeMetadata.gitdir, cfg.gitWorktreeMetadata.commondir]
+				: []),
+			...cfg.writablePaths,
+		].flatMap((root) => ["--writable", root]),
 		...computeGitProtectedPaths(policyCwd, "win32", cfg.gitWorktreeMetadata).flatMap((path) => [
 			"--git-protected",
 			path,

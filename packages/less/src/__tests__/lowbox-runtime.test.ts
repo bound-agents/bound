@@ -97,6 +97,44 @@ it("builds the full native-helper flag protocol in order", () => {
 	]);
 });
 
+it("grants linked-worktree git directories as writable roots before git-protected paths", () => {
+	const linked = {
+		...sandbox,
+		gitWorktreeMetadata: {
+			gitdir: "C:\\main\\.git\\worktrees\\feature",
+			commondir: "C:\\main\\.git",
+			protectedPaths: ["C:\\main\\.git\\config", "C:\\main\\.git\\hooks"],
+		},
+	};
+	const args = buildLowboxArgs(
+		"git commit -m x",
+		"C:\\feature",
+		"C:\\feature",
+		shell,
+		linked,
+		"C:\\tmp",
+		"1234",
+	);
+	expect(args.slice(args.indexOf("--writable"))).toEqual([
+		"--writable",
+		"C:\\feature",
+		"--writable",
+		"C:\\feature",
+		"--writable",
+		"C:\\tmp",
+		"--writable",
+		"C:\\main\\.git\\worktrees\\feature",
+		"--writable",
+		"C:\\main\\.git",
+		"--writable",
+		"C:\\extra root",
+		"--git-protected",
+		"C:\\main\\.git\\config",
+		"--git-protected",
+		"C:\\main\\.git\\hooks",
+	]);
+});
+
 it("parses escaped structured native failures", () => {
 	expect(
 		parseLowboxFailure(
