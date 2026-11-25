@@ -537,6 +537,112 @@ const thinkingOnlyTurn = (finishReason: "length" | "stop" | null = "length"): St
 ];
 
 describe("ModularAgentLoop resilience (base self-sufficiency)", () => {
+	it("does not execute malformed calls and executes one valid retry", async () => {
+		const malformed: StreamChunk[] = [
+			{ type: "tool_use_start", id: "bad-call", name: "lookup" },
+			{ type: "tool_use_args", id: "bad-call", partial_json: '{"value":1,}' },
+			{ type: "tool_use_end", id: "bad-call" },
+			{
+				type: "done",
+				finish_reason: "tool-calls",
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_read_tokens: null,
+					cache_write_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+		const backend = new ScriptedBackend([
+			malformed,
+			toolTurn("retry-call", "lookup", { value: 1 }),
+			[{ type: "text", content: "done" }, done()],
+		]);
+		const executed: ParsedToolCall[] = [];
+		const { strategy, persisted } = makeHarness(backend, async (toolCall) => {
+			executed.push(toolCall);
+			return { content: "ok", exitCode: 0 };
+		});
+
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		expect(result.outcome).toBe("completed");
+		expect(executed).toHaveLength(1);
+		expect(executed[0].input).toEqual({ value: 1 });
+		const malformedRoundTrip = persisted.tools[0] as {
+			results: Array<{ result: ToolExecutionResult }>;
+		};
+		expect(malformedRoundTrip.results[0].result.content).toContain("invalid JSON");
+		expect(malformedRoundTrip.results[0].result.content).not.toContain('{"value":1,}');
+	});
+
+	it("keeps mixed valid and invalid tool results in call order", async () => {
+		const mixed: StreamChunk[] = [
+			{ type: "tool_use_start", id: "bad-call", name: "lookup" },
+			{ type: "tool_use_args", id: "bad-call", partial_json: '{"value":1,}' },
+			{ type: "tool_use_end", id: "bad-call" },
+			{ type: "tool_use_start", id: "good-call", name: "lookup" },
+			{ type: "tool_use_args", id: "good-call", partial_json: '{"value":2}' },
+			{ type: "tool_use_end", id: "good-call" },
+			done(),
+		];
+		const backend = new ScriptedBackend([mixed, [{ type: "text", content: "done" }, done()]]);
+		const executed: ParsedToolCall[] = [];
+		const { strategy, persisted } = makeHarness(backend, async (toolCall) => {
+			executed.push(toolCall);
+			return { content: "ok", exitCode: 0 };
+		});
+
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		expect(result.outcome).toBe("completed");
+		expect(executed.map(({ id }) => id)).toEqual(["good-call"]);
+		const mixedRoundTrip = persisted.tools[0] as {
+			results: Array<{ toolCall: { id: string }; result: ToolExecutionResult }>;
+		};
+		expect(mixedRoundTrip.results.map(({ toolCall }) => toolCall.id)).toEqual([
+			"bad-call",
+			"good-call",
+		]);
+		expect(mixedRoundTrip.results[0].result.content).toContain("invalid JSON");
+	});
+
+	it("bounds repeated malformed-call retries with the invalid-arguments guard", async () => {
+		const malformed: StreamChunk[] = [
+			{ type: "tool_use_start", id: "bad-call", name: "lookup" },
+			{ type: "tool_use_args", id: "bad-call", partial_json: '{"value":1,}' },
+			{ type: "tool_use_end", id: "bad-call" },
+			{
+				type: "done",
+				finish_reason: "tool-calls",
+				usage: {
+					input_tokens: 10,
+					output_tokens: 5,
+					cache_read_tokens: null,
+					cache_write_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+		const backend = new ScriptedBackend([malformed]);
+		let executeCount = 0;
+		const { strategy, persisted } = makeHarness(backend, async () => {
+			executeCount++;
+			return { content: "unexpected", exitCode: 0 };
+		});
+
+		const loop = new TestAgentLoop(strategy, { threadId: "t1", userId: "u1" });
+		const result = await loop.run();
+
+		expect(result.outcome).toBe("guard:invalid-tool-arguments");
+		expect(backend.calls).toHaveLength(5);
+		expect(executeCount).toBe(0);
+		expect(persisted.alerts).toEqual(["[Agent loop guard] invalid-tool-arguments"]);
+	});
+
 	it("aborts on consecutive identical tool calls without a host override", async () => {
 		// Same call every turn → duplicate-call breaker (threshold 12) trips before
 		// the default maxTurns. The base default onLoopGuardTripped surfaces an alert.

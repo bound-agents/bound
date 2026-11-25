@@ -48,6 +48,73 @@ describe("parseResponseChunks default duplicate-id factory", () => {
 	});
 });
 
+describe("parseResponseChunks malformed tool arguments", () => {
+	it("keeps parse diagnostics bounded and excludes the argument bytes", () => {
+		const { logger, warnings } = captureLogger();
+		const rawArgs = '{"value":1,}';
+		const parsed = parseResponseChunks(
+			[
+				{ type: "tool_use_start", id: "bad-call", name: "lookup" },
+				{ type: "tool_use_args", id: "bad-call", partial_json: rawArgs },
+				{ type: "tool_use_end", id: "bad-call" },
+				{
+					type: "done",
+					finish_reason: "tool-calls",
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_write_tokens: null,
+						cache_read_tokens: null,
+						estimated: false,
+					},
+				},
+			],
+			{ logger },
+		);
+
+		expect(parsed.toolCalls[0]).toMatchObject({
+			parseError: "invalid_json",
+			finishReason: "tool-calls",
+			truncated: false,
+		});
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0].metadata).toEqual({
+			toolCallId: "bad-call",
+			argsLength: rawArgs.length,
+			parseError: "invalid_json",
+			finishReason: "tool-calls",
+		});
+		expect(warnings[0].message).not.toContain(rawArgs);
+	});
+
+	it("associates malformed calls with the done chunk for their own attempt", () => {
+		const usage = {
+			input_tokens: 10,
+			output_tokens: 5,
+			cache_write_tokens: null,
+			cache_read_tokens: null,
+			estimated: false,
+		};
+		const parsed = parseResponseChunks([
+			{ type: "tool_use_start", id: "normal-call", name: "lookup" },
+			{ type: "tool_use_args", id: "normal-call", partial_json: '{"value":1,}' },
+			{ type: "tool_use_end", id: "normal-call" },
+			{ type: "done", finish_reason: "tool-calls", usage },
+			{ type: "tool_use_start", id: "length-call", name: "lookup" },
+			{ type: "tool_use_args", id: "length-call", partial_json: '{"value":2,' },
+			{ type: "tool_use_end", id: "length-call" },
+			{ type: "done", finish_reason: "length", usage },
+		]);
+
+		expect(
+			parsed.toolCalls.map(({ finishReason, truncated }) => ({ finishReason, truncated })),
+		).toEqual([
+			{ finishReason: "tool-calls", truncated: false },
+			{ finishReason: "length", truncated: true },
+		]);
+	});
+});
+
 describe("parseResponseChunks thinking encrypted content", () => {
 	it("captures reasoning_encrypted_content from a thinking chunk", () => {
 		const chunks: StreamChunk[] = [

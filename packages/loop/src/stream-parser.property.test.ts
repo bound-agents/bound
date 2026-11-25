@@ -12,7 +12,7 @@
  *   T2 Usage is last-`done`-wins — multiple done chunks resolve to the last.
  *   T3 Tool-call args round-trip — accumulated partial_json is reassembled
  *      verbatim into argsJson; valid JSON parses into `input`, invalid JSON
- *      sets `truncated` and leaves `input` an empty object. Empty args → "{}".
+ *      sets `parseError` and leaves `input` an empty object. Empty args → "{}".
  *   T4 Duplicate tool_use ids are remapped to unique ids, preserving the
  *      args/end routed to the second occurrence.
  *
@@ -164,12 +164,12 @@ function splitIntoFragments(s: string): fc.Arbitrary<string[]> {
 	});
 }
 
-describe("parseResponseChunks — tool-call args round-trip and truncation (T3)", () => {
+describe("parseResponseChunks — tool-call args round-trip and parse errors (T3)", () => {
 	it("reassembles fragmented args and classifies parse-ability", () => {
 		// Distinct names per block ⇒ no superseded-draft dropping interferes.
 		const argsArb = fc.oneof(
 			fc.json(), // valid JSON strings
-			fc.string(), // arbitrary strings (often unparseable → truncated)
+			fc.string(), // arbitrary strings (often unparseable)
 			fc.constant(""), // empty ⇒ defaults to "{}"
 		);
 		fc.assert(
@@ -196,9 +196,11 @@ describe("parseResponseChunks — tool-call args round-trip and truncation (T3)"
 							expect(tc.name).toBe(`tool_${i}`);
 							if (canParse(effective)) {
 								expect(tc.truncated).toBe(false);
+								expect(tc.parseError).toBeUndefined();
 								expect(tc.input).toEqual(JSON.parse(effective));
 							} else {
-								expect(tc.truncated).toBe(true);
+								expect(tc.truncated).toBe(false);
+								expect(tc.parseError).toBe("invalid_json");
 								expect(tc.input).toEqual({});
 							}
 						});

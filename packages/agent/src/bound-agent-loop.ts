@@ -1607,11 +1607,15 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 			let toolMetadata: Record<string, unknown> | undefined;
 			const toolStartTime = Date.now();
 
-			if (toolCall.truncated) {
+			if (toolCall.truncated || toolCall.parseError) {
+				const finishReason = toolCall.finishReason ?? "unknown";
+				const diagnosis = toolCall.truncated
+					? `arguments were truncated at finish_reason=${finishReason}`
+					: `arguments are invalid JSON (parse_error=invalid_json, finish_reason=${finishReason})`;
 				results.push({
 					toolCall,
 					result: {
-						content: `Error: tool call arguments were truncated (output exceeded max_tokens limit). The "${toolCall.name}" call was cut off before the full arguments could be generated. Try breaking the operation into smaller parts, or reduce the size of the arguments.`,
+						content: `Error: tool call ${diagnosis}. The "${toolCall.name}" tool was not run. Retry with valid JSON arguments.`,
 						exitCode: 1,
 						durationMs: 0,
 					},

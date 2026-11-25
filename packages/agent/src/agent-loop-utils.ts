@@ -8,7 +8,13 @@ import {
 	insertRow,
 	listRecentLiveMessageContentByThread,
 } from "@bound/core";
-import type { CapabilityRequirements, ContentBlock, LLMMessage, StreamChunk } from "@bound/llm";
+import type {
+	CapabilityRequirements,
+	ContentBlock,
+	LLMFinishReason,
+	LLMMessage,
+	StreamChunk,
+} from "@bound/llm";
 import type { FieldSource, PricingTier, ResolvedPricing } from "@bound/llm";
 // isTransientLLMError now lives in @bound/loop (error-classification.ts) so the
 // base loop and any extension agent share one definition. Re-exported here for
@@ -891,7 +897,11 @@ export interface ParsedToolCall {
 	name: string;
 	input: Record<string, unknown>;
 	argsJson: string;
-	/** True when the tool_use args JSON failed to parse (likely output truncation). */
+	/** Fixed classification for argument payloads that are not valid JSON. */
+	parseError?: "invalid_json";
+	/** Finish reason for the inference attempt that emitted this malformed call. */
+	finishReason?: LLMFinishReason | null;
+	/** True only when malformed arguments accompany an explicit length stop. */
 	truncated?: boolean;
 }
 
@@ -935,11 +945,14 @@ function isSupersededToolCallDraft(
 	emptySameToolCount: number,
 ): boolean {
 	if (earlier.name !== later.name) return false;
-	if (later.truncated) return false;
+	if (later.truncated || later.parseError) return false;
 
 	const earlierArgs = earlier.argsJson.trim();
 	const laterArgs = later.argsJson.trim();
-	if (earlier.truncated && (earlierArgs === "" || laterArgs.startsWith(earlierArgs))) {
+	if (
+		(earlier.truncated || earlier.parseError) &&
+		(earlierArgs === "" || laterArgs.startsWith(earlierArgs))
+	) {
 		return true;
 	}
 
@@ -950,7 +963,12 @@ function isSupersededToolCallDraft(
 }
 
 function isEmptyObjectCall(call: ParsedToolCall): boolean {
-	return !call.truncated && call.argsJson.trim() === "{}" && Object.keys(call.input).length === 0;
+	return (
+		!call.truncated &&
+		!call.parseError &&
+		call.argsJson.trim() === "{}" &&
+		Object.keys(call.input).length === 0
+	);
 }
 
 export interface ParsedResponse {
@@ -983,6 +1001,8 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 	let cacheWriteTokens: number | null = null;
 	let cacheReadTokens: number | null = null;
 	let usageEstimated = false;
+	let finishReason: LLMFinishReason | null = null;
+	const pendingParseErrorIndices: number[] = [];
 
 	for (const chunk of chunks) {
 		switch (chunk.type) {
@@ -1010,25 +1030,21 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 				const fullArgsJson = rawArgs && rawArgs.length > 0 ? rawArgs : "{}";
 				const name = nameMap.get(chunk.id) ?? chunk.id;
 				let input: Record<string, unknown> = {};
-				let truncated = false;
+				let parseError: ParsedToolCall["parseError"];
 				try {
 					input = JSON.parse(fullArgsJson);
 				} catch {
-					truncated = true;
-					logger.warn("Failed to parse tool_use args; output likely truncated by max_tokens", {
-						toolName: name,
-						id: chunk.id,
-						argsLength: fullArgsJson.length,
-						rawArgsPrefix: fullArgsJson.slice(0, 200),
-					});
+					parseError = "invalid_json";
 				}
 				toolCalls.push({
 					id: chunk.id,
 					name,
 					input,
 					argsJson: fullArgsJson,
-					truncated,
+					truncated: false,
+					...(parseError && { parseError }),
 				});
+				if (parseError) pendingParseErrorIndices.push(toolCalls.length - 1);
 				break;
 			}
 			case "done":
@@ -1037,6 +1053,13 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 				cacheWriteTokens = chunk.usage.cache_write_tokens;
 				cacheReadTokens = chunk.usage.cache_read_tokens;
 				usageEstimated = chunk.usage.estimated;
+				finishReason = chunk.finish_reason ?? null;
+				for (const index of pendingParseErrorIndices) {
+					const toolCall = toolCalls[index];
+					toolCall.finishReason = finishReason;
+					toolCall.truncated = finishReason === "length";
+				}
+				pendingParseErrorIndices.length = 0;
 				break;
 			case "error":
 				logger.warn("Stream error chunk received during aggregation", { error: chunk.error });
@@ -1048,6 +1071,17 @@ export function parseStreamChunks(chunks: StreamChunk[]): ParsedResponse {
 				void _exhaustive;
 			}
 		}
+	}
+
+	for (const toolCall of toolCalls) {
+		if (!toolCall.parseError) continue;
+		logger.warn("Failed to parse tool_use args as JSON", {
+			toolName: toolCall.name,
+			id: toolCall.id,
+			argsLength: toolCall.argsJson.length,
+			parseError: toolCall.parseError,
+			finishReason: toolCall.finishReason ?? null,
+		});
 	}
 
 	return {

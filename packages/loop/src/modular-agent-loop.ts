@@ -103,7 +103,8 @@ export function recordLoopOperationalMetric(
 	else loopInFlight.add(value, attributes);
 }
 /** Reason codes for a tripped loop-guard, surfaced to onLoopGuardTripped. */
-export type LoopGuardReason = "truncated" | "duplicate" | "identical-error" | "routing-error";
+export type LoopGuardReason =
+	"truncated" | "invalid-tool-arguments" | "duplicate" | "identical-error" | "routing-error";
 
 /** Classification of a tool result for the error-chain circuit breakers. */
 export type ToolResultErrorKind = "routing" | "generic" | null;
@@ -145,6 +146,22 @@ export interface LoopDeferredToolCall {
 export interface LoopToolExecutionBatch {
 	results: LoopToolResult[];
 	deferred: LoopDeferredToolCall[];
+}
+
+function invalidToolCallResult(toolCall: ParsedToolCall): LoopToolResult {
+	const finishReason = toolCall.finishReason ?? "unknown";
+	const toolName = toolCall.name.slice(0, 80);
+	const diagnosis = toolCall.truncated
+		? `arguments were truncated at finish_reason=${finishReason}`
+		: `arguments are invalid JSON (parse_error=invalid_json, finish_reason=${finishReason})`;
+	return {
+		toolCall,
+		result: {
+			content: `Error: tool call ${diagnosis}. The "${toolName}" tool was not run. Retry with valid JSON arguments.`,
+			exitCode: 1,
+			durationMs: 0,
+		},
+	};
 }
 
 export interface LoopModelStream {
@@ -225,8 +242,8 @@ export abstract class ModularAgentLoop {
 	// Resilience state — reset per run() in resetResilienceState().
 	protected transportRetries = 0;
 	protected degenerateRetries = 0;
-	protected consecutiveTruncatedTurns = 0;
-	protected lastTruncatedToolName: string | null = null;
+	protected consecutiveInvalidToolCallTurns = 0;
+	protected lastInvalidToolName: string | null = null;
 	protected consecutiveDuplicateToolCalls = 0;
 	protected lastToolCallSignature: string | null = null;
 	protected consecutiveErrorSignature = 0;
@@ -262,8 +279,8 @@ export abstract class ModularAgentLoop {
 	protected resetResilienceState(): void {
 		this.transportRetries = 0;
 		this.degenerateRetries = 0;
-		this.consecutiveTruncatedTurns = 0;
-		this.lastTruncatedToolName = null;
+		this.consecutiveInvalidToolCallTurns = 0;
+		this.lastInvalidToolName = null;
 		this.consecutiveDuplicateToolCalls = 0;
 		this.lastToolCallSignature = null;
 		this.consecutiveErrorSignature = 0;
@@ -1089,7 +1106,36 @@ export abstract class ModularAgentLoop {
 			return beforeDecision;
 		}
 
-		const batch = await this.executeToolRoundTrip(parsed, frame, turn);
+		const invalidCalls = parsed.toolCalls.filter(
+			(toolCall) => toolCall.truncated || toolCall.parseError,
+		);
+		let batch: LoopToolExecutionBatch;
+		if (invalidCalls.length === 0) {
+			batch = await this.executeToolRoundTrip(parsed, frame, turn);
+		} else {
+			this.toolCallsMade += invalidCalls.length;
+			const executableCalls = parsed.toolCalls.filter(
+				(toolCall) => !toolCall.truncated && !toolCall.parseError,
+			);
+			const executed =
+				executableCalls.length > 0
+					? await this.executeToolRoundTrip({ ...parsed, toolCalls: executableCalls }, frame, turn)
+					: { results: [], deferred: [] };
+			const resultsByCallId = new Map(
+				executed.results.map((result) => [result.toolCall.id, result]),
+			);
+			const results = parsed.toolCalls.flatMap((toolCall) => {
+				if (toolCall.truncated || toolCall.parseError) {
+					return [invalidToolCallResult(toolCall)];
+				}
+				const result = resultsByCallId.get(toolCall.id);
+				if (!result) return [];
+				resultsByCallId.delete(toolCall.id);
+				return [result];
+			});
+			results.push(...resultsByCallId.values());
+			batch = { results, deferred: executed.deferred };
+		}
 		this.recordToolErrorSignatures(batch);
 		const executionDecision = await this.afterToolExecution(parsed, frame, batch, turn);
 		if (executionDecision.action !== "continue") {
@@ -1106,27 +1152,33 @@ export abstract class ModularAgentLoop {
 
 	/**
 	 * Pre-execution circuit breakers: abort runaway loops where the model keeps
-	 * emitting truncated tool calls or byte-identical calls turn after turn.
+	 * emitting malformed tool calls or byte-identical calls turn after turn.
 	 * Runs before any tool executes, so it costs nothing when it fires.
 	 */
 	protected async runPreExecutionGuards(parsed: ParsedResponse): Promise<LoopTurnDecision> {
-		const firstTruncated = parsed.toolCalls.find((tc) => tc.truncated);
-		if (firstTruncated) {
-			if (this.lastTruncatedToolName === firstTruncated.name) {
-				this.consecutiveTruncatedTurns++;
+		const firstInvalid = parsed.toolCalls.find((tc) => tc.truncated || tc.parseError);
+		if (firstInvalid) {
+			if (this.lastInvalidToolName === firstInvalid.name) {
+				this.consecutiveInvalidToolCallTurns++;
 			} else {
-				this.consecutiveTruncatedTurns = 1;
-				this.lastTruncatedToolName = firstTruncated.name;
+				this.consecutiveInvalidToolCallTurns = 1;
+				this.lastInvalidToolName = firstInvalid.name;
 			}
-			if (this.consecutiveTruncatedTurns >= this.guardThresholds.maxConsecutiveTruncatedTurns) {
+			if (
+				this.consecutiveInvalidToolCallTurns >= this.guardThresholds.maxConsecutiveTruncatedTurns
+			) {
+				const reason = firstInvalid.truncated ? "truncated" : "invalid-tool-arguments";
+				const detail = firstInvalid.truncated
+					? `Detected ${this.consecutiveInvalidToolCallTurns} consecutive turns with truncated "${firstInvalid.name}" tool calls.`
+					: `Detected ${this.consecutiveInvalidToolCallTurns} consecutive turns with invalid JSON for "${firstInvalid.name}" tool calls.`;
 				return this.tripGuard(
-					"truncated",
-					`[Agent loop aborted] Detected ${this.consecutiveTruncatedTurns} consecutive turns with truncated "${firstTruncated.name}" tool calls. Aborting to prevent runaway token usage.`,
+					reason,
+					`[Agent loop aborted] ${detail} Aborting to prevent runaway token usage.`,
 				);
 			}
 		} else {
-			this.consecutiveTruncatedTurns = 0;
-			this.lastTruncatedToolName = null;
+			this.consecutiveInvalidToolCallTurns = 0;
+			this.lastInvalidToolName = null;
 		}
 
 		const turnSignature = toolCallSignature(parsed.toolCalls);

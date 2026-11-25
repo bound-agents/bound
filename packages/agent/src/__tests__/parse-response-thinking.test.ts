@@ -237,14 +237,39 @@ describe("parseStreamChunks truncation handling", () => {
 		expect(result.toolCalls[0].truncated).toBe(false);
 	});
 
-	it("genuinely malformed args are still flagged truncated", () => {
+	it("reports malformed args as invalid JSON when the response finishes normally", () => {
 		const chunks: StreamChunk[] = [
 			{ type: "tool_use_start", id: "tool-1", name: "bash" },
-			// Cut off mid-JSON — classic output truncation shape.
+			{ type: "tool_use_args", id: "tool-1", partial_json: '{"value":1,}' },
+			{ type: "tool_use_end", id: "tool-1" },
+			{
+				type: "done",
+				finish_reason: "tool-calls",
+				usage: {
+					input_tokens: 100,
+					output_tokens: 50,
+					cache_write_tokens: null,
+					cache_read_tokens: null,
+					estimated: false,
+				},
+			},
+		];
+
+		const result = parseStreamChunks(chunks);
+		expect(result.toolCalls[0].truncated).toBe(false);
+		expect(result.toolCalls[0].parseError).toBe("invalid_json");
+		expect(result.toolCalls[0].finishReason).toBe("tool-calls");
+		expect(result.toolCalls[0].input).toEqual({});
+	});
+
+	it("reports malformed args as truncated only when the response ends at the length limit", () => {
+		const chunks: StreamChunk[] = [
+			{ type: "tool_use_start", id: "tool-1", name: "bash" },
 			{ type: "tool_use_args", id: "tool-1", partial_json: '{"command":"ls -la /very/long' },
 			{ type: "tool_use_end", id: "tool-1" },
 			{
 				type: "done",
+				finish_reason: "length",
 				usage: {
 					input_tokens: 100,
 					output_tokens: 50,
@@ -257,7 +282,35 @@ describe("parseStreamChunks truncation handling", () => {
 
 		const result = parseStreamChunks(chunks);
 		expect(result.toolCalls[0].truncated).toBe(true);
-		expect(result.toolCalls[0].input).toEqual({});
+		expect(result.toolCalls[0].parseError).toBe("invalid_json");
+		expect(result.toolCalls[0].finishReason).toBe("length");
+	});
+
+	it("associates malformed calls with the done chunk for their own attempt", () => {
+		const usage = {
+			input_tokens: 10,
+			output_tokens: 5,
+			cache_write_tokens: null,
+			cache_read_tokens: null,
+			estimated: false,
+		};
+		const result = parseStreamChunks([
+			{ type: "tool_use_start", id: "normal-call", name: "bash" },
+			{ type: "tool_use_args", id: "normal-call", partial_json: '{"value":1,}' },
+			{ type: "tool_use_end", id: "normal-call" },
+			{ type: "done", finish_reason: "tool-calls", usage },
+			{ type: "tool_use_start", id: "length-call", name: "bash" },
+			{ type: "tool_use_args", id: "length-call", partial_json: '{"value":2,' },
+			{ type: "tool_use_end", id: "length-call" },
+			{ type: "done", finish_reason: "length", usage },
+		]);
+
+		expect(
+			result.toolCalls.map(({ finishReason, truncated }) => ({ finishReason, truncated })),
+		).toEqual([
+			{ finishReason: "tool-calls", truncated: false },
+			{ finishReason: "length", truncated: true },
+		]);
 	});
 
 	it("drops truncated tool-call prefixes superseded by a later complete call", () => {
@@ -359,7 +412,8 @@ describe("parseStreamChunks truncation handling", () => {
 
 		const result = parseStreamChunks(chunks);
 		expect(result.toolCalls.map((tc: any) => tc.id)).toEqual(["bad", "good"]);
-		expect(result.toolCalls[0].truncated).toBe(true);
+		expect(result.toolCalls[0].truncated).toBe(false);
+		expect(result.toolCalls[0].parseError).toBe("invalid_json");
 		expect(result.toolCalls[1].truncated).toBe(false);
 	});
 });
