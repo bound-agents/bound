@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { MCPClient, MCPServerConfig, Tool } from "@bound/agent";
-import { AuthChallengeRaisedError } from "@bound/agent";
+import {
+	AuthChallengeRaisedError,
+	McpOAuthProvider,
+	McpTokenStore,
+	RaiseDebouncer,
+} from "@bound/agent";
 import type { AppContext } from "@bound/core";
 import { applySchema, createDatabase } from "@bound/core";
 import type { Logger, McpConfig } from "@bound/shared";
@@ -352,5 +360,73 @@ describe("reloadMcpServers — injected-client connect outcomes", () => {
 		expect(result.pendingAuth).toContain("oauth-add");
 		expect(mcpClientsMap.has("oauth-add")).toBe(true);
 		(ctx.db as unknown as { close: () => void }).close();
+	});
+});
+
+describe("connectConfiguredMcpServers — terminal OAuth rejection (#299)", () => {
+	function oauthSetup() {
+		const db = createDatabase(":memory:");
+		applySchema(db);
+		const store = new McpTokenStore(
+			join(tmpdir(), `mcp-auth-${randomBytes(4).toString("hex")}`, "mcp-auth.json"),
+		);
+		const provider = new McpOAuthProvider(
+			db,
+			store,
+			{ name: "sentry", url: "https://mcp.sentry.dev/mcp" },
+			"site-a",
+			new RaiseDebouncer(),
+		);
+		const cfg = {
+			name: "sentry",
+			transport: "http",
+			url: "https://mcp.sentry.dev/mcp",
+			auth: { type: "oauth" },
+		} as unknown as MCPServerConfig;
+		const provideAuth = (s: MCPServerConfig): MCPServerConfig =>
+			({ ...s, authProvider: provider }) as unknown as MCPServerConfig;
+		return { db, provider, cfg, provideAuth };
+	}
+
+	it("holds the client pending-auth when the provider maps the escaped error to a challenge", async () => {
+		const logger = makeLogger();
+		const { db, provider, cfg, provideAuth } = oauthSetup();
+		const escaped = new Error("Grant not found");
+		let seen: unknown;
+		provider.raiseIfGrantLost = async (e: unknown) => {
+			seen = e;
+			return new AuthChallengeRaisedError("chal-lost", "auth_challenge_raised");
+		};
+		const client = mockClient(cfg, {
+			connect: async () => {
+				throw escaped;
+			},
+		});
+
+		const map = await connectConfiguredMcpServers([cfg], logger, () => client, provideAuth);
+
+		expect(seen).toBe(escaped);
+		expect(map.get("sentry")).toBe(client);
+		expect(logger.entries.some((e) => e.level === "info" && e.msg.includes("chal-lost"))).toBe(
+			true,
+		);
+		expect(logger.entries.some((e) => e.level === "warn")).toBe(false);
+		db.close();
+	});
+
+	it("still drops the client with a WARN for a non-OAuth connect failure", async () => {
+		const logger = makeLogger();
+		const { db, cfg, provideAuth } = oauthSetup();
+		const client = mockClient(cfg, {
+			connect: async () => {
+				throw new TypeError("fetch failed");
+			},
+		});
+
+		const map = await connectConfiguredMcpServers([cfg], logger, () => client, provideAuth);
+
+		expect(map.has("sentry")).toBe(false);
+		expect(logger.entries.some((e) => e.level === "warn" && e.msg.includes("sentry"))).toBe(true);
+		db.close();
 	});
 });

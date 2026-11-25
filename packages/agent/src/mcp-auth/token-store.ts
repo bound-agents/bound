@@ -254,6 +254,38 @@ export class McpTokenStore {
 		});
 	}
 
+	/**
+	 * Durably clear the credentials an authorization server rejected (the SDK
+	 * `invalidateCredentials` hook, #299). `tokens` drops the access/refresh pair
+	 * and the scope record of the lost grant; `verifier` / `discovery` drop the
+	 * matching ephemera; `client` drops the DCR registration cached under
+	 * `issuer` (a config-declared client_id is never stored here); `all` drops
+	 * every one of them. Persistence failures propagate (R-MO23).
+	 */
+	async invalidate(
+		server: string,
+		scope: "all" | "client" | "tokens" | "verifier" | "discovery",
+		issuer?: string,
+	): Promise<void> {
+		await this.write((file) => {
+			if ((scope === "all" || scope === "client") && issuer !== undefined) {
+				delete file.registrations[issuer];
+			}
+			const existing = file.servers[server];
+			if (!existing) return;
+			const next: McpTokenBundle = { ...existing };
+			if (scope === "all" || scope === "tokens") {
+				next.accessToken = "";
+				next.refreshToken = undefined;
+				next.scopes = "";
+				next.accessTokenExpiresAt = 0;
+			}
+			if (scope === "all" || scope === "verifier") next.codeVerifier = undefined;
+			if (scope === "all" || scope === "discovery") next.discoveryState = undefined;
+			file.servers[server] = next;
+		});
+	}
+
 	private isExpired(bundle: McpTokenBundle): boolean {
 		return this.now() >= bundle.accessTokenExpiresAt - MCP_TOKEN_REFRESH_SKEW_MS;
 	}

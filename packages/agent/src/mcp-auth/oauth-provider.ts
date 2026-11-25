@@ -1,10 +1,12 @@
 import type { Database } from "bun:sqlite";
 import type { ChallengeDemand } from "@bound/core";
-import type {
-	OAuthClientMetadata,
-	OAuthDiscoveryState,
-	StoredOAuthClientInformation,
-	StoredOAuthTokens,
+import {
+	type OAuthClientMetadata,
+	type OAuthDiscoveryState,
+	OAuthError,
+	OAuthErrorCode,
+	type StoredOAuthClientInformation,
+	type StoredOAuthTokens,
 } from "@modelcontextprotocol/client";
 import {
 	type RaiseDebouncer,
@@ -70,6 +72,13 @@ export interface ObservedChallenge {
 	scopeDemand: string;
 	resourceMetadataHint: string | null;
 }
+
+/** OAuth codes that mean the stored grant or client is dead, not temporarily unreachable. */
+const TERMINAL_GRANT_ERRORS = new Set<string>([
+	OAuthErrorCode.InvalidGrant,
+	OAuthErrorCode.InvalidClient,
+	OAuthErrorCode.UnauthorizedClient,
+]);
 
 export class McpOAuthProvider {
 	private observed: ObservedChallenge | null = null;
@@ -195,6 +204,51 @@ export class McpOAuthProvider {
 		// saveBundle rejects on a persistence failure; the throw propagates to
 		// the SDK caller, which is the contract R-MO23 requires.
 		await this.store.saveBundle(this.server.name, bundle);
+	}
+
+	/**
+	 * SDK hook (#299): the authorization server rejected stored credentials with
+	 * a terminal OAuth error (`invalid_grant` → `tokens`; `invalid_client` /
+	 * `unauthorized_client` → `client` then `tokens`). The SDK gates the call on
+	 * those codes, so transient failures (5xx, 429, network) never reach here.
+	 * Clearing durably means the SDK's retry sees no refresh token and falls
+	 * through to {@link redirectToAuthorization}, which raises a fresh challenge
+	 * instead of replaying the rejected grant.
+	 */
+	async invalidateCredentials(
+		scope: "all" | "client" | "tokens" | "verifier" | "discovery",
+	): Promise<void> {
+		await this.store.invalidate(this.server.name, scope, this.issuer());
+	}
+
+	/**
+	 * Map an error that escaped the SDK's auth flow to a fresh challenge when it
+	 * is a terminal OAuth rejection of the stored grant (#299): `invalid_grant`,
+	 * `invalid_client`, or `unauthorized_client`. Clears the stored tokens and
+	 * takes the same raise path as {@link redirectToAuthorization}. Any other
+	 * error — network, 5xx, 429, `temporarily_unavailable`, non-OAuth — returns
+	 * null and leaves credentials untouched, so a transient outage never costs
+	 * the operator a re-consent.
+	 */
+	async raiseIfGrantLost(error: unknown): Promise<AuthChallengeRaisedError | null> {
+		if (!(error instanceof OAuthError) || !TERMINAL_GRANT_ERRORS.has(error.code)) return null;
+		if (error.code !== OAuthErrorCode.InvalidGrant) await this.invalidateCredentials("client");
+		await this.invalidateCredentials("tokens");
+		try {
+			this.redirectToAuthorization(new URL(this.server.url));
+		} catch (e) {
+			if (e instanceof AuthChallengeRaisedError) return e;
+			throw e;
+		}
+		return null;
+	}
+
+	private issuer(): string | undefined {
+		const bundle = this.store.getBundle(this.server.name);
+		const state = bundle?.discoveryState as OAuthDiscoveryState | undefined;
+		return (
+			bundle?.issuer ?? state?.authorizationServerMetadata?.issuer ?? state?.authorizationServerUrl
+		);
 	}
 
 	/**

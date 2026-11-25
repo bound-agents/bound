@@ -617,6 +617,83 @@ describe("reconnectResolvedMcpServer (R-MO13b + §7 smoke 2026-10-10)", () => {
 		cleanup();
 	});
 
+	it("connects a fresh client when the resolved server was dropped from the map (#299)", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		const cfg = {
+			name: "sentry",
+			transport: "http",
+			url: "https://mcp.sentry.dev/mcp",
+		} as MCPServerConfig;
+		let connected = false;
+		const fresh = {
+			...makeMockClient(cfg, [{ name: "find_issues" } as Tool]),
+			isConnected: () => connected,
+			getServerDescription: () => "Sentry MCP",
+			getServerInstructions: () => undefined,
+			getServerInfo: () => ({ name: "sentry", version: "1.0.0" }),
+			getServerCapabilities: () => ({ tools: {} }),
+			connect: async () => {
+				connected = true;
+			},
+		} as unknown as MCPClient;
+		const mcpClientsMap = new Map<string, MCPClient>();
+		const mcpServerNames = new Set<string>();
+		let authStamped = false;
+
+		await reconnectResolvedMcpServer({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames,
+			confirmGates: new Map(),
+			sandbox: null,
+			commandContext: commandCtx(appContext, mcpClientsMap),
+			serverName: "sentry",
+			serverConfigFor: (name) => (name === "sentry" ? cfg : null),
+			provideAuth: (s) => {
+				authStamped = true;
+				return s;
+			},
+			createClient: () => fresh,
+		});
+
+		expect(authStamped).toBe(true);
+		expect(mcpClientsMap.get("sentry")).toBe(fresh);
+		expect(fresh.isConnected()).toBe(true);
+		expect(mcpServerNames.has("sentry")).toBe(true);
+		const row = appContext.db
+			.query("SELECT mcp_tools FROM hosts WHERE site_id = ?")
+			.get(appContext.siteId) as { mcp_tools: string | null };
+		expect(row.mcp_tools ?? "").toContain("sentry");
+		cleanup();
+	});
+
+	it("parks a fresh client whose connect raises a new challenge (#299)", async () => {
+		const { appContext, cleanup } = createMockAppContext();
+		const cfg = { name: "sentry", transport: "http", url: "https://x/mcp" } as MCPServerConfig;
+		const fresh = {
+			...makeMockClient(cfg, [], false),
+			connect: async () => {
+				throw new AuthChallengeRaisedError("chal-2", "auth_challenge_raised");
+			},
+		} as unknown as MCPClient;
+		const mcpClientsMap = new Map<string, MCPClient>();
+
+		await reconnectResolvedMcpServer({
+			appContext: appContext as unknown as AppContext,
+			mcpClientsMap,
+			mcpServerNames: new Set(),
+			confirmGates: new Map(),
+			sandbox: null,
+			commandContext: commandCtx(appContext, mcpClientsMap),
+			serverName: "sentry",
+			serverConfigFor: () => cfg,
+			createClient: () => fresh,
+		});
+
+		expect(mcpClientsMap.get("sentry")).toBe(fresh);
+		cleanup();
+	});
+
 	it("leaves the client parked (does not throw) when reconnect fails", async () => {
 		const { appContext, cleanup } = createMockAppContext();
 		const client = {

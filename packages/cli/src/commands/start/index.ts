@@ -7,6 +7,7 @@ export type { StartArgs } from "./bootstrap.js";
 export { buildMcpToolDefinitions } from "./mcp.js";
 
 import { HandleMessageTracker } from "@bound/agent";
+import type { MCPServerConfig } from "@bound/agent";
 import { ThreadExecutor, listModelAliases, startHostHeartbeat } from "@bound/core";
 import type { AppContext } from "@bound/core";
 import { markAwsCredentialCacheStale } from "@bound/llm";
@@ -121,11 +122,15 @@ export async function startNode(
 	const mcpOAuth = createMcpOAuthWiring(appContext, configDir, (serverName) =>
 		reloadMcpForReconnect?.(serverName),
 	);
+	const provideMcpAuth = mcpOAuth
+		? (server: MCPServerConfig): MCPServerConfig => ({
+				...server,
+				authProvider: mcpOAuth.providerFor(server) ?? undefined,
+			})
+		: undefined;
 	const { mcpClientsMap, mcpCommands, mcpServerNames, confirmGates } = await initMcp(
 		appContext,
-		mcpOAuth
-			? (server) => ({ ...server, authProvider: mcpOAuth.providerFor(server) ?? undefined })
-			: undefined,
+		provideMcpAuth,
 	);
 	// A resolved grant re-runs connect for the one server so the next call rides an
 	// authenticated session, then refreshes the capability surface in place so the
@@ -157,6 +162,15 @@ export async function startNode(
 				mcpClients: mcpClientsMap,
 			},
 			serverName,
+			// A server whose startup connect failed outright has no parked client;
+			// rebuild it from live config so the resolution still lands (#299).
+			serverConfigFor: (name) => {
+				const mcp = appContext.optionalConfig.mcp;
+				if (!mcp?.ok) return null;
+				const servers = (mcp.value as { servers: MCPServerConfig[] }).servers;
+				return servers.find((s) => s.name === name) ?? null;
+			},
+			provideAuth: provideMcpAuth,
 		});
 
 	// Phase 4: Model router and inference setup

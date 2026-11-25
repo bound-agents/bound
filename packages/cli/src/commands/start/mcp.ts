@@ -5,6 +5,7 @@
 import {
 	AuthChallengeRaisedError,
 	MCPClient,
+	McpOAuthProvider,
 	generateMCPCommands,
 	generateRemoteMCPProxyCommands,
 	updateHostMCPInfo,
@@ -83,11 +84,12 @@ async function connectMcpServer(
 	provideAuth?: (server: MCPServerConfig) => MCPServerConfig,
 ): Promise<McpConnectionAttempt> {
 	let client: MCPClient | null = null;
+	let effectiveCfg: MCPServerConfig = serverCfg;
 	try {
 		// Wire the OAuth provider onto the config before the client is built, so a
 		// server with auth:{type:"oauth"} rides the provider-driven path (R-MO2).
 		// Servers without an auth block pass through unchanged (byte-identical).
-		const effectiveCfg = provideAuth ? provideAuth(serverCfg) : serverCfg;
+		effectiveCfg = provideAuth ? provideAuth(serverCfg) : serverCfg;
 		client = createClient(effectiveCfg);
 		await client.connect();
 		const tools = await client.listTools();
@@ -107,6 +109,24 @@ async function connectMcpServer(
 				client,
 				challengeId: error.challengeId,
 			};
+		}
+		// #299: a terminal OAuth rejection (invalid_grant / invalid_client) that
+		// escaped the SDK's own retry is a lost grant, not a dead server. The
+		// provider clears the rejected tokens and raises a fresh challenge so the
+		// client stays reconnectable. Transient errors come back null and fall
+		// through to the ordinary failure path with credentials untouched.
+		const provider = effectiveCfg.authProvider;
+		if (client && provider instanceof McpOAuthProvider) {
+			const raised = await provider.raiseIfGrantLost(error).catch(() => null);
+			if (raised) {
+				return {
+					ok: false,
+					pendingAuth: true,
+					serverCfg,
+					client,
+					challengeId: raised.challengeId,
+				};
+			}
 		}
 		if (client?.isConnected()) {
 			try {
@@ -329,6 +349,16 @@ export interface McpReconnectConfig {
 	commandContext: CommandContext;
 	/** The server whose grant just resolved. */
 	serverName: string;
+	/**
+	 * Live config lookup for a resolved server that is NOT in the client map
+	 * (its startup connect failed outright, #299). With it the reconnect builds
+	 * a fresh client instead of dropping the resolution on the floor.
+	 */
+	serverConfigFor?: (serverName: string) => MCPServerConfig | null;
+	/** OAuth provider wiring hook for a freshly built client (R-MO2). */
+	provideAuth?: (server: MCPServerConfig) => MCPServerConfig;
+	/** Client factory override for tests; defaults to `new MCPClient(cfg)`. */
+	createClient?: McpClientFactory;
 }
 
 /**
@@ -356,15 +386,35 @@ export async function reconnectResolvedMcpServer(config: McpReconnectConfig): Pr
 		config;
 	const { serverName } = config;
 	const logger = appContext.logger;
-	const existing = mcpClientsMap.get(serverName);
-	if (!existing) return;
+	let existing = mcpClientsMap.get(serverName);
+	let fresh = false;
+	if (!existing) {
+		// #299: startup dropped this server (its connect failed outright), so
+		// there is no parked client to reconnect. Build one from live config.
+		const cfg = config.serverConfigFor?.(serverName) ?? null;
+		if (!cfg) return;
+		const effective = config.provideAuth ? config.provideAuth(cfg) : cfg;
+		existing = (config.createClient ?? ((c) => new MCPClient(c)))(effective);
+		fresh = true;
+	}
 	try {
-		try {
-			await existing.disconnect();
-		} catch {
-			// Best-effort teardown before reconnect.
+		if (!fresh) {
+			try {
+				await existing.disconnect();
+			} catch {
+				// Best-effort teardown before reconnect.
+			}
 		}
-		await existing.connect();
+		try {
+			await existing.connect();
+		} finally {
+			// A fresh client joins the map even when its connect raises a new
+			// challenge, so the next resolution finds it parked (R-MO13b).
+			if (fresh) {
+				mcpClientsMap.set(serverName, existing);
+				mcpServerNames.add(serverName);
+			}
+		}
 
 		// Regenerate commands from the full client map and re-register in bash.
 		const { commands: mcpCommands } = await generateMCPCommands(mcpClientsMap, confirmGates);

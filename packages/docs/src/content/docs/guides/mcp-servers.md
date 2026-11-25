@@ -125,6 +125,13 @@ Each option opens your browser for consent through a running local daemon and st
 resulting token on the host that owns the server. Once authorized, the waiting thread resumes so
 the model can retry the call.
 
+If the authorization server rejects a stored grant (`invalid_grant`, `invalid_client`, or
+`unauthorized_client`, for example after you revoke access), Bound deletes the rejected tokens and
+raises a new challenge for the server instead of retrying them. This applies at startup as well:
+the server waits for authorization rather than dropping out of the server list, and resolving the
+challenge reconnects it without a restart. Network failures, rate limits, and server errors leave
+the stored tokens in place.
+
 ## Use MCP Apps
 
 Compatible `http` servers can render interactive UI inline for tool results in the web UI,

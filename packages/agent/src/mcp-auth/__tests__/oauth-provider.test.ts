@@ -4,7 +4,14 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applySchema, challengeId, findChallengeById } from "@bound/core";
+import {
+	applySchema,
+	challengeId,
+	findChallengeById,
+	markResolved,
+	raiseChallenge,
+} from "@bound/core";
+import { OAuthError, OAuthErrorCode, auth } from "@modelcontextprotocol/client";
 import { AuthChallengeRaisedError, McpOAuthProvider } from "../oauth-provider";
 import { RaiseDebouncer } from "../raise";
 import { McpTokenStore } from "../token-store";
@@ -145,5 +152,169 @@ describe("McpOAuthProvider PKCE/discovery persistence (R-MO18/R-MO23)", () => {
 		const p = provider();
 		await p.saveDiscoveryState({ issuer: "https://as.example" });
 		expect(p.discoveryState()).toEqual({ issuer: "https://as.example" });
+	});
+});
+
+describe("McpOAuthProvider terminal refresh rejection (#299)", () => {
+	const AS = "https://as.example";
+	const TOKEN_URL = `${AS}/token`;
+
+	async function seedResolvedGrant(): Promise<void> {
+		await store.saveBundle("srv", {
+			accessToken: "old-at",
+			refreshToken: "old-rt",
+			scopes: "read write",
+			accessTokenExpiresAt: 0,
+			issuer: AS,
+		});
+		await store.saveDiscoveryState("srv", {
+			authorizationServerUrl: AS,
+			resourceMetadata: {
+				resource: "https://mcp.example/mcp",
+				authorization_servers: [AS],
+			},
+			authorizationServerMetadata: {
+				issuer: AS,
+				authorization_endpoint: `${AS}/authorize`,
+				token_endpoint: TOKEN_URL,
+				response_types_supported: ["code"],
+				code_challenge_methods_supported: ["S256"],
+			},
+		});
+		const id = raiseChallenge(
+			db,
+			{
+				serverName: "srv",
+				owningSiteId: SITE,
+				serverUrl: "https://mcp.example/mcp",
+				scopeDemand: "read write",
+				grantedScopes: "",
+				resourceMetadataHint: null,
+				clientId: "cid",
+			},
+			SITE,
+		);
+		expect(markResolved(db, id, SITE).ok).toBe(true);
+	}
+
+	function configuredProvider(): McpOAuthProvider {
+		return new McpOAuthProvider(
+			db,
+			store,
+			{ name: "srv", url: "https://mcp.example/mcp", scopes: ["read", "write"], clientId: "cid" },
+			SITE,
+			new RaiseDebouncer(),
+		);
+	}
+
+	function tokenEndpoint(status: number, body: Record<string, unknown>) {
+		const calls: string[] = [];
+		const fetchFn = (async (input: string | URL | Request) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			calls.push(url);
+			if (url !== TOKEN_URL) throw new Error(`unexpected fetch ${url}`);
+			return new Response(JSON.stringify(body), {
+				status,
+				headers: { "content-type": "application/json" },
+			});
+		}) as typeof fetch;
+		return { calls, fetchFn };
+	}
+
+	it("invalid_grant clears the refresh credentials and re-raises the challenge as pending", async () => {
+		await seedResolvedGrant();
+		const { calls, fetchFn } = tokenEndpoint(400, {
+			error: "invalid_grant",
+			error_description: "Grant not found",
+		});
+		const p = configuredProvider();
+
+		await expect(auth(p, { serverUrl: "https://mcp.example/mcp", fetchFn })).rejects.toBeInstanceOf(
+			AuthChallengeRaisedError,
+		);
+
+		// One refresh attempt, not a retry with the same rejected token.
+		expect(calls).toEqual([TOKEN_URL]);
+		const bundle = store.getBundle("srv");
+		expect(bundle?.accessToken).toBe("");
+		expect(bundle?.refreshToken).toBeUndefined();
+		expect(p.tokens()).toBeUndefined();
+		// Discovery state survives a tokens-only invalidation.
+		expect(bundle?.discoveryState).toBeDefined();
+		expect(findChallengeById(db, challengeId(SITE, "srv"))?.status).toBe("pending");
+	});
+
+	it("keeps credentials and the resolved challenge on a transient server_error", async () => {
+		await seedResolvedGrant();
+		const { fetchFn } = tokenEndpoint(503, { error: "temporarily_unavailable" });
+		const p = configuredProvider();
+
+		await expect(auth(p, { serverUrl: "https://mcp.example/mcp", fetchFn })).rejects.toBeDefined();
+
+		const bundle = store.getBundle("srv");
+		expect(bundle?.refreshToken).toBe("old-rt");
+		expect(bundle?.accessToken).toBe("old-at");
+		expect(findChallengeById(db, challengeId(SITE, "srv"))?.status).toBe("resolved");
+	});
+
+	it("invalidateCredentials('client') drops the cached DCR registration for the issuer", async () => {
+		await store.saveRegistration(AS, { clientId: "dcr-client" });
+		await store.saveBundle("srv", {
+			accessToken: "at",
+			refreshToken: "rt",
+			scopes: "",
+			accessTokenExpiresAt: 0,
+			issuer: AS,
+		});
+		const p = provider();
+		await p.invalidateCredentials("client");
+		expect(store.getRegistration(AS)).toBeNull();
+		expect(store.getBundle("srv")?.refreshToken).toBe("rt");
+	});
+
+	it("invalidateCredentials('all') clears tokens, verifier, and discovery state", async () => {
+		await store.saveBundle("srv", {
+			accessToken: "at",
+			refreshToken: "rt",
+			scopes: "read",
+			accessTokenExpiresAt: 0,
+			issuer: AS,
+			codeVerifier: "v",
+			discoveryState: { authorizationServerUrl: AS },
+		});
+		const p = provider();
+		await p.invalidateCredentials("all");
+		const b = store.getBundle("srv");
+		expect(b?.accessToken ?? "").toBe("");
+		expect(b?.refreshToken).toBeUndefined();
+		expect(b?.codeVerifier).toBeUndefined();
+		expect(b?.discoveryState).toBeUndefined();
+	});
+
+	it("raiseIfGrantLost turns an escaped invalid_grant into a pending challenge", async () => {
+		await seedResolvedGrant();
+		const p = configuredProvider();
+		const raised = await p.raiseIfGrantLost(
+			new OAuthError(OAuthErrorCode.InvalidGrant, "Grant not found"),
+		);
+		expect(raised).toBeInstanceOf(AuthChallengeRaisedError);
+		expect(raised?.challengeId).toBe(challengeId(SITE, "srv"));
+		expect(store.getBundle("srv")?.refreshToken).toBeUndefined();
+		expect(findChallengeById(db, challengeId(SITE, "srv"))?.status).toBe("pending");
+	});
+
+	it("raiseIfGrantLost ignores transient and non-OAuth errors", async () => {
+		await seedResolvedGrant();
+		const p = configuredProvider();
+		for (const e of [
+			new OAuthError(OAuthErrorCode.ServerError, "HTTP 503"),
+			new OAuthError(OAuthErrorCode.TemporarilyUnavailable, "later"),
+			new TypeError("fetch failed"),
+			new Error("invalid_grant mentioned in a plain message"),
+		]) {
+			expect(await p.raiseIfGrantLost(e)).toBeNull();
+		}
+		expect(store.getBundle("srv")?.refreshToken).toBe("old-rt");
+		expect(findChallengeById(db, challengeId(SITE, "srv"))?.status).toBe("resolved");
 	});
 });
