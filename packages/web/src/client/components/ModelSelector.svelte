@@ -401,6 +401,15 @@
 			class="popover"
 			class:up={openUp}
 			bind:this={popEl}
+			role="presentation"
+			onkeydown={(e) => {
+				// Escape from anywhere in the popover (route-pin buttons included) closes it;
+				// option keydowns already handled it and called preventDefault.
+				if (e.key === "Escape" && !e.defaultPrevented) {
+					e.preventDefault();
+					close(true);
+				}
+			}}
 			style={popMaxHeight ? `max-height: ${popMaxHeight}px` : undefined}
 		>
 			<ul

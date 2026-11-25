@@ -232,7 +232,7 @@ describe("App hash router", () => {
 
 	it("routes /persona to the Persona view", async () => {
 		const { target } = await mountApp("#/persona");
-		expect(label(target)).toBe("09 Persona");
+		expect(label(target)).toBe("08 Persona");
 	});
 
 	it("falls back to the System Map for an unknown hash", async () => {

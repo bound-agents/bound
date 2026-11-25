@@ -269,6 +269,27 @@
 		.clock {
 			padding: 0 10px;
 		}
+		.brand {
+			padding: 14px 16px;
+		}
+		.nav-btn {
+			padding: 14px 11px;
+			gap: 8px;
+		}
+	}
+
+	/* Narrow desktop: the clock yields so the nine tabs keep one row. */
+	@media (max-width: 1120px) and (min-width: 641px) {
+		.clock {
+			display: none;
+		}
+		.nav-btn {
+			padding: 14px 8px;
+			gap: 6px;
+		}
+		.label {
+			font-size: 13px;
+		}
 	}
 
 	/* Phone: the brand + 8 nav tabs + clock can't share one row at ~390px without

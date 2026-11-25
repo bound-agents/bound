@@ -155,6 +155,33 @@ test.describe("model selector", () => {
 		await expect(page.locator(".pin-badge")).toBeVisible();
 	});
 
+	test("Escape from a focused route pin closes the popover", async ({ page }) => {
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		await trigger(page).click();
+		const pin = page.locator(".pin-choice").nth(1);
+		await pin.focus();
+		await expect(pin).toBeFocused();
+		await page.keyboard.press("Escape");
+		await expect(popover(page)).toHaveCount(0);
+		await expect(trigger(page)).toBeFocused();
+	});
+
+	test("top bar never overflows the desktop viewport", async ({ page, isMobile }) => {
+		test.skip(!!isMobile, "desktop widths only");
+		await mountThread(page, { modelHint: "gpt-6-luna" });
+		for (const [width, height] of [
+			[1280, 800],
+			[1024, 768],
+		] as const) {
+			await page.setViewportSize({ width, height });
+			const { scroll, inner } = await page.evaluate(() => ({
+				scroll: document.documentElement.scrollWidth,
+				inner: window.innerWidth,
+			}));
+			expect(scroll, `scrollWidth at ${width}px`).toBeLessThanOrEqual(inner);
+		}
+	});
+
 	test("switching models updates the header chip immediately", async ({ page }) => {
 		await mountThread(page, { modelHint: "gpt-6-luna" });
 		const chip = page.locator(".chip").first();

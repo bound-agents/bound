@@ -297,6 +297,17 @@ describe("ModelSelector", () => {
 		expect(pins[1]?.getAttribute("aria-pressed")).toBe("true");
 	});
 
+	it("closes on Escape from a focused route-pin button and refocuses the trigger", async () => {
+		const { target } = await mount(expanded, "glm-5-3-flash", {}, expandedRouting);
+		await openList(target);
+		const pins = [...target.querySelectorAll(".pin-section .pin-choice")] as HTMLElement[];
+		pins[1]?.focus();
+		pins[1]?.dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Escape", bubbles: true }));
+		await dom?.settle();
+		expect(target.querySelector('[role="listbox"]')).toBeNull();
+		expect(win().document.activeElement).toBe(target.querySelector("#model"));
+	});
+
 	it("prefills a hintless thread from its latest message model", async () => {
 		const { target } = await mount(
 			expanded,

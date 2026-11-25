@@ -235,7 +235,7 @@
 							<div class="card-top">
 								<LineBadge lineIndex={idx + 2} size="compact" />
 								<div class="card-title">
-									<h3>{host.host_name}</h3>
+									<h3 title={host.host_name}>{host.host_name}</h3>
 									<div class="site-id mono">{host.site_id.slice(0, 12)}</div>
 								</div>
 								<div class="card-right">

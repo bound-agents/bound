@@ -337,7 +337,9 @@
 										onclick={() => moveRoute(m, i, 1)}>↓</button
 									>
 								</span>
-								<span class="r-route mono">{labels.routeLabel(r.route_id)}</span>
+								<span class="r-route mono" title={labels.routeLabel(r.route_id)}
+									>{labels.routeLabel(r.route_id)}</span
+								>
 								<span class="r-host">on {r.host_name}</span>
 								<span class="r-health {r.health}">{healthText(r, now)}</span>
 								<label class="toggle">
@@ -355,7 +357,9 @@
 						{/each}
 						{#each m.stale_routes as s (s.route_id)}
 							<li class="route-row stale">
-								<span class="r-route">{s.host_name ?? "Unknown host"} / {s.provider ?? "?"}</span>
+								<span class="r-route" title="{s.host_name ?? 'Unknown host'} / {s.provider ?? '?'}"
+									>{s.host_name ?? "Unknown host"} / {s.provider ?? "?"}</span
+								>
 								<span class="r-stale-tag">Unavailable</span>
 								<Btn
 									size="sm"

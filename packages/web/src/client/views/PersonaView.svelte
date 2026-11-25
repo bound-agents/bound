@@ -79,7 +79,7 @@
 </script>
 
 <Page>
-	<SectionHeader title="Persona" subtitle="Cluster-wide system voice" number={9}>
+	<SectionHeader title="Persona" subtitle="Cluster-wide system voice" number={8}>
 		{#snippet actions()}
 			<Btn variant="ghost" disabled={!dirty || saving} onclick={revert}>Revert</Btn>
 			<Btn

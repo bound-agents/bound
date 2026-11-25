@@ -66,6 +66,20 @@ test.describe("settings › models", () => {
 		await assertNoHorizontalOverflow(page);
 	});
 
+	test("route labels carry a title so truncated text stays readable", async ({ page }) => {
+		await mountSettings(page);
+		await page.locator(".model-item", { hasText: "Mai Code 2" }).click();
+		const labels = page.locator(".route-row .r-route.mono");
+		await expect(labels.first()).toBeAttached();
+		const n = await labels.count();
+		expect(n).toBeGreaterThan(0);
+		for (let i = 0; i < n; i++) {
+			const el = labels.nth(i);
+			const text = (await el.textContent())?.trim() ?? "";
+			await expect(el).toHaveAttribute("title", text);
+		}
+	});
+
 	test("Enabled toggle calls the drain API", async ({ page }) => {
 		const calls = await mountSettings(page);
 		await page.locator(".model-item", { hasText: "Kimi K3" }).click();
