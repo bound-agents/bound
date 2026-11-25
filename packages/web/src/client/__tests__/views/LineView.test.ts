@@ -699,3 +699,75 @@ describe("LineView — live WS events and polling", () => {
 		expect(note?.textContent).toBe("\u00b7 fallback from opus-4.8");
 	});
 });
+
+describe("LineView — inline rename", () => {
+	const threadId = "thread-abc-1234567890";
+
+	function patches(): Array<{ path: string; body: unknown }> {
+		return requireDom().requests.filter((r) => r.method === "PATCH");
+	}
+
+	it("renames the thread from the header and shows the new title", async () => {
+		const { target } = await mountView({ thread: thread({ title: "Planning" }) });
+		requireDom().route("PATCH", new RegExp(`/api/threads/${threadId}$`), () =>
+			thread({ title: "Roadmap review" }),
+		);
+		await requireDom().fire(target.querySelector(".rename-button") as Element, "click");
+		const input = target.querySelector("input.title-input") as HTMLInputElement;
+		expect(input).not.toBeNull();
+		expect(input.value).toBe("Planning");
+		await requireDom().type(input, "  Roadmap review  ");
+		await requireDom().fire(input, "keydown", { key: "Enter" });
+		await requireDom().settle();
+		expect(patches()).toEqual([
+			expect.objectContaining({
+				path: `/api/threads/${threadId}`,
+				body: { title: "Roadmap review" },
+			}),
+		]);
+		expect(target.querySelector("input.title-input")).toBeNull();
+		expect(target.querySelector("h1.title")?.textContent).toBe("Roadmap review");
+	});
+
+	it("cancels on Escape without a PATCH", async () => {
+		const { target } = await mountView({ thread: thread({ title: "Keep me" }) });
+		await requireDom().fire(target.querySelector(".rename-button") as Element, "click");
+		const input = target.querySelector("input.title-input") as HTMLInputElement;
+		await requireDom().type(input, "Discarded");
+		await requireDom().fire(input, "keydown", { key: "Escape" });
+		expect(patches()).toEqual([]);
+		expect(target.querySelector("input.title-input")).toBeNull();
+		expect(target.querySelector("h1.title")?.textContent).toBe("Keep me");
+	});
+
+	it("skips the PATCH when the title is blank or unchanged", async () => {
+		const { target } = await mountView({ thread: thread({ title: "Same" }) });
+		const dom = requireDom();
+		await dom.fire(target.querySelector(".rename-button") as Element, "click");
+		await dom.type(target.querySelector("input.title-input") as Element, "Same");
+		await dom.fire(target.querySelector("input.title-input") as Element, "blur");
+		await dom.fire(target.querySelector(".rename-button") as Element, "click");
+		await dom.type(target.querySelector("input.title-input") as Element, "   ");
+		await dom.fire(target.querySelector("input.title-input") as Element, "blur");
+		expect(patches()).toEqual([]);
+		expect(target.querySelector("h1.title")?.textContent).toBe("Same");
+	});
+
+	it("keeps the old title and reports the error when the rename fails", async () => {
+		const { target } = await mountView({ thread: thread({ title: "Original" }) });
+		const dom = requireDom();
+		dom.route(
+			"PATCH",
+			new RegExp(`/api/threads/${threadId}$`),
+			() => new Response(JSON.stringify({ error: "Title too long" }), { status: 400 }),
+		);
+		await dom.fire(target.querySelector(".rename-button") as Element, "click");
+		const input = target.querySelector("input.title-input") as HTMLInputElement;
+		await dom.type(input, "Replacement");
+		await dom.fire(input, "keydown", { key: "Enter" });
+		await dom.settle();
+		expect(patches()).toHaveLength(1);
+		expect(target.querySelector("h1.title")?.textContent).toBe("Original");
+		expect(target.querySelector(".rename-error")?.textContent).toContain("Rename failed");
+	});
+});

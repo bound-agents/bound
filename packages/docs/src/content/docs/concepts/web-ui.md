@@ -16,6 +16,9 @@ The Bound web UI runs on the web server, which defaults to
 **Contains:** The thread's messages, live activity, and interaction surface. Threads opened
 from **System Map** appear here.
 
+Use the pencil beside the header title to rename the thread. Enter or leaving the field saves
+it, Escape cancels, and a blank or unchanged title leaves the thread as it was.
+
 The composer stages multiple attachments, including images pasted from the clipboard, then
 sends them together. Press Escape with an empty input to clear staged attachments. Auxiliary
 invocations show a live running card while the web UI is connected. That card is transient:

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { ThreadDetail, TurnProvenanceInfo } from "@bound/client";
 	import type { YardExecutionEvent } from "@bound/shared";
-	import { ChevronLeft, Paperclip } from "lucide-svelte";
-	import { onDestroy, onMount } from "svelte";
+	import { ChevronLeft, Paperclip, Pencil } from "lucide-svelte";
+	import { onDestroy, onMount, tick } from "svelte";
 	import Btn from "../components/Btn.svelte";
 	import ContextDebugPanel from "../components/ContextDebugPanel.svelte";
 	import LineBadge from "../components/LineBadge.svelte";
@@ -27,6 +27,7 @@
 	import { type ModelLabels, buildModelLabels, parseRouteId } from "../lib/model-labels";
 	import { modelStore } from "../lib/modelStore";
 	import { navigateTo } from "../lib/router";
+	import { MAX_THREAD_TITLE_LENGTH, resolveTitleEdit } from "../lib/thread-title";
 	import {
 		EMPTY_YARD_STATE,
 		type YardExecutionState,
@@ -505,6 +506,58 @@
 		return "Conversation";
 	}
 
+	// Inline header rename, same contract as ThreadList's: Enter or blur saves,
+	// Escape cancels, and a blank or unchanged title closes without a request.
+	let editingTitle = $state(false);
+	let titleDraft = $state("");
+	let titleInput = $state<HTMLInputElement | undefined>();
+	let committingTitle = $state(false);
+	let renameError = $state<string | null>(null);
+
+	async function startRename(): Promise<void> {
+		if (!thread) return;
+		titleDraft = viewTitle();
+		renameError = null;
+		editingTitle = true;
+		await tick();
+		titleInput?.focus();
+		titleInput?.select();
+	}
+
+	function cancelRename(): void {
+		editingTitle = false;
+		titleDraft = "";
+	}
+
+	async function commitRename(): Promise<void> {
+		if (!editingTitle || committingTitle || !thread) return;
+		const title = resolveTitleEdit(titleDraft, thread.title);
+		if (title === null) {
+			cancelRename();
+			return;
+		}
+		committingTitle = true;
+		try {
+			const updated = await client.renameThread(threadId, title);
+			if (thread) thread = { ...thread, title: updated.title ?? title };
+		} catch (error) {
+			renameError = error instanceof Error ? error.message : "Rename failed";
+		} finally {
+			committingTitle = false;
+			cancelRename();
+		}
+	}
+
+	function onTitleKeydown(event: KeyboardEvent): void {
+		if (event.key === "Escape") {
+			event.preventDefault();
+			cancelRename();
+		} else if (event.key === "Enter" && !event.isComposing) {
+			event.preventDefault();
+			void commitRename();
+		}
+	}
+
 	function getAttachedSessionHosts(): string[] {
 		return Array.isArray(thread?.attachedSessionHosts) ? thread.attachedSessionHosts : [];
 	}
@@ -689,7 +742,36 @@
 				{#if thread}
 					<div class="kicker">{lineName} Line</div>
 				{/if}
-				<h1 class="title">{viewTitle()}</h1>
+				{#if editingTitle}
+					<input
+						class="title-input"
+						bind:this={titleInput}
+						bind:value={titleDraft}
+						maxlength={MAX_THREAD_TITLE_LENGTH}
+						disabled={committingTitle}
+						aria-label="Thread title"
+						onkeydown={onTitleKeydown}
+						onblur={() => void commitRename()}
+					/>
+				{:else}
+					<div class="title-row">
+						<h1 class="title">{viewTitle()}</h1>
+						{#if thread}
+							<button
+								type="button"
+								class="rename-button"
+								title="Rename thread"
+								aria-label={`Rename ${viewTitle()}`}
+								onclick={() => void startRename()}
+							>
+								<Pencil size={14} />
+							</button>
+						{/if}
+					</div>
+				{/if}
+				{#if renameError}
+					<p class="rename-error" role="alert">Rename failed: {renameError}</p>
+				{/if}
 			</div>
 			{#if thread}
 				<StatusChip status={agentActive ? "active" : "idle"} />
@@ -971,6 +1053,52 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		color: var(--ink);
+	}
+
+	.title-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.rename-button {
+		flex: none;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 4px;
+		border: 0;
+		background: transparent;
+		color: var(--ink-3);
+		cursor: pointer;
+	}
+
+	.rename-button:hover,
+	.rename-button:focus-visible {
+		color: var(--accent);
+	}
+
+	.title-input {
+		width: 100%;
+		box-sizing: border-box;
+		margin: 2px 0 0;
+		padding: 2px 6px;
+		border: 1px solid var(--accent);
+		border-radius: 3px;
+		background: var(--paper);
+		color: var(--ink);
+		font-family: var(--font-header);
+		font-size: 26px;
+		font-weight: 700;
+		letter-spacing: -0.018em;
+		line-height: 1.25;
+	}
+
+	.rename-error {
+		margin: 4px 0 0;
+		font-size: var(--fs-small, 12px);
+		color: var(--err);
 	}
 
 	.agent-state {
@@ -1345,7 +1473,8 @@
 			gap: 10px;
 			flex-wrap: wrap;
 		}
-		.title {
+		.title,
+		.title-input {
 			font-size: 19px;
 		}
 		.input-wrap {

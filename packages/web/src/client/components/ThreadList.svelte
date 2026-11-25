@@ -5,6 +5,7 @@
 	import { formatRelativeTime, isToday } from "../lib/format-time";
 	import { getLineColor, getLineName } from "../lib/metro-lines";
 	import { lineRoute } from "../lib/route-utils";
+	import { MAX_THREAD_TITLE_LENGTH, resolveTitleEdit } from "../lib/thread-title";
 	import LineBadge from "./LineBadge.svelte";
 
 	interface Props {
@@ -66,8 +67,8 @@
 		event.preventDefault();
 		event.stopPropagation();
 		if (editingThreadId !== thread.id || committingThreadId === thread.id) return;
-		const title = editingTitle.trim();
-		if (!title || title.length > 256 || title === thread.title?.trim()) {
+		const title = resolveTitleEdit(editingTitle, thread.title);
+		if (title === null) {
 			cancelEditing();
 			return;
 		}
@@ -326,7 +327,7 @@
 									class="title-input"
 									bind:this={titleInput}
 									bind:value={editingTitle}
-									maxlength="256"
+									maxlength={MAX_THREAD_TITLE_LENGTH}
 									disabled={committingThreadId === thread.id}
 									aria-label="Thread title"
 									onclick={(event) => {
