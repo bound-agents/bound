@@ -189,6 +189,32 @@ describe("threads routes — create + cost", () => {
 			expect(body.id).toBe("t1");
 			expect(Array.isArray(body.attachedSessionHosts)).toBe(true);
 		});
+
+		it("returns the thread owner's display name for user-message labels (#258)", async () => {
+			seedThread(db, "t1");
+			const now = "2026-07-04T00:00:00.000Z";
+			insertRow(
+				db,
+				"users",
+				{
+					id: OPERATOR,
+					display_name: "Kara",
+					platform_ids: null,
+					first_seen_at: now,
+					modified_at: now,
+					deleted: 0,
+				},
+				SITE,
+			);
+			const body = (await (await app.request("/t1")).json()) as { userDisplayName: string | null };
+			expect(body.userDisplayName).toBe("Kara");
+		});
+
+		it("returns a null display name when the owner has no users row", async () => {
+			seedThread(db, "t1");
+			const body = (await (await app.request("/t1")).json()) as { userDisplayName: string | null };
+			expect(body.userDisplayName).toBeNull();
+		});
 	});
 
 	describe("GET /:id/status forwarded-status branches", () => {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolveUserMessageSender } from "@bound/shared/message-sender";
 	import { renderMarkdown } from "../lib/markdown";
 	import { mermaid } from "../lib/mermaid";
 	import { getLineColor } from "../lib/metro-lines";
@@ -14,6 +15,12 @@
 		modelNoteTitle?: string | null;
 		exitCode?: number | null;
 		threadColor?: number;
+		/** The row's metadata bag; `user_name` / `sender_role` label user-role messages. */
+		metadata?: string | Record<string, unknown> | null;
+		/** The thread owner's `users.display_name`, for user rows stamped before `user_name`. */
+		userDisplayName?: string | null;
+		/** The main agent's name for main→aux messages; defaults to "agent". */
+		agentName?: string | null;
 	}
 
 	const {
@@ -25,6 +32,9 @@
 		modelNoteTitle = null,
 		exitCode = null,
 		threadColor = 0,
+		metadata = null,
+		userDisplayName = null,
+		agentName = null,
 	}: Props = $props();
 
 	const isError = $derived(role === "tool_result" && exitCode !== null && exitCode !== 0);
@@ -34,7 +44,7 @@
 	const roleLabel = $derived.by(() => {
 		switch (role) {
 			case "user":
-				return "You";
+				return resolveUserMessageSender({ metadata, userDisplayName, agentName }).name ?? "You";
 			case "assistant":
 				return "Agent";
 			case "alert":

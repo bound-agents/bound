@@ -50,6 +50,8 @@
 		turnRange?: TurnRange | null;
 		scrollRequest?: ScrollRequest | null;
 		threadColor?: number;
+		/** The thread owner's display name — labels user rows stamped before `user_name` (#258). */
+		userDisplayName?: string | null;
 		lineColor?: string;
 		isAgentActive?: boolean;
 		appInstances?: McpAppInstance[];
@@ -88,6 +90,7 @@
 		turnRange = null,
 		scrollRequest = null,
 		threadColor = 0,
+		userDisplayName = null,
 		lineColor = "#999",
 		isAgentActive = false,
 		appInstances = [],
@@ -480,6 +483,8 @@
 								modelNote={note?.text ?? null}
 								modelNoteTitle={note?.title ?? null}
 								exitCode={item.msg.exit_code}
+								metadata={item.msg.metadata ?? null}
+								{userDisplayName}
 								{threadColor}
 							/>
 						{/if}

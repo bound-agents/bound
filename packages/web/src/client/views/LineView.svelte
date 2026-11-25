@@ -818,6 +818,7 @@
 				turnRange={panelMode === "debugger" ? turnRange : null}
 				scrollRequest={panelMode === "context" ? scrollRequest : null}
 				threadColor={thread?.color ?? 0}
+				userDisplayName={thread?.userDisplayName ?? null}
 				{lineColor}
 				isAgentActive={agentActive}
 				appInstances={threadAppInstances}

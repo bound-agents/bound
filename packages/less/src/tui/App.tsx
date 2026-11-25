@@ -314,6 +314,10 @@ export function App({
 	// stdout.rows (Ink then full-clears the terminal).
 	const bannerModel = (id: string) => truncateLabel(displayModel(id), 40);
 
+	// The thread owner's display name labels user rows stamped before `user_name`
+	// (#258). Read on the same poll as the terminal title.
+	const [userDisplayName, setUserDisplayName] = useState<string | null>(null);
+
 	useEffect(() => {
 		let cancelled = false;
 		let lastTitle = state.threadId === initialThreadId ? initialThreadTitle : null;
@@ -326,7 +330,9 @@ export function App({
 			if (!client) return;
 			try {
 				const thread = await client.getThread(state.threadId);
-				if (cancelled || thread.title === lastTitle) return;
+				if (cancelled) return;
+				setUserDisplayName(thread.userDisplayName ?? null);
+				if (thread.title === lastTitle) return;
 				lastTitle = thread.title;
 				terminalTitle.set(formatThreadTitleForTerminal(thread.title));
 			} catch {
@@ -562,6 +568,7 @@ export function App({
 				key={state.threadId}
 				client={client}
 				threadId={state.threadId}
+				userDisplayName={userDisplayName}
 				model={modelDisplay}
 				connectionState={connectionState}
 				cwd={cwd}

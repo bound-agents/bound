@@ -86,6 +86,11 @@ Foreground and background auxiliary invocations show a live running card while t
 client is connected. Clients connecting after an invocation starts see the completed result once
 it lands.
 
+User-role messages carry their sender in the header: the display name stamped when the message
+was sent, else the thread owner's display name, else `you`. When you attach to an auxiliary
+child thread, the main agent's dispatched instructions read `agent` rather than an operator
+name.
+
 ## Connect to another server
 
 Override the configured server URL for the current run:

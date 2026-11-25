@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { ContentBlock } from "@bound/llm";
 import { type Message, applyHashlineEdits } from "@bound/shared";
+import { resolveUserMessageSender } from "@bound/shared/message-sender";
 import { Box, Text } from "ink";
 import type React from "react";
 import { isShellToolName } from "../../tools/shell";
@@ -712,11 +713,17 @@ export interface MessageBlockProps {
 	 * only already-absolute paths linkify, and everything degrades to plain text.
 	 */
 	cwd?: string;
+	/**
+	 * The thread owner's `users.display_name`, labelling user rows that carry no
+	 * stamped `user_name` (#258). Without it such rows keep the `you` header.
+	 */
+	userDisplayName?: string | null;
 }
 
 /**
  * Renders a message based on its role and content.
- * - `"user"`: green left-stripe, "you" header, content
+ * - `"user"`: green left-stripe, sender header (stamped `user_name`, the thread
+ *   owner's display name, `agent` for a main→aux message, else "you"), content
  * - `"assistant"`: cyan left-stripe, "agent" header, content (string or ContentBlock[])
  * - `"tool_call"`: cyan stripe (continues assistant turn), `⏵ name args` rows
  * - `"tool_result"`: cyan stripe, `✓/✗ name · summary` with truncated body
@@ -732,6 +739,7 @@ export function MessageBlock({
 	activitySummary,
 	terminalColumns,
 	cwd,
+	userDisplayName,
 }: MessageBlockProps): React.ReactElement {
 	// Stripe width budget: leave 1 col of right-side gutter for terminals
 	// that reserve a column for cursor/scrollbar artifacts, and floor at
@@ -801,10 +809,13 @@ export function MessageBlock({
 		// before the server persists + broadcasts it. Render dimmed with a
 		// "sending…" cue so it reads as in-flight, not yet committed.
 		const isPending = message.id === PENDING_USER_MESSAGE_ID;
+		const senderLabel =
+			resolveUserMessageSender({ metadata: message.metadata, userDisplayName }).name ?? "you";
 		return (
 			<StripeBox color={isPending ? tokens.pendingStripe : tokens.userStripe} width={stripeWidth}>
 				<Text bold color={isPending ? tokens.pendingStripe : tokens.userStripe}>
-					you{isPending ? <Text dimColor> · sending…</Text> : null}
+					{senderLabel}
+					{isPending ? <Text dimColor> · sending…</Text> : null}
 				</Text>
 				{isPending ? (
 					<Text dimColor>

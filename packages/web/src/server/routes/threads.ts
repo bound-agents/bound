@@ -4,6 +4,7 @@ import {
 	findLiveThreadById,
 	findRunningTaskIdForThread,
 	findThreadById,
+	findUserDisplayNameById,
 	getAttachedSessionHosts,
 	getHostMetaHostName,
 	getSiteId,
@@ -271,6 +272,7 @@ export function createThreadsRoutes(
 			return c.json({
 				...thread,
 				attachedSessionHosts: getAttachedSessionHostLabels(db, id),
+				userDisplayName: findUserDisplayNameById(db, thread.user_id)?.display_name ?? null,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";

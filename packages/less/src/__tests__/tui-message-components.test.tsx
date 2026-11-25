@@ -492,3 +492,32 @@ describe("ToolCallCard streamed-stdout sanitization (ghost-card class)", () => {
 		expect(frame).toContain("red");
 	});
 });
+
+describe("MessageBlock user sender identity (#258)", () => {
+	const header = (metadata: string | null, userDisplayName?: string) => {
+		const message = messageFixture({ id: "u1", role: "user", content: "Hello there", metadata });
+		const frame =
+			renderMessageBlock(message, { terminalColumns: 80, userDisplayName }).lastFrame() ?? "";
+		return frame.split("\n")[0] ?? "";
+	};
+
+	it("shows the user_name stamped on the message metadata", () => {
+		const h = header(JSON.stringify({ user_name: "Kara" }), "Other");
+		expect(h).toContain("Kara");
+		expect(h).not.toContain("you");
+	});
+
+	it("falls back to the thread owner's display name", () => {
+		expect(header(null, "Kara")).toContain("Kara");
+	});
+
+	it("keeps 'you' when no identity is known", () => {
+		expect(header(null)).toContain("you");
+	});
+
+	it("labels a main-agent message as 'agent'", () => {
+		const h = header(JSON.stringify({ sender_role: "main" }), "Kara");
+		expect(h).toContain("agent");
+		expect(h).not.toContain("Kara");
+	});
+});

@@ -169,3 +169,26 @@ describe("MessageBubble", () => {
 		expect(message.getAttribute("style")).toContain("#1E7FA8");
 	});
 });
+
+describe("MessageBubble sender identity (#258)", () => {
+	const label = async (props: Record<string, unknown>) => {
+		const { target } = await mountBubble({ role: "user", content: "hi", ...props });
+		return target.querySelector(".role")?.textContent?.trim();
+	};
+
+	it("shows the user_name stamped on the message metadata", async () => {
+		expect(
+			await label({ metadata: JSON.stringify({ user_name: "Kara" }), userDisplayName: "Other" }),
+		).toBe("Kara");
+	});
+
+	it("falls back to the thread owner's display name", async () => {
+		expect(await label({ metadata: null, userDisplayName: "Kara" })).toBe("Kara");
+	});
+
+	it("labels a main-agent message in an aux thread as the agent", async () => {
+		expect(
+			await label({ metadata: JSON.stringify({ sender_role: "main" }), userDisplayName: "Kara" }),
+		).toBe("agent");
+	});
+});

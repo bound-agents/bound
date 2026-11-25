@@ -476,6 +476,8 @@ export function describeSandboxStatus(
 export interface ChatViewProps {
 	client: BoundClient | null;
 	threadId: string;
+	/** The thread owner's `users.display_name` — labels user rows lacking a stamped `user_name` (#258). */
+	userDisplayName?: string | null;
 	model: string | null;
 	connectionState: ConnectionState;
 	cwd: string;
@@ -551,6 +553,7 @@ export interface ChatViewProps {
 export function ChatView({
 	client,
 	threadId,
+	userDisplayName,
 	model,
 	connectionState,
 	cwd,
@@ -1024,6 +1027,7 @@ export function ChatView({
 									activitySummary={turnActivity.get(msg.id)}
 									terminalColumns={termColumns}
 									cwd={cwd}
+									userDisplayName={userDisplayName}
 								/>
 							</Box>
 						);
@@ -1115,7 +1119,12 @@ export function ChatView({
 					    repaints. See partitionPendingMessage / #134. */}
 					{pending && (
 						<Box marginBottom={1}>
-							<MessageBlock message={pending} terminalColumns={termColumns} cwd={cwd} />
+							<MessageBlock
+								message={pending}
+								terminalColumns={termColumns}
+								cwd={cwd}
+								userDisplayName={userDisplayName}
+							/>
 						</Box>
 					)}
 

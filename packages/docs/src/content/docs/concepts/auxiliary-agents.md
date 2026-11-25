@@ -67,7 +67,7 @@ capability limits in the broader trust model.
 
 Each invocation creates a child thread associated with the parent and the auxiliary
 identity. Its instructions are marked as work dispatched by the main agent rather than as a
-human message. Auxiliary child threads stay out of the web UI thread directory because they
+human message, and the web UI and boundless label them **agent** in the child transcript. Auxiliary child threads stay out of the web UI thread directory because they
 are internal errands rather than operator conversations; the invoking chat turn carries the
 result and the navigable link into the child transcript.
 

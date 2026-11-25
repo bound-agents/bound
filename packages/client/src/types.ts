@@ -19,6 +19,8 @@ export interface ThreadListEntry extends Thread {
 export interface ThreadDetail extends Thread {
 	/** Host display names for live boundless / external client sessions attached to this thread. */
 	attachedSessionHosts: string[];
+	/** The thread owner's `users.display_name`; null when the user row is missing. */
+	userDisplayName: string | null;
 }
 
 /** GET /api/threads/:id/status */
