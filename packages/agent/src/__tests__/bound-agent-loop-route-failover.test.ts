@@ -208,6 +208,54 @@ describe("MainAgentLoop same-model route failover (#265, §7.1)", () => {
 		expect(router.getRouteHealthState("route-b").status).toBe("backoff");
 	});
 
+	it("keeps the local route's cause when failover lands on a remote route that also fails", async () => {
+		// One local route on this host plus one remote route on a peer: the usual
+		// two-host cluster shape. The peer does not advertise work_spool_capable,
+		// so the relay attempt fails fast with a typed routing error.
+		const now = new Date().toISOString();
+		db.run(
+			"INSERT INTO hosts (site_id, host_name, models, work_spool_capable, online_at, modified_at, deleted) VALUES (?, ?, ?, 0, ?, ?, 0)",
+			[
+				"remote-site",
+				"remote-host",
+				JSON.stringify([
+					{
+						id: "m1",
+						logical_model: "m1",
+						route_id: "remote-site:openai-compatible:m1",
+						capabilities: CAPS,
+					},
+				]),
+				now,
+				now,
+			],
+		);
+		try {
+			const a = new FailingBackend(() => new LLMError("Weekly usage limit reached", "zai", 402));
+			const backends = new Map<string, LLMBackend>([["route-a", a]]);
+			const configs = new Map<string, BackendConfig>([
+				[
+					"route-a",
+					{ id: "route-a", provider: "openai-compatible", model: "m1", logicalModel: "m1" },
+				],
+			]);
+			const router = new ModelRouter(backends, "route-a", undefined, configs);
+
+			const result = await makeLoop(router).run();
+
+			expect(result.error).toBeDefined();
+			expect(a.calls).toBe(1);
+			// Both the local route's usage cap and the remote attempt are named.
+			expect(result.error).toContain("route-a");
+			expect(result.error).toContain("Weekly usage limit reached");
+			expect(result.error).toContain("remote-site:openai-compatible:m1");
+			expect(result.error).toContain("work_spool_capable");
+			expect(router.getRouteHealthState("route-a").status).toBe("backoff");
+		} finally {
+			db.run("DELETE FROM hosts WHERE site_id = ?", ["remote-site"]);
+		}
+	}, 20_000);
+
 	it("records a terminal failure exactly once (no double backoff)", async () => {
 		const a = new FailingBackend(() => new LLMError("Bad Request", "zai", 400));
 		const b = new FailingBackend(() => new LLMError("Bad Request", "zai", 400));

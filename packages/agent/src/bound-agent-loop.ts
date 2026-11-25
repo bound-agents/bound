@@ -937,13 +937,25 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		error: unknown,
 		frame: BoundPreparedFrame,
 	): Promise<LoopTurnDecision | null> {
-		const backendId =
-			this.lastModelResolution?.kind === "local" ? this.lastModelResolution.modelId : null;
+		const resolution = this.lastModelResolution;
+		if (resolution?.kind === "remote") {
+			// A remote attempt is the end of this loop's failover chain (the relay
+			// already walked the remote candidate hosts), but it still belongs in the
+			// chain: local route A failing over to a remote route that also fails
+			// must surface both causes, not only the remote one.
+			this.routeFailureChain.push({
+				routeId: this.currentRouteLabel() ?? resolution.modelId,
+				error: formatError(error),
+			});
+			this.routeFailureRecordedFor = error;
+			return null;
+		}
+		const backendId = resolution?.kind === "local" ? resolution.modelId : null;
 		if (!backendId) {
 			return null;
 		}
 		this.routeFailureChain.push({
-			routeId: this.modelRouter.getRouteId(backendId) ?? backendId,
+			routeId: this.currentRouteLabel() ?? backendId,
 			error: formatError(error),
 		});
 		this.routeFailureRecordedFor = error;
@@ -1165,7 +1177,16 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 				});
 			}
 		}
-		const failureChain = this.routeFailureChain;
+		const failureChain = [...this.routeFailureChain];
+		// An error that bypassed onRouteFailure (not a classified route failure)
+		// still ends a chain that earlier routes started: append it so the
+		// surfaced error keeps every earlier route's cause.
+		if (failureChain.length > 0 && this.routeFailureRecordedFor !== error) {
+			failureChain.push({
+				routeId: this.currentRouteLabel() ?? "unknown route",
+				error: formatError(error),
+			});
+		}
 		this.resetRouteFailureChain();
 		const errMsg = error instanceof Error ? error.message : String(error);
 		if (chunks.length > 0) {
@@ -1206,6 +1227,25 @@ export abstract class BoundAgentLoop extends ModularAgentLoop {
 		const finalError = formatRouteFailureChain(formatError(error), failureChain);
 		this.emitAlert(`Error: ${finalError}`);
 		return { action: "error", error: finalError };
+	}
+
+	/**
+	 * Operator-facing label for the route the current resolution targets: the
+	 * local backend's RouteId, or the remote host's advertised RouteId (falling
+	 * back to the candidate host names) for a relayed attempt.
+	 */
+	private currentRouteLabel(): string | null {
+		const resolution = this.lastModelResolution;
+		if (resolution?.kind === "local") {
+			return this.modelRouter.getRouteId(resolution.modelId) ?? resolution.modelId;
+		}
+		if (resolution?.kind === "remote") {
+			const advertised = resolution.hosts.find((h) => h.routeId)?.routeId;
+			if (advertised) return advertised;
+			const names = resolution.hosts.map((h) => h.host_name).join("/");
+			return names ? `${names}:${resolution.modelId}` : resolution.modelId;
+		}
+		return null;
 	}
 
 	/** Start a fresh failover chain (after a served turn or a surfaced terminal error). */

@@ -243,7 +243,7 @@ errors (`5xx`), malformed-request `400`s that are not refusals, and transport er
 Server and transport errors first retry the same route a few times, so a brief blip
 keeps the thread's prompt cache. A route that already failed in the current turn is
 never retried in it. When every route fails, the surfaced error lists each route and
-its own cause in order. A model refusal is not a route failure and never fails over.
+its own cause in order, including a route on another host that the turn failed over to. A model refusal is not a route failure and never fails over.
 
 **Half-open** is the recovery probe. When the wait expires, the route becomes a candidate
 again, but only for a real turn from a new or cold-cache thread — never a warm thread that
