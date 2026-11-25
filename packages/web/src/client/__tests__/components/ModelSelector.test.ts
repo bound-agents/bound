@@ -261,8 +261,8 @@ describe("ModelSelector", () => {
 			l.textContent?.replace(/\s+/g, " ").trim(),
 		);
 		expect(lines).toEqual([
-			"zai:glm-5.3-flash on msi healthy",
-			"copilot:glm-5.3-flash on mac disabled",
+			"zai:glm-5.3-flash on msi Healthy",
+			"copilot:glm-5.3-flash on mac Disabled",
 		]);
 	});
 

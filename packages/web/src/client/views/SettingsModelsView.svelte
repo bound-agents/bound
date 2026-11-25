@@ -66,7 +66,7 @@
 						?.logical_model ?? null;
 			}
 		} catch (e) {
-			error = e instanceof Error ? e.message : "Failed to load routing settings";
+			error = e instanceof Error ? e.message : "Failed to load models";
 		} finally {
 			loading = false;
 		}
@@ -109,7 +109,7 @@
 		}
 		if (r.health === "half_open") return "Trying again";
 		if (r.health === "healthy") return "Healthy";
-		return "Health unknown from this host";
+		return "Status unknown on this host";
 	}
 
 	async function run(key: string, fn: () => Promise<unknown>, failure: string): Promise<void> {
@@ -151,7 +151,11 @@
 	}
 
 	function setFallback(m: ModelRoutingInfo, policy: FallbackPolicyInfo): void {
-		void run(m.logical_model, () => client.setFallbackPolicy(m.logical_model, policy), "Failed");
+		void run(
+			m.logical_model,
+			() => client.setFallbackPolicy(m.logical_model, policy),
+			"Failed to update fallback policy",
+		);
 	}
 
 	function onFallbackMode(m: ModelRoutingInfo, mode: string): void {
@@ -196,7 +200,7 @@
 			const name = r.name.trim();
 			if (!name && !r.model) continue;
 			if (!name || name.includes("@")) {
-				rolesError = "Alias names must be non-empty and contain no '@'.";
+				rolesError = "Enter an alias name without '@'.";
 				return;
 			}
 			if (out[name] !== undefined) {
@@ -205,7 +209,7 @@
 			}
 			if (!r.model) continue;
 			if (!known.has(r.model)) {
-				rolesError = `"${name}" points at a model this cluster does not have.`;
+				rolesError = `"${name}" points to a model not available in this cluster.`;
 				return;
 			}
 			out[name] = r.model;
@@ -227,11 +231,11 @@
 	<SectionHeader
 		title="Models"
 		number="09"
-		subtitle="Which routes serve each model, in what order, and what stands in when it can't"
+		subtitle="Route order, availability, and fallback models"
 	/>
 
 	{#if loading}
-		<p class="muted">Loading routing settings...</p>
+		<p class="muted">Loading models...</p>
 	{:else if error && models.length === 0}
 		<p class="error" role="alert">{error}</p>
 	{:else}
@@ -282,7 +286,7 @@
 						<h3>{m.display_name}</h3>
 					</header>
 
-					<div class="kicker">Routes, in preference order</div>
+					<div class="kicker">Route order</div>
 					<ol class="routes">
 						{#each m.routes as r, i (r.route_id)}
 							<li class="route-row" class:drained={r.drained}>
@@ -319,7 +323,7 @@
 						{#each m.stale_routes as s (s.route_id)}
 							<li class="route-row stale">
 								<span class="r-route">{s.host_name ?? "Unknown host"} / {s.provider ?? "?"}</span>
-								<span class="r-stale-tag">no longer offered</span>
+								<span class="r-stale-tag">Unavailable</span>
 								<Btn
 									size="sm"
 									variant="danger"
@@ -330,7 +334,7 @@
 						{/each}
 					</ol>
 
-					<div class="kicker">When this model can't answer</div>
+					<div class="kicker">Fallback policy</div>
 					<div class="fallback">
 						<select
 							aria-label="Fallback policy for {m.display_name}"
@@ -338,9 +342,9 @@
 							disabled={busy !== null}
 							onchange={(e) => onFallbackMode(m, (e.currentTarget as HTMLSelectElement).value)}
 						>
-							<option value="auto">Use the cluster fallback list</option>
-							<option value="custom">Use these models</option>
-							<option value="never">Never substitute</option>
+							<option value="auto">Cluster default</option>
+							<option value="custom">Custom list</option>
+							<option value="never">Never fall back</option>
 						</select>
 						{#if m.fallback_policy.mode === "custom"}
 							<ul class="chips">
@@ -368,7 +372,7 @@
 						{/if}
 					</div>
 				{:else}
-					<p class="muted">No logical models are advertised in the cluster yet.</p>
+					<p class="muted">No models available yet.</p>
 				{/if}
 			</section>
 		</div>
@@ -377,8 +381,8 @@
 			<section class="roles" aria-label="Roles and aliases">
 				<h3>Roles &amp; aliases</h3>
 				<p class="muted">
-					Names that agents and tasks can ask for instead of a specific model. Default, heavy, and
-					fast are built in; add your own.
+					Reusable names for models. Agents and tasks can reference a role or alias instead of a
+					specific model.
 				</p>
 				<div class="role-grid">
 					{#each roles as r, i (i)}
@@ -394,7 +398,7 @@
 								/>
 							{/if}
 							<select aria-label="Model for {r.name || 'alias'}" bind:value={r.model}>
-								<option value="">(unset)</option>
+								<option value="">Not set</option>
 								{#each sorted as x (x.logical_model)}
 									<option value={x.logical_model}>{x.display_name}</option>
 								{/each}
@@ -419,7 +423,7 @@
 				<div class="cd-row">
 					<span class="cd-label">Cluster fallback list</span>
 					<span class="cd-value"
-						>{defaults.default_fallback_models.map(displayFor).join(", ") || "(none)"}</span
+						>{defaults.default_fallback_models.map(displayFor).join(", ") || "None"}</span
 					>
 				</div>
 			</section>

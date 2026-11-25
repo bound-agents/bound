@@ -552,7 +552,7 @@ describe("MessageList", () => {
 		await dom.settle();
 		const note = target.querySelector('[data-message-id="a1"] .model-note');
 		expect(note?.textContent).toBe("· via hub");
-		expect(note?.getAttribute("title")).toContain("route error");
+		expect(note?.getAttribute("title")).toContain("failed");
 	});
 
 	it("mounts the route-failover notice at the thread level when provided", async () => {

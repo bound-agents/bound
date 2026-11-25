@@ -226,11 +226,7 @@
 					<CostTimeline data={data.tokens.costByModelTimeline} labelFor={routeLabel} />
 				{/if}
 
-				<SectionHeader
-					number={2}
-					subtitle="Local-only — reflects this node's observations"
-					title="Relay Performance"
-				/>
+				<SectionHeader number={2} subtitle="This host only" title="Relay Performance" />
 
 				{#if data.relay.totals.total_cycles === 0}
 					<div class="state">
@@ -300,7 +296,7 @@
 
 				{#if data.context.totals.total_turns_with_debug === 0}
 					<div class="state">
-						<p>No context debug data in the selected range.</p>
+						<p>No context data in the selected range.</p>
 					</div>
 				{:else}
 					<div class="metrics-cards">
@@ -368,7 +364,7 @@
 					<div class="sparkline-row">
 						<div class="sparkline-item">
 							<MiniMetricChart
-								title="Budget Pressure Frequency (% of turns)"
+								title="Budget pressure (% of turns)"
 								color="var(--line-1)"
 								yMin={0}
 								yMax={1}
@@ -383,7 +379,7 @@
 
 						<div class="sparkline-item">
 							<MiniMetricChart
-								title="Context Utilization (avg estimated / window)"
+								title="Context utilization (avg % of window)"
 								color="var(--line-3)"
 								yMin={0}
 								yMax={1}

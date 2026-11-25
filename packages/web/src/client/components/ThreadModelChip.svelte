@@ -26,17 +26,13 @@
 	const viaLabel = $derived(offPreferred ? `${viaHost ?? "?"} / ${viaProvider ?? "?"}` : "");
 </script>
 
-<span
-	class="chip"
-	class:pinned
-	title={pinned ? `Hard-pinned route: ${viaLabel || model}` : undefined}
->
+<span class="chip" class:pinned title={pinned ? `Pinned route: ${viaLabel || model}` : undefined}>
 	{#if pinned}
-		<Lock size={11} aria-label="Hard route pin" />
+		<Lock size={11} aria-label="Pinned route" />
 	{/if}
 	<span class="name">{model}</span>
 	{#if offPreferred}
-		<span class="via" title="Running on a non-preferred route">
+		<span class="via" title="Using a fallback route">
 			· via {viaLabel}
 		</span>
 	{/if}

@@ -18,7 +18,7 @@ describe("ModelHealthDot", () => {
 		const { target } = await mountDot({ state: "healthy" });
 		const dot = target.querySelector(".health-dot") as HTMLElement;
 		expect(dot.getAttribute("style")).toContain("--dot: var(--ok)");
-		expect(dot.getAttribute("aria-label")).toBe("Preferred route healthy");
+		expect(dot.getAttribute("aria-label")).toBe("Healthy");
 	});
 
 	it("renders amber and pulses for a fallback route", async () => {
@@ -32,14 +32,14 @@ describe("ModelHealthDot", () => {
 		const { target } = await mountDot({ state: "none" });
 		const dot = target.querySelector(".health-dot") as HTMLElement;
 		expect(dot.getAttribute("style")).toContain("--dot: var(--idle)");
-		expect(dot.getAttribute("aria-label")).toBe("No eligible route");
+		expect(dot.getAttribute("aria-label")).toBe("No route available");
 	});
 
 	it("defaults to an honest unknown state for an unobservable route", async () => {
 		const { target } = await mountDot({});
 		const dot = target.querySelector(".health-dot") as HTMLElement;
 		expect(dot.getAttribute("style")).toContain("--dot: var(--idle)");
-		expect(dot.getAttribute("aria-label")).toContain("not observable");
+		expect(dot.getAttribute("aria-label")).toBe("Status unknown on this host");
 	});
 
 	it("prefers an explicit title over the mapped label", async () => {

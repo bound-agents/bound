@@ -152,28 +152,29 @@ operation](/bound/concepts/sync/) explains cluster-wide state visibility.
 
 **Purpose:** Manage cluster-wide model routing preferences and inspect per-host route supply.
 
-**Contains:** One row per logical model, labelled by its display name — a provider-published name
-where one exists, then the `models.dev` name, then the raw provider model id; the internal grouping
-key is never shown as a model name. When a model's routes disagree on a name, the one from the
-strongest source wins. Each row shows a three-state health dot: green when a
-preferred route is healthy, amber when the model is serving only through a fallback route, and
-grey when no route is eligible or this host cannot observe the route's health. The page lists models alphabetically with a search box;
-each entry shows its route and host counts. Selecting a model opens a detail pane listing its routes
-in preference order as `provider:model on host` (for example `zai:glm-5.3-flash on MSI`), each with
-its health, up and down controls that set the route order, and an **Enabled** toggle. Turning a
-route off excludes it until it is turned back on. Automatic health states are read-only: a route in
-backoff reads, for example, `Backing off, retrying in 4m`. A route named in the route order but
-advertised by no host shows as no longer offered with a Remove action. Each model also carries a
-fallback policy: use the cluster fallback list, use a custom list of models, or never substitute.
-When two models would share a display name, such as dated snapshots, each gets its snapshot in
-parentheses, for example `GPT-4o (2024-08-06)`. The **Roles & aliases** section maps the built-in
-default, heavy, and fast roles and any custom alias names to a model; a name must point at a model
-the cluster has.
+**Contains:** A searchable, alphabetical list of logical models, each labeled with its display name,
+route and host counts, and a health dot. Display names come from the provider catalog, then
+`models.dev`, then the raw provider model ID, with the highest-precedence source winning when routes
+disagree. Models that would share a name append their snapshot suffix in parentheses, such as
+`GPT-4o (2024-08-06)`. The health dot is green when a preferred route is healthy, amber when the
+model is serving through a fallback route, and gray when no route is available or status is unknown
+on this host.
+
+Selecting a model opens a detail pane listing its routes in preference order as
+`provider:model on host` (for example, `zai:glm-5.3-flash on MSI`). Each route shows its read-only
+automatic health status (such as `Backing off, retrying in 4m`), up and down controls for route
+order, and an **Enabled** toggle that excludes the route when turned off. A route listed in the
+order that no host currently advertises appears as **Unavailable** with a **Remove** button. The
+**Fallback policy** selector sets how the model handles refusals: **Cluster default**, **Custom
+list**, or **Never fall back**.
+
+The **Roles & aliases** section maps the built-in `default`, `heavy`, and `fast` roles and custom
+alias names to available cluster models.
 
 Route health is per-host and is read from the local router. A route served only by a remote host
-reports its health as unknown on this page, because this host does not observe that route's
-outcomes. Route order, enabled routes, fallback policies, and alias mappings are cluster-synced, so an
-edit on any host applies everywhere.
+reports its status as unknown on this host because the local router observes only its own outcomes.
+Route order, enabled routes, fallback policies, and alias mappings are cluster-synced, so an edit on
+any host applies everywhere.
 
 **Related documentation:** [Inference and model routing](/bound/concepts/inference/) explains
 route ranking, health recovery, drains, stickiness, and refusal fallback. [State, consistency,

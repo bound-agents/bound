@@ -21,10 +21,10 @@
 	};
 
 	const LABELS: Record<State, string> = {
-		healthy: "Preferred route healthy",
-		fallback: "Serving via fallback route",
-		none: "No eligible route",
-		unknown: "Route health not observable from this host",
+		healthy: "Healthy",
+		fallback: "Using fallback route",
+		none: "No route available",
+		unknown: "Status unknown on this host",
 	};
 </script>
 

@@ -49,7 +49,7 @@
 			error = null;
 		} catch (err) {
 			console.error("Failed to load network status:", err);
-			error = "Network request failed";
+			error = "Failed to load network status";
 		}
 		loading = false;
 	}

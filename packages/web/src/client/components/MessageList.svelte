@@ -356,7 +356,7 @@
 		for (const a of prov.attempts ?? []) {
 			const r = describeRoute(a.route_id);
 			const outcome =
-				a.outcome === "ok" ? "served" : a.outcome === "refusal" ? "refused" : "route error";
+				a.outcome === "ok" ? "served" : a.outcome === "refusal" ? "refused" : "failed";
 			lines.push(
 				`${modelDisplay(a.model_id)} · ${r.label}${r.host ? ` on ${r.host}` : ""} · ${outcome}`,
 			);

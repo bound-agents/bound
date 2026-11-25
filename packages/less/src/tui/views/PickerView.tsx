@@ -83,7 +83,13 @@ export function PickerView({
 					setItems(modelItems);
 				}
 			} catch (err) {
-				setError(err instanceof Error ? err.message : "Failed to load items");
+				setError(
+					err instanceof Error
+						? err.message
+						: mode === "thread"
+							? "Failed to load threads"
+							: "Failed to load models",
+				);
 			} finally {
 				setLoading(false);
 			}
@@ -106,7 +112,9 @@ export function PickerView({
 				)}
 				{error && <Text color={tokens.bannerError}>Error: {error}</Text>}
 				{!loading && !error && items.length === 0 && (
-					<Text color={tokens.warningNotice}>No items available</Text>
+					<Text color={tokens.warningNotice}>
+						{mode === "thread" ? "No threads available" : "No models available"}
+					</Text>
 				)}
 				{!loading && !error && items.length > 0 && (
 					<Box marginTop={1}>

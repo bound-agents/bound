@@ -169,6 +169,6 @@ describe("NetworkStatus", () => {
 		const { target } = await dom.mount(NetworkStatus, {});
 		await dom.settle();
 		expect(target.querySelector(".state.err")).not.toBeNull();
-		expect(target.textContent).toContain("Network request failed");
+		expect(target.textContent).toContain("Failed to load network status");
 	});
 });

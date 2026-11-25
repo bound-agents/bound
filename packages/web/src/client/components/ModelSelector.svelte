@@ -91,8 +91,11 @@
 	}
 
 	function healthText(r: RouteSupplyInfo): string {
-		if (r.drained) return "disabled";
-		return r.health === "half_open" ? "half-open" : r.health;
+		if (r.drained) return "Disabled";
+		if (r.health === "half_open") return "Retrying";
+		if (r.health === "backoff") return "Backing off";
+		if (r.health === "healthy") return "Healthy";
+		return "Unknown";
 	}
 
 	function routeLine(r: RouteSupplyInfo): string {

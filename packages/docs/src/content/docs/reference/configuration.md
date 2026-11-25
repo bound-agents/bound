@@ -102,7 +102,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `id` | string (non-empty) | — | Logical alias the router resolves (e.g. `"opus"`). Distinct from `model`. |
+| `id` | string (non-empty) | — | Host-local backend identifier (for example, `"opus"` or `"copilot"`). Distinct from `model` and `logical_model`. |
 | `provider` | enum | — | One of `ollama`, `bedrock`, `bedrock-mantle`, `anthropic`, `openai-compatible`, `cerebras`, `zai`, `opencode-go`, `umans`, `chatgpt-oauth`, `github-copilot`. |
 | `model` | string (non-empty) | — | Provider-specific identifier (model name or Bedrock ARN). For `bedrock-mantle`, the Mantle model ID for the selected `provider_mode` (for example, `openai.gpt-5.4` or `anthropic.claude-sonnet-5`). Omitted for `umans` (the model lineup is fetched at runtime — see below). |
 | `provider_mode` | enum `anthropic`\|`openai_responses` | — | Required for `bedrock-mantle`. Selects the Mantle protocol surface: Anthropic Messages (`/anthropic/v1/messages`) or OpenAI Responses (`/openai/v1/responses`). |
@@ -111,7 +111,7 @@ An empty `backends` array is valid for a hub-only node that relays all inference
 | `token_store_path` | string | `config/chatgpt-auth.json` (`chatgpt-oauth`), `config/copilot-auth.json` (`github-copilot`) | Absolute path to the persisted OAuth token bundle. For `chatgpt-oauth`, create it with `bound login --chatgpt`; for `github-copilot`, with `bound login --copilot`. Both still require `model` and `context_window`. |
 | `region` | string | absent | AWS region (Bedrock, and required for `bedrock-mantle` — the Mantle endpoint host is region-scoped). |
 | `profile` | string | absent | AWS profile name (Bedrock and `bedrock-mantle`; falls back to the ambient credential chain when absent). |
-| `context_window` | int > 0 | — | Optional override of the model's context-window budget. Normally resolved automatically — from the provider's discovery API, then `models.dev` — so you only set it to cap the window below what those sources report, or for a model neither source knows. Omitted for `umans` (fetched per-model). A backend whose window resolves from no source stays unready (see below). |
+| `context_window` | int > 0 | — | Optional override of the model's context-window budget. Resolved automatically from the provider's discovery API, then `models.dev`. Set it to cap the window below what those sources report, or for a model neither source knows. Omitted for `umans` (fetched per-model). A backend whose window resolves from no source stays unready (see below). |
 | `logical_model` | string | absent | Operator-declared logical model this backend joins. Takes precedence over structural normalization but is overridden by a synced `model_aliases` entry. Absent → the logical model is resolved by normalization, or left unassigned when confidence is low. |
 | `price_per_m_input` | number ≥ 0 | derived | USD per million non-cached input tokens. Optional override. Normally resolved from the provider's pricing API, then `models.dev` — including context-tiered rates. Set it only to override those sources; a deliberate `0` (free local model) overrides them, while omitting it falls through to the derived price. |
 | `price_per_m_output` | number ≥ 0 | derived | USD per million output tokens. Optional override, same precedence as `price_per_m_input`. |
@@ -135,10 +135,9 @@ discovery and `models.dev`: `streaming`, `tool_use`, `system_prompt`,
 `prompt_caching`, `vision` (bool), `max_context` (int > 0). There is no hardcoded
 per-driver `max_context` default: a backend whose `max_context` is set by none of
 local config (`context_window` or this override), provider discovery, or
-`models.dev` stays **unready** — it is not advertised and not routable, and the
-host logs the configuration gap naming the field to set — rather than dispatching
-a turn on a guessed window. Set `context_window` for any model absent from both
-your provider's discovery API and `models.dev`.
+`models.dev` stays unready, unadvertised, and unroutable, and the host logs the missing
+field. Set `context_window` for any model absent from both your provider's discovery API
+and `models.dev`.
 
 **Thinking config** (`thinking`) — either the literal `true` (legacy shorthand), or an
 object:
@@ -180,7 +179,7 @@ catalog every 24 hours.
 A failed fetch never blocks startup: the host falls back to its cached snapshot,
 or to local config and provider APIs alone when no cache exists. A backend whose
 `max_context` is unresolved across all three layers (local config, provider
-discovery, `models.dev`) stays unready rather than running on a guessed window.
+discovery, `models.dev`) stays unready.
 
 **Defaults block** (`defaults`) — top-level operator-preference defaults applied to
 every backend that does not set the same field itself. A per-backend value always wins.
@@ -311,23 +310,22 @@ the backend overrides the catalog entirely; absent both, a turn with no catalog 
 
 #### Self-configuring form (one entry, whole lineup)
 
-Instead of one entry per model, a single `github-copilot` entry with **no `model`** expands at
+Instead of one entry per model, a single `github-copilot` entry with no `model` expands at
 startup into one backend per chat-routable model in the account's catalog. A model whose
-`supported_endpoints` the driver cannot route (for example an embeddings-only model) is excluded,
-and the `auto` selector is not in the `/models` catalog, so it stays a separate entry you add by
-hand when you want it. An expanded backend's id is `copilot-<provider-model-id>` (the entry id
-plus the catalog model id), so the lineup is deterministic across restarts.
+`supported_endpoints` the driver cannot route (for example, an embeddings-only model) is excluded,
+and the `auto` selector is absent from the `/models` catalog, so it stays a separate single-model
+entry when needed. An expanded backend's ID is `copilot-<provider-model-id>` (the entry ID plus the
+catalog model ID), so the lineup is deterministic across restarts.
 
 Authoritative per-model fields — context window, output limit, capabilities, display name, and
-pricing — come from the catalog and are rejected on the namespace entry itself (there is no single
-model to apply them to). What you *can* set on the namespace entry is a blanket reasoning/cache
-choice (`thinking`, `effort`, `cache_ttl`, `system_prompt_suffix`), which every expanded backend
-inherits, and a `model_overrides` map keyed by provider model id to pin one model's request
-controls without listing the rest. `model_overrides` is provider-agnostic — the same field works on
-the `bedrock` and `bedrock-mantle` namespace entries described below.
+pricing — come from the catalog and are rejected on the namespace entry itself. A namespace entry
+accepts blanket reasoning and cache controls (`thinking`, `effort`, `cache_ttl`,
+`system_prompt_suffix`), which every expanded backend inherits, and a `model_overrides` map keyed
+by provider model ID to set per-model request controls. `model_overrides` is provider-agnostic and
+also works on the `bedrock` and `bedrock-mantle` namespace entries described below.
 
-This entry replaces the twelve hand-written `copilot-*` backends (the eleven concrete models plus
-`copilot-auto`):
+Example configuration with a self-configuring `copilot` namespace and a separate `copilot-auto`
+entry:
 
 ```js
 export default {
@@ -336,15 +334,10 @@ export default {
       id: "copilot",
       provider: "github-copilot",
       // Blanket reasoning/cache controls inherited by every expanded backend.
-      // These are not catalog-derivable, so they are configured once here.
       thinking: { type: "adaptive", display: "summarized" },
       effort: "medium",
       cache_ttl: "1h",
-      // Per-model request-control pins, keyed by provider model id. Here they
-      // bind the four Claude models' expanded rows back to the logical ids the
-      // old hand-written `copilot-opus-5.5` … entries resolved to, so existing
-      // thread/task/agent model_hints that named those ids keep resolving (see
-      // "Expanded ids and existing references" below).
+      // Per-model overrides, keyed by provider model ID.
       model_overrides: {
         "claude-opus-5.5": { logical_model: "opus-5-5" },
         "claude-sonnet-5.5": { logical_model: "sonnet-5-5" },
@@ -353,8 +346,7 @@ export default {
       },
     },
     {
-      // `auto` is a provider-local selector, not a catalog model, so it stays a
-      // separate single-model entry.
+      // `auto` is a provider-local selector, so it stays a separate single-model entry.
       id: "copilot-auto",
       provider: "github-copilot",
       model: "auto",
@@ -366,58 +358,40 @@ export default {
 };
 ```
 
-**Per-model value coverage.** With the entry above, every value the twelve hand-written entries
-carried is now sourced from the catalog, the top-level `defaults` block, or the override map:
+**Field sources for expanded Copilot backends:**
 
-| Value | Where it comes from now |
+| Field | Source |
 |---|---|
 | `context_window`, `max_output_tokens`, capabilities, pricing, display name | Copilot catalog (per model) |
-| `thinking` (all four Claude models carried `adaptive`) | Namespace-entry blanket `thinking`, inherited by every expanded row |
-| `effort` (the three non-opus Claude models carried `medium`) | Namespace-entry blanket `effort`; a model that advertises no effort ladder drops it |
-| `cache_ttl` (`1h` on all four Claude models) | Namespace-entry blanket `cache_ttl` |
-| reasoning mode for GPT / Grok / Gemini (the eight entries carried nothing) | Catalog reasoning metadata + the top-level `defaults` block |
-| `logical_model` for the four Claude models | `model_overrides` pins (see below) |
-| `context_window`, `max_output_tokens` for `auto` | Still set by hand on the `copilot-auto` entry (not a catalog model) |
+| `thinking`, `effort`, `cache_ttl`, `system_prompt_suffix` | Namespace-entry settings (inherited by each expanded backend; unsupported `effort` values are dropped) |
+| Default reasoning mode | Catalog reasoning metadata and top-level `defaults` |
+| Per-model `logical_model` or request-control overrides | `model_overrides` |
+| `context_window`, `max_output_tokens` for `auto` | Explicit fields on the `copilot-auto` entry |
 
 #### Expanded ids and existing references
 
-Resolution goes through **logical models**, not backend-id string equality, so an expanded backend
-pools and resolves by the same logical key a hand-written entry did. A model hint resolves in this
-order:
+Model hints resolve through logical models in the following order:
 
-1. **Exact id.** A hint that names a registered backend id or an advertised cluster entry id (including
-   an `@RouteId` pin) resolves to it directly — literal id matches always win.
-2. **Role or alias.** A hint that names an entry in [`routing.model_roles`](#routingmodel_roles) — the
-   three reserved roles or an operator-named alias — follows the mapping to its target logical model.
+1. **Exact id.** A hint that names a registered backend ID or an advertised cluster entry ID
+   (including an `@RouteId` pin) resolves to it directly.
+2. **Role or alias.** A hint that names an entry in [`routing.model_roles`](#routingmodel_roles) —
+   the three reserved roles or an operator-named alias — follows the mapping to its target logical
+   model.
 3. **Logical model.** Otherwise the hint is normalized and matched against the advertised logical
-   models: structural normalization strips the dashed `copilot-` prefix, so for the GPT, Grok, and
-   Gemini families the old config id and the expanded id land on the same logical key
-   (`copilot-gpt-6.2-sol` and the expanded `copilot-gpt-6.2-sol` both normalize to `gpt-6-2-sol`) and
-   existing references resolve unchanged. Matching never crosses to a different logical model.
+   models. Structural normalization strips known dashed provider prefixes (such as `copilot-`), so
+   `copilot-gpt-6.2-sol` normalizes to `gpt-6-2-sol`. Matching never crosses to a different logical
+   model.
 
-The four Claude models are the exception. Their raw catalog ids carry a `claude-` segment that is
-**not** a stripped vendor prefix, so the expanded `copilot-claude-opus-5.5` normalizes to
-`claude-opus-5-5`, while the old hand-written `copilot-opus-5.5` normalized to the bare family
-`opus-5-5`. Left alone, a thread or task that named `copilot-opus-5.5` would not match the expanded
-row through normalization.
-
-Expanding to the raw catalog id is the right default for pooling: `claude-opus-5-5` is exactly what
-the direct Bedrock and Bedrock Mantle Anthropic routes normalize to, so Copilot Claude pools
-cross-provider with them automatically — the whole point of logical models. To keep an old reference
-like `copilot-opus-5.5` resolving, add a cluster alias in
-[`routing.model_roles`](#routingmodel_roles) pointing the old name at the expanded logical model:
-`{ "copilot-opus-5.5": "claude-opus-5-5" }`. A cluster alias is replicated, lives beside the other
-routing preferences, and is the general mechanism for any name→logical-model indirection — so it is
-preferred over a per-backend `model_overrides` `logical_model` pin, which is host-local config that
-must be repeated on every host and only shifts which logical key the row advertises. The alternative
-normalization change — adding `claude` to the dashed vendor prefixes stripped by normalization — is a
-**cross-cutting change to the one structural rule every provider shares** (it would also collapse
-`claude-`-prefixed ids on Anthropic, Bedrock, and Mantle to bare family keys), so it is not made as a
-side effect of Copilot expansion.
+Catalog IDs that carry a `claude-` segment preserve it during normalization, so an expanded
+`copilot-claude-opus-5.5` normalizes to `claude-opus-5-5` and pools directly with Bedrock and
+Bedrock Mantle Anthropic routes. To map another name such as `copilot-opus-5.5` to that logical
+model across all hosts, add a cluster alias in [`routing.model_roles`](#routingmodel_roles) (for
+example, `{ "copilot-opus-5.5": "claude-opus-5-5" }`). Cluster aliases replicate across hosts,
+whereas `model_overrides.logical_model` is host-local.
 
 #### Bedrock and Bedrock Mantle self-configuring namespaces
 
-A `bedrock` or `bedrock-mantle` entry with **no `model`** is a self-configuring namespace for its
+A `bedrock` or `bedrock-mantle` entry with no `model` is a self-configuring namespace for its
 `(profile, region)`: at startup it fetches the account's entitled lineup from the control plane and
 expands into one backend per eligible model. One entry per `(AWS profile, region)` permutation; the
 region is part of the entry. An expanded backend's id is `<entry-id>-<provider-model-id>`. The entry
@@ -485,13 +459,13 @@ Because GPT and Claude are served on `bedrock-runtime` per AWS's recommendation,
 namespace is only needed for a model that is genuinely Mantle-only.
 
 **Explicit (model-bearing) entries still work unchanged.** A `bedrock` or `bedrock-mantle` entry
-*with* a `model` is a single concrete backend exactly as before; `provider_mode` is still required on
+with a `model` is a single concrete backend; `provider_mode` is still required on
 a concrete `bedrock-mantle` entry. Display names, limits, and pricing for every form fill from
 `models.dev` where the control plane is silent.
 
 #### OpenCode Go self-configuring namespace
 
-An `opencode-go` entry with **no `model`** is a self-configuring namespace for its API key: at
+An `opencode-go` entry with no `model` is a self-configuring namespace for its API key: at
 startup it fetches `GET <base_url>/models` (default `https://opencode.ai/zen/go/v1/models`) and
 expands into one backend per routable chat model. An expanded backend's id is
 `<entry-id>-<provider-model-id>`. `default` may name an expanded id; until the lineup lands,
@@ -527,12 +501,12 @@ and replay encrypted reasoning across turns.
 tool use, the reasoning effort ladder, and per-token pricing (including context-threshold price
 tiers from `cost.text.*.overrides`) all come from the listing. `context_window`, `capabilities`, and
 `price_per_m_*` are rejected on the namespace entry; use `model_overrides` instead. An
-`opencode-go` entry *with* a `model` is a single concrete backend exactly as before.
+`opencode-go` entry with a `model` is a single concrete backend.
 
 #### ChatGPT OAuth, Anthropic, and OpenAI-compatible self-configuring namespaces
 
-Every provider accepts the namespace form, not just the ones above. A `chatgpt-oauth`, `anthropic`,
-`openai-compatible`, `cerebras`, or `zai` entry with **no `model`** fetches its provider's model
+Every provider accepts the namespace form. A `chatgpt-oauth`, `anthropic`,
+`openai-compatible`, `cerebras`, or `zai` entry with no `model` fetches its provider's model
 listing at startup with this host's own credentials and expands into one backend per listed model,
 id `<entry-id>-<provider-model-id>`. A failed or empty listing retries in the background with
 backoff; the entry serves no inference until the lineup lands.
@@ -567,7 +541,7 @@ export default {
 ```
 
 As with every namespace entry, `context_window`, `capabilities`, and `price_per_m_*` are rejected at
-the top level; put per-model values in `model_overrides`. An entry *with* a `model` stays a single
+the top level; put per-model values in `model_overrides`. An entry with a `model` stays a single
 concrete backend.
 
 ---
@@ -724,7 +698,7 @@ the web UI's **Persona** view, or the corresponding API.
 
 ### `routing.model_roles`
 
-`routing.model_roles` is a replicated, cluster-wide JSON object mapping **names** to logical models.
+`routing.model_roles` is a replicated, cluster-wide JSON object mapping names to logical models.
 It holds two kinds of name, differing only in intent:
 
 - The three **reserved roles** `default`, `heavy`, and `fast` carry documented semantics. A turn that
@@ -747,6 +721,6 @@ order). Because the map is replicated, every host agrees on what each name means
 
 `routing.default_fallback_models` is a replicated, cluster-wide JSON array of logical model IDs
 (`["...", "..."]`) giving the ordered cluster-default list to try when a model refusal calls for
-a different model and no per-model fallback override applies. It names models, never routes:
+a different model and no per-model fallback override applies. It lists logical model IDs;
 route-level failover for the same model is automatic and separate (see
 [Inference and model routing](/bound/concepts/inference/#route-failures-and-model-refusals)).

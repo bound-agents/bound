@@ -56,22 +56,21 @@ A backend's metadata — context window, output limit, capabilities, and pricing
 resolves in a fixed precedence: explicit values in `model_backends` config win,
 then the provider's own discovery API (where the account's live model lineup and
 limits come from), then the `models.dev` fallback registry. `context_window` and
-`max_output_tokens` are therefore optional overrides: you set them only to cap a
-value below what the provider or `models.dev` reports, or for a model neither
-source knows. A backend whose context window resolves from none of the three
-sources stays unready — not advertised, not routable — rather than running on a
-guessed window. A reported output limit above 25% of the context window is capped
-at 25%: Bound reserves the output limit out of the window when it sizes the
-prompt, and some providers report an output limit as large as the whole window.
-An explicit `max_output_tokens` override is always honoured.
+`max_output_tokens` are optional overrides: set them to cap a value below what
+the provider or `models.dev` reports, or for a model neither source knows. A
+backend whose context window resolves from none of the three sources stays
+unready, unadvertised, and unroutable. A reported output limit above 25% of the
+context window is capped at 25%: Bound reserves the output limit out of the
+window when it sizes the prompt, and some providers report an output limit as
+large as the whole window. An explicit `max_output_tokens` override is always
+honored.
 
-The same precedence resolves each model's **display name** — the name shown in the
-model picker, the Settings › Models page, the thread chip, and the message-header
-routing note. A provider-published display name wins, then the `models.dev`
-name, then the raw provider model id with its version dots intact. The internal
-grouping key (`logical_model`), route ids, and site ids are never shown as a
-model name. When a logical model's routes resolve different names, the one from
-the strongest source wins, ties broken by the provider model id.
+The same precedence resolves each model's **display name**, shown in the model
+picker, the **Models** view, the thread chip, and the message-header routing
+note. A provider-published display name takes precedence, followed by the
+`models.dev` name and then the raw provider model ID with its version dots
+intact. When a logical model's routes resolve different names, the strongest
+source wins, with ties broken by the provider model ID.
 
 ## Provider-specific request handling
 
@@ -220,10 +219,9 @@ to the model that actually incurred it.
 
 ## Route health and recovery
 
-Each host tracks the health of every route on its own, and never shares that health
-with other hosts. Health is short-lived failure state, not durable configuration, so
-replicating it would flood the cluster with churn; a recovering route simply gets one
-trial from each live host instead. A route is in one of three states.
+Each host tracks route health locally without replicating it across the cluster.
+Because health is short-lived failure state, each live host runs its own recovery
+trial when a route's backoff expires. A route is in one of three states:
 
 **Healthy** is the normal state: the route is a full candidate for any turn.
 
@@ -248,9 +246,8 @@ on the recovering route:
 Some failures also raise an operator alert, because they need a human. An expired
 authentication token (`401`) first tries a token refresh; the route only backs off and
 alerts if the refresh itself fails, since re-login is a human action. A provider that keeps
-returning malformed-request errors (a driver bug, not a refusal) raises a single alert
-while automatic recovery keeps running, so a later fix is picked up without operator
-action.
+returning malformed-request errors raises a single alert while automatic recovery
+keeps running, so a later fix takes effect without manual action.
 
 The candidate pool and its ranking are shaped by cluster-wide preferences that replicate
 to every host, so a thread sees the same routing decision wherever its next turn runs.
@@ -260,8 +257,8 @@ to every host, so a thread sees the same routing decision wherever its next turn
 An operator can declare a preferred order of routes for a logical model. When set, the
 listed routes rank first in their declared order; any eligible route that is not listed
 follows, ordered by locality (local before remote) and then by a stable route identity.
-Route order is a preference over identity, never over liveness — a listed route that is
-offline, unhealthy, or lacks a capability the turn needs is skipped, not forced.
+Route order ranks eligible routes by identity; any listed route that is offline,
+unhealthy, or missing a required capability is skipped.
 
 ### Drains
 
@@ -290,49 +287,44 @@ A thread, scheduled task, or auxiliary invocation can **pin** a single route for
 A pin is expressed in the model hint as `logical_model@RouteId` (or `@RouteId` to pin a
 route regardless of its logical model). A pinned call considers only that route: route
 failover and model substitution are both disabled, and any route error or model refusal
-surfaces verbatim rather than being retried elsewhere. If the pinned route no longer
-exists anywhere in the cluster, the call fails with a clear error rather than silently
-falling back to another route.
+surfaces verbatim. If the pinned route no longer exists anywhere in the cluster, the call
+fails with an error.
 
 ### Route and model removal
 
 Routes and models come and go as providers are added, removed, or temporarily lose
-their lineup. Bound distinguishes a route or model that is **momentarily down** from one
-that is **gone for good**, and never destroys operator preferences on the former in case
-it returns.
+their lineup. Bound distinguishes a route or model that is temporarily unavailable from
+one that is permanently removed, preserving operator preferences during temporary outages.
 
 **Removing one route of several.** When a host drops a route — a provider is removed from
 its config, or a lineup refresh no longer lists it — that route leaves the host's
 advertisement and its local health state is discarded. Threads sticky to the removed
 route move to the next ranked route for the same model on their next turn. A hard pin on
-the removed route fails loudly rather than silently switching routes. Any route order,
-drain, alias, or fallback-list entry that named the route is left in place as a dormant
-no-op — it does nothing while the route is absent, and Settings › Models marks it stale so
-it can be pruned by hand. A reverted config edit or a provider that comes back restores
-those entries without reconfiguration.
+the removed route fails with an error. Any route order, drain, alias, or fallback-list
+entry that named the route stays in place as a dormant no-op while the route is absent,
+and the **Models** view marks it **Unavailable** with a **Remove** button. A reverted
+config edit or a provider that comes back restores those entries without reconfiguration.
 
-**Removing the last route for a model.** A model becomes decommissioned only once no
-non-deleted host in the cluster advertises it. A host that is merely offline or stale
-still counts: while its row survives, the model it advertised stays *transiently
-unavailable* (retryable, shown as a grey dot), not decommissioned. Only when cluster
-host-liveness eviction removes the dead host's row does the model flip to
-*decommissioned*. A decommissioned model leaves the picker for new threads and tasks.
-Existing threads that target it stay readable and, on the next turn, surface a notice
-asking the operator to pick another model — Bound does not silently substitute one.
-Live scheduled tasks naming the model literally park with an advisory (a task or aux agent that
-targets a cluster role or alias follows the mapping instead); heartbeat and consolidation tasks
-are never parked, so for them the advisory is the only signal that the `model_hint` has gone dead.
-A cluster role or alias, auxiliary agent, or live scheduled task pointing at the decommissioned
-model raises an operator advisory rather than being silently reassigned.
-Historical turn records keep the model and route that originally served each turn.
+**Removing the last route for a model.** A model becomes decommissioned once no
+non-deleted host in the cluster advertises it. While an offline or stale host's row
+survives, the model stays temporarily unavailable (retryable, shown as a gray dot). Once
+host-liveness eviction removes the dead host's row, the model is decommissioned and leaves
+the picker for new threads and tasks. Existing threads targeting it stay readable and
+prompt the operator to choose another model on the next turn. Live scheduled tasks naming
+the model directly park with an advisory, while tasks and auxiliary agents targeting a
+cluster role or alias follow the mapping. Heartbeat and consolidation tasks stay active
+and surface an advisory when their `model_hint` becomes dead. Any cluster role, alias,
+auxiliary agent, or live scheduled task pointing to a decommissioned model raises an
+advisory. Historical turn records keep the model and route that originally served each
+turn.
 
 **When the model comes back.** Once any host advertises a ready route for the model again,
 it reappears in the picker and existing threads resume on their next turn. Dormant
 preferences that were never pruned take effect again, and the dangling-reference advisories
 resolve on their own. A hard pin resumes only if the exact same route identity returns.
-Scheduled tasks that parked while the model was gone stay parked — their advisory notes
-the model's return so the operator can resume them deliberately, rather than firing a
-burst of catch-up runs after a long absence.
+Scheduled tasks that parked while the model was gone stay parked; their advisory notes
+the model's return so the operator can resume them deliberately and avoid a burst of
+catch-up runs.
 
 See the [configuration reference](/bound/reference/configuration/#replicated-control-state)
 for the cluster-wide default-model role and fallback-list keys.
