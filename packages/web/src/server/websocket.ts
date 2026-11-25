@@ -19,6 +19,7 @@ import {
 	hasInFlightClientToolCallsForConnection,
 	insertRow,
 	listClientSessionIdsByConnectionId,
+	listRemoteClientToolsForThreads,
 	softDelete,
 	updateClaimedBy,
 	updateRow,
@@ -52,6 +53,29 @@ import {
 	startSessionHostHandoff,
 } from "./trace-topology";
 import { YardExecutionCache } from "./yard-execution-cache";
+
+type SyncedClientTool = {
+	type: "function";
+	function: { name: string; description: string; parameters: Record<string, unknown> };
+};
+
+/** Parse a synced client_sessions.client_tools value; malformed entries are dropped. */
+export function parseClientTools(raw: string): SyncedClientTool[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(parsed)) return [];
+	return parsed.filter(
+		(d): d is SyncedClientTool =>
+			typeof d === "object" &&
+			d !== null &&
+			(d as { type?: unknown }).type === "function" &&
+			typeof (d as { function?: { name?: unknown } }).function?.name === "string",
+	);
+}
 
 // Zod schemas for all client→server message types
 const sessionConfigureSchema = z.object({
@@ -605,6 +629,11 @@ export function createWebSocketHandler(
 		}
 	}
 
+	/** Tool definitions synced with the session row, or null when none are registered. */
+	function serializeClientTools(conn: ClientConnection): string | null {
+		return conn.clientTools.size > 0 ? JSON.stringify([...conn.clientTools.values()]) : null;
+	}
+
 	/**
 	 * Upsert a client_sessions row for (connection, thread) on this host.
 	 * Idempotent across re-subscribes: a re-subscribe on the same connection
@@ -614,9 +643,16 @@ export function createWebSocketHandler(
 		if (!db || !siteId) return;
 		const id = `${conn.connectionId}::${threadId}`;
 		const now = new Date().toISOString();
+		const clientTools = serializeClientTools(conn);
 		const existing = findClientSessionIdById(db, id);
 		if (existing) {
-			updateRow(db, "client_sessions", id, { site_id: siteId, deleted: 0 }, siteId);
+			updateRow(
+				db,
+				"client_sessions",
+				id,
+				{ site_id: siteId, client_tools: clientTools, deleted: 0 },
+				siteId,
+			);
 			return;
 		}
 		insertRow(
@@ -627,6 +663,7 @@ export function createWebSocketHandler(
 				connection_id: conn.connectionId,
 				thread_id: threadId,
 				site_id: siteId,
+				client_tools: clientTools,
 				created_at: now,
 				deleted: 0,
 				modified_at: now,
@@ -1502,6 +1539,15 @@ export function createWebSocketHandler(
 					for (const [name, def] of conn.clientTools) {
 						merged.set(name, def);
 					}
+				}
+			}
+			if (merged.size > 0 || !db || !siteId) return merged;
+			// No local connection holds this thread's tools: fall back to sessions
+			// synced from other hosts. Calls for these tools resolve no local
+			// connection and relay to the session host (invariant #21).
+			for (const raw of listRemoteClientToolsForThreads(db, candidates, siteId)) {
+				for (const def of parseClientTools(raw)) {
+					if (!merged.has(def.function.name)) merged.set(def.function.name, def);
 				}
 			}
 			return merged;

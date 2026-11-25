@@ -623,6 +623,7 @@ export function applySchema(db: Database): void {
 			connection_id TEXT NOT NULL,
 			thread_id     TEXT NOT NULL,
 			site_id       TEXT NOT NULL,
+			client_tools  TEXT,
 			created_at    TEXT NOT NULL,
 			deleted       INTEGER NOT NULL DEFAULT 0,
 			modified_at   TEXT NOT NULL
@@ -1164,6 +1165,14 @@ export function applySchema(db: Database): void {
 	// next startup; existing rows default to NULL until the host re-registers.
 	try {
 		db.run("ALTER TABLE hosts ADD COLUMN commit_hash TEXT");
+	} catch {
+		/* already exists */
+	}
+
+	// Invariant #21: client tool definitions sync with the session row so a
+	// turn started on another host can offer and relay the session's tools.
+	try {
+		db.run("ALTER TABLE client_sessions ADD COLUMN client_tools TEXT");
 	} catch {
 		/* already exists */
 	}

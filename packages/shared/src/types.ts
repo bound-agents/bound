@@ -428,6 +428,8 @@ export interface ClientSession extends SoftDeletable {
 	connection_id: string;
 	thread_id: string;
 	site_id: string;
+	/** JSON ToolDefinition[] registered by the session's client, or null. */
+	client_tools?: string | null;
 	created_at: string; // ISO 8601
 	modified_at: string; // ISO 8601
 }

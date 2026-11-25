@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { CLIENT_SESSION_HOST_STALE_MS } from "@bound/core";
 import { isClientToolInterface } from "@bound/shared";
 import type { EligibleHost } from "./relay-router";
 
@@ -7,7 +8,6 @@ import type { EligibleHost } from "./relay-router";
  * STALE_THRESHOLD_MS: a host is considered live if its heartbeat-maintained
  * `modified_at` (falling back to `online_at`) is within this window.
  */
-const CLIENT_SESSION_HOST_STALE_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * True when the thread has at least one live (non-deleted) client session on
