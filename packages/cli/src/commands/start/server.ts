@@ -713,8 +713,8 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 			thread_id: string,
 			agentId: string,
 			seed: { parentThreadId: string; parentCallId: string; instructions: string },
-		): Promise<void> => {
-			await threadExecutor.execute(thread_id, async () => {
+		): Promise<boolean> => {
+			return threadExecutor.execute(thread_id, async (_shouldYield, abortSignal) => {
 				const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
 				if (claimed.length === 0) return {};
 				const claimedIds = claimed.map((e) => e.message_id);
@@ -848,6 +848,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						platform,
 						systemPromptAddition,
 						platformInstructions,
+						abortSignal,
 					});
 					if (!runner) {
 						finishParent(
@@ -874,6 +875,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						userId: threadInfo?.user_id ?? operatorUserId,
 						parentThreadId: seed.parentThreadId,
 					});
+					if (abortSignal.aborted) return {};
 					// The child-thread link rides the placeholder row's metadata
 					// (aux_thread, stamped by the loop's persist seam from the
 					// DeferredToolResult) — resolveDeferredToolResult preserves
@@ -886,14 +888,16 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					acknowledgeBatch(appContext.db, claimed);
 					return { claimedIds };
 				} catch (error) {
-					finishParent(
-						`Error: background auxiliary invocation failed: ${formatError(error)}`,
-						true,
-					);
-					try {
-						acknowledgeBatch(appContext.db, claimed);
-					} catch {
-						// claimed entries reset via executor error path
+					if (!abortSignal.aborted) {
+						finishParent(
+							`Error: background auxiliary invocation failed: ${formatError(error)}`,
+							true,
+						);
+						try {
+							acknowledgeBatch(appContext.db, claimed);
+						} catch {
+							// claimed entries reset via executor error path
+						}
 					}
 					return {};
 				}
@@ -942,14 +946,27 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 					);
 					return;
 				}
-				await runBackgroundAuxThread(thread_id, auxOwner.agent_id, seed);
+				const needsRetrigger = await runBackgroundAuxThread(thread_id, auxOwner.agent_id, seed);
+				if (needsRetrigger) {
+					appContext.logger.info(`[agent] Re-triggering dispatch for thread ${thread_id}`);
+					setTimeout(
+						() =>
+							handleThread(thread_id).catch((err) =>
+								appContext.logger.warn("Background re-trigger failed", {
+									threadId: thread_id,
+									error: formatError(err),
+								}),
+							),
+						0,
+					);
+				}
 				return;
 			}
 
 			const needsRetrigger = await threadExecutor.execute(
 				thread_id,
 				// runFn: claim → inject notification messages → resolve model → run inference
-				async (shouldYield) => {
+				async (shouldYield, abortSignal) => {
 					const claimed = claimPending(appContext.db, thread_id, appContext.siteId);
 					if (claimed.length === 0) return {};
 
@@ -1130,6 +1147,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 										activeLoopAbortControllers,
 										agentLoopFactory,
 										shouldYield,
+										abortSignal,
 										platform,
 										clientTools: resolvedClientTools,
 										connectionId: resolvedConnectionId,
@@ -1153,6 +1171,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								rootSpan.end();
 								handleMessageTracker.touchTurn(thread_id);
 							}
+							if (abortSignal.aborted) return {};
 
 							const { agentResult: result } = agentLoopResult;
 
@@ -1180,6 +1199,7 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 								threadId: thread_id,
 								turnStartAt,
 							});
+							if (abortSignal.aborted) return {};
 
 							// NOTE: No post-loop message:broadcast needed here. The agent loop's
 							// broadcastMessage() already emits message:broadcast for every message
@@ -1196,18 +1216,21 @@ export async function initServer(deps: ServerDeps): Promise<ServerResult> {
 						}
 
 						// Acknowledge the batch we just processed
+						if (abortSignal.aborted) return {};
 						acknowledgeBatch(appContext.db, claimed);
 						handleMessageTracker.maybeCloseTurnIfIdle(appContext.db, thread_id, "ok");
 						return { claimedIds };
 					} catch (error) {
 						appContext.logger.error(`[agent] Error: ${formatError(error)}`);
-						try {
-							acknowledgeBatch(appContext.db, claimed);
-						} catch (ackError) {
-							appContext.logger.error("Failed to acknowledge message batch", {
-								error: ackError instanceof Error ? ackError.message : String(ackError),
-								claimedIds,
-							});
+						if (!abortSignal.aborted) {
+							try {
+								acknowledgeBatch(appContext.db, claimed);
+							} catch (ackError) {
+								appContext.logger.error("Failed to acknowledge message batch", {
+									error: ackError instanceof Error ? ackError.message : String(ackError),
+									claimedIds,
+								});
+							}
 						}
 						// Close the turn with error status — the cycle terminated
 						// abnormally and is no longer in a state that should hold

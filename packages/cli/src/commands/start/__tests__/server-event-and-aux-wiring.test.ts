@@ -41,6 +41,7 @@ import {
 	createDatabase,
 	enqueueMessage,
 	findBackgroundPlaceholderDeliveryState,
+	hasPending,
 	insertRow,
 	readMessageMetadata,
 } from "@bound/core";
@@ -101,6 +102,7 @@ function makeModelRouter() {
 		getDefaultId: () => "fake",
 		getCacheTtl: () => undefined,
 		getCacheWarmConfig: () => undefined,
+		listBackends: () => [],
 	};
 }
 
@@ -310,6 +312,133 @@ describe("initServer — background aux dispatch (#76/#220)", () => {
 		result = undefined;
 		db.close();
 		cleanupTmpDir(tmpDir);
+	});
+
+	it("retries ordinary dispatch after a timed-out loop settles without acknowledging its batch", async () => {
+		const threadId = randomUUID();
+		const messageId = randomUUID();
+		const now = new Date().toISOString();
+		seedThread(db, siteId, threadId, "web", "operator");
+		insertRow(
+			db,
+			"messages",
+			{
+				id: messageId,
+				thread_id: threadId,
+				role: "user",
+				content: "run the task",
+				model_id: null,
+				tool_name: null,
+				created_at: now,
+				modified_at: now,
+				host_origin: "test-host",
+				deleted: 0,
+				exit_code: null,
+				metadata: null,
+			},
+			siteId,
+		);
+
+		let loopCalls = 0;
+		const agentLoopFactory = (config: { abortSignal?: AbortSignal }) => ({
+			run: async () => {
+				loopCalls++;
+				if (loopCalls === 1) {
+					return new Promise((resolve, reject) => {
+						const signal = config.abortSignal;
+						if (!signal) {
+							reject(new Error("executor abort signal was not propagated"));
+							return;
+						}
+						const finish = () => resolve({ messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 });
+						if (signal.aborted) finish();
+						else signal.addEventListener("abort", finish, { once: true });
+					});
+				}
+				return { messagesCreated: 1, toolCallsMade: 0, filesChanged: 0 };
+			},
+		});
+
+		const appContext = makeAppContext(db, siteId);
+		result = await initServer(makeDeps(appContext, agentLoopFactory, makeRelayProcessor()));
+		(result.threadExecutor as unknown as { runTimeoutMs: number }).runTimeoutMs = 25;
+		enqueueMessage(db, messageId, threadId);
+		appContext.eventBus.emit("notify:enqueued", { thread_id: threadId });
+
+		for (
+			let i = 0;
+			i < 100 &&
+			(loopCalls < 2 || hasPending(db, threadId) || result.threadExecutor.isActive(threadId));
+			i++
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+
+		expect(loopCalls).toBe(2);
+		expect(hasPending(db, threadId)).toBe(false);
+	});
+
+	it("does not deliver a late background result after timeout and retries the aux dispatch", async () => {
+		const parentThreadId = randomUUID();
+		const auxThreadId = randomUUID();
+		const agentId = randomUUID();
+		const callId = `call_${randomUUID().slice(0, 8)}`;
+		seedThread(db, siteId, parentThreadId, "web", "operator");
+		seedThread(db, siteId, auxThreadId, "web", "operator", agentId);
+		seedAgent(db, siteId, agentId);
+
+		let runnerCalls = 0;
+		let activeRunners = 0;
+		let maxActiveRunners = 0;
+		let completionEvents = 0;
+		const agentLoopFactory = {
+			createAuxLoopRunner:
+				({ abortSignal }: { abortSignal: AbortSignal }) =>
+				async () => {
+					runnerCalls++;
+					activeRunners++;
+					maxActiveRunners = Math.max(maxActiveRunners, activeRunners);
+					try {
+						if (runnerCalls === 1) {
+							await new Promise<void>((resolve) => {
+								if (abortSignal.aborted) {
+									resolve();
+								} else {
+									abortSignal.addEventListener("abort", resolve, { once: true });
+								}
+							});
+							return { summary: "late result", error: undefined };
+						}
+						return { summary: "retried result", error: undefined };
+					} finally {
+						activeRunners--;
+					}
+				},
+		};
+
+		const appContext = makeAppContext(db, siteId);
+		appContext.eventBus.on("aux:completed", () => completionEvents++);
+		result = await initServer(makeDeps(appContext, agentLoopFactory, makeRelayProcessor()));
+		(result.threadExecutor as unknown as { runTimeoutMs: number }).runTimeoutMs = 25;
+		seedBackgroundAux(db, siteId, { parentThreadId, auxThreadId, callId, agentId });
+		appContext.eventBus.emit("notify:enqueued", { thread_id: auxThreadId });
+
+		let placeholder = findBackgroundPlaceholderDeliveryState(db, parentThreadId, callId);
+		for (let i = 0; i < 100 && (runnerCalls < 2 || !placeholder?.delivered); i++) {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			placeholder = findBackgroundPlaceholderDeliveryState(db, parentThreadId, callId);
+		}
+
+		expect(runnerCalls).toBe(2);
+		expect(maxActiveRunners).toBe(1);
+		expect(completionEvents).toBe(1);
+		expect(placeholder?.delivered).toBe(true);
+		const parentRow = db
+			.query(
+				"SELECT content FROM messages WHERE thread_id = ? AND tool_name = ? AND role = 'tool_result'",
+			)
+			.get(parentThreadId, callId) as { content: string } | null;
+		expect(parentRow?.content).toBe("retried result");
 	});
 
 	/**

@@ -35,6 +35,8 @@ export interface RunLocalLoopParams {
 	timeoutScheduler?: TimeoutScheduler;
 	/** Cooperative cancellation: checked at yield points in the agent loop. */
 	shouldYield?: () => boolean;
+	/** Cancellation requested by the owning ThreadExecutor. */
+	abortSignal?: AbortSignal;
 	/** Platform identifier for platform-scoped threads (e.g. "discord"). */
 	platform?: string;
 	/** Client tools from WS connections subscribed to this thread. */
@@ -108,10 +110,21 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 		handleMessageTracker,
 		noTools,
 		maxOutputTokens,
+		abortSignal: parentAbortSignal,
 	} = params;
 
 	const abortController = new AbortController();
 	activeLoopAbortControllers.set(threadId, abortController);
+	const abortFromParent = (): void => {
+		abortController.abort(parentAbortSignal?.reason);
+	};
+	if (parentAbortSignal) {
+		if (parentAbortSignal.aborted) {
+			abortFromParent();
+		} else {
+			parentAbortSignal.addEventListener("abort", abortFromParent, { once: true });
+		}
+	}
 
 	// Resettable inactivity timeout — restarted each time the loop signals activity.
 	let timeoutId = timeoutScheduler.setTimeout(() => {
@@ -159,6 +172,7 @@ export async function runLocalAgentLoop(params: RunLocalLoopParams): Promise<Run
 	} finally {
 		timeoutScheduler.clearTimeout(timeoutId);
 		eventBus.off("agent:cancel", onCancel);
+		parentAbortSignal?.removeEventListener("abort", abortFromParent);
 		activeLoopAbortControllers.delete(threadId);
 	}
 }

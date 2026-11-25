@@ -20,8 +20,16 @@ export interface ExecutorRunResult {
 
 export interface ExecutorOptions {
 	/** Maximum time (ms) a single runFn invocation may take before the
-	 *  executor gives up and releases the lock. Default: 10 minutes. */
+	 *  executor requests cancellation. The lock remains held until the
+	 *  callback settles so a late callback cannot overlap a replacement run. */
 	runTimeoutMs?: number;
+}
+
+class ExecutorTimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ExecutorTimeoutError";
+	}
 }
 
 export class ThreadExecutor {
@@ -56,7 +64,8 @@ export class ThreadExecutor {
 	 * returns immediately (the active loop will pick up new messages).
 	 *
 	 * @param threadId - Thread to process
-	 * @param runFn - Inference callback; receives shouldYield and returns result
+	 * @param runFn - Inference callback; receives shouldYield and an abort signal
+	 *   that fires when the executor timeout is reached
 	 * @param onComplete - Called after each successful (non-yielded) iteration
 	 */
 	/**
@@ -68,7 +77,7 @@ export class ThreadExecutor {
 	 */
 	async execute(
 		threadId: string,
-		runFn: (shouldYield: () => boolean) => Promise<ExecutorRunResult>,
+		runFn: (shouldYield: () => boolean, abortSignal: AbortSignal) => Promise<ExecutorRunResult>,
 		onComplete?: (result: ExecutorRunResult) => Promise<void>,
 	): Promise<boolean> {
 		if (this.activeLocks.has(threadId)) return false;
@@ -77,9 +86,11 @@ export class ThreadExecutor {
 		try {
 			while (true) {
 				const shouldYield = () => hasPending(this.db, threadId);
+				const abortController = new AbortController();
+				const runPromise = Promise.resolve().then(() => runFn(shouldYield, abortController.signal));
 
 				try {
-					const result = await this.withTimeout(runFn(shouldYield), threadId);
+					const result = await this.withTimeout(runPromise, threadId, abortController);
 
 					if (result.yielded) {
 						resetProcessingForThread(this.db, threadId);
@@ -90,6 +101,12 @@ export class ThreadExecutor {
 					if (onComplete) await onComplete(result);
 					if (!hasPending(this.db, threadId)) break;
 				} catch (error) {
+					// A timeout only requests cancellation. Keep the executor lock until
+					// the callback settles so a late callback cannot overlap a replacement
+					// run or acknowledge work claimed by that replacement.
+					if (error instanceof ExecutorTimeoutError) {
+						await runPromise.catch(() => undefined);
+					}
 					this.logger.error(`[thread-executor] ${threadId}: ${formatError(error)}`);
 					// Reset any processing entries so they can be re-claimed on next attempt
 					resetProcessingForThread(this.db, threadId);
@@ -107,18 +124,24 @@ export class ThreadExecutor {
 	}
 
 	/**
-	 * Race a promise against a timeout. If the timeout fires first,
-	 * the promise is abandoned and an error is thrown.
+	 * Race a promise against a timeout. If the timeout fires first, request
+	 * cancellation and reject; the caller still waits for the original callback
+	 * to settle before releasing the thread lock.
 	 */
 	private withTimeout(
 		promise: Promise<ExecutorRunResult>,
 		threadId: string,
+		abortController: AbortController,
 	): Promise<ExecutorRunResult> {
 		if (this.runTimeoutMs <= 0) return promise;
 
 		return new Promise<ExecutorRunResult>((resolve, reject) => {
 			const timer = setTimeout(() => {
-				reject(new Error(`runFn timeout after ${this.runTimeoutMs}ms for thread ${threadId}`));
+				const error = new ExecutorTimeoutError(
+					`runFn timeout after ${this.runTimeoutMs}ms for thread ${threadId}`,
+				);
+				abortController.abort(error);
+				reject(error);
 			}, this.runTimeoutMs);
 
 			promise.then(
