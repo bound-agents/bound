@@ -285,6 +285,8 @@ interface ConsistencyObserver {
 	}): void;
 	complete(reason: "all_done" | "table_count_match", observedAt?: number): void;
 	timeout(cursor: { tableIndex: number; offset: number }): void;
+	/** The connection the request was sent on closed or was replaced (#306). */
+	disconnected(cursor: { tableIndex: number; offset: number }): void;
 	sendFailed(): void;
 }
 
@@ -328,7 +330,8 @@ export class WsTransport {
 		ping?: () => void,
 		ownerId?: string,
 	): void {
-		const replacesExistingPeer = this.peerConnections.has(peerSiteId);
+		const replacedPeer = this.peerConnections.get(peerSiteId);
+		const replacesExistingPeer = replacedPeer !== undefined;
 		this.peerConnections.set(peerSiteId, {
 			peerSiteId,
 			sendFrame,
@@ -337,6 +340,8 @@ export class WsTransport {
 			ownerId,
 		});
 		if (!replacesExistingPeer) recordActiveConnection("server", 1);
+		// The replaced socket will never answer requests sent on it (#306).
+		if (replacedPeer) this.abandonConsistencyRequests(replacedPeer);
 		this.config.logger?.debug("WsTransport peer added", { peerSiteId, ownerId });
 	}
 
@@ -346,8 +351,12 @@ export class WsTransport {
 	 * (HLC_ZERO cursor would permanently block pruning).
 	 */
 	removePeer(peerSiteId: string): void {
+		const peer = this.peerConnections.get(peerSiteId);
 		const removedPeer = this.peerConnections.delete(peerSiteId);
 		if (removedPeer) recordActiveConnection("server", -1);
+		// Settle consistency requests sent on this connection now, not at their
+		// five-minute deadline, so reconnect backfill is not blocked (#306).
+		if (peer) this.abandonConsistencyRequests(peer);
 
 		const state = this.snapshotStates.get(peerSiteId);
 		const wasSeeding = !!state;
@@ -2251,8 +2260,35 @@ export class WsTransport {
 			timer: Timer;
 			cursor: { tableIndex: number; offset: number };
 			observer?: ConsistencyObserver;
+			/** Connection the request was sent on; responses can only arrive over it. */
+			peer: PeerConnection;
 		}
 	>();
+
+	/**
+	 * Settle every pending consistency request that was sent on `peer` (#306).
+	 * The connection is gone, so no response can arrive: clear the deadline,
+	 * keep the partial pages and cursor as resume state for the next attempt,
+	 * and reject so `runBackfill` releases its guard. Requests on other
+	 * connections — unrelated peers or a newer socket for the same peer — are
+	 * untouched, and any late frame for an abandoned id is ignored because the
+	 * id is no longer pending.
+	 */
+	private abandonConsistencyRequests(peer: PeerConnection): void {
+		for (const [requestId, req] of this.pendingConsistencyRequests) {
+			if (req.peer !== peer) continue;
+			clearTimeout(req.timer);
+			this.pendingConsistencyRequests.delete(requestId);
+			this.consistencyResumeState = { cursor: { ...req.cursor }, data: req.data };
+			req.observer?.disconnected(this.consistencyResumeState.cursor);
+			this.config.logger?.debug("[consistency] Request abandoned — connection closed", {
+				requestId,
+				peerSiteId: peer.peerSiteId,
+				cursor: req.cursor,
+			});
+			req.reject(new Error("Consistency request abandoned: connection closed"));
+		}
+	}
 
 	requestConsistency(
 		tables: string[],
@@ -2322,6 +2358,7 @@ export class WsTransport {
 				timer,
 				cursor: { tableIndex: resumeTableIndex, offset: resumeOffset },
 				observer,
+				peer: hubPeer,
 			});
 		});
 	}
@@ -2518,8 +2555,8 @@ export class WsTransport {
 		const consistency = operation?.consistency();
 		let frameCount = 0;
 		let tableCount = 0;
-		let completionReason: "all_done" | "table_count_match" | "timeout" | "send_failed" =
-			"send_failed";
+		let completionReason:
+			"all_done" | "table_count_match" | "timeout" | "disconnected" | "send_failed" = "send_failed";
 		let requestSentAt = 0;
 		let firstResponseAt: number | undefined;
 		let lastResponseAt: number | undefined;
@@ -2575,6 +2612,11 @@ export class WsTransport {
 			},
 			timeout(cursor) {
 				completionReason = "timeout";
+				lastTableIndex = cursor.tableIndex;
+				lastOffset = cursor.offset;
+			},
+			disconnected(cursor) {
+				completionReason = "disconnected";
 				lastTableIndex = cursor.tableIndex;
 				lastOffset = cursor.offset;
 			},
