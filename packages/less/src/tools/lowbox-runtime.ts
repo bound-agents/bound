@@ -130,9 +130,6 @@ export function buildLowboxArgs(
 			policyCwd,
 			cwd,
 			tempRoot,
-			...(cfg.gitWorktreeMetadata
-				? [cfg.gitWorktreeMetadata.gitdir, cfg.gitWorktreeMetadata.commondir]
-				: []),
 			...cfg.writablePaths,
 		].flatMap((root) => ["--writable", root]),
 		...computeGitProtectedPaths(policyCwd, "win32", cfg.gitWorktreeMetadata).flatMap((path) => [
