@@ -212,3 +212,8 @@ The plugin also compiles runes modules (`.svelte.js` / `.svelte.ts`) with `compi
 
 Bun attributes a compiled component's coverage to its `.svelte` path without applying the inline source map: line numbers in the coverage report are lines of the compiled JS, not the `.svelte` source. Totals and percentages are real. To read an uncovered range, compile the component (`compileSvelteModule`) and look up those lines in the output.
 
+### Never construct a just-bash `Bash` outside `createSandbox`
+
+just-bash 2.14.4 normalizes every script by `trimStart()`-ing each non-heredoc line, without tracking quotes, unless `ExecOptions.rawScript` is `true`. A quoted multiline argument loses its indentation: `python3 -c` bodies fail with `IndentationError`, and whitespace-sensitive literals are rewritten while the command exits 0 (#308).
+
+`createSandbox` in `packages/sandbox/src/sandbox-factory.ts` is the exec seam: it returns a `Bash` subclass that forces `rawScript: true` on every `exec`, including nested `bash -c` and `source`. Get the shell from `createSandbox`, pass options straight through, and never write `new Bash(` or `rawScript` in `packages/*/src`. `scripts/validate-sandbox-exec-seam.ts` fails `bun check` on either. Tests may build a raw `Bash` to probe just-bash itself, but a test that stands in for the production sandbox should build it with `createSandbox`.

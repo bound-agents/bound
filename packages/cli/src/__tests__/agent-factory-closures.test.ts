@@ -24,9 +24,9 @@ import type { AppContext } from "@bound/core";
 import { applyMetricsSchema, applySchema } from "@bound/core";
 import type { ChatParams, LLMBackend, StreamChunk } from "@bound/llm";
 import { ModelRouter } from "@bound/llm";
-import { createClusterFs, loopContextStorage } from "@bound/sandbox";
+import { createClusterFs, createSandbox, loopContextStorage } from "@bound/sandbox";
 import { TypedEventEmitter } from "@bound/shared";
-import { Bash } from "just-bash";
+import { InMemoryFs, MountableFs } from "just-bash";
 import { createAgentLoopFactory } from "../commands/start/agent-factory";
 
 /**
@@ -694,11 +694,12 @@ describe("createAgentLoopFactory — aux runner sandbox + persist", () => {
 });
 
 /**
- * #308: just-bash normalizes scripts by `trimStart()`-ing every non-heredoc
- * line, including lines that sit inside a quoted multiline argument. The
- * factory's exec wrappers must pass `rawScript: true` so main, aux, and Yard
- * dispatch hand the command to the interpreter byte-for-byte. These drive a
- * REAL just-bash instance through each path and compare stdout exactly.
+ * #308/#319: just-bash normalizes scripts by `trimStart()`-ing every
+ * non-heredoc line, including lines that sit inside a quoted multiline
+ * argument. `createSandbox` is the exec seam that forces `rawScript: true`, so
+ * main, aux, and Yard dispatch must hand the command to the interpreter
+ * byte-for-byte. These drive a REAL `createSandbox` sandbox through each path
+ * and compare stdout exactly.
  */
 describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#308)", () => {
 	const SCRIPT = [
@@ -729,8 +730,11 @@ describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#
 		"",
 	].join("\n");
 
-	function makeRealSandbox() {
-		const bash = new Bash();
+	async function makeRealSandbox() {
+		const { bash } = await createSandbox({
+			clusterFs: new MountableFs({ base: new InMemoryFs() }),
+			commands: [],
+		});
 		const calls: Array<{
 			cmd: string;
 			opts?: Record<string, unknown>;
@@ -749,15 +753,16 @@ describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#
 		};
 	}
 
-	function expectPreserved(sandbox: ReturnType<typeof makeRealSandbox>) {
+	type RealSandbox = Awaited<ReturnType<typeof makeRealSandbox>>;
+
+	function expectPreserved(sandbox: RealSandbox) {
 		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
 		expect(call).toBeDefined();
-		expect(call?.opts?.rawScript).toBe(true);
 		expect(call?.result.exitCode).toBe(0);
 		expect(call?.result.stdout).toBe(EXPECTED);
 	}
 
-	async function runAux(sandbox: ReturnType<typeof makeRealSandbox>, backend: LLMBackend) {
+	async function runAux(sandbox: RealSandbox, backend: LLMBackend) {
 		const db = makeDb();
 		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
 		const factory = createAgentLoopFactory(
@@ -781,7 +786,7 @@ describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#
 		});
 	}
 
-	async function runMain(sandbox: ReturnType<typeof makeRealSandbox>, backend: LLMBackend) {
+	async function runMain(sandbox: RealSandbox, backend: LLMBackend) {
 		const db = makeDb();
 		const clusterFsObj = createClusterFs({ db, siteId: "test-site-id" });
 		const factory = createAgentLoopFactory(
@@ -800,22 +805,22 @@ describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#
 	}`;
 
 	it("main loop: direct bms_bash keeps quoted indentation, heredocs, and literals", async () => {
-		const sandbox = makeRealSandbox();
+		const sandbox = await makeRealSandbox();
 		await runMain(sandbox, new ToolThenTextBackend(SCRIPT, "done"));
 		expectPreserved(sandbox);
-		// The loop's own signal still reaches just-bash next to rawScript.
+		// The loop's own signal still reaches the sandbox exec unchanged.
 		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
 		expect(call?.opts?.signal).toBeInstanceOf(AbortSignal);
 	}, 30_000);
 
 	it("aux loop: direct bms_bash keeps quoted indentation, heredocs, and literals", async () => {
-		const sandbox = makeRealSandbox();
+		const sandbox = await makeRealSandbox();
 		await runAux(sandbox, new ToolThenTextBackend(SCRIPT, "aux done"));
 		expectPreserved(sandbox);
 	}, 30_000);
 
 	it("main loop: Yard bms_bash keeps whitespace and forwards cwd/timeout unchanged", async () => {
-		const sandbox = makeRealSandbox();
+		const sandbox = await makeRealSandbox();
 		await runMain(sandbox, new YardThenTextBackend(yardProgram, "yard done"));
 		expectPreserved(sandbox);
 		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);
@@ -824,7 +829,7 @@ describe("createAgentLoopFactory — sandbox exec preserves script whitespace (#
 	}, 60_000);
 
 	it("aux loop: Yard bms_bash keeps whitespace and forwards cwd/timeout unchanged", async () => {
-		const sandbox = makeRealSandbox();
+		const sandbox = await makeRealSandbox();
 		await runAux(sandbox, new YardThenTextBackend(yardProgram, "aux yard done"));
 		expectPreserved(sandbox);
 		const call = sandbox.calls.find((c) => c.cmd === SCRIPT);

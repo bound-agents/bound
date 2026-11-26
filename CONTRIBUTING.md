@@ -164,6 +164,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [Tool-result content items must match ai@7's prompt schema](docs/gotchas.md#tool-result-content-items-must-match-ai7s-prompt-schema)
 - [Bun coverage thresholds are per-file, `--parallel` under-reports, and 1.4.0 over-reports](docs/gotchas.md#bun-coverage-thresholds-are-per-file---parallel-under-reports-and-140-over-reports)
 - [`.svelte` imports under `bun test` need the preloaded svelte plugin](docs/gotchas.md#svelte-imports-under-bun-test-need-the-preloaded-svelte-plugin)
+- [Never construct a just-bash `Bash` outside `createSandbox`](docs/gotchas.md#never-construct-a-just-bash-bash-outside-createsandbox)
 
 ## Recurring Checklists
 

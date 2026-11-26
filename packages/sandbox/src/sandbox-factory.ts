@@ -1,4 +1,4 @@
-import { Bash, type CustomCommand, type NetworkConfig } from "just-bash";
+import { Bash, type CustomCommand, type ExecOptions, type NetworkConfig } from "just-bash";
 import type { MountableFs } from "just-bash";
 import {
 	type MemoryThresholdResult,
@@ -7,6 +7,21 @@ import {
 } from "./memory-tracker";
 import { materializeSandboxRuntime } from "./runtime/materialize";
 import { UrlFilter } from "./url-filter";
+
+/**
+ * The sandbox's only exec seam. just-bash's default script normalization
+ * `trimStart()`s every non-heredoc line without tracking quotes, so indentation
+ * inside a quoted multiline argument is silently dropped (#308, #319). Every
+ * exec is forced to `rawScript: true`; all other options (signal, cwd, env,
+ * stdin) pass through. The interpreter re-enters through `this.exec`, so nested
+ * `bash -c` and `source` inherit the flag. Never construct a just-bash `Bash`
+ * anywhere else — `scripts/validate-sandbox-exec-seam.ts` enforces it.
+ */
+class RawScriptBash extends Bash {
+	override exec(commandLine: string, options?: ExecOptions) {
+		return super.exec(commandLine, { ...options, rawScript: true });
+	}
+}
 
 export interface ExecutionLimits {
 	maxCallDepth?: number;
@@ -77,7 +92,7 @@ export async function createSandbox(config: SandboxConfig): Promise<Sandbox> {
 		};
 	}
 
-	const bash = new Bash(bashOptions);
+	const bash = new RawScriptBash(bashOptions);
 
 	return {
 		bash,

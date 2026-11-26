@@ -269,6 +269,14 @@ When `executionLimits` is provided, any omitted fields fall back to those same d
 
 `networkConfig` is passed through directly to `just-bash` and controls whether the sandbox can make outbound network requests.
 
+#### Exec seam
+
+`createSandbox` is the only place a `just-bash` `Bash` is constructed. It builds a private `Bash` subclass whose `exec(cmd, opts)` always calls the parent with `{ ...opts, rawScript: true }`. just-bash's default script normalization `trimStart()`s every non-heredoc line without tracking quotes, which strips indentation inside quoted multiline arguments (a `python3 -c` body, a `printf` literal) while the command still exits 0 (#308). With `rawScript` forced at the seam, every caller's script reaches the interpreter byte-for-byte, and no caller can opt out by omitting a flag.
+
+The subclass keeps the `Bash` type, so `registerCommand` and `fs` work unchanged. The interpreter re-enters through `this.exec`, so nested `bash -c` and `source` inherit `rawScript`. All other options (`signal`, `cwd`, `env`, `stdin`) pass through as given.
+
+Code outside `sandbox-factory.ts` never constructs `Bash` and never sets `rawScript`. `scripts/validate-sandbox-exec-seam.ts` (part of `bun check`) fails on any `new Bash(` or `rawScript` reference in `packages/*/src` outside the seam, and its allowlist is empty.
+
 #### End-to-end sandbox creation example
 
 ```typescript
