@@ -152,7 +152,7 @@ Accumulated the hard way — check here before writing a bug report. The list be
 - [`thinking`-signature portability](docs/gotchas.md#thinking-signature-portability)
 - [OpenAI Responses reserves tool names (`tool_search`, `shell`, …)](docs/gotchas.md#openai-responses-reserves-tool-names-tool_search-shell-)
 - [`boundless_bash` runs inside a filesystem sandbox by default](docs/gotchas.md#boundless_bash-runs-inside-a-filesystem-sandbox-by-default)
-- [Nothing inside the boundless sandbox can kill a stray process](docs/gotchas.md#nothing-inside-the-boundless-sandbox-can-kill-a-stray-process)
+- [Sandboxed commands can kill their own processes but cannot list them](docs/gotchas.md#sandboxed-commands-can-kill-their-own-processes-but-cannot-list-them)
 - [Mantle GPT-5.x automatic prompt cache is exact-match, not prefix](docs/gotchas.md#mantle-gpt-5x-automatic-prompt-cache-is-exact-match-not-prefix)
 - [`@ai-sdk/openai` injects `reasoning.summary` on Mantle Responses turns](docs/gotchas.md#ai-sdkopenai-injects-reasoningsummary-on-mantle-responses-turns)
 - [Encrypted reasoning is bound to the provider that minted it](docs/gotchas.md#encrypted-reasoning-is-bound-to-the-provider-that-minted-it)
